@@ -40,6 +40,7 @@ def test_db_roundtrip_base_score_is_self_consistent(tmp_path, monkeypatch):
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+    from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.solver.scoring import solve_best_fever_combination
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
 
@@ -119,6 +120,7 @@ def test_db_roundtrip_base_score_is_self_consistent(tmp_path, monkeypatch):
     assert int(row["score"]) == score
 
     stored_details = json.loads(row["details_json"])
-    stored_stats = stored_details.get("Stats") or {}
+    stored_details = _unpack_stats_after_load(stored_details) or {}
+    stored_stats = (stored_details.get("Stats") or {}) if isinstance(stored_details, dict) else {}
     stored_score = evaluate_stats_score(stored_stats, calc_song, ref_arrays)
     assert int(stored_score) == score

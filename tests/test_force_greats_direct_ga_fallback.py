@@ -67,6 +67,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
         gears_by_name,
         minis_by_name,
         build_details_fn,
+        team_buff="T5",
         db_loadouts_full=None,
         allow_db_query=True,
         materialize_ga_details=True,

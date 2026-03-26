@@ -1,43 +1,40 @@
-import json
-import time
-
 import pytest
 
-from gear_optimizer.data.database import get_db_connection
+from gear_optimizer.data.database import init_db, save_loadouts_batch
 from inventory_optimizer import run_inventory_meta_coverage
 
 
-def _insert_loadout(conn, song_name, score, gear_names, minis_groups, details, *, loadout_hash_suffix=""):
-    conn.execute(
-        """
-        INSERT INTO songs (name, best_score, best_fg_score, last_updated)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-            best_score = MAX(best_score, excluded.best_score),
-            best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-            last_updated = excluded.last_updated
-        """,
-        (song_name, score, 0, time.time()),
+def _insert_loadout(song_name, score, gear_names, minis_groups, details):
+    details_out = dict(details or {})
+    details_out.setdefault(
+        "Stats",
+        {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 0,
+        },
     )
-    conn.execute(
-        """
-        INSERT INTO team_buff_loadouts (
-            song_name, team_buff, loadout_hash, score, fg_score,
-            gear_json, minis_json, details_json, force_details_json, timestamp
-        )
-        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            song_name,
-            f"{song_name}-{score}{str(loadout_hash_suffix or '')}",
-            score,
-            0,
-            json.dumps(gear_names),
-            json.dumps(minis_groups),
-            json.dumps(details),
-            None,
-            time.time(),
-        ),
+    mini_names = [min(g) for g in (minis_groups or []) if isinstance(g, list) and g]
+    save_loadouts_batch(
+        str(song_name),
+        [
+            {
+                "score": int(score),
+                "fg_score": 0,
+                "gear": list(gear_names),
+                "minis": list(mini_names),
+                "details": details_out,
+                "force": None,
+            }
+        ],
+        team_buff="T5",
     )
 
 
@@ -62,37 +59,31 @@ def test_inventory_meta_coverage_caps_song_count(monkeypatch, tmp_path):
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        # Three songs, disjoint gear names => each needs its own 6 variants (no reuse).
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        _insert_loadout(
-            conn,
-            "SongOne",
-            100,
-            ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"],
-            minis,
-            _base_details("Chill"),
-        )
-        _insert_loadout(
-            conn,
-            "SongTwo",
-            100,
-            ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"],
-            minis,
-            _base_details("Chill"),
-        )
-        _insert_loadout(
-            conn,
-            "SongThree",
-            100,
-            ["HatC", "NeckC", "FaceC", "ShirtC", "BackC", "PantC"],
-            minis,
-            _base_details("Chill"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+
+    # Three songs, disjoint gear names => each needs its own 6 variants (no reuse).
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    _insert_loadout(
+        "SongOne",
+        100,
+        ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"],
+        minis,
+        _base_details("Chill"),
+    )
+    _insert_loadout(
+        "SongTwo",
+        100,
+        ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"],
+        minis,
+        _base_details("Chill"),
+    )
+    _insert_loadout(
+        "SongThree",
+        100,
+        ["HatC", "NeckC", "FaceC", "ShirtC", "BackC", "PantC"],
+        minis,
+        _base_details("Chill"),
+    )
 
     results = run_inventory_meta_coverage(
         inventory_cap=6,
@@ -114,16 +105,12 @@ def test_inventory_meta_coverage_reuses_variants(monkeypatch, tmp_path):
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        _insert_loadout(conn, "SongOne", 100, gear, minis, _base_details("Chill"))
-        _insert_loadout(conn, "SongTwo", 100, gear, minis, _base_details("Rush"))
-        _insert_loadout(conn, "SongThree", 100, gear, minis, _base_details("Vibe"))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    _insert_loadout("SongOne", 100, gear, minis, _base_details("Chill"))
+    _insert_loadout("SongTwo", 100, gear, minis, _base_details("Rush"))
+    _insert_loadout("SongThree", 100, gear, minis, _base_details("Vibe"))
 
     # With OV=0, variants are element-wildcard and can be reused across all three songs.
     results = run_inventory_meta_coverage(inventory_cap=6, partitions_per_song=8, seed=1, profile=False)
@@ -138,15 +125,11 @@ def test_inventory_meta_coverage_full_gpu_smoke(monkeypatch, tmp_path):
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        _insert_loadout(conn, "SongOne", 100, gear, minis, _base_details("Chill", ov=0))
-        _insert_loadout(conn, "SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    _insert_loadout("SongOne", 100, gear, minis, _base_details("Chill", ov=0))
+    _insert_loadout("SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
 
     results = run_inventory_meta_coverage(
         inventory_cap=6,
@@ -169,15 +152,11 @@ def test_inventory_meta_coverage_lns_runs(monkeypatch, tmp_path):
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        _insert_loadout(conn, "SongOne", 100, gear, minis, _base_details("Chill", ov=0))
-        _insert_loadout(conn, "SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    _insert_loadout("SongOne", 100, gear, minis, _base_details("Chill", ov=0))
+    _insert_loadout("SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
 
     results = run_inventory_meta_coverage(
         inventory_cap=6,
@@ -198,16 +177,12 @@ def test_inventory_meta_coverage_gpu_full_parallel_repack_matches_serial(monkeyp
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        _insert_loadout(conn, "SongOne", 100, gear, minis, _base_details("Chill", ov=0))
-        _insert_loadout(conn, "SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
-        _insert_loadout(conn, "SongThree", 100, gear, minis, _base_details("Vibe", ov=0))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    _insert_loadout("SongOne", 100, gear, minis, _base_details("Chill", ov=0))
+    _insert_loadout("SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
+    _insert_loadout("SongThree", 100, gear, minis, _base_details("Vibe", ov=0))
 
     common_args = dict(
         inventory_cap=6,
@@ -241,19 +216,15 @@ def test_inventory_meta_coverage_cpsat_hypergraph_non_regression_top1(monkeypatc
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
-        gear_c = ["HatC", "NeckC", "FaceC", "ShirtC", "BackC", "PantC"]
-        _insert_loadout(conn, "SongOne", 100, gear_a, minis, _base_details("Chill"))
-        _insert_loadout(conn, "SongTwo", 100, gear_b, minis, _base_details("Chill"))
-        _insert_loadout(conn, "SongThree", 100, gear_a, minis, _base_details("Flow"))
-        _insert_loadout(conn, "SongFour", 100, gear_c, minis, _base_details("Flow"))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
+    gear_c = ["HatC", "NeckC", "FaceC", "ShirtC", "BackC", "PantC"]
+    _insert_loadout("SongOne", 100, gear_a, minis, _base_details("Chill"))
+    _insert_loadout("SongTwo", 100, gear_b, minis, _base_details("Chill"))
+    _insert_loadout("SongThree", 100, gear_a, minis, _base_details("Flow"))
+    _insert_loadout("SongFour", 100, gear_c, minis, _base_details("Flow"))
 
     common_args = dict(
         inventory_cap=6,
@@ -288,33 +259,13 @@ def test_inventory_meta_coverage_cpsat_skips_multi_candidate_mode(monkeypatch, t
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
-        gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
-        gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
-        _insert_loadout(
-            conn,
-            "SongOne",
-            100,
-            gear_a,
-            minis,
-            _base_details("Chill"),
-            loadout_hash_suffix="-a",
-        )
-        _insert_loadout(
-            conn,
-            "SongOne",
-            100,
-            gear_b,
-            minis,
-            _base_details("Flow"),
-            loadout_hash_suffix="-b",
-        )
-        _insert_loadout(conn, "SongTwo", 100, gear_a, minis, _base_details("Chill"))
-        conn.commit()
-    finally:
-        conn.close()
+    init_db()
+    minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+    gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+    gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
+    _insert_loadout("SongOne", 100, gear_a, minis, _base_details("Chill"))
+    _insert_loadout("SongOne", 100, gear_b, minis, _base_details("Flow"))
+    _insert_loadout("SongTwo", 100, gear_a, minis, _base_details("Chill"))
 
     results = run_inventory_meta_coverage(
         inventory_cap=6,

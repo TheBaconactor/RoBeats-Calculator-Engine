@@ -5,12 +5,74 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
-from gear_optimizer.data.loadout_equivalence import decode_minis_json, extract_song_colors
+from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list
+from gear_optimizer.data.loadout_equivalence import extract_song_colors
 
 from .keys import ELEMENT_TO_ID
 from .models import SongCandidate
 
 TEAM_BUFF_DEFAULT: str = "T5"
+
+
+class _EncodingMaps:
+    __slots__ = ("gear_id_to_name", "mini_id_to_name")
+
+    def __init__(self, *, gear_id_to_name: Dict[int, str], mini_id_to_name: Dict[int, str]):
+        self.gear_id_to_name = gear_id_to_name
+        self.mini_id_to_name = mini_id_to_name
+
+
+def _load_encoding_maps(conn: sqlite3.Connection) -> _EncodingMaps:
+    gear_id_to_name: Dict[int, str] = {}
+    mini_id_to_name: Dict[int, str] = {}
+
+    try:
+        rows = conn.execute("SELECT id, name FROM gear_name_encoding").fetchall()
+        for r in rows or []:
+            try:
+                i = int(r[0] or 0)
+                n = str(r[1] or "").strip()
+            except Exception:
+                continue
+            if i > 0 and n:
+                gear_id_to_name[i] = n
+    except sqlite3.Error:
+        pass
+
+    try:
+        rows = conn.execute("SELECT id, name FROM mini_name_encoding").fetchall()
+        for r in rows or []:
+            try:
+                i = int(r[0] or 0)
+                n = str(r[1] or "").strip()
+            except Exception:
+                continue
+            if i > 0 and n:
+                mini_id_to_name[i] = n
+    except sqlite3.Error:
+        pass
+
+    return _EncodingMaps(gear_id_to_name=gear_id_to_name, mini_id_to_name=mini_id_to_name)
+
+
+def _decode_gear_names_blob(payload: object, maps: _EncodingMaps) -> Tuple[str, ...]:
+    ids = _unpack_id_list(payload)
+    names = [str(maps.gear_id_to_name.get(int(i), "") or "").strip() for i in ids if int(i) > 0]
+    names = [n for n in names if n]
+    return tuple(names)
+
+
+def _decode_mini_groups_blob(payload: object, maps: _EncodingMaps) -> Tuple[Tuple[str, ...], ...]:
+    id_groups = _unpack_id_groups(payload)
+    out: List[Tuple[str, ...]] = []
+    for g in id_groups or []:
+        if not g:
+            continue
+        names = [str(maps.mini_id_to_name.get(int(i), "") or "").strip() for i in g if int(i) > 0]
+        names = sorted({n for n in names if n})
+        if names:
+            out.append(tuple(names))
+    return tuple(out)
 
 
 def _resolve_tables(_conn: sqlite3.Connection) -> Tuple[str, str, str]:
@@ -118,12 +180,13 @@ def fetch_candidates_for_peak(
     base_table, fg_table, team_buff = _resolve_tables(conn)
     candidates: List[SongCandidate] = []
     rows: List[Tuple[str, sqlite3.Row]] = []
+    maps = _load_encoding_maps(conn)
 
     if peak == base_peak:
         try:
             cursor = conn.execute(
                 f"""
-                    SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                    SELECT rowid AS rowid, song_name, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
                     FROM {base_table}
                     WHERE song_name = ? AND team_buff = ? AND score = ?
                     """,
@@ -137,7 +200,7 @@ def fetch_candidates_for_peak(
         try:
             cursor = conn.execute(
                 f"""
-                    SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                    SELECT rowid AS rowid, song_name, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
                     FROM {fg_table}
                     WHERE song_name = ? AND team_buff = ? AND fg_score = ?
                     """,
@@ -148,7 +211,7 @@ def fetch_candidates_for_peak(
             pass
 
     for source_table, row in rows:
-        candidate = parse_candidate_row(song_name, source_table, row)
+        candidate = parse_candidate_row(song_name, source_table, row, maps)
         if candidate is not None:
             candidates.append(candidate)
 
@@ -157,6 +220,7 @@ def fetch_candidates_for_peak(
 
 def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[str, List[SongCandidate]], List[str]]:
     candidates_by_song: Dict[str, List[SongCandidate]] = {}
+    maps = _load_encoding_maps(conn)
 
     base_table, fg_table, team_buff = _resolve_tables(conn)
     peak_map: Dict[str, int] = {}
@@ -217,7 +281,7 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
                 {base_filter}
                 GROUP BY song_name
             )
-            SELECT l.rowid AS rowid, l.song_name, l.score, l.fg_score, l.gear_json, l.minis_json, l.details_json, l.force_details_json
+            SELECT l.rowid AS rowid, l.song_name, l.score, l.fg_score, l.gear_ids_blob, l.minis_ids_blob, l.details_json, l.force_details_json
             FROM {base_table} l
             JOIN base ON base.song_name = l.song_name AND base.base_peak = l.score
             WHERE l.team_buff = ?
@@ -227,7 +291,7 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
             song = str(row["song_name"] or "")
             if peak_map.get(song, 0) != base_peak.get(song, 0):
                 continue
-            cand = parse_candidate_row(song, base_table, row)
+            cand = parse_candidate_row(song, base_table, row, maps)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)
@@ -243,7 +307,7 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
                 {fg_filter}
                 GROUP BY song_name
             )
-            SELECT f.rowid AS rowid, f.song_name, f.score, f.fg_score, f.gear_json, f.minis_json, f.details_json, f.force_details_json
+            SELECT f.rowid AS rowid, f.song_name, f.score, f.fg_score, f.gear_ids_blob, f.minis_ids_blob, f.details_json, f.force_details_json
             FROM {fg_table} f
             JOIN fg ON fg.song_name = f.song_name AND fg.fg_peak = f.fg_score
             WHERE f.team_buff = ?
@@ -253,7 +317,7 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
             song = str(row["song_name"] or "")
             if peak_map.get(song, 0) != fg_peak.get(song, 0):
                 continue
-            cand = parse_candidate_row(song, fg_table, row)
+            cand = parse_candidate_row(song, fg_table, row, maps)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)
@@ -294,6 +358,7 @@ def fetch_candidates_within_delta_allow_missing(
 
     base_table, fg_table, team_buff = _resolve_tables(conn)
     candidates_by_song: Dict[str, List[SongCandidate]] = {}
+    maps = _load_encoding_maps(conn)
 
     peak_map: Dict[str, int] = {}
     base_peak: Dict[str, int] = {}
@@ -386,8 +451,8 @@ def fetch_candidates_within_delta_allow_missing(
                     l.song_name AS song_name,
                     l.score AS score,
                     l.fg_score AS fg_score,
-                    l.gear_json AS gear_json,
-                    l.minis_json AS minis_json,
+                    l.gear_ids_blob AS gear_ids_blob,
+                    l.minis_ids_blob AS minis_ids_blob,
                     l.details_json AS details_json,
                     l.force_details_json AS force_details_json,
                     ROW_NUMBER() OVER (PARTITION BY l.song_name ORDER BY l.score DESC, l.rowid ASC) AS rn
@@ -395,13 +460,13 @@ def fetch_candidates_within_delta_allow_missing(
                 JOIN peaks p ON p.song_name = l.song_name
                 WHERE l.team_buff = ? AND l.score >= (p.peak - ?)
             )
-            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            SELECT rowid, song_name, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM ranked
             WHERE rn <= ?
             """
         for row in conn.execute(query, tuple(peaks_params)):
             song = str(row["song_name"] or "")
-            cand = parse_candidate_row(song, base_table, row)
+            cand = parse_candidate_row(song, base_table, row, maps)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)
@@ -447,8 +512,8 @@ def fetch_candidates_within_delta_allow_missing(
                     f.song_name AS song_name,
                     f.score AS score,
                     f.fg_score AS fg_score,
-                    f.gear_json AS gear_json,
-                    f.minis_json AS minis_json,
+                    f.gear_ids_blob AS gear_ids_blob,
+                    f.minis_ids_blob AS minis_ids_blob,
                     f.details_json AS details_json,
                     f.force_details_json AS force_details_json,
                     ROW_NUMBER() OVER (PARTITION BY f.song_name ORDER BY f.fg_score DESC, f.rowid ASC) AS rn
@@ -456,13 +521,13 @@ def fetch_candidates_within_delta_allow_missing(
                 JOIN peaks p ON p.song_name = f.song_name
                 WHERE f.team_buff = ? AND f.fg_score >= (p.peak - ?)
             )
-            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            SELECT rowid, song_name, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM ranked
             WHERE rn <= ?
             """
         for row in conn.execute(query, tuple(peaks_params)):
             song = str(row["song_name"] or "")
-            cand = parse_candidate_row(song, fg_table, row)
+            cand = parse_candidate_row(song, fg_table, row, maps)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)
@@ -495,7 +560,9 @@ def fetch_candidates_within_delta_allow_missing(
     return candidates_by_song, missing
 
 
-def parse_candidate_row(song_name: str, source_table: str, row: sqlite3.Row) -> Optional[SongCandidate]:
+def parse_candidate_row(
+    song_name: str, source_table: str, row: sqlite3.Row, maps: _EncodingMaps
+) -> Optional[SongCandidate]:
     try:
         try:
             rowid = int(row["rowid"] or 0)
@@ -504,8 +571,8 @@ def parse_candidate_row(song_name: str, source_table: str, row: sqlite3.Row) -> 
         if rowid <= 0:
             return None
 
-        gear_names = _parse_gear_json(row["gear_json"])
-        mini_groups = _parse_minis_json(row["minis_json"])
+        gear_names = _decode_gear_names_blob(row["gear_ids_blob"], maps)
+        mini_groups = _decode_mini_groups_blob(row["minis_ids_blob"], maps)
         if len(gear_names) != 6 or len(mini_groups) != 3:
             return None
 
@@ -542,34 +609,6 @@ def _parse_json(payload: Optional[str]) -> Dict[str, Any]:
     except Exception:
         return {}
     return value if isinstance(value, dict) else {}
-
-
-def _parse_gear_json(payload: Optional[str]) -> Tuple[str, ...]:
-    if not payload:
-        return tuple()
-    try:
-        gear = json.loads(payload)
-    except Exception:
-        return tuple()
-    if not isinstance(gear, list):
-        return tuple()
-    names = [str(item).strip() for item in gear if item]
-    if len(names) != 6 or any(not n for n in names):
-        return tuple()
-    return tuple(names)
-
-
-def _parse_minis_json(payload: Optional[str]) -> Tuple[Tuple[str, ...], ...]:
-    groups = decode_minis_json(payload)
-    if len(groups) != 3:
-        return tuple()
-    normalized: List[Tuple[str, ...]] = []
-    for group in groups:
-        names = tuple(sorted({str(n).strip() for n in group if n}))
-        if not names:
-            return tuple()
-        normalized.append(names)
-    return tuple(normalized)
 
 
 def _extract_gem_totals(details: Dict[str, Any]) -> Tuple[int, ...]:

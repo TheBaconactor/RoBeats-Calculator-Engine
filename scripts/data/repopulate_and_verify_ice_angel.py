@@ -7,7 +7,15 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries, build_db_payload
-from gear_optimizer.data.database import get_db_connection, get_evolution_db_path, init_db
+from gear_optimizer.data.database import (
+    _insert_missing_piece_names,
+    _load_piece_name_encoding_maps,
+    _pack_id_groups,
+    _pack_id_list,
+    get_db_connection,
+    get_evolution_db_path,
+    init_db,
+)
 
 # 1. Initialize DB (User cleared it, so likely need to ensure tables exist or just connect)
 db_path = get_evolution_db_path()
@@ -82,6 +90,12 @@ for idx, entry in enumerate(entries, start=1):
     mini_names = [m.get("Name") for m in (mock_minis or []) if m.get("Name")]
     loadout_hash = entry.get("loadout_hash") or f"mock-{idx}"
 
+    _insert_missing_piece_names(cursor.connection, table="gear_name_encoding", names=gear_names)
+    _insert_missing_piece_names(cursor.connection, table="mini_name_encoding", names=mini_names)
+    maps = _load_piece_name_encoding_maps(cursor.connection, db_path=str(db_path))
+    gear_ids_blob = _pack_id_list([int(maps.gear_name_to_id.get(n, 0) or 0) for n in gear_names])
+    minis_ids_blob = _pack_id_groups([[int(maps.mini_name_to_id.get(n, 0) or 0) for n in mini_names]])
+
     # Simple insert
     cursor.execute(
         """
@@ -91,8 +105,8 @@ for idx, entry in enumerate(entries, start=1):
             loadout_hash,
             score,
             fg_score,
-            gear_json,
-            minis_json,
+            gear_ids_blob,
+            minis_ids_blob,
             force_details_json,
             details_json,
             timestamp
@@ -105,8 +119,8 @@ for idx, entry in enumerate(entries, start=1):
             loadout_hash,
             score,
             fg_score,
-            json.dumps(gear_names),
-            json.dumps([[name] for name in mini_names]),
+            gear_ids_blob,
+            minis_ids_blob,
             force_json,
             details_json,
             123456789,

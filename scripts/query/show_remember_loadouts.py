@@ -7,9 +7,10 @@ import sqlite3
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import get_evolution_db_path
+from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
 
 
-def print_loadout(title, row):
+def print_loadout(title, row, maps):
     if not row:
         print(f"\n=== {title} ===")
         print("No data found.")
@@ -17,14 +18,21 @@ def print_loadout(title, row):
 
     score = row["score"]
     fg_score = row["fg_score"]
-    gear_json = row["gear_json"]
-    minis_json = row["minis_json"]
     details_json = row["details_json"]
     force_details_json = row["force_details_json"] if "force_details_json" in row.keys() else None
 
-    gear = json.loads(gear_json) if gear_json else []
-    minis = json.loads(minis_json) if minis_json else []
+    gear_ids = _unpack_id_list(row["gear_ids_blob"])
+    gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+    gear = [g for g in gear if g]
+
+    mini_id_groups = _unpack_id_groups(row["minis_ids_blob"])
+    minis = [
+        sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+    ]
+    minis = [[n for n in g if n] for g in minis if g]
+
     details = json.loads(details_json) if details_json else {}
+    details = _unpack_stats_after_load(details) or {}
     force_details = json.loads(force_details_json) if force_details_json else {}
 
     print(f"\n=== {title} ===")
@@ -111,11 +119,12 @@ def main():
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
 
     print("\n\nTOP 5 BY BASE SCORE:")
     cursor = conn.execute(
         """
-        SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+        SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
         FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY score DESC
@@ -125,12 +134,12 @@ def main():
     )
     for i, row in enumerate(cursor):
         print(f"--- Rank {i + 1} ---")
-        print_loadout(f"Base Rank {i + 1}", row)
+        print_loadout(f"Base Rank {i + 1}", row, maps)
 
     print("\n\nTOP 5 BY FG SCORE:")
     cursor = conn.execute(
         """
-        SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+        SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
         FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY fg_score DESC
@@ -140,7 +149,7 @@ def main():
     )
     for i, row in enumerate(cursor):
         print(f"--- Rank {i + 1} ---")
-        print_loadout(f"FG Rank {i + 1}", row)
+        print_loadout(f"FG Rank {i + 1}", row, maps)
 
     conn.close()
 

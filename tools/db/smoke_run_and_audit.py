@@ -13,11 +13,15 @@ import argparse
 import os
 import subprocess
 import sys
+import json
+import sqlite3
 from configparser import ConfigParser
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, difficulty: str) -> None:
@@ -100,10 +104,77 @@ def main() -> None:
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
 
-    print("\nAuditing DB...")
-    audit_script = PROJECT_ROOT / "tools" / "db" / "audit_frontend_db.py"
-    proc2 = subprocess.run([sys.executable, str(audit_script), "--db", str(smoke_db)], cwd=str(PROJECT_ROOT), env=env)
-    raise SystemExit(proc2.returncode)
+    print("\nAuditing DB (compact schema)...")
+    from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
+
+    conn2 = sqlite3.connect(str(smoke_db))
+    conn2.row_factory = sqlite3.Row
+    try:
+        version = conn2.execute("PRAGMA user_version").fetchone()[0]
+        print(f"PRAGMA user_version: {version}")
+
+        required_tables = {
+            "songs",
+            "team_buff_loadouts",
+            "team_buff_fg_loadouts",
+            "gear_name_encoding",
+            "mini_name_encoding",
+        }
+        existing = {r["name"] for r in conn2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        missing = sorted(required_tables - existing)
+        if missing:
+            print(f"Missing required tables: {missing}")
+            raise SystemExit(2)
+
+        t5_rows = conn2.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))='T5'"
+        ).fetchone()[0]
+        print(f"team_buff_loadouts(T5) rows: {int(t5_rows or 0):,}")
+        if int(t5_rows or 0) <= 0:
+            print("No baseline rows persisted.")
+            raise SystemExit(2)
+
+        row = conn2.execute(
+            """
+            SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json
+            FROM team_buff_loadouts
+            WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))='T5'
+            ORDER BY score DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            print("No rows found to audit.")
+            raise SystemExit(2)
+
+        maps = _load_piece_name_encoding_maps(conn2, db_path=str(smoke_db))
+        gear_ids = _unpack_id_list(row["gear_ids_blob"])
+        gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+        gear = [g for g in gear if g]
+        mini_id_groups = _unpack_id_groups(row["minis_ids_blob"])
+        minis = [
+            sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+        ]
+        minis = [[n for n in g if n] for g in minis if g]
+
+        details = json.loads(row["details_json"]) if row["details_json"] else {}
+        details = _unpack_stats_after_load(details) or {}
+        stats = details.get("Stats") if isinstance(details, dict) else None
+
+        print(f"Top row score={int(row['score'] or 0):,} fg_score={int(row['fg_score'] or 0):,}")
+        print(f"Top row gear_count={len(gear)} minis_slots={len(minis)} stats_keys={len(stats or {}) if isinstance(stats, dict) else 0}")
+
+        if len(gear) != 6:
+            print("Unexpected gear length (expected 6).")
+            raise SystemExit(2)
+        if not isinstance(stats, dict) or not stats:
+            print("Missing/empty Stats after unpack.")
+            raise SystemExit(2)
+
+        print("Audit OK.")
+        raise SystemExit(0)
+    finally:
+        conn2.close()
 
 
 if __name__ == "__main__":

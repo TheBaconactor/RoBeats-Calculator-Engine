@@ -44,7 +44,8 @@ def test_build_persistence_entries_backfills_base_hitsim_delta(monkeypatch):
 
     match = [e for e in out if e.get("gear") == ["G1"] and e.get("minis") == ["M1"]]
     assert len(match) == 1
-    assert match[0]["details"]["hitsim_offset_deltas_ms"] == [7, 9]
+    # Derived HitSim per-window deltas are computed on demand (not persisted/backfilled by default).
+    assert match[0]["details"].get("hitsim_offset_deltas_ms") is None
     assert "hitsim_offset_delta_ms" not in match[0]["details"]
 
 
@@ -79,7 +80,7 @@ def test_build_persistence_entries_backfills_top1_hitsim_deltas_when_missing(mon
     assert out
     assert out[0]["gear"] == ["Top1Gear"]
     assert out[0]["minis"] == ["Top1Mini"]
-    assert out[0]["details"]["hitsim_offset_deltas_ms"] == [3, 4]
+    assert out[0]["details"].get("hitsim_offset_deltas_ms") is None
     assert "hitsim_offset_delta_ms" not in out[0]["details"]
 
 
@@ -134,6 +135,39 @@ def test_build_persistence_entries_backfills_fg_hitsim_deltas_for_retained_rows(
     match = [e for e in out if e.get("gear") == ["G1"] and e.get("minis") == ["M1"]]
     assert len(match) == 1
     force_out = match[0].get("force") or {}
-    assert (force_out.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") == [9, 8, 7]
+    assert (force_out.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
     assert (force_out.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
-    assert calls["count"] == 1
+    assert calls["count"] == 0
+
+
+def test_build_persistence_entries_persists_compact_hitsim_context():
+    from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+
+    db_payload = {
+        "score": 123,
+        "fg_score": 0,
+        "gear": ["Top1Gear"],
+        "minis": ["Top1Mini"],
+        "details": {"Stats": {"Fever Fill Rate": 1, "Fever Time": 1}},
+        "force": None,
+    }
+
+    out = build_persistence_entries(
+        db_payload,
+        ga_candidates=[],
+        loadout_entries={},
+        build_details_fn=lambda _d: {},
+        calc_song={
+            "metadata": {
+                "HumanHitSimApplied": True,
+                "HumanHitSimApplyTo": "ALL",
+                "HumanHitSimSeed": 4242,
+                "HumanHitSimDistribution": "uniform",
+                "HumanHitSimGreatMode": "late",
+            }
+        },
+        ref_arrays=None,
+    )
+
+    assert out
+    assert out[0]["details"]["hs"] == [4242, 1, 0, 0]

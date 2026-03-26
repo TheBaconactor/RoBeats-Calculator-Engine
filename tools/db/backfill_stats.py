@@ -8,7 +8,13 @@ import json
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
-from gear_optimizer.data.database import get_evolution_db_path
+from gear_optimizer.data.database import (
+    _load_piece_name_encoding_maps,
+    _pack_stats_for_storage,
+    _unpack_id_groups,
+    _unpack_id_list,
+    get_evolution_db_path,
+)
 from gear_optimizer.core.config import load_paths_cache
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 
@@ -52,10 +58,11 @@ def main():
     for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
         print(f"\nFetching entries from {table}...")
         cur = conn.execute(f"""
-            SELECT rowid, song_name, gear_json, minis_json, details_json
+            SELECT rowid, song_name, gear_ids_blob, minis_ids_blob, details_json
             FROM {table}
         """)
         rows = cur.fetchall()
+        maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
 
         updated = 0
         print(f"Processing {len(rows)} entries from {table}... this may take a moment.")
@@ -65,8 +72,17 @@ def main():
                 print(f"[{table}] Processed {i}/{len(rows)}...")
 
             details = json.loads(row["details_json"]) if row["details_json"] else {}
-            gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-            mini_groups = json.loads(row["minis_json"]) if row["minis_json"] else []
+            gear_ids = _unpack_id_list(row["gear_ids_blob"])
+            gear_names = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+            gear_names = [g for g in gear_names if g]
+
+            mini_id_groups = _unpack_id_groups(row["minis_ids_blob"])
+            mini_groups = [
+                sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0})
+                for g in (mini_id_groups or [])
+                if g
+            ]
+            mini_groups = [[n for n in g if n] for g in mini_groups if g]
             # Extract first name from each group (representative)
             mini_names = [item[0] for item in mini_groups if isinstance(item, list) and item]
 
@@ -89,8 +105,10 @@ def main():
                 gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
             )
 
-            # Update details with computed Stats
+            # Update details with computed Stats (then pack to compact `st` array).
+            details.pop("st", None)
             details["Stats"] = computed_stats
+            details = _pack_stats_for_storage(details)
 
             # Write back
             conn.execute(f"UPDATE {table} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))

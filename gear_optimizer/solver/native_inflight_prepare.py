@@ -83,6 +83,21 @@ def _db_context_cache_ttl_s() -> float:
     return 1.0
 
 
+def _resolve_baseline_team_buff_for_db(cfg) -> str:
+    """
+    Resolve the baseline TeamBuff tier for DB seed/context reads.
+
+    Default config is auto mode => T5, but this must not be hardcoded when users run
+    with manual TeamBuff settings.
+    """
+    try:
+        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+
+        return resolve_baseline_team_buff_from_cfg(cfg)
+    except Exception:
+        return "T5"
+
+
 def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict], int, int, int, int] | None:
     key = (str(db_key or "").strip(), bool(use_evo_db))
     if not key[0] or not key[1]:
@@ -312,6 +327,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
             minis_by_name,
             load_known_loadouts=False,
             allow_fallback=False,
+            team_buff=_resolve_baseline_team_buff_for_db(cfg),
         )
         if bool(db_baseline_valid):
             _db_context_cache_put(

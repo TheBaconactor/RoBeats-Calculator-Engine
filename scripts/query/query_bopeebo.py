@@ -4,10 +4,18 @@ import json
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gear_optimizer.data.database import get_db_connection, get_evolution_db_path
+from gear_optimizer.data.database import (
+    _load_piece_name_encoding_maps,
+    _unpack_id_groups,
+    _unpack_id_list,
+    _unpack_stats_after_load,
+    get_db_connection,
+    get_evolution_db_path,
+)
 
 db_path = get_evolution_db_path()
 conn = get_db_connection(db_path)
+maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
 
 # Search for Bopeebo
 cursor = conn.execute(
@@ -26,7 +34,7 @@ for row in results:
     # Get top loadout with FG details
     loadout_cursor = conn.execute(
         """
-        SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+        SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
         FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY fg_score DESC, score DESC
@@ -37,9 +45,16 @@ for row in results:
 
     loadout = loadout_cursor.fetchone()
     if loadout:
-        gear = json.loads(loadout["gear_json"]) if loadout["gear_json"] else []
-        minis = json.loads(loadout["minis_json"]) if loadout["minis_json"] else []
+        gear_ids = _unpack_id_list(loadout["gear_ids_blob"])
+        gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+        gear = [g for g in gear if g]
+        mini_id_groups = _unpack_id_groups(loadout["minis_ids_blob"])
+        minis = [
+            sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+        ]
+        minis = [[n for n in g if n] for g in minis if g]
         details = json.loads(loadout["details_json"]) if loadout["details_json"] else {}
+        details = _unpack_stats_after_load(details) or {}
         force_details = json.loads(loadout["force_details_json"]) if loadout["force_details_json"] else {}
 
         print(f"Top FG Loadout:")

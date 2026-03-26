@@ -5,7 +5,13 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from gear_optimizer.data.database import get_db_connection
+from gear_optimizer.data.database import (
+    _insert_missing_piece_names,
+    _load_piece_name_encoding_maps,
+    _pack_id_groups,
+    _pack_id_list,
+    get_db_connection,
+)
 from inventory_optimizer import run_inventory_meta_coverage
 
 
@@ -35,6 +41,7 @@ def _upgrades(upgrade_id: int) -> List[Dict[str, int]]:
 def _insert_loadout(
     conn,
     *,
+    db_path: str,
     song_name: str,
     score: int,
     gear_names: List[str],
@@ -52,11 +59,23 @@ def _insert_loadout(
         """,
         (song_name, int(score), 0, time.time()),
     )
+
+    gear_names_clean = [str(n).strip() for n in (gear_names or []) if str(n).strip()]
+    mini_names_clean = sorted({str(n).strip() for g in (minis_groups or []) for n in (g or []) if str(n).strip()})
+    _insert_missing_piece_names(conn, table="gear_name_encoding", names=gear_names_clean)
+    _insert_missing_piece_names(conn, table="mini_name_encoding", names=mini_names_clean)
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
+
+    gear_ids_blob = _pack_id_list([int(maps.gear_name_to_id.get(n, 0) or 0) for n in gear_names_clean])
+    minis_ids_blob = _pack_id_groups(
+        [[int(maps.mini_name_to_id.get(str(n).strip(), 0) or 0) for n in (g or [])] for g in (minis_groups or [])]
+    )
+
     conn.execute(
         """
         INSERT INTO team_buff_loadouts (
             song_name, team_buff, loadout_hash, score, fg_score,
-            gear_json, minis_json, details_json, force_details_json, timestamp
+            gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp
         )
         VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
@@ -65,8 +84,8 @@ def _insert_loadout(
             f"{song_name}-{score}-{time.time_ns()}",
             int(score),
             0,
-            json.dumps(list(gear_names), ensure_ascii=False),
-            json.dumps(list(minis_groups), ensure_ascii=False),
+            gear_ids_blob,
+            minis_ids_blob,
             json.dumps(details, ensure_ascii=False),
             None,
             time.time(),
@@ -141,12 +160,21 @@ def test_seeded_inventory_reports_per_song_used_items_for_element(monkeypatch, t
                 ff = 90 if profile == "FF" else 0
                 details = _details(selected_element, pp=pp, cm=cm, fm=fm, ft=ft, ff=ff, ov=0)
 
-            _insert_loadout(conn, song_name=song_name, score=100, gear_names=gear, minis_groups=minis, details=details)
+            _insert_loadout(
+                conn,
+                db_path=str(db_path),
+                song_name=song_name,
+                score=100,
+                gear_names=gear,
+                minis_groups=minis,
+                details=details,
+            )
 
         # Add a near-peak row that must never be selected (exact-peak-only requirement).
         near_song = next(iter(profile_by_song.keys()))
         _insert_loadout(
             conn,
+            db_path=str(db_path),
             song_name=near_song,
             score=99,
             gear_names=gear,
@@ -158,6 +186,7 @@ def test_seeded_inventory_reports_per_song_used_items_for_element(monkeypatch, t
         other_element = next(e for e in ELEMENTS if e != selected_element)
         _insert_loadout(
             conn,
+            db_path=str(db_path),
             song_name=f"{other_element}_OtherSong",
             score=100,
             gear_names=gear,

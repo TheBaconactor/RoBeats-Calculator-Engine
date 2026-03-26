@@ -75,10 +75,9 @@ def _select_reference_songs(*, db_path: Path, paths: dict, count: int) -> list[d
     try:
         rows = conn.execute(
             """
-            SELECT song_name, score, fg_score, gear_json, minis_json, details_json
+            SELECT song_name, score, fg_score, details_json
             FROM team_buff_loadouts
             WHERE details_json IS NOT NULL
-            AND details_json LIKE '%"Stats"%'
             AND team_buff = 'T5'
             ORDER BY score DESC
             LIMIT ?

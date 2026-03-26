@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
@@ -10,10 +10,7 @@ import numpy as np
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.time_quantize import quantize_to_int_ms
 from ...data.loadout_equivalence import representative_mini_names
-from ...solver.fever_timeline import calculate_fever_timeline_indices
-from ...solver.scoring_core import fast_calculate_score, lookup_reference_py
-from ...solver.scoring.force_greats import _compute_force_greats_timeline
-from ...solver.scoring.stats_scoring import build_great_penalty_table
+from ...solver.scoring_core import lookup_reference_py
 
 _TEAM_BUFF_TIERS: dict[str, dict[str, int]] = {
     "NONE": {"PP": 0, "Elem": 0},
@@ -35,6 +32,72 @@ def _truthy_cfg(v: object) -> bool:
 
 
 _MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
+
+_HITSIM_APPLY_CODE_TO_STR: dict[int, str] = {0: "FG", 1: "ALL"}
+_HITSIM_DIST_CODE_TO_STR: dict[int, str] = {0: "uniform"}
+_HITSIM_GREAT_MODE_CODE_TO_STR: dict[int, str] = {0: "late", 1: "early", 2: "full"}
+
+
+def _hitsim_params_from_details(details: object) -> tuple[int, str, str, str] | None:
+    """
+    Extract persisted HumanHitSim context for deterministic recompute.
+
+    Preferred compact format:
+        details["hs"] = [seed, apply_to_code, dist_code, great_mode_code]
+    """
+    if not isinstance(details, dict):
+        return None
+
+    hs = details.get("hs")
+    if isinstance(hs, (list, tuple)) and len(hs) >= 4:
+        try:
+            seed = int(hs[0] or 0)
+        except Exception:
+            seed = 0
+        if seed <= 0:
+            return None
+        try:
+            apply_code = int(hs[1] or 0)
+        except Exception:
+            apply_code = 0
+        try:
+            dist_code = int(hs[2] or 0)
+        except Exception:
+            dist_code = 0
+        try:
+            mode_code = int(hs[3] or 0)
+        except Exception:
+            mode_code = 0
+        apply_to = _HITSIM_APPLY_CODE_TO_STR.get(int(apply_code), "FG")
+        dist = _HITSIM_DIST_CODE_TO_STR.get(int(dist_code), "uniform")
+        mode = _HITSIM_GREAT_MODE_CODE_TO_STR.get(int(mode_code), "late")
+        return (int(seed), str(apply_to), str(dist), str(mode))
+
+    # Back-compat: verbose key style.
+    if details.get("HumanHitSimSeed") is not None:
+        try:
+            seed = int(details.get("HumanHitSimSeed") or 0)
+        except Exception:
+            seed = 0
+        if seed <= 0:
+            return None
+        apply_to = str(details.get("HumanHitSimApplyTo", "FG") or "FG").strip().upper()
+        if apply_to not in {"FG", "ALL"}:
+            apply_to = "FG"
+        dist = str(details.get("HumanHitSimDistribution", "uniform") or "uniform").strip().lower() or "uniform"
+        mode = str(details.get("HumanHitSimGreatMode", "late") or "late").strip().lower() or "late"
+        return (int(seed), apply_to, dist, mode)
+
+    return None
+
+
+def _shallow_clone_calc_song(calc_song: dict) -> dict:
+    meta0 = calc_song.get("metadata", {}) or {}
+    song_data0 = calc_song.get("song_data", {}) or {}
+    out = dict(calc_song)
+    out["metadata"] = dict(meta0) if isinstance(meta0, dict) else {}
+    out["song_data"] = dict(song_data0) if isinstance(song_data0, dict) else {}
+    return out
 
 
 def _mini_names_from_text(text: str) -> list[str]:
@@ -516,184 +579,6 @@ def _stats_get_int(stats: dict, key: str, default: int = 0) -> int:
         return default
     return _safe_int(stats.get(key, default), default)
 
-
-@dataclass(frozen=True)
-class _TimelineCtx:
-    fever_mask_head: np.ndarray
-    count_body_fever: int
-    count_body_normal: int
-
-
-@dataclass(frozen=True)
-class _FgTimelineCtx:
-    fever_mask_head: np.ndarray
-    count_body_fever: int
-    count_body_normal: int
-    section_details: list[dict]
-
-
-def _build_base_timeline_ctx(
-    *, stats: dict, calc_song: dict, ref_arrays: dict, fever_mask_buffer: np.ndarray
-) -> _TimelineCtx:
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps")
-    if timestamps is None:
-        raise ValueError("calc_song.song_data.timestamps missing")
-    timestamps = np.asarray(timestamps)
-    total_notes = int(timestamps.shape[0])
-    if total_notes <= 0:
-        return _TimelineCtx(np.zeros(0, dtype=np.bool_), 0, 0)
-
-    meta = calc_song.get("metadata", {}) or {}
-    long_notes = _safe_int(meta.get("Long Notes"), 0)
-    last_note_time = float(meta.get("Last Note Time", float(timestamps[-1]) if total_notes else 0.0))
-
-    ff_factor = lookup_reference_py(
-        _stats_get_int(stats, "Fever Fill Rate", 0), ref_arrays["Fever Fill Rate"], TOTAL_ROWS
-    )
-    ft_factor = lookup_reference_py(_stats_get_int(stats, "Fever Time", 0), ref_arrays["Fever Time"], TOTAL_ROWS)
-
-    if fever_mask_buffer.shape[0] != total_notes:
-        raise ValueError("fever_mask_buffer wrong length")
-
-    fever_mask_head, count_fever, count_normal, _acts, _last_end = calculate_fever_timeline_indices(
-        timestamps,
-        total_notes,
-        float(ff_factor),
-        float(ft_factor),
-        int(long_notes),
-        float(last_note_time),
-        fever_mask_buffer,
-    )
-    return _TimelineCtx(fever_mask_head.copy(), int(count_fever), int(count_normal))
-
-
-def _build_fg_timeline_ctx(
-    *,
-    stats: dict,
-    calc_song: dict,
-    ref_arrays: dict,
-    forced_counts: list[int],
-) -> _FgTimelineCtx | None:
-    if not forced_counts:
-        return None
-
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    if timestamps is None:
-        return None
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
-
-    timestamps = np.asarray(timestamps)
-    total_notes = int(timestamps.shape[0])
-    if total_notes <= 0:
-        return None
-
-    meta = calc_song.get("metadata", {}) or {}
-    long_notes = _safe_int(meta.get("Long Notes"), 0)
-    base_ts = np.asarray(song_data.get("timestamps", timestamps))
-    default_last_note = float(base_ts[-1]) if int(base_ts.shape[0]) > 0 else 0.0
-    last_note_time = float(meta.get("Last Note Time", default_last_note))
-
-    ff_factor = lookup_reference_py(
-        _stats_get_int(stats, "Fever Fill Rate", 0), ref_arrays["Fever Fill Rate"], TOTAL_ROWS
-    )
-    ft_factor = lookup_reference_py(_stats_get_int(stats, "Fever Time", 0), ref_arrays["Fever Time"], TOTAL_ROWS)
-
-    fever_mask_head, count_fever, count_normal, _non_fever_base, section_details = _compute_force_greats_timeline(
-        timestamps,
-        great_candidates,
-        total_notes,
-        float(ff_factor),
-        float(ft_factor),
-        int(long_notes),
-        float(last_note_time),
-        list(forced_counts),
-        clamp_base_notes_nonnegative=True,
-        clamp_forced_to_section_notes=True,
-        use_forced_great_timing=use_forced_great_timing,
-    )
-    return _FgTimelineCtx(fever_mask_head, int(count_fever), int(count_normal), section_details)
-
-
-def _score_from_ctx(
-    *,
-    base_value: float,
-    combo_mul: float,
-    fever_mul: float,
-    ctx: _TimelineCtx,
-) -> int:
-    return int(
-        fast_calculate_score(
-            float(base_value),
-            float(combo_mul),
-            float(fever_mul),
-            ctx.fever_mask_head,
-            int(ctx.count_body_fever),
-            int(ctx.count_body_normal),
-        )
-    )
-
-
-def _score_fg_from_ctx(
-    *,
-    base_value: float,
-    combo_mul: float,
-    fever_mul: float,
-    primary_val: int,
-    secondary_val: int,
-    ctx: _FgTimelineCtx,
-) -> int:
-    from math import floor
-
-    base_score = int(
-        fast_calculate_score(
-            float(base_value),
-            float(combo_mul),
-            float(fever_mul),
-            ctx.fever_mask_head,
-            int(ctx.count_body_fever),
-            int(ctx.count_body_normal),
-        )
-    )
-
-    combo_value = floor(float(base_value) * float(combo_mul))
-
-    great_penalty_base_head = (
-        floor((float(primary_val) * 2.0) * (2.0 / 3.0)) + floor(float(secondary_val) * (2.0 / 3.0)) + 150
-    )
-    great_penalty_base_raw = ((float(primary_val) * 2.0) * (2.0 / 3.0)) + (float(secondary_val) * (2.0 / 3.0)) + 150.0
-
-    great_combo_value = floor(float(great_penalty_base_raw) * float(combo_mul))
-    body_penalty = max(0, int(combo_value) - int(great_combo_value))
-
-    penalty_table = build_great_penalty_table(float(base_value), float(combo_mul), float(great_penalty_base_head))
-    if penalty_table:
-        penalty_table[-1] = int(body_penalty)
-
-    total_score_penalty = 0
-    for detail in ctx.section_details:
-        forced = _safe_int(detail.get("forced"), 0)
-        if forced <= 0:
-            continue
-        skip_wasted = bool(detail.get("skip_wasted"))
-        start_idx = _safe_int(detail.get("start_idx"), 0) + (0 if skip_wasted else 1)
-        note_idx = int(start_idx)
-        remaining = int(forced)
-        score_penalty = 0
-        while remaining > 0:
-            if 0 <= note_idx < len(penalty_table):
-                score_penalty += int(penalty_table[note_idx])
-            else:
-                score_penalty += int(body_penalty)
-            note_idx += 1
-            remaining -= 1
-        total_score_penalty += score_penalty
-
-    return max(0, int(base_score) - int(total_score_penalty))
-
-
 def compute_team_buff_tier_leaderboards(
     *,
     entries: list[dict],
@@ -708,7 +593,11 @@ def compute_team_buff_tier_leaderboards(
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
 
-    This is intentionally CPU-only and designed for post-processing:
+    Base scoring uses the GPU fixed-scoring path and FG scoring uses the GPU ForceGreats
+    kernel (fixed-stats mode) so on-demand tier computation matches production scoring
+    semantics (including GPU timeline behavior).
+
+    This is designed for post-processing:
     - Uses the existing gem allocations (Stats in details) as-is.
     - Uses the existing ForceGreats config (force_details_json) as-is.
     - Produces top-N lists by base score and FG score per tier.
@@ -732,172 +621,395 @@ def compute_team_buff_tier_leaderboards(
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
     tier_list = tuple(t for t in tiers if _norm_team_buff(t))
 
-    # Per-entry timeline cache (tier changes do not affect FT/FF, so timeline is stable per entry).
-    song_data = calc_song.get("song_data", {}) or {}
-    base_timestamps = song_data.get("timestamps")
-    base_timestamps = np.asarray(base_timestamps) if base_timestamps is not None else np.zeros(0, dtype=np.float32)
-    total_notes = int(base_timestamps.shape[0])
-    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_) if total_notes > 0 else np.zeros(0, dtype=np.bool_)
+    # Group entries by persisted HumanHitSim context (if any). This matters when
+    # HumanHitSim.Seed=0 chooses a different random seed per run; persisted rows
+    # can come from multiple seeds and must be rescored against their own timing.
+    meta_calc = calc_song.get("metadata", {}) or {}
+    calc_song_already_hitsim = bool(meta_calc.get("HumanHitSimApplied"))
+    entry_groups: dict[tuple[int, str, str, str] | None, list[dict]] = {}
+    if calc_song_already_hitsim:
+        entry_groups[None] = list(entries)
+    else:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            details0 = entry.get("details")
+            hs_params = _hitsim_params_from_details(details0)
+            entry_groups.setdefault(hs_params, []).append(entry)
 
+    calc_song_by_hitsim: dict[tuple[int, str, str, str], dict] = {}
     per_entry: list[dict] = []
 
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        details = entry.get("details") or {}
-        if not isinstance(details, dict):
-            details = {}
-        stats_base_raw = details.get("Stats") or {}
-        stats_base = (
-            _ensure_stats_include_base_effect(stats_base_raw, base_effect) if isinstance(stats_base_raw, dict) else {}
-        )
-        if not isinstance(stats_base, dict) or not stats_base:
-            continue
+    for hs_key, group_entries in entry_groups.items():
+        group_song = calc_song
+        if hs_key is not None:
+            cached = calc_song_by_hitsim.get(hs_key)
+            if cached is None:
+                seed, apply_to, dist, mode = hs_key
+                song1 = _shallow_clone_calc_song(calc_song)
+                # Defensive: ensure we can re-apply even if callers accidentally pass a dirty meta.
+                try:
+                    meta1 = song1.get("metadata", {}) or {}
+                    if isinstance(meta1, dict):
+                        for k in (
+                            "HumanHitSimApplied",
+                            "HumanHitSimSeed",
+                            "HumanHitSimApplyTo",
+                            "HumanHitSimDistribution",
+                            "HumanHitSimGreatMode",
+                            "HumanHitSimSeedIsRandom",
+                            "HumanHitSimDebug",
+                            "HumanHitSimPlanned",
+                        ):
+                            meta1.pop(k, None)
+                        song1["metadata"] = meta1
+                except Exception:
+                    pass
 
-        gear = _flat_item_names(entry.get("gear") or [])
-        minis = _representative_mini_names_from_any(entry.get("minis") or [])
+                try:
+                    from ...solver.hit_simulation import apply_human_hit_sim
 
-        # Base timeline + multipliers for base scoring.
-        base_ctx = _build_base_timeline_ctx(
-            stats=stats_base, calc_song=calc_song, ref_arrays=ref_arrays, fever_mask_buffer=fever_mask_buffer
-        )
-        cm_factor = lookup_reference_py(
-            _stats_get_int(stats_base, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
-        )
-        fm_factor = lookup_reference_py(
-            _stats_get_int(stats_base, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
-        )
+                    apply_human_hit_sim(
+                        song1,
+                        cfg_dict={
+                            "HumanHitSim": {
+                                "Enabled": "1",
+                                "ApplyTo": str(apply_to),
+                                "Seed": int(seed),
+                                "Distribution": str(dist),
+                                "GreatMode": str(mode),
+                            }
+                        },
+                    )
+                except Exception:
+                    # Fallback: score using chart timestamps (better than crashing).
+                    pass
 
-        base_pp_stat = _stats_get_int(stats_base, "Perfect Points", 0)
-        base_primary_val = _stats_get_int(stats_base, primary_color, 0) if primary_color else 0
-        base_secondary_val = _stats_get_int(stats_base, secondary_color, 0) if secondary_color else 0
+                cached = song1
+                calc_song_by_hitsim[hs_key] = cached
+            group_song = cached
 
-        # Optional FG context (may have a different gem allocation than base).
-        force_obj = entry.get("force")
-        fg_counts = _extract_force_config_counts(force_obj) if isinstance(force_obj, dict) else []
-        fg_ctx = None
-        fg_cm_factor = float(cm_factor)
-        fg_fm_factor = float(fm_factor)
-        fg_pp_stat = int(base_pp_stat)
-        fg_primary_val = int(base_primary_val)
-        fg_secondary_val = int(base_secondary_val)
-        if fg_counts:
-            fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
-            fg_stats = _ensure_stats_include_base_effect(fg_stats0, base_effect) if isinstance(fg_stats0, dict) else {}
-            if not isinstance(fg_stats, dict) or not fg_stats:
-                fg_stats = stats_base
-
-            fg_ctx = _build_fg_timeline_ctx(
-                stats=fg_stats, calc_song=calc_song, ref_arrays=ref_arrays, forced_counts=fg_counts
+        for entry in group_entries:
+            if not isinstance(entry, dict):
+                continue
+            details = entry.get("details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            stats_base_raw = details.get("Stats") or {}
+            stats_base = (
+                _ensure_stats_include_base_effect(stats_base_raw, base_effect)
+                if isinstance(stats_base_raw, dict)
+                else {}
             )
-            fg_cm_factor = lookup_reference_py(
-                _stats_get_int(fg_stats, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
-            )
-            fg_fm_factor = lookup_reference_py(
-                _stats_get_int(fg_stats, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
-            )
-            fg_pp_stat = _stats_get_int(fg_stats, "Perfect Points", 0)
-            fg_primary_val = _stats_get_int(fg_stats, primary_color, 0) if primary_color else 0
-            fg_secondary_val = _stats_get_int(fg_stats, secondary_color, 0) if secondary_color else 0
+            if not isinstance(stats_base, dict) or not stats_base:
+                continue
 
-        per_entry.append(
-            {
-                "gear": gear,
-                "minis": minis,
-                "source_score": _safe_int(entry.get("score"), 0),
-                "source_fg_score": _safe_int(entry.get("fg_score"), 0),
-                "base": {
-                    "ctx": base_ctx,
-                    "cm": float(cm_factor),
-                    "fm": float(fm_factor),
-                    "pp": int(base_pp_stat),
-                    "p_val": int(base_primary_val),
-                    "s_val": int(base_secondary_val),
-                },
-                "fg": None
-                if fg_ctx is None
-                else {
-                    "ctx": fg_ctx,
-                    "cm": float(fg_cm_factor),
-                    "fm": float(fg_fm_factor),
-                    "pp": int(fg_pp_stat),
-                    "p_val": int(fg_primary_val),
-                    "s_val": int(fg_secondary_val),
-                    "counts": fg_counts,
-                    "config": (
-                        (force_obj.get("ForceGreats", {}) or {}).get("config") if isinstance(force_obj, dict) else None
-                    ),
-                },
-            }
-        )
+            gear = _flat_item_names(entry.get("gear") or [])
+            minis = _representative_mini_names_from_any(entry.get("minis") or [])
+
+            # Base multipliers/indices for GPU fixed scoring (tier changes do not affect CM/FM/FT/FF).
+            ft_idx = _stats_get_int(stats_base, "Fever Time", 0)
+            ff_idx = _stats_get_int(stats_base, "Fever Fill Rate", 0)
+            cm_factor = lookup_reference_py(
+                _stats_get_int(stats_base, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
+            )
+            fm_factor = lookup_reference_py(
+                _stats_get_int(stats_base, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
+            )
+
+            base_pp_stat = _stats_get_int(stats_base, "Perfect Points", 0)
+            base_primary_val = _stats_get_int(stats_base, primary_color, 0) if primary_color else 0
+            base_secondary_val = _stats_get_int(stats_base, secondary_color, 0) if secondary_color else 0
+
+            # Optional FG stats snapshot (may have a different gem allocation than base).
+            force_obj = entry.get("force")
+            fg_counts = _extract_force_config_counts(force_obj) if isinstance(force_obj, dict) else []
+            fg_pp_stat = int(base_pp_stat)
+            fg_primary_val = int(base_primary_val)
+            fg_secondary_val = int(base_secondary_val)
+            fg_ft_stat = int(ft_idx)
+            fg_ff_stat = int(ff_idx)
+            fg_cm_stat = _stats_get_int(stats_base, "Combo Multiplier", 0)
+            fg_fm_stat = _stats_get_int(stats_base, "Fever Multiplier", 0)
+            if fg_counts:
+                fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
+                fg_stats = (
+                    _ensure_stats_include_base_effect(fg_stats0, base_effect) if isinstance(fg_stats0, dict) else {}
+                )
+                if not isinstance(fg_stats, dict) or not fg_stats:
+                    fg_stats = stats_base
+
+                fg_pp_stat = _stats_get_int(fg_stats, "Perfect Points", 0)
+                fg_primary_val = _stats_get_int(fg_stats, primary_color, 0) if primary_color else 0
+                fg_secondary_val = _stats_get_int(fg_stats, secondary_color, 0) if secondary_color else 0
+                fg_ft_stat = _stats_get_int(fg_stats, "Fever Time", 0)
+                fg_ff_stat = _stats_get_int(fg_stats, "Fever Fill Rate", 0)
+                fg_cm_stat = _stats_get_int(fg_stats, "Combo Multiplier", 0)
+                fg_fm_stat = _stats_get_int(fg_stats, "Fever Multiplier", 0)
+
+            per_entry.append(
+                {
+                    "loadout_hash": _norm_text(entry.get("loadout_hash", "")),
+                    "song": group_song,
+                    "gear": gear,
+                    "minis": minis,
+                    "source_score": _safe_int(entry.get("score"), 0),
+                    "source_fg_score": _safe_int(entry.get("fg_score"), 0),
+                    "base": {
+                        "cm": float(cm_factor),
+                        "fm": float(fm_factor),
+                        "ft_idx": int(ft_idx),
+                        "ff_idx": int(ff_idx),
+                        "pp": int(base_pp_stat),
+                        "p_val": int(base_primary_val),
+                        "s_val": int(base_secondary_val),
+                    },
+                    "fg": None
+                    if not fg_counts
+                    else {
+                        "pp": int(fg_pp_stat),
+                        "p_val": int(fg_primary_val),
+                        "s_val": int(fg_secondary_val),
+                        "ft_stat": int(fg_ft_stat),
+                        "ff_stat": int(fg_ff_stat),
+                        "cm_stat": int(fg_cm_stat),
+                        "fm_stat": int(fg_fm_stat),
+                        "counts": fg_counts,
+                        "config": (
+                            (force_obj.get("ForceGreats", {}) or {}).get("config")
+                            if isinstance(force_obj, dict)
+                            else None
+                        ),
+                    },
+                }
+            )
 
     # Compute tiered scores for all retained entries.
-    tiers_out: dict[str, dict] = {}
+    from ...solver.scoring.gpu_solver import _GPU_LOCK
+    from ...solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
+
+    # Group by (possibly HitSim-mutated) calc_song object so we can batch GPU fixed scoring per song context.
+    per_entry_by_song_id: dict[int, list[dict]] = {}
+    song_by_id: dict[int, dict] = {}
+    for e in per_entry:
+        song0 = e.get("song")
+        if not isinstance(song0, dict):
+            continue
+        sid = int(id(song0))
+        song_by_id.setdefault(sid, song0)
+        per_entry_by_song_id.setdefault(sid, []).append(e)
+
+    tier_deltas: dict[str, tuple[int, int, int]] = {}
     for tier in tier_list:
         target_effect = _team_buff_effect(tier, target_team_color)
+        tier_deltas[str(tier)] = (
+            int(target_effect.get("Perfect Points", 0) - base_effect.get("Perfect Points", 0)),
+            int(target_effect.get(primary_color, 0) - base_effect.get(primary_color, 0)) if primary_color else 0,
+            int(target_effect.get(secondary_color, 0) - base_effect.get(secondary_color, 0)) if secondary_color else 0,
+        )
 
-        delta_pp = int(target_effect.get("Perfect Points", 0) - base_effect.get("Perfect Points", 0))
-        delta_primary = (
-            int(target_effect.get(primary_color, 0) - base_effect.get(primary_color, 0)) if primary_color else 0
-        )
-        delta_secondary = (
-            int(target_effect.get(secondary_color, 0) - base_effect.get(secondary_color, 0)) if secondary_color else 0
-        )
+    # Precompute all FG scores for all tiers in the fewest possible GPU calls.
+    fg_scores_by_sid: dict[int, dict[str, list[int]]] = {}
+    have_fg = any(isinstance(e.get("fg"), dict) for e in per_entry)
+    if have_fg:
+        from ...solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
+        from ...solver.taichi_gem.force_greats.fields import FG_MAX_SECTIONS
+
+        for sid, group_entries in per_entry_by_song_id.items():
+            tier_to_scores: dict[str, list[int]] = {str(t): [0] * len(group_entries) for t in tier_list}
+
+            group_song = song_by_id.get(sid)
+            if not isinstance(group_song, dict):
+                fg_scores_by_sid[sid] = tier_to_scores
+                continue
+
+            song_data = group_song.get("song_data", {}) or {}
+            ts_raw = song_data.get("fg_timestamps", song_data.get("timestamps"))
+            if ts_raw is None:
+                fg_scores_by_sid[sid] = tier_to_scores
+                continue
+            timestamps_np = np.asarray(ts_raw, dtype=np.float32)
+            great_raw = song_data.get("fg_great_candidate_timestamps")
+            great_np = np.asarray(great_raw, dtype=np.float32) if great_raw is not None else None
+
+            meta = group_song.get("metadata", {}) or {}
+            long_notes = _safe_int(meta.get("Long Notes"), 0)
+            base_ts_raw = song_data.get("timestamps", ts_raw)
+            base_ts = np.asarray(base_ts_raw, dtype=np.float32)
+            default_last_note = float(base_ts[-1]) if int(base_ts.shape[0]) > 0 else 0.0
+            last_note_time = float(meta.get("Last Note Time", default_last_note))
+
+            # Group by forced-count config; each config requires one FG GPU call.
+            counts_to_indices: dict[tuple[int, ...], list[int]] = {}
+            for idx, e in enumerate(group_entries):
+                fg = e.get("fg")
+                if not isinstance(fg, dict):
+                    continue
+                counts0 = fg.get("counts")
+                if not isinstance(counts0, (list, tuple)) or not counts0:
+                    continue
+                counts_t = tuple(int(x) for x in counts0)
+                if not counts_t:
+                    continue
+                if int(len(counts_t)) > int(FG_MAX_SECTIONS):
+                    # Production FG solver is limited to FG_MAX_SECTIONS; skip rather than crashing.
+                    continue
+                counts_to_indices.setdefault(counts_t, []).append(int(idx))
+
+            for counts_t, idxs in counts_to_indices.items():
+                n_sections = int(len(counts_t))
+                if n_sections <= 0:
+                    continue
+
+                genomes: list[dict[str, Any]] = []
+                for t in tier_list:
+                    dpp, dp, ds = tier_deltas[str(t)]
+                    for idx in idxs:
+                        fg = group_entries[idx].get("fg") or {}
+                        genomes.append(
+                            {
+                                "base_pp": int(fg.get("pp", 0) or 0) + int(dpp),
+                                "base_cm": int(fg.get("cm_stat", 0) or 0),
+                                "base_fm": int(fg.get("fm_stat", 0) or 0),
+                                "base_ft_stat": int(fg.get("ft_stat", 0) or 0),
+                                "base_ff_stat": int(fg.get("ff_stat", 0) or 0),
+                                "base_p_val": int(fg.get("p_val", 0) or 0) + int(dp),
+                                "base_s_val": int(fg.get("s_val", 0) or 0) + int(ds),
+                            }
+                        )
+                if not genomes:
+                    continue
+
+                with _GPU_LOCK:
+                    out_raw = solve_force_greats_finder_gpu(
+                        genomes,
+                        timestamps_np,
+                        great_np,
+                        int(long_notes),
+                        float(last_note_time),
+                        [counts_t],
+                        [(0, 0)],
+                        n_sections=n_sections,
+                        is_p_ft=0,
+                        is_s_ft=0,
+                        is_p_ff=0,
+                        is_s_ff=0,
+                        is_p_pp=0,
+                        is_s_pp=0,
+                        is_p_cm=0,
+                        is_s_cm=0,
+                        is_p_fm=0,
+                        is_s_fm=0,
+                        is_p_ov=0,
+                        is_s_ov=0,
+                        ref_arrays=ref_arrays,
+                        total_budget=0,
+                        return_raw=True,
+                    )
+
+                if not isinstance(out_raw, dict):
+                    continue
+                final_scores = out_raw.get("final_score")
+                if final_scores is None:
+                    continue
+                final_np = np.asarray(final_scores, dtype=np.int32)
+                if int(final_np.shape[0]) != len(genomes):
+                    continue
+
+                k = 0
+                for t in tier_list:
+                    tier_key = str(t)
+                    out_list = tier_to_scores.get(tier_key)
+                    if out_list is None:
+                        k += len(idxs)
+                        continue
+                    for idx in idxs:
+                        out_list[idx] = int(final_np[k])
+                        k += 1
+
+            fg_scores_by_sid[sid] = tier_to_scores
+    else:
+        for sid, group_entries in per_entry_by_song_id.items():
+            fg_scores_by_sid[sid] = {str(t): [0] * len(group_entries) for t in tier_list}
+
+    tiers_out: dict[str, dict] = {}
+    for tier in tier_list:
+        delta_pp, delta_primary, delta_secondary = tier_deltas[str(tier)]
 
         base_ranked: list[dict] = []
         fg_ranked: list[dict] = []
 
-        for e in per_entry:
-            b = e["base"]
-            pp_stat = int(b["pp"]) + delta_pp
-            p_val = int(b["p_val"]) + delta_primary
-            s_val = int(b["s_val"]) + delta_secondary
-            pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
-            base_value = (p_val * 2) + s_val + float(pp_factor)
-            base_score = _score_from_ctx(base_value=base_value, combo_mul=b["cm"], fever_mul=b["fm"], ctx=b["ctx"])
+        for sid, group_entries in per_entry_by_song_id.items():
+            group_song = song_by_id.get(sid)
+            if not isinstance(group_song, dict) or not group_entries:
+                continue
 
-            fg_score = 0
-            fg = e.get("fg")
-            if fg and fg.get("ctx") is not None:
-                pp_stat_fg = int(fg["pp"]) + delta_pp
-                p_val_fg = int(fg["p_val"]) + delta_primary
-                s_val_fg = int(fg["s_val"]) + delta_secondary
-                pp_factor_fg = lookup_reference_py(pp_stat_fg, ref_arrays["Perfect Points"], TOTAL_ROWS)
-                base_value_fg = (p_val_fg * 2) + s_val_fg + float(pp_factor_fg)
-                fg_score = _score_fg_from_ctx(
-                    base_value=base_value_fg,
-                    combo_mul=float(fg["cm"]),
-                    fever_mul=float(fg["fm"]),
-                    primary_val=int(p_val_fg),
-                    secondary_val=int(s_val_fg),
-                    ctx=fg["ctx"],
-                )
-
-            out_row = {
-                "gear": e["gear"],
-                "minis": e["minis"],
-                "score": int(base_score),
-                "fg_score": int(fg_score) if int(fg_score) > 0 else 0,
-                "source_score": int(e["source_score"]),
-                "source_fg_score": int(e["source_fg_score"]),
-            }
-            base_ranked.append(out_row)
-
-            if fg and fg.get("ctx") is not None and int(fg_score) > int(base_score):
-                fg_ranked.append(
+            base_inputs: list[dict[str, Any]] = []
+            for e in group_entries:
+                b = e.get("base") or {}
+                pp_stat = int(b.get("pp", 0) or 0) + int(delta_pp)
+                p_val = int(b.get("p_val", 0) or 0) + int(delta_primary)
+                s_val = int(b.get("s_val", 0) or 0) + int(delta_secondary)
+                pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
+                base_value = (p_val * 2) + s_val + float(pp_factor)
+                base_inputs.append(
                     {
-                        "gear": e["gear"],
-                        "minis": e["minis"],
-                        "score": int(base_score),
-                        "fg_score": int(fg_score),
-                        "source_score": int(e["source_score"]),
-                        "source_fg_score": int(e["source_fg_score"]),
-                        "force_config": fg.get("config"),
+                        "base_value": float(base_value),
+                        "combo_mul": float(b.get("cm", 1.0) or 1.0),
+                        "fever_mul": float(b.get("fm", 1.0) or 1.0),
+                        "ft_idx": int(b.get("ft_idx", 0) or 0),
+                        "ff_idx": int(b.get("ff_idx", 0) or 0),
                     }
                 )
 
-        base_ranked.sort(key=lambda r: int(r.get("score", 0) or 0), reverse=True)
-        fg_ranked.sort(key=lambda r: int(r.get("fg_score", 0) or 0), reverse=True)
+            with _GPU_LOCK:
+                base_scores = score_fixed_stats_gpu(base_inputs, group_song, ref_arrays=ref_arrays)
+
+            fg_scores_for_tier = (fg_scores_by_sid.get(sid) or {}).get(str(tier)) if have_fg else None
+
+            for i, (e, base_score) in enumerate(zip(group_entries, base_scores)):
+                fg_score = 0
+                if fg_scores_for_tier is not None and i < int(len(fg_scores_for_tier)):
+                    fg_score = int(fg_scores_for_tier[i] or 0)
+                fg = e.get("fg")
+
+                out_row = {
+                    "loadout_hash": e.get("loadout_hash") or "",
+                    "gear": e.get("gear") or [],
+                    "minis": e.get("minis") or [],
+                    "score": int(base_score),
+                    "fg_score": int(fg_score) if int(fg_score) > 0 else 0,
+                    "source_score": int(e.get("source_score") or 0),
+                    "source_fg_score": int(e.get("source_fg_score") or 0),
+                }
+                base_ranked.append(out_row)
+
+                if isinstance(fg, dict) and int(fg_score) > int(base_score):
+                    fg_ranked.append(
+                        {
+                            "loadout_hash": e.get("loadout_hash") or "",
+                            "gear": e.get("gear") or [],
+                            "minis": e.get("minis") or [],
+                            "score": int(base_score),
+                            "fg_score": int(fg_score),
+                            "source_score": int(e.get("source_score") or 0),
+                            "source_fg_score": int(e.get("source_fg_score") or 0),
+                            "force_config": fg.get("config"),
+                        }
+                    )
+
+        base_ranked.sort(
+            key=lambda r: (
+                -int(r.get("score", 0) or 0),
+                str(r.get("loadout_hash") or ""),
+            )
+        )
+        fg_ranked.sort(
+            key=lambda r: (
+                -int(r.get("fg_score", 0) or 0),
+                str(r.get("loadout_hash") or ""),
+            )
+        )
 
         base_top = base_ranked[:n]
         fg_top = fg_ranked[:n]
@@ -958,11 +1070,20 @@ def build_team_buff_tier_db_batches(
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
     try:
         meta0 = calc_song.get("metadata", {}) or {}
-        base_hitsim_enabled = bool(meta0.get("HumanHitSimApplied")) and str(
-            meta0.get("HumanHitSimApplyTo", "") or ""
-        ).strip().upper() == "ALL"
+        base_hitsim_enabled = (
+            bool(meta0.get("HumanHitSimApplied"))
+            and str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper() == "ALL"
+        )
     except Exception:
         base_hitsim_enabled = False
+    # Default: do not compute/persist derived per-window HitSim deltas here; they are large.
+    persist_hitsim_deltas = str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    base_hitsim_enabled = bool(base_hitsim_enabled and persist_hitsim_deltas)
     base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
     fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
 
@@ -1093,7 +1214,7 @@ def build_team_buff_tier_db_batches(
                 delta=delta_map,
                 fg_score=fg_score_out,
             )
-            if isinstance(force_out, dict) and fg_score_out > score_out:
+            if isinstance(force_out, dict) and base_hitsim_enabled and fg_score_out > score_out:
                 fg_meta = force_out.get("ForceGreats")
                 if isinstance(fg_meta, dict):
                     existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")

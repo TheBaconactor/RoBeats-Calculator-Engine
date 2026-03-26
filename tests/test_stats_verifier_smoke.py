@@ -1,6 +1,7 @@
 import json
 
 from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+from gear_optimizer.data.database import _unpack_stats_after_load
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats
 
 
@@ -49,7 +50,8 @@ def test_stats_verifier_smoke(tmp_path, monkeypatch):
         ).fetchone()
         assert row is not None
         details = json.loads(str(row["details_json"] or "{}"))
-        stats_obj = details.get("Stats")
+        details = _unpack_stats_after_load(details) or {}
+        stats_obj = details.get("Stats") if isinstance(details, dict) else None
         assert isinstance(stats_obj, dict) and stats_obj
 
     all_valid, stats = verify_and_repair_stats(dry_run=True, verbose=False, sample_size=0)
@@ -57,4 +59,3 @@ def test_stats_verifier_smoke(tmp_path, monkeypatch):
     assert int(stats.get("missing", 0) or 0) == 0
     assert int(stats.get("empty", 0) or 0) == 0
     assert int(stats.get("fg_empty", 0) or 0) == 0
-

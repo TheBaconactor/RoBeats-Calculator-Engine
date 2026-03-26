@@ -6,7 +6,7 @@ import json
 # Add project root to path for imports if needed
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gear_optimizer.data.database import get_evolution_db_path
+from gear_optimizer.data.database import get_evolution_db_path, _load_piece_name_encoding_maps, _unpack_id_list
 
 DB_PATH = get_evolution_db_path()
 SONG_NAME = "RB Battles 2020 - The Songs [EXTENDED CUT] (Hard) by Various Artists (Arranged by AdasiekCat)"
@@ -20,6 +20,7 @@ def show_leaderboards():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(DB_PATH))
 
     print(f"=== LEADERBOARD: {SONG_NAME} ===\n")
 
@@ -31,7 +32,7 @@ def show_leaderboards():
     # Note: team_buff_loadouts is Base Score focused
     cursor.execute(
         """
-        SELECT score, fg_score, gear_json 
+        SELECT score, fg_score, gear_ids_blob
         FROM team_buff_loadouts 
         WHERE song_name = ? 
         ORDER BY score DESC 
@@ -42,7 +43,9 @@ def show_leaderboards():
 
     rows = cursor.fetchall()
     for i, row in enumerate(rows):
-        gear_list = json.loads(row["gear_json"]) if row["gear_json"] else []
+        gear_ids = _unpack_id_list(row["gear_ids_blob"])
+        gear_list = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+        gear_list = [g for g in gear_list if g]
         gear_short = ", ".join([g[:10] + ".." for g in gear_list[:2]])  # Brief summary
         print(f"{i + 1:<5} {row['score']:<12} {row['fg_score']:<12} {gear_short}")
     print("\n")

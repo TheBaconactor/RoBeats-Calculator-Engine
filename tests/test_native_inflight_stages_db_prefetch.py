@@ -16,7 +16,7 @@ def test_prefetch_db_loadouts_sync_uses_song_key_cache(monkeypatch):
 
     calls = {"n": 0}
 
-    def _fake_get_best_loadouts(song_name, *, limit, gears_by_name, minis_by_name):
+    def _fake_get_best_loadouts(song_name, *, limit, gears_by_name, minis_by_name, team_buff="T5"):
         calls["n"] += 1
         return [
             {
@@ -50,6 +50,7 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
         gears_by_name,
         minis_by_name,
         build_details_fn,
+        team_buff="T5",
         db_loadouts_full=None,
         allow_db_query=True,
         materialize_ga_details=True,

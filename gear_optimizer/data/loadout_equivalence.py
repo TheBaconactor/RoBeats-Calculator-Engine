@@ -2,19 +2,17 @@
 Loadout equivalence + mini variant grouping.
 
 This module centralizes logic for:
-- Parsing minis_json (list[list[str]])
 - Computing a song-context "effective" mini signature (ignores irrelevant element stats)
 - Computing a song-context loadout hash from gear names + effective mini signatures
-- Merging minis_json across equivalent loadouts (union variant names per effective mini)
+- Merging mini variant groups across equivalent loadouts (union variant names per effective mini)
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..core.constants import PATHS
 from ..core.fallback_monitor import warn_fallback
@@ -100,75 +98,6 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
     if not selected:
         selected = primary or secondary
     return (primary, secondary, selected)
-
-
-def decode_minis_json(minis_json: Optional[str]) -> list[list[str]]:
-    """
-    Decode minis_json into canonical list[list[str]] form.
-    """
-    if not minis_json:
-        return []
-
-    try:
-        decoded = json.loads(minis_json)
-    except Exception:
-        return []
-
-    if not isinstance(decoded, list):
-        return []
-
-    groups: list[list[str]] = []
-    for item in decoded:
-        if not isinstance(item, (list, tuple)):
-            continue
-        names = [str(x).strip() for x in item if x is not None]
-        names = [n for n in names if n]
-        if names:
-            groups.append(names)
-
-    # Drop empties, sort+dedupe per group deterministically.
-    out: list[list[str]] = []
-    for g in groups:
-        if not g:
-            continue
-        out.append(sorted(set(g)))
-    return out
-
-
-def encode_minis_groups(groups: Iterable[Iterable[str]]) -> str:
-    """
-    Encode canonical minis groups to minis_json.
-    """
-    normalized: list[list[str]] = []
-    for g in groups or []:
-        if not g:
-            continue
-
-        # Guard against accidentally treating a string as an iterable of characters.
-        if isinstance(g, str):
-            names = [g.strip()]
-        else:
-            names = [str(x).strip() for x in g if x is not None]
-        names = [n for n in names if n]
-        if not names:
-            continue
-        normalized.append(sorted(set(names)))
-
-    if not normalized:
-        return json.dumps([], separators=(",", ":"))
-
-    # Frontend/export consumers often pick the first element of each group as the displayed
-    # mini for that slot. If multiple slots share the same variant group, rotate the group
-    # so the first elements become distinct when possible (A/B, A/B, C -> A/B, B/A, C).
-    reps = representative_mini_names(normalized)
-    rotated: list[list[str]] = []
-    for g, rep in zip(normalized, reps):
-        if rep and rep in g and len(g) > 1:
-            rotated.append([rep, *[n for n in g if n != rep]])
-        else:
-            rotated.append(g)
-
-    return json.dumps(rotated, separators=(",", ":"))
 
 
 def representative_mini_names(groups: list[list[str]]) -> list[str]:

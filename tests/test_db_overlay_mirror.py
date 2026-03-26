@@ -66,7 +66,6 @@ def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch
     monkeypatch.setenv("EVOLUTION_OVERLAY_DB_PATH", str(overlay_db))
     monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
-    monkeypatch.setenv("POST_TEAM_BUFF_TIERS", "0")
     song_meta_path.write_text("[]", encoding="utf-8")
 
     init_db()
@@ -118,7 +117,6 @@ def test_async_db_saver_keeps_canonical_db_for_local_runs(tmp_path, monkeypatch)
     monkeypatch.setenv("EVOLUTION_OVERLAY_DB_PATH", str(overlay_db))
     monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
     monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
-    monkeypatch.setenv("POST_TEAM_BUFF_TIERS", "0")
     song_meta_path.write_text("[]", encoding="utf-8")
 
     init_db()

@@ -7,6 +7,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import get_evolution_db_path
+from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_list
 
 
 def check_fg_diversity(song_name_filter=None):
@@ -17,6 +18,7 @@ def check_fg_diversity(song_name_filter=None):
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
 
     print(f"--- Checking FG Diversity in {os.path.basename(db_path)} ---")
 
@@ -35,7 +37,7 @@ def check_fg_diversity(song_name_filter=None):
     # Query top 51 FG
     rows = conn.execute(
         """
-        SELECT rowid, score, fg_score, gear_json, minis_json, loadout_hash
+        SELECT rowid, score, fg_score, gear_ids_blob, minis_ids_blob, loadout_hash
         FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY fg_score DESC
@@ -58,7 +60,9 @@ def check_fg_diversity(song_name_filter=None):
         unique_hashes.add(l_hash)
         unique_fg.add(r["fg_score"])
 
-        gear = json.loads(r["gear_json"])
+        gear_ids = _unpack_id_list(r["gear_ids_blob"])
+        gear = [str(maps.gear_id_to_name.get(int(i), "") or "").strip() for i in gear_ids if int(i) > 0]
+        gear = [g for g in gear if g]
         # Summarize gear (first 2 items)
         gear_sum = ", ".join(gear[:2]) + ("..." if len(gear) > 2 else "")
 

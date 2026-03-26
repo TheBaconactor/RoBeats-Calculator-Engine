@@ -1637,12 +1637,22 @@ def run_native_inflight_song_pipeline(
                                 song.cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
                                 FG_CANDIDATE_LIMIT,
                             )
+                            baseline_team_buff = "T5"
+                            try:
+                                from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+
+                                baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(
+                                    getattr(song, "cfg_dict", None) or {}, default="T5"
+                                )
+                            except Exception:
+                                baseline_team_buff = "T5"
                             song.db_loadouts_future = db_prefetch_executor.submit(
                                 _prefetch_db_loadouts_sync,
                                 song.db_key,
                                 limit=int(prefetch_limit),
                                 gears_by_name=song.gears_by_name,
                                 minis_by_name=song.minis_by_name,
+                                team_buff=str(baseline_team_buff or "T5"),
                             )
                             _register_completion_future(song.db_loadouts_future)
                         except Exception:

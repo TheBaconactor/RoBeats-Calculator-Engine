@@ -229,7 +229,9 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
     assert int(row["score"]) == score
     assert int(row["fg_score"]) == fg_score
 
-    stored_details = json.loads(row["details_json"])
+    from gear_optimizer.data.database import _unpack_stats_after_load
+
+    stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
     stored_force = json.loads(row["force_details_json"])
     cfg = (stored_force.get("ForceGreats") or {}).get("config") or {}
     counts = _config_dict_to_counts(cfg)

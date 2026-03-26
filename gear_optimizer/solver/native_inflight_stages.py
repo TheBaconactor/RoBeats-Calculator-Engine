@@ -27,7 +27,7 @@ from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 logger = logging.getLogger(__name__)
 
 _FG_JIT_WARMED = False
-_FG_DB_LOADOUTS_CACHE: "OrderedDict[str, tuple[int, list[dict]]]" = OrderedDict()
+_FG_DB_LOADOUTS_CACHE: "OrderedDict[tuple[str, str], tuple[int, list[dict]]]" = OrderedDict()
 _FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
 
 
@@ -41,10 +41,12 @@ def _fg_db_cache_max() -> int:
     return 256
 
 
-def _fg_db_cache_get(song_name: str, *, limit: int) -> list[dict] | None:
-    key = str(song_name or "").strip()
-    if not key:
+def _fg_db_cache_get(song_name: str, *, limit: int, team_buff: str = "T5") -> list[dict] | None:
+    song_key = str(song_name or "").strip()
+    if not song_key:
         return None
+    tier_key = str(team_buff or "T5").strip().upper() or "T5"
+    key = (song_key, tier_key)
     try:
         with _FG_DB_LOADOUTS_CACHE_LOCK:
             entry = _FG_DB_LOADOUTS_CACHE.get(key)
@@ -59,10 +61,12 @@ def _fg_db_cache_get(song_name: str, *, limit: int) -> list[dict] | None:
         return None
 
 
-def _fg_db_cache_put(song_name: str, *, limit: int, rows: list[dict]) -> None:
-    key = str(song_name or "").strip()
-    if not key:
+def _fg_db_cache_put(song_name: str, *, limit: int, rows: list[dict], team_buff: str = "T5") -> None:
+    song_key = str(song_name or "").strip()
+    if not song_key:
         return
+    tier_key = str(team_buff or "T5").strip().upper() or "T5"
+    key = (song_key, tier_key)
     if not isinstance(rows, list):
         return
     try:
@@ -127,6 +131,20 @@ def _cfg_value_ci(section: dict, key: str, default: object = None) -> object:
         if str(cur_key).lower() == target:
             return cur_value
     return default
+
+
+def _resolve_baseline_team_buff_for_db(cfg_dict: dict | None) -> str:
+    """
+    Resolve the baseline TeamBuff tier for DB reads in native in-flight stages.
+
+    Default config is auto mode => T5, but this must not be hardcoded for manual configs.
+    """
+    try:
+        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+
+        return resolve_baseline_team_buff_from_cfg_dict(cfg_dict or {}, default="T5")
+    except Exception:
+        return "T5"
 
 
 class _InFlightStageProfiler:
@@ -338,21 +356,28 @@ def _prefetch_db_loadouts_sync(
     limit: int,
     gears_by_name: dict,
     minis_by_name: dict,
+    team_buff: str = "T5",
 ) -> list[dict]:
     try:
         limit_i = max(0, int(limit))
     except Exception:
         limit_i = 0
-    cached = _fg_db_cache_get(song_name, limit=limit_i)
+    cached = _fg_db_cache_get(song_name, limit=limit_i, team_buff=str(team_buff or "T5"))
     if cached is not None:
         return cached
 
     try:
         from gear_optimizer.data.database import get_best_loadouts
 
-        rows = get_best_loadouts(song_name, limit=limit_i, gears_by_name=gears_by_name, minis_by_name=minis_by_name)
+        rows = get_best_loadouts(
+            song_name,
+            limit=limit_i,
+            gears_by_name=gears_by_name,
+            minis_by_name=minis_by_name,
+            team_buff=str(team_buff or "T5"),
+        )
         if isinstance(rows, list):
-            _fg_db_cache_put(song_name, limit=limit_i, rows=rows)
+            _fg_db_cache_put(song_name, limit=limit_i, rows=rows, team_buff=str(team_buff or "T5"))
             return rows
         return []
     except Exception:
@@ -459,7 +484,12 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                     db_loadouts_full = fut.result(timeout=0)
                     song.db_loadouts_full = db_loadouts_full
                     if isinstance(db_loadouts_full, list):
-                        _fg_db_cache_put(song.db_key, limit=int(fg_candidate_limit), rows=db_loadouts_full)
+                        _fg_db_cache_put(
+                            song.db_key,
+                            limit=int(fg_candidate_limit),
+                            rows=db_loadouts_full,
+                            team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
+                        )
                 except Exception:
                     db_loadouts_full = None
                 finally:
@@ -487,6 +517,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         song.gears_by_name,
         song.minis_by_name,
         build_details,
+        team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
         db_loadouts_full=db_loadouts_full,
         # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
         allow_db_query=not bool(prefetch_pending),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from gear_optimizer.solver.dual_process_inflight import _configure_worker_vulkan_device
+from gear_optimizer.solver.dual_process_inflight import recommend_dual_process_inflight_thread_overrides
 from gear_optimizer.solver.dual_process_inflight import shard_inflight_tasks
 
 
@@ -48,3 +49,36 @@ def test_configure_worker_vulkan_device_sets_both_env_vars(monkeypatch) -> None:
 
     assert os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] == "2"
     assert os.environ["TI_VISIBLE_DEVICE"] == "2"
+
+
+def test_recommend_dual_process_inflight_thread_overrides_scales_and_caps() -> None:
+    cfg_dict = {
+        "IterationEngine": {
+            "inflight_prepworkers": "8",
+            "inflight_decodeworkers": "8",
+            "inflight_fgprepworkers": "8",
+        }
+    }
+
+    out = recommend_dual_process_inflight_thread_overrides(
+        cfg_dict,
+        inflight_limit=12,
+        instances=2,
+        logical_cpus=16,
+    )
+
+    assert out["INFLIGHT_PREP_WORKERS"] == 2
+    assert out["INFLIGHT_DECODE_WORKERS"] == 2
+    assert out["INFLIGHT_FG_PREP_WORKERS"] == 2
+    assert out["INFLIGHT_DB_PREFETCH_WORKERS"] == 2
+    assert out["INFLIGHT_FG_WORKERS"] == 2
+
+
+def test_recommend_dual_process_inflight_thread_overrides_noop_for_single_instance() -> None:
+    out = recommend_dual_process_inflight_thread_overrides(
+        {"IterationEngine": {"inflight_prepworkers": "8"}},
+        inflight_limit=12,
+        instances=1,
+        logical_cpus=16,
+    )
+    assert out == {}

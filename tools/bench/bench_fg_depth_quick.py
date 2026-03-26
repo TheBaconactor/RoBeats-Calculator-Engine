@@ -40,20 +40,26 @@ def _read_fg_best(db_path: Path, *, song_substr: str) -> list[dict]:
             best_fg_score = int(r["best_fg_score"] or 0)
 
             best_fg = conn.execute(
-                "SELECT fg_score, gear_json, minis_json FROM team_buff_fg_loadouts WHERE song_name = ? ORDER BY fg_score DESC LIMIT 1",
+                "SELECT fg_score, gear_ids_blob, minis_ids_blob FROM team_buff_fg_loadouts WHERE song_name = ? ORDER BY fg_score DESC LIMIT 1",
                 (song_name,),
             ).fetchone()
             gear = []
             minis = []
             if best_fg:
-                try:
-                    gear = json.loads(best_fg["gear_json"] or "[]")
-                except Exception:
-                    gear = []
-                try:
-                    minis = json.loads(best_fg["minis_json"] or "[]")
-                except Exception:
-                    minis = []
+                from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list
+
+                maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
+                gear_ids = _unpack_id_list(best_fg["gear_ids_blob"])
+                gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+                gear = [g for g in gear if g]
+
+                mini_id_groups = _unpack_id_groups(best_fg["minis_ids_blob"])
+                minis = [
+                    sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0})
+                    for g in (mini_id_groups or [])
+                    if g
+                ]
+                minis = [[n for n in g if n] for g in minis if g]
             out.append(
                 {
                     "song": song_name,

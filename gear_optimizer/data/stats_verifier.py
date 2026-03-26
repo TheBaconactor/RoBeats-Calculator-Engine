@@ -9,7 +9,17 @@ import json
 import sqlite3
 from typing import Dict, Tuple, Iterable
 
-from gear_optimizer.data.database import _ensure_stats_in_details, get_evolution_db_path
+from gear_optimizer.data.database import (
+    _ensure_stats_in_details,
+    _load_piece_name_encoding_maps,
+    _pack_stats_for_storage,
+    _strip_computed_details_fields,
+    _unpack_id_groups,
+    _unpack_id_list,
+    _unpack_stats_after_load,
+    get_evolution_db_path,
+)
+from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.data.csv_parser import parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
 
@@ -25,6 +35,32 @@ def _is_stats_empty(stats) -> bool:
         if not any(stats.values()):
             return True
     return False
+
+
+def _decode_names_from_row(row: sqlite3.Row, maps) -> tuple[list[str], list[str]]:
+    gear_names: list[str] = []
+    try:
+        ids = _unpack_id_list(row["gear_ids_blob"])
+    except Exception:
+        ids = []
+    if ids:
+        gear_names = [str(maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
+        gear_names = [n for n in gear_names if n]
+
+    mini_groups: list[list[str]] = []
+    try:
+        id_groups = _unpack_id_groups(row["minis_ids_blob"])
+    except Exception:
+        id_groups = []
+    for g in id_groups or []:
+        if not g:
+            continue
+        names = [str(maps.mini_id_to_name.get(int(i), "") or "").strip() for i in g if int(i) > 0]
+        names = [n for n in names if n]
+        if names:
+            mini_groups.append(names)
+    mini_names = representative_mini_names(mini_groups)
+    return gear_names, list(mini_names)
 
 
 def verify_and_repair_stats(
@@ -71,28 +107,14 @@ def verify_and_repair_stats(
 
     json_ok = _sqlite_json_available(conn)
 
-    def _counts_from_config_json(minis_json_raw: object) -> list[str]:
-        mini_names_raw = json.loads(minis_json_raw) if minis_json_raw else []
-        mini_names: list[str] = []
-        for item in mini_names_raw:
-            if isinstance(item, list) and item:
-                mini_names.append(str(item[0]))
-            elif isinstance(item, str):
-                mini_names.append(item)
-        return mini_names
-
-    def _iter_base_rows_to_verify(
-        c: sqlite3.Connection, *, table: str, limit: int
-    ) -> Iterable[sqlite3.Row]:
-        cols = "rowid, song_name, gear_json, minis_json, details_json, team_buff"
+    def _iter_base_rows_to_verify(c: sqlite3.Connection, *, table: str, limit: int) -> Iterable[sqlite3.Row]:
+        cols = "rowid, song_name, gear_ids_blob, minis_ids_blob, details_json, team_buff"
         q = f"SELECT {cols} FROM {table}"
         if limit > 0:
             q += f" LIMIT {int(limit)}"
         return c.execute(q)
 
-    def _iter_problem_base_rows_sql(
-        c: sqlite3.Connection, *, table: str, limit: int
-    ) -> Iterable[sqlite3.Row]:
+    def _iter_problem_base_rows_sql(c: sqlite3.Connection, *, table: str, limit: int) -> Iterable[sqlite3.Row]:
         # Fast path: only stream rows that look invalid, using SQLite JSON functions.
         #
         # We treat as invalid when:
@@ -100,19 +122,28 @@ def verify_and_repair_stats(
         # - Stats is an empty object ({})
         # - Stats object exists but all values are 0 (placeholder dict)
         cols = (
-            "rowid, song_name, gear_json, minis_json, details_json, team_buff, "
-            "CASE WHEN json_type(details_json, '$.Stats') IS NULL THEN 1 ELSE 0 END AS is_missing"
+            "rowid, song_name, gear_ids_blob, minis_ids_blob, details_json, team_buff, "
+            "CASE WHEN json_type(details_json, '$.Stats') IS NULL AND json_type(details_json, '$.st') IS NULL THEN 1 ELSE 0 END AS is_missing"
         )
         q = f"""
             SELECT {cols}
             FROM {table}
             WHERE
-                json_type(details_json, '$.Stats') IS NULL
-                OR json_extract(details_json, '$.Stats') = '{{}}'
+                (json_type(details_json, '$.Stats') IS NULL AND json_type(details_json, '$.st') IS NULL)
                 OR (
                     json_type(details_json, '$.Stats') = 'object'
+                    AND (
+                        json_extract(details_json, '$.Stats') = '{{}}'
+                        OR NOT EXISTS (
+                            SELECT 1 FROM json_each(details_json, '$.Stats')
+                            WHERE CAST(value AS REAL) != 0
+                        )
+                    )
+                )
+                OR (
+                    json_type(details_json, '$.st') = 'array'
                     AND NOT EXISTS (
-                        SELECT 1 FROM json_each(details_json, '$.Stats')
+                        SELECT 1 FROM json_each(details_json, '$.st')
                         WHERE CAST(value AS REAL) != 0
                     )
                 )
@@ -165,7 +196,8 @@ def verify_and_repair_stats(
             print(f"[StatsVerifier] {base_table} sample progress: {i}/{verify_limit}...")
 
         details = json.loads(row["details_json"]) if row["details_json"] else {}
-        stats = details.get("Stats")
+        details = _unpack_stats_after_load(details) or {}
+        stats = details.get("Stats") if isinstance(details, dict) else None
 
         # Check for missing or empty Stats
         issue_type = None
@@ -194,8 +226,8 @@ def verify_and_repair_stats(
 
         if issue_type:
             if not dry_run:
-                gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-                mini_names = _counts_from_config_json(row["minis_json"])
+                maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
+                gear_names, mini_names = _decode_names_from_row(row, maps)
 
                 details = _ensure_stats_in_details(
                     details,
@@ -205,10 +237,11 @@ def verify_and_repair_stats(
                     team_buff=row["team_buff"] if isinstance(row, sqlite3.Row) else None,
                     team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
                 )
+                details = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else details
 
                 conn.execute(
                     f"UPDATE {base_table} SET details_json = ? WHERE rowid = ?",
-                    (json.dumps(details), row["rowid"]),
+                    (json.dumps(details, separators=(",", ":")), row["rowid"]),
                 )
                 repaired += 1
 
@@ -273,7 +306,15 @@ def _verify_fg_table(
             print(f"[StatsVerifier] Table {table_name} does not exist, skipping...")
         return 0, 0, 0
 
-    select_cols = ["rowid", "song_name", "team_buff", "gear_json", "minis_json", "details_json", "force_details_json"]
+    select_cols = [
+        "rowid",
+        "song_name",
+        "team_buff",
+        "gear_ids_blob",
+        "minis_ids_blob",
+        "details_json",
+        "force_details_json",
+    ]
     total = int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] or 0)
     empty_count = 0
     repaired_count = 0
@@ -293,16 +334,25 @@ def _verify_fg_table(
         # See base table for invalid definitions; apply the same rules here.
         q = f"""
             SELECT
-                {', '.join(select_cols)},
-                CASE WHEN json_type(details_json, '$.Stats') IS NULL THEN 1 ELSE 0 END AS is_missing
+                {", ".join(select_cols)},
+                CASE WHEN json_type(details_json, '$.Stats') IS NULL AND json_type(details_json, '$.st') IS NULL THEN 1 ELSE 0 END AS is_missing
             FROM {table_name}
             WHERE
-                json_type(details_json, '$.Stats') IS NULL
-                OR json_extract(details_json, '$.Stats') = '{{}}'
+                (json_type(details_json, '$.Stats') IS NULL AND json_type(details_json, '$.st') IS NULL)
                 OR (
                     json_type(details_json, '$.Stats') = 'object'
+                    AND (
+                        json_extract(details_json, '$.Stats') = '{{}}'
+                        OR NOT EXISTS (
+                            SELECT 1 FROM json_each(details_json, '$.Stats')
+                            WHERE CAST(value AS REAL) != 0
+                        )
+                    )
+                )
+                OR (
+                    json_type(details_json, '$.st') = 'array'
                     AND NOT EXISTS (
-                        SELECT 1 FROM json_each(details_json, '$.Stats')
+                        SELECT 1 FROM json_each(details_json, '$.st')
                         WHERE CAST(value AS REAL) != 0
                     )
                 )
@@ -321,7 +371,8 @@ def _verify_fg_table(
             print(f"[StatsVerifier] {table_name} sample progress: {i}/{verify_limit}...")
 
         details = json.loads(row["details_json"]) if row["details_json"] else {}
-        stats = details.get("Stats")
+        details = _unpack_stats_after_load(details) or {}
+        stats = details.get("Stats") if isinstance(details, dict) else None
 
         is_empty = _is_stats_empty(stats)
         if json_ok and verify_limit <= 0 and ("is_missing" in row.keys()):
@@ -338,17 +389,13 @@ def _verify_fg_table(
 
                 if base_stats_from_force and isinstance(base_stats_from_force, dict) and base_stats_from_force:
                     # Use BaseStats from force_details_json
-                    details["Stats"] = base_stats_from_force
+                    if isinstance(details, dict):
+                        details = dict(details)
+                        details["Stats"] = base_stats_from_force
                 else:
                     # Recompute from gear/minis/gems
-                    gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-                    mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
-                    mini_names: list[str] = []
-                    for item in mini_names_raw:
-                        if isinstance(item, list) and item:
-                            mini_names.append(str(item[0]))
-                        elif isinstance(item, str):
-                            mini_names.append(item)
+                    maps = _load_piece_name_encoding_maps(conn, db_path=str(get_evolution_db_path()))
+                    gear_names, mini_names = _decode_names_from_row(row, maps)
 
                     details = _ensure_stats_in_details(
                         details,
@@ -359,8 +406,11 @@ def _verify_fg_table(
                         team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
                     )
 
+                details = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else details
+
                 conn.execute(
-                    f"UPDATE {table_name} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"])
+                    f"UPDATE {table_name} SET details_json = ? WHERE rowid = ?",
+                    (json.dumps(details, separators=(",", ":")), row["rowid"]),
                 )
                 repaired_count += 1
 

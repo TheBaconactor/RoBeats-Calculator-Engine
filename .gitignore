@@ -45,10 +45,8 @@ paths_cache.json
 .claude/
 .cursor/
 
-# Local database (active during runtime)
-evolution.db
-evolution_before_prune_*.db
-evolution_corrupt_*.db
+# Local databases (generated during runtime)
+evolution*.db
 
 # Website export folder
 RoBeatMetaWebsite/

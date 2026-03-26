@@ -6,12 +6,123 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_int
+
 
 def _truthy_env(name: str) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return False
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_override_present(name: str) -> bool:
+    raw = os.environ.get(name)
+    return raw is not None and str(raw).strip() != ""
+
+
+def _ceil_div(n: int, d: int) -> int:
+    nn = int(n)
+    dd = max(1, int(d))
+    return int((nn + dd - 1) // dd)
+
+
+def _read_cfg_int(cfg_dict: dict | None, *, section: str, key: str, default: int = 0) -> int:
+    if not isinstance(cfg_dict, dict):
+        return int(default)
+    sec = cfg_dict.get(section)
+    if not isinstance(sec, dict):
+        return int(default)
+    return safe_int(sec.get(key), int(default))
+
+
+def recommend_dual_process_inflight_thread_overrides(
+    cfg_dict: dict | None,
+    *,
+    inflight_limit: int,
+    instances: int,
+    logical_cpus: int | None = None,
+) -> dict[str, int]:
+    """
+    Recommend conservative per-process thread pool sizes for dual-process in-flight mode.
+
+    Dual-process mode creates multiple independent thread pools per worker. Reusing the
+    single-process `InFlight_*Workers` defaults/config verbatim can oversubscribe the CPU.
+    This helper:
+    - splits configured worker counts across instances
+    - caps per-pool worker counts based on per-worker CPU budget
+    - returns values suitable for `INFLIGHT_*_WORKERS` env overrides
+
+    Note: this is a heuristic default. If it causes regressions (GPU underfeed, FG backlog
+    growth, slower wall time), set explicit `INFLIGHT_*_WORKERS` env vars to take control
+    and bypass these recommendations.
+    """
+    try:
+        n_instances = max(1, int(instances or 1))
+    except Exception:
+        n_instances = 1
+    if n_instances <= 1:
+        return {}
+
+    inflight_limit_i = max(1, int(inflight_limit or 1))
+
+    ncpu = logical_cpus if logical_cpus is not None else (os.cpu_count() or 1)
+    try:
+        ncpu = int(ncpu)
+    except Exception:
+        ncpu = 1
+    ncpu = max(1, int(ncpu))
+
+    per_worker_cpu = max(1, int(ncpu) // int(n_instances))
+
+    # Cap: 1..4 threads for the heavier pools, scaled by available CPU per worker.
+    # Example: 16 logical CPUs, 2 instances => per_worker_cpu=8 => cap=2.
+    heavy_cap = max(1, min(4, int((per_worker_cpu + 1) // 4)))
+    aux_cap = max(1, min(2, int(heavy_cap)))
+
+    prep_cfg = _read_cfg_int(cfg_dict, section="IterationEngine", key="inflight_prepworkers", default=0)
+    decode_cfg = _read_cfg_int(cfg_dict, section="IterationEngine", key="inflight_decodeworkers", default=0)
+    fg_cfg = _read_cfg_int(cfg_dict, section="IterationEngine", key="inflight_fgworkers", default=0)
+    fg_prep_cfg = _read_cfg_int(cfg_dict, section="IterationEngine", key="inflight_fgprepworkers", default=0)
+    db_prefetch_cfg = _read_cfg_int(cfg_dict, section="IterationEngine", key="inflight_dbprefetchworkers", default=0)
+
+    def _scaled(cfg_val: int, *, default: int, cap: int) -> int:
+        val = safe_int(cfg_val, 0)
+        if val > 0:
+            val = _ceil_div(int(val), int(n_instances))
+        else:
+            val = int(default)
+        val = max(1, min(int(val), int(cap), int(inflight_limit_i)))
+        return int(val)
+
+    prep = _scaled(prep_cfg, default=heavy_cap, cap=heavy_cap)
+    decode = _scaled(decode_cfg, default=heavy_cap, cap=heavy_cap)
+    fg_prep = _scaled(fg_prep_cfg, default=aux_cap, cap=aux_cap)
+    db_prefetch = _scaled(db_prefetch_cfg, default=aux_cap, cap=aux_cap)
+    fg_default = min(4, int(inflight_limit_i))
+    fg = _scaled(fg_cfg, default=fg_default, cap=min(4, int(heavy_cap)))
+
+    return {
+        "INFLIGHT_PREP_WORKERS": int(prep),
+        "INFLIGHT_DECODE_WORKERS": int(decode),
+        "INFLIGHT_FG_WORKERS": int(fg),
+        "INFLIGHT_FG_PREP_WORKERS": int(fg_prep),
+        "INFLIGHT_DB_PREFETCH_WORKERS": int(db_prefetch),
+    }
+
+
+def _apply_thread_overrides(thread_overrides: dict[str, int] | None) -> None:
+    if not isinstance(thread_overrides, dict) or not thread_overrides:
+        return
+    for name, value in thread_overrides.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if _env_override_present(name):
+            continue
+        try:
+            os.environ[str(name).strip()] = str(int(value))
+        except Exception:
+            continue
 
 
 def _shard_index_for_song(song_name: str, difficulty: str, *, instances: int) -> int:
@@ -100,6 +211,7 @@ def dual_process_inflight_worker_main(
     post_queue: Any,
     control_queue: Any,
     stop_event: Any,
+    thread_overrides: dict[str, int] | None = None,
     initial_completed_keys: list[str] | None = None,
 ) -> None:
     """
@@ -114,6 +226,13 @@ def dual_process_inflight_worker_main(
         pass
     try:
         _configure_worker_disk_artifacts(int(worker_index))
+    except Exception:
+        pass
+
+    # In dual-process mode, each worker creates multiple ThreadPoolExecutors. Apply
+    # conservative per-pool sizes by default to avoid CPU oversubscription.
+    try:
+        _apply_thread_overrides(thread_overrides)
     except Exception:
         pass
 

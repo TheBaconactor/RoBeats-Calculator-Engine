@@ -9,6 +9,7 @@ sys.path.insert(0, ".")
 from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
+from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
 
 # Load gear/mini data
 paths = load_paths_cache()
@@ -34,6 +35,7 @@ base_stats = {
 # Get a broken entry
 conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
+maps = _load_piece_name_encoding_maps(conn, db_path="evolution.db")
 row = conn.execute("SELECT * FROM team_buff_loadouts WHERE rowid=16207").fetchone()
 
 print("=" * 60)
@@ -41,8 +43,15 @@ print("Debugging rowid 16207")
 print("=" * 60)
 
 details = json.loads(row["details_json"])
-gear_names = json.loads(row["gear_json"])
-mini_names_raw = json.loads(row["minis_json"])
+details = _unpack_stats_after_load(details) or {}
+gear_ids = _unpack_id_list(row["gear_ids_blob"])
+gear_names = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+gear_names = [g for g in gear_names if g]
+mini_id_groups = _unpack_id_groups(row["minis_ids_blob"])
+mini_names_raw = [
+    sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+]
+mini_names_raw = [[n for n in g if n] for g in mini_names_raw if g]
 
 print(f"Gear names: {gear_names}")
 print(f"Minis raw: {mini_names_raw}")

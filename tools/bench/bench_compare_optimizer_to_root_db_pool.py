@@ -123,11 +123,12 @@ class _RefRow:
 
 
 def _load_ref_top_base(conn: sqlite3.Connection, *, song_name: str, team_buff: str) -> _RefRow | None:
-    from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
+    from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
+    from gear_optimizer.data.loadout_equivalence import representative_mini_names
 
     row = conn.execute(
         """
-        SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json
+        SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json
         FROM team_buff_loadouts
         WHERE song_name = ? AND team_buff = ?
         ORDER BY score DESC, timestamp DESC
@@ -138,20 +139,31 @@ def _load_ref_top_base(conn: sqlite3.Connection, *, song_name: str, team_buff: s
     if row is None:
         return None
     try:
+        db_key = str(conn.execute("PRAGMA database_list").fetchone()[2] or "")
+    except Exception:
+        db_key = ""
+    maps = _load_piece_name_encoding_maps(conn, db_path=db_key)
+    try:
         details = json.loads(row[5]) if row[5] else {}
     except Exception:
         details = {}
+    details = _unpack_stats_after_load(details) or {}
     stats = _coerce_stats(details.get("Stats"))
     if not stats:
         return None
-    try:
-        gear_names = json.loads(row[3]) if row[3] else []
-    except Exception:
-        gear_names = []
-    try:
-        mini_groups = decode_minis_json(row[4])
-    except Exception:
-        mini_groups = []
+    gear_ids = _unpack_id_list(row[3])
+    gear_names = [str(maps.gear_id_to_name.get(int(i), "") or "").strip() for i in gear_ids if int(i) > 0]
+    gear_names = [g for g in gear_names if g]
+
+    mini_id_groups = _unpack_id_groups(row[4])
+    mini_groups: list[list[str]] = []
+    for g in mini_id_groups or []:
+        if not g:
+            continue
+        names = [str(maps.mini_id_to_name.get(int(i), "") or "").strip() for i in g if int(i) > 0]
+        names = sorted({n for n in names if n})
+        if names:
+            mini_groups.append(names)
     mini_names = representative_mini_names(mini_groups)
     return _RefRow(
         score=_safe_int(row[1], 0),
@@ -164,11 +176,12 @@ def _load_ref_top_base(conn: sqlite3.Connection, *, song_name: str, team_buff: s
 
 
 def _load_ref_top_fg(conn: sqlite3.Connection, *, song_name: str, team_buff: str) -> _RefRow | None:
-    from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
+    from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
+    from gear_optimizer.data.loadout_equivalence import representative_mini_names
 
     row = conn.execute(
         """
-        SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json
+        SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json
         FROM team_buff_fg_loadouts
         WHERE song_name = ? AND team_buff = ?
         ORDER BY fg_score DESC, score DESC, timestamp DESC
@@ -179,18 +192,29 @@ def _load_ref_top_fg(conn: sqlite3.Connection, *, song_name: str, team_buff: str
     if row is None:
         return None
     try:
+        db_key = str(conn.execute("PRAGMA database_list").fetchone()[2] or "")
+    except Exception:
+        db_key = ""
+    maps = _load_piece_name_encoding_maps(conn, db_path=db_key)
+    try:
         details = json.loads(row[5]) if row[5] else {}
     except Exception:
         details = {}
+    details = _unpack_stats_after_load(details) or {}
     stats = _coerce_stats(details.get("Stats"))
-    try:
-        gear_names = json.loads(row[3]) if row[3] else []
-    except Exception:
-        gear_names = []
-    try:
-        mini_groups = decode_minis_json(row[4])
-    except Exception:
-        mini_groups = []
+    gear_ids = _unpack_id_list(row[3])
+    gear_names = [str(maps.gear_id_to_name.get(int(i), "") or "").strip() for i in gear_ids if int(i) > 0]
+    gear_names = [g for g in gear_names if g]
+
+    mini_id_groups = _unpack_id_groups(row[4])
+    mini_groups: list[list[str]] = []
+    for g in mini_id_groups or []:
+        if not g:
+            continue
+        names = [str(maps.mini_id_to_name.get(int(i), "") or "").strip() for i in g if int(i) > 0]
+        names = sorted({n for n in names if n})
+        if names:
+            mini_groups.append(names)
     mini_names = representative_mini_names(mini_groups)
     return _RefRow(
         score=_safe_int(row[1], 0),
@@ -211,7 +235,7 @@ def _select_song_pool(*, conn: sqlite3.Connection, paths: dict, team_buff: str, 
         FROM team_buff_loadouts
         WHERE team_buff = ?
           AND details_json IS NOT NULL
-          AND details_json LIKE '%"Stats"%'
+          AND details_json LIKE '%"st"%'
         ORDER BY score DESC
         LIMIT ?
         """,

@@ -19,6 +19,7 @@ def _stats(perfect_points: int) -> dict:
 
 def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
+    from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_consistency.db"
@@ -93,8 +94,6 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     assert fg_entries[0]["score"] == 1000
     assert fg_entries[0]["fg_score"] == 1200
     assert fg_entries[0]["details"]["Stats"] == base_stats
-    assert fg_entries[0]["details"]["hitsim_offset_deltas_ms"] == [17, 18]
-    assert "hitsim_offset_delta_ms" not in fg_entries[0]["details"]
 
     save_loadouts_batch(song_name, fg_entries)
 
@@ -118,15 +117,16 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     assert int(row["score"]) == 1000
     assert int(row["fg_score"]) == 1200
 
-    stored_details = json.loads(row["details_json"])
+    stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
     assert stored_details.get("Stats") == base_stats
-    assert stored_details.get("hitsim_offset_deltas_ms") == [17, 18]
+    # Derived per-window HitSim deltas are computed on demand and not persisted.
+    assert stored_details.get("hitsim_offset_deltas_ms") is None
     assert stored_details.get("hitsim_offset_delta_ms") is None
 
     assert fg_row is not None
     assert int(fg_row["score"]) == 1000
     assert int(fg_row["fg_score"]) == 1200
-    fg_details = json.loads(fg_row["details_json"])
+    fg_details = _unpack_stats_after_load(json.loads(fg_row["details_json"])) or {}
     fg_force = json.loads(fg_row["force_details_json"])
     assert fg_details.get("Stats") == fg_stats
     assert (fg_force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}

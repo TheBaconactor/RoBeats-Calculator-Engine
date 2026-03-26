@@ -32,7 +32,7 @@ To stop safely:
 The optimizer will:
 - Load all songs from Data folders (Easy/Normal/Hard)
 - Run genetic algorithm optimization for each song
-- Store results in `evolution.db` SQLite database
+- Store results in `evolution.db` SQLite database (compact baseline-only; tiers recomputed on demand)
 - Use GPU acceleration for gem allocation (if available)
 
 ---

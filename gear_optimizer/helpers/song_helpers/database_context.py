@@ -156,6 +156,7 @@ def load_database_context(
     *,
     load_known_loadouts: bool = True,
     allow_fallback: bool = True,
+    team_buff: str = "T5",
 ):
     """
     Load database seeds and known loadouts.
@@ -199,6 +200,7 @@ def load_database_context(
             limit=1,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
+            team_buff=str(team_buff or "T5"),
             allow_fallback=allow_fallback,
         )
         if best_loadouts:
@@ -255,10 +257,10 @@ def load_database_context(
                 cursor = conn.execute(
                     """SELECT loadout_hash, score, fg_score, force_details_json, details_json
                        FROM team_buff_loadouts
-                       WHERE song_name = ? AND team_buff = 'T5'
+                       WHERE song_name = ? AND team_buff = ?
                        ORDER BY score DESC
                        LIMIT ?""",
-                    (song_key, LOADOUTS_PER_SONG_LIMIT),
+                    (song_key, str(team_buff or "T5"), LOADOUTS_PER_SONG_LIMIT),
                 )
                 for row in cursor:
                     force_blob = row["force_details_json"]
@@ -301,6 +303,7 @@ def load_database_progress_baseline(
     *,
     load_known_loadouts: bool = True,
     allow_fallback: bool = True,
+    team_buff: str = "T5",
 ):
     """
     Load the DB seed/loadout context plus the canonical progress baseline.
@@ -333,6 +336,7 @@ def load_database_progress_baseline(
             minis_by_name,
             load_known_loadouts=load_known_loadouts,
             allow_fallback=allow_fallback,
+            team_buff=str(team_buff or "T5"),
         )
     except sqlite3.Error:
         if not allow_fallback:
@@ -354,9 +358,9 @@ def load_database_progress_baseline(
                     """
                     SELECT MAX(fg_score)
                     FROM team_buff_fg_loadouts
-                    WHERE song_name = ? AND team_buff = 'T5'
+                    WHERE song_name = ? AND team_buff = ?
                     """,
-                    (str(found_song_name or "").strip(),),
+                    (str(found_song_name or "").strip(), str(team_buff or "T5")),
                 ).fetchone()
                 if row is not None:
                     try:

@@ -17,7 +17,7 @@ from .analysis import (
     format_gem_counts,
     sort_gears_by_slot,
 )
-from .db import get_all_loadouts_from_db, get_all_team_buff_loadouts_from_db
+from .db import get_all_loadouts_from_db
 from .song_scan import get_songs_by_elemental_combo
 
 
@@ -103,7 +103,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
     def _build_loadout_entry(loadout_data: dict, selected_element: str, *, team_buff: str, team_color: str) -> dict:
         loadout_key = str(loadout_data.get("loadout_key") or "").strip()
         gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-        minis_groups = normalize_minis_groups_for_display(loadout_data.get("minis_json") or [])
+        minis_groups = normalize_minis_groups_for_display(loadout_data.get("mini_groups") or [])
         mini_names = sorted([min(g) for g in minis_groups if g])
         avg_gems = loadout_data["avg_gems"]
         peak_in_songs = loadout_data.get("peak_in_songs") or []
@@ -118,7 +118,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             "loadout_key": loadout_key,
             "team_buff": str(team_buff),
             "gear": gear_names,
-            "minis_json": minis_groups,
+            "mini_groups": minis_groups,
             "peak_in_songs": peak_in_songs,
             "songs_with_set": loadout_data["songs_with_set"],
             "win_frequency": loadout_data["win_frequency"],
@@ -143,20 +143,6 @@ def run_general_meta(cfg, paths: dict) -> dict:
         if not song_name:
             continue
         baseline_loadouts_by_song.setdefault(song_name, []).append(row)
-
-    team_buff_grouped = get_all_team_buff_loadouts_from_db()
-    team_buff_loadouts_by_song: dict[str, dict[str, list[dict]]] = {}
-    if team_buff_grouped:
-        team_buff_total = sum(len(v) for v in team_buff_grouped.values())
-        print(f"  Found {team_buff_total} TeamBuff-tiered loadout records")
-        for team_buff, rows in team_buff_grouped.items():
-            per_song: dict[str, list[dict]] = {}
-            for row in rows:
-                song_name = str((row or {}).get("song_name") or "").strip()
-                if not song_name:
-                    continue
-                per_song.setdefault(song_name, []).append(row)
-            team_buff_loadouts_by_song[str(team_buff).upper()] = per_song
 
     results: Dict[str, Any] = {}
 
@@ -214,7 +200,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         team_color = _resolve_team_color(primary)
         for loadout_data in top_loadouts:
             gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-            minis_groups = normalize_minis_groups_for_display(loadout_data.get("minis_json") or [])
+            minis_groups = normalize_minis_groups_for_display(loadout_data.get("mini_groups") or [])
             mini_names = sorted([min(g) for g in minis_groups if g])
             avg_gems = loadout_data["avg_gems"]
             peak_in_songs = loadout_data.get("peak_in_songs") or []
@@ -241,39 +227,14 @@ def run_general_meta(cfg, paths: dict) -> dict:
         team_buff_winners["T5"]["songs_count_with_data"] = len(songs)
         team_buff_winners["T5"]["winner"] = loadout_entries[0] if loadout_entries else None
 
-        tier_map = {"None": "NONE", "T1": "T1", "T10": "T10", "T15": "T15"}
-        for label, db_key in tier_map.items():
-            per_song = team_buff_loadouts_by_song.get(db_key)
-            if not per_song:
-                continue
-            songs_with_data = [s for s in songs if str(s.get("song_name") or "").strip() in per_song]
-            team_buff_winners[label]["songs_count_with_data"] = len(songs_with_data)
-            if not songs_with_data:
-                continue
-            tier_top = find_most_common_loadout(
-                songs_with_data,
-                [],
-                minis_by_name,
-                top_n=1,
-                loadouts_by_song=per_song,
-                gears_by_name=gears_by_name,
-            )
-            if tier_top:
-                team_buff_winners[label]["winner"] = _build_loadout_entry(
-                    tier_top[0],
-                    primary,
-                    team_buff=db_key if label != "None" else "NONE",
-                    team_color=team_color,
-                )
-
         winners_to_print = [t for t in team_buff_tiers if team_buff_winners[t]["winner"] is not None]
         if winners_to_print:
-            print("  TeamBuff winners (T5 baseline; others DB-tiered):")
+            print("  TeamBuff winners (baseline-only persistence):")
             for label in winners_to_print:
                 winner = team_buff_winners[label]["winner"] or {}
-                minis_groups = winner.get("minis_json") or []
+                minis_groups = winner.get("mini_groups") or []
                 mini_names = sorted([min(g) for g in minis_groups if g])
-                songs_note = "songs in category" if label == "T5" else "songs with tier data"
+                songs_note = "songs in category" if label == "T5" else "songs"
                 print(
                     f"    {label}: {int(winner.get('win_frequency') or 0)} wins "
                     f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} {songs_note})"

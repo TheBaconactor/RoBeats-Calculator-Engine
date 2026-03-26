@@ -23,18 +23,28 @@ minis = load_csv_db("Data/Gear/Minis.csv", "mini")
 
 conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
+from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
+
+maps = _load_piece_name_encoding_maps(conn, db_path="evolution.db")
 
 row = conn.execute("""
-    SELECT song_name, gear_json, minis_json, details_json
+    SELECT song_name, gear_ids_blob, minis_ids_blob, details_json
     FROM team_buff_loadouts 
     WHERE song_name LIKE '%lonely stella%'
     ORDER BY score DESC
     LIMIT 1
 """).fetchone()
 
-gear_names = json.loads(row["gear_json"])
-minis_raw = json.loads(row["minis_json"])
+gear_ids = _unpack_id_list(row["gear_ids_blob"])
+gear_names = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+gear_names = [g for g in gear_names if g]
+mini_id_groups = _unpack_id_groups(row["minis_ids_blob"])
+minis_raw = [
+    sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+]
+minis_raw = [[n for n in g if n] for g in minis_raw if g]
 details = json.loads(row["details_json"])
+details = _unpack_stats_after_load(details) or {}
 
 # Extract first mini from each group
 mini_names = []

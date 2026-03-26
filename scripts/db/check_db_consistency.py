@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gear_optimizer.data.database import get_db_connection, get_evolution_db_path
+from gear_optimizer.data.database import (
+    _load_piece_name_encoding_maps,
+    _unpack_id_list,
+    get_db_connection,
+    get_evolution_db_path,
+)
 
 DEFAULT_SONG_NAME = "Ice Angel (Easy) by Yooh"
 DEFAULT_REFERENCE_TIER = str(os.environ.get("DB_CONSISTENCY_REFERENCE_TIER", "T5") or "T5").strip().upper() or "T5"
@@ -145,7 +150,7 @@ def _iter_top_loadouts_for_tier(conn: sqlite3.Connection, song_name: str, team_b
         return []
     rows = conn.execute(
         """
-        SELECT score, fg_score, gear_json, details_json
+        SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json
         FROM team_buff_loadouts
         WHERE song_name = ? AND UPPER(COALESCE(team_buff, 'UNKNOWN')) = ?
         ORDER BY score DESC, fg_score DESC
@@ -181,11 +186,12 @@ def _print_tier_table(song_record, tier_stats: list[TierStats]) -> None:
 
 
 def _print_top_loadouts(
-    conn: sqlite3.Connection, song_name: str, tier_stats: list[TierStats], per_tier_limit: int
+    conn: sqlite3.Connection, song_name: str, tier_stats: list[TierStats], per_tier_limit: int, *, db_path: str
 ) -> None:
     if per_tier_limit <= 0 or not tier_stats:
         return
     print("\nTOP LOADOUTS PER TIER:")
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
     for tier in tier_stats:
         print(f"  [{tier.team_buff}]")
         rows = _iter_top_loadouts_for_tier(conn, song_name, tier.team_buff, per_tier_limit=per_tier_limit)
@@ -193,7 +199,9 @@ def _print_top_loadouts(
             print("    (none)")
             continue
         for i, row in enumerate(rows, 1):
-            gear = json.loads(row["gear_json"]) if row["gear_json"] else []
+            gear_ids = _unpack_id_list(row["gear_ids_blob"])
+            gear = [str(maps.gear_id_to_name.get(int(g), "") or "").strip() for g in gear_ids if int(g) > 0]
+            gear = [g for g in gear if g]
             details = json.loads(row["details_json"]) if row["details_json"] else {}
             ft = details.get("FT", "?")
             ff = details.get("FF", "?")
@@ -318,6 +326,7 @@ def main() -> int:
                 song_name,
                 tier_stats,
                 per_tier_limit=max(0, int(args.max_loadouts_per_tier)),
+                db_path=str(db_path),
             )
 
         print("\nREFERENCE CHECK:")

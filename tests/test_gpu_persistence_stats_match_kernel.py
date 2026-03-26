@@ -270,7 +270,11 @@ def test_persisted_stats_roundtrip_reproduces_gpu_score(tmp_path, monkeypatch):
         ).fetchone()
         assert row is not None
         persisted_score = int(row["score"])
-        persisted_details = json.loads(row["details_json"]) if row["details_json"] else {}
+        from gear_optimizer.data.database import _unpack_stats_after_load
+
+        persisted_details = (
+            _unpack_stats_after_load(json.loads(row["details_json"])) if row["details_json"] else {}
+        ) or {}
         persisted_stats = persisted_details.get("Stats") or {}
     finally:
         conn.close()

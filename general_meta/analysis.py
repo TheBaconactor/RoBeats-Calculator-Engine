@@ -6,7 +6,7 @@ import math
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
+from gear_optimizer.data.loadout_equivalence import representative_mini_names
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 
@@ -102,15 +102,22 @@ def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
     return min(tied)
 
 
-def _decode_db_minis(minis_json_blob: Optional[str]) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
+def _minis_keys_from_groups(mini_groups: object) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
     """
-    Decode DB minis_json into:
+    Convert decoded mini variant groups into:
     - representative mini names (sorted; multiplicity preserved)
-    - a canonical "variant key" that preserves per-mini variant groups
-
-    Expects canonical `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"]]` shape.
+    - a canonical "variant key" that preserves per-slot variant groups
     """
-    groups = decode_minis_json(minis_json_blob)
+    groups: list[list[str]] = []
+    if isinstance(mini_groups, list):
+        for g0 in mini_groups:
+            if not isinstance(g0, list):
+                continue
+            names = [str(n).strip() for n in g0 if n]
+            names = sorted(set([n for n in names if n]))
+            if names:
+                groups.append(names)
+
     reps = representative_mini_names(groups)
     rep_key = tuple(sorted([n for n in reps if n]))
     variant_key = tuple(sorted(tuple(g) for g in groups))
@@ -154,12 +161,8 @@ def find_most_common_loadout(
             continue
 
         best = max(loadouts, key=_effective_score)
-        try:
-            gears = json.loads(best.get("gear_json") or "[]")
-        except Exception:
-            gears = []
-
-        rep_names, variant_key = _decode_db_minis(best.get("minis_json"))
+        gears = list(best.get("gear") or [])
+        rep_names, variant_key = _minis_keys_from_groups(best.get("mini_groups"))
         sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements)
 
         if gears_by_name:
@@ -216,7 +219,7 @@ def find_most_common_loadout(
                 "rank": idx + 1,
                 "loadout_key": loadout_key,
                 "gear_names": list(gears),
-                "minis_json": _groups_from_variant_key(tuple(chosen_variant) if chosen_variant else ()),
+                "mini_groups": _groups_from_variant_key(tuple(chosen_variant) if chosen_variant else ()),
                 "peak_in_songs": peak_in_songs,
                 "songs_with_set": len(rows),
                 "win_frequency": count,

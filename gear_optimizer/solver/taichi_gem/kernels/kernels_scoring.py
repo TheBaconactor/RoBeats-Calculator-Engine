@@ -669,6 +669,15 @@ def _optimize_core_device_impl(
 
     best_final_score: ti.i32 = 0
 
+    # Seed with the current stats score so budget=0 returns a correct value.
+    base_value0: ti.f32 = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor_cur
+    factor0: ti.f32 = kernels_helpers._calc_head_factor(base_value0, c_mul_cur)
+    head0: ti.i32 = ti.cast(
+        kernels_helpers._calc_head_score_bits(base_value0, factor0, f_mul_cur, m0, m1, m2, m3, head_len),
+        ti.i32,
+    )
+    best_final_score = _calc_body_score_i32(base_value0, c_mul_cur, f_mul_cur, count_fever, count_normal) + head0
+
     while remaining > 0:
         # Evaluate each "pick 1 gem now, fill the rest with OV" option.
         # remaining > 0 here, so (remaining - 1) is always non-negative.

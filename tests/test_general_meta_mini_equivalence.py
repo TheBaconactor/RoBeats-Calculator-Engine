@@ -1,5 +1,3 @@
-import json
-
 from general_meta.analysis import find_most_common_loadout
 
 
@@ -41,15 +39,15 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
         {
             "song_name": "Song1",
             "score": 100,
-            "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps([["MiniA"]]),
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniA"]],
             "details_json": None,
         },
         {
             "song_name": "Song2",
             "score": 100,
-            "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps([["MiniB"]]),
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniB"]],
             "details_json": None,
         },
     ]
@@ -61,7 +59,7 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
     assert result["win_frequency"] == 2
     assert result["songs_with_set"] == 2
     assert result["peak_in_songs"] == ["Song1", "Song2"]
-    assert result["minis_json"] in ([["MiniA"]], [["MiniB"]])
+    assert result["mini_groups"] in ([["MiniA"]], [["MiniB"]])
 
 
 def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
@@ -102,15 +100,15 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
         {
             "song_name": "Song1",
             "score": 100,
-            "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps([["MiniA"]]),
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniA"]],
             "details_json": None,
         },
         {
             "song_name": "Song2",
             "score": 100,
-            "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps([["MiniB"]]),
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniB"]],
             "details_json": None,
         },
     ]
@@ -119,4 +117,4 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
     assert len(results) == 2
     assert [r["win_frequency"] for r in results] == [1, 1]
     assert sorted([r["peak_in_songs"] for r in results]) == [["Song1"], ["Song2"]]
-    assert sorted([r["minis_json"] for r in results]) == [[["MiniA"]], [["MiniB"]]]
+    assert sorted([r["mini_groups"] for r in results]) == [[["MiniA"]], [["MiniB"]]]

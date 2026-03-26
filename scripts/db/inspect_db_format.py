@@ -5,9 +5,11 @@ import json
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import get_db_connection, get_evolution_db_path
+from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list
 
 db_path = get_evolution_db_path()
 conn = get_db_connection(db_path)
+maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
 
 # Show schema
 print("=" * 80)
@@ -57,13 +59,19 @@ if loadout:
     print(f"fg_score: {loadout['fg_score']}")
     print(f"timestamp: {loadout['timestamp']}")
 
-    print(f"\ngear_json (raw): {loadout['gear_json']}")
-    gear = json.loads(loadout["gear_json"]) if loadout["gear_json"] else []
-    print(f"gear_json (parsed): {gear}")
+    gear_ids = _unpack_id_list(loadout["gear_ids_blob"])
+    gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
+    gear = [g for g in gear if g]
+    print(f"\ngear_ids_blob bytes: {len(loadout['gear_ids_blob'] or b'')}")
+    print(f"gear (decoded): {gear}")
 
-    print(f"\nminis_json (raw): {loadout['minis_json']}")
-    minis = json.loads(loadout["minis_json"]) if loadout["minis_json"] else []
-    print(f"minis_json (parsed): {minis}")
+    mini_id_groups = _unpack_id_groups(loadout["minis_ids_blob"])
+    minis = [
+        sorted({maps.mini_id_to_name.get(int(i), "") for i in g if int(i) > 0}) for g in (mini_id_groups or []) if g
+    ]
+    minis = [[n for n in g if n] for g in minis if g]
+    print(f"\nminis_ids_blob bytes: {len(loadout['minis_ids_blob'] or b'')}")
+    print(f"minis (decoded groups): {minis}")
 
     print(f"\ndetails_json (raw, first 200 chars): {(loadout['details_json'] or '')[:200]}...")
     if loadout["details_json"]:

@@ -1,4 +1,7 @@
 import numpy as np
+import pytest
+
+pytestmark = pytest.mark.gpu
 
 
 def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
@@ -13,7 +16,7 @@ def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
     }
 
 
@@ -113,7 +116,10 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
             "Last Note Time": 10.0,
             "Total Notes": 12,
         },
-        "song_data": {"timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32)},
+        "song_data": {
+            "timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32),
+            "note_types": np.ones(12, dtype=np.int16),
+        },
     }
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
 
@@ -185,7 +191,7 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
         "score": 1,
         "fg_score": 0,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-        # Corrupted minis sometimes show up as strings like "['Name']" inside minis_json groups.
+        # Corrupted minis sometimes show up as strings like "['Name']" inside persisted mini variant groups.
         "minis": [["['M1']"], ["M2"], ["M3"]],
         "details": {"Stats": stats},
         "force": None,
@@ -323,3 +329,319 @@ def test_team_buff_tiers_support_target_team_color_overrides():
     assert s_stats["Flow"] == 40
     assert n_stats["Rush"] == 100
     assert n_stats["Flow"] == 10
+
+
+def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    calc_song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 120,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    entry = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5", "T15"),
+    )
+
+    t5 = out["tiers"]["T5"]["base_top51"][0]
+    t15 = out["tiers"]["T15"]["base_top51"][0]
+
+    assert t5["score"] != t15["score"]
+    assert t5["fg_score"] != t15["fg_score"]
+
+
+def test_team_buff_tier_postprocess_fg_scoring_matches_gpu_force_greats_kernel():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
+
+    calc_song = _mock_song(name="pytest_team_buff_fg_kernel_match", n_notes=24)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "NONE", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 120,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    entry = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        # Flat force payload as stored in DB.
+        "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("NONE",),
+    )
+    got = int(out["tiers"]["NONE"]["base_top51"][0]["fg_score"])
+
+    timestamps_np = calc_song["song_data"]["timestamps"]
+    meta = calc_song["metadata"]
+    with _GPU_LOCK:
+        expected_raw = solve_force_greats_finder_gpu(
+            [
+                {
+                    "base_pp": int(stats["Perfect Points"]),
+                    "base_cm": int(stats["Combo Multiplier"]),
+                    "base_fm": int(stats["Fever Multiplier"]),
+                    "base_ft_stat": int(stats["Fever Time"]),
+                    "base_ff_stat": int(stats["Fever Fill Rate"]),
+                    "base_p_val": int(stats["Rush"]),
+                    "base_s_val": int(stats["Flow"]),
+                }
+            ],
+            timestamps_np,
+            None,
+            int(meta.get("Long Notes", 0) or 0),
+            float(meta.get("Last Note Time", float(timestamps_np[-1]))),
+            [(1,)],
+            [(0, 0)],
+            n_sections=1,
+            is_p_ft=0,
+            is_s_ft=0,
+            is_p_ff=0,
+            is_s_ff=0,
+            is_p_pp=0,
+            is_s_pp=0,
+            is_p_cm=0,
+            is_s_cm=0,
+            is_p_fm=0,
+            is_s_fm=0,
+            is_p_ov=0,
+            is_s_ov=0,
+            ref_arrays=ref_arrays,
+            total_budget=0,
+            return_raw=True,
+        )
+
+    assert isinstance(expected_raw, dict)
+    expected = int(expected_raw["final_score"][0])
+    assert got == expected
+
+
+def test_team_buff_tier_leaderboards_respects_persisted_hitsim_seed(monkeypatch):
+    import gear_optimizer.solver.hit_simulation as hs
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    calls: list[int] = []
+
+    def _fake_apply(calc_song, *, cfg_dict):
+        cfg = cfg_dict.get("HumanHitSim") if isinstance(cfg_dict, dict) else None
+        seed = int((cfg or {}).get("Seed", 0) or 0)
+        calls.append(int(seed))
+        # Minimal "applied" markers; score correctness is tested elsewhere.
+        meta = calc_song.get("metadata", {}) or {}
+        meta["HumanHitSimApplied"] = True
+        meta["HumanHitSimSeed"] = int(seed)
+        meta["HumanHitSimApplyTo"] = str((cfg or {}).get("ApplyTo", "FG") or "FG").strip().upper()
+        calc_song["metadata"] = meta
+        song_data = calc_song.get("song_data", {}) or {}
+        if song_data.get("fg_timestamps") is None:
+            song_data["fg_timestamps"] = song_data.get("timestamps")
+        calc_song["song_data"] = song_data
+        return {"seed": int(seed)}
+
+    monkeypatch.setattr(hs, "apply_human_hit_sim", _fake_apply)
+
+    calc_song = _mock_song(name="pytest_hitsim_ctx", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 120,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    entry_a = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["A1", "A2", "A3", "A4", "A5", "A6"],
+        "minis": ["A7", "A8", "A9"],
+        "details": {"Stats": stats, "hs": [111, 0, 0, 0]},
+        "force": None,
+    }
+    entry_b = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["B1", "B2", "B3", "B4", "B5", "B6"],
+        "minis": ["B7", "B8", "B9"],
+        "details": {"Stats": stats, "hs": [222, 0, 0, 0]},
+        "force": None,
+    }
+
+    compute_team_buff_tier_leaderboards(
+        entries=[entry_a, entry_b],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+    )
+
+    assert sorted(calls) == [111, 222]
+
+
+def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monkeypatch):
+    """
+    Regression test: CPU fixed scoring can diverge from production GPU scoring due to
+    the analytical ceiling HitSim timeline path. Tier postprocess must match GPU.
+    """
+    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
+    from gear_optimizer.solver.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
+
+    # Enable the ceiling kernel (tests default it off for most of the suite).
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+
+    ref_arrays = _get_team_buff_ref_arrays_cached()
+    assert isinstance(ref_arrays, dict) and ref_arrays
+
+    # Minimal 12-note prefix extracted from a real chart known to trigger CPU/GPU divergence.
+    timestamps = np.asarray(
+        [
+            0.023000000044703484,
+            0.023000000044703484,
+            0.023000000044703484,
+            0.16899999976158142,
+            0.3149999976158142,
+            0.3149999976158142,
+            0.3149999976158142,
+            0.4620000123977661,
+            0.6079999804496765,
+            0.6079999804496765,
+            0.7540000081062317,
+            0.9010000228881836,
+        ],
+        dtype=np.float32,
+    )
+    calc_song = {
+        "metadata": {
+            "Song Name": "pytest_gpu_fixed_scoring_regression",
+            "Difficulty": "Hard",
+            "Primary Color": "Vibe",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+            "Total Notes": int(timestamps.shape[0]),
+        },
+        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+    }
+
+    stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 53,
+        "Fever Multiplier": 68,
+        "Fever Fill Rate": 60,
+        "Fever Time": 58,
+        "Vibe": 616,
+        "Flow": 136,
+        "Rush": 60,
+        "Beat": 33,
+        "Chill": 49,
+    }
+
+    cpu = int(evaluate_stats_score(stats, calc_song, ref_arrays))
+
+    primary = calc_song["metadata"]["Primary Color"]
+    secondary = calc_song["metadata"]["Secondary Color"]
+    pp_factor = lookup_reference_py(int(stats["Perfect Points"]), ref_arrays["Perfect Points"], TOTAL_ROWS)
+    base_value = (int(stats.get(primary, 0)) * 2) + int(stats.get(secondary, 0)) + float(pp_factor)
+    combo_mul = float(lookup_reference_py(int(stats["Combo Multiplier"]), ref_arrays["Combo Multiplier"], TOTAL_ROWS))
+    fever_mul = float(lookup_reference_py(int(stats["Fever Multiplier"]), ref_arrays["Fever Multiplier"], TOTAL_ROWS))
+    ft_idx = int(stats["Fever Time"])
+    ff_idx = int(stats["Fever Fill Rate"])
+    gpu = int(
+        score_fixed_stats_gpu(
+            [
+                {
+                    "base_value": float(base_value),
+                    "combo_mul": float(combo_mul),
+                    "fever_mul": float(fever_mul),
+                    "ft_idx": int(ft_idx),
+                    "ff_idx": int(ff_idx),
+                }
+            ],
+            calc_song,
+            ref_arrays=ref_arrays,
+        )[0]
+    )
+
+    assert cpu != gpu
+
+    entry = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        "force": None,
+    }
+    cfg_dict = {
+        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Vibe"},
+    }
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=1,
+    )
+
+    scored = int(out["tiers"]["T5"]["base_top51"][0]["score"])
+    assert scored == gpu
+    assert scored != cpu

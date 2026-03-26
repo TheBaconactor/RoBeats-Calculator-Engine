@@ -23,7 +23,14 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from gear_optimizer.data.database import get_db_connection, init_db
+from gear_optimizer.data.database import (
+    _insert_missing_piece_names,
+    _load_piece_name_encoding_maps,
+    _pack_id_groups,
+    _pack_id_list,
+    get_db_connection,
+    init_db,
+)
 from inventory_optimizer import run_inventory_meta_coverage
 
 
@@ -91,6 +98,7 @@ def _random_details(*, rng: random.Random, selected_element: str, ov: int = 0) -
 def _insert_loadout(
     conn,
     *,
+    db_path: str,
     song_name: str,
     loadout_hash: str,
     score: int,
@@ -109,6 +117,18 @@ def _insert_loadout(
         """,
         (song_name, score, 0, time.time()),
     )
+
+    gear_names_clean = [str(n).strip() for n in (gear_names or []) if str(n).strip()]
+    mini_names_clean = sorted({str(n).strip() for g in (minis_groups or []) for n in (g or []) if str(n).strip()})
+    _insert_missing_piece_names(conn, table="gear_name_encoding", names=gear_names_clean)
+    _insert_missing_piece_names(conn, table="mini_name_encoding", names=mini_names_clean)
+    maps = _load_piece_name_encoding_maps(conn, db_path=str(db_path))
+
+    gear_ids_blob = _pack_id_list([int(maps.gear_name_to_id.get(n, 0) or 0) for n in gear_names_clean])
+    minis_ids_blob = _pack_id_groups(
+        [[int(maps.mini_name_to_id.get(str(n).strip(), 0) or 0) for n in (g or [])] for g in (minis_groups or [])]
+    )
+
     conn.execute(
         """
         INSERT INTO team_buff_loadouts (
@@ -117,8 +137,8 @@ def _insert_loadout(
             loadout_hash,
             score,
             fg_score,
-            gear_json,
-            minis_json,
+            gear_ids_blob,
+            minis_ids_blob,
             details_json,
             force_details_json,
             timestamp
@@ -131,8 +151,8 @@ def _insert_loadout(
             str(loadout_hash),
             score,
             0,
-            json.dumps(gear_names),
-            json.dumps(minis_groups),
+            gear_ids_blob,
+            minis_ids_blob,
             json.dumps(details),
             None,
             time.time(),
@@ -291,6 +311,7 @@ def main() -> int:
                         details = _base_details(selected_element=element, ov=int(args.ov))
                     _insert_loadout(
                         conn,
+                        db_path=str(db_path),
                         song_name=song_name,
                         loadout_hash=f"{song_name}-peak-{c}-{rng.getrandbits(32):08x}",
                         score=100,

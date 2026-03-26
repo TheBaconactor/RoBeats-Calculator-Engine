@@ -1,46 +1,44 @@
-import json
-import sqlite3
-
-from gear_optimizer.data.database import ensure_schema
+from gear_optimizer.data.database import init_db, save_loadouts_batch
 from general_meta.db import get_all_loadouts_from_db
 
 
 def test_get_all_loadouts_includes_fg_loadouts_rows(monkeypatch, tmp_path):
     db_path = tmp_path / "evolution.db"
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-
-    conn.execute(
-        "INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, 0, 0, 0)",
-        ("Song A",),
-    )
-
-    # Insert into team_buff_fg_loadouts (FG rows should always be visible via unified view).
-    conn.execute(
-        """
-        INSERT INTO team_buff_fg_loadouts (
-            song_name, team_buff, loadout_hash, score, fg_score,
-            gear_json, minis_json, details_json, force_details_json, timestamp
-        )
-        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-        """,
-        (
-            "Song A",
-            "hash1",
-            100,
-            999,
-            json.dumps(["Hat A"]),
-            json.dumps([["Mini A"]]),
-            None,
-            None,
-        ),
-    )
-    conn.commit()
-    conn.close()
-
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+
+    save_loadouts_batch(
+        "Song A",
+        [
+            {
+                "score": 100,
+                "fg_score": 999,
+                "gear": ["Hat A", "Neck A", "Face A", "Shirt A", "Back A", "Pants A"],
+                "minis": ["Mini A", "Mini B", "Mini C"],
+                "details": {
+                    "Stats": {
+                        "Perfect Points": 0,
+                        "Combo Multiplier": 0,
+                        "Fever Multiplier": 0,
+                        "Fever Fill Rate": 0,
+                        "Fever Time": 0,
+                        "Chill": 0,
+                        "Flow": 0,
+                        "Rush": 0,
+                        "Beat": 0,
+                        "Vibe": 0,
+                    },
+                    "GemCounts": {},
+                    "PrimaryColor": "Rush",
+                    "SecondaryColor": "Flow",
+                    "SelectedElement": "Rush",
+                },
+                "force": {"Score": 999, "BaseStats": {}, "GemCounts": {}, "ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+        team_buff="T5",
+    )
     rows = get_all_loadouts_from_db()
 
     assert any(r["song_name"] == "Song A" and r["fg_score"] == 999 for r in rows)

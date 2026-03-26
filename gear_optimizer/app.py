@@ -3175,6 +3175,7 @@ class GearOptimizerApp:
         try:
             from gear_optimizer.solver.dual_process_inflight import (
                 dual_process_inflight_worker_main,
+                recommend_dual_process_inflight_thread_overrides,
                 shard_inflight_tasks,
             )
             from gear_optimizer.solver.native_inflight_support import _task_key
@@ -3243,88 +3244,6 @@ class GearOptimizerApp:
             except Exception:
                 continue
 
-        # Log effective per-worker thread settings (same formula as native in-flight).
-        try:
-            ga_seed = str(os.environ.get("GA_SEED") or "").strip()
-
-            def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
-                ncpu = os.cpu_count() or 1
-                try:
-                    ncpu = int(ncpu)
-                except Exception:
-                    ncpu = 1
-                ncpu = max(1, int(ncpu))
-                inflight_limit = max(1, int(inflight_limit))
-                kind = str(kind or "").strip().lower()
-                base = max(1, ncpu // 2)
-                if ncpu <= 4:
-                    base = min(base, 2)
-                elif ncpu <= 8:
-                    base = min(base, 3)
-                if kind in {"fg_prep", "fgprep"}:
-                    base = max(1, min(base, 2 if ncpu <= 8 else base))
-                return max(1, min(int(inflight_limit), int(base)))
-
-            ie = cfg_dict.get("IterationEngine", {}) if isinstance(cfg_dict, dict) else {}
-
-            def _env_int(name: str, default: int) -> int:
-                raw = os.environ.get(name)
-                if raw is None or str(raw).strip() == "":
-                    return int(default)
-                try:
-                    return int(str(raw).strip())
-                except Exception:
-                    return int(default)
-
-            def _cfg_int(name: str, default: int) -> int:
-                if not isinstance(ie, dict):
-                    return int(default)
-                return safe_int(ie.get(str(name)), int(default))
-
-            for shard_idx, shard in shard_items:
-                inflight_limit = max(1, min(int(inflight_songs or 1), int(len(shard))))
-
-                prep_workers = _env_int("INFLIGHT_PREP_WORKERS", _cfg_int("inflight_prepworkers", 0))
-                if prep_workers <= 0:
-                    prep_workers = 1 if ga_seed else _default_worker_threads(inflight_limit=inflight_limit, kind="prep")
-
-                decode_workers = _env_int("INFLIGHT_DECODE_WORKERS", _cfg_int("inflight_decodeworkers", 0))
-                if decode_workers <= 0:
-                    decode_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="decode")
-
-                fg_workers_default = min(4, inflight_limit)
-                fg_workers = _env_int(
-                    "INFLIGHT_FG_WORKERS",
-                    _cfg_int("inflight_fgworkers", int(fg_workers_default)),
-                )
-                fg_workers = max(1, min(int(fg_workers), int(inflight_limit)))
-
-                fg_prep_workers = _env_int("INFLIGHT_FG_PREP_WORKERS", _cfg_int("inflight_fgprepworkers", 0))
-                if fg_prep_workers <= 0:
-                    fg_prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="fg_prep")
-
-                db_prefetch_workers = _env_int(
-                    "INFLIGHT_DB_PREFETCH_WORKERS", _cfg_int("inflight_dbprefetchworkers", 0)
-                )
-                if db_prefetch_workers <= 0:
-                    db_prefetch_workers = max(1, min(int(fg_prep_workers), 4))
-
-                logger.debug(
-                    "[InFlight][Dual] worker=%s shard=%s tasks=%s InFlightSongs=%s "
-                    "Prep=%s Decode=%s FG=%s FGPrep=%s FGDBPrefetch=%s",
-                    int(shard_idx),
-                    int(shard_idx),
-                    int(len(shard)),
-                    int(inflight_songs),
-                    int(prep_workers),
-                    int(decode_workers),
-                    int(fg_workers),
-                    int(fg_prep_workers),
-                    int(db_prefetch_workers),
-                )
-        except Exception:
-            pass
-
         try:
             mp_ctx = multiprocessing.get_context("spawn")
         except ValueError:
@@ -3333,6 +3252,15 @@ class GearOptimizerApp:
         control_queue = mp_ctx.Queue()
         stop_event = mp_ctx.Event()
         initial_completed_keys = list(completed_songs) if isinstance(completed_songs, set) else []
+
+        def _env_int(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            if raw is None or str(raw).strip() == "":
+                return int(default)
+            try:
+                return int(str(raw).strip())
+            except Exception:
+                return int(default)
 
         processes: list[multiprocessing.Process] = []
         for shard_idx, shard in shard_items:
@@ -3347,6 +3275,44 @@ class GearOptimizerApp:
                 extras = list(t[16:]) if isinstance(t, (tuple, list)) and len(t) > 16 else []
                 work_items.append((fp, song_name, diff, extras))
 
+            inflight_limit = max(1, min(int(inflight_songs or 1), int(len(shard))))
+            thread_overrides = recommend_dual_process_inflight_thread_overrides(
+                cfg_dict if isinstance(cfg_dict, dict) else None,
+                inflight_limit=int(inflight_limit),
+                instances=int(instances),
+                logical_cpus=os.cpu_count() or 1,
+            )
+
+            try:
+                prep_workers = _env_int(
+                    "INFLIGHT_PREP_WORKERS", safe_int(thread_overrides.get("INFLIGHT_PREP_WORKERS"), 1)
+                )
+                decode_workers = _env_int(
+                    "INFLIGHT_DECODE_WORKERS", safe_int(thread_overrides.get("INFLIGHT_DECODE_WORKERS"), 1)
+                )
+                fg_workers = _env_int("INFLIGHT_FG_WORKERS", safe_int(thread_overrides.get("INFLIGHT_FG_WORKERS"), 1))
+                fg_prep_workers = _env_int(
+                    "INFLIGHT_FG_PREP_WORKERS", safe_int(thread_overrides.get("INFLIGHT_FG_PREP_WORKERS"), 1)
+                )
+                db_prefetch_workers = _env_int(
+                    "INFLIGHT_DB_PREFETCH_WORKERS", safe_int(thread_overrides.get("INFLIGHT_DB_PREFETCH_WORKERS"), 1)
+                )
+                logger.debug(
+                    "[InFlight][Dual] worker=%s shard=%s tasks=%s InFlightSongs=%s "
+                    "Prep=%s Decode=%s FG=%s FGPrep=%s FGDBPrefetch=%s",
+                    int(shard_idx),
+                    int(shard_idx),
+                    int(len(shard)),
+                    int(inflight_songs),
+                    int(prep_workers),
+                    int(decode_workers),
+                    int(fg_workers),
+                    int(fg_prep_workers),
+                    int(db_prefetch_workers),
+                )
+            except Exception:
+                pass
+
             p = mp_ctx.Process(
                 target=dual_process_inflight_worker_main,
                 kwargs={
@@ -3358,6 +3324,7 @@ class GearOptimizerApp:
                     "post_queue": post_queue,
                     "control_queue": control_queue,
                     "stop_event": stop_event,
+                    "thread_overrides": thread_overrides,
                     "initial_completed_keys": initial_completed_keys,
                 },
                 daemon=True,

@@ -14,6 +14,7 @@ import atexit
 import weakref
 import warnings
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
@@ -22,10 +23,8 @@ from ..core.fallback_monitor import warn_fallback
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
 from .loadout_equivalence import (
-    decode_minis_json,
     effective_loadout_hash_from_names,
     effective_mini_signature_for_name,
-    encode_minis_groups,
     extract_song_colors,
     get_minis_by_name_cached,
     get_gears_by_name_cached,
@@ -53,6 +52,378 @@ def _json_loads(value: Any) -> Any:
     if _orjson is not None:
         return _orjson.loads(value)
     return json.loads(value)
+
+
+# ---------------------------------------------------------------------------
+# Compact piece name encoding (gear/minis)
+# ---------------------------------------------------------------------------
+
+_GEAR_NAME_ENCODING_TABLE = "gear_name_encoding"
+_MINI_NAME_ENCODING_TABLE = "mini_name_encoding"
+
+
+def _encode_uvarint(value: int) -> bytes:
+    """Encode an unsigned integer as base-128 varint (little-endian groups)."""
+    x = int(value)
+    if x < 0:
+        raise ValueError("uvarint cannot encode negative values")
+    out = bytearray()
+    while True:
+        b = x & 0x7F
+        x >>= 7
+        if x:
+            out.append(int(b | 0x80))
+        else:
+            out.append(int(b))
+            break
+    return bytes(out)
+
+
+def _decode_uvarints(blob: bytes) -> list[int]:
+    """Decode a sequence of base-128 varints from a bytes blob."""
+    if not blob:
+        return []
+    out: list[int] = []
+    x = 0
+    shift = 0
+    for b in blob:
+        x |= (int(b) & 0x7F) << shift
+        if int(b) & 0x80:
+            shift += 7
+            if shift > 63:
+                raise ValueError("uvarint too large")
+            continue
+        out.append(int(x))
+        x = 0
+        shift = 0
+    if shift:
+        raise ValueError("truncated uvarint stream")
+    return out
+
+
+def _pack_id_list(ids: Sequence[int]) -> bytes:
+    """Pack a list of positive integer IDs into a compact varint blob."""
+    if not ids:
+        return b""
+    buf = bytearray()
+    for v in ids:
+        iv = int(v)
+        if iv <= 0:
+            continue
+        buf += _encode_uvarint(iv)
+    return bytes(buf)
+
+
+def _unpack_id_list(blob: Any) -> list[int]:
+    """Unpack a varint blob produced by `_pack_id_list`."""
+    if not blob:
+        return []
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes()
+    if not isinstance(blob, (bytes, bytearray)):
+        return []
+    try:
+        return [int(v) for v in _decode_uvarints(bytes(blob)) if int(v) > 0]
+    except Exception:
+        return []
+
+
+def _pack_id_groups(groups: Sequence[Sequence[int]]) -> bytes:
+    """
+    Pack list-of-lists IDs using 0 as a group separator.
+
+    IDs are expected to be positive (>=1). Separator is encoded as uvarint(0) i.e. one byte 0.
+    """
+    if not groups:
+        return b""
+    buf = bytearray()
+    for g0 in groups:
+        if not g0:
+            continue
+        for v in g0:
+            iv = int(v)
+            if iv <= 0:
+                continue
+            buf += _encode_uvarint(iv)
+        buf += b"\x00"
+    return bytes(buf)
+
+
+def _unpack_id_groups(blob: Any) -> list[list[int]]:
+    """Inverse of `_pack_id_groups`."""
+    if not blob:
+        return []
+    if isinstance(blob, memoryview):
+        blob = blob.tobytes()
+    if not isinstance(blob, (bytes, bytearray)):
+        return []
+    try:
+        values = _decode_uvarints(bytes(blob))
+    except Exception:
+        return []
+    out: list[list[int]] = []
+    cur: list[int] = []
+    for v in values:
+        iv = int(v)
+        if iv == 0:
+            if cur:
+                out.append(cur)
+            cur = []
+            continue
+        if iv > 0:
+            cur.append(iv)
+    if cur:
+        out.append(cur)
+    return out
+
+
+@dataclass(slots=True)
+class _PieceNameEncodingMaps:
+    gear_name_to_id: dict[str, int]
+    gear_id_to_name: dict[int, str]
+    mini_name_to_id: dict[str, int]
+    mini_id_to_name: dict[int, str]
+    gear_count: int
+    mini_count: int
+
+
+_PIECE_ENCODING_CACHE_LOCK = threading.Lock()
+_PIECE_ENCODING_CACHE: dict[str, _PieceNameEncodingMaps] = {}
+
+
+def _encoding_table_count(conn: sqlite3.Connection, table: str) -> int:
+    try:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0] or 0) if row else 0
+    except sqlite3.Error:
+        return 0
+
+
+def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) -> _PieceNameEncodingMaps:
+    """
+    Load (and cache) piece name <-> id maps for a DB path.
+
+    Cache is refreshed when the encoding tables' row counts change.
+    """
+    db_path = str(db_path)
+    gear_count = _encoding_table_count(conn, _GEAR_NAME_ENCODING_TABLE)
+    mini_count = _encoding_table_count(conn, _MINI_NAME_ENCODING_TABLE)
+
+    with _PIECE_ENCODING_CACHE_LOCK:
+        cached = _PIECE_ENCODING_CACHE.get(db_path)
+        if (
+            cached is not None
+            and int(cached.gear_count) == int(gear_count)
+            and int(cached.mini_count) == int(mini_count)
+        ):
+            return cached
+
+    gear_name_to_id: dict[str, int] = {}
+    gear_id_to_name: dict[int, str] = {}
+    mini_name_to_id: dict[str, int] = {}
+    mini_id_to_name: dict[int, str] = {}
+
+    try:
+        rows = conn.execute(f"SELECT id, name FROM {_GEAR_NAME_ENCODING_TABLE}").fetchall()
+        for r in rows:
+            try:
+                i = int(r[0] or 0)
+                n = str(r[1] or "")
+            except Exception:
+                continue
+            if i > 0 and n:
+                gear_name_to_id[n] = i
+                gear_id_to_name[i] = n
+    except sqlite3.Error:
+        pass
+
+    try:
+        rows = conn.execute(f"SELECT id, name FROM {_MINI_NAME_ENCODING_TABLE}").fetchall()
+        for r in rows:
+            try:
+                i = int(r[0] or 0)
+                n = str(r[1] or "")
+            except Exception:
+                continue
+            if i > 0 and n:
+                mini_name_to_id[n] = i
+                mini_id_to_name[i] = n
+    except sqlite3.Error:
+        pass
+
+    maps = _PieceNameEncodingMaps(
+        gear_name_to_id=gear_name_to_id,
+        gear_id_to_name=gear_id_to_name,
+        mini_name_to_id=mini_name_to_id,
+        mini_id_to_name=mini_id_to_name,
+        gear_count=int(gear_count),
+        mini_count=int(mini_count),
+    )
+    with _PIECE_ENCODING_CACHE_LOCK:
+        _PIECE_ENCODING_CACHE[db_path] = maps
+    return maps
+
+
+def _insert_missing_piece_names(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    names: Sequence[str],
+) -> None:
+    if not names:
+        return
+    cleaned = sorted({str(n).strip() for n in (names or []) if str(n).strip()})
+    if not cleaned:
+        return
+
+    try:
+        existing = {str(r[0]) for r in conn.execute(f"SELECT name FROM {table}").fetchall() if r and r[0]}
+    except sqlite3.Error:
+        existing = set()
+    missing = [n for n in cleaned if n not in existing]
+    if not missing:
+        return
+
+    try:
+        row = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+        max_id = int(row[0] or 0) if row else 0
+    except sqlite3.Error:
+        max_id = 0
+
+    params = [(max_id + idx + 1, n) for idx, n in enumerate(missing)]
+    try:
+        conn.executemany(
+            f"INSERT INTO {table} (id, name) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+            params,
+        )
+    except sqlite3.Error:
+        # Fallback for older SQLite builds lacking ON CONFLICT DO NOTHING syntax.
+        try:
+            conn.executemany(f"INSERT OR IGNORE INTO {table} (id, name) VALUES (?, ?)", params)
+        except sqlite3.Error:
+            return
+
+
+def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) -> None:
+    """
+    Populate encoding tables deterministically (sorted) from the known dataset.
+
+    This is best-effort: failures must not block optimizer startup.
+    """
+    try:
+        gears_by_name = get_gears_by_name_cached()
+        minis_by_name = get_minis_by_name_cached()
+    except Exception:
+        return
+
+    gear_names = sorted([str(k).strip() for k in (gears_by_name or {}).keys() if str(k).strip()])
+    mini_names = sorted([str(k).strip() for k in (minis_by_name or {}).keys() if str(k).strip()])
+
+    if gear_names:
+        _insert_missing_piece_names(conn, table=_GEAR_NAME_ENCODING_TABLE, names=gear_names)
+    if mini_names:
+        _insert_missing_piece_names(conn, table=_MINI_NAME_ENCODING_TABLE, names=mini_names)
+
+    # Refresh cache for this db_path.
+    with _PIECE_ENCODING_CACHE_LOCK:
+        _PIECE_ENCODING_CACHE.pop(str(db_path), None)
+
+
+# ---------------------------------------------------------------------------
+# Compact details payload helpers (Stats packing, computed fields stripping)
+# ---------------------------------------------------------------------------
+
+_STATS_PACK_KEYS: tuple[str, ...] = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Fill Rate",
+    "Fever Time",
+    "Chill",
+    "Flow",
+    "Rush",
+    "Beat",
+    "Vibe",
+)
+
+
+def _pack_stats_for_storage(details: Any) -> Any:
+    """
+    Reduce JSON size by storing Stats as a short array under `details["st"]`.
+
+    - Input: details["Stats"] is a dict with verbose keys.
+    - Output: details["st"] is a fixed-order int list, and "Stats" is removed.
+    """
+    if not isinstance(details, dict) or not details:
+        return details
+    if details.get("st") is not None:
+        # Already packed.
+        return details
+    stats = details.get("Stats")
+    if not isinstance(stats, dict) or not stats:
+        return details
+    arr: list[int] = []
+    for k in _STATS_PACK_KEYS:
+        try:
+            arr.append(int(stats.get(k, 0) or 0))
+        except Exception:
+            arr.append(0)
+    out = dict(details)
+    out.pop("Stats", None)
+    out["st"] = arr
+    return out
+
+
+def _unpack_stats_after_load(details: Any) -> Any:
+    """Inverse of `_pack_stats_for_storage` (best-effort)."""
+    if not isinstance(details, dict) or not details:
+        return details
+    stats = details.get("Stats")
+    if isinstance(stats, dict) and stats:
+        return details
+    st = details.get("st")
+    if not isinstance(st, (list, tuple)) or not st:
+        return details
+    if len(st) < len(_STATS_PACK_KEYS):
+        return details
+    out_stats: dict[str, int] = {}
+    for i, k in enumerate(_STATS_PACK_KEYS):
+        try:
+            out_stats[k] = int(st[i] or 0)
+        except Exception:
+            out_stats[k] = 0
+    out = dict(details)
+    out["Stats"] = out_stats
+    return out
+
+
+def _strip_computed_details_fields(details: Any) -> Any:
+    """
+    Remove large derived fields that can be recomputed on demand.
+
+    Currently:
+    - `hitsim_offset_deltas_ms` (per-window deltas) is computed on demand via DB manager,
+      and must not be persisted to keep the DB small.
+    """
+    if not isinstance(details, dict) or not details:
+        return details
+    if (
+        details.get("hitsim_offset_deltas_ms") is None
+        and "hitsim_offset_delta_ms" not in details
+        and not isinstance(details.get("ForceGreats"), dict)
+    ):
+        return details
+
+    out = dict(details)
+    out.pop("hitsim_offset_delta_ms", None)
+    out.pop("hitsim_offset_deltas_ms", None)
+    fg0 = out.get("ForceGreats")
+    if isinstance(fg0, dict):
+        fg1 = dict(fg0)
+        fg1.pop("hitsim_offset_delta_ms", None)
+        fg1.pop("hitsim_offset_deltas_ms", None)
+        out["ForceGreats"] = fg1
+    return out
 
 
 def get_evolution_db_path() -> str:
@@ -338,9 +709,12 @@ def init_db():
     """
     Initialize the SQLite database schema if it doesn't exist.
 
-    Storage optimization: gear_json stores only names (not full stats) as a JSON array of strings.
-    minis_json stores mini variant groups as a JSON array of arrays, e.g. [["MiniA","MiniA2"], ["MiniB"], ...].
-    Full stats are looked up from Gears.csv/Minis.csv when loading.
+    Storage optimization (compact/default `evolution.db`):
+    - Gear + minis are persisted as compact integer IDs via:
+      - encoding tables: `gear_name_encoding`, `mini_name_encoding`
+      - BLOB columns: `gear_ids_blob`, `minis_ids_blob`
+    - `details_json` stores packed Stats as `st` (fixed-order int list) instead of verbose `Stats` keys.
+    - Large derived fields (e.g. `hitsim_offset_deltas_ms`) are not persisted.
     """
 
     db_path = get_evolution_db_path()
@@ -348,6 +722,10 @@ def init_db():
     try:
         # `get_db_connection()` already ensures schema/migrations; keep this function
         # as a stable entry point for callers/tests.
+        try:
+            _initialize_piece_name_encodings(conn, db_path=str(db_path))
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -769,18 +1147,8 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
     if not isinstance(details, dict):
         return {}
 
-    # Persist only the per-window HitSim deltas; strip the legacy scalar if present.
-    out = details
-    if "hitsim_offset_delta_ms" in out:
-        out = dict(out)
-        out.pop("hitsim_offset_delta_ms", None)
-    fg0 = out.get("ForceGreats")
-    if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
-        fg1 = dict(fg0)
-        fg1.pop("hitsim_offset_delta_ms", None)
-        if out is details:
-            out = dict(out)
-        out["ForceGreats"] = fg1
+    # Keep persisted payload compact: do not persist derived HitSim delta fields.
+    out = _strip_computed_details_fields(details)
 
     if force_data is None or int(fg_score or 0) <= 0:
         return out
@@ -919,20 +1287,23 @@ def save_loadouts_batch(
     entries: List[PersistenceEntry],
     *,
     db_path: Optional[str] = None,
+    team_buff: str = "T5",
 ) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
-    Persists base results into TeamBuff tier tables (T5).
+    Persists base results into TeamBuff tier tables for the provided baseline tier.
 
     Args:
         song_name: Name of the song
         entries: List of persistence dicts with keys: score, fg_score, gear, minis, details, force
+        team_buff: Baseline TeamBuff tier for this run (default: T5)
     """
     if not entries:
         return
     song_name = str(song_name or "").strip()
     if not song_name:
         return
+    team_buff = str(team_buff or "").strip().upper() or "T5"
 
     def _coerce_int(v: Any) -> int:
         try:
@@ -984,10 +1355,10 @@ def save_loadouts_batch(
     resolved_db_path = str(db_path or get_evolution_db_path())
     conn = get_db_connection(resolved_db_path)
     try:
-        # Persist the base run as TeamBuff T5 (default auto mode) in the same transaction.
+        # Persist the base run under the baseline TeamBuff tier in the same transaction.
         save_team_buff_loadouts_batch(
             song_name,
-            "T5",
+            team_buff,
             entries,
             conn=conn,
             commit=False,
@@ -1106,21 +1477,26 @@ def save_team_buff_loadouts_batch(
 
         out = dict(force_data)
         fg0 = out.get("ForceGreats")
-        if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
+        if isinstance(fg0, dict) and ("hitsim_offset_delta_ms" in fg0 or "hitsim_offset_deltas_ms" in fg0):
             fg1 = dict(fg0)
             fg1.pop("hitsim_offset_delta_ms", None)
+            fg1.pop("hitsim_offset_deltas_ms", None)
             out["ForceGreats"] = fg1
 
         det0 = out.get("details")
         if isinstance(det0, dict):
             det_out = det0
-            if "hitsim_offset_delta_ms" in det_out:
+            if "hitsim_offset_delta_ms" in det_out or "hitsim_offset_deltas_ms" in det_out:
                 det_out = dict(det_out)
                 det_out.pop("hitsim_offset_delta_ms", None)
+                det_out.pop("hitsim_offset_deltas_ms", None)
             nested_fg0 = det_out.get("ForceGreats")
-            if isinstance(nested_fg0, dict) and "hitsim_offset_delta_ms" in nested_fg0:
+            if isinstance(nested_fg0, dict) and (
+                "hitsim_offset_delta_ms" in nested_fg0 or "hitsim_offset_deltas_ms" in nested_fg0
+            ):
                 nested_fg1 = dict(nested_fg0)
                 nested_fg1.pop("hitsim_offset_delta_ms", None)
+                nested_fg1.pop("hitsim_offset_deltas_ms", None)
                 if det_out is det0:
                     det_out = dict(det_out)
                 det_out["ForceGreats"] = nested_fg1
@@ -1318,6 +1694,53 @@ def save_team_buff_loadouts_batch(
         loadouts_params = []
         fg_loadouts_params = []
 
+        # Compact name encoding maps (gear/minis). These tables are populated at init_db()
+        # and extended lazily for previously unseen names.
+        encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
+
+        def _encode_gear_names_to_blob(gear_names: list[str]) -> bytes:
+            nonlocal encoding_maps
+            missing = [n for n in (gear_names or []) if n and n not in encoding_maps.gear_name_to_id]
+            if missing:
+                _insert_missing_piece_names(conn, table=_GEAR_NAME_ENCODING_TABLE, names=missing)
+                encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
+            ids: list[int] = []
+            for n in gear_names or []:
+                if not n:
+                    continue
+                i = int(encoding_maps.gear_name_to_id.get(n, 0) or 0)
+                if i > 0:
+                    ids.append(i)
+            return bytes(_pack_id_list(ids))
+
+        def _encode_mini_groups_to_blob(groups: list[list[str]]) -> bytes:
+            nonlocal encoding_maps
+            flat: list[str] = []
+            for g in groups or []:
+                if not g:
+                    continue
+                for n in g:
+                    if n:
+                        flat.append(str(n))
+            missing = [n for n in sorted(set(flat)) if n and n not in encoding_maps.mini_name_to_id]
+            if missing:
+                _insert_missing_piece_names(conn, table=_MINI_NAME_ENCODING_TABLE, names=missing)
+                encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
+            id_groups: list[list[int]] = []
+            for g in groups or []:
+                if not g:
+                    continue
+                ids: list[int] = []
+                for n in g:
+                    if not n:
+                        continue
+                    i = int(encoding_maps.mini_name_to_id.get(str(n), 0) or 0)
+                    if i > 0:
+                        ids.append(i)
+                if ids:
+                    id_groups.append(ids)
+            return bytes(_pack_id_groups(id_groups))
+
         entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
         for i, entry in enumerate(deduplicated_entries):
             entry_id = int(id(entry))
@@ -1386,20 +1809,23 @@ def save_team_buff_loadouts_batch(
                     s_color,
                     sel_color,
                 )
-                minis_json = encode_minis_groups(groups)
                 mini_names = representative_mini_names(groups)
             else:
                 warn_fallback(
-                    "db.minis_json.singletons",
+                    "db.minis_groups.singletons",
                     "effective mini grouping unavailable; persisting singleton mini groups",
                     context={"song_name": song_name, "team_buff": team_buff},
                     fatal=False,
                 )
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
-                minis_json = _json_dumps_compact([[n] for n in mini_names])
+                groups = [[n] for n in mini_names]
 
-            gear_json = _json_dumps_compact(gear_names)
-            details_json = _json_dumps_compact(details) if details else None
+            gear_ids_blob = _encode_gear_names_to_blob(gear_names) or None
+            minis_ids_blob = _encode_mini_groups_to_blob(groups) or None
+
+            # Compact storage: names are persisted via encoding tables + BLOB IDs.
+            details_storage = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else None
+            details_json = _json_dumps_compact(details_storage) if details_storage else None
             force_json = _json_dumps_compact(force_data) if force_data else None
 
             loadouts_params.append(
@@ -1409,8 +1835,8 @@ def save_team_buff_loadouts_batch(
                     loadout_hash,
                     score,
                     fg_score,
-                    gear_json,
-                    minis_json,
+                    gear_ids_blob,
+                    minis_ids_blob,
                     details_json,
                     force_json,
                 )
@@ -1418,9 +1844,12 @@ def save_team_buff_loadouts_batch(
 
             if force_data is not None and fg_score > score:
                 fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
-                fg_details_json = (
-                    _json_dumps_compact(fg_details) if isinstance(fg_details, dict) and fg_details else details_json
+                fg_details_storage = (
+                    _pack_stats_for_storage(_strip_computed_details_fields(fg_details))
+                    if isinstance(fg_details, dict) and fg_details
+                    else None
                 )
+                fg_details_json = _json_dumps_compact(fg_details_storage) if fg_details_storage else details_json
                 fg_loadouts_params.append(
                     (
                         song_name,
@@ -1428,8 +1857,8 @@ def save_team_buff_loadouts_batch(
                         loadout_hash,
                         score,
                         fg_score,
-                        gear_json,
-                        minis_json,
+                        gear_ids_blob,
+                        minis_ids_blob,
                         fg_details_json,
                         force_json,
                     )
@@ -1443,14 +1872,14 @@ def save_team_buff_loadouts_batch(
                 """
                 INSERT INTO team_buff_loadouts (
                     song_name, team_buff, loadout_hash, score, fg_score,
-                    gear_json, minis_json, details_json, force_details_json, timestamp
+                    gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = CASE WHEN excluded.score >= score THEN excluded.gear_json ELSE gear_json END,
-                    minis_json = CASE WHEN excluded.score >= score THEN excluded.minis_json ELSE minis_json END,
+                    gear_ids_blob = CASE WHEN excluded.score >= score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
+                    minis_ids_blob = CASE WHEN excluded.score >= score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
@@ -1470,14 +1899,14 @@ def save_team_buff_loadouts_batch(
                 """
                 INSERT INTO team_buff_fg_loadouts (
                     song_name, team_buff, loadout_hash, score, fg_score,
-                    gear_json, minis_json, details_json, force_details_json, timestamp
+                    gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.gear_json ELSE gear_json END,
-                    minis_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.minis_json ELSE minis_json END,
+                    gear_ids_blob = CASE WHEN excluded.fg_score >= fg_score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
+                    minis_ids_blob = CASE WHEN excluded.fg_score >= fg_score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
@@ -1490,27 +1919,6 @@ def save_team_buff_loadouts_batch(
                 fg_loadouts_params,
             )
             _log_timing("insert_team_buff_fg_loadouts", time.perf_counter() - _t_insfg0)
-
-            # Keep the canonical song-level FG leaderboard in sync with the *reference tier* only.
-            #
-            # NOTE:
-            # - The async TeamBuff tier post-process persists derived tiers (T1/T10/T15/NONE and color variants)
-            #   via this function, but `songs.best_fg_score` is expected to reflect the canonical tier
-            #   (T5, persisted by `save_loadouts_batch()`).
-            # - Updating `songs.best_fg_score` from non-T5 derived tiers makes DB counters disagree with
-            #   the optimizer's canonical results and breaks `scripts/db/check_db_consistency.py --strict`.
-            if str(team_buff) == "T5":
-                best_fg_max = max((int(row[4] or 0) for row in fg_loadouts_params), default=0)
-                if best_fg_max > 0:
-                    conn.execute(
-                        """
-                        INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
-                        ON CONFLICT(name) DO UPDATE SET
-                            best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                            last_updated = strftime('%s', 'now')
-                        """,
-                        (song_name, best_fg_max),
-                    )
 
         # Enforce FG leaderboard invariant.
         _t_inv0 = time.perf_counter()
@@ -1587,7 +1995,7 @@ def save_team_buff_loadouts_batch(
                 *, table: str, loadout_hash: str, expected_score: int, expected_fg_score: int
             ) -> None:
                 row = conn.execute(
-                    f"SELECT score, fg_score, gear_json, minis_json, details_json FROM {table} "
+                    f"SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json FROM {table} "
                     "WHERE song_name = ? AND team_buff = ? AND loadout_hash = ?",
                     (song_name, team_buff, loadout_hash),
                 ).fetchone()
@@ -1615,8 +2023,27 @@ def save_team_buff_loadouts_batch(
 
                 # Hash consistency check: ensure persisted (gear/minis/details) re-hash back to the stored hash.
                 try:
-                    gear_names_row = _json_loads(row["gear_json"]) if row["gear_json"] else []
-                    mini_groups_row = decode_minis_json(row["minis_json"])
+                    gear_ids_blob_row = row["gear_ids_blob"]
+                    minis_ids_blob_row = row["minis_ids_blob"]
+
+                    gear_names_row: list[str] = []
+                    ids = _unpack_id_list(gear_ids_blob_row)
+                    if ids:
+                        gear_names_row = [
+                            str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids if int(i) > 0
+                        ]
+                        gear_names_row = [n for n in gear_names_row if n]
+
+                    mini_groups_row: list[list[str]] = []
+                    id_groups = _unpack_id_groups(minis_ids_blob_row)
+                    if id_groups:
+                        for g in id_groups:
+                            if not g:
+                                continue
+                            names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g if int(i) > 0]
+                            names = [n for n in names if n]
+                            if names:
+                                mini_groups_row.append(names)
                     mini_names_row = representative_mini_names(mini_groups_row)
                     details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
                     p_color, s_color, sel_color = extract_song_colors(details_row)
@@ -1689,13 +2116,14 @@ def get_best_loadouts(
     team_buff: str = "T5",
     *,
     allow_fallback: bool = True,
+    db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieve the top N loadouts for a song to seed the GA.
 
     Storage format:
-    - gear_json: JSON array of name strings
-    - minis_json: JSON array of variant groups (list[list[str]])
+    - gear_ids_blob: varint-packed list of encoding-table IDs (decoded via `gear_name_encoding`)
+    - minis_ids_blob: varint-packed groups of IDs with 0 separators (decoded via `mini_name_encoding`)
     If gears_by_name/minis_by_name are provided, expands representative names to full stat dicts.
 
     Args:
@@ -1708,8 +2136,8 @@ def get_best_loadouts(
     Returns:
         list: List of loadout dictionaries
     """
-    db_path = get_evolution_db_path()
-    if not os.path.exists(db_path):
+    resolved_db_path = str(db_path or get_evolution_db_path() or "").strip()
+    if not resolved_db_path or not os.path.exists(resolved_db_path):
         return []
 
     song_name = str(song_name or "").strip()
@@ -1723,17 +2151,44 @@ def get_best_loadouts(
     }
 
     # PERF: use a cached per-thread connection for read-heavy call sites.
-    conn = get_db_connection_cached(db_path, allow_fallback=allow_fallback)
+    conn = get_db_connection_cached(resolved_db_path, allow_fallback=allow_fallback)
     try:
         results: list[dict[str, Any]] = []
         by_hash: dict[str, dict[str, Any]] = {}
 
+        encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
+
         def _materialize_common(row) -> tuple[str, list[str], list[list[str]], list[str], dict[str, Any], dict | None]:
             loadout_hash = str(row["loadout_hash"])
-            gear_names = _json_loads(row["gear_json"]) if row["gear_json"] else []
-            mini_groups = decode_minis_json(row["minis_json"])
+            gear_names: list[str] = []
+            try:
+                gear_ids_blob = row["gear_ids_blob"]
+            except Exception:
+                gear_ids_blob = None
+            if gear_ids_blob:
+                ids = _unpack_id_list(gear_ids_blob)
+                if ids:
+                    gear_names = [str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
+                    gear_names = [n for n in gear_names if n]
+
+            mini_groups: list[list[str]] = []
+            try:
+                minis_ids_blob = row["minis_ids_blob"]
+            except Exception:
+                minis_ids_blob = None
+            if minis_ids_blob:
+                id_groups = _unpack_id_groups(minis_ids_blob)
+                if id_groups:
+                    for g in id_groups:
+                        names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g]
+                        names = [n for n in names if n]
+                        if names:
+                            mini_groups.append(names)
             mini_names = representative_mini_names(mini_groups)
             details = _json_loads(row["details_json"]) if row["details_json"] else {}
+            details = _unpack_stats_after_load(details)
+            # DB seeding doesn't need large derived fields; keep the in-memory payload lightweight.
+            details = _strip_computed_details_fields(details)
 
             # Optional strict verifier: detect corrupted/mismatched hashes before seeding.
             if strict_seed_hash:
@@ -1761,6 +2216,14 @@ def get_best_loadouts(
 
             force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
             force_obj = force_block if isinstance(force_block, dict) else None
+            if isinstance(force_obj, dict):
+                force_obj = _strip_computed_details_fields(force_obj)
+                nested = force_obj.get("details")
+                if isinstance(nested, dict):
+                    nested_out = _strip_computed_details_fields(nested)
+                    if nested_out is not nested:
+                        force_obj = dict(force_obj)
+                        force_obj["details"] = nested_out
             return loadout_hash, gear_names, mini_groups, mini_names, details, force_obj
 
         def _expand_items(gear_names: list[str], mini_names: list[str]):
@@ -1779,7 +2242,7 @@ def get_best_loadouts(
         # 1. Fetch Top Base Score Loadouts (canonical base seed rows)
         cursor = conn.execute(
             """
-            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM team_buff_loadouts
             WHERE song_name = ? AND team_buff = ?
             ORDER BY score DESC
@@ -1793,6 +2256,7 @@ def get_best_loadouts(
                 continue
             gear_data, minis_data = _expand_items(gear_names, mini_names)
             entry = {
+                "loadout_hash": loadout_hash,
                 "score": row["score"],
                 "fg_score": row["fg_score"],
                 "gear": gear_data,
@@ -1807,7 +2271,7 @@ def get_best_loadouts(
         # 2. Fetch Top ForceGreats Loadouts (paired base+fg scores)
         cursor = conn.execute(
             """
-            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM team_buff_fg_loadouts
             WHERE song_name = ? AND team_buff = ?
             ORDER BY fg_score DESC
@@ -1824,6 +2288,7 @@ def get_best_loadouts(
             entry = by_hash.get(loadout_hash)
             if entry is None:
                 entry = {
+                    "loadout_hash": loadout_hash,
                     "score": row["score"],
                     "fg_score": fg_score,
                     "gear": gear_data,

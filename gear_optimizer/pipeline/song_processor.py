@@ -792,6 +792,15 @@ def process_song_task(args) -> SongResultPayload:
         ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
         stage_timing["cpu_setup_sec"] = time.perf_counter() - _t_setup0
 
+        # Persist/load baseline candidates under the baseline TeamBuff tier for this run.
+        # Default config is auto mode => T5, but this must not be hardcoded.
+        try:
+            from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+
+            baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
+        except Exception:
+            baseline_team_buff = "T5"
+
         # --- DB KEY ---
         # HumanHitSim MUST NOT affect DB keying: HitSim is intended to explore/visualize
         # alternate timelines while accumulating results under the same song key.
@@ -815,6 +824,7 @@ def process_song_task(args) -> SongResultPayload:
             gears_by_name,
             minis_by_name,
             allow_fallback=False,
+            team_buff=str(baseline_team_buff or "T5"),
         )
         stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
@@ -1000,6 +1010,7 @@ def process_song_task(args) -> SongResultPayload:
                 gears_by_name,
                 minis_by_name,
                 build_details,
+                team_buff=str(baseline_team_buff or "T5"),
                 materialize_ga_details=False,
             )
 

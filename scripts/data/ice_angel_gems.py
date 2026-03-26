@@ -14,7 +14,7 @@ song_name = "Ice Angel (Easy) by Yooh"
 # Get top base score
 cursor = conn.execute(
     """
-    SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+    SELECT score, fg_score, details_json, force_details_json
     FROM team_buff_loadouts
     WHERE song_name = ?
     ORDER BY score DESC
@@ -28,7 +28,7 @@ top_base = cursor.fetchone()
 # Get top FG score
 cursor = conn.execute(
     """
-    SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+    SELECT score, fg_score, details_json, force_details_json
     FROM team_buff_loadouts
     WHERE song_name = ?
     ORDER BY fg_score DESC

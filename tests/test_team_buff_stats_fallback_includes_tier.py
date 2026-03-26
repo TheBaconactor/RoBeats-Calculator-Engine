@@ -12,6 +12,7 @@ def test_team_buff_stats_fallback_includes_tier_effect(monkeypatch, tmp_path: Pa
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
     from gear_optimizer.data.database import init_db, save_team_buff_loadouts_batch
+    from gear_optimizer.data.database import _unpack_stats_after_load
 
     init_db()
 
@@ -43,9 +44,9 @@ def test_team_buff_stats_fallback_includes_tier_effect(monkeypatch, tmp_path: Pa
         ).fetchone()
         assert row is not None
         details = json.loads(row[0])
-        stats = details.get("Stats") or {}
+        details = _unpack_stats_after_load(details) or {}
+        stats = (details.get("Stats") or {}) if isinstance(details, dict) else {}
         assert stats.get("Perfect Points") == 20
         assert stats.get("Rush") == 25
     finally:
         con.close()
-

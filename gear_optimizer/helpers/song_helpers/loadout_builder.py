@@ -189,6 +189,7 @@ def build_loadout_entries(
     gears_by_name,
     minis_by_name,
     build_details_fn,
+    team_buff="T5",
     db_loadouts_full=None,
     allow_db_query=True,
     existing_entries=None,
@@ -227,6 +228,7 @@ def build_loadout_entries(
                     limit=db_loadouts_limit,
                     gears_by_name=gears_by_name,
                     minis_by_name=minis_by_name,
+                    team_buff=str(team_buff or "T5"),
                 )
             except Exception:
                 db_loadouts = []

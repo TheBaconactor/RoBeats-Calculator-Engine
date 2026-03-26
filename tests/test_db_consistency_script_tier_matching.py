@@ -27,7 +27,8 @@ def _seed_db(
             CREATE TABLE songs (
                 name TEXT PRIMARY KEY,
                 best_score INTEGER DEFAULT 0,
-                best_fg_score INTEGER DEFAULT 0
+                best_fg_score INTEGER DEFAULT 0,
+                last_updated REAL
             );
 
             CREATE TABLE team_buff_loadouts (
@@ -36,8 +37,11 @@ def _seed_db(
                 loadout_hash TEXT,
                 score INTEGER,
                 fg_score INTEGER DEFAULT 0,
-                gear_json TEXT,
-                details_json TEXT
+                gear_ids_blob BLOB,
+                minis_ids_blob BLOB,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL
             );
 
             CREATE TABLE team_buff_fg_loadouts (
@@ -45,42 +49,56 @@ def _seed_db(
                 team_buff TEXT,
                 loadout_hash TEXT,
                 score INTEGER,
-                fg_score INTEGER
+                fg_score INTEGER,
+                gear_ids_blob BLOB,
+                minis_ids_blob BLOB,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL
+            );
+
+            CREATE TABLE gear_name_encoding (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE mini_name_encoding (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
             );
             """
         )
 
         conn.execute(
-            "INSERT INTO songs (name, best_score, best_fg_score) VALUES (?, ?, ?)",
-            (song_name, int(songs_best), int(songs_best_fg)),
+            "INSERT INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
+            (song_name, int(songs_best), int(songs_best_fg), 0.0),
         )
 
-        gear_json = json.dumps(["G1", "G2", "G3"])
         details_json = json.dumps({"FT": 0, "FF": 0})
         rows = [
-            (song_name, "T5", "h_t5_1", int(t5_best), int(t5_best_fg), gear_json, details_json),
-            (song_name, "T5", "h_t5_2", int(t5_best - 10), int(t5_best_fg - 10), gear_json, details_json),
-            (song_name, "T1", "h_t1_1", int(t1_best), int(t1_best_fg), gear_json, details_json),
-            (song_name, "T1", "h_t1_2", int(t1_best - 10), int(t1_best_fg - 10), gear_json, details_json),
+            (song_name, "T5", "h_t5_1", int(t5_best), int(t5_best_fg), None, None, details_json, None, 0.0),
+            (song_name, "T5", "h_t5_2", int(t5_best - 10), int(t5_best_fg - 10), None, None, details_json, None, 0.0),
+            (song_name, "T1", "h_t1_1", int(t1_best), int(t1_best_fg), None, None, details_json, None, 0.0),
+            (song_name, "T1", "h_t1_2", int(t1_best - 10), int(t1_best_fg - 10), None, None, details_json, None, 0.0),
         ]
         conn.executemany(
             """
             INSERT INTO team_buff_loadouts
-            (song_name, team_buff, loadout_hash, score, fg_score, gear_json, details_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (song_name, team_buff, loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
 
         fg_rows = [
-            (song_name, "T5", "h_t5_1", int(t5_best), int(t5_best_fg)),
-            (song_name, "T1", "h_t1_1", int(t1_best), int(t1_best_fg)),
+            (song_name, "T5", "h_t5_1", int(t5_best), int(t5_best_fg), None, None, None, None, 0.0),
+            (song_name, "T1", "h_t1_1", int(t1_best), int(t1_best_fg), None, None, None, None, 0.0),
         ]
         conn.executemany(
             """
             INSERT INTO team_buff_fg_loadouts
-            (song_name, team_buff, loadout_hash, score, fg_score)
-            VALUES (?, ?, ?, ?, ?)
+            (song_name, team_buff, loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             fg_rows,
         )

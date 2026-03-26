@@ -10,6 +10,7 @@ Extension rule:
   and reuse these helpers from orchestrators to avoid duplicated save semantics.
 """
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -544,7 +545,51 @@ def build_persistence_entries(
     # PERF: FG HitSim per-window deltas depend on (FFR, FT, NonFever counts) + the song's simulated timing.
     _hitsim_fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
 
+    # Default: do not persist the derived per-window HitSim deltas. They are large and can
+    # be recomputed on demand via the DB manager.
+    persist_hitsim_deltas = str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    # Persist minimal HumanHitSim context so on-demand recomputation can reproduce
+    # the same simulated timing when HumanHitSim.Seed=0 (random-per-run).
+    #
+    # Encoded format (compact, JSON-friendly):
+    #   details["hs"] = [seed, apply_to_code, dist_code, great_mode_code]
+    # where:
+    #   apply_to_code: 0=FG, 1=ALL
+    #   dist_code: 0=uniform (only supported distribution today)
+    #   great_mode_code: 0=late, 1=early, 2=full
+    hitsim_ctx: list[int] | None = None
+    try:
+        meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+        if isinstance(meta0, dict) and meta0.get("HumanHitSimApplied"):
+            try:
+                seed0 = int(meta0.get("HumanHitSimSeed", 0) or 0)
+            except Exception:
+                seed0 = 0
+            if seed0 > 0:
+                apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+                apply_code = 1 if apply_to == "ALL" else 0
+                dist = str(meta0.get("HumanHitSimDistribution", "") or "").strip().lower() or "uniform"
+                dist_code = 0 if dist == "uniform" else 0
+                mode = str(meta0.get("HumanHitSimGreatMode", "") or "").strip().lower()
+                if mode == "early":
+                    mode_code = 1
+                elif mode == "full":
+                    mode_code = 2
+                else:
+                    mode_code = 0
+                hitsim_ctx = [int(seed0), int(apply_code), int(dist_code), int(mode_code)]
+    except Exception:
+        hitsim_ctx = None
+
     def _maybe_backfill_base_hitsim_deltas(details_obj: dict) -> dict:
+        if not persist_hitsim_deltas:
+            return details_obj
         if not (calc_song is not None and ref_arrays is not None and isinstance(details_obj, dict)):
             return details_obj
 
@@ -631,7 +676,14 @@ def build_persistence_entries(
         return tuple(int(v) for v in out)
 
     def _maybe_backfill_fg_hitsim_deltas(force_obj: dict, *, stats_obj: dict) -> dict:
-        if not (calc_song is not None and ref_arrays is not None and isinstance(force_obj, dict) and isinstance(stats_obj, dict)):
+        if not persist_hitsim_deltas:
+            return force_obj
+        if not (
+            calc_song is not None
+            and ref_arrays is not None
+            and isinstance(force_obj, dict)
+            and isinstance(stats_obj, dict)
+        ):
             return force_obj
 
         meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
@@ -748,6 +800,10 @@ def build_persistence_entries(
             fg_meta1.pop("hitsim_offset_delta_ms", None)
             details_with_meta["ForceGreats"] = fg_meta1
 
+        # Attach compact HumanHitSim reproduction context when available.
+        if hitsim_ctx and details_with_meta.get("hs") is None:
+            details_with_meta["hs"] = list(hitsim_ctx)
+
         force_out = _normalize_force_payload(force_obj) if isinstance(force_obj, dict) else force_obj
 
         persist_entries.append(
@@ -850,7 +906,8 @@ def build_persistence_entries(
             # If we're in a context that has the full HitSim inputs, ensure the base delta is present
             # even on this GA-candidates fallback path (used by native in-flight deferred posts).
             if (
-                calc_song is not None
+                persist_hitsim_deltas
+                and calc_song is not None
                 and ref_arrays is not None
                 and isinstance(eval_details, dict)
                 and eval_details.get("hitsim_offset_deltas_ms") is None
@@ -965,7 +1022,8 @@ def build_persistence_entries(
             # Frontend expects this present for *all* retained base rows (top51), not just top1.
             # Compute lazily for the final retained set so we don't do extra work for pruned rows.
             if (
-                calc_song is not None
+                persist_hitsim_deltas
+                and calc_song is not None
                 and ref_arrays is not None
                 and isinstance(details_obj, dict)
                 and details_obj.get("hitsim_offset_deltas_ms") is None
@@ -1013,7 +1071,8 @@ def build_persistence_entries(
             # Ensure FG per-window deltas are present for all retained rows that have a valid FG payload.
             # Store them on the persisted `force` payload (used by FG leaderboard rows + frontend).
             if (
-                calc_song is not None
+                persist_hitsim_deltas
+                and calc_song is not None
                 and ref_arrays is not None
                 and isinstance(details_obj, dict)
                 and isinstance(force_obj, dict)

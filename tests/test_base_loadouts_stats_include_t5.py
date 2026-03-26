@@ -12,6 +12,7 @@ def test_base_loadouts_stats_include_team_buff_t5(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
     from gear_optimizer.data.database import init_db, save_loadouts_batch
+    from gear_optimizer.data.database import _unpack_stats_after_load
 
     init_db()
 
@@ -42,7 +43,8 @@ def test_base_loadouts_stats_include_team_buff_t5(monkeypatch, tmp_path: Path):
         ).fetchone()
         assert row is not None
         details = json.loads(row[0])
-        stats = details.get("Stats") or {}
+        details = _unpack_stats_after_load(details) or {}
+        stats = (details.get("Stats") or {}) if isinstance(details, dict) else {}
         assert stats.get("Perfect Points") == 25
         assert stats.get("Rush") == 30
     finally:

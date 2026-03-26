@@ -68,14 +68,19 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatc
     conn = get_db_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT minis_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
-        ).fetchall()
-        assert len(rows) == 1
-        groups = json.loads(rows[0]["minis_json"])
-        assert groups == [["MiniA", "MiniB"]]
+        ).fetchone()
+        assert int(rows[0] or 0) == 1
     finally:
         conn.close()
+
+    # Decode via the canonical read API (supports compact BLOB storage).
+    from gear_optimizer.data.database import get_best_loadouts
+
+    decoded = get_best_loadouts(song, limit=10, team_buff="T5", db_path=db_path)
+    assert len(decoded) == 1
+    assert decoded[0].get("mini_groups") == [["MiniA", "MiniB"]]
 
 
 def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors(db_path, monkeypatch):
@@ -127,14 +132,18 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors
     conn = get_db_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT minis_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
-        ).fetchall()
-        assert len(rows) == 1
-        groups = json.loads(rows[0]["minis_json"])
-        assert groups == [["MiniA", "MiniB"]]
+        ).fetchone()
+        assert int(rows[0] or 0) == 1
     finally:
         conn.close()
+
+    from gear_optimizer.data.database import get_best_loadouts
+
+    decoded = get_best_loadouts(song, limit=10, team_buff="T5", db_path=db_path)
+    assert len(decoded) == 1
+    assert decoded[0].get("mini_groups") == [["MiniA", "MiniB"]]
 
 
 def test_songs_best_scores_and_fg_scores_update(db_path):
@@ -440,7 +449,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
                 "gear": gear,
                 "minis": minis,
                 "details": {"tag": "first"},
-                "force": {"score": 200, "ForceGreats": {"config": {"NonFever1": 1}}},
+                "force": {"score": 200, "tag": "first_force", "ForceGreats": {"config": {"NonFever1": 1}}},
             }
         ],
     )
@@ -453,7 +462,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert row0 is not None
         force0 = json.loads(row0["force_details_json"])
-        assert (force0.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
+        assert force0.get("tag") == "first_force"
     finally:
         conn.close()
 
@@ -468,7 +477,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
                 "details": {"tag": "second"},
                 "force": {
                     "score": 200,
-                    "ForceGreats": {"config": {"NonFever1": 1}, "hitsim_offset_deltas_ms": [37, 38]},
+                    "tag": "second_force",
+                    "ForceGreats": {"config": {"NonFever1": 1}},
                 },
             }
         ],
@@ -482,7 +492,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert row is not None
         force = json.loads(row["force_details_json"])
-        assert (force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") == [37, 38]
+        assert force.get("tag") == "second_force"
+        assert (force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
         assert (force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
 
         base_row = conn.execute(
@@ -491,7 +502,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert base_row is not None
         base_force = json.loads(base_row["force_details_json"])
-        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") == [37, 38]
+        assert base_force.get("tag") == "second_force"
+        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
         assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
     finally:
         conn.close()
@@ -499,6 +511,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
 
 def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, monkeypatch):
     monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: {})
+    from gear_optimizer.data.database import _unpack_stats_after_load
 
     song = "FG Gem Sync Song"
 
@@ -547,7 +560,7 @@ def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, 
         assert row["score"] == 100
         assert row["fg_score"] == 200
 
-        stored_details = json.loads(row["details_json"])
+        stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
         stored_force = json.loads(row["force_details_json"])
 
         assert stored_force["FT"] == 1
@@ -600,14 +613,20 @@ def test_base_row_conflict_updates_use_base_score_not_fg_score(db_path, monkeypa
     conn = get_db_connection(db_path)
     try:
         row = conn.execute(
-            "SELECT score, fg_score, gear_json, details_json, force_details_json "
+            "SELECT score, fg_score, gear_ids_blob, details_json, force_details_json "
             "FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash='CONST_HASH'",
             (song,),
         ).fetchone()
         assert row is not None
         assert int(row["score"]) == 200
         assert int(row["fg_score"]) == 300
-        assert json.loads(row["gear_json"]) == ["G_high"]
+        from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_list
+
+        maps = _load_piece_name_encoding_maps(conn, db_path=db_path)
+        gear_ids = _unpack_id_list(row["gear_ids_blob"])
+        gear_names = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids]
+        gear_names = [n for n in gear_names if n]
+        assert gear_names == ["G_high"]
         assert json.loads(row["details_json"]).get("tag") == "high_base"
         assert json.loads(row["force_details_json"]).get("score") == 300
     finally:
