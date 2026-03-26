@@ -37,6 +37,8 @@ demand (not persisted).
 The compact/default DB intentionally:
 - Persists only the baseline tier rows (usually `T5`).
 - Stores gear/minis via encoding tables + BLOB ID columns.
+- Repairs legacy compact upgrades in place on schema init by backfilling missing `gear_ids_blob` / `minis_ids_blob`
+  from older `gear_json` / `minis_json` payloads.
 
 Instead of querying SQLite directly, have your backend use `EvolutionDbManager`:
 
@@ -46,7 +48,8 @@ from gear_optimizer.data.db_manager import EvolutionDbManager
 db = EvolutionDbManager.from_env()
 
 # 1) Discover songs + ranks available in the DB
-catalog = db.get_song_catalog(team_buff=\"T5\", max_rank=51)
+#    (defaults to the resolved baseline tier for the current config)
+catalog = db.get_song_catalog(max_rank=51)
 
 # 2) View a specific row on-demand (tier score is computed on demand)
 row = db.get_leaderboard_entry(

@@ -1,4 +1,8 @@
+import json
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 
 def _entry(*, score: int, fg_score: int = 0) -> dict:
@@ -29,6 +33,76 @@ def _entry(*, score: int, fg_score: int = 0) -> dict:
     }
 
 
+def _seed_legacy_json_db(db_path: Path, *, user_version: int) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE songs (
+                name TEXT PRIMARY KEY,
+                best_score INTEGER DEFAULT 0,
+                best_fg_score INTEGER DEFAULT 0,
+                last_updated REAL
+            );
+
+            CREATE TABLE team_buff_loadouts (
+                song_name TEXT,
+                team_buff TEXT,
+                loadout_hash TEXT,
+                score INTEGER,
+                fg_score INTEGER DEFAULT 0,
+                gear_json TEXT,
+                minis_json TEXT,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL,
+                PRIMARY KEY (song_name, team_buff, loadout_hash)
+            );
+
+            CREATE TABLE team_buff_fg_loadouts (
+                song_name TEXT,
+                team_buff TEXT,
+                loadout_hash TEXT,
+                score INTEGER,
+                fg_score INTEGER,
+                gear_json TEXT,
+                minis_json TEXT,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL,
+                PRIMARY KEY (song_name, team_buff, loadout_hash)
+            );
+            """
+        )
+        conn.execute(f"PRAGMA user_version = {int(user_version)}")
+        conn.execute(
+            "INSERT INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
+            ("Legacy Song", 1234, 0, 0.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO team_buff_loadouts
+            (song_name, team_buff, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Legacy Song",
+                "T5",
+                "legacy_hash",
+                1234,
+                0,
+                json.dumps(["Hat A"]),
+                json.dumps([["Mini A", "Mini B"]]),
+                json.dumps({"tag": "legacy"}),
+                None,
+                0.0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_evolution_db_manager_from_env_uses_evolution_db_path(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.db_manager import EvolutionDbManager
 
@@ -55,6 +129,69 @@ def test_evolution_db_manager_from_env_include_overlay_wires_overlay_path(tmp_pa
     assert db.overlay_db_path == str(overlay)
 
 
+@pytest.mark.parametrize("user_version", [17, 18])
+def test_init_db_backfills_legacy_json_rows_to_compact_blobs(tmp_path: Path, monkeypatch, user_version: int):
+    from gear_optimizer.data.database import get_best_loadouts, init_db
+
+    db_path = tmp_path / f"legacy_v{user_version}.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    _seed_legacy_json_db(db_path, user_version=user_version)
+
+    init_db()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(team_buff_loadouts)").fetchall()}
+        assert "gear_ids_blob" in columns
+        assert "minis_ids_blob" in columns
+
+        row = conn.execute(
+            "SELECT gear_ids_blob, minis_ids_blob FROM team_buff_loadouts WHERE song_name = ? AND team_buff = ?",
+            ("Legacy Song", "T5"),
+        ).fetchone()
+        assert row is not None
+        assert row[0] is not None
+        assert row[1] is not None
+    finally:
+        conn.close()
+
+    rows = get_best_loadouts("Legacy Song", limit=5, team_buff="T5", allow_fallback=False, db_path=str(db_path))
+    assert len(rows) == 1
+    assert rows[0]["gear"] == ["Hat A"]
+    assert rows[0]["mini_groups"] == [["Mini A", "Mini B"]]
+
+
+def test_get_song_catalog_defaults_to_resolved_baseline_team_buff(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.database import init_db, save_loadouts_batch
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "baseline_t10.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T10"},
+        },
+    )
+    init_db()
+    save_loadouts_batch("Catalog Song", [_entry(score=4321)], team_buff="T10")
+
+    db = EvolutionDbManager.from_env()
+    catalog = db.get_song_catalog()
+
+    assert catalog["team_buff"] == "T10"
+    assert catalog["songs"] == [
+        {
+            "song_name": "Catalog Song",
+            "base_ranks": [1],
+            "fg_ranks": [],
+            "leaderboards": ["base"],
+        }
+    ]
+
+
 def test_save_loadouts_batch_persists_under_explicit_baseline_team_buff(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
 
@@ -76,4 +213,3 @@ def test_save_loadouts_batch_persists_under_explicit_baseline_team_buff(tmp_path
         assert int(row["score"]) == 1234
     finally:
         conn.close()
-

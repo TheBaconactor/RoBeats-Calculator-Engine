@@ -208,12 +208,12 @@ class EvolutionDbManager:
     def get_song_catalog(
         self,
         *,
-        team_buff: str = "T5",
+        team_buff: Optional[str] = None,
         max_rank: int = 51,
         limit_songs: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Return available songs + leaderboard availability for a baseline tier.
+        Return available songs + leaderboard availability for the resolved baseline tier.
 
         Output shape (JSON-friendly):
             {
@@ -224,7 +224,13 @@ class EvolutionDbManager:
               ]
             }
         """
-        team_buff = str(team_buff or "").strip().upper() or "T5"
+        resolved_team_buff = str(team_buff or "").strip().upper()
+        if not resolved_team_buff:
+            from ..core.config import load_config
+            from ..core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+            from ..core.utils import cfg_to_dict
+
+            resolved_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_to_dict(load_config()), default="T5")
         max_rank_i = max(1, int(max_rank))
         song_limit_i = int(limit_songs) if limit_songs is not None else None
 
@@ -235,7 +241,7 @@ class EvolutionDbManager:
             try:
                 rows = conn.execute(
                     "SELECT song_name, COUNT(*) AS cnt FROM team_buff_loadouts WHERE team_buff = ? GROUP BY song_name",
-                    (team_buff,),
+                    (resolved_team_buff,),
                 ).fetchall()
                 for r in rows or []:
                     if not r:
@@ -247,7 +253,7 @@ class EvolutionDbManager:
             try:
                 rows = conn.execute(
                     "SELECT song_name, COUNT(*) AS cnt FROM team_buff_fg_loadouts WHERE team_buff = ? GROUP BY song_name",
-                    (team_buff,),
+                    (resolved_team_buff,),
                 ).fetchall()
                 for r in rows or []:
                     if not r:
@@ -275,7 +281,7 @@ class EvolutionDbManager:
                 }
             )
 
-        return {"team_buff": team_buff, "songs": songs}
+        return {"team_buff": resolved_team_buff, "songs": songs}
 
     # ---------------------------------------------------------------------
     # Leaderboard views (on-demand compute)

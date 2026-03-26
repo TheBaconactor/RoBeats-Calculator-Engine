@@ -41,6 +41,10 @@ The default `evolution.db` workflow persists only the **baseline** TeamBuff tier
 Derived tiers (`NONE/T1/T10/T15`) are recomputed on demand (not persisted).
 See: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`.
 
+Legacy DB note:
+- Pre-compact DBs that still store `gear_json` / `minis_json` are upgraded in place on schema init.
+- Current reads use the compact BLOB columns after that repair/backfill step.
+
 ## Queueing
 
 The manager exposes a small shared executor for cheap request queueing:
@@ -106,12 +110,14 @@ out = db.compute_team_buff_tier_leaderboards_on_demand(
 This replaces ad-hoc SQL for basic discovery.
 
 ```python
-catalog = db.get_song_catalog(team_buff="T5", max_rank=51)
+catalog = db.get_song_catalog(max_rank=51)
 ```
 
 Returns a JSON-friendly dict:
 
 - `team_buff`: the baseline tier queried
+  - when omitted, this is resolved from the current config (`AutoSelectBuffAndColor` => `T5`, otherwise the configured
+    `TeamContributionBuffConstant.TeamBuff`)
 - `songs`: list of:
   - `song_name`
   - `leaderboards`: `["base"]`, `["fg"]`, or `["base","fg"]`

@@ -12,14 +12,12 @@ have gaps, which makes "new songs" / top51 outputs appear to lack the delta.
 
 What this script does
 ---------------------
-- Scans the canonical frontend views:
-  - `frontend_fg_top51_by_song_tier`
-  - `frontend_base_top51_by_song_tier`
+- Scans the persisted canonical tables:
+  - `team_buff_loadouts`
+  - `team_buff_fg_loadouts`
 - For any row missing the delta field, it re-reads the song chart from `Data/`,
   applies HumanHitSim deterministically (by default), recomputes the delta, and
-  writes it back into the underlying tier tables:
-  - `team_buff_fg_loadouts`
-  - `team_buff_loadouts`
+  writes it back into the persisted rows.
 
 Notes / limitations
 -------------------
@@ -220,10 +218,11 @@ def _iter_target_rows(conn: sqlite3.Connection, *, song_filter: str = "") -> tup
     base_rows: list[dict] = []
     fg_rows: list[dict] = []
 
-    # Base top51: fill missing top-level details delta; also fill missing force delta when force present.
+    # Base leaderboard rows: fill missing top-level details delta; also fill missing force delta when force present.
     for r in conn.execute(
         "SELECT song_name, team_buff, loadout_hash, details_json, force_details_json "
-        "FROM frontend_base_top51_by_song_tier"
+        "FROM team_buff_loadouts "
+        "ORDER BY song_name, team_buff, score DESC, timestamp DESC"
     ):
         song_name = str(r["song_name"] or "").strip()
         if not song_name:
@@ -261,10 +260,11 @@ def _iter_target_rows(conn: sqlite3.Connection, *, song_filter: str = "") -> tup
             }
         )
 
-    # FG top51: fill missing force delta (and mirror into details.ForceGreats).
+    # FG leaderboard rows: fill missing force delta (and mirror into details.ForceGreats).
     for r in conn.execute(
         "SELECT song_name, team_buff, loadout_hash, details_json, force_details_json "
-        "FROM frontend_fg_top51_by_song_tier"
+        "FROM team_buff_fg_loadouts "
+        "ORDER BY song_name, team_buff, fg_score DESC, timestamp DESC"
     ):
         song_name = str(r["song_name"] or "").strip()
         if not song_name:
@@ -331,7 +331,7 @@ def _resolve_song_paths(*, paths: dict, wanted: set[str]) -> dict[str, str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backfill missing ForceGreats/base HitSim offset deltas in top51 views.")
+    ap = argparse.ArgumentParser(description="Backfill missing ForceGreats/base HitSim offset deltas in persisted rows.")
     ap.add_argument("--db", type=str, default="", help="SQLite DB path (default: EVOLUTION_DB_PATH / ./evolution.db).")
     ap.add_argument(
         "--seed",
@@ -371,6 +371,17 @@ def main() -> int:
         print("--seed must be non-zero (the DB does not persist per-row random seeds).")
         return 2
 
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    t0 = time.perf_counter()
+    base_rows, fg_rows = _iter_target_rows(conn, song_filter=str(args.song_filter or ""))
+
+    if not base_rows and not fg_rows:
+        print("No missing offset delta fields detected in persisted loadout tables.")
+        conn.close()
+        return 0
+
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
     cfg_dict.setdefault("HumanHitSim", {})
@@ -384,22 +395,12 @@ def main() -> int:
     stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
     ref_arrays = _preload_ref_arrays(stats_table)
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-
-    t0 = time.perf_counter()
-    base_rows, fg_rows = _iter_target_rows(conn, song_filter=str(args.song_filter or ""))
-
-    if not base_rows and not fg_rows:
-        print("No missing offset delta fields detected in top51 views.")
-        return 0
-
     wanted_songs = {e["key"].song_name for e in base_rows} | {e["key"].song_name for e in fg_rows}
     if args.limit_songs and int(args.limit_songs) > 0:
         wanted_songs = set(sorted(wanted_songs)[: int(args.limit_songs)])
 
     print(f"DB: {db_path}")
-    print(f"Songs with missing delta (top51 views): {len(wanted_songs):,}")
+    print(f"Songs with missing delta (persisted rows): {len(wanted_songs):,}")
     print(f"  base rows needing backfill: {len(base_rows):,}")
     print(f"  fg rows needing backfill:   {len(fg_rows):,}")
 

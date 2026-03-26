@@ -19,6 +19,8 @@ Default persistence behavior (`evolution.db`):
 `EVOLUTION_DB_PATH` always overrides the resolved DB path for the current process.
 
 The schema below describes the canonical tables. The optimizer only writes baseline-tier rows into the tiered tables.
+When upgrading an older DB that still stores `gear_json` / `minis_json`, schema init backfills the compact BLOB columns
+in place so current readers can decode those rows without a separate conversion step.
 
 ## Schema Definitions
 
@@ -184,7 +186,7 @@ from gear_optimizer.data.db_manager import EvolutionDbManager
 
 db = EvolutionDbManager.from_env()
 
-catalog = db.get_song_catalog(team_buff="T5", max_rank=51)
+catalog = db.get_song_catalog(max_rank=51)
 
 row = db.get_leaderboard_entry(
     "Rainshower (Easy) by Silentroom",
