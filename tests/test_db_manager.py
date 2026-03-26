@@ -213,3 +213,98 @@ def test_save_loadouts_batch_persists_under_explicit_baseline_team_buff(tmp_path
         assert int(row["score"]) == 1234
     finally:
         conn.close()
+
+
+def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_baseline(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.database import init_db, save_loadouts_batch
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "compact_t10.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+    save_loadouts_batch("OnDemand Song", [_entry(score=1234)], team_buff="T10")
+
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T10", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+
+    captured: dict[str, object] = {}
+
+    def fake_compute(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
+        captured["entries"] = list(entries)
+        captured["cfg_dict"] = dict(cfg_dict)
+        captured["tiers"] = tuple(tiers)
+        captured["target_team_color_override"] = target_team_color_override
+        return {"tiers": {"T10": {"base_top51": [{"score": 1234, "fg_score": 1234}]}}}
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        fake_compute,
+    )
+
+    db = EvolutionDbManager.from_env()
+    out = db.compute_team_buff_tier_leaderboards_on_demand("OnDemand Song", song_file="dummy.txt", tiers=("T10",))
+
+    assert captured["entries"]
+    assert captured["tiers"] == ("T10",)
+    assert out["tiers"]["T10"]["base_top51"][0]["score"] == 1234
+
+
+def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.database import init_db, save_loadouts_batch
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "compact_t10.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+    save_loadouts_batch("Leaderboard Song", [_entry(score=2222)], team_buff="T10")
+
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T10", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+
+    captured: dict[str, object] = {}
+
+    def fake_build(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
+        captured["entries"] = list(entries)
+        captured["tiers"] = tuple(tiers)
+        return {"T10": [{"score": 2222, "fg_score": 2222}]}
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
+        fake_build,
+    )
+
+    db = EvolutionDbManager.from_env()
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
+
+    out = db.get_leaderboard_entry("Leaderboard Song", tier="T10", leaderboard="base", rank=1)
+
+    assert captured["entries"]
+    assert captured["tiers"] == ("T10",)
+    assert out is not None
+    assert out["song_name"] == "Leaderboard Song"
+    assert out["tier"] == "T10"
+    assert out["score"] == 2222
