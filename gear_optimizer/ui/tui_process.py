@@ -9,8 +9,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from gear_optimizer.core.config import load_config
 from gear_optimizer.data.database import get_best_loadouts, get_song_counters
 from gear_optimizer.ui.progress_ipc import SharedProgress
+from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -167,7 +169,14 @@ def _db_best_block(song_label: str) -> list[str]:
     if not label:
         return ["\x1b[91m[DB]\x1b[0m No current song yet."]
     try:
-        rows = get_best_loadouts(label, limit=3, gears_by_name=None, minis_by_name=None, team_buff="T5")
+        baseline_team_buff = resolve_baseline_team_buff_from_cfg(load_config(), default="T5")
+        rows = get_best_loadouts(
+            label,
+            limit=3,
+            gears_by_name=None,
+            minis_by_name=None,
+            team_buff=baseline_team_buff,
+        )
     except Exception as exc:
         return [f"\x1b[91m[DB]\x1b[0m Error: {type(exc).__name__}: {exc}"]
     if not rows:
