@@ -1343,13 +1343,22 @@ def save_loadouts_batch(
             continue
         score = _coerce_int(entry.get("score", 0))
         fg_score = _coerce_int(entry.get("fg_score", 0))
+        fg_base_score = score
+        try:
+            raw_fg_base = entry.get("fg_base_score")
+        except Exception:
+            raw_fg_base = None
+        if raw_fg_base is not None:
+            fg_base_score = _coerce_int(raw_fg_base)
+            if fg_base_score <= 0:
+                fg_base_score = score
         force_data = entry.get("force")
         if fg_score <= 0 and force_data is not None:
             fg_score = _fg_score_from_force(force_data)
 
         if best_score_max is None or score > best_score_max:
             best_score_max = score
-        if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
+        if force_data is not None and fg_score > fg_base_score and (best_fg_max is None or fg_score > best_fg_max):
             best_fg_max = fg_score
 
     resolved_db_path = str(db_path or get_evolution_db_path())
@@ -1440,6 +1449,7 @@ def save_team_buff_loadouts_batch(
     _t0 = time.perf_counter()
 
     minis_by_name = get_minis_by_name_cached()
+    gears_by_name = get_gears_by_name_cached()
 
     def _coerce_int(v: Any) -> int:
         try:
@@ -1677,6 +1687,113 @@ def save_team_buff_loadouts_batch(
 
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
+    def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
+        if gear_names_local:
+            if not isinstance(gears_by_name, dict) or not gears_by_name:
+                return False
+            if any((n and n not in gears_by_name) for n in gear_names_local):
+                return False
+        if mini_names_local:
+            if not isinstance(minis_by_name, dict) or not minis_by_name:
+                return False
+            if any((n and n not in minis_by_name) for n in mini_names_local):
+                return False
+        return True
+
+    def _recompute_stats_in_details_for_persistence(
+        details_obj: Any,
+        *,
+        gear_names_local: list[str],
+        mini_names_local: list[str],
+        team_color: str,
+    ) -> dict:
+        """
+        Recompute `details["Stats"]` deterministically from:
+        - canonical representative gear + mini names
+        - persisted gem counts (GemCounts + FT/FF)
+        - TeamBuff tier effect for correct frontend display
+
+        This prevents persisting:
+        - mini-variant off-element drift (equivalence-group representatives),
+        - config-tainted Stats snapshots that don't match legacy DB semantics.
+        """
+        if not isinstance(details_obj, dict):
+            details_obj = {}
+
+        try:
+            from gear_optimizer.core.stats_calculator import compute_full_stats
+        except Exception:
+            return details_obj
+
+        # Base stats for persistence: TeamBuff only (no user-config gems).
+        base_stats = {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 0,
+        }
+
+        buff_tier = str(team_buff or "").strip().upper()
+        buff_color = str(team_color or "").strip()
+        if not buff_color:
+            buff_color = str(
+                details_obj.get("PrimaryColor")
+                or details_obj.get("Primary Color")
+                or details_obj.get("SelectedElement")
+                or details_obj.get("Selected Element")
+                or ""
+            ).strip()
+
+        buff_tiers = {
+            "T1": {"PP": 25, "Elem": 35},
+            "T5": {"PP": 25, "Elem": 30},
+            "T10": {"PP": 20, "Elem": 25},
+            "T15": {"PP": 15, "Elem": 20},
+            "NONE": {"PP": 0, "Elem": 0},
+        }
+        if buff_tier in buff_tiers:
+            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(buff_tiers[buff_tier]["PP"])
+            elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
+            valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
+            if valid_color_key:
+                base_stats[valid_color_key] = int(base_stats.get(valid_color_key, 0) or 0) + int(
+                    buff_tiers[buff_tier]["Elem"]
+                )
+
+        gem_counts = details_obj.get("GemCounts")
+        if isinstance(gem_counts, dict):
+            gem_counts = dict(gem_counts)
+        else:
+            gem_counts = {}
+        gem_counts["Fever Time"] = int(details_obj.get("FT", 0) or 0)
+        gem_counts["Fever Fill Rate"] = int(details_obj.get("FF", 0) or 0)
+
+        selected_element = details_obj.get("SelectedElement") or details_obj.get("Selected Element") or ""
+        selected_element = str(selected_element or "").strip()
+
+        computed = compute_full_stats(
+            gear_names_local,
+            mini_names_local,
+            gem_counts,
+            selected_element,
+            gears_by_name if isinstance(gears_by_name, dict) else {},
+            minis_by_name if isinstance(minis_by_name, dict) else {},
+            base_stats,
+        )
+        if not isinstance(computed, dict) or not computed:
+            return details_obj
+
+        out = dict(details_obj)
+        out.pop("st", None)  # Always repack from Stats at persistence time.
+        out["Stats"] = computed
+        return out
+
     own_conn = conn is None
     if conn is None:
         resolved_db_path = str(db_path or get_evolution_db_path())
@@ -1753,6 +1870,15 @@ def save_team_buff_loadouts_batch(
         for i, entry in enumerate(deduplicated_entries):
             score = _coerce_int(entry.get("score", 0))
             fg_score = _coerce_int(entry.get("fg_score", 0))
+            fg_base_score = score
+            try:
+                raw_fg_base = entry.get("fg_base_score")
+            except Exception:
+                raw_fg_base = None
+            if raw_fg_base is not None:
+                fg_base_score = _coerce_int(raw_fg_base)
+                if fg_base_score <= 0:
+                    fg_base_score = score
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
@@ -1777,20 +1903,6 @@ def save_team_buff_loadouts_batch(
                         details_out["SelectedElement"] = sel_color_eff
                     details = details_out
 
-            # Defensive: ensure Stats are populated in details
-            # If Stats is missing or empty, compute it from loadout components
-            current_stats = details.get("Stats") if isinstance(details, dict) else None
-            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
-                # TeamBuff tier tables must include their tier effect in Stats for correct frontend display.
-                details = _ensure_stats_in_details(
-                    details,
-                    gear,
-                    minis,
-                    minis_by_name,
-                    team_buff=team_buff,
-                    team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
-                )
-
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
 
@@ -1809,6 +1921,8 @@ def save_team_buff_loadouts_batch(
                     s_color,
                     sel_color,
                 )
+                # Legacy DB behavior: when a variant group appears multiple times (two equipped minis share the
+                # same signature), rotate representatives so slots display distinct minis when possible.
                 mini_names = representative_mini_names(groups)
             else:
                 warn_fallback(
@@ -1819,6 +1933,51 @@ def save_team_buff_loadouts_batch(
                 )
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
                 groups = [[n] for n in mini_names]
+
+            # Canonicalize persisted Stats:
+            # - Use representative mini names for equivalence groups (legacy DB behavior)
+            # - Avoid persisting config-tainted Stats snapshots (ElementalGems/UserInputStatsGems)
+            # - Preserve unknown-gear/minis cases (tests/tools may use synthetic names)
+            details_unpacked = _unpack_stats_after_load(details) if isinstance(details, dict) else details
+            current_stats = details_unpacked.get("Stats") if isinstance(details_unpacked, dict) else None
+            has_stats = isinstance(current_stats, dict) and len(current_stats) > 0
+            can_recompute = (eff is not None) and _can_recompute_stats_for_persistence(gear_names, mini_names)
+            if not has_stats:
+                # Defensive: never persist empty Stats.
+                if can_recompute:
+                    details = _recompute_stats_in_details_for_persistence(
+                        details_unpacked,
+                        gear_names_local=gear_names,
+                        mini_names_local=mini_names,
+                        team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                    )
+                else:
+                    details = _ensure_stats_in_details(
+                        details_unpacked,
+                        gear,
+                        minis,
+                        minis_by_name,
+                        team_buff=team_buff,
+                        team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                    )
+            elif can_recompute:
+                details = _recompute_stats_in_details_for_persistence(
+                    details_unpacked,
+                    gear_names_local=gear_names,
+                    mini_names_local=mini_names,
+                    team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                )
+            else:
+                details = details_unpacked
+
+            if (
+                isinstance(details, dict)
+                and isinstance(details.get("Stats"), dict)
+                and details.get("Stats")
+                and details.get("st") is not None
+            ):
+                details = dict(details)
+                details.pop("st", None)
 
             gear_ids_blob = _encode_gear_names_to_blob(gear_names) or None
             minis_ids_blob = _encode_mini_groups_to_blob(groups) or None
@@ -1842,8 +2001,38 @@ def save_team_buff_loadouts_batch(
                 )
             )
 
-            if force_data is not None and fg_score > score:
+            if force_data is not None and fg_score > fg_base_score:
                 fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
+                if isinstance(fg_details, dict) and fg_details:
+                    fg_unpacked = _unpack_stats_after_load(fg_details)
+                    fg_stats = fg_unpacked.get("Stats") if isinstance(fg_unpacked, dict) else None
+                    fg_has_stats = isinstance(fg_stats, dict) and len(fg_stats) > 0
+                    if can_recompute:
+                        fg_details = _recompute_stats_in_details_for_persistence(
+                            fg_unpacked,
+                            gear_names_local=gear_names,
+                            mini_names_local=mini_names,
+                            team_color=str(fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or "").strip(),
+                        )
+                    elif not fg_has_stats:
+                        fg_details = _ensure_stats_in_details(
+                            fg_unpacked,
+                            gear,
+                            minis,
+                            minis_by_name,
+                            team_buff=team_buff,
+                            team_color=str(fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or "").strip(),
+                        )
+                    else:
+                        fg_details = fg_unpacked
+                if (
+                    isinstance(fg_details, dict)
+                    and isinstance(fg_details.get("Stats"), dict)
+                    and fg_details.get("Stats")
+                    and fg_details.get("st") is not None
+                ):
+                    fg_details = dict(fg_details)
+                    fg_details.pop("st", None)
                 fg_details_storage = (
                     _pack_stats_for_storage(_strip_computed_details_fields(fg_details))
                     if isinstance(fg_details, dict) and fg_details
@@ -1855,7 +2044,7 @@ def save_team_buff_loadouts_batch(
                         song_name,
                         team_buff,
                         loadout_hash,
-                        score,
+                        fg_base_score,
                         fg_score,
                         gear_ids_blob,
                         minis_ids_blob,

@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.core.team_buff import normalize_team_buff
+from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.data.database import (
     _load_piece_name_encoding_maps,
     _pack_stats_for_storage,
@@ -100,8 +101,7 @@ def main():
                 if g
             ]
             mini_groups = [[n for n in g if n] for g in mini_groups if g]
-            # Extract first name from each group (representative)
-            mini_names = [item[0] for item in mini_groups if isinstance(item, list) and item]
+            mini_names = representative_mini_names(mini_groups)
 
             gem_counts = dict(details.get("GemCounts", {}) or {})
             # DB stores FT/FF gem allocations at the top level (not inside GemCounts).

@@ -538,7 +538,9 @@ def build_persistence_entries(
     from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 
     persist_entries = []
-    seen_hashes: set[str] = set()
+    # Deduplicate by loadout hash but prefer the best base score and best FG payload when
+    # duplicates occur (e.g., top1 + union entries, best_fg fallback + union entries).
+    entry_index_by_hash: dict[str, int] = {}
     # PERF: Base HitSim per-window deltas depend only on (FFR, FT) + the song's simulated timing
     # (HumanHitSim.ApplyTo=ALL). Cache per (FFR, FT) stat pair.
     _hitsim_base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
@@ -777,12 +779,17 @@ def build_persistence_entries(
             # Fallback: best-effort stable-ish signature
             return str((tuple(gear_items or []), tuple(mini_items or [])))
 
-    def _append_entry(score_val, gear_items, mini_items, details_obj, fg_score_val=0, force_obj=None):
-        # Avoid emitting duplicates (we may include top1/best_fg + retained union entries).
+    def _append_entry(
+        score_val,
+        gear_items,
+        mini_items,
+        details_obj,
+        fg_score_val=0,
+        force_obj=None,
+        *,
+        fg_base_score_val=None,
+    ):
         h = _loadout_hash(gear_items, mini_items)
-        if h in seen_hashes:
-            return
-        seen_hashes.add(h)
 
         # Extract attempt metadata from details for tagging
         attempt_lifetime = details_obj.get("attempt_lifetime", 0) if details_obj else 0
@@ -806,16 +813,86 @@ def build_persistence_entries(
 
         force_out = _normalize_force_payload(force_obj) if isinstance(force_obj, dict) else force_obj
 
-        persist_entries.append(
-            {
-                "score": score_val or 0,
-                "fg_score": fg_score_val or 0,
-                "gear": names_list(gear_items),
-                "minis": names_list(mini_items),
-                "details": details_with_meta,
-                "force": force_out,
-            }
-        )
+        new_entry = {
+            "score": score_val or 0,
+            "fg_score": fg_score_val or 0,
+            "gear": names_list(gear_items),
+            "minis": names_list(mini_items),
+            "details": details_with_meta,
+            "force": force_out,
+        }
+        # Preserve the base-score context for the best-FG payload when available.
+        # This enables FG leaderboard semantics (`fg_score > fg_base_score`) even when
+        # the best base score for the same hash is higher than the FG base context.
+        if fg_base_score_val is not None:
+            try:
+                new_entry["fg_base_score"] = int(fg_base_score_val or 0)
+            except Exception:
+                new_entry["fg_base_score"] = 0
+        elif force_out is not None and int(fg_score_val or 0) > 0:
+            try:
+                new_entry["fg_base_score"] = int(score_val or 0)
+            except Exception:
+                new_entry["fg_base_score"] = 0
+
+        # Merge duplicates by hash to preserve BOTH:
+        # - best base score + its details payload, AND
+        # - best FG score + its force payload.
+        #
+        # This prevents FG-allocation details from accidentally replacing base-optimal
+        # details when the same hash is emitted multiple times in different roles.
+        idx = entry_index_by_hash.get(h)
+        if idx is None:
+            persist_entries.append(new_entry)
+            entry_index_by_hash[h] = len(persist_entries) - 1
+            return
+
+        existing = persist_entries[idx]
+        if not isinstance(existing, dict):
+            persist_entries[idx] = new_entry
+            return
+
+        try:
+            existing_score = int(existing.get("score", 0) or 0)
+        except Exception:
+            existing_score = 0
+        try:
+            new_score_i = int(new_entry.get("score", 0) or 0)
+        except Exception:
+            new_score_i = 0
+
+        if new_score_i > existing_score:
+            existing["score"] = new_score_i
+            existing["gear"] = new_entry.get("gear", existing.get("gear"))
+            existing["minis"] = new_entry.get("minis", existing.get("minis"))
+            existing["details"] = new_entry.get("details", existing.get("details"))
+        elif new_score_i == existing_score:
+            # Fill missing details payload on ties (common when GA details are materialized lazily).
+            if not existing.get("details") and new_entry.get("details"):
+                existing["details"] = new_entry["details"]
+
+        try:
+            existing_fg = int(existing.get("fg_score", 0) or 0)
+        except Exception:
+            existing_fg = 0
+        try:
+            new_fg_i = int(new_entry.get("fg_score", 0) or 0)
+        except Exception:
+            new_fg_i = 0
+
+        if new_fg_i > existing_fg:
+            existing["fg_score"] = new_fg_i
+            existing["force"] = new_entry.get("force")
+            if "fg_base_score" in new_entry:
+                existing["fg_base_score"] = new_entry.get("fg_base_score")
+        elif new_fg_i == existing_fg:
+            # Fill missing force payload on ties.
+            if existing.get("force") is None and new_entry.get("force") is not None:
+                existing["force"] = new_entry.get("force")
+                if "fg_base_score" in new_entry and "fg_base_score" not in existing:
+                    existing["fg_base_score"] = new_entry.get("fg_base_score")
+            elif "fg_base_score" in new_entry and "fg_base_score" not in existing:
+                existing["fg_base_score"] = new_entry.get("fg_base_score")
 
     # Top 1 (base) - store with its OWN fg_score and force data (if available)
     # This ensures the force_details_json matches the loadout gear
@@ -1091,6 +1168,7 @@ def build_persistence_entries(
                 details_obj,
                 fg_score_to_save,
                 force_obj,
+                fg_base_score_val=entry.get("fg_base_score") if isinstance(entry, dict) else None,
             )
 
     return persist_entries
