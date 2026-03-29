@@ -97,3 +97,14 @@ Verified locally (GPU):
   persisting the grouping arrays alongside song metadata for reuse across processes/runs.
 - The ceiling kernel is designed to be a deterministic upper envelope for fever membership under the modeled Perfect windows,
   not an expected-value estimator. Expected-value/Markov variants remain future work (see `docs/ANALYTICAL_HITSIM_SOLUTION.md`).
+
+### Follow-up: Exact DP reference + counterexample (2026-03-29)
+
+A reference-only exact DP was added to help validate and characterize the ceiling objective:
+
+- `gear_optimizer/solver/hitsim_ceiling_exact_dp_ref.py` implements an exact DP under a score-independent
+  "maximize total fever notes" objective with deterministic tie-breaks.
+- `tests/test_ceiling_hitsim_exact_dp_counterexample.py` contains a deterministic synthetic chart where the shipped greedy
+  ceiling kernel is not optimal under that objective (the DP finds a strictly higher total-fever signature).
+
+This does not change production behavior; the GPU ceiling timeline remains the greedy interval-propagation kernel.
