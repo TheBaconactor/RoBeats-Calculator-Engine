@@ -362,6 +362,58 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
 
 
+def _force_counts_to_fp_targets(
+    forced_counts: list[int],
+    *,
+    calc_song: dict,
+    ff_stat: int,
+    ref_arrays: dict,
+) -> list[int]:
+    """
+    Convert persisted forced-count configs back into the GPU finder's FP-target form.
+
+    Compact DB payloads persist `ForceGreats.config` as actual forced Great counts per
+    section, but the low-level GPU finder consumes fill-penalty targets (FP targets).
+    Replaying persisted counts directly into the GPU solver underestimates FG scores.
+    """
+    counts = [max(0, int(x)) for x in list(forced_counts or [])]
+    if not counts:
+        return []
+
+    try:
+        song_data = calc_song.get("song_data", {}) or {}
+        timestamps = song_data.get("timestamps")
+        total_notes = int(len(timestamps)) if timestamps is not None else 0
+    except Exception:
+        total_notes = 0
+
+    if total_notes <= 0:
+        try:
+            total_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Total Notes"), 0)
+        except Exception:
+            total_notes = 0
+
+    try:
+        long_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Long Notes"), 0)
+    except Exception:
+        long_notes = 0
+
+    try:
+        ff_factor = float(lookup_reference_py(int(ff_stat), ref_arrays["Fever Fill Rate"], TOTAL_ROWS))
+        raw_fill = max(0.0, float(total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)) * float(ff_factor)
+        base_notes = int(ceil(raw_fill))
+    except Exception:
+        return counts
+
+    fp_targets: list[int] = []
+    for forced in counts:
+        if forced <= 0:
+            fp_targets.append(0)
+            continue
+        fp_targets.append(max(0, int(ceil(raw_fill + (float(forced) * 0.5)) - base_notes)))
+    return fp_targets
+
+
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(str(v)) if v is not None else int(default)
@@ -731,6 +783,7 @@ def compute_team_buff_tier_leaderboards(
             fg_ff_stat = int(ff_idx)
             fg_cm_stat = _stats_get_int(stats_base, "Combo Multiplier", 0)
             fg_fm_stat = _stats_get_int(stats_base, "Fever Multiplier", 0)
+            fg_fp_targets = []
             if fg_counts:
                 fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
                 fg_stats = (
@@ -746,6 +799,12 @@ def compute_team_buff_tier_leaderboards(
                 fg_ff_stat = _stats_get_int(fg_stats, "Fever Fill Rate", 0)
                 fg_cm_stat = _stats_get_int(fg_stats, "Combo Multiplier", 0)
                 fg_fm_stat = _stats_get_int(fg_stats, "Fever Multiplier", 0)
+                fg_fp_targets = _force_counts_to_fp_targets(
+                    fg_counts,
+                    calc_song=group_song,
+                    ff_stat=int(fg_ff_stat),
+                    ref_arrays=ref_arrays,
+                )
 
             per_entry.append(
                 {
@@ -754,6 +813,7 @@ def compute_team_buff_tier_leaderboards(
                     "gear": gear,
                     "minis": minis,
                     "source_score": _safe_int(entry.get("score"), 0),
+                    "source_fg_base_score": _safe_int(entry.get("fg_base_score"), _safe_int(entry.get("score"), 0)),
                     "source_fg_score": _safe_int(entry.get("fg_score"), 0),
                     "base": {
                         "cm": float(cm_factor),
@@ -775,6 +835,7 @@ def compute_team_buff_tier_leaderboards(
                         "cm_stat": int(fg_cm_stat),
                         "fm_stat": int(fg_fm_stat),
                         "counts": fg_counts,
+                        "fp_targets": fg_fp_targets,
                         "config": (
                             (force_obj.get("ForceGreats", {}) or {}).get("config")
                             if isinstance(force_obj, dict)
@@ -845,7 +906,7 @@ def compute_team_buff_tier_leaderboards(
                 fg = e.get("fg")
                 if not isinstance(fg, dict):
                     continue
-                counts0 = fg.get("counts")
+                counts0 = fg.get("fp_targets")
                 if not isinstance(counts0, (list, tuple)) or not counts0:
                     continue
                 counts_t = tuple(int(x) for x in counts0)
@@ -972,6 +1033,9 @@ def compute_team_buff_tier_leaderboards(
                 if fg_scores_for_tier is not None and i < int(len(fg_scores_for_tier)):
                     fg_score = int(fg_scores_for_tier[i] or 0)
                 fg = e.get("fg")
+                fg_base_compare_score = int(e.get("source_fg_base_score") or 0)
+                if fg_base_compare_score <= 0:
+                    fg_base_compare_score = int(base_score)
 
                 out_row = {
                     "loadout_hash": e.get("loadout_hash") or "",
@@ -984,15 +1048,17 @@ def compute_team_buff_tier_leaderboards(
                 }
                 base_ranked.append(out_row)
 
-                if isinstance(fg, dict) and int(fg_score) > int(base_score):
+                if isinstance(fg, dict) and int(fg_score) > int(fg_base_compare_score):
                     fg_ranked.append(
                         {
                             "loadout_hash": e.get("loadout_hash") or "",
                             "gear": e.get("gear") or [],
                             "minis": e.get("minis") or [],
                             "score": int(base_score),
+                            "fg_base_score": int(fg_base_compare_score),
                             "fg_score": int(fg_score),
                             "source_score": int(e.get("source_score") or 0),
+                            "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
                             "source_fg_score": int(e.get("source_fg_score") or 0),
                             "force_config": fg.get("config"),
                         }
@@ -1113,6 +1179,7 @@ def build_team_buff_tier_db_batches(
 
         base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
+        fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
 
         for r in base_top:
             if not isinstance(r, dict):
@@ -1132,6 +1199,7 @@ def build_team_buff_tier_db_batches(
                 tuple(sorted(_representative_mini_names_from_any(r.get("minis")))),
             )
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
+            fg_base_score_by_key[k] = _safe_int(r.get("fg_base_score"), 0)
             if k not in base_score_by_key:
                 base_score_by_key[k] = _safe_int(r.get("score"), 0)
 
@@ -1144,6 +1212,7 @@ def build_team_buff_tier_db_batches(
 
             score_out = int(base_score_by_key.get(k, 0) or 0)
             fg_score_out = int(fg_score_by_key.get(k, 0) or 0)
+            fg_base_score_out = int(fg_base_score_by_key.get(k, 0) or 0)
 
             # Keep payloads internally consistent: adjust Stats + FG score fields for this tier.
             details_base = orig.get("details") or {}
@@ -1293,6 +1362,7 @@ def build_team_buff_tier_db_batches(
                 {
                     "score": score_out,
                     "fg_score": fg_score_out,
+                    "fg_base_score": fg_base_score_out,
                     "gear": _flat_item_names(orig.get("gear")),
                     "minis": _representative_mini_names_from_any(orig.get("minis")),
                     "details": details_out,

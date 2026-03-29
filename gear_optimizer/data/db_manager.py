@@ -366,7 +366,19 @@ class EvolutionDbManager:
             return None
 
         if lb == "fg":
-            rows = [r for r in rows if int(r.get("fg_score", 0) or 0) > int(r.get("score", 0) or 0)]
+            def _fg_compare_score(row: dict) -> int:
+                try:
+                    fg_base_score = int(row.get("fg_base_score", 0) or 0)
+                except Exception:
+                    fg_base_score = 0
+                if fg_base_score > 0:
+                    return fg_base_score
+                try:
+                    return int(row.get("score", 0) or 0)
+                except Exception:
+                    return 0
+
+            rows = [r for r in rows if int(r.get("fg_score", 0) or 0) > int(_fg_compare_score(r))]
             rows.sort(key=lambda r: int(r.get("fg_score", 0) or 0), reverse=True)
         else:
             rows.sort(key=lambda r: int(r.get("score", 0) or 0), reverse=True)

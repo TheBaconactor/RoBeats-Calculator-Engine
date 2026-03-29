@@ -308,3 +308,65 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     assert out["song_name"] == "Leaderboard Song"
     assert out["tier"] == "T10"
     assert out["score"] == 2222
+
+
+def test_db_manager_get_leaderboard_entry_uses_fg_base_score_context(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "leaderboard_ctx.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
+    monkeypatch.setattr(
+        EvolutionDbManager,
+        "get_best_loadouts",
+        lambda self, _song_name, **kwargs: [{"score": 100, "fg_score": 95}],
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
+        lambda **kwargs: {
+            "T5": [
+                {
+                    "score": 100,
+                    "fg_base_score": 90,
+                    "fg_score": 95,
+                    "gear": [],
+                    "minis": [],
+                    "details": {},
+                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                },
+                {
+                    "score": 110,
+                    "fg_base_score": 0,
+                    "fg_score": 105,
+                    "gear": [],
+                    "minis": [],
+                    "details": {},
+                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                },
+            ]
+        },
+    )
+
+    db = EvolutionDbManager.from_env()
+    out = db.get_leaderboard_entry("FG Context Song", tier="T5", leaderboard="fg", rank=1)
+
+    assert out is not None
+    assert out["song_name"] == "FG Context Song"
+    assert out["tier"] == "T5"
+    assert int(out["fg_score"] or 0) == 95
+    assert int(out["fg_base_score"] or 0) == 90
