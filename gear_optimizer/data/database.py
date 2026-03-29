@@ -30,6 +30,7 @@ from .loadout_equivalence import (
     get_gears_by_name_cached,
     canonical_minis_groups_from_names,
     representative_mini_names,
+    rotate_mini_groups_for_slot_display,
 )
 
 try:
@@ -1921,9 +1922,11 @@ def save_team_buff_loadouts_batch(
                     s_color,
                     sel_color,
                 )
-                # Legacy DB behavior: when a variant group appears multiple times (two equipped minis share the
-                # same signature), rotate representatives so slots display distinct minis when possible.
-                mini_names = representative_mini_names(groups)
+                # Legacy mini-group representation contract:
+                # - choose distinct representatives across duplicate groups when possible, and
+                # - rotate each group so the representative becomes the first element (consumers often read `g[0]`).
+                groups = rotate_mini_groups_for_slot_display(groups)
+                mini_names = [g[0] for g in groups if g]
             else:
                 warn_fallback(
                     "db.minis_groups.singletons",

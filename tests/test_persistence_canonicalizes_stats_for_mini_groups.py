@@ -161,16 +161,31 @@ def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkey
     con = sqlite3.connect(db_path)
     try:
         row = con.execute(
-            "SELECT details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' LIMIT 1",
+            "SELECT details_json, minis_ids_blob FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' LIMIT 1",
             ("pytest_song",),
         ).fetchone()
         assert row is not None
         details = json.loads(row[0])
         details = db._unpack_stats_after_load(details) or {}
         stats = (details.get("Stats") or {}) if isinstance(details, dict) else {}
+
+        mini_id_groups = db._unpack_id_groups(row[1])
+        maps = db._load_piece_name_encoding_maps(con, db_path=str(db_path))
+        mini_groups = [
+            [str(maps.mini_id_to_name.get(int(i), "") or "") for i in (g or []) if int(i) > 0] for g in mini_id_groups
+        ]
+        mini_groups = [[n for n in g if n] for g in mini_groups if g]
     finally:
         con.close()
 
     # Expect the combination (BlackY + Heavy Metal Starlet), not (BlackY + BlackY).
     assert int(stats.get("Flow", 0) or 0) == 20
     assert int(stats.get("Vibe", 0) or 0) == 35
+
+    # Persisted mini groups should also encode the rotated representative order so consumers
+    # that display `group[0]` don't show duplicates.
+    assert ["Halloween Witch Teresa"] in mini_groups
+    dupe_groups = [g for g in mini_groups if set(g) == {"BlackY", "Heavy Metal Starlet"}]
+    assert len(dupe_groups) == 2
+    assert dupe_groups[0][0] != dupe_groups[1][0]
+    assert {dupe_groups[0][0], dupe_groups[1][0]} == {"BlackY", "Heavy Metal Starlet"}

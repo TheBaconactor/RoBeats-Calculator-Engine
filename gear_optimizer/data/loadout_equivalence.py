@@ -132,6 +132,47 @@ def representative_mini_names(groups: list[list[str]]) -> list[str]:
     return reps
 
 
+def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[str]]:
+    """
+    Rotate mini variant groups so the representative for each slot becomes the first element.
+
+    Legacy DB behavior:
+    - Minis are persisted as "variant groups" per equipped slot, e.g. [["A","B"], ["A","B"], ["C"]].
+    - Many consumers historically treated `group[0]` as the displayed/representative mini name.
+    - When a variant group repeats across slots, rotate representatives so the first elements are
+      distinct when possible (A/B, A/B, C -> A/B, B/A, C).
+
+    This preserves determinism while keeping the full variant set in each slot group.
+    """
+
+    if not groups:
+        return []
+
+    # Normalize shape: drop empties, strip strings, and keep per-group sorted unique names.
+    normalized: list[list[str]] = []
+    for g0 in groups:
+        if not g0:
+            continue
+        g = [str(x).strip() for x in g0 if x is not None]
+        g = [n for n in g if n]
+        if not g:
+            continue
+        normalized.append(sorted(set(g)))
+
+    if not normalized:
+        return []
+
+    reps = representative_mini_names(normalized)
+    rotated: list[list[str]] = []
+    for g, rep in zip(normalized, reps):
+        if rep and rep in g and len(g) > 1:
+            rotated.append([rep, *[n for n in g if n != rep]])
+        else:
+            rotated.append(g)
+
+    return rotated
+
+
 def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str]]:
     """Normalize minis groups for frontend display.
 
