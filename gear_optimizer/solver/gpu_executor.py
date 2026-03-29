@@ -4927,18 +4927,23 @@ class GpuExecutor:
         ga_stage_coords = payload.get("ga_stage_coords")
         if ga_stage_coords is not None and bool(kwargs_local.get("genome_stats_preuploaded")):
             try:
+                table_slot_i = int(payload.get("ga_stage_table_slot", song_slot) or song_slot)
+            except Exception:
+                table_slot_i = int(song_slot)
+            try:
                 from .taichi_gem import api as _taichi_api
 
-                table_slot = int(payload.get("ga_stage_table_slot", song_slot) or song_slot)
                 _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                    int(table_slot),
-                    np.asarray(ga_stage_coords, dtype=np.int32),
+                    table_slot=int(table_slot_i),
+                    coords=ga_stage_coords,
                     n_slots=9,
                 )
-            except Exception:
-                # Fallback to host upload path.
-                kwargs_local["genome_stats_preuploaded"] = False
-                kwargs_local["upload_genome_stats"] = True
+            except Exception as exc:
+                raise RuntimeError(
+                    "GA->FG staging failed inside executor "
+                    f"(table_slot={table_slot_i}, song_slot={song_slot}, "
+                    f"coords_shape={getattr(ga_stage_coords, 'shape', None)})"
+                ) from exc
 
         if bool(payload.get("fg_reset_before", True)):
             fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))

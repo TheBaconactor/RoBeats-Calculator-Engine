@@ -238,6 +238,53 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
     assert "FG Config: {'NonFever1': 0, 'NonFever2': 0}" not in out
 
 
+def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(capsys):
+    """
+    Regression test:
+    When the best FG variant comes from a DB-cached entry (i.e. `_is_ga` is False),
+    the console output should still print the ForceGreats loadout + config.
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    best_data = {"Score": 44590483, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    db_cached_fg_variant = {
+        "data": {
+            "Score": 44612857,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
+            "Selected Element": "Rush",
+            "ForceGreats": {"config": {"NonFever2": 2}, "final_score": 44612857},
+        },
+        "gear": ["G1"],
+        "minis": ["M1"],
+        "score": 44590483,
+        "fg_score": 44612857,
+        "_is_ga": False,
+    }
+
+    print_results(
+        "Test Song",
+        best_data=best_data,
+        best_gear=["G1"],
+        best_minis=["M1"],
+        current_gear_list=["G1"],
+        current_mini_list=["M1"],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[db_cached_fg_variant],
+        status_emit_fn=_noop_status_emit,
+        db_best_fg_score=44612857,
+        prev_record={"score": 44590483, "gear": ["G1"], "minis": ["M1"], "details": {"Score": 44590483}},
+    )
+
+    out = capsys.readouterr().out
+    assert "Best FG Score Found: 44612857" in out
+    assert "[Best Gear Loadout (ForceGreats)]" in out
+    assert "FG Config: {'NonFever2': 2}" in out
+
+
 def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys):
     """
     Regression test:

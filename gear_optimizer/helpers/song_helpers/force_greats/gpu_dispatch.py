@@ -980,12 +980,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 except Exception:
                     slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
                 _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                    int(slot0),
-                    np.asarray(ga_stage_coords, dtype=np.int32),
+                    table_slot=int(slot0),
+                    coords=ga_stage_coords,
                     n_slots=9,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(
+                    "Direct FG solve GA->FG staging failed "
+                    f"(table_slot={slot0}, song_slot={song_slot}, "
+                    f"coords_shape={getattr(ga_stage_coords, 'shape', None)})"
+                ) from exc
         return solve_force_greats_finder_gpu(*args, **kwargs)
 
     # ---------------------------------------------------------------------
@@ -2274,8 +2278,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     download_keep_count = None
 
             genome_stats_backing = None
+            genome_stats_arr = None
+
             if genome_stats_preuploaded:
-                genome_stats_arr = None
+                if coords_arr is None:
+                    raise RuntimeError("genome_stats_preuploaded=True but coords_arr is None")
+
                 genome_stats_uploaded = True
                 if gpu_client is not None:
                     ga_stage_coords_pending = coords_arr
@@ -2285,29 +2293,22 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         from ....solver.taichi_gem import api as _taichi_api
 
                         _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                            int(ga_candidate_table_slot),
-                            np.asarray(coords_arr, dtype=np.int32),
+                            table_slot=int(ga_candidate_table_slot),
+                            coords=coords_arr,
                             n_slots=9,
                         )
-                    except Exception as e:
-                        warn_fallback(
-                            "fg.ga_stage.host_upload",
-                            "GA->FG genome stats staging failed; falling back to host upload",
-                            exc=e,
-                            fatal=False,
-                        )
-                        genome_stats_preuploaded = False
-                        genome_stats_arr = None
-                        genome_stats_uploaded = False
-
-            if not genome_stats_preuploaded:
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "GA->FG genome stats staging failed in FG dispatcher "
+                            f"(table_slot={ga_candidate_table_slot}, coords_shape={getattr(coords_arr, 'shape', None)})"
+                        ) from exc
+            else:
                 # FAST PATH: Build numpy array directly instead of list[dict]
                 # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
                 # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
                 # However, when deferring apply in in-process GPU executor mode, this buffer would be reused
                 # across in-flight async requests (corrupting results). In that mode we allocate a dedicated
                 # array per group instead of fill+copy.
-                genome_stats_backing = None
                 if defer_group_apply and in_process and gpu_client is not None:
                     genome_stats_arr, genome_stats_backing = _checkout_deferred_genome_stats_buf(int(n_pending))
                 else:
@@ -2320,6 +2321,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         )
                         genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
                     genome_stats_arr = genome_stats_buf[:n_pending, :]
+
                 for i, bs in enumerate(pending):
                     genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
                     genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))

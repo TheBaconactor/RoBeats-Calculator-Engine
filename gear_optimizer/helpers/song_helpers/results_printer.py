@@ -118,20 +118,25 @@ def print_results(
             except Exception:
                 return False
 
-        # "Best FG Score Found" is the best FG-scored result we saw this run:
-        # - non-zero FG config
-        # - GA-origin only when `_is_ga` is present (default to True when absent).
+        # "Best FG Score Found" should reflect the best FG-scored result available for printing.
+        #
+        # Important: `fg_variants` can include DB-cached FG results (source="db") as well as
+        # GA-origin results (source="ga"). Filtering to GA-only can hide the actual persisted
+        # best FG loadout (and its config) even when `db_best_fg_score` is correctly printed.
         candidates: list[dict] = []
         for v in fg_variants or []:
             if not isinstance(v, dict):
-                continue
-            if not bool(v.get("_is_ga", True)):
                 continue
             if not _has_nonzero_fg_config(v):
                 continue
             candidates.append(v)
         if candidates:
-            best_fg_entry = max(candidates, key=_extract_final_score)
+            # Prefer GA-origin when scores tie (keeps "found this run" behavior when equivalent),
+            # but never at the expense of hiding a better DB-cached FG result.
+            def _fg_pick_key(entry: dict) -> tuple[int, int]:
+                return (_extract_final_score(entry), 1 if bool(entry.get("_is_ga", False)) else 0)
+
+            best_fg_entry = max(candidates, key=_fg_pick_key)
             best_fg_score_found = _extract_final_score(best_fg_entry)
 
     # When ForceGreats is deferred (or disabled by config), `fg_variants` can be empty even if the
