@@ -1225,18 +1225,39 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
     if not gem_counts:
         return {k: gs(k, 0) for k in keys}
 
-    # Quick check: would reversal make a key value negative?
-    # If so, stats is already pre-gem (GPU batch path returns "Stats": stats)
-    g_ov = gem_counts.get("Element", 0)
-    expected_reduction = g_ov * ELEMENTAL_GEM_SCALE  # ~469 for 67 gems
-    current_val = stats.get(selected_color, 0) if selected_color else 0
+    # Quick check: would reversal make any key negative?
+    # If so, stats is already pre-gem (some GPU batch paths return base stats directly).
+    try:
+        g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
+        g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
+        g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
+        g_ov = int(gem_counts.get("Element", 0) or 0)
 
-    # If subtracting overflow gems would make it negative, stats is already base stats
-    if current_val - expected_reduction < -50:  # Small tolerance for rounding
-        # Stats is already pre-gem; return a minimal dict for downstream solvers.
-        return {k: gs(k, 0) for k in keys}
+        deltas = {
+            "Perfect Points": int(g_pp) * int(GEM_SCALE_NORMAL),
+            "Chill": int(g_pp) * int(GEM_STAT_TO_ELEMENT_SCALE),
+            "Combo Multiplier": int(g_cm) * int(GEM_SCALE_NORMAL),
+            "Flow": int(g_cm) * int(GEM_STAT_TO_ELEMENT_SCALE),
+            "Fever Multiplier": int(g_fm) * int(GEM_SCALE_FEVER),
+            "Rush": int(g_fm) * int(GEM_STAT_TO_ELEMENT_SCALE),
+            "Fever Time": int(ft_gems) * int(GEM_SCALE_FEVER),
+            "Beat": int(ft_gems) * int(GEM_STAT_TO_ELEMENT_SCALE),
+            "Fever Fill Rate": int(ff_gems) * int(GEM_SCALE_FEVER),
+            "Vibe": int(ff_gems) * int(GEM_STAT_TO_ELEMENT_SCALE),
+        }
+        if selected_color:
+            deltas[str(selected_color)] = int(g_ov) * int(ELEMENTAL_GEM_SCALE)
 
-    # Stats has gem contributions baked in - need to reverse them
+        for k, d in deltas.items():
+            if int(d) <= 0:
+                continue
+            cur = gs(k, 0)
+            if (int(cur) - int(d)) < -50:  # small tolerance for rounding
+                return {kk: gs(kk, 0) for kk in keys}
+    except Exception:
+        pass
+
+    # Stats has gem contributions baked in - reverse them.
     base = {k: gs(k, 0) for k in keys}
 
     # Reverse gem contributions
@@ -1354,8 +1375,6 @@ def apply_force_greats_to_result(
         "config": fg_result["config_dict"],
         "final_score": fg_result["final_score"],
     }
-
-    data_dict["ForceGreats"] = fg_info
 
     # Memory leak fix: Shallow copy is sufficient (only modifying top-level keys)
     # Eliminates 28K deepcopy operations per song

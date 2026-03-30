@@ -9,6 +9,7 @@ on CPU and is NOT ported to GPU.
 import os
 import numpy as np
 from math import ceil
+from collections import OrderedDict
 
 from ..core.jit_setup import jit
 from .scoring_core import lookup_reference_py
@@ -20,8 +21,14 @@ from ..core.constants import (
 )
 
 
-# Global cache for SongTimelineGrid instances (one per song)
-SONG_TIMELINE_GRIDS = {}
+# Global cache for SongTimelineGrid instances (one per song).
+# NOTE: Keep bounded to avoid runaway RAM growth on long runs over large song sets.
+try:
+    _SONG_TIMELINE_GRID_CACHE_MAX = int(os.environ.get("SONG_TIMELINE_GRID_CACHE_MAX", "128") or "128")
+except Exception:
+    _SONG_TIMELINE_GRID_CACHE_MAX = 128
+_SONG_TIMELINE_GRID_CACHE_MAX = max(0, int(_SONG_TIMELINE_GRID_CACHE_MAX))
+SONG_TIMELINE_GRIDS: "OrderedDict[tuple, SongTimelineGrid]" = OrderedDict()
 
 
 def _safe_int(val: object, default: int = 0) -> int:
@@ -797,8 +804,15 @@ def get_song_timeline_grid(calc_song, ref_arrays):
         SongTimelineGrid: Cached or newly created grid
     """
     song_key = _timeline_grid_cache_key(calc_song)
+    if _SONG_TIMELINE_GRID_CACHE_MAX <= 0:
+        return SongTimelineGrid(calc_song, ref_arrays)
 
-    if song_key not in SONG_TIMELINE_GRIDS:
-        SONG_TIMELINE_GRIDS[song_key] = SongTimelineGrid(calc_song, ref_arrays)
+    grid = SONG_TIMELINE_GRIDS.get(song_key)
+    if grid is None:
+        grid = SongTimelineGrid(calc_song, ref_arrays)
+        SONG_TIMELINE_GRIDS[song_key] = grid
+    SONG_TIMELINE_GRIDS.move_to_end(song_key)
+    while len(SONG_TIMELINE_GRIDS) > int(_SONG_TIMELINE_GRID_CACHE_MAX):
+        SONG_TIMELINE_GRIDS.popitem(last=False)
 
-    return SONG_TIMELINE_GRIDS[song_key]
+    return grid

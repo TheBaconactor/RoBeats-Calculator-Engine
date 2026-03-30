@@ -50,12 +50,28 @@ def _fallback_jit(nopython: bool = True, cache: bool = True) -> Callable[[_F], _
 HAS_NUMBA = False
 jit = _fallback_jit
 
+# Numba reads some config from env at import time; set our cache dir early so
+# disk caching (when enabled) doesn't leak into user profile dirs.
+_NUMBA_DISK_CACHE_ENABLED = _env_bool("NUMBA_DISK_CACHE", True)
+if _NUMBA_DISK_CACHE_ENABLED and "NUMBA_CACHE_DIR" not in os.environ:
+    _cache_dir = _default_numba_cache_dir()
+    if _cache_dir:
+        os.environ["NUMBA_CACHE_DIR"] = _cache_dir
+
 try:
     from numba import jit as _numba_jit
 except ImportError:
     pass
 else:
     HAS_NUMBA = True
+    try:
+        import numba as _numba
+
+        _effective_cache_dir = str(os.environ.get("NUMBA_CACHE_DIR", "") or "").strip()
+        if _NUMBA_DISK_CACHE_ENABLED and _effective_cache_dir:
+            _numba.config.CACHE_DIR = _effective_cache_dir
+    except Exception:
+        pass
 
     def _numba_jit_wrapper(nopython: bool = True, cache: bool = True) -> Callable[[_F], _F]:
         """
@@ -67,12 +83,21 @@ else:
         """
         disk_cache_enabled = _env_bool("NUMBA_DISK_CACHE", True)
         use_cache = bool(cache) and disk_cache_enabled
-        if use_cache and "NUMBA_CACHE_DIR" not in os.environ:
-            cache_dir = _default_numba_cache_dir()
-            if cache_dir:
-                os.environ["NUMBA_CACHE_DIR"] = cache_dir
-            else:
+        if use_cache:
+            cache_dir = str(os.environ.get("NUMBA_CACHE_DIR", "") or "").strip()
+            if not cache_dir:
+                cache_dir = _default_numba_cache_dir() or ""
+                if cache_dir:
+                    os.environ["NUMBA_CACHE_DIR"] = cache_dir
+            if not cache_dir:
                 use_cache = False
+            else:
+                try:
+                    import numba as _numba
+
+                    _numba.config.CACHE_DIR = str(cache_dir)
+                except Exception:
+                    pass
         return _numba_jit(nopython=nopython, cache=use_cache)
 
     jit = _numba_jit_wrapper

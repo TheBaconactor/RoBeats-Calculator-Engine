@@ -2599,7 +2599,7 @@ def run_inventory_meta_coverage(
     gpu_full_repair_max_cands_per_slot: int = 16,
     gpu_full_repair_song_limit: int = 512,
     gpu_full_restricted_universe_path: str = "",
-    cp_sat_hypergraph_enabled: bool = True,
+    cp_sat_hypergraph_enabled: bool = False,
     cp_sat_hypergraph_rounds: int = 3,
     cp_sat_hypergraph_max_songs: int = 192,
     cp_sat_hypergraph_patterns_per_song: int = 48,
@@ -3266,6 +3266,20 @@ def run_inventory_meta_coverage(
                 best_sol.stats.setdefault("repair", repair_stats)
         cp_sat_stats = None
         cp_sat_allowed = bool(cp_sat_hypergraph_enabled) and int(gpu_full_top_candidates) == 1
+        if bool(cp_sat_hypergraph_enabled):
+            try:
+                reason = "enabled" if cp_sat_allowed else "skipped(top_candidates!=1)"
+                mem.log(
+                    "[CP-SAT] hypergraph refinement: {} (rounds={} max_songs={} time_limit_sec={} workers={})".format(
+                        reason,
+                        int(cp_sat_hypergraph_rounds),
+                        int(cp_sat_hypergraph_max_songs),
+                        float(cp_sat_hypergraph_time_limit_sec),
+                        int(cp_sat_hypergraph_num_workers),
+                    )
+                )
+            except Exception:
+                pass
         if cp_sat_allowed:
             if totals_np is None or elements_np is None:
                 raise RuntimeError("CP-SAT hypergraph refinement requires totals/elements inputs.")

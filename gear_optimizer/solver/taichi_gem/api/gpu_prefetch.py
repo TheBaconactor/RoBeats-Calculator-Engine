@@ -31,6 +31,7 @@ Usage in main loop:
 from __future__ import annotations
 
 import time
+import threading
 from typing import Any, Optional
 from collections import deque
 
@@ -39,6 +40,42 @@ from .timeline import _song_timing_cache_key, precompute_timeline_gpu
 
 # Use 5 slots by default (slots 1-5, leaving slot 0 as fallback)
 DEFAULT_NUM_SLOTS = 5
+
+
+def _assert_gpu_owner_thread() -> None:
+    """
+    Taichi/Vulkan calls must be issued from the GPU owner thread (the executor thread).
+
+    This module is intentionally *not* safe to call from multiprocessing workers or other
+    threads; callers should submit `GpuRequestType.PRECOMPUTE_TIMELINE` via the GPU executor.
+    """
+    try:
+        from gear_optimizer.solver.gpu_executor import get_gpu_executor, is_gpu_worker_mode
+    except Exception:
+        return
+
+    if is_gpu_worker_mode():
+        raise RuntimeError("GPUPrefetchManager is GPU-owner-only (do not call from worker mode)")
+
+    try:
+        ex = get_gpu_executor()
+    except Exception:
+        return
+
+    try:
+        if not bool(getattr(ex, "is_running", False)):
+            return
+    except Exception:
+        return
+
+    try:
+        executor_thread = getattr(ex, "_executor_thread", None)
+    except Exception:
+        executor_thread = None
+
+    if executor_thread is not None and getattr(executor_thread, "is_alive", lambda: False)():
+        if threading.current_thread() is not executor_thread:
+            raise RuntimeError("GPUPrefetchManager must run on the GPU executor thread")
 
 
 class GPUPrefetchManager:
@@ -106,6 +143,7 @@ class GPUPrefetchManager:
         Returns:
             Slot ID if prefetched, None if no slots available
         """
+        _assert_gpu_owner_thread()
         key = self._make_song_key(calc_song, ref_arrays)
 
         # Already prefetched?
@@ -149,6 +187,7 @@ class GPUPrefetchManager:
         Returns:
             Slot ID (1-N) if prefetched, 0 if fallback needed
         """
+        _assert_gpu_owner_thread()
         key = self._make_song_key(calc_song, ref_arrays)
 
         # Check if already prefetched

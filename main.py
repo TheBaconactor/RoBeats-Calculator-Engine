@@ -114,16 +114,14 @@ def _apply_gpu_song_slots_default() -> None:
     cfg_path = _read_config_path()
     try:
         cfg = load_config(cfg_path)
-        inflight = int(str(cfg.get("IterationEngine", "InFlightSongs", fallback="0") or "0"))
+        cfg_slots = int(str(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0") or "0"))
     except Exception:
-        inflight = 0
+        cfg_slots = 0
 
-    # Default Taichi song slots is 8. For high-throughput runs we prefer a larger
-    # slot pool to reduce churn/timeline reuploads as songs rotate through slots.
-    #
-    # Users can override this explicitly via `GPU_SONG_SLOTS`.
-    target = max(24, 8, inflight)
-    os.environ.setdefault("GPU_SONG_SLOTS", str(int(target)))
+    # Prefer the app-level autosizing logic, but honor an explicit config override here
+    # so `GPU_SongSlots` takes effect even if something imports Taichi fields early.
+    if int(cfg_slots) > 0:
+        os.environ.setdefault("GPU_SONG_SLOTS", str(int(cfg_slots)))
 
 
 def main() -> int:

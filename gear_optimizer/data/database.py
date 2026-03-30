@@ -508,10 +508,10 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
-    # Set busy timeout to prevent blocking readers for too long.
-    # This makes writers retry briefly instead of holding locks.
+    # Match busy_timeout to the connection timeout (cap to avoid surprising waits).
     try:
-        conn.execute("PRAGMA busy_timeout=100;")
+        busy_ms = int(max(100.0, min(float(timeout) * 1000.0, 30_000.0)))
+        conn.execute(f"PRAGMA busy_timeout={busy_ms};")
     except Exception:
         pass
     ensure_schema(conn)
@@ -1365,48 +1365,64 @@ def save_loadouts_batch(
     resolved_db_path = str(db_path or get_evolution_db_path())
     conn = get_db_connection(resolved_db_path)
     try:
-        # Persist the base run under the baseline TeamBuff tier in the same transaction.
-        save_team_buff_loadouts_batch(
-            song_name,
-            team_buff,
-            entries,
-            conn=conn,
-            commit=False,
-            db_path=resolved_db_path,
-        )
+        def _is_lock_error(err: sqlite3.Error) -> bool:
+            msg = str(err or "").lower()
+            return ("database is locked" in msg) or ("database is busy" in msg) or ("database table is locked" in msg)
 
-        if best_score_max is None and not best_fg_max:
-            conn.commit()
-            return
+        max_attempts = 6
+        base_sleep_sec = 0.05
+        for attempt in range(max_attempts):
+            try:
+                # Persist the base run under the baseline TeamBuff tier in the same transaction.
+                save_team_buff_loadouts_batch(
+                    song_name,
+                    team_buff,
+                    entries,
+                    conn=conn,
+                    commit=False,
+                    db_path=resolved_db_path,
+                )
 
-        if best_score_max is not None:
-            conn.execute(
-                """
-                INSERT INTO songs (name, best_score) VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    best_score = MAX(best_score, excluded.best_score),
-                    last_updated = strftime('%s', 'now')
-                """,
-                (song_name, best_score_max),
-            )
+                if best_score_max is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO songs (name, best_score) VALUES (?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            best_score = MAX(best_score, excluded.best_score),
+                            last_updated = strftime('%s', 'now')
+                        """,
+                        (song_name, best_score_max),
+                    )
 
-        if best_fg_max:
-            conn.execute(
-                """
-                INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                    last_updated = strftime('%s', 'now')
-                """,
-                (song_name, best_fg_max),
-            )
-        conn.commit()
-    except sqlite3.Error as e:
-        print(f"[DB] Error updating best scores: {e}")
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
+                if best_fg_max:
+                    conn.execute(
+                        """
+                        INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
+                            last_updated = strftime('%s', 'now')
+                        """,
+                        (song_name, best_fg_max),
+                    )
+
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                if _is_lock_error(e) and attempt < (max_attempts - 1):
+                    sleep_sec = min(2.0, float(base_sleep_sec) * (2**attempt))
+                    time.sleep(max(0.0, sleep_sec))
+                    continue
+                raise
+            except sqlite3.Error:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
     finally:
         conn.close()
 
@@ -2288,8 +2304,7 @@ def save_team_buff_loadouts_batch(
             conn.rollback()
         except sqlite3.Error:
             pass
-        if not own_conn:
-            raise
+        raise
     finally:
         if own_conn:
             try:

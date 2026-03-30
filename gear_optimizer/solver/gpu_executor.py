@@ -607,6 +607,10 @@ class GpuExecutor:
 
         # Stats
         self._requests_processed = 0
+        # Response delivery robustness: never allow response puts to stall the GPU owner thread.
+        self._response_put_failures_total = 0
+        self._response_put_failures_by_worker = defaultdict(int)
+        self._response_put_last_warn_monotonic = 0.0
         from gear_optimizer.core.env_config import ENV
 
         self._profile_enabled = ENV.gpu_executor_profile
@@ -1215,6 +1219,12 @@ class GpuExecutor:
         # Reset per-run state (GpuExecutor is a singleton and may be started/stopped
         # multiple times within one Python process during profiling/benchmarks).
         self._requests_processed = 0
+        self._response_put_failures_total = 0
+        try:
+            self._response_put_failures_by_worker.clear()
+        except Exception:
+            self._response_put_failures_by_worker = defaultdict(int)
+        self._response_put_last_warn_monotonic = 0.0
         self._wait_sec = 0.0
         self._exec_sec = 0.0
         try:
@@ -1359,6 +1369,12 @@ class GpuExecutor:
         # Wait for thread to finish
         if self._executor_thread:
             self._executor_thread.join(timeout=10.0)
+            try:
+                if self._executor_thread.is_alive():
+                    logger.warning("[GpuExecutor] Stop timed out; executor thread is still alive.")
+                    self._write_heartbeat(phase="error", note="stop_timeout_thread_alive", force=True)
+            except Exception:
+                pass
 
         self._running = False
         if self._high_res_timer_enabled:
@@ -1709,6 +1725,7 @@ class GpuExecutor:
             "request_count": int(request_count),
             "request_types": type_counts,
             "note": str(note or ""),
+            "response_put_failures_total": int(getattr(self, "_response_put_failures_total", 0) or 0),
         }
 
         try:
@@ -1866,9 +1883,47 @@ class GpuExecutor:
                 q = self._response_queues.get(req.worker_id)
                 if q is None:
                     return False
-                q.put(resp)
+                put_nowait = getattr(q, "put_nowait", None)
+                if callable(put_nowait):
+                    put_nowait(resp)
+                else:
+                    q.put(resp, block=False)
                 return True
+            except queue.Full:
+                try:
+                    self._response_put_failures_total += 1
+                    self._response_put_failures_by_worker[int(req.worker_id)] += 1
+                    now = time.monotonic()
+                    if (now - float(self._response_put_last_warn_monotonic or 0.0)) >= 5.0:
+                        self._response_put_last_warn_monotonic = now
+                        logger.warning(
+                            "[GpuExecutor] Response queue full; dropping response "
+                            "(worker_id=%s request_id=%s type=%s total_failures=%s)",
+                            int(req.worker_id),
+                            int(getattr(req, "request_id", 0) or 0),
+                            str(getattr(getattr(req, "request_type", None), "value", "") or ""),
+                            int(self._response_put_failures_total),
+                        )
+                except Exception:
+                    pass
+                return False
             except Exception:
+                try:
+                    self._response_put_failures_total += 1
+                    self._response_put_failures_by_worker[int(req.worker_id)] += 1
+                    now = time.monotonic()
+                    if (now - float(self._response_put_last_warn_monotonic or 0.0)) >= 5.0:
+                        self._response_put_last_warn_monotonic = now
+                        logger.warning(
+                            "[GpuExecutor] Failed to deliver response "
+                            "(worker_id=%s request_id=%s type=%s total_failures=%s)",
+                            int(req.worker_id),
+                            int(getattr(req, "request_id", 0) or 0),
+                            str(getattr(getattr(req, "request_type", None), "value", "") or ""),
+                            int(self._response_put_failures_total),
+                        )
+                except Exception:
+                    pass
                 return False
 
         # After observing bursty workload, briefly switch to zero-wait dequeue so local

@@ -159,3 +159,108 @@ def test_apply_force_greats_to_result_updates_stats_and_gems_on_finder_cache_hit
     ):
         assert int(got.get(k, 0)) == int(expected.get(k, 0))
     assert int(got.get(sel, 0)) == int(expected.get(sel, 0))
+
+
+def test_apply_force_greats_to_result_does_not_mutate_input_on_cache_hit():
+    """
+    Regression: apply_force_greats_to_result() must not mutate the input result dict.
+
+    Historically this function wrote ForceGreats metadata into the input dict even though it
+    advertises returning a cloned variant.
+    """
+    from gear_optimizer.core.constants import TOTAL_ROWS, FG_SEARCH_RADIUS
+    from gear_optimizer.core.utils import stats_signature
+    from gear_optimizer.solver.scoring import solve_best_fever_combination, apply_force_greats_to_result, FG_CACHE
+
+    calc_song = _mock_song()
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+
+    data_dict = solve_best_fever_combination(
+        cfg=None,
+        initial_stats={
+            "Perfect Points": 100,
+            "Combo Multiplier": 100,
+            "Fever Multiplier": 100,
+            "Fever Fill Rate": 100,
+            "Fever Time": 100,
+            "Rush": 100,
+            "Flow": 100,
+            "Beat": 50,
+            "Vibe": 50,
+            "Chill": 50,
+        },
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        silent=True,
+        override_cfg={
+            "selected_color": "Rush",
+            "user_ft": 0,
+            "user_ff": 0,
+            "user_pp": 0,
+            "user_cm": 0,
+            "user_fm": 0,
+            "static_elem_input": 0,
+            "use_gpu": False,
+        },
+    )
+
+    assert "ForceGreats" not in data_dict
+
+    sel = data_dict.get("Selected Element") or "Rush"
+    ft0 = int(data_dict.get("FT", 0) or 0)
+    ff0 = int(data_dict.get("FF", 0) or 0)
+    sig = stats_signature(data_dict["Stats"], calc_song, sel)
+    cache_key = (sig, "finder", ft0, ff0, int(FG_SEARCH_RADIUS), False)
+    FG_CACHE.clear()
+    FG_CACHE[cache_key] = {
+        "config_dict": {"NonFever1": 1},
+        "final_score": int(data_dict.get("Score", 0) or 0),
+        "gem_counts": dict(data_dict.get("GemCounts") or {}),
+        "FT": ft0,
+        "FF": ff0,
+    }
+
+    fg_variant = apply_force_greats_to_result(
+        data_dict,
+        calc_song,
+        ref_arrays,
+        use_finder=True,
+        use_gpu=False,
+    )
+    assert fg_variant is not None
+    assert "ForceGreats" not in data_dict
+
+
+def test_extract_base_stats_detects_pre_gem_without_element_gems():
+    """
+    Regression: _extract_base_stats() must not corrupt pre-gem stats when Element gems are 0.
+
+    Some GPU payload paths can supply base (pre-gem) stats alongside a gem allocation,
+    and reversing those gems must be a no-op.
+    """
+    from gear_optimizer.core.constants import GEM_SCALE_NORMAL
+    from gear_optimizer.solver.scoring.force_greats import _extract_base_stats
+
+    stats = {
+        "Perfect Points": 10,
+        "Combo Multiplier": 10,
+        "Fever Multiplier": 10,
+        "Fever Time": 10,
+        "Fever Fill Rate": 10,
+        "Beat": 10,
+        "Vibe": 10,
+        "Rush": 10,
+        "Flow": 10,
+        "Chill": 10,
+    }
+    gem_counts = {
+        # Use a large count so reversing would go strongly negative if applied.
+        "Perfect Points": max(90, int(GEM_SCALE_NORMAL) * 50),
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Element": 0,
+    }
+
+    base = _extract_base_stats(stats, gem_counts, "Rush", 0, 0)
+    assert base.get("Perfect Points") == stats.get("Perfect Points")
+    assert base.get("Rush") == stats.get("Rush")

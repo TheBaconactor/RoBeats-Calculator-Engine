@@ -834,11 +834,21 @@ def process_song_task(args) -> SongResultPayload:
         attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
 
         def emit(msg):
-            if status_queue:
-                try:
-                    status_queue.put(f"[{queue_label or found_song_name}] {msg}")
-                except Exception:
-                    pass
+            if not status_queue:
+                return
+            try:
+                payload = f"[{queue_label or found_song_name}] {msg}"
+            except Exception:
+                payload = str(msg)
+            try:
+                put_nowait = getattr(status_queue, "put_nowait", None)
+                if callable(put_nowait):
+                    put_nowait(payload)
+                else:
+                    status_queue.put(payload, block=False)
+            except Exception:
+                # Never allow progress reporting to stall a worker.
+                pass
 
         emit("START")
 
@@ -851,6 +861,16 @@ def process_song_task(args) -> SongResultPayload:
             # Get GPU slot for timeline prefetch (prefetched or on-demand)
             if gpu_mode:
                 try:
+                    _gpu_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
+                except Exception:
+                    _gpu_song_slot = 0
+                # Propagate song_slot into calc_song so downstream FG can reuse the same GPU timeline slot.
+                try:
+                    calc_song["_gpu_song_slot"] = int(_gpu_song_slot)
+                except Exception:
+                    pass
+
+                try:
                     # Configure GPU-native GA run buffers BEFORE any Taichi field allocation
                     # (prefetch triggers `precompute_timeline_gpu()` -> `ensure_ready()`).
                     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
@@ -861,21 +881,6 @@ def process_song_task(args) -> SongResultPayload:
                     )
                 except Exception:
                     pass  # Prefetch should still run even if sizing fails.
-
-                try:
-                    from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
-
-                    _prefetch_mgr = get_gpu_prefetch_manager()
-                    _t_timeline0 = time.perf_counter()
-                    _gpu_song_slot = _prefetch_mgr.get_slot(calc_song, ref_arrays)
-                    stage_timing["gpu_timeline_precompute_sec"] = time.perf_counter() - _t_timeline0
-                except Exception as _pfx_err:
-                    pass  # Fallback to slot 0
-                # Propagate song_slot into calc_song so downstream FG can reuse the same GPU timeline slot.
-                try:
-                    calc_song["_gpu_song_slot"] = int(_gpu_song_slot)
-                except Exception:
-                    pass
 
             # Run Genetic Algorithm (now memetic-enhanced)
             ga_start = time.perf_counter()

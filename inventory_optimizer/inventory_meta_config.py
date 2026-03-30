@@ -169,7 +169,7 @@ class InventoryMetaCoverageSettings:
     gpu_full_restricted_universe_path: str = ""
 
     # CP-SAT hypergraph refinement (top-1 strict only)
-    cp_sat_hypergraph_enabled: bool = True
+    cp_sat_hypergraph_enabled: bool = False
     cp_sat_hypergraph_rounds: int = 3
     cp_sat_hypergraph_max_songs: int = 192
     cp_sat_hypergraph_patterns_per_song: int = 48

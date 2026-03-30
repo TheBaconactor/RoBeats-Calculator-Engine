@@ -50,14 +50,18 @@ def _clamp_song_slots(n: int) -> int:
     if n < 2:
         return 2
     # Prevent accidental huge allocations (each slot is ~3MB of timeline grids).
-    if n > 8192:
-        return 8192
+    if n > 256:
+        try:
+            logger.warning("[GPU] GPU_SONG_SLOTS=%s too large; clamping to 256 to avoid VRAM OOM.", int(n))
+        except Exception:
+            pass
+        return 256
     return n
 
 
 # Concurrent song grid slots for batch coalescing / timeline caching.
 # Override via env var `GPU_SONG_SLOTS` (set before process start).
-MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 24))
+MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
