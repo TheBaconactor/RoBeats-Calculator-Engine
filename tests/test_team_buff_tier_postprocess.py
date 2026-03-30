@@ -375,6 +375,84 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
     assert t5["fg_score"] != t15["fg_score"]
 
 
+def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 150,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    entry = {
+        "score": 100,
+        "fg_score": 95,
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        "force": {
+            "Stats": dict(stats),
+            "ForceGreats": {"config": {"NonFever1": 1}},
+        },
+    }
+
+    def _fake_score_fixed_stats_gpu(base_inputs, _group_song, *, ref_arrays=None):
+        assert len(base_inputs) == 1
+        return np.asarray([110], dtype=np.int32)
+
+    def _fake_solve_force_greats_finder_gpu(
+        genomes,
+        timestamps,
+        great_timestamps,
+        long_notes,
+        last_note_time,
+        counts,
+        offsets,
+        **kwargs,
+    ):
+        assert len(genomes) == 1
+        assert counts
+        return {"final_score": np.asarray([95], dtype=np.int32)}
+
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.api.fixed_scoring.score_fixed_stats_gpu",
+        _fake_score_fixed_stats_gpu,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.api.solve_force_greats_finder_gpu",
+        _fake_solve_force_greats_finder_gpu,
+    )
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=1,
+    )
+
+    tier = out["tiers"]["T5"]
+    assert tier["base_top51"][0]["score"] == 110
+    assert tier["base_top51"][0]["fg_score"] == 95
+    assert len(tier["fg_top51"]) == 1
+    assert tier["fg_top51"][0]["fg_score"] == 95
+    assert tier["fg_top51"][0]["fg_base_score"] == 90
+    assert tier["fg_top51"][0]["score"] == 110
+
+
 def test_team_buff_tier_postprocess_fg_scoring_matches_gpu_force_greats_kernel():
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
@@ -599,6 +677,89 @@ def test_team_buff_tier_postprocess_converts_persisted_forced_counts_back_to_fp_
     assert tuple(fp_targets) == (0, 1, 0)
     assert got == int(expected_fp["final_score"][0])
     assert got != int(expected_raw["final_score"][0])
+
+
+def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_rows(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 150,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    entry = {
+        "score": 100,
+        "fg_score": 95,
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        "force": {
+            "Stats": dict(stats),
+            "ForceGreats": {"config": {"NonFever1": 1}},
+        },
+    }
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T5": {
+                    "base_top51": [
+                        {
+                            "gear": list(entry["gear"]),
+                            "minis": list(entry["minis"]),
+                            "score": 110,
+                            "fg_score": 95,
+                        }
+                    ],
+                    "fg_top51": [
+                        {
+                            "gear": list(entry["gear"]),
+                            "minis": list(entry["minis"]),
+                            "score": 110,
+                            "fg_score": 95,
+                            "fg_base_score": 90,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=1,
+    )
+
+    row = batches["T5"][0]
+    assert row["score"] == 110
+    assert row["fg_score"] == 95
+    assert row["fg_base_score"] == 90
+    assert row["gear"] == entry["gear"]
+    assert row["minis"] == entry["minis"]
+    assert row["force"]["ForceGreats"]["config"] == {"NonFever1": 1}
 
 
 def test_team_buff_tier_leaderboards_respects_persisted_hitsim_seed(monkeypatch):
