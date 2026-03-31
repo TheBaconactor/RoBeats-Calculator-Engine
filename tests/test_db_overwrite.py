@@ -72,3 +72,49 @@ def test_save_loadouts_batch_overwrite(db_connection):
     ).fetchone()
     assert row["score"] == 1100
     assert json.loads(row["details_json"])["test"] == "higher"
+
+
+def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connection):
+    """
+    Deferred FG-only persistence updates must not overwrite the base row's details payload.
+
+    This guards against persistence-path bugs where an FG variant payload (FT/FF/GemCounts/Stats)
+    is accidentally paired with the base score on an equal-score upsert.
+    """
+    song = "Test Song Deferred FG"
+    gear = ["G1", "G2"]
+    minis = ["M1"]
+
+    entry_base = {
+        "score": 1000,
+        "fg_score": 0,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "base"},
+        "force": None,
+    }
+    save_loadouts_batch(song, [entry_base])
+
+    entry_deferred_fg = {
+        "score": 1000,  # same base score
+        "fg_score": 1500,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "fg_variant"},
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 1500}},
+        "_deferred_fg_update": True,
+    }
+    save_loadouts_batch(song, [entry_deferred_fg])
+
+    row = db_connection.execute(
+        """
+        SELECT score, fg_score, details_json, force_details_json
+        FROM team_buff_loadouts
+        WHERE song_name=? AND team_buff='T5'
+        """,
+        (song,),
+    ).fetchone()
+    assert row["score"] == 1000
+    assert row["fg_score"] == 1500
+    assert json.loads(row["details_json"])["test"] == "base"
+    assert row["force_details_json"] is not None

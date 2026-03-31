@@ -1365,6 +1365,7 @@ def save_loadouts_batch(
     resolved_db_path = str(db_path or get_evolution_db_path())
     conn = get_db_connection(resolved_db_path)
     try:
+
         def _is_lock_error(err: sqlite3.Error) -> bool:
             msg = str(err or "").lower()
             return ("database is locked" in msg) or ("database is busy" in msg) or ("database table is locked" in msg)
@@ -1775,7 +1776,9 @@ def save_team_buff_loadouts_batch(
             "NONE": {"PP": 0, "Elem": 0},
         }
         if buff_tier in buff_tiers:
-            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(buff_tiers[buff_tier]["PP"])
+            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(
+                buff_tiers[buff_tier]["PP"]
+            )
             elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
             valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
             if valid_color_key:
@@ -1826,6 +1829,7 @@ def save_team_buff_loadouts_batch(
 
         _t_params0 = time.perf_counter()
         loadouts_params = []
+        deferred_fg_loadouts_params = []
         fg_loadouts_params = []
 
         # Compact name encoding maps (gear/minis). These tables are populated at init_db()
@@ -1968,7 +1972,9 @@ def save_team_buff_loadouts_batch(
                         details_unpacked,
                         gear_names_local=gear_names,
                         mini_names_local=mini_names,
-                        team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                        team_color=str(
+                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
+                        ).strip(),
                     )
                 else:
                     details = _ensure_stats_in_details(
@@ -1977,14 +1983,18 @@ def save_team_buff_loadouts_batch(
                         minis,
                         minis_by_name,
                         team_buff=team_buff,
-                        team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                        team_color=str(
+                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
+                        ).strip(),
                     )
             elif can_recompute:
                 details = _recompute_stats_in_details_for_persistence(
                     details_unpacked,
                     gear_names_local=gear_names,
                     mini_names_local=mini_names,
-                    team_color=str(details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or "").strip(),
+                    team_color=str(
+                        details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
+                    ).strip(),
                 )
             else:
                 details = details_unpacked
@@ -2019,6 +2029,8 @@ def save_team_buff_loadouts_batch(
                     force_json,
                 )
             )
+            if bool(entry.get("_deferred_fg_update")):
+                deferred_fg_loadouts_params.append(loadouts_params.pop())
 
             if force_data is not None and fg_score > fg_base_score:
                 fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
@@ -2031,7 +2043,9 @@ def save_team_buff_loadouts_batch(
                             fg_unpacked,
                             gear_names_local=gear_names,
                             mini_names_local=mini_names,
-                            team_color=str(fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or "").strip(),
+                            team_color=str(
+                                fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or ""
+                            ).strip(),
                         )
                     elif not fg_has_stats:
                         fg_details = _ensure_stats_in_details(
@@ -2040,7 +2054,9 @@ def save_team_buff_loadouts_batch(
                             minis,
                             minis_by_name,
                             team_buff=team_buff,
-                            team_color=str(fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or "").strip(),
+                            team_color=str(
+                                fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or ""
+                            ).strip(),
                         )
                     else:
                         fg_details = fg_unpacked
@@ -2100,6 +2116,33 @@ def save_team_buff_loadouts_batch(
                 loadouts_params,
             )
             _log_timing("insert_team_buff_loadouts", time.perf_counter() - _t_ins0)
+
+        if deferred_fg_loadouts_params:
+            _t_ins0 = time.perf_counter()
+            conn.executemany(
+                """
+                INSERT INTO team_buff_loadouts (
+                    song_name, team_buff, loadout_hash, score, fg_score,
+                    gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
+                    -- Deferred FG-only update: preserve base leaderboard payload (score/details/gear/minis)
+                    fg_score = MAX(fg_score, excluded.fg_score),
+                    gear_ids_blob = CASE WHEN gear_ids_blob IS NULL THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
+                    minis_ids_blob = CASE WHEN minis_ids_blob IS NULL THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
+                    details_json = CASE WHEN details_json IS NULL THEN excluded.details_json ELSE details_json END,
+                    force_details_json = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
+                            THEN excluded.force_details_json
+                        ELSE force_details_json
+                    END,
+                    timestamp = strftime('%s', 'now')
+            """,
+                deferred_fg_loadouts_params,
+            )
+            _log_timing("insert_team_buff_loadouts_deferred_fg", time.perf_counter() - _t_ins0)
 
         if fg_loadouts_params:
             _t_insfg0 = time.perf_counter()

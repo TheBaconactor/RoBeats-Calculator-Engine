@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import json
 import logging
 import os
@@ -267,7 +268,12 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
     while True:
         try:
-            item = result_queue.get()
+            item = result_queue.get(timeout=0.2)
+        except queue.Empty:
+            # Ensure async DB failures don't silently degrade the run while we wait
+            # for compute results (or the shutdown sentinel).
+            async_db.raise_if_failed()
+            continue
         except KeyboardInterrupt:
             # Ctrl+C can land on this process while blocked in `Queue.get()` on Windows.
             # Ignore it so the parent can drive shutdown via the sentinel `None` and
@@ -688,13 +694,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 logging.error(msg + "\n" + traceback.format_exc())
             except Exception:
                 pass
+        async_db.raise_if_failed()
 
-    # Flush pending DB work (best-effort) before the process exits so we don't leave
-    # the main pipeline waiting on in-flight DB tasks.
-    try:
-        async_db.shutdown(timeout=30.0)
-    except Exception:
-        pass
+    # Flush pending DB work before exiting so we don't leave the main pipeline
+    # waiting on in-flight DB tasks.
+    async_db.shutdown(timeout=30.0)
 
     try:
         if pending_final_print:

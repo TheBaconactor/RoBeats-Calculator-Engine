@@ -1968,7 +1968,9 @@ def run_native_inflight_song_pipeline(
                 deltas_cache_by_ff_ft: dict[tuple[int, int], tuple[int, ...]] = {}
                 if hitsim_enabled and isinstance(song.calc_song, dict) and isinstance(song.ref_arrays, dict):
                     try:
-                        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
+                        from gear_optimizer.solver.scoring.force_greats import (
+                            summarize_hitsim_offset_deltas_ms_for_base,
+                        )
                     except Exception:
                         summarize_hitsim_offset_deltas_ms_for_base = None
 
@@ -2792,28 +2794,53 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             # Keep base payload consistent with base score on deferred FG updates.
             details = dict(details_obj)
         else:
-            stats_obj = data.get("Stats", {})
-            if not stats_obj:
-                try:
-                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                        materialize_stats_from_payload,
-                    )
+            base_eval_data = base_entry.get("eval_data") if isinstance(base_entry, dict) else None
+            if isinstance(base_eval_data, dict) and base_eval_data:
+                stats_obj = base_eval_data.get("Stats", {})
+                if not stats_obj:
+                    try:
+                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                            materialize_stats_from_payload,
+                        )
 
-                    stats_obj = materialize_stats_from_payload(data, mutate_payload=True) or {}
-                except Exception:
-                    stats_obj = stats_obj or {}
+                        stats_obj = materialize_stats_from_payload(base_eval_data, mutate_payload=False) or {}
+                    except Exception:
+                        stats_obj = stats_obj or {}
 
-            details = {
-                "FT": data.get("FT", 0),
-                "FF": data.get("FF", 0),
-                "GemCounts": data.get("GemCounts", {}),
-                "Stats": stats_obj or {},
-                "SelectedElement": get_selected_element(data, ""),
-                "PrimaryColor": song.meta_primary_color,
-                "SecondaryColor": song.meta_secondary_color,
-                "Difficulty": song.effective_difficulty,
-                "ForceGreats": data.get("ForceGreats", {}),
-            }
+                details = {
+                    "FT": base_eval_data.get("FT", 0),
+                    "FF": base_eval_data.get("FF", 0),
+                    "GemCounts": base_eval_data.get("GemCounts", {}),
+                    "Stats": stats_obj or {},
+                    "SelectedElement": get_selected_element(base_eval_data, ""),
+                    "PrimaryColor": song.meta_primary_color,
+                    "SecondaryColor": song.meta_secondary_color,
+                    "Difficulty": song.effective_difficulty,
+                    "ForceGreats": data.get("ForceGreats", {}),
+                }
+            else:
+                stats_obj = data.get("Stats", {})
+                if not stats_obj:
+                    try:
+                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                            materialize_stats_from_payload,
+                        )
+
+                        stats_obj = materialize_stats_from_payload(data, mutate_payload=True) or {}
+                    except Exception:
+                        stats_obj = stats_obj or {}
+
+                details = {
+                    "FT": data.get("FT", 0),
+                    "FF": data.get("FF", 0),
+                    "GemCounts": data.get("GemCounts", {}),
+                    "Stats": stats_obj or {},
+                    "SelectedElement": get_selected_element(data, ""),
+                    "PrimaryColor": song.meta_primary_color,
+                    "SecondaryColor": song.meta_secondary_color,
+                    "Difficulty": song.effective_difficulty,
+                    "ForceGreats": data.get("ForceGreats", {}),
+                }
 
         force_obj = None
         try:
@@ -2832,6 +2859,9 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 "details": details,
                 "force": force_obj,
                 "_is_ga": bool(is_ga),
+                # Mark these entries as coming from a deferred FG-only persistence pass
+                # so the DB layer can avoid overwriting base `details_json` on ties.
+                "_deferred_fg_update": True,
             }
         )
     return entries

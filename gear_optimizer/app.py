@@ -4084,6 +4084,10 @@ class GearOptimizerApp:
             if "db_payload" in res:
                 res["db_payload"] = None
 
+            # Surface async DB failures promptly so the optimizer can't silently keep running
+            # without persistence.
+            self._async_db_saver.raise_if_failed()
+
         self._progress_counts_driven = False
 
         if failed > 0:

@@ -30,6 +30,19 @@ def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
+def _async_db_strict() -> bool:
+    """
+    Strict async DB policy.
+
+    When enabled, async DB failures should surface to the caller so the optimizer
+    doesn't continue "successfully" while persistence is broken.
+    """
+    raw = os.environ.get("METAFINDER_ASYNC_DB_STRICT")
+    if raw is not None:
+        return str(raw or "").strip().lower() in TRUTHY_ENV_VALUES
+    return _truthy_env("GPU_STRICT", "1")
+
+
 def _overlay_backend_mode_enabled() -> bool:
     """
     Enable overlay DB mirroring only when the optimizer is paired with the backend/live site.
@@ -192,6 +205,13 @@ class AsyncDbSaver:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+        self._error_lock = threading.Lock()
+        self._last_error: BaseException | None = None
+        self._last_error_msg: str = ""
+        self._last_error_kind: str = ""
+        self._last_error_song: str = ""
+        self._last_error_ts: float = 0.0
+        self._failures_total = 0
 
     def start(self) -> None:
         with self._lock:
@@ -206,6 +226,7 @@ class AsyncDbSaver:
             self._thread.start()
 
     def submit(self, song_name: str, entries: list[dict], *, meta: dict | None = None) -> None:
+        self.raise_if_failed()
         meta = meta or {}
         # Allow "meta-only" submissions (no entries) so per-song attempt counters can
         # advance even when we intentionally skip persistence (e.g., score=0).
@@ -216,6 +237,7 @@ class AsyncDbSaver:
         self._queue.put(("save", song_name, entries or [], meta))
 
     def submit_pending_fg_job(self, song_name: str, candidates: list[dict]) -> None:
+        self.raise_if_failed()
         if not song_name:
             return
         if not self._running:
@@ -223,6 +245,7 @@ class AsyncDbSaver:
         self._queue.put(("upsert_pending_fg_job", str(song_name), candidates or []))
 
     def delete_pending_fg_job(self, song_name: str) -> None:
+        self.raise_if_failed()
         if not song_name:
             return
         if not self._running:
@@ -253,13 +276,21 @@ class AsyncDbSaver:
                 logging.warning(msg)
             except Exception:
                 pass
+            if _async_db_strict():
+                raise RuntimeError(msg)
+        self.raise_if_failed()
 
     def shutdown(self, timeout: float = 30.0) -> None:
         if not self._running:
             return
 
-        # Best-effort flush before stopping.
-        self.flush(timeout=timeout)
+        flush_exc: BaseException | None = None
+        try:
+            # Best-effort flush before stopping.
+            self.flush(timeout=timeout)
+        except BaseException as exc:
+            # Still shut down the thread to avoid leaving it running across a "failed" shutdown.
+            flush_exc = exc
 
         try:
             self._queue.put(None)
@@ -275,6 +306,46 @@ class AsyncDbSaver:
         with self._lock:
             self._running = False
             self._thread = None
+        if flush_exc is not None:
+            raise flush_exc
+        self.raise_if_failed()
+
+    def last_error(self) -> dict | None:
+        with self._error_lock:
+            if self._last_error is None:
+                return None
+            return {
+                "kind": str(self._last_error_kind or ""),
+                "song": str(self._last_error_song or ""),
+                "message": str(self._last_error_msg or ""),
+                "ts_monotonic": float(self._last_error_ts or 0.0),
+                "failures_total": int(self._failures_total),
+            }
+
+    def raise_if_failed(self) -> None:
+        if not _async_db_strict():
+            return
+        err = self.last_error()
+        if not err:
+            return
+        kind = err.get("kind") or "unknown"
+        song = err.get("song") or "?"
+        msg = err.get("message") or "unknown error"
+        raise RuntimeError(f"[DB][ASYNC][{kind}] {song}: {msg}")
+
+    def _record_error(self, kind: str, exc: BaseException, *, song_name: str = "") -> None:
+        msg = f"{type(exc).__name__}: {exc}"
+        try:
+            now = float(time.monotonic())
+        except Exception:
+            now = 0.0
+        with self._error_lock:
+            self._last_error = exc
+            self._last_error_msg = str(msg)
+            self._last_error_kind = str(kind or "unknown")
+            self._last_error_song = str(song_name or "")
+            self._last_error_ts = float(now)
+            self._failures_total = int(self._failures_total) + 1
 
     def _loop(self) -> None:
         while True:
@@ -295,8 +366,8 @@ class AsyncDbSaver:
                         from gear_optimizer.data.database import delete_pending_fg_job
 
                         delete_pending_fg_job(str(song_name))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._record_error("delete_pending_fg_job", exc, song_name=str(song_name))
                     continue
 
                 if kind == "upsert_pending_fg_job":
@@ -308,8 +379,8 @@ class AsyncDbSaver:
                         from gear_optimizer.data.database import upsert_pending_fg_job
 
                         upsert_pending_fg_job(str(song_name), list(candidates or []))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._record_error("upsert_pending_fg_job", exc, song_name=str(song_name))
                     continue
 
                 if kind != "save":
@@ -461,7 +532,10 @@ class AsyncDbSaver:
 
                         # Derived per-window HitSim deltas are large. Default behavior is to compute them
                         # strictly on demand (DB manager) and never backfill/persist them here.
-                        persist_hitsim_deltas = str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower() in TRUTHY_ENV_VALUES
+                        persist_hitsim_deltas = (
+                            str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower()
+                            in TRUTHY_ENV_VALUES
+                        )
                         needs_hitsim_any = bool(persist_hitsim_deltas and (needs_base_hitsim or needs_fg_hitsim))
 
                         if needs_hitsim_any and enabled_all and apply_to_all and file_path:
@@ -673,6 +747,7 @@ class AsyncDbSaver:
                     )
                     # Derived TeamBuff tiers are computed on demand (never persisted).
                 except Exception as exc:
+                    self._record_error("save", exc, song_name=str(song_name))
                     msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
                     try:
                         print(msg)
