@@ -174,8 +174,10 @@ ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot
 # Download staging buffer for `ga_run_payload_packed` (reduce padded Vulkan `to_numpy()` transfers).
 ga_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
 # Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
-MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
-MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
+DEFAULT_MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
+DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
+MAX_GA_RUNS = DEFAULT_MAX_GA_RUNS
+MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
 # Download staging buffers (smaller than `ga_runs_payload_packed` to reduce padded Vulkan `to_numpy()` transfers).
 GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Covers GA_POPULATION_SIZE (250) with slack.
@@ -285,6 +287,7 @@ def reset_fields_state() -> None:
     globals so `ensure_fields_allocated()` can safely re-allocate and re-bind.
     """
     global _fields_allocated, _grid_fields_allocated, _last_uploaded_grid_id
+    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
 
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
@@ -419,6 +422,11 @@ def reset_fields_state() -> None:
     chunk_best_results = None
     ftff_combo_ft = None
     ftff_combo_ff = None
+
+    # Restore configurable GA buffer shapes so future sessions/modules do not inherit
+    # the previous caller's reduced multi-run sizing after a hard reset.
+    MAX_GA_RUNS = int(DEFAULT_MAX_GA_RUNS)
+    MAX_GA_RUN_GENOMES = int(DEFAULT_MAX_GA_RUN_GENOMES)
 
     _fields_allocated = False
     _grid_fields_allocated = False
