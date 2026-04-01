@@ -3030,10 +3030,27 @@ class GearOptimizerApp:
         self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-        """Legacy entry point retained for compatibility; all runs now use native in-flight."""
+        """Run the current queue through native in-flight when supported, else direct per-song processing."""
         if self._stop_requested_now():
             return
         if not tasks:
+            return
+
+        cfg_dict0 = tasks[0][3] if tasks else {}
+        ie0 = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
+        raw_meta_finder = ie0.get("MetaFinder", ie0.get("metafinder", True)) if isinstance(ie0, dict) else True
+        meta_finder_enabled = str(raw_meta_finder).strip().lower() in TRUTHY_ENV_VALUES
+
+        if not bool(meta_finder_enabled):
+            logger.info(
+                "[InFlight] Native pipeline skipped: calculate-only / gem-only mode keeps the direct per-song path."
+            )
+            self._consume_results(
+                (safe_process_song_task(task) for task in tasks),
+                completed_songs=completed_songs,
+                memory_resume_tracker=memory_resume_tracker,
+                total_tasks=self._effective_total_tasks(tasks if isinstance(tasks, list) else []),
+            )
             return
 
         song_task_count = max(0, int(len(tasks)))
@@ -3041,7 +3058,6 @@ class GearOptimizerApp:
         inflight_songs = 0
         inflight_instances = 1
         try:
-            cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
             inflight_songs = safe_int(raw, 0)
