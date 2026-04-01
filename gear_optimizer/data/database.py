@@ -2154,14 +2154,33 @@ def save_team_buff_loadouts_batch(
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
-                    score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_ids_blob = CASE WHEN excluded.fg_score >= fg_score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
-                    minis_ids_blob = CASE WHEN excluded.fg_score >= fg_score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
-                    details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
+                    score = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.score
+                        WHEN excluded.fg_score = fg_score AND excluded.score > score THEN excluded.score
+                        ELSE score
+                    END,
+                    gear_ids_blob = CASE
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                            THEN excluded.gear_ids_blob
+                        ELSE gear_ids_blob
+                    END,
+                    minis_ids_blob = CASE
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                            THEN excluded.minis_ids_blob
+                        ELSE minis_ids_blob
+                    END,
+                    details_json = CASE
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                            THEN excluded.details_json
+                        ELSE details_json
+                    END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
+                        WHEN excluded.fg_score = fg_score AND excluded.score > score AND excluded.force_details_json IS NOT NULL
+                            THEN excluded.force_details_json
+                        WHEN excluded.fg_score = fg_score AND excluded.score = score AND force_details_json IS NULL
+                            AND excluded.force_details_json IS NOT NULL
                             THEN excluded.force_details_json
                         ELSE force_details_json
                     END,
@@ -2259,12 +2278,13 @@ def save_team_buff_loadouts_batch(
 
                 got_score = int(row["score"] or 0)
                 got_fg_score = int(row["fg_score"] or 0)
-                if got_score < int(expected_score):
-                    _warn_or_raise(
-                        f"[DB] Score regressed after persistence (possible override/race): table={table} "
-                        f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
-                        f"expected>={int(expected_score)} got={got_score}"
-                    )
+                if table != "team_buff_fg_loadouts" or got_fg_score <= int(expected_fg_score):
+                    if got_score < int(expected_score):
+                        _warn_or_raise(
+                            f"[DB] Score regressed after persistence (possible override/race): table={table} "
+                            f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
+                            f"expected>={int(expected_score)} got={got_score}"
+                        )
                 if got_fg_score < int(expected_fg_score):
                     _warn_or_raise(
                         f"[DB] FG score regressed after persistence (possible override/race): table={table} "
