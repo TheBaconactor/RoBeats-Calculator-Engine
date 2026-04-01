@@ -7,6 +7,8 @@ import copy
 import io
 import json
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -103,9 +105,19 @@ def summarize_depth_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "base_score": _summary_stats([_safe_float(row.get("best_score", 0), 0.0) for row in runs]),
         "fg_score": _summary_stats([_safe_float(row.get("best_fg_score", 0), 0.0) for row in runs]),
         "duplicate_genome_ratio": _summary_stats(
-            [_safe_float(row.get("duplicate_genome_ratio", 0.0), 0.0) for row in runs if row.get("duplicate_genome_ratio") is not None]
+            [
+                _safe_float(row.get("duplicate_genome_ratio", 0.0), 0.0)
+                for row in runs
+                if row.get("duplicate_genome_ratio") is not None
+            ]
         ),
         "elapsed_wall_sec": _summary_stats([_safe_float(row.get("elapsed_wall_sec", 0.0), 0.0) for row in runs]),
+        "pending_fg_jobs_song_after": _summary_stats(
+            [_safe_float(row.get("pending_fg_jobs_song_after", 0.0), 0.0) for row in runs]
+        ),
+        "pending_fg_jobs_song_delta": _summary_stats(
+            [_safe_float(row.get("pending_fg_jobs_song_delta", 0.0), 0.0) for row in runs]
+        ),
         "unique_base_hashes": int(len(set(base_hashes))),
         "unique_fg_hashes": int(len(set(fg_hashes))),
         "base_mode_hash": base_mode_hash,
@@ -114,6 +126,8 @@ def summarize_depth_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "fg_mode_hash": fg_mode_hash,
         "fg_mode_count": int(fg_mode_count),
         "fg_stability_ratio": (float(fg_mode_count) / float(len(runs))) if runs else 0.0,
+        "error_runs": int(sum(1 for row in runs if str(row.get("error", "") or "").strip())),
+        "fg_debt_runs": int(sum(1 for row in runs if _safe_int(row.get("pending_fg_jobs_song_delta", 0), 0) > 0)),
         "stage_timing": stage_means,
         "gpu_timing": gpu_means,
     }
@@ -232,6 +246,59 @@ def _read_last_audit_record(audit_path: Path, song_name: str) -> dict[str, Any] 
     return last
 
 
+def _resolve_db_source_path(explicit_db_path: str | None = None) -> Path | None:
+    if explicit_db_path:
+        path = Path(str(explicit_db_path))
+        return path if path.exists() else None
+    env_path = os.environ.get("EVOLUTION_DB_PATH")
+    if env_path:
+        path = Path(str(env_path))
+        return path if path.exists() else None
+    default_path = PROJECT_ROOT / "evolution.db"
+    return default_path if default_path.exists() else None
+
+
+def _prepare_seed_db(*, db_source_path: Path | None, temp_root: Path, depth: int, ga_seed: int) -> Path:
+    run_db_path = temp_root / f"depth_{int(depth)}_seed_{int(ga_seed)}.db"
+    if db_source_path is not None and db_source_path.exists():
+        shutil.copy2(str(db_source_path), str(run_db_path))
+    return run_db_path
+
+
+def _count_pending_fg_jobs_for_song(db_path: Path, song_name: str) -> int:
+    if not db_path.exists():
+        return 0
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_fg_jobs'"
+            ).fetchone()
+            if not row or int(row[0] or 0) <= 0:
+                return 0
+            result = conn.execute(
+                "SELECT COUNT(*) FROM pending_fg_jobs WHERE song_name = ?",
+                (str(song_name),),
+            ).fetchone()
+            return int((result or [0])[0] or 0)
+    except Exception:
+        return 0
+
+
+def _cleanup_temp_root(temp_root: Path) -> None:
+    for _ in range(10):
+        try:
+            shutil.rmtree(str(temp_root))
+            return
+        except PermissionError:
+            time.sleep(0.2)
+        except FileNotFoundError:
+            return
+    try:
+        shutil.rmtree(str(temp_root), ignore_errors=True)
+    except Exception:
+        pass
+
+
 def run_single_seed(
     *,
     fp: str,
@@ -248,6 +315,7 @@ def run_single_seed(
     ga_depth: int,
     ga_seed: int,
     audit_path: Path,
+    run_db_path: Path,
 ) -> dict[str, Any]:
     from gear_optimizer.pipeline.song_processor import safe_process_song_task
 
@@ -274,8 +342,11 @@ def run_single_seed(
 
     old_audit = os.environ.get("GA_REDUNDANCY_AUDIT")
     old_audit_path = os.environ.get("GA_REDUNDANCY_AUDIT_PATH")
+    old_db_path = os.environ.get("EVOLUTION_DB_PATH")
     os.environ["GA_REDUNDANCY_AUDIT"] = "1"
     os.environ["GA_REDUNDANCY_AUDIT_PATH"] = str(audit_path)
+    os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)
+    pending_fg_before = _count_pending_fg_jobs_for_song(run_db_path, song_name)
     t0 = time.perf_counter()
     try:
         with contextlib.redirect_stdout(io.StringIO()):
@@ -289,6 +360,10 @@ def run_single_seed(
             os.environ.pop("GA_REDUNDANCY_AUDIT_PATH", None)
         else:
             os.environ["GA_REDUNDANCY_AUDIT_PATH"] = old_audit_path
+        if old_db_path is None:
+            os.environ.pop("EVOLUTION_DB_PATH", None)
+        else:
+            os.environ["EVOLUTION_DB_PATH"] = old_db_path
     elapsed = time.perf_counter() - t0
 
     if not isinstance(res, dict):
@@ -298,6 +373,7 @@ def run_single_seed(
     base_hash, fg_hash = _extract_top_hashes(res.get("persist_entries") or [])
     record = res.get("_record") if isinstance(res.get("_record"), dict) else {}
     audit_record = _read_last_audit_record(audit_path, song_name)
+    pending_fg_after = _count_pending_fg_jobs_for_song(run_db_path, song_name)
 
     return {
         "seed": int(ga_seed),
@@ -314,7 +390,97 @@ def run_single_seed(
         "duplicate_signature_ratio": None
         if audit_record is None
         else _safe_float(audit_record.get("duplicate_signature_ratio", 0.0), 0.0),
+        "pending_fg_jobs_song_before": int(pending_fg_before),
+        "pending_fg_jobs_song_after": int(pending_fg_after),
+        "pending_fg_jobs_song_delta": int(pending_fg_after - pending_fg_before),
         "error": str(res.get("_error", "") or ""),
+    }
+
+
+def run_benchmark(
+    *,
+    song_name: str,
+    difficulty: str,
+    config_path: Path,
+    depths: list[int],
+    seeds: list[int],
+    ga_multi_start: int,
+    use_db: bool,
+    fg_candidate_limit: int,
+    fg_search_radius: int,
+    hitsim_enabled: bool,
+    hitsim_seed: int,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    base_cfg_dict = _load_cfg_dict(config_path)
+    paths, ref_arrays, all_gears, all_minis, gears_by_name, minis_by_name = _load_runtime_inputs()
+    fp = _resolve_song_file(paths, str(difficulty), str(song_name))
+
+    db_source_path = _resolve_db_source_path(db_path)
+    all_depth_runs: dict[str, list[dict[str, Any]]] = {}
+    temp_root = Path(tempfile.mkdtemp(prefix="ga_stability_"))
+    try:
+        audit_path = temp_root / "ga_redundancy.jsonl"
+        for depth in depths:
+            rows: list[dict[str, Any]] = []
+            for seed in seeds:
+                cfg_dict = _prepare_cfg_dict(
+                    base_cfg_dict=base_cfg_dict,
+                    song_name=str(song_name),
+                    difficulty=str(difficulty),
+                    ga_depth=int(depth),
+                    ga_multi_start=int(ga_multi_start),
+                    use_evo_db=bool(use_db),
+                    fg_candidate_limit=int(fg_candidate_limit),
+                    fg_search_radius=int(fg_search_radius),
+                    hitsim_enabled=bool(hitsim_enabled),
+                    hitsim_seed=int(hitsim_seed),
+                )
+                run_db_path = _prepare_seed_db(
+                    db_source_path=db_source_path,
+                    temp_root=temp_root,
+                    depth=int(depth),
+                    ga_seed=int(seed),
+                )
+                row = run_single_seed(
+                    fp=fp,
+                    song_name=str(song_name),
+                    difficulty=str(difficulty),
+                    cfg_dict=cfg_dict,
+                    paths=paths,
+                    ref_arrays=ref_arrays,
+                    all_gears=all_gears,
+                    all_minis=all_minis,
+                    gears_by_name=gears_by_name,
+                    minis_by_name=minis_by_name,
+                    use_evo_db=bool(use_db),
+                    ga_depth=int(depth),
+                    ga_seed=int(seed),
+                    audit_path=audit_path,
+                    run_db_path=run_db_path,
+                )
+                rows.append(row)
+            all_depth_runs[str(depth)] = rows
+    finally:
+        _cleanup_temp_root(temp_root)
+
+    summary = {depth: summarize_depth_runs(rows) for depth, rows in all_depth_runs.items()}
+    return {
+        "song_name": str(song_name),
+        "difficulty": str(difficulty),
+        "config_path": str(config_path),
+        "depths": [int(d) for d in depths],
+        "seeds": [int(s) for s in seeds],
+        "ga_multi_start": int(ga_multi_start),
+        "use_db": bool(use_db),
+        "fg_candidate_limit": int(fg_candidate_limit),
+        "fg_search_radius": int(fg_search_radius),
+        "hitsim_enabled": bool(hitsim_enabled),
+        "hitsim_seed": int(hitsim_seed),
+        "db_source_path": "" if db_source_path is None else str(db_source_path),
+        "seed_db_isolated": True,
+        "runs_by_depth": all_depth_runs,
+        "summary_by_depth": summary,
     }
 
 
@@ -331,6 +497,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fg-search-radius", type=int, default=5)
     ap.add_argument("--hitsim-enabled", action="store_true")
     ap.add_argument("--hitsim-seed", type=int, default=1)
+    ap.add_argument(
+        "--db-path",
+        default="",
+        help="Optional DB snapshot to copy per seed. Defaults to EVOLUTION_DB_PATH or ./evolution.db when present.",
+    )
     ap.add_argument(
         "--out",
         default=str(Path("artifacts") / "runcheck" / "ga_winner_stability.json"),
@@ -356,72 +527,28 @@ def main(argv: list[str] | None = None) -> int:
     out_path = Path(str(args.out))
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    base_cfg_dict = _load_cfg_dict(config_path)
-    paths, ref_arrays, all_gears, all_minis, gears_by_name, minis_by_name = _load_runtime_inputs()
-    fp = _resolve_song_file(paths, str(args.difficulty), str(args.song_name))
-
-    all_depth_runs: dict[str, list[dict[str, Any]]] = {}
-    with tempfile.TemporaryDirectory(prefix="ga_stability_") as tmp:
-        audit_path = Path(tmp) / "ga_redundancy.jsonl"
-        for depth in depths:
-            rows: list[dict[str, Any]] = []
-            for seed in seeds:
-                cfg_dict = _prepare_cfg_dict(
-                    base_cfg_dict=base_cfg_dict,
-                    song_name=str(args.song_name),
-                    difficulty=str(args.difficulty),
-                    ga_depth=int(depth),
-                    ga_multi_start=int(args.ga_multi_start),
-                    use_evo_db=bool(args.use_db),
-                    fg_candidate_limit=int(args.fg_candidate_limit),
-                    fg_search_radius=int(args.fg_search_radius),
-                    hitsim_enabled=bool(args.hitsim_enabled),
-                    hitsim_seed=int(args.hitsim_seed),
-                )
-                row = run_single_seed(
-                    fp=fp,
-                    song_name=str(args.song_name),
-                    difficulty=str(args.difficulty),
-                    cfg_dict=cfg_dict,
-                    paths=paths,
-                    ref_arrays=ref_arrays,
-                    all_gears=all_gears,
-                    all_minis=all_minis,
-                    gears_by_name=gears_by_name,
-                    minis_by_name=minis_by_name,
-                    use_evo_db=bool(args.use_db),
-                    ga_depth=int(depth),
-                    ga_seed=int(seed),
-                    audit_path=audit_path,
-                )
-                rows.append(row)
-            all_depth_runs[str(depth)] = rows
-
-    summary = {depth: summarize_depth_runs(rows) for depth, rows in all_depth_runs.items()}
-    payload = {
-        "song_name": str(args.song_name),
-        "difficulty": str(args.difficulty),
-        "config_path": str(config_path),
-        "depths": depths,
-        "seeds": seeds,
-        "ga_multi_start": int(args.ga_multi_start),
-        "use_db": bool(args.use_db),
-        "fg_candidate_limit": int(args.fg_candidate_limit),
-        "fg_search_radius": int(args.fg_search_radius),
-        "hitsim_enabled": bool(args.hitsim_enabled),
-        "hitsim_seed": int(args.hitsim_seed),
-        "runs_by_depth": all_depth_runs,
-        "summary_by_depth": summary,
-    }
+    payload = run_benchmark(
+        song_name=str(args.song_name),
+        difficulty=str(args.difficulty),
+        config_path=config_path,
+        depths=depths,
+        seeds=seeds,
+        ga_multi_start=int(args.ga_multi_start),
+        use_db=bool(args.use_db),
+        fg_candidate_limit=int(args.fg_candidate_limit),
+        fg_search_radius=int(args.fg_search_radius),
+        hitsim_enabled=bool(args.hitsim_enabled),
+        hitsim_seed=int(args.hitsim_seed),
+        db_path=str(args.db_path or ""),
+    )
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     print(f"[stability] wrote {out_path}")
     for depth in depths:
         depth_key = str(depth)
-        row = summary[depth_key]
+        row = payload["summary_by_depth"][depth_key]
         print(
-            "[stability] depth={} base_stability={:.2f} unique_base_hashes={} "
-            "dup_mean={:.2%} wall_mean={:.3f}s".format(
+            "[stability] depth={} base_stability={:.2f} unique_base_hashes={} dup_mean={:.2%} wall_mean={:.3f}s".format(
                 int(depth),
                 float(row.get("base_stability_ratio", 0.0) or 0.0),
                 int(row.get("unique_base_hashes", 0) or 0),

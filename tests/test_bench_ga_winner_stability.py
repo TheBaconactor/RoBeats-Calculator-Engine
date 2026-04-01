@@ -44,6 +44,8 @@ def test_summarize_depth_runs_reports_stability_and_timing_means():
                 "fg_hash": "fg_a",
                 "duplicate_genome_ratio": 0.10,
                 "elapsed_wall_sec": 5.0,
+                "pending_fg_jobs_song_after": 0,
+                "pending_fg_jobs_song_delta": 0,
                 "stage_timing": {"cpu_ga_wall_sec": 3.0, "cpu_fg_wall_sec": 1.0},
                 "gpu_timing": {"kernel_sec": 2.0},
             },
@@ -54,6 +56,8 @@ def test_summarize_depth_runs_reports_stability_and_timing_means():
                 "fg_hash": "fg_b",
                 "duplicate_genome_ratio": 0.20,
                 "elapsed_wall_sec": 7.0,
+                "pending_fg_jobs_song_after": 1,
+                "pending_fg_jobs_song_delta": 1,
                 "stage_timing": {"cpu_ga_wall_sec": 4.0, "cpu_fg_wall_sec": 1.5},
                 "gpu_timing": {"kernel_sec": 3.0},
             },
@@ -64,6 +68,8 @@ def test_summarize_depth_runs_reports_stability_and_timing_means():
                 "fg_hash": "fg_b",
                 "duplicate_genome_ratio": 0.30,
                 "elapsed_wall_sec": 6.0,
+                "pending_fg_jobs_song_after": 0,
+                "pending_fg_jobs_song_delta": 0,
                 "stage_timing": {"cpu_ga_wall_sec": 5.0, "cpu_fg_wall_sec": 2.0},
                 "gpu_timing": {"kernel_sec": 4.0},
             },
@@ -77,5 +83,8 @@ def test_summarize_depth_runs_reports_stability_and_timing_means():
     assert summary["base_stability_ratio"] == pytest.approx(2 / 3)
     assert summary["duplicate_genome_ratio"]["mean"] == pytest.approx(0.20)
     assert summary["elapsed_wall_sec"]["mean"] == pytest.approx(6.0)
+    assert summary["pending_fg_jobs_song_delta"]["max"] == pytest.approx(1.0)
+    assert summary["fg_debt_runs"] == 1
+    assert summary["error_runs"] == 0
     assert summary["stage_timing"]["cpu_ga_wall_sec"]["mean"] == pytest.approx(4.0)
     assert summary["gpu_timing"]["kernel_sec"]["mean"] == pytest.approx(3.0)
