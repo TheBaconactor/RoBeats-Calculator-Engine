@@ -78,6 +78,7 @@ from ..helpers.ga_helpers import (
 from ..helpers.ga_helpers.steady_state import (
     build_steady_state_initial_population_ids,
     build_steady_state_next_population_ids,
+    extend_seen_archive_keys,
     resolve_steady_state_settings,
 )
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
@@ -1639,6 +1640,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
         float(steady_state.refresh_pct) * 100.0,
     )
 
+    seen_archive_keys: set[tuple[int, ...]] = set()
     for epoch_idx in range(int(num_runs)):
         if reset_every_runs > 0 and epoch_idx > 0 and (epoch_idx % reset_every_runs) == 0:
             gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at steady-state epoch {epoch_idx + 1}/{num_runs}")
@@ -1714,14 +1716,23 @@ def _run_gpu_native_ga_runs_payload_steady_state(
             slot_count=np.asarray(slot_count, dtype=np.int32),
             refresh_count=int(steady_state.refresh_count),
             seed=((42 if ga_seed is None else int(ga_seed)) ^ ((int(epoch_idx) + 1) * 747796405)),
+            seen_archive_keys=seen_archive_keys,
+            elite_keep_count=int(elite_count),
+        )
+        extend_seen_archive_keys(
+            seen_archive_keys=seen_archive_keys,
+            population_ids=np.asarray(pop_snapshot, dtype=np.int32),
         )
         logger.info(
-            "  Steady-state refresh %d/%d: survivors=%d dropped_dupes=%d fresh=%d fallback_dupes=%d",
+            "  Steady-state refresh %d/%d: survivors=%d dropped_dupes=%d archive_rejected=%d fresh=%d fresh_collisions=%d fallback_archive=%d fallback_dupes=%d",
             int(epoch_idx + 1),
             int(num_runs - 1),
             int(refresh_stats.survivors_kept),
             int(refresh_stats.survivor_duplicates_dropped),
+            int(refresh_stats.survivor_archive_rejected),
             int(refresh_stats.fresh_added),
+            int(refresh_stats.fresh_archive_collisions),
+            int(refresh_stats.fallback_archive_reused),
             int(refresh_stats.fallback_duplicates_added),
         )
 

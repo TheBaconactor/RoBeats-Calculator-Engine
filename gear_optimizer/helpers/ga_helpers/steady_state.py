@@ -21,7 +21,10 @@ class SteadyStateSettings:
 class SteadyStateRefreshStats:
     survivors_kept: int
     survivor_duplicates_dropped: int
+    survivor_archive_rejected: int
     fresh_added: int
+    fresh_archive_collisions: int
+    fallback_archive_reused: int
     fallback_duplicates_added: int
 
 
@@ -126,6 +129,34 @@ def _sample_fresh_population_row(
     return row
 
 
+def _canonical_row_key(row: Any) -> tuple[int, ...]:
+    canon = canonicalize_genome_ids(row)
+    if canon is not None:
+        return tuple(int(x) for x in canon)
+    arr = np.asarray(row, dtype=np.int32).reshape(-1)
+    return tuple(int(x) for x in arr.tolist())
+
+
+def _normalize_seen_archive_keys(seen_archive_keys: Any) -> set[tuple[int, ...]]:
+    out: set[tuple[int, ...]] = set()
+    if seen_archive_keys is None:
+        return out
+    for value in seen_archive_keys:
+        try:
+            out.add(_canonical_row_key(value))
+        except Exception:
+            continue
+    return out
+
+
+def extend_seen_archive_keys(*, seen_archive_keys: set[tuple[int, ...]], population_ids: Any) -> None:
+    pop_ids = np.asarray(population_ids, dtype=np.int32)
+    if pop_ids.ndim != 2:
+        raise ValueError(f"population_ids must be 2D; got ndim={pop_ids.ndim}")
+    for row in pop_ids:
+        seen_archive_keys.add(_canonical_row_key(row))
+
+
 def build_steady_state_next_population_ids(
     *,
     current_population_ids: Any,
@@ -134,6 +165,8 @@ def build_steady_state_next_population_ids(
     slot_count: Any,
     refresh_count: int,
     seed: int,
+    seen_archive_keys: Any = None,
+    elite_keep_count: int = 0,
 ) -> tuple[np.ndarray, SteadyStateRefreshStats]:
     pop_ids = np.asarray(current_population_ids, dtype=np.int32)
     if pop_ids.ndim != 2:
@@ -146,37 +179,57 @@ def build_steady_state_next_population_ids(
     scores_arr = np.asarray(scores, dtype=np.int32).reshape(-1)
     slot_start_arr = np.asarray(slot_start, dtype=np.int32).reshape(-1)
     slot_count_arr = np.asarray(slot_count, dtype=np.int32).reshape(-1)
+    seen_archive = _normalize_seen_archive_keys(seen_archive_keys)
 
     refresh_count_i = max(0, min(int(n_genomes) - 1, int(refresh_count)))
     if refresh_count_i <= 0:
         return np.asarray(pop_ids, dtype=np.int32).copy(), SteadyStateRefreshStats(
             survivors_kept=int(n_genomes),
             survivor_duplicates_dropped=0,
+            survivor_archive_rejected=0,
             fresh_added=0,
+            fresh_archive_collisions=0,
+            fallback_archive_reused=0,
             fallback_duplicates_added=0,
         )
 
     survivor_target = max(1, int(n_genomes) - int(refresh_count_i))
+    elite_keep_target = max(0, min(int(survivor_target), int(elite_keep_count)))
     order = np.argsort(-scores_arr, kind="stable")
 
     selected: list[np.ndarray] = []
-    seen: set[tuple[int, ...]] = set()
+    selected_keys: set[tuple[int, ...]] = set()
     duplicate_survivors = 0
+    archive_rejected = 0
+
     for idx in order.tolist():
         row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
-        key = canonicalize_genome_ids(row)
-        if key is None:
-            key = tuple(int(x) for x in row.tolist())
-        if key in seen:
+        key = _canonical_row_key(row)
+        if key in selected_keys:
             duplicate_survivors += 1
             continue
-        seen.add(key)
+        selected_keys.add(key)
+        selected.append(row.copy())
+        if len(selected) >= int(elite_keep_target):
+            break
+
+    for idx in order.tolist():
+        row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
+        key = _canonical_row_key(row)
+        if key in selected_keys:
+            duplicate_survivors += 1
+            continue
+        if key in seen_archive:
+            archive_rejected += 1
+            continue
+        selected_keys.add(key)
         selected.append(row.copy())
         if len(selected) >= int(survivor_target):
             break
 
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
     fresh_added = 0
+    fresh_archive_collisions = 0
     attempts = 0
     max_attempts = max(256, int(refresh_count_i) * 64)
     while len(selected) < int(n_genomes) and attempts < int(max_attempts):
@@ -186,17 +239,28 @@ def build_steady_state_next_population_ids(
             slot_count=slot_count_arr,
             n_slots=int(n_slots),
         )
-        key = canonicalize_genome_ids(candidate)
-        if key is None:
-            key = tuple(int(x) for x in candidate.tolist())
+        key = _canonical_row_key(candidate)
         attempts += 1
-        if key in seen:
+        if key in selected_keys or key in seen_archive:
+            fresh_archive_collisions += 1
             continue
-        seen.add(key)
+        selected_keys.add(key)
         selected.append(candidate)
         fresh_added += 1
 
+    fallback_archive_reused = 0
     fallback_duplicates = 0
+    if len(selected) < int(n_genomes):
+        for idx in order.tolist():
+            row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
+            key = _canonical_row_key(row)
+            if key in selected_keys:
+                continue
+            selected_keys.add(key)
+            selected.append(row.copy())
+            fallback_archive_reused += 1
+            if len(selected) >= int(n_genomes):
+                break
     if len(selected) < int(n_genomes):
         for idx in order.tolist():
             selected.append(np.asarray(pop_ids[int(idx)], dtype=np.int32).copy())
@@ -207,6 +271,9 @@ def build_steady_state_next_population_ids(
     return np.asarray(selected[: int(n_genomes)], dtype=np.int32), SteadyStateRefreshStats(
         survivors_kept=min(int(survivor_target), len(selected)),
         survivor_duplicates_dropped=int(duplicate_survivors),
+        survivor_archive_rejected=int(archive_rejected),
         fresh_added=int(fresh_added),
+        fresh_archive_collisions=int(fresh_archive_collisions),
+        fallback_archive_reused=int(fallback_archive_reused),
         fallback_duplicates_added=int(fallback_duplicates),
     )

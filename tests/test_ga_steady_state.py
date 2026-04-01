@@ -5,6 +5,7 @@ import numpy as np
 from gear_optimizer.helpers.ga_helpers.steady_state import (
     build_steady_state_initial_population_ids,
     build_steady_state_next_population_ids,
+    extend_seen_archive_keys,
     resolve_steady_state_settings,
 )
 
@@ -80,3 +81,74 @@ def test_build_steady_state_next_population_ids_keeps_unique_survivors_and_refre
     assert stats.survivors_kept == 2
     assert stats.survivor_duplicates_dropped >= 1
     assert stats.fresh_added >= 1
+
+
+def test_build_steady_state_next_population_ids_prefers_new_rows_over_archive_repeats():
+    previous_population = np.asarray(
+        [
+            [1, 2, 3, 4, 5, 6, 11, 12, 13],
+            [21, 2, 3, 4, 5, 6, 31, 32, 33],
+        ],
+        dtype=np.int32,
+    )
+    current_population = np.asarray(
+        [
+            [1, 2, 3, 4, 5, 6, 11, 12, 13],
+            [21, 2, 3, 4, 5, 6, 31, 32, 33],
+            [41, 2, 3, 4, 5, 6, 51, 52, 53],
+            [61, 2, 3, 4, 5, 6, 71, 72, 73],
+        ],
+        dtype=np.int32,
+    )
+    scores = np.asarray([400, 300, 200, 100], dtype=np.int32)
+    slot_start = np.asarray([1, 2, 3, 4, 5, 6, 11, 0, 0], dtype=np.int32)
+    slot_count = np.asarray([96, 1, 1, 1, 1, 1, 32, 0, 0], dtype=np.int32)
+
+    seen_archive: set[tuple[int, ...]] = set()
+    extend_seen_archive_keys(seen_archive_keys=seen_archive, population_ids=previous_population)
+
+    next_population, stats = build_steady_state_next_population_ids(
+        current_population_ids=current_population,
+        scores=scores,
+        slot_start=slot_start,
+        slot_count=slot_count,
+        refresh_count=1,
+        seed=123,
+        seen_archive_keys=seen_archive,
+        elite_keep_count=1,
+    )
+
+    keys = [_canon_key(row) for row in next_population]
+
+    assert keys[0] == _canon_key(current_population[0])
+    assert _canon_key(current_population[2]) in keys
+    assert _canon_key(current_population[3]) in keys
+    assert _canon_key(current_population[1]) not in keys
+    assert stats.survivor_archive_rejected >= 1
+
+
+def test_extend_seen_archive_keys_canonicalizes_mini_permutations():
+    archive: set[tuple[int, ...]] = set()
+    population = np.asarray(
+        [
+            [1, 2, 3, 4, 5, 6, 11, 12, 13],
+            [1, 2, 3, 4, 5, 6, 13, 12, 11],
+        ],
+        dtype=np.int32,
+    )
+
+    extend_seen_archive_keys(seen_archive_keys=archive, population_ids=population)
+
+    assert archive == {
+        (
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            11,
+            12,
+            13,
+        )
+    }
