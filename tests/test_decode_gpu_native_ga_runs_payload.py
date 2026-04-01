@@ -269,6 +269,98 @@ def test_decode_gpu_native_ga_runs_payload_prefers_max_candidate_over_header():
     assert decoded[0].get("GenomeIDs")
 
 
+def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {slot: [_item(f"{slot}{i}") for i in range(2 if slot == "Hat" else 1)] for slot in slots}
+    mini_pool = [_item(f"M{i}") for i in range(3)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
+    }
+
+    n_slots = 9
+    width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((4, 26), dtype=np.int32)
+
+    dup_ids_a = np.asarray(
+        [
+            registry.slot_start[0],
+            registry.slot_start[1],
+            registry.slot_start[2],
+            registry.slot_start[3],
+            registry.slot_start[4],
+            registry.slot_start[5],
+            registry.slot_start[6] + 0,
+            registry.slot_start[6] + 1,
+            registry.slot_start[6] + 2,
+        ],
+        dtype=np.int32,
+    )
+    dup_ids_better = np.asarray(
+        [
+            registry.slot_start[0],
+            registry.slot_start[1],
+            registry.slot_start[2],
+            registry.slot_start[3],
+            registry.slot_start[4],
+            registry.slot_start[5],
+            registry.slot_start[6] + 2,
+            registry.slot_start[6] + 0,
+            registry.slot_start[6] + 1,
+        ],
+        dtype=np.int32,
+    )
+    unique_ids = dup_ids_a.copy()
+    unique_ids[0] = registry.slot_start[0] + 1
+
+    selected_payload[0, 0] = 3
+    selected_payload[0, 1] = 110
+    selected_payload[0, 2 : 2 + n_slots] = dup_ids_a
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([110, 1, 2, 0, 0, 0, 0], dtype=np.int32)
+    selected_payload[0, 2 + n_slots + 7] = 0
+
+    packed1 = np.zeros((width,), dtype=np.int32)
+    packed1[0] = 110
+    packed1[1 : 1 + n_slots] = dup_ids_a
+    packed1[1 + n_slots : 1 + n_slots + 7] = np.asarray([110, 1, 2, 0, 0, 0, 0], dtype=np.int32)
+    selected_payload[1, 0] = 0
+    selected_payload[1, 1] = 1
+    selected_payload[1, 2 : 2 + width] = packed1
+
+    packed2 = np.zeros((width,), dtype=np.int32)
+    packed2[0] = 150
+    packed2[1 : 1 + n_slots] = dup_ids_better
+    packed2[1 + n_slots : 1 + n_slots + 7] = np.asarray([150, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+    selected_payload[2, 0] = 0
+    selected_payload[2, 1] = 2
+    selected_payload[2, 2 : 2 + width] = packed2
+
+    packed3 = np.zeros((width,), dtype=np.int32)
+    packed3[0] = 120
+    packed3[1 : 1 + n_slots] = unique_ids
+    packed3[1 + n_slots : 1 + n_slots + 7] = np.asarray([120, 5, 6, 0, 0, 0, 0], dtype=np.int32)
+    selected_payload[3, 0] = 0
+    selected_payload[3, 1] = 3
+    selected_payload[3, 2 : 2 + width] = packed3
+
+    best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+    )
+
+    assert len(decoded) == 2
+    assert [int(cand.get("Score", 0)) for cand in decoded] == [150, 120]
+    assert int(decoded[0]["Data"]["_ga_gpu_row_idx"]) == 2
+    assert int(best_data.get("Score", 0)) == 150
+
+
 def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(monkeypatch):
     monkeypatch.delenv("GA_DECODE_INCLUDE_STATS", raising=False)
 

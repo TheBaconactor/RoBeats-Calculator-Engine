@@ -75,6 +75,7 @@ from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
 )
+from ..helpers.ga_helpers.unique_eval import GlobalUniqueEvalTable, select_exact_unique_row_indices
 from ..helpers.ga_helpers.redundancy_audit import (
     analyze_ga_redundancy_from_runs_payload,
     summarize_ga_redundancy_record,
@@ -617,6 +618,17 @@ def decode_gpu_native_ga_runs_payload(
         scores_vec = np.asarray(packed[:, 0], dtype=np.int32)
         genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
         results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+        dedup_indices, dedup_stats = select_exact_unique_row_indices(
+            genome_ids_mat=genome_ids_mat,
+            scores=scores_vec,
+            exact=True,
+        )
+        if int(dedup_indices.size) != int(genome_ids_mat.shape[0]):
+            genome_ids_mat = genome_ids_mat[dedup_indices]
+            results_mat = results_mat[dedup_indices]
+            scores_vec = scores_vec[dedup_indices]
+            sel_run_idx = sel_run_idx[dedup_indices]
+            sel_rows = sel_rows[dedup_indices]
 
         # PERF/CPU NOTE:
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
@@ -767,7 +779,9 @@ def decode_gpu_native_ga_runs_payload(
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
             logger.info(
                 "[PERF][GADecode] "
-                f"selected={int(selected_n)} stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
+                f"selected={int(selected_n)} unique_rows={int(dedup_stats.unique)} "
+                f"duplicate_hits={int(dedup_stats.duplicate_hits)} replacements={int(dedup_stats.replacements)} "
+                f"stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
             )
 
         return best_data, list(best_gear), list(best_minis), unique_evaluated
@@ -2606,7 +2620,7 @@ def solve_coevolution_genetic(
         best_data = None
         best_gear = None
         best_minis = None
-        merged_candidates: list[dict] = []
+        exact_unique_table: GlobalUniqueEvalTable[dict] = GlobalUniqueEvalTable()
 
         for seg_payload in payload_segments:
             seg_best_data, seg_best_gear, seg_best_minis, seg_candidates = decode_gpu_native_ga_runs_payload(
@@ -2618,7 +2632,8 @@ def solve_coevolution_genetic(
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
             )
-            merged_candidates.extend(list(seg_candidates or []))
+            for candidate in list(seg_candidates or []):
+                exact_unique_table.upsert_candidate(candidate, exact=True)
             if best_data is None or int(seg_best_data.get("Score", 0)) > int(best_data.get("Score", 0)):
                 best_data = seg_best_data
                 best_gear = seg_best_gear
@@ -2627,7 +2642,7 @@ def solve_coevolution_genetic(
         if best_data is None or best_gear is None or best_minis is None:
             raise RuntimeError("Internal error: failed to decode GPU-native GA payload")
 
-        unique_evaluated = merged_candidates
+        unique_evaluated = exact_unique_table.ordered_payloads()
         if len(payload_segments) > 1:
             # Rare fallback: multiple flush segments (e.g., due to Vulkan reset). Re-select on CPU to
             # preserve a bounded funnel size across segments.
