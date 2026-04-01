@@ -61,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--difficulty", default="")
     ap.add_argument("--depths", default="")
     ap.add_argument("--seeds", default="")
+    ap.add_argument(
+        "--pipeline",
+        default="inflight",
+        choices=["inflight", "direct"],
+        help="Pipeline for the generated candidate run when --candidate is omitted.",
+    )
     ap.add_argument("--ga-multi-start", type=int, default=0)
     ap.add_argument("--use-db", action="store_true")
     ap.add_argument("--fg-candidate-limit", type=int, default=0)
@@ -242,12 +248,14 @@ def _resolve_candidate_payload(args: argparse.Namespace, baseline: dict[str, Any
         if str(args.seeds or "").strip()
         else [int(v) for v in baseline.get("seeds") or []]
     )
+    pipeline = str(args.pipeline or baseline.get("pipeline") or "inflight")
     payload = run_benchmark(
         song_name=song_name,
         difficulty=difficulty,
         config_path=config_path,
         depths=depths,
         seeds=seeds,
+        pipeline=pipeline,
         ga_multi_start=int(args.ga_multi_start or baseline.get("ga_multi_start") or 3),
         use_db=bool(args.use_db or baseline.get("use_db") or False),
         fg_candidate_limit=int(args.fg_candidate_limit or baseline.get("fg_candidate_limit") or 51),

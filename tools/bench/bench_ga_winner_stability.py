@@ -6,6 +6,7 @@ import contextlib
 import copy
 import io
 import json
+import multiprocessing
 import os
 import shutil
 import sqlite3
@@ -351,7 +352,130 @@ def _cleanup_temp_root(temp_root: Path) -> None:
         pass
 
 
-def run_single_seed(
+def _start_post_processor(total_tasks: int) -> tuple[Any, Any]:
+    from gear_optimizer.pipeline.post_processor import run_post_processor
+
+    post_queue_size = _safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
+    post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
+    post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
+    post_proc = multiprocessing.Process(
+        target=run_post_processor,
+        args=(post_queue, int(total_tasks)),
+        daemon=True,
+        name="SongPostProcessorBench",
+    )
+    post_proc.start()
+    return post_queue, post_proc
+
+
+def _stop_post_processor(post_queue: Any, post_proc: Any) -> None:
+    sentinel_sent = False
+    try:
+        if post_queue is not None:
+            t0 = time.perf_counter()
+            while True:
+                try:
+                    post_queue.put(None, block=True, timeout=0.5)
+                    sentinel_sent = True
+                    break
+                except Exception:
+                    try:
+                        if post_proc is None or not post_proc.is_alive():
+                            break
+                    except Exception:
+                        break
+                    if (time.perf_counter() - t0) >= 15.0:
+                        break
+                    continue
+    except Exception:
+        pass
+    try:
+        if post_proc is not None:
+            post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
+    except Exception:
+        pass
+    try:
+        if post_proc is not None and post_proc.is_alive():
+            post_proc.terminate()
+            post_proc.join(timeout=5.0)
+    except Exception:
+        pass
+
+
+def _query_team_buff_bests(db_path: Path, song_name: str, *, team_buff: str = "T5") -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "best_score": 0,
+        "best_fg_score": 0,
+        "base_hash": "",
+        "fg_hash": "",
+        "base_rows": 0,
+        "fg_rows": 0,
+        "pending_fg_jobs": 0,
+    }
+    if not db_path.exists():
+        return out
+
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            base = conn.execute(
+                """
+                SELECT loadout_hash, score
+                FROM team_buff_loadouts
+                WHERE song_name = ? AND team_buff = ?
+                ORDER BY score DESC, timestamp DESC
+                LIMIT 1
+                """,
+                (str(song_name), str(team_buff)),
+            ).fetchone()
+            if base:
+                out["base_hash"] = str(base[0] or "")
+                out["best_score"] = _safe_int(base[1], 0)
+
+            fg = conn.execute(
+                """
+                SELECT loadout_hash, fg_score
+                FROM team_buff_fg_loadouts
+                WHERE song_name = ? AND team_buff = ?
+                ORDER BY fg_score DESC, timestamp DESC
+                LIMIT 1
+                """,
+                (str(song_name), str(team_buff)),
+            ).fetchone()
+            if fg:
+                out["fg_hash"] = str(fg[0] or "")
+                out["best_fg_score"] = _safe_int(fg[1], 0)
+
+            base_rows = conn.execute(
+                "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name = ? AND team_buff = ?",
+                (str(song_name), str(team_buff)),
+            ).fetchone()
+            if base_rows:
+                out["base_rows"] = _safe_int(base_rows[0], 0)
+
+            fg_rows = conn.execute(
+                "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name = ? AND team_buff = ?",
+                (str(song_name), str(team_buff)),
+            ).fetchone()
+            if fg_rows:
+                out["fg_rows"] = _safe_int(fg_rows[0], 0)
+
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_fg_jobs'"
+            ).fetchone()
+            if pending and _safe_int(pending[0], 0) > 0:
+                pending_rows = conn.execute(
+                    "SELECT COUNT(*) FROM pending_fg_jobs WHERE song_name = ?",
+                    (str(song_name),),
+                ).fetchone()
+                if pending_rows:
+                    out["pending_fg_jobs"] = _safe_int(pending_rows[0], 0)
+    except Exception:
+        return out
+
+    return out
+
+
+def run_single_seed_direct(
     *,
     fp: str,
     song_name: str,
@@ -449,6 +573,121 @@ def run_single_seed(
     }
 
 
+def run_single_seed_inflight(
+    *,
+    fp: str,
+    song_name: str,
+    difficulty: str,
+    cfg_dict: dict[str, Any],
+    paths: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    all_gears: list[Any],
+    all_minis: list[Any],
+    gears_by_name: dict[str, Any],
+    minis_by_name: dict[str, Any],
+    use_evo_db: bool,
+    ga_depth: int,
+    ga_seed: int,
+    audit_path: Path,
+    run_db_path: Path,
+) -> dict[str, Any]:
+    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+
+    repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
+    task = (
+        fp,
+        song_name,
+        difficulty,
+        cfg_dict,
+        paths,
+        ref_arrays,
+        all_gears,
+        all_minis,
+        gears_by_name,
+        minis_by_name,
+        bool(use_evo_db),
+        True,
+        int(ga_depth),
+        None,
+        1,
+        False,
+        repeat_ctx,
+    )
+
+    old_audit = os.environ.get("GA_REDUNDANCY_AUDIT")
+    old_audit_path = os.environ.get("GA_REDUNDANCY_AUDIT_PATH")
+    old_db_path = os.environ.get("EVOLUTION_DB_PATH")
+    os.environ["GA_REDUNDANCY_AUDIT"] = "1"
+    os.environ["GA_REDUNDANCY_AUDIT_PATH"] = str(audit_path)
+    os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)
+    try:
+        from gear_optimizer.data.database import init_db
+
+        init_db()
+    except Exception:
+        pass
+
+    pending_fg_before = _count_pending_fg_jobs_for_song(run_db_path, song_name)
+    post_queue, post_proc = _start_post_processor(total_tasks=1)
+    completed_songs: set[str] = set()
+    t0 = time.perf_counter()
+    error_msg = ""
+    try:
+        run_native_inflight_song_pipeline(
+            [task],
+            in_flight_songs=1,
+            completed_songs=completed_songs,
+            memory_resume_tracker=None,
+            post_queue=post_queue,
+            total_tasks=1,
+            stop_requested=None,
+            progress_cb=None,
+            bundle_completed_cb=None,
+        )
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+    finally:
+        _stop_post_processor(post_queue, post_proc)
+        if old_audit is None:
+            os.environ.pop("GA_REDUNDANCY_AUDIT", None)
+        else:
+            os.environ["GA_REDUNDANCY_AUDIT"] = old_audit
+        if old_audit_path is None:
+            os.environ.pop("GA_REDUNDANCY_AUDIT_PATH", None)
+        else:
+            os.environ["GA_REDUNDANCY_AUDIT_PATH"] = old_audit_path
+        if old_db_path is None:
+            os.environ.pop("EVOLUTION_DB_PATH", None)
+        else:
+            os.environ["EVOLUTION_DB_PATH"] = old_db_path
+
+    elapsed = time.perf_counter() - t0
+    audit_record = _read_last_audit_record(audit_path, song_name)
+    summary = _query_team_buff_bests(run_db_path, song_name, team_buff="T5")
+    pending_fg_after = _count_pending_fg_jobs_for_song(run_db_path, song_name)
+
+    return {
+        "seed": int(ga_seed),
+        "elapsed_wall_sec": float(elapsed),
+        "best_score": _safe_int(summary.get("best_score", 0), 0),
+        "best_fg_score": _safe_int(summary.get("best_fg_score", 0), 0),
+        "base_hash": str(summary.get("base_hash", "") or ""),
+        "fg_hash": str(summary.get("fg_hash", "") or ""),
+        "stage_timing": {},
+        "gpu_timing": {},
+        "duplicate_genome_ratio": None
+        if audit_record is None
+        else _safe_float(audit_record.get("duplicate_genome_ratio", 0.0), 0.0),
+        "duplicate_signature_ratio": None
+        if audit_record is None
+        else _safe_float(audit_record.get("duplicate_signature_ratio", 0.0), 0.0),
+        "pending_fg_jobs_song_before": int(pending_fg_before),
+        "pending_fg_jobs_song_after": int(pending_fg_after),
+        "pending_fg_jobs_song_delta": int(pending_fg_after - pending_fg_before),
+        "error": str(error_msg or ""),
+    }
+
+
 def run_benchmark(
     *,
     song_name: str,
@@ -462,13 +701,20 @@ def run_benchmark(
     fg_search_radius: int,
     hitsim_enabled: bool,
     hitsim_seed: int,
+    pipeline: str = "inflight",
     db_path: str | None = None,
 ) -> dict[str, Any]:
+    pipeline = str(pipeline or "").strip().lower()
+    if pipeline not in {"direct", "inflight"}:
+        raise ValueError(f"Unknown pipeline: {pipeline}")
+
     base_cfg_dict = _load_cfg_dict(config_path)
     paths, ref_arrays, all_gears, all_minis, gears_by_name, minis_by_name = _load_runtime_inputs()
     fp = _resolve_song_file(paths, str(difficulty), str(song_name))
 
-    db_source_path = _resolve_db_source_path(db_path)
+    explicit_db_path = bool(db_path and str(db_path).strip())
+    allow_db_source = bool(explicit_db_path or use_db)
+    db_source_path = _resolve_db_source_path(db_path if explicit_db_path else None) if allow_db_source else None
     all_depth_runs: dict[str, list[dict[str, Any]]] = {}
     temp_root = Path(tempfile.mkdtemp(prefix="ga_stability_"))
     try:
@@ -476,13 +722,14 @@ def run_benchmark(
         for depth in depths:
             rows: list[dict[str, Any]] = []
             for seed in seeds:
+                use_evo_db_for_run = True if pipeline == "inflight" else bool(use_db)
                 cfg_dict = _prepare_cfg_dict(
                     base_cfg_dict=base_cfg_dict,
                     song_name=str(song_name),
                     difficulty=str(difficulty),
                     ga_depth=int(depth),
                     ga_multi_start=int(ga_multi_start),
-                    use_evo_db=bool(use_db),
+                    use_evo_db=bool(use_evo_db_for_run),
                     fg_candidate_limit=int(fg_candidate_limit),
                     fg_search_radius=int(fg_search_radius),
                     hitsim_enabled=bool(hitsim_enabled),
@@ -494,23 +741,42 @@ def run_benchmark(
                     depth=int(depth),
                     ga_seed=int(seed),
                 )
-                row = run_single_seed(
-                    fp=fp,
-                    song_name=str(song_name),
-                    difficulty=str(difficulty),
-                    cfg_dict=cfg_dict,
-                    paths=paths,
-                    ref_arrays=ref_arrays,
-                    all_gears=all_gears,
-                    all_minis=all_minis,
-                    gears_by_name=gears_by_name,
-                    minis_by_name=minis_by_name,
-                    use_evo_db=bool(use_db),
-                    ga_depth=int(depth),
-                    ga_seed=int(seed),
-                    audit_path=audit_path,
-                    run_db_path=run_db_path,
-                )
+                if pipeline == "direct":
+                    row = run_single_seed_direct(
+                        fp=fp,
+                        song_name=str(song_name),
+                        difficulty=str(difficulty),
+                        cfg_dict=cfg_dict,
+                        paths=paths,
+                        ref_arrays=ref_arrays,
+                        all_gears=all_gears,
+                        all_minis=all_minis,
+                        gears_by_name=gears_by_name,
+                        minis_by_name=minis_by_name,
+                        use_evo_db=bool(use_evo_db_for_run),
+                        ga_depth=int(depth),
+                        ga_seed=int(seed),
+                        audit_path=audit_path,
+                        run_db_path=run_db_path,
+                    )
+                else:
+                    row = run_single_seed_inflight(
+                        fp=fp,
+                        song_name=str(song_name),
+                        difficulty=str(difficulty),
+                        cfg_dict=cfg_dict,
+                        paths=paths,
+                        ref_arrays=ref_arrays,
+                        all_gears=all_gears,
+                        all_minis=all_minis,
+                        gears_by_name=gears_by_name,
+                        minis_by_name=minis_by_name,
+                        use_evo_db=bool(use_evo_db_for_run),
+                        ga_depth=int(depth),
+                        ga_seed=int(seed),
+                        audit_path=audit_path,
+                        run_db_path=run_db_path,
+                    )
                 rows.append(row)
             all_depth_runs[str(depth)] = rows
     finally:
@@ -518,6 +784,7 @@ def run_benchmark(
 
     summary = {depth: summarize_depth_runs(rows) for depth, rows in all_depth_runs.items()}
     return {
+        "pipeline": str(pipeline),
         "song_name": str(song_name),
         "difficulty": str(difficulty),
         "config_path": str(config_path),
@@ -543,6 +810,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--config", default="config.ini")
     ap.add_argument("--depths", default="6,12,18,24")
     ap.add_argument("--seeds", default="1337,1338,1339,1340,1341")
+    ap.add_argument(
+        "--pipeline",
+        default="inflight",
+        choices=["inflight", "direct"],
+        help="Execution pipeline: inflight matches production main.py; direct calls safe_process_song_task.",
+    )
     ap.add_argument("--ga-multi-start", type=int, default=3)
     ap.add_argument("--use-db", action="store_true", help="Enable EvolutionDB reads during the run.")
     ap.add_argument("--fg-candidate-limit", type=int, default=51)
@@ -591,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         fg_search_radius=int(args.fg_search_radius),
         hitsim_enabled=bool(args.hitsim_enabled),
         hitsim_seed=int(args.hitsim_seed),
+        pipeline=str(args.pipeline),
         db_path=str(args.db_path or ""),
     )
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

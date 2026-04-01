@@ -2,7 +2,25 @@ from __future__ import annotations
 
 import pytest
 
-from tools.bench.bench_ga_winner_stability import _extract_top_hashes, summarize_depth_runs
+from tools.bench.bench_ga_winner_stability import _extract_top_hashes, run_benchmark, summarize_depth_runs
+
+
+def test_run_benchmark_rejects_unknown_pipeline():
+    with pytest.raises(ValueError):
+        run_benchmark(
+            song_name="00 (Hard) by garlagan",
+            difficulty="Hard",
+            config_path=None,  # type: ignore[arg-type]
+            depths=[6],
+            seeds=[1337],
+            ga_multi_start=1,
+            use_db=False,
+            fg_candidate_limit=51,
+            fg_search_radius=5,
+            hitsim_enabled=False,
+            hitsim_seed=1,
+            pipeline="nope",
+        )
 
 
 def test_extract_top_hashes_uses_best_base_and_fg_entries():
