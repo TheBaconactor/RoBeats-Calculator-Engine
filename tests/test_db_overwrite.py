@@ -174,3 +174,54 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
     assert row["score"] == 1000
     assert row["fg_score"] == 2000
     assert json.loads(row["details_json"])["test"] == "higher_base"
+
+
+def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_connection, monkeypatch):
+    """
+    Strict DB write-integrity verification should not fail when the DB already contains a better FG row.
+
+    Scenario:
+    - Row A persists with higher `fg_score` but lower base `score`.
+    - Row B attempts to persist a higher base `score` but lower `fg_score`.
+
+    The FG table should keep Row A (because FG leaderboard is ordered by `fg_score`), and strict verification should
+    not treat the base-score mismatch as an override/race.
+    """
+    monkeypatch.setenv("DB_VERIFY_WRITE_INTEGRITY", "1")
+    monkeypatch.setenv("DB_STRICT_WRITE_INTEGRITY", "1")
+
+    song = "Test Song FG Verifier"
+    gear = ["G1", "G2"]
+    minis = ["M1"]
+
+    entry_best_fg_lower_base = {
+        "score": 900,
+        "fg_score": 2000,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "best_fg"},
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000}},
+    }
+    save_loadouts_batch(song, [entry_best_fg_lower_base])
+
+    entry_worse_fg_higher_base = {
+        "score": 1000,
+        "fg_score": 1500,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "worse_fg_higher_base"},
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 1500}},
+    }
+    save_loadouts_batch(song, [entry_worse_fg_higher_base])
+
+    row = db_connection.execute(
+        """
+        SELECT score, fg_score, details_json
+        FROM team_buff_fg_loadouts
+        WHERE song_name=? AND team_buff='T5'
+        """,
+        (song,),
+    ).fetchone()
+    assert row["fg_score"] == 2000
+    assert row["score"] == 900
+    assert json.loads(row["details_json"])["test"] == "best_fg"
