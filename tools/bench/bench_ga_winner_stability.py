@@ -55,9 +55,64 @@ def _top_frequency(values: list[str]) -> tuple[str, int]:
     return str(key), int(count)
 
 
-def _extract_top_hashes(persist_entries: list[dict[str, Any]]) -> tuple[str, str]:
-    from gear_optimizer.data.database import get_loadout_hash
+def _loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
+    import hashlib
 
+    g = sorted([str(n) for n in (gear_names or []) if str(n)])
+    m = sorted([str(n) for n in (mini_names or []) if str(n)])
+    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _extract_entry_colors(entry: dict[str, Any]) -> tuple[str, str, str]:
+    details_raw = entry.get("details", {}) if isinstance(entry, dict) else {}
+    details: dict[str, Any] = {}
+    if isinstance(details_raw, dict):
+        details = details_raw
+    elif isinstance(details_raw, str) and details_raw.strip():
+        try:
+            details = json.loads(details_raw)
+        except Exception:
+            details = {}
+    p_color = str(details.get("PrimaryColor") or details.get("primary_color") or "").strip()
+    s_color = str(details.get("SecondaryColor") or details.get("secondary_color") or "").strip()
+    sel_color = str(details.get("SelectedElement") or details.get("selected_element") or "").strip()
+    if not sel_color:
+        sel_color = p_color or s_color
+    return p_color, s_color, sel_color
+
+
+def _effective_loadout_hash_from_entry(entry: dict[str, Any], minis_by_name: dict[str, Any] | None) -> str:
+    gear_raw = entry.get("gear") if isinstance(entry, dict) else []
+    minis_raw = entry.get("minis") if isinstance(entry, dict) else []
+    gear_names = [str(x.get("Name") if isinstance(x, dict) else x or "").strip() for x in (gear_raw or [])]
+    mini_names = [str(x.get("Name") if isinstance(x, dict) else x or "").strip() for x in (minis_raw or [])]
+
+    gear_names = [n for n in gear_names if n]
+    mini_names = [n for n in mini_names if n]
+
+    if not gear_names and not mini_names:
+        return ""
+
+    if not minis_by_name:
+        return _loadout_hash_from_names(gear_names, mini_names)
+
+    p_color, s_color, sel_color = _extract_entry_colors(entry)
+    if not p_color and not s_color:
+        return _loadout_hash_from_names(gear_names, mini_names)
+
+    from gear_optimizer.data.loadout_equivalence import (
+        effective_loadout_hash_from_names,
+        effective_mini_signature_for_name,
+    )
+
+    mini_sigs = [effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names]
+    return str(effective_loadout_hash_from_names(gear_names, mini_sigs))
+
+
+def _extract_top_hashes(
+    persist_entries: list[dict[str, Any]], *, minis_by_name: dict[str, Any] | None = None
+) -> tuple[str, str]:
     base_hash = ""
     fg_hash = ""
     base_best = -(1 << 60)
@@ -67,10 +122,7 @@ def _extract_top_hashes(persist_entries: list[dict[str, Any]]) -> tuple[str, str
             continue
         loadout_hash = str(entry.get("loadout_hash", "") or "")
         if not loadout_hash:
-            try:
-                loadout_hash = str(get_loadout_hash(entry.get("gear") or [], entry.get("minis") or []) or "")
-            except Exception:
-                loadout_hash = ""
+            loadout_hash = _effective_loadout_hash_from_entry(entry, minis_by_name)
         score = _safe_int(entry.get("score", 0), 0)
         fg_score = _safe_int(entry.get("fg_score", 0), 0)
         if score > base_best:
@@ -370,7 +422,7 @@ def run_single_seed(
         return {"seed": int(ga_seed), "error": "non-dict-result", "elapsed_wall_sec": float(elapsed)}
 
     best_data = res.get("best_data") if isinstance(res.get("best_data"), dict) else {}
-    base_hash, fg_hash = _extract_top_hashes(res.get("persist_entries") or [])
+    base_hash, fg_hash = _extract_top_hashes(res.get("persist_entries") or [], minis_by_name=minis_by_name)
     record = res.get("_record") if isinstance(res.get("_record"), dict) else {}
     audit_record = _read_last_audit_record(audit_path, song_name)
     pending_fg_after = _count_pending_fg_jobs_for_song(run_db_path, song_name)
