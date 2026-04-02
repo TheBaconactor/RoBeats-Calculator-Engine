@@ -50,40 +50,9 @@ def _mk_mini(*, name: str, rng: np.random.Generator) -> dict:
     }
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_gpu_native_ga_winner_exact_check_is_debug_only(monkeypatch) -> None:
-    """
-    Debug-only guard: when enabled, the GA winner exact-check should call the canonical
-    solver, but it must not overwrite the selected GA payload.
-    """
+def _solve_synthetic_ga(*, song_name: str) -> dict:
     from gear_optimizer.data.models import GASettings
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
-    import gear_optimizer.solver.scoring.fever_solver as fever_solver
-
-    called = {"n": 0}
-    refined_score = 2_000_000_000
-
-    def _fake_solve_best_fever_combination(cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None):
-        called["n"] += 1
-        selected_color = ""
-        if isinstance(override_cfg, dict):
-            selected_color = str(override_cfg.get("selected_color") or "")
-        return {
-            "Score": int(refined_score),
-            "FT": 0,
-            "FF": 0,
-            "GemCounts": {
-                "Perfect Points": 0,
-                "Combo Multiplier": 0,
-                "Fever Multiplier": 0,
-                "Element": 0,
-            },
-            "Stats": dict(base_stats or {}),
-            "Selected Element": selected_color,
-        }
-
-    monkeypatch.setattr(fever_solver, "solve_best_fever_combination", _fake_solve_best_fever_combination)
-    monkeypatch.setenv("GPU_GA_WINNER_EXACT_CHECK", "1")
 
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {
@@ -130,7 +99,7 @@ def test_gpu_native_ga_winner_exact_check_is_debug_only(monkeypatch) -> None:
     timestamps = np.linspace(0.0, 120.0, 900, dtype=np.float32)
     calc_song = {
         "metadata": {
-            "Song Name": "WinnerRefinementGuard",
+            "Song Name": str(song_name),
             "Primary Color": "Beat",
             "Secondary Color": "Vibe",
             "Long Notes": 25,
@@ -183,6 +152,82 @@ def test_gpu_native_ga_winner_exact_check_is_debug_only(monkeypatch) -> None:
         song_slot=0,
         ga_seed=123,
     )
+    return best_data
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_native_ga_winner_refinement_overwrites_payload_on_improvement(monkeypatch) -> None:
+    """
+    Regression test:
+    GPU-native GA winner payload must be refined via the canonical gem solver when it improves score.
+    """
+    import gear_optimizer.solver.scoring.fever_solver as fever_solver
+
+    called = {"n": 0}
+    refined_score = 2_000_000_000
+
+    def _fake_solve_best_fever_combination(cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None):
+        called["n"] += 1
+        selected_color = ""
+        if isinstance(override_cfg, dict):
+            selected_color = str(override_cfg.get("selected_color") or "")
+        return {
+            "Score": int(refined_score),
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {
+                "Perfect Points": 0,
+                "Combo Multiplier": 0,
+                "Fever Multiplier": 0,
+                "Element": 0,
+            },
+            "Stats": dict(base_stats or {}),
+            "Selected Element": selected_color,
+        }
+
+    monkeypatch.setattr(fever_solver, "solve_best_fever_combination", _fake_solve_best_fever_combination)
+    monkeypatch.setenv("GPU_GA_WINNER_REFINEMENT", "1")
+    best_data = _solve_synthetic_ga(song_name="WinnerRefinementGuard")
+
+    assert called["n"] > 0, "winner refinement did not call solve_best_fever_combination()"
+    assert int(best_data.get("Score", 0) or 0) == refined_score, "winner refinement must overwrite the GA payload"
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_native_ga_winner_exact_check_stays_debug_only_when_refinement_disabled(monkeypatch) -> None:
+    """
+    Debug-only guard:
+    When winner refinement is disabled, the GA winner exact-check may call the canonical solver,
+    but it must not overwrite the selected GA payload.
+    """
+    import gear_optimizer.solver.scoring.fever_solver as fever_solver
+
+    called = {"n": 0}
+    refined_score = 2_000_000_000
+
+    def _fake_solve_best_fever_combination(cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None):
+        called["n"] += 1
+        selected_color = ""
+        if isinstance(override_cfg, dict):
+            selected_color = str(override_cfg.get("selected_color") or "")
+        return {
+            "Score": int(refined_score),
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {
+                "Perfect Points": 0,
+                "Combo Multiplier": 0,
+                "Fever Multiplier": 0,
+                "Element": 0,
+            },
+            "Stats": dict(base_stats or {}),
+            "Selected Element": selected_color,
+        }
+
+    monkeypatch.setattr(fever_solver, "solve_best_fever_combination", _fake_solve_best_fever_combination)
+    monkeypatch.setenv("GPU_GA_WINNER_REFINEMENT", "0")
+    monkeypatch.setenv("GPU_GA_WINNER_EXACT_CHECK", "1")
+    best_data = _solve_synthetic_ga(song_name="WinnerRefinementDebugOnly")
 
     assert called["n"] > 0, "winner exact-check did not call solve_best_fever_combination()"
     assert int(best_data.get("Score", 0) or 0) != refined_score, "exact-check must not mutate the GA payload"
