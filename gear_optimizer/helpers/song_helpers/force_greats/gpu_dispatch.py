@@ -995,7 +995,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     # ---------------------------------------------------------------------
     # Async batching controls.
     # ---------------------------------------------------------------------
-    from .gpu_dispatch_async import resolve_fg_async_batching_settings
+    from .gpu_dispatch_async import plan_fg_async_threshold_flush, resolve_fg_async_batching_settings
 
     async_settings = resolve_fg_async_batching_settings(gpu_client=gpu_client, song_slot=int(song_slot), perf=perf)
     in_process = bool(async_settings.in_process)
@@ -1111,43 +1111,55 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             return None
 
         if batch is None:
-            if not fg_tasks_batch:
+            if fg_tasks_batch:
+                batch = fg_tasks_batch
+                fg_tasks_batch = []
+            elif not download_after:
                 return None
-            batch = fg_tasks_batch
-            fg_tasks_batch = []
+            else:
+                batch = []
 
-        if not batch:
+        if batch:
+            task_tiles = _split_items_by_work_budget(
+                list(batch),
+                max_work=int(fg_task_tile_max_threads),
+                estimate_fn=lambda item: _estimate_fg_task_threads(
+                    item,
+                    n_sections=int(n_sections),
+                    n_genomes=int(genome_stats_n_genomes),
+                ),
+            )
+            if not task_tiles:
+                return None
+            fg_task_tile_batches += int(len(task_tiles))
+            if len(task_tiles) > 1:
+                fg_task_tile_splits += int(len(task_tiles) - 1)
+        elif download_after:
+            # Exact batch-boundary tail: queue a download-only request instead of
+            # withholding the last solve task just to keep the final drain non-empty.
+            task_tiles = [[]]
+        else:
             return None
-        task_tiles = _split_items_by_work_budget(
-            list(batch),
-            max_work=int(fg_task_tile_max_threads),
-            estimate_fn=lambda item: _estimate_fg_task_threads(
-                item,
-                n_sections=int(n_sections),
-                n_genomes=int(genome_stats_n_genomes),
-            ),
-        )
-        if not task_tiles:
-            return None
-        fg_task_tile_batches += int(len(task_tiles))
-        if len(task_tiles) > 1:
-            fg_task_tile_splits += int(len(task_tiles) - 1)
 
         last_future = None
         for tile_idx, task_tile in enumerate(task_tiles):
             first = task_tile[0] if task_tile else {}
-            if not isinstance(first, dict):
+            if task_tile and not isinstance(first, dict):
                 continue
 
-            placeholder_counts = first.get("counts_list")
-            placeholder_pairs = first.get("ftff_pairs")
-            # When using task batching (`fg_tasks=`), the executor ignores the positional
-            # (counts_list, ftff_pairs) arguments and reads per-task windows instead.
-            # Still, we must pass non-None placeholders to satisfy the API signature.
-            if placeholder_counts is None:
+            if task_tile:
+                placeholder_counts = first.get("counts_list")
+                placeholder_pairs = first.get("ftff_pairs")
+                # When using task batching (`fg_tasks=`), the executor ignores the positional
+                # (counts_list, ftff_pairs) arguments and reads per-task windows instead.
+                # Still, we must pass non-None placeholders to satisfy the API signature.
+                if placeholder_counts is None:
+                    placeholder_counts = [tuple([0] * int(n_sections))]
+                if placeholder_pairs is None:
+                    continue
+            else:
                 placeholder_counts = [tuple([0] * int(n_sections))]
-            if placeholder_pairs is None:
-                continue
+                placeholder_pairs = []
 
             submit_kwargs = dict(
                 n_sections=n_sections,
@@ -2877,13 +2889,15 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 }
                             )
                             if len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                                flush_plan = plan_fg_async_threshold_flush(
+                                    pending_tasks=len(fg_tasks_batch),
+                                    tasks_per_request=fg_async_tasks_per_request,
+                                )
                                 fut = None
-                                if fg_async_tasks_per_request >= 2:
-                                    spill = fg_tasks_batch[:-1]
-                                    fg_tasks_batch = fg_tasks_batch[-1:]
-                                    fut = _flush_fg_tasks_batch(batch=spill)
-                                else:
-                                    fut = _flush_fg_tasks_batch()
+                                if int(flush_plan.submit_count) > 0:
+                                    submit_batch = fg_tasks_batch[: int(flush_plan.submit_count)]
+                                    fg_tasks_batch = fg_tasks_batch[int(flush_plan.submit_count) :]
+                                    fut = _flush_fg_tasks_batch(batch=submit_batch)
                                 if fut is not None:
                                     group_futures.append(fut)
                     else:
@@ -3092,12 +3106,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 }
                             )
                             if len(fg_tasks_batch) >= fg_async_tasks_per_request:
-                                if fg_async_tasks_per_request >= 2:
-                                    spill = fg_tasks_batch[:-1]
-                                    fg_tasks_batch = fg_tasks_batch[-1:]
-                                    _flush_fg_tasks_batch(batch=spill)
-                                else:
-                                    _flush_fg_tasks_batch()
+                                flush_plan = plan_fg_async_threshold_flush(
+                                    pending_tasks=len(fg_tasks_batch),
+                                    tasks_per_request=fg_async_tasks_per_request,
+                                )
+                                if int(flush_plan.submit_count) > 0:
+                                    submit_batch = fg_tasks_batch[: int(flush_plan.submit_count)]
+                                    fg_tasks_batch = fg_tasks_batch[int(flush_plan.submit_count) :]
+                                    _flush_fg_tasks_batch(batch=submit_batch)
                     else:
                         for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
                             _submit_solve_force_greats_finder(

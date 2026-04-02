@@ -49,6 +49,48 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def _resolve_artifact_paths(path_or_paths: Path | list[Path] | tuple[Path, ...] | None) -> list[Path]:
+    if path_or_paths is None:
+        return []
+
+    raw_paths: list[Path]
+    if isinstance(path_or_paths, Path):
+        raw_paths = [path_or_paths]
+    elif isinstance(path_or_paths, (list, tuple)):
+        raw_paths = [Path(p) for p in path_or_paths if p is not None]
+    else:
+        raw_paths = [Path(path_or_paths)]
+
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            key = str(path.resolve())
+        except Exception:
+            key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(path)
+
+    for base_path in raw_paths:
+        if base_path.exists():
+            _add(base_path)
+        try:
+            parent = base_path.parent
+            stem = str(base_path.stem or "")
+            suffix = str(base_path.suffix or "")
+            pattern = f"{stem}.w*{suffix}" if suffix else f"{stem}.w*"
+            for candidate in sorted(parent.glob(pattern)):
+                if candidate.is_file():
+                    _add(candidate)
+        except Exception:
+            continue
+
+    return out
+
+
 @dataclass(frozen=True)
 class RunPaths:
     out_dir: Path
@@ -1629,8 +1671,9 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
     return out
 
 
-def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
-    if not trace_path.exists():
+def _parse_gpu_executor_trace(trace_path: Path | list[Path] | tuple[Path, ...]) -> dict[str, Any]:
+    trace_paths = _resolve_artifact_paths(trace_path)
+    if not trace_paths:
         return {"ok": False, "error": "missing_trace"}
 
     samples = 0
@@ -1709,76 +1752,77 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         dst.append(float(value))
 
     try:
-        with trace_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if not row:
-                    continue
-                samples += 1
-                planner_mode = str(row.get("planner_mode") or "").strip()
-                if planner_mode:
-                    planner_mode_counts[planner_mode] += 1
-                _append_float(row, "queue_depth_hint", queue_depth_hint_series, non_negative=False)
-                _append_float(row, "pressure_hint", pressure_hint_series, non_negative=True)
-                _append_float(row, "work_units", work_units_series, non_negative=True)
-                _append_float(row, "diversity_pct", diversity_pct_series, non_negative=True)
-                _append_float(row, "dominant_share_pct", dominant_share_pct_series, non_negative=True)
-                _append_float(row, "avg_submit_age_ms", submit_age_ms_series, non_negative=True)
-                event = (row.get("event") or "").strip().lower()
-                if event == "wait":
-                    wait_events += 1
+        for cur_trace_path in trace_paths:
+            with cur_trace_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if not row:
+                        continue
+                    samples += 1
+                    planner_mode = str(row.get("planner_mode") or "").strip()
+                    if planner_mode:
+                        planner_mode_counts[planner_mode] += 1
+                    _append_float(row, "queue_depth_hint", queue_depth_hint_series, non_negative=False)
+                    _append_float(row, "pressure_hint", pressure_hint_series, non_negative=True)
+                    _append_float(row, "work_units", work_units_series, non_negative=True)
+                    _append_float(row, "diversity_pct", diversity_pct_series, non_negative=True)
+                    _append_float(row, "dominant_share_pct", dominant_share_pct_series, non_negative=True)
+                    _append_float(row, "avg_submit_age_ms", submit_age_ms_series, non_negative=True)
+                    event = (row.get("event") or "").strip().lower()
+                    if event == "wait":
+                        wait_events += 1
+                        try:
+                            wall_ts = float(row.get("wall_ts") or "0")
+                        except Exception:
+                            wall_ts = 0.0
+                        try:
+                            w = float(row.get("wait_sec") or "0")
+                        except Exception:
+                            w = 0.0
+                        w = max(0.0, float(w))
+                        wait_sec_series.append(w)
+                        try:
+                            batch_size = int(row.get("batch_size") or "0")
+                        except Exception:
+                            batch_size = 0
+                        types = (row.get("types") or "").strip()
+                        wait_rows.append(
+                            {
+                                "wall_ts": float(wall_ts),
+                                "wait_sec": float(w),
+                                "batch_size": int(batch_size),
+                                "types": str(types),
+                            }
+                        )
+                        continue
+                    if event != "exec":
+                        continue
+                    exec_events += 1
+                    types = (row.get("types") or "").strip()
                     try:
                         wall_ts = float(row.get("wall_ts") or "0")
                     except Exception:
-                        wall_ts = 0.0
+                        continue
                     try:
-                        w = float(row.get("wait_sec") or "0")
+                        exec_sec = float(row.get("exec_sec") or "0")
                     except Exception:
-                        w = 0.0
-                    w = max(0.0, float(w))
-                    wait_sec_series.append(w)
-                    try:
-                        batch_size = int(row.get("batch_size") or "0")
-                    except Exception:
-                        batch_size = 0
-                    types = (row.get("types") or "").strip()
-                    wait_rows.append(
-                        {
-                            "wall_ts": float(wall_ts),
-                            "wait_sec": float(w),
-                            "batch_size": int(batch_size),
-                            "types": str(types),
-                        }
-                    )
-                    continue
-                if event != "exec":
-                    continue
-                exec_events += 1
-                types = (row.get("types") or "").strip()
-                try:
-                    wall_ts = float(row.get("wall_ts") or "0")
-                except Exception:
-                    continue
-                try:
-                    exec_sec = float(row.get("exec_sec") or "0")
-                except Exception:
-                    exec_sec = 0.0
-                exec_sec = max(0.0, float(exec_sec))
-                if exec_sec > 0:
-                    end_ts = float(wall_ts)
-                    start_ts = float(end_ts - exec_sec)
-                    exec_raw_intervals.append((start_ts, end_ts, str(types)))
-                req_count = _batch_req_count(types)
-                if req_count > 0:
-                    exec_batch_req_series.append(float(req_count))
+                        exec_sec = 0.0
+                    exec_sec = max(0.0, float(exec_sec))
+                    if exec_sec > 0:
+                        end_ts = float(wall_ts)
+                        start_ts = float(end_ts - exec_sec)
+                        exec_raw_intervals.append((start_ts, end_ts, str(types)))
+                    req_count = _batch_req_count(types)
+                    if req_count > 0:
+                        exec_batch_req_series.append(float(req_count))
 
-                if not _types_has_fg(types):
-                    continue
-                fg_exec_events += 1
-                fg_exec_total_sec += exec_sec
-                if exec_sec > 0:
-                    fg_raw_intervals.append((start_ts, end_ts))
-                    fg_intervals.append((start_ts, end_ts))
+                    if not _types_has_fg(types):
+                        continue
+                    fg_exec_events += 1
+                    fg_exec_total_sec += exec_sec
+                    if exec_sec > 0:
+                        fg_raw_intervals.append((start_ts, end_ts))
+                        fg_intervals.append((start_ts, end_ts))
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -1901,6 +1945,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     if not fg_intervals:
         return {
             "ok": True,
+            "paths": [str(p) for p in trace_paths],
             "samples": int(samples),
             "exec_events": int(exec_events),
             "wait_events": int(wait_events),
@@ -1971,6 +2016,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
 
     return {
         "ok": True,
+        "paths": [str(p) for p in trace_paths],
         "samples": int(samples),
         "exec_events": int(exec_events),
         "wait_events": int(wait_events),
@@ -2000,7 +2046,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
 
 
 def _parse_gpu_executor_exec_intervals_by_label(
-    trace_path: Path,
+    trace_path: Path | list[Path] | tuple[Path, ...],
 ) -> dict[str, list[tuple[float, float]]]:
     """
     Parse `gpu_executor_trace.csv` and return merged exec intervals grouped by a label.
@@ -2009,45 +2055,47 @@ def _parse_gpu_executor_exec_intervals_by_label(
     - If the `types` column contains exactly one distinct request type, use it.
     - Otherwise, bucket as "mixed".
     """
-    if not trace_path.exists():
+    trace_paths = _resolve_artifact_paths(trace_path)
+    if not trace_paths:
         return {}
 
     by_label: dict[str, list[tuple[float, float]]] = defaultdict(list)
     try:
-        with trace_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if not row:
-                    continue
-                if (row.get("event") or "").strip().lower() != "exec":
-                    continue
-                try:
-                    end_ts = float(row.get("wall_ts") or "0")
-                except Exception:
-                    continue
-                try:
-                    exec_sec = float(row.get("exec_sec") or "0")
-                except Exception:
-                    exec_sec = 0.0
-                exec_sec = max(0.0, float(exec_sec))
-                if exec_sec <= 0:
-                    continue
-                start_ts = float(end_ts - exec_sec)
-
-                types = (row.get("types") or "").strip()
-                names: list[str] = []
-                for tok in types.split(";"):
-                    tok = tok.strip()
-                    if not tok:
+        for cur_trace_path in trace_paths:
+            with cur_trace_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if not row:
                         continue
-                    name = tok.split(":", 1)[0].strip()
-                    if name:
-                        names.append(name)
-                if not names:
-                    continue
-                uniq = sorted(set(names))
-                label = uniq[0] if len(uniq) == 1 else "mixed"
-                by_label[label].append((start_ts, float(end_ts)))
+                    if (row.get("event") or "").strip().lower() != "exec":
+                        continue
+                    try:
+                        end_ts = float(row.get("wall_ts") or "0")
+                    except Exception:
+                        continue
+                    try:
+                        exec_sec = float(row.get("exec_sec") or "0")
+                    except Exception:
+                        exec_sec = 0.0
+                    exec_sec = max(0.0, float(exec_sec))
+                    if exec_sec <= 0:
+                        continue
+                    start_ts = float(end_ts - exec_sec)
+
+                    types = (row.get("types") or "").strip()
+                    names: list[str] = []
+                    for tok in types.split(";"):
+                        tok = tok.strip()
+                        if not tok:
+                            continue
+                        name = tok.split(":", 1)[0].strip()
+                        if name:
+                            names.append(name)
+                    if not names:
+                        continue
+                    uniq = sorted(set(names))
+                    label = uniq[0] if len(uniq) == 1 else "mixed"
+                    by_label[label].append((start_ts, float(end_ts)))
     except Exception:
         return {}
 
@@ -2457,30 +2505,116 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _parse_stage_profile_json(stage_profile_path: Path) -> dict[str, Any]:
-    if not stage_profile_path.exists():
+def _parse_stage_profile_json(stage_profile_path: Path | list[Path] | tuple[Path, ...]) -> dict[str, Any]:
+    stage_paths = _resolve_artifact_paths(stage_profile_path)
+    if not stage_paths:
         return {"ok": False, "error": "missing_stage_profile"}
+    worker_profiles: list[dict[str, Any]] = []
+    merged_stages: dict[str, dict[str, Any]] = {}
+    merged_songs: dict[str, dict[str, float]] = {}
+    total_wall_s_max = 0.0
+
     try:
-        with stage_profile_path.open("r", encoding="utf-8") as f:
-            obj = json.load(f)
+        for cur_stage_path in stage_paths:
+            with cur_stage_path.open("r", encoding="utf-8") as f:
+                obj = json.load(f)
+            if not isinstance(obj, dict):
+                continue
+            stages = obj.get("stages")
+            songs = obj.get("songs")
+            if not isinstance(stages, dict):
+                stages = {}
+            if not isinstance(songs, dict):
+                songs = {}
+
+            worker_profiles.append(
+                {
+                    "path": str(cur_stage_path),
+                    "total_wall_s": _safe_float(obj.get("total_wall_s", 0.0), 0.0),
+                    "stage_count": int(len(stages)),
+                    "song_count": int(len(songs)),
+                }
+            )
+            total_wall_s_max = max(total_wall_s_max, _safe_float(obj.get("total_wall_s", 0.0), 0.0))
+
+            for stage_name, info in stages.items():
+                if not isinstance(info, dict):
+                    continue
+                merged = merged_stages.setdefault(
+                    str(stage_name),
+                    {
+                        "count": 0,
+                        "total_s": 0.0,
+                        "max_s": 0.0,
+                        "cpu_total_s": 0.0,
+                        "cpu_max_s": 0.0,
+                        "_p50_weighted_sum": 0.0,
+                        "_cpu_p50_weighted_sum": 0.0,
+                        "p95_s": 0.0,
+                        "cpu_p95_s": 0.0,
+                    },
+                )
+                count = max(0, _safe_int(info.get("count", 0), 0))
+                merged["count"] = int(merged.get("count", 0) or 0) + int(count)
+                merged["total_s"] = float(merged.get("total_s", 0.0) or 0.0) + _safe_float(info.get("total_s", 0.0), 0.0)
+                merged["max_s"] = max(float(merged.get("max_s", 0.0) or 0.0), _safe_float(info.get("max_s", 0.0), 0.0))
+                merged["cpu_total_s"] = float(merged.get("cpu_total_s", 0.0) or 0.0) + _safe_float(
+                    info.get("cpu_total_s", 0.0), 0.0
+                )
+                merged["cpu_max_s"] = max(
+                    float(merged.get("cpu_max_s", 0.0) or 0.0),
+                    _safe_float(info.get("cpu_max_s", 0.0), 0.0),
+                )
+                merged["_p50_weighted_sum"] = float(merged.get("_p50_weighted_sum", 0.0) or 0.0) + (
+                    _safe_float(info.get("p50_s", 0.0), 0.0) * float(count)
+                )
+                merged["_cpu_p50_weighted_sum"] = float(merged.get("_cpu_p50_weighted_sum", 0.0) or 0.0) + (
+                    _safe_float(info.get("cpu_p50_s", 0.0), 0.0) * float(count)
+                )
+                merged["p95_s"] = max(float(merged.get("p95_s", 0.0) or 0.0), _safe_float(info.get("p95_s", 0.0), 0.0))
+                merged["cpu_p95_s"] = max(
+                    float(merged.get("cpu_p95_s", 0.0) or 0.0),
+                    _safe_float(info.get("cpu_p95_s", 0.0), 0.0),
+                )
+
+            for song_name, song_metrics in songs.items():
+                if not isinstance(song_metrics, dict):
+                    continue
+                merged_song = merged_songs.setdefault(str(song_name), {})
+                for metric_name, value in song_metrics.items():
+                    if not isinstance(value, (int, float)):
+                        continue
+                    merged_song[str(metric_name)] = float(merged_song.get(str(metric_name), 0.0) or 0.0) + float(value)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(obj, dict):
+
+    if not worker_profiles:
         return {"ok": False, "error": "invalid_payload"}
-    stages = obj.get("stages")
-    songs = obj.get("songs")
-    if not isinstance(stages, dict):
-        stages = {}
-    if not isinstance(songs, dict):
-        songs = {}
+
+    finalized_stages: dict[str, dict[str, Any]] = {}
+    for stage_name, info in merged_stages.items():
+        count = max(0, int(info.get("count", 0) or 0))
+        finalized = dict(info)
+        finalized["p50_s"] = (
+            float(info.get("_p50_weighted_sum", 0.0) or 0.0) / float(count) if count > 0 else 0.0
+        )
+        finalized["cpu_p50_s"] = (
+            float(info.get("_cpu_p50_weighted_sum", 0.0) or 0.0) / float(count) if count > 0 else 0.0
+        )
+        finalized.pop("_p50_weighted_sum", None)
+        finalized.pop("_cpu_p50_weighted_sum", None)
+        finalized_stages[str(stage_name)] = finalized
+
     return {
         "ok": True,
-        "path": str(stage_profile_path),
-        "total_wall_s": _safe_float(obj.get("total_wall_s", 0.0), 0.0),
-        "stages": stages,
-        "songs": songs,
-        "song_count": int(len(songs)),
-        "stage_count": int(len(stages)),
+        "path": str(stage_paths[0]),
+        "paths": [str(p) for p in stage_paths],
+        "workers": worker_profiles,
+        "total_wall_s": float(total_wall_s_max),
+        "stages": finalized_stages,
+        "songs": merged_songs,
+        "song_count": int(len(merged_songs)),
+        "stage_count": int(len(finalized_stages)),
     }
 
 
@@ -2923,7 +3057,11 @@ def main(argv: list[str] | None = None) -> int:
             "gpu_typeperf_csv": str(paths.typeperf_csv),
             "gpu_getcounter_csv": str(paths.getcounter_csv),
             "gpu_executor_trace_csv": str(trace_path) if trace_path is not None else "",
+            "gpu_executor_trace_csvs": (
+                [str(p) for p in _resolve_artifact_paths(trace_path)] if trace_path is not None else []
+            ),
             "inflight_stage_profile_json": str(stage_profile_path),
+            "inflight_stage_profile_jsons": [str(p) for p in _resolve_artifact_paths(stage_profile_path)],
             "profile_events_jsonl": str(events_path),
         },
         "run_id": str(run_id),

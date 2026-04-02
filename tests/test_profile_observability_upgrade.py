@@ -48,6 +48,21 @@ def _write_stage_profile_json(path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _write_stage_profile_json_custom(
+    path: Path,
+    *,
+    total_wall_s: float,
+    stages: dict,
+    songs: dict | None = None,
+) -> None:
+    payload = {
+        "total_wall_s": float(total_wall_s),
+        "stages": dict(stages or {}),
+        "songs": dict(songs or {}),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _write_perf_stdout(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -112,6 +127,47 @@ def test_fg_trace_parses_rich_workload_columns(tmp_path):
     assert (out.get("work_units") or {}).get("count", 0) >= 1
     assert (out.get("queue_depth_hint") or {}).get("mean", 0) >= 10
     assert (out.get("planner_mode_counts") or {}).get("throughput", 0) >= 1
+
+
+def test_fg_trace_reads_worker_suffixed_files(tmp_path):
+    _write_trace_csv(tmp_path / "gpu_executor_trace.w0.csv")
+    _write_trace_csv_rich(tmp_path / "gpu_executor_trace.w1.csv")
+
+    out = psr._parse_gpu_executor_trace(tmp_path / "gpu_executor_trace.csv")
+
+    assert out["ok"] is True
+    assert out["exec_events"] == 3
+    assert len(out.get("paths") or []) == 2
+
+
+def test_stage_profile_reads_worker_suffixed_files_and_aggregates(tmp_path):
+    _write_stage_profile_json_custom(
+        tmp_path / "inflight_stage_profile.w0.json",
+        total_wall_s=12.0,
+        stages={
+            "fg_prep": {"count": 2, "total_s": 1.0, "max_s": 0.7, "cpu_total_s": 0.4, "cpu_max_s": 0.3},
+        },
+        songs={"song_a": {"fg_prep": 1.0}},
+    )
+    _write_stage_profile_json_custom(
+        tmp_path / "inflight_stage_profile.w1.json",
+        total_wall_s=18.0,
+        stages={
+            "fg_prep": {"count": 3, "total_s": 2.5, "max_s": 1.2, "cpu_total_s": 0.8, "cpu_max_s": 0.5},
+            "ga_gpu": {"count": 1, "total_s": 4.0, "max_s": 4.0, "cpu_total_s": 0.0, "cpu_max_s": 0.0},
+        },
+        songs={"song_b": {"fg_prep": 2.5, "ga_gpu": 4.0}},
+    )
+
+    out = psr._parse_stage_profile_json(tmp_path / "inflight_stage_profile.json")
+
+    assert out["ok"] is True
+    assert out["total_wall_s"] == 18.0
+    assert len(out.get("paths") or []) == 2
+    assert (out["stages"]["fg_prep"] or {}).get("count") == 5
+    assert (out["stages"]["fg_prep"] or {}).get("total_s") == 3.5
+    assert (out["stages"]["ga_gpu"] or {}).get("count") == 1
+    assert out["song_count"] == 2
 
 
 def test_deep_mode_sets_debug_profile_bundle(tmp_path):

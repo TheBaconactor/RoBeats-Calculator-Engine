@@ -18,6 +18,28 @@ class FgAsyncBatchingSettings:
     enforce_single_request: bool
 
 
+@dataclass(frozen=True)
+class FgAsyncThresholdFlushPlan:
+    submit_count: int
+    keep_queued_count: int
+
+
+def plan_fg_async_threshold_flush(*, pending_tasks: int, tasks_per_request: int) -> FgAsyncThresholdFlushPlan:
+    """
+    Decide how many queued FG tasks to submit once the async request threshold is checked.
+
+    Policy:
+    - Below the threshold, keep everything queued.
+    - At or above the threshold, flush the full pending batch so the next request boundary
+      is not gated on building one more CPU-side task.
+    """
+    pending = max(0, int(pending_tasks))
+    threshold = max(1, int(tasks_per_request))
+    if pending < threshold:
+        return FgAsyncThresholdFlushPlan(submit_count=0, keep_queued_count=int(pending))
+    return FgAsyncThresholdFlushPlan(submit_count=int(pending), keep_queued_count=0)
+
+
 def resolve_fg_async_batching_settings(
     *,
     gpu_client: Optional["GpuServiceClient"],
@@ -53,9 +75,9 @@ def resolve_fg_async_batching_settings(
     if gpu_client is not None and "FG_ASYNC_TASKS_PER_REQUEST" not in os.environ:
         try:
             if in_process:
-                # In in-process (thread-queue) mode, overly large task batches can create multi-second
-                # continuous GPU work (TDR / UI freezes on Windows). Keep the default conservative.
-                fg_async_tasks_per_request_default = 256
+                # In in-process (thread-queue) mode, larger batches reduce submit-side bubbles between
+                # FG requests, but we still cap the default at the proven safe window for Windows/TDR.
+                fg_async_tasks_per_request_default = 512
             else:
                 # IPC mode: batch aggressively enough to reduce per-request overhead.
                 fg_async_tasks_per_request_default = 256
