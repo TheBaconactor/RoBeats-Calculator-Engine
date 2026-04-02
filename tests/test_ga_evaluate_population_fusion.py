@@ -38,7 +38,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
 
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga_operations, "kernels", _Kernels())
-    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda _budget: 1)
+    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)
@@ -94,7 +94,7 @@ def test_ga_evaluate_population_reuses_exact_eval_results_on_cold_start(monkeypa
 
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga_operations, "kernels", _Kernels())
-    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda _budget: 1)
+    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)

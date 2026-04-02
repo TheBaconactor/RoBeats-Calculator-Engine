@@ -54,6 +54,8 @@ from gear_optimizer.solver.windows_timer import (
 
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
+_WARMUP_SENTINEL_SCHEMA = 2
+_GA_WARMUP_PROFILE = "v2_compile_use_hints"
 
 
 def _system_timer_override_allowed() -> bool:
@@ -145,6 +147,35 @@ _WORKER_RESPONSE_ROUTER_STOP = threading.Event()
 def _default_executor_heartbeat_path() -> Path:
     repo_root = Path(__file__).resolve().parents[2]
     return repo_root / "bin" / "gpu_executor_heartbeat.json"
+
+
+def _warmup_sentinel_is_fresh(
+    *,
+    sentinel_path: Path,
+    warmup_fg: bool,
+    warmup_ga: bool,
+) -> bool:
+    try:
+        payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        schema = int(payload.get("schema", 0) or 0)
+    except Exception:
+        schema = 0
+    if schema < _WARMUP_SENTINEL_SCHEMA:
+        return False
+    if not bool(payload.get("ok", False)):
+        return False
+    if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
+        return False
+    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
+        return False
+    if str(payload.get("ga_warmup_profile", "") or "") != _GA_WARMUP_PROFILE:
+        return False
+    return True
 
 
 def _prune_pending_responses(now: float | None = None) -> None:
@@ -1805,7 +1836,16 @@ class GpuExecutor:
                 with lock_cm as cache_dir:
                     cache_dir = str(cache_dir or "").strip()
                     sentinel_path = Path(cache_dir) / "metafinder_warmup_done.json" if cache_dir else None
-                    if sentinel_path is not None and sentinel_path.exists():
+                    warmup_cached = bool(
+                        sentinel_path is not None
+                        and sentinel_path.exists()
+                        and _warmup_sentinel_is_fresh(
+                            sentinel_path=sentinel_path,
+                            warmup_fg=bool(warmup_fg),
+                            warmup_ga=bool(warmup_ga),
+                        )
+                    )
+                    if warmup_cached:
                         self._write_heartbeat(phase="warmup_cached", force=True)
                     else:
                         sentinel_error = ""
@@ -1850,13 +1890,14 @@ class GpuExecutor:
                             if sentinel_path is not None:
                                 try:
                                     payload = {
-                                        "schema": 1,
+                                        "schema": int(_WARMUP_SENTINEL_SCHEMA),
                                         "ok": not bool(sentinel_error),
                                         "error": str(sentinel_error or ""),
                                         "pid": int(os.getpid()),
                                         "warmed_at": int(time.time() * 1000.0),
                                         "warmup_fg": bool(warmup_fg),
                                         "warmup_ga": bool(warmup_ga),
+                                        "ga_warmup_profile": str(_GA_WARMUP_PROFILE),
                                     }
                                     sentinel_path.parent.mkdir(parents=True, exist_ok=True)
                                     tmp_path = sentinel_path.with_suffix(".tmp")

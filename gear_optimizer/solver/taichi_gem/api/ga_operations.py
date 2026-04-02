@@ -613,6 +613,8 @@ def ga_evaluate_population(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     use_hints: int = 0,
+    max_ft_gems_global: int | None = None,
+    max_ff_gems_global: int | None = None,
     materialize_mode: str = "none",
     update_global_best: bool = False,
 ) -> None:
@@ -687,7 +689,15 @@ def ga_evaluate_population(
     prune_plateaus_i = _GA_PLATEAU_PRUNE_ENABLED
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
-    n_combos = _ensure_ftff_combo_tables(total_budget_i)
+    max_ft_gems_i = int(total_budget_i) if max_ft_gems_global is None else int(max_ft_gems_global)
+    max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
+    max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
+    max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
+    n_combos = _ensure_ftff_combo_tables(
+        total_budget_i,
+        max_ft_gems=max_ft_gems_i,
+        max_ff_gems=max_ff_gems_i,
+    )
     eval_budget = int(_ga_eval_budget())
     max_evals = max(int(eval_budget), int(n_genomes))
     combo_chunk = compute_ga_combo_chunk(
@@ -2017,6 +2027,17 @@ def warmup_ga_kernels() -> None:
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
         use_hints=0,
+        materialize_mode="store_hints",
+    )
+    # Compile the warm-start (`use_hints=1`) specialization too; this path dominates
+    # real runs after Gen 0 and otherwise incurs a first-hit JIT spike.
+    ga_evaluate_population(
+        n_total,
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        use_hints=1,
         materialize_mode="store_hints",
     )
     ga_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)

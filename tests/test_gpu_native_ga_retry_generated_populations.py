@@ -19,7 +19,7 @@ class _FakeGpuApi:
         self.next_generation_calls = 0
         self._fail_once = bool(fail_once)
 
-    def _ensure_ftff_combo_tables(self, _total_budget):
+    def _ensure_ftff_combo_tables(self, _total_budget, **_kwargs):
         return 1
 
     def ga_upload_item_stats(self, *_args, **_kwargs):

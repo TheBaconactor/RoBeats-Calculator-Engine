@@ -216,6 +216,73 @@ def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
     return bool(cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats"))
 
 
+def _compute_global_ftff_combo_caps(
+    *,
+    item_stats: "np.ndarray | None",
+    slot_start: "np.ndarray | None",
+    slot_count: "np.ndarray | None",
+    base_fixed_stats_arr: "np.ndarray | None",
+    total_budget: int,
+    gem_scale_fever: int,
+    n_slots: int = 9,
+) -> tuple[int, int]:
+    """
+    Compute conservative global FT/FF gem caps for combo-table pruning.
+
+    The FT/FF kernels enforce per-genome max gems from stat ceilings:
+      max_ft_gems = floor((MAX_STAT - base_ft_stat) / gem_scale_fever)
+      max_ff_gems = floor((MAX_STAT - base_ff_stat) / gem_scale_fever)
+
+    For a fixed song + item pools we can derive a safe global cap by using the
+    minimum possible base FT/FF across all genomes (base-fixed + per-slot minima).
+    Any combo above these caps is impossible for every genome and can be skipped.
+    """
+    budget_i = max(0, int(total_budget))
+    gem_scale_i = int(gem_scale_fever)
+    if budget_i <= 0 or gem_scale_i <= 0:
+        return budget_i, budget_i
+
+    try:
+        stats = np.asarray(item_stats, dtype=np.int32)
+        starts = np.asarray(slot_start, dtype=np.int32).reshape(-1)
+        counts = np.asarray(slot_count, dtype=np.int32).reshape(-1)
+        base = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
+    except Exception:
+        return budget_i, budget_i
+
+    if stats.ndim != 2 or int(stats.shape[1]) < 5 or int(base.size) < 5:
+        return budget_i, budget_i
+
+    slot_lim = min(int(n_slots), int(starts.shape[0]), int(counts.shape[0]))
+    if slot_lim <= 0:
+        return budget_i, budget_i
+
+    min_ft_stat = int(base[3])
+    min_ff_stat = int(base[4])
+    n_items = int(stats.shape[0])
+
+    for s in range(slot_lim):
+        count_i = int(counts[s] or 0)
+        if count_i <= 0:
+            continue
+        start_i = int(starts[s] or 0)
+        if start_i < 0:
+            start_i = 0
+        end_i = min(int(n_items), int(start_i + count_i))
+        if end_i <= start_i:
+            continue
+        slot_stats = stats[start_i:end_i]
+        min_ft_stat += int(np.min(slot_stats[:, 3]))
+        min_ff_stat += int(np.min(slot_stats[:, 4]))
+
+    max_stat_index = 160
+    cap_ft = (int(max_stat_index) - int(min_ft_stat)) // int(gem_scale_i)
+    cap_ff = (int(max_stat_index) - int(min_ff_stat)) // int(gem_scale_i)
+    cap_ft = max(0, min(int(budget_i), int(cap_ft)))
+    cap_ff = max(0, min(int(budget_i), int(cap_ff)))
+    return int(cap_ft), int(cap_ff)
+
+
 # PRODUCTION: GA_FORCE_COLD_START is a production runtime override for the GPU-native GA path.
 # DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS, GPU_NATIVE_GA_COLD_TAIL_GENS.
 _GA_FORCE_COLD_START = _env_flag("GA_FORCE_COLD_START", "")
@@ -228,6 +295,8 @@ _GPU_NATIVE_GA_LOG_PROGRESS = _env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
 # Warm-start (use_hints=1) uses a bounded local search that can under-score some genomes.
 # Force a cold-scored tail so the final persisted winner is selected under canonical scoring.
 _GPU_NATIVE_GA_COLD_TAIL_GENS = _env_int("GPU_NATIVE_GA_COLD_TAIL_GENS", 1)
+# Prune FT/FF combo tables to globally feasible caps derived from base-stat ceilings.
+_GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = _env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
 
 
 if _GPU_NATIVE_AVAILABLE:
@@ -1675,6 +1744,19 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
+    if _GPU_NATIVE_GA_GLOBAL_FTFF_CAPS:
+        max_ft_gems_global, max_ff_gems_global = _compute_global_ftff_combo_caps(
+            item_stats=item_stats,
+            slot_start=slot_start,
+            slot_count=slot_count,
+            base_fixed_stats_arr=base_fixed_stats_arr,
+            total_budget=int(total_budget),
+            gem_scale_fever=int(gem_scale_fever),
+            n_slots=int(n_slots),
+        )
+    else:
+        max_ft_gems_global = int(total_budget)
+        max_ff_gems_global = int(total_budget)
 
     fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
     if fg_candidate_limit <= 0:
@@ -1692,7 +1774,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # Determine an auto batch size that avoids combo-chunking in ga_evaluate_population.
     # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_EVALS_PER_DISPATCH.
     try:
-        n_combos = int(gpu_api._ensure_ftff_combo_tables(total_budget))
+        n_combos = int(
+            gpu_api._ensure_ftff_combo_tables(
+                total_budget,
+                max_ft_gems=int(max_ft_gems_global),
+                max_ff_gems=int(max_ff_gems_global),
+            )
+        )
     except Exception:
         n_combos = 0
     denom = int(n_genomes) * max(1, n_combos)
@@ -1942,6 +2030,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_p_ov=is_p_ov,
                             is_s_ov=is_s_ov,
                             use_hints=int(eval_use_hints),
+                            max_ft_gems_global=int(max_ft_gems_global),
+                            max_ff_gems_global=int(max_ff_gems_global),
                             materialize_mode="store_hints",
                         )
                         _sync()
