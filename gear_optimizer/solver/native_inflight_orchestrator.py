@@ -54,6 +54,7 @@ from gear_optimizer.solver.native_inflight_prepare import _prepare_song, bump_pr
 from gear_optimizer.solver.native_inflight_scheduler import (
     _continuous_fg_should_start,
     _continuous_fg_submit_budget,
+    _continuous_ga_warm_queue_limit,
     _default_prime_target,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
@@ -1033,6 +1034,21 @@ def run_native_inflight_song_pipeline(
         ga_queue_limit_cache_key = cache_key
         return int(ga_queue_limit_cache_value)
 
+    def _current_ga_queue_limit() -> int:
+        return int(
+            _continuous_ga_warm_queue_limit(
+                ga_queue_limit=_effective_ga_queue_limit(),
+                inflight_limit=int(inflight_limit),
+                fg_enabled=bool(fg_enabled),
+                prepared_count=len(prepared),
+                prep_inflight_count=len(prep_inflight),
+                decode_inflight_count=len(decode_inflight),
+                pending_fg_count=len(pending_fg),
+                fg_prep_inflight_count=len(fg_prep_inflight),
+                fg_inflight_count=len(fg_futures),
+            )
+        )
+
     def _stop_requested_cached(now_mono: float | None = None) -> bool:
         nonlocal stop_next_check_mono, stop_cached_requested
         if stop_cached_requested:
@@ -1541,7 +1557,7 @@ def run_native_inflight_song_pipeline(
                         aging_hard_s=float(fg_aging_hard_s),
                     ):
                         break
-                ga_queue_limit_effective = _effective_ga_queue_limit()
+                ga_queue_limit_effective = _current_ga_queue_limit()
                 if ga_queue_debug and ga_queue_limit_effective != last_ga_queue_limit_effective:
                     last_ga_queue_limit_effective = int(ga_queue_limit_effective)
                     try:
@@ -2260,7 +2276,7 @@ def run_native_inflight_song_pipeline(
                 aging_trigger_s=float(fg_aging_trigger_s),
                 aging_hard_s=float(fg_aging_hard_s),
             )
-            ga_queue_limit_effective = _effective_ga_queue_limit()
+            ga_queue_limit_effective = _current_ga_queue_limit()
 
             if should_start_fg:
                 if fg_decision_debug:

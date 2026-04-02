@@ -205,6 +205,52 @@ def _read_fg_slot_reserve(
     return max(1, min(int(reserve), int(reserve_cap)))
 
 
+def _continuous_ga_warm_queue_limit(
+    *,
+    ga_queue_limit: int,
+    inflight_limit: int,
+    fg_enabled: bool,
+    prepared_count: int,
+    prep_inflight_count: int,
+    decode_inflight_count: int,
+    pending_fg_count: int,
+    fg_prep_inflight_count: int,
+    fg_inflight_count: int,
+) -> int:
+    """
+    Limit the initial GA backlog while the FG pipeline has not started yet.
+
+    During startup, CPU prep can outrun the GPU and bury the first decoded/FG-ready songs behind
+    a large queued GA tail. Cap the warm-start GA backlog to roughly one in-flight window only
+    while:
+    - FG is enabled,
+    - no downstream decode/FG work exists yet, and
+    - the CPU staging side is already healthy enough to refill that window.
+
+    Once decode/FG work exists, or prep staging is shallow, restore the full GA queue limit.
+    """
+    limit = max(1, int(ga_queue_limit))
+    inflight_limit = max(1, int(inflight_limit))
+    if (not fg_enabled) or inflight_limit <= 1:
+        return limit
+
+    downstream_fg_work = (
+        max(0, int(decode_inflight_count))
+        + max(0, int(pending_fg_count))
+        + max(0, int(fg_prep_inflight_count))
+        + max(0, int(fg_inflight_count))
+    )
+    if downstream_fg_work > 0:
+        return limit
+
+    warm_limit = max(2, min(limit, min(inflight_limit, 4)))
+    staging_depth = max(0, int(prepared_count)) + max(0, int(prep_inflight_count))
+    if staging_depth < warm_limit:
+        return limit
+
+    return max(1, min(limit, warm_limit))
+
+
 def _continuous_fg_should_start(
     *,
     pending_fg_count: int,
@@ -283,4 +329,3 @@ def _continuous_fg_submit_budget(
             budget = max(int(budget), min(int(capacity), int(max_burst)))
 
     return max(0, min(int(capacity), int(budget)))
-
