@@ -40,6 +40,37 @@ def test_shard_inflight_tasks_is_deterministic_and_no_duplicates() -> None:
     assert shards1 == [tasks]
 
 
+def test_shard_inflight_tasks_balances_skewed_groups() -> None:
+    tasks: list[tuple[str, str, str]] = []
+    for i in range(6):
+        tasks.append((f"fpa{i}", "SongA", "Hard"))
+    for i in range(6):
+        tasks.append((f"fpb{i}", "SongB", "Hard"))
+    tasks.append(("fpc0", "SongC", "Easy"))
+    tasks.append(("fpd0", "SongD", "Easy"))
+
+    shards = shard_inflight_tasks(tasks, instances=2)
+    counts = [len(shard) for shard in shards]
+    assert sum(counts) == len(tasks)
+    assert max(counts) - min(counts) <= 1
+
+
+def test_shard_inflight_tasks_preserves_per_shard_input_order() -> None:
+    tasks = [
+        ("fp1", "SongA", "Hard"),
+        ("fp2", "SongB", "Hard"),
+        ("fp3", "SongA", "Hard"),
+        ("fp4", "SongC", "Easy"),
+        ("fp5", "SongB", "Hard"),
+        ("fp6", "SongD", "Normal"),
+    ]
+    task_pos = {task: idx for idx, task in enumerate(tasks)}
+    shards = shard_inflight_tasks(tasks, instances=2)
+    for shard in shards:
+        positions = [task_pos[t] for t in shard]
+        assert positions == sorted(positions)
+
+
 def test_configure_worker_vulkan_device_sets_both_env_vars(monkeypatch) -> None:
     monkeypatch.setenv("INFLIGHT_VULKAN_VISIBLE_DEVICES", "0,2")
     monkeypatch.delenv("TAICHI_VULKAN_VISIBLE_DEVICE", raising=False)
