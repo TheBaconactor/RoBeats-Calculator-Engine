@@ -2638,9 +2638,19 @@ def solve_coevolution_genetic(
                 secondary_color=str(s_color or ""),
             )
 
-        # Debug-only: compare the selected GA winner against the canonical solver without mutating
-        # the returned/persisted payload. This is intentionally off by default to avoid wasted work.
-        if env_flag("GPU_GA_WINNER_EXACT_CHECK", "0"):
+        # Winner refinement:
+        #
+        # GPU-native GA uses warm-start scoring (`use_hints=1`) for throughput, but warm-start relies on a bounded
+        # local search that can under-score some genomes (and even pick a different FT/FF combo) when hints are stale
+        # or inherited across mutated/crossover children. When that happens, the GA payload can represent a suboptimal
+        # gem allocation for the correct gear/minis loadout, which later shows up as "same loadout_hash improved by
+        # gem split" inconsistencies.
+        #
+        # To keep persisted winners stable, we always re-solve the final GA winner with the canonical cold (no-hints)
+        # GPU gem solver and replace the payload when it improves score.
+        refine_winner = env_flag("GPU_GA_WINNER_REFINEMENT", "1")
+        exact_check = env_flag("GPU_GA_WINNER_EXACT_CHECK", "0")
+        if refine_winner or exact_check:
             try:
                 from .scoring.fever_solver import solve_best_fever_combination
 
@@ -2671,14 +2681,68 @@ def solve_coevolution_genetic(
                         if refined_score > best_score:
                             song_name = str((calc_song or {}).get("metadata", {}).get("Song Name", "") or "")
                             logger.warning(
-                                "[GPU][ExactCheck] canonical winner solve beat GA payload: song=%r best=%d refined=%d delta=%d",
+                                "[GPU] refined GA winner payload: song=%r best=%d refined=%d delta=%d",
+                                song_name,
+                                best_score,
+                                refined_score,
+                                refined_score - best_score,
+                            )
+                            if refine_winner:
+                                g_ft = int(refined.get("FT", 0) or 0)
+                                g_ff = int(refined.get("FF", 0) or 0)
+                                gems = refined.get("GemCounts") if isinstance(refined.get("GemCounts"), dict) else {}
+                                g_pp = int((gems or {}).get("Perfect Points", 0) or 0)
+                                g_cm = int((gems or {}).get("Combo Multiplier", 0) or 0)
+                                g_fm = int((gems or {}).get("Fever Multiplier", 0) or 0)
+                                g_ov = int((gems or {}).get("Element", 0) or 0)
+                                sel = str(
+                                    refined.get("Selected Element", "")
+                                    or override_cfg.get("selected_color", "")
+                                    or p_color
+                                    or ""
+                                )
+                                refined_stats = refined.get("Stats") if isinstance(refined.get("Stats"), dict) else None
+                                if not isinstance(refined_stats, dict) or not refined_stats:
+                                    # Defensive: rebuild stats even if the solver omitted a full `Stats` payload.
+                                    base_fixed_arr, _sel_built = build_base_fixed_stats_array(
+                                        base_stats_fixed, cfg_data
+                                    )
+                                    merged = _add_genome_item_stats(build_stats_dict(base_fixed_arr), genome)
+                                    refined_stats = apply_gems_to_base_stats(
+                                        merged,
+                                        sel,
+                                        g_ft,
+                                        g_ff,
+                                        g_pp,
+                                        g_cm,
+                                        g_fm,
+                                        g_ov,
+                                    )
+                                best_data = _build_best_result_payload(
+                                    score=int(refined_score),
+                                    genome=genome,
+                                    stats=refined_stats,
+                                    selected_color=sel,
+                                    g_ft=g_ft,
+                                    g_ff=g_ff,
+                                    g_pp=g_pp,
+                                    g_cm=g_cm,
+                                    g_fm=g_fm,
+                                    g_ov=g_ov,
+                                )
+                                best_gear = list(best_data.get("Gear") or best_gear or [])
+                                best_minis = list(best_data.get("Minis") or best_minis or [])
+                        elif exact_check and refined_score < best_score:
+                            song_name = str((calc_song or {}).get("metadata", {}).get("Song Name", "") or "")
+                            logger.warning(
+                                "[GPU][ExactCheck] GA payload beat canonical winner solve (unexpected): song=%r best=%d refined=%d delta=%d",
                                 song_name,
                                 best_score,
                                 refined_score,
                                 refined_score - best_score,
                             )
             except Exception:
-                # Never fail the run for a debug check issue.
+                # Never fail the run for a winner refinement issue; fall back to the GA payload.
                 pass
 
         logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
