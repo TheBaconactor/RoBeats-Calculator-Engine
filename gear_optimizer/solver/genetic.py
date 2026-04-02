@@ -61,6 +61,7 @@ from ..core.constants import (
 from ..core.config import read_fg_candidate_limit
 from ..core.color_flags import build_color_flags
 from ..core.env_config import env_flag
+from ..core.profile_events import emit_profile_event
 from ..core.utils import safe_int, safe_float
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -1722,9 +1723,76 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     audit_payload_segments: list[np.ndarray] = []
     audit_redundancy = _ga_redundancy_audit_enabled()
 
-    perf = _PERF_TIMING
     # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
-    phase_timing = perf and env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
+    perf = _PERF_TIMING
+    phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
+    profile_events_enabled = bool(
+        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
+        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+    )
+    phase_events_enabled = bool(phase_timing and profile_events_enabled)
+    song_profile_key = None
+    try:
+        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+        song_diff = str(meta.get("Difficulty") or "").strip()
+        if song_name:
+            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
+    except Exception:
+        song_profile_key = None
+
+    if profile_events_enabled:
+        emit_profile_event(
+            component="gpu_executor",
+            event="ga_gpu_phase_flags",
+            song_key=song_profile_key,
+            metrics={
+                "perf_timing": int(bool(perf)),
+                "phase_timing": int(bool(phase_timing)),
+                "phase_events_enabled": int(bool(phase_events_enabled)),
+            },
+        )
+
+    phase_samples_current: dict[str, list[float]] | None = None
+
+    def _p95_ms(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(float(v) for v in values)
+        idx = int(round(0.95 * (len(ordered) - 1)))
+        idx = max(0, min(idx, len(ordered) - 1))
+        return float(ordered[idx])
+
+    def _emit_ga_phase_window(*, phase_samples: dict[str, list[float]], batch_run_start: int, batch_runs: int) -> None:
+        if not phase_events_enabled or not phase_samples:
+            return
+        for phase_name, values in phase_samples.items():
+            samples = [float(v) for v in values]
+            if not samples:
+                continue
+            total_ms = float(sum(samples))
+            sample_count = int(len(samples))
+            max_ms = float(max(samples))
+            emit_profile_event(
+                component="gpu_executor",
+                event="ga_gpu_phase",
+                song_key=song_profile_key,
+                metrics={
+                    "phase": str(phase_name),
+                    "samples": int(sample_count),
+                    "total_ms": float(total_ms),
+                    "mean_ms": float(total_ms / float(sample_count)) if sample_count > 0 else 0.0,
+                    "p95_ms": float(_p95_ms(samples)),
+                    "max_ms": float(max_ms),
+                    "batch_run_start": int(batch_run_start),
+                    "batch_runs": int(batch_runs),
+                    "pop": int(n_genomes),
+                    "n_generations": int(n_generations),
+                    "combos": int(n_combos),
+                    "sync_timed": 1,
+                },
+            )
+
     if phase_timing:
         import taichi as ti
 
@@ -1739,6 +1807,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     def _log_phase(*, phase: str, ms: float, runs: int, pop: int, gen: int, use_hints: int, combos: int) -> None:
         if not phase_timing:
             return
+        if phase_samples_current is not None:
+            phase_samples_current.setdefault(str(phase), []).append(float(ms))
         try:
             logger.info(
                 "[PERF][GAGPUPhase] "
@@ -1845,6 +1915,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     gen_use_hints = 0  # Force cold start on Gen 0
                     cold_tail_gens = max(0, int(_GPU_NATIVE_GA_COLD_TAIL_GENS))
                     n_total = int(batch_len) * int(n_genomes)
+                    phase_samples_current = {} if phase_events_enabled else None
 
                     for gen in range(int(n_generations)):
                         _raise_if_abort_requested(f"before GPU-native GA generation {int(gen)}")
@@ -2033,6 +2104,12 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             gen=int(n_generations),
                             use_hints=0,
                             combos=int(n_combos),
+                        )
+                    if phase_samples_current:
+                        _emit_ga_phase_window(
+                            phase_samples=phase_samples_current,
+                            batch_run_start=int(global_run_idx),
+                            batch_runs=int(batch_len),
                         )
 
                     if audit_redundancy:

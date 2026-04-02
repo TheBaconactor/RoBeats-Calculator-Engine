@@ -127,6 +127,68 @@ def _write_events_jsonl(path: Path) -> None:
             f.write(json.dumps(row) + "\n")
 
 
+def _write_events_jsonl_with_ga_phases(path: Path) -> None:
+    rows = [
+        {
+            "run_id": "r1",
+            "ts_wall": 10.0,
+            "component": "gpu_executor",
+            "event": "ga_gpu_phase",
+            "song_key": "Song A (Hard)",
+            "metrics": {
+                "phase": "evaluate",
+                "samples": 4,
+                "total_ms": 100.0,
+                "mean_ms": 25.0,
+                "p95_ms": 30.0,
+                "max_ms": 33.0,
+                "batch_runs": 2,
+                "pop": 250,
+                "n_generations": 75,
+            },
+        },
+        {
+            "run_id": "r1",
+            "ts_wall": 11.0,
+            "component": "gpu_executor",
+            "event": "ga_gpu_phase",
+            "song_key": "Song A (Hard)",
+            "metrics": {
+                "phase": "evaluate",
+                "samples": 2,
+                "total_ms": 60.0,
+                "mean_ms": 30.0,
+                "p95_ms": 35.0,
+                "max_ms": 40.0,
+                "batch_runs": 1,
+                "pop": 250,
+                "n_generations": 75,
+            },
+        },
+        {
+            "run_id": "r1",
+            "ts_wall": 12.0,
+            "component": "gpu_executor",
+            "event": "ga_gpu_phase",
+            "song_key": "Song A (Hard)",
+            "metrics": {
+                "phase": "next_generation",
+                "samples": 3,
+                "total_ms": 36.0,
+                "mean_ms": 12.0,
+                "p95_ms": 15.0,
+                "max_ms": 16.0,
+                "batch_runs": 2,
+                "pop": 250,
+                "n_generations": 75,
+            },
+        },
+    ]
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
 def test_fg_trace_classifies_breakpoint_batch_labels(tmp_path):
     trace_path = tmp_path / "gpu_executor_trace.csv"
     _write_trace_csv(trace_path)
@@ -246,6 +308,48 @@ def test_deep_mode_sets_debug_profile_bundle(tmp_path):
     assert env_overrides.get("METAFINDER_PROFILE_EVENTS") == "1"
 
 
+def test_set_env_tracks_native_ga_phase_timing_override(tmp_path):
+    out_dir = tmp_path / "profile_run_phase_env"
+    rc = psr.main(
+        [
+            "--out",
+            str(out_dir),
+            "--typeperf-start-delay",
+            "0",
+            "--set-env",
+            "GPU_NATIVE_GA_PHASE_TIMING=1",
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    )
+    assert rc == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    env_overrides = ((summary.get("effective_settings") or {}).get("env_overrides") or {})
+    assert env_overrides.get("GPU_NATIVE_GA_PHASE_TIMING") == "1"
+
+
+def test_profile_events_parser_collects_ga_phase_windows(tmp_path):
+    events_path = tmp_path / "events_ga_phase.jsonl"
+    _write_events_jsonl_with_ga_phases(events_path)
+
+    out = psr._parse_profile_events_jsonl(events_path)
+
+    assert out["ok"] is True
+    ga = out.get("ga_gpu_phases") or {}
+    assert ga.get("count") == 3
+    by_phase = ga.get("by_phase_ms") or {}
+    eval_phase = by_phase.get("evaluate") or {}
+    next_gen_phase = by_phase.get("next_generation") or {}
+    assert eval_phase.get("samples") == 6
+    assert eval_phase.get("total_ms") == 160.0
+    assert round(float(eval_phase.get("mean_ms", 0.0)), 3) == round(160.0 / 6.0, 3)
+    assert next_gen_phase.get("samples") == 3
+    assert next_gen_phase.get("total_ms") == 36.0
+
+
 def test_analyzer_detects_instrumentation_gap():
     summary = {
         "gpu_executor_trace_summary": {"fg_exec_events": 0, "fg_intervals": []},
@@ -256,6 +360,36 @@ def test_analyzer_detects_instrumentation_gap():
     result = analyze_run.analyze_summary(summary)
     ids = [a["id"] for a in (result.get("anomalies") or [])]
     assert "instrumentation_gap" in ids
+
+
+def test_analyzer_detects_ga_phase_observability_gap():
+    summary = {
+        "gpu_executor_trace_summary": {"fg_exec_events": 1, "fg_intervals": [[0.0, 1.0]]},
+        "gpu_request_type_summary": {"by_type": {"gpu_native_ga_run": {"ok": True}}},
+        "gpu_summary": {"target_engine_util_pct_max": {"mean": 75.0}},
+        "gpu_phase_summary": {"ok": True},
+        "perf_stdout_summary": {"ga_gpu_phases": {"count": 0}},
+        "profile_events_summary": {"ga_gpu_phases": {"count": 0}},
+        "effective_settings": {"env_overrides": {"GPU_NATIVE_GA_PHASE_TIMING": "1"}},
+    }
+    result = analyze_run.analyze_summary(summary)
+    ids = [a["id"] for a in (result.get("anomalies") or [])]
+    assert "ga_phase_observability_gap" in ids
+
+
+def test_analyzer_skips_ga_phase_gap_without_phase_request():
+    summary = {
+        "gpu_executor_trace_summary": {"fg_exec_events": 1, "fg_intervals": [[0.0, 1.0]]},
+        "gpu_request_type_summary": {"by_type": {"gpu_native_ga_run": {"ok": True}}},
+        "gpu_summary": {"target_engine_util_pct_max": {"mean": 75.0}},
+        "gpu_phase_summary": {"ok": True},
+        "perf_stdout_summary": {"ga_gpu_phases": {"count": 0}},
+        "profile_events_summary": {"ga_gpu_phases": {"count": 0}},
+        "effective_settings": {"env_overrides": {}},
+    }
+    result = analyze_run.analyze_summary(summary)
+    ids = [a["id"] for a in (result.get("anomalies") or [])]
+    assert "ga_phase_observability_gap" not in ids
 
 
 def test_analyze_profile_restores_stdout_on_missing_file(capsys):

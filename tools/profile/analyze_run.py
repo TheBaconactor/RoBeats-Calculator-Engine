@@ -143,6 +143,7 @@ def _collect_metrics(summary: dict[str, Any], events: list[dict[str, Any]]) -> d
     req_summary = summary.get("gpu_request_type_summary") or {}
     perf = summary.get("perf_stdout_summary") or {}
     events_summary = summary.get("profile_events_summary") or {}
+    env_overrides = ((summary.get("effective_settings") or {}).get("env_overrides") or {})
 
     stage_total_wall_s = _safe_float(stage.get("total_wall_s", 0.0), _safe_float(summary.get("elapsed_sec", 0.0), 0.0))
     underfed_total_s = _safe_float(((stage.get("stages") or {}).get("underfed_wait") or {}).get("total_s", 0.0), 0.0)
@@ -163,6 +164,15 @@ def _collect_metrics(summary: dict[str, Any], events: list[dict[str, Any]]) -> d
     fg_labels_present = any(("fg_" in str(k)) or ("force_great" in str(k)) for k in by_type.keys())
     if not fg_labels_present:
         fg_labels_present = bool(_safe_int((perf.get("fg_task_trace") or {}).get("count_start", 0), 0) > 0)
+    ga_labels_present = any(("gpu_native_ga_run" in str(k)) or ("ga_" in str(k)) for k in by_type.keys())
+    perf_ga_phase_count = _safe_int((perf.get("ga_gpu_phases") or {}).get("count", 0), 0)
+    events_ga_phase_count = _safe_int((events_summary.get("ga_gpu_phases") or {}).get("count", 0), 0)
+    ga_phase_requested = str(env_overrides.get("GPU_NATIVE_GA_PHASE_TIMING", "") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     backlog = _summarize_backlog(events)
     if backlog.get("count", 0) < 2 and isinstance(events_summary, dict):
@@ -185,6 +195,9 @@ def _collect_metrics(summary: dict[str, Any], events: list[dict[str, Any]]) -> d
         "fg_exec_events": int(fg_exec_events),
         "fg_intervals_count": int(fg_intervals_count),
         "fg_labels_present": bool(fg_labels_present),
+        "ga_labels_present": bool(ga_labels_present),
+        "ga_phase_count": int(max(perf_ga_phase_count, events_ga_phase_count)),
+        "ga_phase_requested": bool(ga_phase_requested),
         "gpu_util_mean_pct": float(util_mean),
         "backlog": backlog,
     }
@@ -333,6 +346,24 @@ def detect_anomalies(summary: dict[str, Any], events: list[dict[str, Any]], thre
                     "fg_labels_present": bool(fg_labels_present),
                     "fg_exec_events": int(fg_exec_events),
                     "fg_intervals_count": int(fg_intervals_count),
+                },
+            )
+        )
+
+    ga_labels_present = bool(metrics.get("ga_labels_present", False))
+    ga_phase_count = _safe_int(metrics.get("ga_phase_count", 0), 0)
+    ga_phase_requested = bool(metrics.get("ga_phase_requested", False))
+    if ga_labels_present and ga_phase_requested and ga_phase_count <= 0:
+        out.append(
+            _mk_anomaly(
+                aid="ga_phase_observability_gap",
+                severity=0.90,
+                confidence=0.95,
+                summary="Instrumentation gap: native-GA requests are present but GA phase timings are missing.",
+                evidence_path="perf_stdout_summary.ga_gpu_phases.count",
+                evidence={
+                    "ga_labels_present": bool(ga_labels_present),
+                    "ga_phase_count": int(ga_phase_count),
                 },
             )
         )

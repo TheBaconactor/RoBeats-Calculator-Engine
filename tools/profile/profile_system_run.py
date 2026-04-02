@@ -2574,11 +2574,16 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "METAFINDER_DEBUG_PROFILE",
         "PERF_TIMING",
         "GPU_EXECUTOR_PROFILE",
+        "FG_TASK_TRACE",
         "INFLIGHT_STAGE_PROFILE",
         "INFLIGHT_STAGE_PROFILE_PATH",
+        "GPU_NATIVE_GA_PHASE_TIMING",
+        "GPU_NATIVE_GA_PHASE_EVENTS",
         "METAFINDER_PROFILE_EVENTS",
         "METAFINDER_PROFILE_EVENTS_PATH",
         "METAFINDER_PROFILE_RUN_ID",
+        "PROFILE_EVENTS_PATH",
+        "PROFILE_RUN_ID",
     )
     env_overrides: dict[str, str] = {}
     for key in tracked_env:
@@ -2720,6 +2725,7 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
     last_ts_wall = None
     pending_fg_points: list[tuple[float, float]] = []
     backlog_points: list[tuple[float, float]] = []
+    ga_phase_rows: list[dict[str, Any]] = []
 
     try:
         with profile_events_path.open("r", encoding="utf-8") as f:
@@ -2752,6 +2758,34 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
                 metrics = obj.get("metrics")
                 if not isinstance(metrics, dict):
                     continue
+
+                if event in {"ga_gpu_phase", "ga_gpu_phase_window"} and component in {"gpu_executor", "ga_native"}:
+                    phase = str(metrics.get("phase", "") or "").strip() or "unknown"
+                    sample_count = _safe_int(metrics.get("samples", metrics.get("count", 1)), 1)
+                    if sample_count <= 0:
+                        sample_count = 1
+                    total_ms = _safe_float(metrics.get("total_ms", metrics.get("ms", 0.0)), 0.0)
+                    mean_ms = _safe_float(
+                        metrics.get("mean_ms", (total_ms / float(sample_count)) if sample_count > 0 else 0.0),
+                        0.0,
+                    )
+                    p95_ms = _safe_float(metrics.get("p95_ms", mean_ms), mean_ms)
+                    max_ms = _safe_float(metrics.get("max_ms", mean_ms), mean_ms)
+                    ga_phase_rows.append(
+                        {
+                            "phase": str(phase),
+                            "samples": int(sample_count),
+                            "total_ms": float(total_ms),
+                            "mean_ms": float(mean_ms),
+                            "p95_ms": float(p95_ms),
+                            "max_ms": float(max_ms),
+                            "runs": _safe_int(metrics.get("runs", metrics.get("batch_runs", 0)), 0),
+                            "pop": _safe_int(metrics.get("pop", 0), 0),
+                            "n_generations": _safe_int(metrics.get("n_generations", 0), 0),
+                            "batch_run_start": _safe_int(metrics.get("batch_run_start", 0), 0),
+                        }
+                    )
+
                 pending_fg = _safe_int(metrics.get("pending_fg", -1), -1)
                 fg_futures = max(0, _safe_int(metrics.get("fg_futures", 0), 0))
                 pending_all = _safe_int(metrics.get("pending", -1), -1)
@@ -2789,6 +2823,43 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
             backlog_positive_ratio = float(sum(1 for d in deltas if d > 0.0) / len(deltas))
 
     top_events = sorted(event_counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
+    ga_phase_summary: dict[str, Any] = {"count": 0}
+    if ga_phase_rows:
+        phase_totals: dict[str, dict[str, float]] = {}
+        for row in ga_phase_rows:
+            phase = str(row.get("phase", "unknown") or "unknown")
+            entry = phase_totals.setdefault(
+                phase,
+                {
+                    "windows": 0.0,
+                    "samples": 0.0,
+                    "total_ms": 0.0,
+                    "max_ms": 0.0,
+                },
+            )
+            entry["windows"] += 1.0
+            entry["samples"] += float(row.get("samples", 0) or 0.0)
+            entry["total_ms"] += float(row.get("total_ms", 0.0) or 0.0)
+            entry["max_ms"] = max(float(entry.get("max_ms", 0.0) or 0.0), float(row.get("max_ms", 0.0) or 0.0))
+
+        by_phase_ms: dict[str, Any] = {}
+        for phase, entry in sorted(phase_totals.items(), key=lambda kv: kv[0]):
+            samples = int(round(float(entry.get("samples", 0.0) or 0.0)))
+            total_ms = float(entry.get("total_ms", 0.0) or 0.0)
+            by_phase_ms[str(phase)] = {
+                "windows": int(round(float(entry.get("windows", 0.0) or 0.0))),
+                "samples": int(samples),
+                "total_ms": float(total_ms),
+                "mean_ms": float(total_ms / float(samples)) if samples > 0 else 0.0,
+                "max_ms": float(entry.get("max_ms", 0.0) or 0.0),
+            }
+
+        ga_phase_summary = {
+            "count": int(len(ga_phase_rows)),
+            "by_phase_ms": by_phase_ms,
+            "top_slowest": sorted(ga_phase_rows, key=lambda r: float(r.get("max_ms", 0.0) or 0.0), reverse=True)[:20],
+        }
+
     return {
         "ok": True,
         "path": str(profile_events_path),
@@ -2797,6 +2868,7 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
         "last_ts_wall": float(last_ts_wall) if last_ts_wall is not None else None,
         "component_counts": {k: int(v) for k, v in sorted(component_counts.items(), key=lambda kv: kv[0])},
         "event_counts_top": [{"event": str(k), "count": int(v)} for k, v in top_events],
+        "ga_gpu_phases": ga_phase_summary,
         "pending_fg": {
             "count": int(len(pending_fg_vals)),
             "stats": _series_stats(pending_fg_vals) if pending_fg_vals else {"count": 0},
