@@ -18,12 +18,18 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._set_runtime_progress_counts = lambda **_kwargs: None
     app._progress_event = lambda **_kwargs: None
     app._maybe_mark_robeatsmeta_song_batch_computed = lambda *_args, **_kwargs: None
+    app._effective_total_tasks = lambda tasks: len(tasks or [])
     return app
 
 
 def _build_tasks(*, inflight_songs: int = 2, count: int = 2):
     cfg = {"IterationEngine": {"inflightsongs": inflight_songs}}
     return [(f"song-{idx}", None, None, cfg, None, None) for idx in range(count)]
+
+
+def _build_calc_only_tasks(*, count: int = 1):
+    cfg = {"IterationEngine": {"inflightsongs": 1, "MetaFinder": "false"}}
+    return [(f"song-{idx}", f"Calc Song {idx}", "Hard", cfg, None, None) for idx in range(count)]
 
 
 def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
@@ -46,6 +52,36 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
     assert calls[0]["args"][0] == tasks
     assert calls[0]["kwargs"]["in_flight_songs"] == 1
     assert calls[0]["kwargs"]["total_tasks"] == 1
+
+
+def test_calculate_only_skips_native_inflight_pipeline(monkeypatch):
+    app = _make_minimal_app()
+    tasks = _build_calc_only_tasks(count=1)
+    native_calls: list[dict] = []
+    consumed: list[dict] = []
+
+    def _record_run(*args, **kwargs):
+        native_calls.append({"args": args, "kwargs": kwargs})
+
+    def _fake_safe_process(task):
+        return {"song": task[1], "_queue_key": task[0], "_queue_label": task[1]}
+
+    def _consume(results_iter, **_kwargs):
+        consumed.extend(list(results_iter))
+
+    app._consume_results = _consume
+
+    monkeypatch.setattr("gear_optimizer.app.safe_process_song_task", _fake_safe_process)
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.solver.native_inflight_orchestrator",
+        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
+    )
+
+    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+    assert native_calls == []
+    assert consumed == [{"song": "Calc Song 0", "_queue_key": "song-0", "_queue_label": "Calc Song 0"}]
 
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):

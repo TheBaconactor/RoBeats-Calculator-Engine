@@ -76,6 +76,13 @@ from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
 )
+from ..helpers.ga_helpers.steady_state import (
+    build_steady_state_initial_population_ids,
+    build_steady_state_next_population_ids,
+    extend_seen_archive_keys,
+    resolve_steady_state_settings,
+)
+from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from ..helpers.ga_helpers.redundancy_audit import (
     analyze_ga_redundancy_from_runs_payload,
     summarize_ga_redundancy_record,
@@ -687,6 +694,17 @@ def decode_gpu_native_ga_runs_payload(
         scores_vec = np.asarray(packed[:, 0], dtype=np.int32)
         genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
         results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+        dedup_indices, dedup_stats = select_exact_unique_row_indices(
+            genome_ids_mat=genome_ids_mat,
+            scores=scores_vec,
+            exact=True,
+        )
+        if int(dedup_indices.size) != int(genome_ids_mat.shape[0]):
+            genome_ids_mat = genome_ids_mat[dedup_indices]
+            results_mat = results_mat[dedup_indices]
+            scores_vec = scores_vec[dedup_indices]
+            sel_run_idx = sel_run_idx[dedup_indices]
+            sel_rows = sel_rows[dedup_indices]
 
         # PERF/CPU NOTE:
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
@@ -837,7 +855,9 @@ def decode_gpu_native_ga_runs_payload(
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
             logger.info(
                 "[PERF][GADecode] "
-                f"selected={int(selected_n)} stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
+                f"selected={int(selected_n)} unique_rows={int(dedup_stats.unique)} "
+                f"duplicate_hits={int(dedup_stats.duplicate_hits)} replacements={int(dedup_stats.replacements)} "
+                f"stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
             )
 
         return best_data, list(best_gear), list(best_minis), unique_evaluated
@@ -1563,6 +1583,261 @@ def _run_gpu_native_ga(
     return best_genome, best_score, best_result, all_evaluated
 
 
+def _run_gpu_native_ga_runs_payload_steady_state(
+    *,
+    calc_song: dict,
+    ref_arrays: dict,
+    song_slot: int,
+    item_stats: "np.ndarray",
+    slot_start: "np.ndarray",
+    slot_count: "np.ndarray",
+    base_fixed_stats_arr: "np.ndarray",
+    n_generations: int,
+    initial_populations: "np.ndarray | None",
+    num_runs: int,
+    n_genomes: int,
+    init_heuristic_topk: "np.ndarray | None",
+    init_heuristic_k: int,
+    init_heuristic_copies: int,
+    db_seed_ids: "np.ndarray | None",
+    db_seed_prob: float,
+    db_seed_copies: int,
+    db_seed_mutations: int,
+    elite_count: int,
+    mutation_rate: float,
+    immigrant_rate: float,
+    tournament_k: int,
+    color_flags: dict | None,
+    cfg_data: dict | None,
+    ga_seed: int | None,
+) -> "np.ndarray":
+    if not _GPU_NATIVE_AVAILABLE:
+        raise RuntimeError("GPU-native GA not available (missing dependencies)")
+
+    gpu_api = _require_gpu_api()
+    cfg_data = dict(cfg_data or {})
+    color_flags = dict(color_flags or {})
+
+    try:
+        from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
+        from .taichi_gem import fields as gpu_fields
+    except Exception as exc:
+        raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
+
+    n_generations = max(1, int(n_generations))
+    num_runs = max(1, int(num_runs))
+    n_genomes = max(1, int(n_genomes))
+    n_slots = 9
+
+    steady_state = resolve_steady_state_settings(cfg_data=cfg_data, epoch_count=num_runs, n_genomes=n_genomes)
+    if not steady_state.enabled:
+        raise RuntimeError("steady-state helper called while steady-state is disabled")
+
+    gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
+
+    reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
+    try:
+        reset_every_runs = int(reset_every_runs_env)
+    except Exception:
+        reset_every_runs = 0
+
+    max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
+    try:
+        max_retries = int(max_retries_env)
+    except Exception:
+        max_retries = 1
+
+    def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
+        msg = str(exc)
+        return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
+
+    def _restore_song_gpu_state() -> None:
+        load_ref_arrays(ref_arrays)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
+        gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        if init_heuristic_topk is not None and int(init_heuristic_k) > 0:
+            gpu_api.ga_upload_init_heuristic_topk(
+                topk_ids=np.asarray(init_heuristic_topk, dtype=np.int32),
+                heuristic_k=int(init_heuristic_k),
+                n_slots=int(n_slots),
+            )
+
+    _restore_song_gpu_state()
+
+    if initial_populations is not None:
+        current_population_ids = build_steady_state_initial_population_ids(
+            initial_populations,
+            n_genomes=int(n_genomes),
+            n_slots=int(n_slots),
+        )
+        gpu_api.ga_upload_population_indices(current_population_ids, n_slots=int(n_slots))
+    else:
+        seed_base = 42 if ga_seed is None else int(ga_seed)
+        gpu_api.ga_generate_initial_populations(
+            run_idx_start=0,
+            n_runs=1,
+            n_genomes=int(n_genomes),
+            n_slots=int(n_slots),
+            seed=int(seed_base),
+            heuristic_prob=0.0,
+            heuristic_k=int(init_heuristic_k),
+            seed_prob=float(db_seed_prob or 0.0),
+            seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
+            seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
+            heuristic_copies=int(init_heuristic_copies),
+            seed_ids=db_seed_ids,
+        )
+        gpu_api.ga_load_initial_population(run_idx=0, n_genomes=int(n_genomes), n_slots=int(n_slots))
+        current_population_ids = np.asarray(
+            gpu_api.ga_download_population_indices(n_genomes=int(n_genomes), n_slots=int(n_slots)),
+            dtype=np.int32,
+        )
+
+    fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
+    if fg_candidate_limit <= 0:
+        fg_candidate_limit = FG_CANDIDATE_LIMIT
+    fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
+    top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
+    fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
+
+    logger.info(
+        "  Steady-state epochs: %d (generations per epoch: %d, refresh_count: %d, refresh_pct: %.0f%%)",
+        int(num_runs),
+        int(n_generations),
+        int(steady_state.refresh_count),
+        float(steady_state.refresh_pct) * 100.0,
+    )
+
+    seen_archive_keys: set[tuple[int, ...]] = set()
+    for epoch_idx in range(int(num_runs)):
+        if reset_every_runs > 0 and epoch_idx > 0 and (epoch_idx % reset_every_runs) == 0:
+            gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at steady-state epoch {epoch_idx + 1}/{num_runs}")
+            _restore_song_gpu_state()
+            gpu_api.ga_upload_population_indices(current_population_ids, n_slots=int(n_slots))
+
+        last_exc = None
+        for attempt in range(max_retries + 1):
+            try:
+                gpu_api.ga_upload_population_indices(current_population_ids, n_slots=int(n_slots))
+                _run_gpu_native_ga(
+                    population=None,
+                    n_generations=int(n_generations),
+                    registry=None,
+                    cfg_data=cfg_data,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    base_stats_fixed={},
+                    gpu_static={
+                        "need_upload_item_stats": False,
+                        "need_upload_base_fixed": False,
+                        "item_stats": item_stats,
+                        "slot_start": slot_start,
+                        "slot_count": slot_count,
+                        "base_fixed_stats": base_fixed_stats_arr,
+                    },
+                    elite_count=int(elite_count),
+                    mutation_rate=float(mutation_rate),
+                    immigrant_rate=float(immigrant_rate),
+                    tournament_k=int(tournament_k),
+                    color_flags=color_flags,
+                    status_cb=None,
+                    song_slot=int(song_slot),
+                    store_payload_idx=int(epoch_idx),
+                    store_payload_only=True,
+                    n_genomes_override=int(n_genomes),
+                    population_preloaded=True,
+                    ga_seed=ga_seed,
+                    ga_seed_offset=int(epoch_idx),
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= max_retries or not _is_vulkan_semaphore_failure(exc):
+                    break
+                logger.warning(
+                    "[GPU GA] Vulkan backend error; retrying steady-state epoch after reset (attempt %d/%d)",
+                    int(attempt + 1),
+                    int(max_retries),
+                )
+                try:
+                    gpu_api.hard_reset_taichi(reason=str(exc).splitlines()[0][:200])
+                    _restore_song_gpu_state()
+                    gpu_api.ga_upload_population_indices(current_population_ids, n_slots=int(n_slots))
+                except Exception:
+                    break
+
+        if last_exc is not None:
+            raise last_exc
+
+        if epoch_idx >= int(num_runs) - 1:
+            continue
+
+        _best_score, _best_ids, _best_result_row, pop_snapshot, _results, scores = gpu_api.ga_download_run_payload(
+            n_genomes=int(n_genomes),
+            n_slots=int(n_slots),
+        )
+        current_population_ids, refresh_stats = build_steady_state_next_population_ids(
+            current_population_ids=np.asarray(pop_snapshot, dtype=np.int32),
+            scores=np.asarray(scores, dtype=np.int32),
+            slot_start=np.asarray(slot_start, dtype=np.int32),
+            slot_count=np.asarray(slot_count, dtype=np.int32),
+            refresh_count=int(steady_state.refresh_count),
+            seed=((42 if ga_seed is None else int(ga_seed)) ^ ((int(epoch_idx) + 1) * 747796405)),
+            seen_archive_keys=seen_archive_keys,
+            elite_keep_count=int(elite_count),
+        )
+        extend_seen_archive_keys(
+            seen_archive_keys=seen_archive_keys,
+            population_ids=np.asarray(pop_snapshot, dtype=np.int32),
+        )
+        logger.info(
+            "  Steady-state refresh %d/%d: survivors=%d dropped_dupes=%d archive_rejected=%d fresh=%d fresh_collisions=%d fallback_archive=%d fallback_dupes=%d",
+            int(epoch_idx + 1),
+            int(num_runs - 1),
+            int(refresh_stats.survivors_kept),
+            int(refresh_stats.survivor_duplicates_dropped),
+            int(refresh_stats.survivor_archive_rejected),
+            int(refresh_stats.fresh_added),
+            int(refresh_stats.fresh_archive_collisions),
+            int(refresh_stats.fallback_archive_reused),
+            int(refresh_stats.fallback_duplicates_added),
+        )
+
+    audit_redundancy = _ga_redundancy_audit_enabled()
+    if audit_redundancy:
+        try:
+            audit_payload = gpu_api.ga_download_runs_payload(
+                n_runs=int(num_runs),
+                n_genomes=int(n_genomes),
+                n_slots=int(n_slots),
+            )
+            audit_record = analyze_ga_redundancy_from_runs_payload(
+                runs_payload=audit_payload,
+                item_stats=item_stats,
+                base_fixed_stats_arr=base_fixed_stats_arr,
+                calc_song=calc_song,
+                cfg_data=cfg_data,
+                ga_seed=ga_seed,
+            )
+            logger.info(summarize_ga_redundancy_record(audit_record))
+            audit_path = write_ga_redundancy_audit_record(audit_record)
+            logger.info(f"[GA Redundancy Audit] wrote {audit_path}")
+        except Exception as exc:
+            logger.warning(f"[GA Redundancy Audit] Warning: failed to capture audit: {exc}")
+
+    return gpu_api.ga_download_fg_selected_payload(
+        table_slot=int(song_slot),
+        n_runs=int(num_runs),
+        limit=int(fg_candidate_limit),
+        top_base_keep=int(top_base_keep),
+        base_budget=int(base_budget),
+        fg_budget_end=int(fg_budget_end),
+    )
+
+
 def run_gpu_native_ga_runs_payload_prebuilt(
     *,
     calc_song: dict,
@@ -1674,6 +1949,36 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     if n_slots != 9:
         raise ValueError(f"GPU-native GA expects n_slots=9, got {n_slots}")
+
+    steady_state = resolve_steady_state_settings(cfg_data=cfg_data, epoch_count=num_runs, n_genomes=n_genomes)
+    if steady_state.enabled:
+        return _run_gpu_native_ga_runs_payload_steady_state(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            song_slot=int(song_slot),
+            item_stats=np.asarray(item_stats, dtype=np.int32),
+            slot_start=np.asarray(slot_start, dtype=np.int32),
+            slot_count=np.asarray(slot_count, dtype=np.int32),
+            base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
+            n_generations=int(n_generations),
+            initial_populations=initial_populations,
+            num_runs=int(num_runs),
+            n_genomes=int(n_genomes),
+            init_heuristic_topk=init_heuristic_topk,
+            init_heuristic_k=int(init_heuristic_k),
+            init_heuristic_copies=int(init_heuristic_copies),
+            db_seed_ids=db_seed_ids,
+            db_seed_prob=float(db_seed_prob or 0.0),
+            db_seed_copies=int(db_seed_copies),
+            db_seed_mutations=int(db_seed_mutations),
+            elite_count=int(elite_count),
+            mutation_rate=float(mutation_rate),
+            immigrant_rate=float(immigrant_rate),
+            tournament_k=int(tournament_k),
+            color_flags=color_flags,
+            cfg_data=cfg_data,
+            ga_seed=ga_seed,
+        )
 
     # Reduce padded CPU↔GPU transfers by sizing multi-run GA buffers to the
     # current session's needs. This MUST happen before the first Taichi field
@@ -2476,6 +2781,26 @@ def solve_coevolution_genetic(
         )
     except Exception:
         cfg_data["ga_convergence_trace_song_filter"] = ""
+    try:
+        cfg_data["ga_steady_state_enabled"] = bool(
+            cfg.getboolean("IterationEngine", "GPU_GA_SteadyStateEnabled", fallback=True)
+        )
+    except Exception:
+        cfg_data["ga_steady_state_enabled"] = True
+    try:
+        cfg_data["ga_steady_state_refresh_pct"] = max(
+            0.0,
+            min(0.75, safe_float(cfg.get("IterationEngine", "GPU_GA_SteadyStateRefreshPct", fallback="0.25"), 0.25)),
+        )
+    except Exception:
+        cfg_data["ga_steady_state_refresh_pct"] = 0.25
+    try:
+        cfg_data["ga_steady_state_min_refresh"] = max(
+            0,
+            safe_int(cfg.get("IterationEngine", "GPU_GA_SteadyStateMinRefresh", fallback="8"), 8),
+        )
+    except Exception:
+        cfg_data["ga_steady_state_min_refresh"] = 8
     # ForceGreatsFinder runs after GA and requires BaseStats for downstream FG batching.
     # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
@@ -2491,27 +2816,8 @@ def solve_coevolution_genetic(
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.
     if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
-        gpu_api = _require_gpu_api()
         logger.info("=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
         logger.info(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
-
-        # --- MULTI-START LOOP ---
-        num_runs = ga_settings.multi_start
-
-        # IMPORTANT: Configure run buffer sizes BEFORE allocating any Taichi fields
-        # (first allocation happens inside `load_ref_arrays()`).
-        from .taichi_gem import fields as gpu_fields
-
-        gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=GA_POPULATION_SIZE)
-
-        # CRITICAL: Upload GPU prerequisites for evaluation
-        from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
-
-        # 1. Load reference bonus lookup tables (required by optimize_core_device)
-        load_ref_arrays(ref_arrays)
-
-        # 2. Precompute timeline grid (required by solve_genomes_with_ftff_kernel)
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
 
         # 3. Create Registry (restrict pools only for non-optimized slots).
         registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
@@ -2520,46 +2826,12 @@ def solve_coevolution_genetic(
             gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis
         )
 
-        # Upload static per-song GA data once (item stats + base fixed stats)
-        # Doing this once avoids large repeated from_numpy() calls which can
-        # trigger Vulkan resource exhaustion (semaphore allocation failures)
-        # during multi-start runs.
         gpu_data = registry.to_gpu_arrays()
-        gpu_api.ga_upload_item_stats(
-            gpu_data["item_stats"],
-            gpu_data["slot_start"],
-            gpu_data["slot_count"],
-        )
-
-        # Upload base fixed stats (team buffs + user gems from config)
         base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
-        gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
-
-        # 4. Upload GPU-side heuristic top-K table for initial population generation.
-        heuristic_k = int(getattr(gpu_fields, "GA_INIT_HEURISTIC_K", 0) or 0)
-        if heuristic_k > 0:
-            try:
-                topk = build_ga_init_heuristic_topk(
-                    item_stats=gpu_data["item_stats"],
-                    slot_start=gpu_data["slot_start"],
-                    slot_count=gpu_data["slot_count"],
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    heuristic_k=int(heuristic_k),
-                    n_slots=9,
-                )
-                if topk is not None:
-                    gpu_api.ga_upload_init_heuristic_topk(topk_ids=topk, heuristic_k=int(heuristic_k), n_slots=9)
-            except Exception as e:
-                logger.warning(f"[GPU GA] Warning: failed to build/upload init heuristic table: {e}")
-
-        # Match CPU logic: split total depth across runs (Micro-GA strategy)
-        # or use full depth if multi-start is 1.
+        num_runs = max(1, int(ga_settings.multi_start or 1))
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
-
         logger.info(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
-        # GPU-native GA exploration knobs (optional; defaults preserve current behavior)
         gpu_tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
         gpu_tournament_k = max(1, min(8, int(gpu_tournament_k)))
 
@@ -2571,267 +2843,70 @@ def solve_coevolution_genetic(
         gpu_immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
         gpu_immigrant_rate = max(0.0, min(1.0, float(gpu_immigrant_rate)))
 
-        # Buffer per-run snapshots on GPU and download once per song to avoid
-        # per-run GPU->CPU sync (Vulkan `to_numpy()` is expensive).
-        n_slots = 9
-        n_genomes = None
-        payload_segments: list[np.ndarray] = []
-        segment_runs = 0
+        try:
+            from .taichi_gem import fields as gpu_fields
+        except Exception:
+            gpu_fields = None
 
-        def _flush_ga_run_payload_segment() -> None:
-            nonlocal segment_runs
-            if segment_runs <= 0:
-                return
-            if n_genomes is None:
-                raise RuntimeError("Internal error: n_genomes not set before GA payload flush")
-            fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
-            if fg_candidate_limit <= 0:
-                fg_candidate_limit = FG_CANDIDATE_LIMIT
-            fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
-            top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-            base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
-            fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
-            payload_segments.append(
-                gpu_api.ga_download_fg_selected_payload(
-                    table_slot=int(song_slot),
-                    n_runs=int(segment_runs),
-                    limit=int(fg_candidate_limit),
-                    top_base_keep=int(top_base_keep),
-                    base_budget=int(base_budget),
-                    fg_budget_end=int(fg_budget_end),
+        heuristic_k = int(getattr(gpu_fields, "GA_INIT_HEURISTIC_K", 0) or 0)
+        init_heuristic_topk = None
+        if heuristic_k > 0:
+            try:
+                init_heuristic_topk = build_ga_init_heuristic_topk(
+                    item_stats=gpu_data["item_stats"],
+                    slot_start=gpu_data["slot_start"],
+                    slot_count=gpu_data["slot_count"],
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                    heuristic_k=int(heuristic_k),
+                    n_slots=9,
                 )
-            )
-            segment_runs = 0
+            except Exception as exc:
+                logger.warning(f"[GPU GA] Warning: failed to build init heuristic table: {exc}")
 
-        def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
-            msg = str(exc)
-            return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
-
-        # Stability: reset Taichi runtime periodically on Vulkan to avoid long-run
-        # resource exhaustion (seen as random "failed to create semaphore" crashes).
-        # NOTE: Periodic runtime reset is OFF by default because it adds heavy
-        # overhead (ti.reset() + ti.init() + field allocation) and can dominate
-        # throughput when processing large queues. Enable only if you still hit
-        # Vulkan backend instability.
-        reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
-        try:
-            reset_every_runs = int(reset_every_runs_env)
-        except Exception:
-            reset_every_runs = 0
-
-        max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
-        try:
-            max_retries = int(max_retries_env)
-        except Exception:
-            max_retries = 1
-
-        # Seed genome IDs for GPU-side DB seed injection (optional).
-        seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=n_slots)
+        seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
         have_seed = seed_ids is not None
-
-        # Segment state for GPU-generated initial populations.
-        segment_start_global = 0
-        segment_total_runs = 0
-        segment_pop_generated = False
-
-        for run_idx in range(num_runs):
-            # Start a new segment whenever we exhausted the staged buffer.
-            if (not segment_pop_generated) or run_idx >= (segment_start_global + segment_total_runs):
-                segment_start_global = run_idx
-                segment_total_runs = min(gpu_fields.MAX_GA_RUNS, num_runs - run_idx)
-                segment_pop_generated = False
-
-                n_genomes = int(GA_POPULATION_SIZE)
-                if n_genomes > gpu_fields.MAX_GA_RUN_GENOMES:
-                    raise RuntimeError(
-                        f"GPU GA population too large for run buffer: {n_genomes} > {gpu_fields.MAX_GA_RUN_GENOMES}"
-                    )
-
-                gpu_api.ga_generate_initial_populations(
-                    run_idx_start=0,
-                    n_runs=int(segment_total_runs),
-                    n_genomes=int(n_genomes),
-                    n_slots=int(n_slots),
-                    seed=int(ga_seed if ga_seed is not None else 42),
-                    heuristic_prob=0.0,
-                    heuristic_k=int(heuristic_k),
-                    seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
-                    seed_copies=1 if have_seed else 0,
-                    seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
-                    heuristic_copies=25,
-                    seed_ids=seed_ids if have_seed else None,
-                )
-                segment_pop_generated = True
-
-            if _GPU_NATIVE_GA_LOG_PROGRESS:
-                logger.info(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
-
-            if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:
-                try:
-                    # Preserve buffered run payloads before resetting Taichi runtime.
-                    _flush_ga_run_payload_segment()
-                    gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {run_idx + 1}/{num_runs}")
-                    load_ref_arrays(ref_arrays)
-                    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-                    gpu_api.ga_upload_item_stats(
-                        gpu_data["item_stats"],
-                        gpu_data["slot_start"],
-                        gpu_data["slot_count"],
-                    )
-                    gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
-                    segment_pop_generated = False
-                except Exception as e:
-                    logger.warning(f"[GPU GA] Warning: periodic reset failed: {e}")
-
-            if not segment_pop_generated:
-                gpu_api.ga_generate_initial_populations(
-                    run_idx_start=0,
-                    n_runs=int(segment_total_runs),
-                    n_genomes=int(n_genomes),
-                    n_slots=int(n_slots),
-                    seed=int(ga_seed if ga_seed is not None else 42),
-                    heuristic_prob=0.0,
-                    heuristic_k=int(heuristic_k),
-                    seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
-                    seed_copies=1 if have_seed else 0,
-                    seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
-                    heuristic_copies=25,
-                    seed_ids=seed_ids if have_seed else None,
-                )
-                segment_pop_generated = True
-
-            # Load this run's initial population into active GA buffers (GPU->GPU copy).
-            local_run_idx = run_idx - segment_start_global
-            gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
-
-            # Run GPU-Native GA (retry/reset on Vulkan semaphore failures)
-            last_exc = None
-            for attempt in range(max_retries + 1):
-                try:
-                    _run_gpu_native_ga(
-                        population=None,
-                        n_generations=gens_per_run,
-                        registry=registry,
-                        cfg_data=cfg_data,
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        base_stats_fixed=base_stats_fixed,
-                        gpu_static={
-                            "need_upload_item_stats": False,
-                            "need_upload_base_fixed": False,
-                            "item_stats": gpu_data["item_stats"],
-                            "slot_start": gpu_data["slot_start"],
-                            "slot_count": gpu_data["slot_count"],
-                            "base_fixed_stats": base_stats_arr,
-                        },
-                        elite_count=GA_ELITISM,
-                        mutation_rate=gpu_mutation_rate,
-                        immigrant_rate=gpu_immigrant_rate,
-                        tournament_k=gpu_tournament_k,
-                        # Use color flags for correct p_val/s_val calculation
-                        color_flags=build_color_flags(p_color, s_color, selected_color),
-                        status_cb=status_cb,
-                        song_slot=song_slot,  # Use prefetched GPU slot
-                        store_payload_idx=segment_runs,
-                        store_payload_only=True,
-                        n_genomes_override=n_genomes,
-                        population_preloaded=True,
-                        ga_seed=ga_seed,
-                        ga_seed_offset=int(run_idx),
-                    )
-                    last_exc = None
-                    break
-                except Exception as e:
-                    last_exc = e
-                    if attempt >= max_retries or not _is_vulkan_semaphore_failure(e):
-                        break
-                    logger.warning(
-                        f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})"
-                    )
-                    try:
-                        # Preserve buffered run payloads before resetting Taichi runtime.
-                        _flush_ga_run_payload_segment()
-                        gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
-                        load_ref_arrays(ref_arrays)
-                        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-                        gpu_api.ga_upload_item_stats(
-                            gpu_data["item_stats"],
-                            gpu_data["slot_start"],
-                            gpu_data["slot_count"],
-                        )
-                        gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
-                        # Restore staged initial populations for the retry (reset clears GPU buffers).
-                        gpu_api.ga_generate_initial_populations(
-                            run_idx_start=0,
-                            n_runs=int(segment_total_runs),
-                            n_genomes=int(n_genomes),
-                            n_slots=int(n_slots),
-                            seed=int(ga_seed if ga_seed is not None else 42),
-                            heuristic_prob=0.0,
-                            heuristic_k=int(heuristic_k),
-                            seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
-                            seed_copies=1 if have_seed else 0,
-                            seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
-                            heuristic_copies=25,
-                            seed_ids=seed_ids if have_seed else None,
-                        )
-                        segment_pop_generated = True
-                        gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
-                    except Exception as reset_exc:
-                        logger.error(f"[GPU GA] Reset failed: {reset_exc}")
-                        break
-
-            if last_exc is not None:
-                raise last_exc
-
-            segment_runs += 1
-            if segment_runs >= gpu_fields.MAX_GA_RUNS:
-                _flush_ga_run_payload_segment()
-
-        _flush_ga_run_payload_segment()
-
-        # One-time download: GPU-selected candidate payload(s) (bounded CPU transfer).
-        if not payload_segments:
-            raise RuntimeError("Internal error: no GA run payloads were stored")
+        runs_payload = run_gpu_native_ga_runs_payload_prebuilt(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            song_slot=int(song_slot),
+            item_stats=gpu_data["item_stats"],
+            slot_start=gpu_data["slot_start"],
+            slot_count=gpu_data["slot_count"],
+            base_fixed_stats_arr=base_stats_arr,
+            n_generations=int(gens_per_run),
+            initial_populations=None,
+            num_runs=int(num_runs),
+            n_genomes=int(GA_POPULATION_SIZE),
+            init_heuristic_topk=init_heuristic_topk,
+            init_heuristic_k=int(heuristic_k),
+            init_heuristic_copies=25,
+            db_seed_ids=seed_ids if have_seed else None,
+            db_seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
+            db_seed_copies=1 if have_seed else 0,
+            db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
+            elite_count=int(GA_ELITISM),
+            mutation_rate=float(gpu_mutation_rate),
+            immigrant_rate=float(gpu_immigrant_rate),
+            tournament_k=int(gpu_tournament_k),
+            color_flags=build_color_flags(p_color, s_color, selected_color),
+            cfg_data=cfg_data,
+            ga_seed=ga_seed,
+        )
 
         fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT))
         if fg_candidate_limit <= 0:
             fg_candidate_limit = FG_CANDIDATE_LIMIT
 
-        best_data = None
-        best_gear = None
-        best_minis = None
-        merged_candidates: list[dict] = []
-
-        for seg_payload in payload_segments:
-            seg_best_data, seg_best_gear, seg_best_minis, seg_candidates = decode_gpu_native_ga_runs_payload(
-                runs_payload=seg_payload,
-                registry=registry,
-                cfg_data=cfg_data,
-                base_stats_fixed=base_stats_fixed,
-                fg_candidate_limit=fg_candidate_limit,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-            )
-            merged_candidates.extend(list(seg_candidates or []))
-            if best_data is None or int(seg_best_data.get("Score", 0)) > int(best_data.get("Score", 0)):
-                best_data = seg_best_data
-                best_gear = seg_best_gear
-                best_minis = seg_best_minis
-
-        if best_data is None or best_gear is None or best_minis is None:
-            raise RuntimeError("Internal error: failed to decode GPU-native GA payload")
-
-        unique_evaluated = merged_candidates
-        if len(payload_segments) > 1:
-            # Rare fallback: multiple flush segments (e.g., due to Vulkan reset). Re-select on CPU to
-            # preserve a bounded funnel size across segments.
-            unique_evaluated = select_fg_candidates(
-                unique_evaluated,
-                limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
-                primary_color=str(p_color or ""),
-                secondary_color=str(s_color or ""),
-            )
+        best_data, best_gear, best_minis, unique_evaluated = decode_gpu_native_ga_runs_payload(
+            runs_payload=runs_payload,
+            registry=registry,
+            cfg_data=cfg_data,
+            base_stats_fixed=base_stats_fixed,
+            fg_candidate_limit=fg_candidate_limit,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+        )
 
         # Winner refinement:
         #

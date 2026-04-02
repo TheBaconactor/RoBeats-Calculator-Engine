@@ -44,6 +44,32 @@ def test_gpu_ga_load_initial_populations_batch_roundtrip():
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
+    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready, hard_reset_taichi
+
+    default_runs = int(fields.DEFAULT_MAX_GA_RUNS)
+    default_genomes = int(fields.DEFAULT_MAX_GA_RUN_GENOMES)
+
+    try:
+        hard_reset_taichi(reason="test shrink ga run buffers")
+        fields.configure_ga_run_buffers(max_runs=1, max_genomes=250)
+        ensure_ready()
+
+        assert int(fields.MAX_GA_RUNS) == 1
+        assert int(fields.ga_fg_candidates_packed.shape[1]) == 1
+
+        hard_reset_taichi(reason="test restore ga run buffers")
+        ensure_ready()
+
+        assert int(fields.MAX_GA_RUNS) == default_runs
+        assert int(fields.MAX_GA_RUN_GENOMES) == default_genomes
+        assert int(fields.ga_fg_candidates_packed.shape[1]) == default_runs
+    finally:
+        hard_reset_taichi(reason="test cleanup ga run buffers")
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_next_generation_fused_runs_matches_sequential():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_upload_island_boundaries,

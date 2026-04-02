@@ -8,7 +8,6 @@ Includes:
 import sys
 
 import taichi as ti
-from taichi.lang import simt
 
 from .. import kernels_helpers
 from ..kernels_scoring import local_search_from_hint, optimize_core_device_refined as optimize_core_device
@@ -262,8 +261,8 @@ def ga_find_best_combo_warmstart_kernel(
     When use_hints=1, uses local_search_from_hint() with the genome's stored hint.
     When use_hints=0, falls back to full optimize_core_device() (cold start).
 
-    Vulkan path reduces the winning key into `chunk_best_key` via an atomic-free
-    block-local shared-memory reduction and intentionally does NOT write
+    Vulkan path reduces the winning key into `chunk_best_key` via an exact
+    per-genome `ti.atomic_max` and intentionally does NOT write
     `chunk_best_results` (materialization validates cached payloads and recomputes
     when needed).
 
@@ -327,31 +326,28 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: deterministic atomic-free block reduction.
+        # Vulkan: deterministic per-genome atomic reduction.
         #
-        # We keep combo coverage deterministic by deriving the work lane from the loop
-        # index (`lane = tid % block_dim`) while using the physical invocation ID only
-        # for subgroup/shared-memory coordination.
+        # The active cold/warm evaluation path must be deterministic across hard
+        # resets for the exact same population. The atomic-free subgroup/shared
+        # reduction can still become unstable on Vulkan when physical invocation
+        # grouping diverges from logical combo lanes after Taichi resets, so keep
+        # combo coverage on loop-index lanes and combine the per-lane maxima into
+        # `chunk_best_key[genome_idx]` via `ti.atomic_max`.
         #
-        # We intentionally do NOT write `chunk_best_results` here; the materialization kernel validates
-        # cached payloads and will recompute the winning allocation when the cache doesn't match budget.
+        # We intentionally do NOT write `chunk_best_results` here; the
+        # materialization kernel validates cached payloads and will recompute the
+        # winning allocation when the cache doesn't match budget.
         block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
-        waves = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
-        shared_waves_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
         total_threads = n_genomes * block_dim
 
         ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
         for tid in range(total_threads):
             genome_idx = tid // block_dim
             lane = tid - genome_idx * block_dim  # stable 0..block_dim-1 per genome
-            lane_phys = ti.cast(simt.block.thread_idx(), ti.i32)
 
             if reuse_exact_eval_results != 0 and kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
                 continue
-
-            if lane_phys < waves:
-                shared_waves_key[lane_phys] = ti.u64(0)
-            simt.block.sync()
 
             local_best_key = ti.u64(0)
 
@@ -388,21 +384,5 @@ def ga_find_best_combo_warmstart_kernel(
                     local_best_key = key
                 local_c += block_dim
 
-            best = simt.subgroup.reduce_max(local_best_key)
-            if simt.subgroup.elect() and best != ti.u64(0):
-                # lane//32 indexing works for wave32 and wave64 (wave64 uses even slots).
-                wave_slot = lane_phys >> 5
-                shared_waves_key[wave_slot] = best
-            simt.block.sync()
-
-            if lane_phys == 0:
-                block_best = shared_waves_key[0]
-                for i in range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE):
-                    v = shared_waves_key[i]
-                    if v > block_best:
-                        block_best = v
-
-                if block_best != ti.u64(0):
-                    prev = kernels_helpers.chunk_best_key[genome_idx]
-                    if block_best > prev:
-                        kernels_helpers.chunk_best_key[genome_idx] = block_best
+            if local_best_key != ti.u64(0):
+                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)

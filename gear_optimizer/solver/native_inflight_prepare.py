@@ -444,6 +444,26 @@ def _prepare_song(task: tuple) -> _NativeSong:
         )
     except Exception:
         cfg_data["ga_convergence_trace_song_filter"] = ""
+    try:
+        cfg_data["ga_steady_state_enabled"] = bool(
+            cfg.getboolean("IterationEngine", "GPU_GA_SteadyStateEnabled", fallback=True)
+        )
+    except Exception:
+        cfg_data["ga_steady_state_enabled"] = True
+    try:
+        cfg_data["ga_steady_state_refresh_pct"] = max(
+            0.0,
+            min(0.75, safe_float(cfg.get("IterationEngine", "GPU_GA_SteadyStateRefreshPct", fallback="0.25"), 0.25)),
+        )
+    except Exception:
+        cfg_data["ga_steady_state_refresh_pct"] = 0.25
+    try:
+        cfg_data["ga_steady_state_min_refresh"] = max(
+            0,
+            safe_int(cfg.get("IterationEngine", "GPU_GA_SteadyStateMinRefresh", fallback="8"), 8),
+        )
+    except Exception:
+        cfg_data["ga_steady_state_min_refresh"] = 8
 
     # ForceGreatsFinder runs after GA and needs per-candidate BaseStats for signature grouping.
     # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
