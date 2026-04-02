@@ -1,3 +1,4 @@
+import csv
 import json
 import sys
 from pathlib import Path
@@ -61,6 +62,24 @@ def _write_stage_profile_json_custom(
         "songs": dict(songs or {}),
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_typeperf_csv(path: Path) -> None:
+    rows = [
+        [
+            "Timestamp",
+            r"\GPU Engine(pid_4101_luid_0x1_0x2_phys_0_eng_0_engtype_Compute)\Utilization Percentage",
+            r"\GPU Engine(pid_4102_luid_0x1_0x2_phys_0_eng_1_engtype_Compute)\Utilization Percentage",
+            r"\GPU Engine(pid_4999_luid_0x1_0x2_phys_0_eng_2_engtype_Compute)\Utilization Percentage",
+            r"\GPU Adapter Memory(luid_0x1_0x2_phys_0)\Dedicated Usage",
+            r"\GPU Adapter Memory(luid_0x1_0x2_phys_0)\Shared Usage",
+        ],
+        ['"04/02/2026 12:00:00.000"', "15", "45", "60", "1024", "128"],
+        ['"04/02/2026 12:00:01.000"', "55", "25", "80", "2048", "256"],
+    ]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
 
 
 def _write_perf_stdout(path: Path) -> None:
@@ -168,6 +187,35 @@ def test_stage_profile_reads_worker_suffixed_files_and_aggregates(tmp_path):
     assert (out["stages"]["fg_prep"] or {}).get("total_s") == 3.5
     assert (out["stages"]["ga_gpu"] or {}).get("count") == 1
     assert out["song_count"] == 2
+
+
+def test_typeperf_header_and_series_match_any_observed_worker_pid(tmp_path):
+    csv_path = tmp_path / "gpu_typeperf.csv"
+    _write_typeperf_csv(csv_path)
+
+    matching = psr._typeperf_csv_header_matching_pids(csv_path, target_pids=[1000, 4102, 7777])
+
+    assert matching == [4102]
+    assert psr._typeperf_csv_header_has_pid(csv_path, target_pids=[1000, 4101]) is True
+    assert psr._typeperf_csv_header_has_pid(csv_path, target_pids=[1000, 7777]) is False
+
+
+def test_typeperf_parsers_aggregate_across_multiple_target_worker_pids(tmp_path):
+    csv_path = tmp_path / "gpu_typeperf.csv"
+    _write_typeperf_csv(csv_path)
+
+    summary = psr._parse_typeperf_csv(csv_path, target_pids=[4101, 4102])
+    series = psr._load_typeperf_pid_util_series(csv_path, target_pids=[4101, 4102])
+    util_ts = psr._load_typeperf_pid_util_timeseries(csv_path, target_pids=[4101, 4102])
+
+    assert summary["ok"] is True
+    assert summary["target_pids"] == [4101, 4102]
+    assert summary["target_engine_util_pct_max"]["count"] == 2
+    assert summary["target_engine_util_pct_max"]["max"] == 55.0
+    assert summary["global_engine_util_pct_max"]["max"] == 80.0
+    assert summary["adapter_dedicated_usage_bytes_max"]["max"] == 2048.0
+    assert series == [45.0, 55.0]
+    assert [sample[1] for sample in util_ts] == [45.0, 55.0]
 
 
 def test_deep_mode_sets_debug_profile_bundle(tmp_path):

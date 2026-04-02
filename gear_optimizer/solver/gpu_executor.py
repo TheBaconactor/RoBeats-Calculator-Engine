@@ -589,6 +589,8 @@ class GpuExecutor:
         self._taichi_ready = False
         self._ready_event = threading.Event()
         self._last_init_error: Optional[str] = None
+        self._abort_requested = threading.Event()
+        self._abort_reason = ""
         self._in_process_queues = False
         # Single-item defer buffer used by `_gather_batch()` to prevent batching "no-batch"
         # request types behind unrelated work (stability/TDR guard on Windows).
@@ -1275,6 +1277,7 @@ class GpuExecutor:
         self._last_init_error = None
         self._deferred_request = None
         self._ready_event.clear()
+        self.clear_abort()
         self._last_ref_arrays_sig = None
         # Scratch buffer for registry request coalescing (avoid per-chunk np.empty allocations).
         self._registry_coalesce_staging: Any | None = None
@@ -1356,6 +1359,8 @@ class GpuExecutor:
         """Stop the GPU executor."""
         if not self._running:
             return
+
+        self.request_abort("shutdown")
 
         # Send shutdown request
         shutdown_req = GpuRequest(
@@ -3885,10 +3890,16 @@ class GpuExecutor:
         chunk: list[GpuRequest] = []
         chunk_units = 0.0
 
-        for req in requests:
+        for idx, req in enumerate(requests):
+            if self.abort_requested():
+                out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
+                return out
             req_units = max(1.0, float(self._estimate_request_work_units(req)))
             if chunk and (len(chunk) >= int(max_reqs) or (chunk_units + req_units) > float(max_work_units)):
                 out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
+                if self.abort_requested():
+                    out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
+                    return out
                 chunk = []
                 chunk_units = 0.0
             chunk.append(req)
@@ -3902,7 +3913,13 @@ class GpuExecutor:
     def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
         if not requests:
             return []
-        return [self._execute_gpu_native_ga_run(req) for req in requests]
+        out: list[GpuResponse] = []
+        for idx, req in enumerate(requests):
+            if self.abort_requested():
+                out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
+                break
+            out.append(self._execute_gpu_native_ga_run(req))
+        return out
 
     def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
@@ -3926,6 +3943,15 @@ class GpuExecutor:
                 request_id=request.request_id,
                 success=False,
                 error="GPU_NATIVE_GA_RUN requires in-process queues (avoid IPC pickling)",
+            )
+
+        try:
+            self._raise_if_abort_requested()
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=str(e),
             )
 
         payload = request.payload or {}
@@ -3990,6 +4016,7 @@ class GpuExecutor:
                 color_flags=dict(color_flags),
                 cfg_data=dict(cfg_data),
                 ga_seed=int(ga_seed) if ga_seed is not None else None,
+                abort_requested=self.abort_requested,
             )
             if n_genomes is not None:
                 kwargs["n_genomes"] = int(n_genomes)
@@ -4538,6 +4565,7 @@ class GpuExecutor:
             )
 
         try:
+            self._raise_if_abort_requested()
             result = self._run_fg_solve_with_breakpoints_payload(request.payload or {})
             return GpuResponse(request_id=request.request_id, success=True, result=result)
         except Exception as e:
@@ -4568,6 +4596,15 @@ class GpuExecutor:
                 request_id=request.request_id,
                 success=False,
                 error="FG_SOLVE_WITH_BREAKPOINTS_BATCH requires payloads: list[dict]",
+            )
+
+        try:
+            self._raise_if_abort_requested()
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=str(e),
             )
 
         debug_batch_pack = env_flag("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0")
@@ -4616,6 +4653,7 @@ class GpuExecutor:
                 last_selection_upload_key: tuple[Any, ...] | None = None
                 selection_sig_cache: dict[tuple[Any, ...], tuple[Any, ...]] = {}
                 for chunk_start in range(0, int(len(payloads)), int(max_batch)):
+                    self._raise_if_abort_requested()
                     chunk = list(payloads[chunk_start : chunk_start + int(max_batch)])
                     if not chunk:
                         continue
@@ -4744,6 +4782,7 @@ class GpuExecutor:
         results: list[Any] = []
         try:
             for p in payloads:
+                self._raise_if_abort_requested()
                 if not isinstance(p, dict):
                     raise TypeError("FG_SOLVE_WITH_BREAKPOINTS_BATCH payload item must be dict")
                 results.append(self._run_fg_solve_with_breakpoints_payload(p))
@@ -4759,6 +4798,8 @@ class GpuExecutor:
         self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
     ) -> Any:
         import numpy as np
+
+        self._raise_if_abort_requested()
 
         try:
             n_sections = int(payload.get("n_sections", 0) or 0)
@@ -5134,6 +5175,38 @@ class GpuExecutor:
     @property
     def last_init_error(self) -> Optional[str]:
         return self._last_init_error
+
+    def request_abort(self, reason: str = "abort requested") -> None:
+        try:
+            reason_text = str(reason or "").strip()
+        except Exception:
+            reason_text = ""
+        self._abort_reason = reason_text or "abort requested"
+        self._abort_requested.set()
+
+    def clear_abort(self) -> None:
+        self._abort_reason = ""
+        self._abort_requested.clear()
+
+    def abort_requested(self) -> bool:
+        return bool(self._abort_requested.is_set())
+
+    def _abort_error_message(self) -> str:
+        reason = str(getattr(self, "_abort_reason", "") or "").strip()
+        if not reason:
+            reason = "abort requested"
+        return f"GpuExecutor aborted: {reason}"
+
+    def _raise_if_abort_requested(self) -> None:
+        if self.abort_requested():
+            raise RuntimeError(self._abort_error_message())
+
+    def _aborted_response(self, request: GpuRequest) -> GpuResponse:
+        return GpuResponse(
+            request_id=int(getattr(request, "request_id", 0) or 0),
+            success=False,
+            error=self._abort_error_message(),
+        )
 
     def wait_until_ready(self, timeout: float | None = None) -> bool:
         if not self._running:

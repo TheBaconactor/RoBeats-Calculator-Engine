@@ -1520,6 +1520,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     color_flags: dict | None = None,
     cfg_data: dict | None = None,
     ga_seed: int | None = None,
+    abort_requested=None,
 ) -> "np.ndarray":
     """
     Run the GPU-native GA for multiple runs using either:
@@ -1626,6 +1627,18 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         msg = str(exc)
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
+    def _abort_requested_now() -> bool:
+        if abort_requested is None or not callable(abort_requested):
+            return False
+        try:
+            return bool(abort_requested())
+        except Exception:
+            return False
+
+    def _raise_if_abort_requested(where: str) -> None:
+        if _abort_requested_now():
+            raise RuntimeError(f"GpuExecutor aborted: {where}")
+
     def _restore_song_gpu_state() -> None:
         # Rebuild Taichi/GA static state for this song slot after hard resets.
         load_ref_arrays(ref_arrays)
@@ -1634,6 +1647,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
 
     # Load refs/timeline + upload static per-song GA data once.
+    _raise_if_abort_requested("before GPU-native GA setup")
     _restore_song_gpu_state()
 
     # Optional heuristic top-K table for GPU initial population generation.
@@ -1735,6 +1749,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             return
 
     def _stage_segment_initial_populations(*, run_start: int, seg_runs: int, segment_pop_arr) -> None:
+        _raise_if_abort_requested("before staging initial populations")
         if segment_pop_arr is not None:
             gpu_api.ga_upload_initial_populations(
                 segment_pop_arr,
@@ -1763,6 +1778,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     run_start_global = 0
     while run_start_global < num_runs:
+        _raise_if_abort_requested("before GPU-native GA segment")
         seg_len = min(int(gpu_fields.MAX_GA_RUNS), num_runs - run_start_global)
         segment_pop = None
         if initial_populations is not None:
@@ -1782,6 +1798,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
         local_run_idx = 0
         while local_run_idx < seg_len:
+            _raise_if_abort_requested("before GPU-native GA batch")
             global_run_idx = run_start_global + local_run_idx
 
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
@@ -1808,6 +1825,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             last_exc = None
             for attempt in range(max_retries + 1):
                 try:
+                    _raise_if_abort_requested("before loading GPU-native GA batch")
                     # Pack batch initial populations contiguously, preserving per-run semantics.
                     gpu_api.ga_load_initial_populations_batch(
                         run_idx_start=int(local_run_idx),
@@ -1829,6 +1847,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     n_total = int(batch_len) * int(n_genomes)
 
                     for gen in range(int(n_generations)):
+                        _raise_if_abort_requested(f"before GPU-native GA generation {int(gen)}")
                         eval_use_hints = int(gen_use_hints)
                         if cold_tail_gens > 0 and int(gen) >= (int(n_generations) - int(cold_tail_gens)):
                             eval_use_hints = 0
@@ -1855,6 +1874,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             materialize_mode="store_hints",
                         )
                         _sync()
+                        _raise_if_abort_requested(f"after GPU-native GA evaluate generation {int(gen)}")
                         if t0:
                             _log_phase(
                                 phase="evaluate",
@@ -1870,6 +1890,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         if trace_writer is not None:
                             gpu_api.ga_update_global_best(int(n_total), n_slots=int(n_slots))
                         _sync()
+                        _raise_if_abort_requested(f"after GPU-native GA global-best update generation {int(gen)}")
                         if t0:
                             _log_phase(
                                 phase="write_best_hints",
@@ -1909,6 +1930,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             n_slots=int(n_slots),
                         )
                         _sync()
+                        _raise_if_abort_requested(f"after GPU-native GA runs-best update generation {int(gen)}")
                         if t0:
                             _log_phase(
                                 phase="update_runs_best",
@@ -1936,6 +1958,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 n_slots=int(n_slots),
                             )
                             _sync()
+                            _raise_if_abort_requested(f"after GPU-native GA migration generation {int(gen)}")
                             if t0:
                                 _log_phase(
                                     phase="migration",
@@ -1963,6 +1986,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 elites_per_island=int(elite_count),
                             )
                             _sync()
+                            _raise_if_abort_requested(f"after GPU-native GA next-generation generation {int(gen)}")
                             if t0:
                                 _log_phase(
                                     phase="next_generation",
@@ -1978,6 +2002,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     # `(runs, pop, payload_cols)` downloads. Row 0 is per-run best (tracked
                     # across generations), rows 1..K are top-score entries from the final population.
                     t0 = time.perf_counter() if phase_timing else 0.0
+                    _raise_if_abort_requested("before packing FG candidates from GPU-native GA")
                     gpu_api.ga_pack_fg_candidates_table_segmented(
                         table_slot=int(song_slot),
                         run_idx_start=int(local_run_idx),
@@ -1998,6 +2023,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         is_s_ov=is_s_ov,
                     )
                     _sync()
+                    _raise_if_abort_requested("after packing FG candidates from GPU-native GA")
                     if t0:
                         _log_phase(
                             phase="pack_fg_candidates",
@@ -2010,6 +2036,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         )
 
                     if audit_redundancy:
+                        _raise_if_abort_requested("before GA payload snapshot download")
                         gpu_api.ga_store_runs_payload_snapshot_segmented(
                             run_idx_start=int(local_run_idx),
                             n_runs=int(batch_len),
@@ -2041,6 +2068,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             local_run_idx += int(batch_len)
 
         if audit_redundancy:
+            _raise_if_abort_requested("before GA audit payload download")
             audit_payload_segments.append(
                 gpu_api.ga_download_runs_payload(
                     n_runs=int(seg_len),

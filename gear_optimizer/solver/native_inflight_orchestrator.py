@@ -941,6 +941,7 @@ def run_native_inflight_song_pipeline(
     memory_poll_interval_s = 0.05
     memory_next_check_mono = 0.0
     memory_cached_requested = False
+    gpu_abort_requested = False
 
     def _register_completion_future(fut: concurrent.futures.Future | None) -> None:
         if fut is None:
@@ -1090,6 +1091,25 @@ def run_native_inflight_song_pipeline(
                 fh.write(traceback.format_exc() + "\n")
         except Exception:
             pass
+
+    def _request_gpu_abort(reason: str) -> None:
+        nonlocal gpu_abort_requested
+        if gpu_abort_requested:
+            return
+        gpu_abort_requested = True
+        try:
+            gpu_executor.request_abort(str(reason or "stop requested"))
+        except Exception:
+            pass
+
+    def _is_stop_abort_exception(exc: BaseException) -> bool:
+        if isinstance(exc, concurrent.futures.CancelledError):
+            return True
+        try:
+            msg = str(exc or "")
+        except Exception:
+            msg = ""
+        return "GpuExecutor aborted:" in msg
 
     # Prime the pipeline: pre-prepare a backlog synchronously so the GPU queue
     # doesn't starve on early song boundaries while prep workers spin up.
@@ -1301,6 +1321,7 @@ def run_native_inflight_song_pipeline(
             if _stop_requested_cached(now):
                 if not stopping:
                     stopping = True
+                    _request_gpu_abort("native in-flight stop requested")
                     try:
                         pending_tasks.clear()
                     except Exception:
@@ -1424,6 +1445,8 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             pass
                 except Exception as exc:
+                    if stopping and _is_stop_abort_exception(exc):
+                        continue
                     payload = build_error_payload(
                         song_name=str(song_name),
                         queue_key=str(task_key),
@@ -1467,15 +1490,18 @@ def run_native_inflight_song_pipeline(
                         setattr(song, "_fg_prep_submit_t0", None)
                     song.fg_prep_future.result()
                 except Exception as exc:
-                    _post(
-                        build_error_payload(
-                            song_name=str(song.song_name),
-                            queue_key=str(song.task_key),
-                            queue_label=str(song.task_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
+                    if stopping and _is_stop_abort_exception(exc):
+                        pass
+                    else:
+                        _post(
+                            build_error_payload(
+                                song_name=str(song.song_name),
+                                queue_key=str(song.task_key),
+                                queue_label=str(song.task_key),
+                                exc=exc,
+                                trace=traceback.format_exc(),
+                            )
                         )
-                    )
                 finally:
                     song.fg_prep_future = None
 
@@ -1717,17 +1743,18 @@ def run_native_inflight_song_pipeline(
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
-                    payload = build_error_payload(
-                        song_name=str(song.song_name),
-                        queue_key=str(song.task_key),
-                        queue_label=str(song.task_key),
-                        exc=exc,
-                        trace=traceback.format_exc(),
-                    )
                     bundle_parent = getattr(song, "_bundle_parent_task", None)
-                    if bundle_parent is not None:
-                        payload["_suppress_progress"] = True
-                    _post(payload)
+                    if not (stopping and _is_stop_abort_exception(exc)):
+                        payload = build_error_payload(
+                            song_name=str(song.song_name),
+                            queue_key=str(song.task_key),
+                            queue_label=str(song.task_key),
+                            exc=exc,
+                            trace=traceback.format_exc(),
+                        )
+                        if bundle_parent is not None:
+                            payload["_suppress_progress"] = True
+                        _post(payload)
                     # GA failed: release the reserved timeline slot for this song.
                     try:
                         _clear_fg_resident_owner(getattr(song, "calc_song", None))
@@ -1735,6 +1762,8 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
+                    if stopping and _is_stop_abort_exception(exc):
+                        continue
                     if bundle_parent is not None:
                         _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
                     else:
@@ -1828,17 +1857,18 @@ def run_native_inflight_song_pipeline(
                 try:
                     best_data, best_gear, best_minis, ga_candidates = song.decode_future.result()
                 except Exception as exc:
-                    payload = build_error_payload(
-                        song_name=str(song.song_name),
-                        queue_key=str(song.task_key),
-                        queue_label=str(song.task_key),
-                        exc=exc,
-                        trace=traceback.format_exc(),
-                    )
                     bundle_parent = getattr(song, "_bundle_parent_task", None)
-                    if bundle_parent is not None:
-                        payload["_suppress_progress"] = True
-                    _post(payload)
+                    if not (stopping and _is_stop_abort_exception(exc)):
+                        payload = build_error_payload(
+                            song_name=str(song.song_name),
+                            queue_key=str(song.task_key),
+                            queue_label=str(song.task_key),
+                            exc=exc,
+                            trace=traceback.format_exc(),
+                        )
+                        if bundle_parent is not None:
+                            payload["_suppress_progress"] = True
+                        _post(payload)
                     # Decode failed: release the reserved timeline slot for this song.
                     try:
                         _clear_fg_resident_owner(getattr(song, "calc_song", None))
@@ -1846,6 +1876,8 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
+                    if stopping and _is_stop_abort_exception(exc):
+                        continue
                     if bundle_parent is not None:
                         _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
                     else:
@@ -2110,23 +2142,26 @@ def run_native_inflight_song_pipeline(
                             fut.result()
                         except GpuServiceTimeoutError:
                             raise
-                        except Exception:
-                            fg_failed = True
-                            try:
-                                if post_sender is not None and bool(getattr(fg_song, "_bundle_wait_for_fg", False)):
-                                    post_sender.send(
-                                        {
-                                            "_fg_update": True,
-                                            "song": fg_song.song_name,
-                                            "db_key": fg_song.db_key,
-                                            "use_evo_db": bool(fg_song.use_evo_db),
-                                            "persist_entries": [],
-                                            "file_path": fg_song.fp,
-                                            "cfg_dict": fg_song.cfg_dict,
-                                        }
-                                    )
-                            except Exception:
-                                pass
+                        except Exception as exc:
+                            if stopping and _is_stop_abort_exception(exc):
+                                fg_failed = False
+                            else:
+                                fg_failed = True
+                                try:
+                                    if post_sender is not None and bool(getattr(fg_song, "_bundle_wait_for_fg", False)):
+                                        post_sender.send(
+                                            {
+                                                "_fg_update": True,
+                                                "song": fg_song.song_name,
+                                                "db_key": fg_song.db_key,
+                                                "use_evo_db": bool(fg_song.use_evo_db),
+                                                "persist_entries": [],
+                                                "file_path": fg_song.fp,
+                                                "cfg_dict": fg_song.cfg_dict,
+                                            }
+                                        )
+                                except Exception:
+                                    pass
                         # Release this song's reserved timeline slot now that FG is complete.
                         try:
                             _clear_fg_resident_owner(getattr(fg_song, "calc_song", None))
