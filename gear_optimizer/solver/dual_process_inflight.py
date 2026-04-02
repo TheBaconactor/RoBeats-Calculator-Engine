@@ -131,23 +131,69 @@ def _shard_index_for_song(song_name: str, difficulty: str, *, instances: int) ->
     return int(zlib.crc32(key) & 0xFFFFFFFF) % int(n)
 
 
+def _difficulty_weight(difficulty: str) -> int:
+    d = str(difficulty or "").strip().lower()
+    if d == "easy":
+        return 1
+    if d == "normal":
+        return 2
+    if d == "hard":
+        return 3
+    return 2
+
+
 def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tuple]]:
     """
     Deterministically shard in-flight task tuples across worker processes.
 
     - Shard key is (song_name, difficulty) so SongRepeats stay on the same worker.
-    - Per-shard order preserves the original queue order.
+    - Uses deterministic greedy balancing so dual-process workers get closer load.
+    - Per-shard task order preserves the original queue order.
     """
     n = max(1, int(instances or 1))
     shards: list[list[tuple]] = [[] for _ in range(n)]
+    if n <= 1:
+        return [list(tasks or [])]
+
+    grouped: dict[tuple[str, str], list[tuple]] = {}
     for task in tasks or []:
         try:
-            song_name = task[1]
-            difficulty = task[2]
+            song_name = str(task[1] or "")
+            difficulty = str(task[2] or "")
         except Exception:
             song_name = "Unknown"
             difficulty = "Unknown"
-        shards[_shard_index_for_song(str(song_name), str(difficulty), instances=n)].append(task)
+        grouped.setdefault((song_name, difficulty), []).append(task)
+
+    # Deterministic greedy assignment:
+    # - heavier groups first (repeat count * coarse difficulty proxy)
+    # - stable tie-break by crc32(song|difficulty)
+    # This keeps same (song,diff) together but avoids severe shard skew.
+    groups_sorted: list[tuple[str, str, int, int]] = []
+    for (song_name, difficulty), group_tasks in grouped.items():
+        key_bytes = f"{song_name}|{difficulty}".encode("utf-8", errors="replace")
+        key_hash = int(zlib.crc32(key_bytes) & 0xFFFFFFFF)
+        weight = max(1, len(group_tasks)) * _difficulty_weight(difficulty)
+        groups_sorted.append((song_name, difficulty, int(weight), int(key_hash)))
+    groups_sorted.sort(key=lambda x: (-int(x[2]), int(x[3]), str(x[0]), str(x[1])))
+
+    shard_loads = [0 for _ in range(n)]
+    group_to_shard: dict[tuple[str, str], int] = {}
+    for song_name, difficulty, weight, _key_hash in groups_sorted:
+        target_idx = min(range(n), key=lambda i: (int(shard_loads[i]), int(i)))
+        group_to_shard[(str(song_name), str(difficulty))] = int(target_idx)
+        shard_loads[target_idx] = int(shard_loads[target_idx]) + int(weight)
+
+    # Preserve per-shard order as seen in the original queue.
+    for task in tasks or []:
+        try:
+            song_name = str(task[1] or "")
+            difficulty = str(task[2] or "")
+        except Exception:
+            song_name = "Unknown"
+            difficulty = "Unknown"
+        idx = int(group_to_shard.get((song_name, difficulty), _shard_index_for_song(song_name, difficulty, instances=n)))
+        shards[idx].append(task)
     return shards
 
 

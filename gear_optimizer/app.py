@@ -431,7 +431,19 @@ class GearOptimizerApp:
             pass
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
-        return self._stop_control.request_stop(reason, force=force)
+        try:
+            return self._stop_control.request_stop(reason, force=force)
+        finally:
+            # Best-effort: once the user asks to stop, ask the GPU owner to abort
+            # long-running in-flight requests so shutdown does not wait for a full GA/FG drain.
+            try:
+                from gear_optimizer.solver.gpu_executor import get_gpu_executor
+
+                gpu_executor = get_gpu_executor()
+                if gpu_executor.is_running:
+                    gpu_executor.request_abort(f"stop requested ({reason})")
+            except Exception:
+                pass
 
     def _stop_requested_now(self) -> bool:
         if self._stop_cached_result:

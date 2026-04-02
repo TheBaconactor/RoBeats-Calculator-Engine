@@ -32,6 +32,32 @@ def test_execute_gpu_native_ga_run_batch_preserves_order(monkeypatch):
     assert all(r.success for r in out)
 
 
+def test_execute_gpu_native_ga_run_chunk_aborts_remaining_requests(monkeypatch):
+    executor = GpuExecutor()
+    calls: list[int] = []
+
+    def _fake_single(req: GpuRequest) -> GpuResponse:
+        calls.append(int(req.request_id))
+        executor.request_abort("hotkey stop")
+        return GpuResponse(request_id=int(req.request_id), success=True, result={"rid": int(req.request_id)})
+
+    monkeypatch.setattr(executor, "_execute_gpu_native_ga_run", _fake_single)
+
+    reqs = [
+        _req(121, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 1}),
+        _req(122, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 2}),
+        _req(123, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 3}),
+    ]
+    out = executor._execute_gpu_native_ga_run_chunk(reqs)
+    executor.clear_abort()
+
+    assert calls == [121]
+    assert [r.request_id for r in out] == [121, 122, 123]
+    assert out[0].success is True
+    assert all(r.success is False for r in out[1:])
+    assert all("GpuExecutor aborted: hotkey stop" in str(r.error) for r in out[1:])
+
+
 def test_execute_gpu_native_ga_run_batch_splits_large_chunks(monkeypatch):
     executor = GpuExecutor()
     monkeypatch.setenv("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "2")

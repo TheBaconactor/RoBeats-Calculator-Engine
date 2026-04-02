@@ -31,7 +31,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 import psutil
 
@@ -89,6 +89,58 @@ def _resolve_artifact_paths(path_or_paths: Path | list[Path] | tuple[Path, ...] 
             continue
 
     return out
+
+
+def _normalize_pid_list(*, target_pid: int | None = None, target_pids: Iterable[int] | None = None) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    raw_values = list(target_pids or [])
+    if target_pid is not None:
+        raw_values.append(target_pid)
+    for raw in raw_values:
+        try:
+            pid = int(raw)
+        except Exception:
+            continue
+        if pid <= 0 or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+    return out
+
+
+def _resolve_live_target_pids(
+    *,
+    target_pid: int | None = None,
+    target_pids_fn: Callable[[], Iterable[int]] | None = None,
+) -> list[int]:
+    dynamic_pids: list[int] = []
+    if target_pids_fn is not None:
+        try:
+            dynamic_pids = list(target_pids_fn() or [])
+        except Exception:
+            dynamic_pids = []
+    return _normalize_pid_list(target_pid=target_pid, target_pids=dynamic_pids)
+
+
+def _get_process_tree_pids(root_pid: int) -> list[int]:
+    root_pid = int(root_pid)
+    try:
+        root = psutil.Process(root_pid)
+    except Exception:
+        return _normalize_pid_list(target_pid=root_pid)
+
+    pids = [root_pid]
+    try:
+        children = root.children(recursive=True)
+    except Exception:
+        children = []
+    for child in children:
+        try:
+            pids.append(int(child.pid))
+        except Exception:
+            continue
+    return _normalize_pid_list(target_pids=pids)
 
 
 @dataclass(frozen=True)
@@ -162,7 +214,13 @@ def _getcounter_available() -> bool:
         return False
 
 
-def _start_getcounter(csv_path: Path, *, interval_sec: float, target_pid: int) -> subprocess.Popen | None:
+def _start_getcounter(
+    csv_path: Path,
+    *,
+    interval_sec: float,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
+) -> subprocess.Popen | None:
     """
     GPU engine utilization sampler using PowerShell Get-Counter.
 
@@ -186,25 +244,35 @@ def _start_getcounter(csv_path: Path, *, interval_sec: float, target_pid: int) -
     # Many systems reject sub-second intervals; clamp to >= 1s to avoid hard failure.
     interval = max(1.0, float(interval))
 
-    try:
-        target_pid = int(target_pid)
-    except Exception:
-        target_pid = 0
+    target_pid_list = _normalize_pid_list(target_pid=target_pid, target_pids=target_pids)
+    pids_literal = ",".join(str(pid) for pid in target_pid_list)
 
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $out = '{str(csv_path).replace("'", "''")}'
 $dir = Split-Path -Parent $out
 if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
-$pid = {target_pid}
-$pattern = '*pid_' + $pid + '_*'
+$pids = @({pids_literal})
+$tokens = @()
+foreach ($pid in $pids) {{
+  if ([int]$pid -gt 0) {{ $tokens += ('pid_' + [int]$pid + '_') }}
+}}
 $sw = New-Object System.IO.StreamWriter($out, $false, [System.Text.Encoding]::UTF8)
 $sw.WriteLine('wall_ts,instance,util_pct')
 try {{
   Get-Counter -Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval {interval} -Continuous | ForEach-Object {{
     foreach ($s in $_.CounterSamples) {{
-      if ($pid -gt 0) {{
-        if ($s.Path -notlike $pattern) {{ continue }}
+      $include = ($tokens.Count -eq 0)
+      if (-not $include) {{
+        foreach ($tok in $tokens) {{
+          if ($s.Path -like ('*' + $tok + '*')) {{
+            $include = $true
+            break
+          }}
+        }}
+      }}
+      if (-not $include) {{
+        continue
       }}
       $ts = [DateTimeOffset]$s.Timestamp
       $wall = $ts.ToUnixTimeMilliseconds() / 1000.0
@@ -249,6 +317,7 @@ def _start_getcounter_with_pid_retry(
     *,
     interval_sec: float,
     target_pid: int,
+    target_pids_fn: Callable[[], Iterable[int]] | None = None,
     proc: subprocess.Popen | None,
     max_attempts: int = 12,
     data_wait_sec: float = 2.0,
@@ -278,7 +347,12 @@ def _start_getcounter_with_pid_retry(
         except Exception:
             pass
 
-        getcounter_proc = _start_getcounter(csv_path, interval_sec=float(interval_sec), target_pid=int(target_pid))
+        getcounter_proc = _start_getcounter(
+            csv_path,
+            interval_sec=float(interval_sec),
+            target_pid=int(target_pid),
+            target_pids=_resolve_live_target_pids(target_pid=int(target_pid), target_pids_fn=target_pids_fn),
+        )
         if getcounter_proc is None:
             return None
 
@@ -308,6 +382,10 @@ def _typeperf_target_token(pid: int) -> str:
     return f"pid_{int(pid)}_"
 
 
+def _typeperf_target_tokens(*, target_pid: int | None = None, target_pids: Iterable[int] | None = None) -> list[str]:
+    return [_typeperf_target_token(pid) for pid in _normalize_pid_list(target_pid=target_pid, target_pids=target_pids)]
+
+
 def _read_first_line(path: Path) -> str | None:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -316,19 +394,33 @@ def _read_first_line(path: Path) -> str | None:
         return None
 
 
-def _typeperf_csv_header_has_pid(csv_path: Path, *, target_pid: int) -> bool:
+def _typeperf_csv_header_matching_pids(
+    csv_path: Path,
+    *,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
+) -> list[int]:
     """
-    Check whether a running `typeperf` capture includes GPU Engine instances for `target_pid`.
+    Returns the subset of target PIDs whose GPU Engine instances appear in the typeperf header.
 
     Important: `typeperf` resolves wildcard instances up-front. If the process hasn't used the GPU
     yet when `typeperf` starts, its `pid_*` instances won't be present in the header and never
     appear later. In that case we need to restart typeperf.
     """
-    token = _typeperf_target_token(int(target_pid))
     header = _read_first_line(csv_path)
     if not header:
-        return False
-    return token in header
+        return []
+    pids = _normalize_pid_list(target_pid=target_pid, target_pids=target_pids)
+    return [pid for pid in pids if _typeperf_target_token(pid) in header]
+
+
+def _typeperf_csv_header_has_pid(
+    csv_path: Path,
+    *,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
+) -> bool:
+    return bool(_typeperf_csv_header_matching_pids(csv_path, target_pid=target_pid, target_pids=target_pids))
 
 
 def _start_typeperf_with_pid_retry(
@@ -336,6 +428,7 @@ def _start_typeperf_with_pid_retry(
     *,
     interval_sec: float,
     target_pid: int,
+    target_pids_fn: Callable[[], Iterable[int]] | None = None,
     proc: subprocess.Popen | None,
     max_attempts: int = 6,
     header_wait_sec: float = 2.5,
@@ -379,7 +472,8 @@ def _start_typeperf_with_pid_retry(
                         break
                 except Exception:
                     break
-            if _typeperf_csv_header_has_pid(csv_path, target_pid=int(target_pid)):
+            live_target_pids = _resolve_live_target_pids(target_pid=int(target_pid), target_pids_fn=target_pids_fn)
+            if _typeperf_csv_header_has_pid(csv_path, target_pids=live_target_pids):
                 pid_in_header = True
                 break
             time.sleep(0.15)
@@ -683,6 +777,7 @@ class _CpuSampler:
         self._thread: threading.Thread | None = None
 
         self._proc_cache: dict[int, psutil.Process] = {}
+        self._observed_tree_pids: set[int] = {self._root_pid}
 
     def start(self) -> None:
         if self._thread is not None:
@@ -702,19 +797,6 @@ class _CpuSampler:
         except Exception:
             pass
 
-    def _get_tree_pids(self, root: psutil.Process) -> list[int]:
-        pids = [int(root.pid)]
-        try:
-            children = root.children(recursive=True)
-        except Exception:
-            children = []
-        for c in children:
-            try:
-                pids.append(int(c.pid))
-            except Exception:
-                continue
-        return pids
-
     def _get_proc(self, pid: int) -> psutil.Process | None:
         pid = int(pid)
         proc = self._proc_cache.get(pid)
@@ -727,6 +809,9 @@ class _CpuSampler:
         self._proc_cache[pid] = proc
         self._prime_cpu_percent(proc)
         return proc
+
+    def observed_tree_pids(self) -> list[int]:
+        return sorted(self._observed_tree_pids)
 
     def _run(self) -> None:
         t0 = time.perf_counter()
@@ -764,7 +849,8 @@ class _CpuSampler:
                 except Exception:
                     mem_system = None
 
-                tree_pids = self._get_tree_pids(root)
+                tree_pids = _get_process_tree_pids(int(root.pid))
+                self._observed_tree_pids.update(tree_pids)
                 cpu_tree = 0.0
                 rss_tree = 0
                 threads_tree = 0
@@ -826,7 +912,8 @@ def _clamp_pct(v: float) -> float:
 def _parse_typeperf_csv(
     csv_path: Path,
     *,
-    target_pid: int,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
     luid_name_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not csv_path.exists():
@@ -837,7 +924,8 @@ def _parse_typeperf_csv(
     #  - max engine utilization for the target PID (across all engines)
     #  - max engine utilization globally (across all engines)
     #  - max dedicated/shared adapter memory usage
-    target_token = f"pid_{int(target_pid)}_"
+    target_pid_list = _normalize_pid_list(target_pid=target_pid, target_pids=target_pids)
+    target_tokens = _typeperf_target_tokens(target_pid=target_pid, target_pids=target_pids)
     luid_name_map = dict(luid_name_map or {})
 
     try:
@@ -849,7 +937,7 @@ def _parse_typeperf_csv(
 
             col_names = list(header)
             util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
-            pid_util_cols = [i for i in util_cols if target_token in col_names[i]]
+            pid_util_cols = [i for i in util_cols if any(token in col_names[i] for token in target_tokens)]
             ded_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Dedicated Usage")]
             shr_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Shared Usage")]
 
@@ -881,7 +969,7 @@ def _parse_typeperf_csv(
                     # Still allow per-adapter max aggregation even if we can't classify type.
                     if luid:
                         util_cols_by_luid.setdefault(luid, []).append(i)
-                        if target_token in name:
+                        if any(token in name for token in target_tokens):
                             pid_util_cols_by_luid.setdefault(luid, []).append(i)
                     continue
                 typ = m.group(1).lower()
@@ -889,7 +977,7 @@ def _parse_typeperf_csv(
                 if luid:
                     util_cols_by_luid.setdefault(luid, []).append(i)
                     util_cols_by_luid_type.setdefault((luid, typ), []).append(i)
-                if target_token in name:
+                if any(token in name for token in target_tokens):
                     pid_util_cols_by_type.setdefault(typ, []).append(i)
                     if luid:
                         pid_util_cols_by_luid.setdefault(luid, []).append(i)
@@ -1043,7 +1131,8 @@ def _parse_typeperf_csv(
 
     return {
         "ok": True,
-        "target_pid": int(target_pid),
+        "target_pid": int(target_pid_list[0]) if target_pid_list else None,
+        "target_pids": target_pid_list,
         "target_engine_util_pct_max": _series_stats(util_pid_max_series),
         "global_engine_util_pct_max": _series_stats(util_global_max_series),
         "target_engine_util_pct_by_type_max": {k: _series_stats(v) for k, v in util_pid_by_type_series.items() if v},
@@ -1062,7 +1151,8 @@ def _parse_typeperf_csv(
 def _load_typeperf_pid_util_series(
     csv_path: Path,
     *,
-    target_pid: int,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
 ) -> list[float]:
     """
     Returns a per-sample series of "max GPU Engine utilization (%) across engines for target pid".
@@ -1073,7 +1163,7 @@ def _load_typeperf_pid_util_series(
     if not csv_path.exists():
         return []
 
-    target_token = f"pid_{int(target_pid)}_"
+    target_tokens = _typeperf_target_tokens(target_pid=target_pid, target_pids=target_pids)
     series: list[float] = []
 
     def _to_float(x: str) -> float | None:
@@ -1094,7 +1184,7 @@ def _load_typeperf_pid_util_series(
 
             col_names = list(header)
             util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
-            pid_util_cols = [i for i in util_cols if target_token in col_names[i]]
+            pid_util_cols = [i for i in util_cols if any(token in col_names[i] for token in target_tokens)]
             if not pid_util_cols:
                 return []
 
@@ -1128,12 +1218,13 @@ def _typeperf_timestamp_to_epoch(ts: str) -> float | None:
 def _load_typeperf_pid_util_timeseries(
     csv_path: Path,
     *,
-    target_pid: int,
+    target_pid: int | None = None,
+    target_pids: Iterable[int] | None = None,
 ) -> list[tuple[float, float]]:
     if not csv_path.exists():
         return []
 
-    target_token = f"pid_{int(target_pid)}_"
+    target_tokens = _typeperf_target_tokens(target_pid=target_pid, target_pids=target_pids)
     out: list[tuple[float, float]] = []
 
     def _to_float(x: str) -> float | None:
@@ -1154,7 +1245,7 @@ def _load_typeperf_pid_util_timeseries(
 
             col_names = list(header)
             util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
-            pid_util_cols = [i for i in util_cols if target_token in col_names[i]]
+            pid_util_cols = [i for i in util_cols if any(token in col_names[i] for token in target_tokens)]
             if not pid_util_cols:
                 return []
 
@@ -2483,11 +2574,16 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "METAFINDER_DEBUG_PROFILE",
         "PERF_TIMING",
         "GPU_EXECUTOR_PROFILE",
+        "FG_TASK_TRACE",
         "INFLIGHT_STAGE_PROFILE",
         "INFLIGHT_STAGE_PROFILE_PATH",
+        "GPU_NATIVE_GA_PHASE_TIMING",
+        "GPU_NATIVE_GA_PHASE_EVENTS",
         "METAFINDER_PROFILE_EVENTS",
         "METAFINDER_PROFILE_EVENTS_PATH",
         "METAFINDER_PROFILE_RUN_ID",
+        "PROFILE_EVENTS_PATH",
+        "PROFILE_RUN_ID",
     )
     env_overrides: dict[str, str] = {}
     for key in tracked_env:
@@ -2629,6 +2725,7 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
     last_ts_wall = None
     pending_fg_points: list[tuple[float, float]] = []
     backlog_points: list[tuple[float, float]] = []
+    ga_phase_rows: list[dict[str, Any]] = []
 
     try:
         with profile_events_path.open("r", encoding="utf-8") as f:
@@ -2661,6 +2758,34 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
                 metrics = obj.get("metrics")
                 if not isinstance(metrics, dict):
                     continue
+
+                if event in {"ga_gpu_phase", "ga_gpu_phase_window"} and component in {"gpu_executor", "ga_native"}:
+                    phase = str(metrics.get("phase", "") or "").strip() or "unknown"
+                    sample_count = _safe_int(metrics.get("samples", metrics.get("count", 1)), 1)
+                    if sample_count <= 0:
+                        sample_count = 1
+                    total_ms = _safe_float(metrics.get("total_ms", metrics.get("ms", 0.0)), 0.0)
+                    mean_ms = _safe_float(
+                        metrics.get("mean_ms", (total_ms / float(sample_count)) if sample_count > 0 else 0.0),
+                        0.0,
+                    )
+                    p95_ms = _safe_float(metrics.get("p95_ms", mean_ms), mean_ms)
+                    max_ms = _safe_float(metrics.get("max_ms", mean_ms), mean_ms)
+                    ga_phase_rows.append(
+                        {
+                            "phase": str(phase),
+                            "samples": int(sample_count),
+                            "total_ms": float(total_ms),
+                            "mean_ms": float(mean_ms),
+                            "p95_ms": float(p95_ms),
+                            "max_ms": float(max_ms),
+                            "runs": _safe_int(metrics.get("runs", metrics.get("batch_runs", 0)), 0),
+                            "pop": _safe_int(metrics.get("pop", 0), 0),
+                            "n_generations": _safe_int(metrics.get("n_generations", 0), 0),
+                            "batch_run_start": _safe_int(metrics.get("batch_run_start", 0), 0),
+                        }
+                    )
+
                 pending_fg = _safe_int(metrics.get("pending_fg", -1), -1)
                 fg_futures = max(0, _safe_int(metrics.get("fg_futures", 0), 0))
                 pending_all = _safe_int(metrics.get("pending", -1), -1)
@@ -2698,6 +2823,43 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
             backlog_positive_ratio = float(sum(1 for d in deltas if d > 0.0) / len(deltas))
 
     top_events = sorted(event_counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
+    ga_phase_summary: dict[str, Any] = {"count": 0}
+    if ga_phase_rows:
+        phase_totals: dict[str, dict[str, float]] = {}
+        for row in ga_phase_rows:
+            phase = str(row.get("phase", "unknown") or "unknown")
+            entry = phase_totals.setdefault(
+                phase,
+                {
+                    "windows": 0.0,
+                    "samples": 0.0,
+                    "total_ms": 0.0,
+                    "max_ms": 0.0,
+                },
+            )
+            entry["windows"] += 1.0
+            entry["samples"] += float(row.get("samples", 0) or 0.0)
+            entry["total_ms"] += float(row.get("total_ms", 0.0) or 0.0)
+            entry["max_ms"] = max(float(entry.get("max_ms", 0.0) or 0.0), float(row.get("max_ms", 0.0) or 0.0))
+
+        by_phase_ms: dict[str, Any] = {}
+        for phase, entry in sorted(phase_totals.items(), key=lambda kv: kv[0]):
+            samples = int(round(float(entry.get("samples", 0.0) or 0.0)))
+            total_ms = float(entry.get("total_ms", 0.0) or 0.0)
+            by_phase_ms[str(phase)] = {
+                "windows": int(round(float(entry.get("windows", 0.0) or 0.0))),
+                "samples": int(samples),
+                "total_ms": float(total_ms),
+                "mean_ms": float(total_ms / float(samples)) if samples > 0 else 0.0,
+                "max_ms": float(entry.get("max_ms", 0.0) or 0.0),
+            }
+
+        ga_phase_summary = {
+            "count": int(len(ga_phase_rows)),
+            "by_phase_ms": by_phase_ms,
+            "top_slowest": sorted(ga_phase_rows, key=lambda r: float(r.get("max_ms", 0.0) or 0.0), reverse=True)[:20],
+        }
+
     return {
         "ok": True,
         "path": str(profile_events_path),
@@ -2706,6 +2868,7 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
         "last_ts_wall": float(last_ts_wall) if last_ts_wall is not None else None,
         "component_counts": {k: int(v) for k, v in sorted(component_counts.items(), key=lambda kv: kv[0])},
         "event_counts_top": [{"event": str(k), "count": int(v)} for k, v in top_events],
+        "ga_gpu_phases": ga_phase_summary,
         "pending_fg": {
             "count": int(len(pending_fg_vals)),
             "stats": _series_stats(pending_fg_vals) if pending_fg_vals else {"count": 0},
@@ -2999,6 +3162,7 @@ def main(argv: list[str] | None = None) -> int:
                     paths.typeperf_csv,
                     interval_sec=float(typeperf_interval_sec_effective),
                     target_pid=int(proc_pid),
+                    target_pids_fn=lambda: _get_process_tree_pids(int(proc_pid)),
                     proc=proc,
                 )
         except Exception:
@@ -3011,6 +3175,7 @@ def main(argv: list[str] | None = None) -> int:
                     paths.getcounter_csv,
                     interval_sec=float(ns.getcounter_interval),
                     target_pid=int(proc_pid),
+                    target_pids_fn=lambda: _get_process_tree_pids(int(proc_pid)),
                     proc=proc,
                 )
         except Exception:
@@ -3038,6 +3203,10 @@ def main(argv: list[str] | None = None) -> int:
 
     display_adapters = _windows_display_adapter_luid_name_map()
     video_controllers = _windows_video_controller_summary()
+    observed_tree_pids = _normalize_pid_list(target_pid=int(proc_pid), target_pids=sampler.observed_tree_pids())
+    cpu_summary = _parse_cpu_jsonl(paths.cpu_jsonl)
+    if observed_tree_pids:
+        cpu_summary["observed_tree_pids"] = observed_tree_pids
 
     summary = {
         "display_adapters": display_adapters,
@@ -3050,6 +3219,7 @@ def main(argv: list[str] | None = None) -> int:
         "typeperf_started_at_epoch_sec": float(typeperf_started_at) if typeperf_started_at is not None else None,
         "typeperf_interval_sec": float(typeperf_interval_sec_effective),
         "typeperf_target_pid_in_header": bool(typeperf_target_pid_in_header),
+        "typeperf_target_pids": observed_tree_pids,
         "paths": {
             "out_dir": str(paths.out_dir),
             "stdout_log": str(paths.stdout_log),
@@ -3065,10 +3235,11 @@ def main(argv: list[str] | None = None) -> int:
             "profile_events_jsonl": str(events_path),
         },
         "run_id": str(run_id),
-        "cpu_summary": _parse_cpu_jsonl(paths.cpu_jsonl),
+        "cpu_summary": cpu_summary,
         "gpu_summary": _parse_typeperf_csv(
             paths.typeperf_csv,
             target_pid=int(proc_pid),
+            target_pids=observed_tree_pids,
             luid_name_map=display_adapters,
         ),
         "gpu_executor_trace_summary": _parse_gpu_executor_trace(trace_path)
@@ -3089,7 +3260,11 @@ def main(argv: list[str] | None = None) -> int:
         intervals = trace_summary.get("fg_intervals") or []
         if intervals and typeperf_started_at is not None and paths.typeperf_csv.exists():
             # Prefer true wall-clock timestamps from typeperf (more accurate than approximating from start+interval).
-            util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc_pid))
+            util_ts = _load_typeperf_pid_util_timeseries(
+                paths.typeperf_csv,
+                target_pid=int(proc_pid),
+                target_pids=observed_tree_pids,
+            )
             series_kind = "target_pid_engine_util_pct_max"
             if not util_ts:
                 util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
@@ -3103,7 +3278,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 # Fallback: approximate sampling times when we can't parse timestamps.
-                util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc_pid))
+                util_series = _load_typeperf_pid_util_series(
+                    paths.typeperf_csv,
+                    target_pid=int(proc_pid),
+                    target_pids=observed_tree_pids,
+                )
                 if not util_series:
                     util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
                     series_kind = "global_engine_util_pct_max"
@@ -3127,7 +3306,11 @@ def main(argv: list[str] | None = None) -> int:
             if not by_label:
                 summary["gpu_request_type_summary"] = {"ok": False, "error": "missing_or_empty_trace"}
             else:
-                util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc_pid))
+                util_ts = _load_typeperf_pid_util_timeseries(
+                    paths.typeperf_csv,
+                    target_pid=int(proc_pid),
+                    target_pids=observed_tree_pids,
+                )
                 series_kind = "target_pid_engine_util_pct_max"
                 if not util_ts:
                     util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
@@ -3147,7 +3330,11 @@ def main(argv: list[str] | None = None) -> int:
                         by_type[str(label)] = st
                 else:
                     # Fallback: approximate sample times when we can't parse timestamps.
-                    util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc_pid))
+                    util_series = _load_typeperf_pid_util_series(
+                        paths.typeperf_csv,
+                        target_pid=int(proc_pid),
+                        target_pids=observed_tree_pids,
+                    )
                     if not util_series:
                         util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
                         series_kind = "global_engine_util_pct_max"

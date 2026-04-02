@@ -4,6 +4,7 @@ import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
+    _continuous_ga_warm_queue_limit,
     _default_prime_target,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
@@ -164,6 +165,64 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
     monkeypatch.setenv("INFLIGHT_FG_SLOT_RESERVE", "0")
     reserve = _read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
     assert reserve == 0
+
+
+def test_continuous_ga_warm_queue_limit_caps_cold_start_backlog():
+    limit = _continuous_ga_warm_queue_limit(
+        ga_queue_limit=12,
+        inflight_limit=4,
+        fg_enabled=True,
+        prepared_count=4,
+        prep_inflight_count=2,
+        decode_inflight_count=0,
+        pending_fg_count=0,
+        fg_prep_inflight_count=0,
+        fg_inflight_count=0,
+    )
+    assert limit == 4
+
+
+def test_continuous_ga_warm_queue_limit_restores_full_limit_once_fg_pipeline_starts():
+    limit = _continuous_ga_warm_queue_limit(
+        ga_queue_limit=12,
+        inflight_limit=4,
+        fg_enabled=True,
+        prepared_count=4,
+        prep_inflight_count=2,
+        decode_inflight_count=1,
+        pending_fg_count=0,
+        fg_prep_inflight_count=0,
+        fg_inflight_count=0,
+    )
+    assert limit == 12
+
+
+def test_continuous_ga_warm_queue_limit_skips_cap_when_fg_disabled_or_staging_shallow():
+    disabled_limit = _continuous_ga_warm_queue_limit(
+        ga_queue_limit=12,
+        inflight_limit=4,
+        fg_enabled=False,
+        prepared_count=4,
+        prep_inflight_count=2,
+        decode_inflight_count=0,
+        pending_fg_count=0,
+        fg_prep_inflight_count=0,
+        fg_inflight_count=0,
+    )
+    assert disabled_limit == 12
+
+    shallow_limit = _continuous_ga_warm_queue_limit(
+        ga_queue_limit=12,
+        inflight_limit=4,
+        fg_enabled=True,
+        prepared_count=1,
+        prep_inflight_count=1,
+        decode_inflight_count=0,
+        pending_fg_count=0,
+        fg_prep_inflight_count=0,
+        fg_inflight_count=0,
+    )
+    assert shallow_limit == 12
 
 
 def test_continuous_fg_submit_budget_adaptive_behavior():

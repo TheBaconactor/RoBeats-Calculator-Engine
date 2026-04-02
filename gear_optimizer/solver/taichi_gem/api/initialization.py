@@ -62,7 +62,7 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
 # Stores (n_genomes, hash_bytes) of last uploaded stats
 _GENOME_STATS_CACHE = None
-_FTFF_COMBO_CACHE = {"budget": None, "n_combos": 0}
+_FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
 
 
 def hard_reset_taichi(*, reason: str | None = None) -> None:
@@ -96,7 +96,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _ref_loaded = False
     _last_ref_arrays_sig = None
     _GENOME_STATS_CACHE = None
-    _FTFF_COMBO_CACHE = {"budget": None, "n_combos": 0}
+    _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
 
     try:
         from .timeline import reset_timeline_state as _reset_timeline_state
@@ -120,7 +120,12 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         pass
 
 
-def _ensure_ftff_combo_tables(total_budget: int) -> int:
+def _ensure_ftff_combo_tables(
+    total_budget: int,
+    *,
+    max_ft_gems: int | None = None,
+    max_ff_gems: int | None = None,
+) -> int:
     """
     Ensure the FT/FF combo lookup tables are resident on GPU.
 
@@ -128,8 +133,12 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
       0 <= ft <= total_budget
       0 <= ff <= total_budget - ft
 
+    Optional global caps can further prune impossible combos:
+      ft <= max_ft_gems
+      ff <= max_ff_gems
+
     Returns:
-        n_combos: Number of valid combos for this budget.
+        n_combos: Number of valid combos for this budget/cap pair.
     """
     # Circular import avoided
     ensure_ready()
@@ -139,8 +148,13 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
     if total_budget > fields.MAX_TOTAL_BUDGET:
         raise ValueError(f"total_budget={total_budget} exceeds fields.MAX_TOTAL_BUDGET={fields.MAX_TOTAL_BUDGET}")
 
-    cached_budget = _FTFF_COMBO_CACHE.get("budget")
-    if cached_budget == total_budget:
+    cap_ft = int(total_budget) if max_ft_gems is None else int(max_ft_gems)
+    cap_ff = int(total_budget) if max_ff_gems is None else int(max_ff_gems)
+    cap_ft = max(0, min(int(total_budget), int(cap_ft)))
+    cap_ff = max(0, min(int(total_budget), int(cap_ff)))
+
+    cache_key = (int(total_budget), int(cap_ft), int(cap_ff))
+    if _FTFF_COMBO_CACHE.get("key") == cache_key:
         return int(_FTFF_COMBO_CACHE.get("n_combos") or 0)
 
     ft = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
@@ -150,13 +164,20 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
     # ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0
     dim = int(total_budget) + 1
     tri_i, tri_j = np.triu_indices(dim)
-    n_combos = int(tri_i.shape[0])
-    ft[:n_combos] = tri_i.astype(np.int32, copy=False)
-    ff[:n_combos] = (tri_j - tri_i).astype(np.int32, copy=False)
+    ft_vals = tri_i.astype(np.int32, copy=False)
+    ff_vals = (tri_j - tri_i).astype(np.int32, copy=False)
+    if cap_ft < int(total_budget) or cap_ff < int(total_budget):
+        valid = (ft_vals <= int(cap_ft)) & (ff_vals <= int(cap_ff))
+        ft_vals = ft_vals[valid]
+        ff_vals = ff_vals[valid]
+
+    n_combos = int(ft_vals.shape[0])
+    ft[:n_combos] = ft_vals
+    ff[:n_combos] = ff_vals
 
     fields.ftff_combo_ft.from_numpy(ft)
     fields.ftff_combo_ff.from_numpy(ff)
-    _FTFF_COMBO_CACHE["budget"] = total_budget
+    _FTFF_COMBO_CACHE["key"] = cache_key
     _FTFF_COMBO_CACHE["n_combos"] = n_combos
     return n_combos
 
