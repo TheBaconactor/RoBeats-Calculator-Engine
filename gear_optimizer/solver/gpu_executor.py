@@ -55,7 +55,7 @@ from gear_optimizer.solver.windows_timer import (
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
 _WARMUP_SENTINEL_SCHEMA = 2
-_GA_WARMUP_PROFILE = "v2_compile_use_hints"
+_GA_WARMUP_PROFILE = "v3_compile_update_global"
 
 
 def _system_timer_override_allowed() -> bool:
@@ -1923,6 +1923,22 @@ class GpuExecutor:
                         ga_ops.warmup_ga_kernels()
                 except Exception:
                     pass
+
+        # When GA phase timing is enabled, callers usually care about stable per-phase measurements.
+        # Even with offline caches, the first-hit JIT/load cost for template-specialized kernels can
+        # show up as a single massive outlier in `evaluate.max_ms`. Keep a lightweight per-process
+        # warmup enabled in that mode so the first real GA request doesn't pay that spike.
+        try:
+            warmup_ga_light = bool(warmup_ga) and bool(env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0"))
+        except Exception:
+            warmup_ga_light = False
+        if warmup_ga_light:
+            try:
+                from .taichi_gem.api import ga_operations as ga_ops
+
+                ga_ops.warmup_ga_kernels_light()
+            except Exception:
+                pass
 
         self._write_heartbeat(phase="ready", force=True)
 
