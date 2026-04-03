@@ -24,6 +24,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [INFLIGHT_GA_FG_THROUGHPUT.md](INFLIGHT_GA_FG_THROUGHPUT.md) - throughput protocol for GA + FG work.
 - [GPU_RESIDENT_GA_FG_PLAN.md](GPU_RESIDENT_GA_FG_PLAN.md) - same-slot GPU-resident GA to FG handoff plan.
 - [STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md](STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md) - proposal to replace repeated GA restarts with steady-state search plus exact duplicate-eval reuse.
+- [PHD_PERFORMANCE_HOMEWORK.md](PHD_PERFORMANCE_HOMEWORK.md) - standalone PhD-level homework focused on multiplicative throughput speedups via scientific/mathematical reductions.
 - [TAICHI_PORT_ROADMAP.md](TAICHI_PORT_ROADMAP.md) - Taichi/Vulkan roadmap and constraints.
 - [OPTIMIZATION_ANALYSIS.md](OPTIMIZATION_ANALYSIS.md) - optimization findings and tradeoffs.
 - [ANALYTICAL_HITSIM_PROBLEM.md](ANALYTICAL_HITSIM_PROBLEM.md) - problem statement for one-shot analytical HitSim (fever timing depends on hit timing).
@@ -36,6 +37,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [ARCHITECTURE_IMPROVEMENTS.md](ARCHITECTURE_IMPROVEMENTS.md) - older architecture proposal.
 - [CHANGES_SUMMARY.md](CHANGES_SUMMARY.md) - summary of a past task set.
 - [CODEX_WORKLOG.md](CODEX_WORKLOG.md) - durable long-context agent worklog and handoff diary.
+- [ECLIPSE_GA_FG_SUBMISSION_SECOND_PASS.md](ECLIPSE_GA_FG_SUBMISSION_SECOND_PASS.md) - second-pass review of the bundled ECLIPSE GA→FG research submission (net-new vs baseline engineering).
 - [ANALYTICAL_GEM_OPTIMIZATION_STUDY.md](ANALYTICAL_GEM_OPTIMIZATION_STUDY.md) - research notes on gem optimization.
 - [FG_PRECISION_PROPOSAL_LETTER.md](FG_PRECISION_PROPOSAL_LETTER.md) - proposal for FG precision work.
 - [DATABASE_MERGE_BUG_FIX.md](DATABASE_MERGE_BUG_FIX.md) - investigation into a database merge bug.
