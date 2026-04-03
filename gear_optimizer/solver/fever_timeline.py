@@ -488,13 +488,13 @@ class SongTimelineGrid:
         # - off: no bucketing.
         # - b / factors: canonicalize by exact (FT factor, FF factor). This is safe if
         #   factors come from lookup tables (plateaus) and equality is exact.
-        # - a / signature: canonicalize by computed timeline signature (always safe,
-        #   but cannot avoid first-time compute for a new signature).
+        # - a / signature: canonicalize by computed timeline signature (exact topology-cell
+        #   reduction; always safe, but cannot avoid first-time compute for a new signature).
         #
-        # Default remains "off" for parity safety.
-        # Default to factor-based bucketing ("b") for performance.
-        # Set TIMELINE_BUCKET_MODE=off to disable.
-        self._bucket_mode = str(os.environ.get("TIMELINE_BUCKET_MODE", "b") or "b").strip().lower()
+        # Default to exact signature bucketing so identical topology cells are reduced
+        # by default. Set TIMELINE_BUCKET_MODE=off to disable or TIMELINE_BUCKET_MODE=b
+        # to keep factor-only canonicalization.
+        self._bucket_mode = str(os.environ.get("TIMELINE_BUCKET_MODE", "a") or "a").strip().lower()
         if self._bucket_mode in {"none", "0", "false"}:
             self._bucket_mode = "off"
         if self._bucket_mode in {"factor", "factors", "b"}:
