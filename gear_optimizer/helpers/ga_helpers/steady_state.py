@@ -65,6 +65,28 @@ def resolve_steady_state_settings(*, cfg_data: dict | None, epoch_count: int, n_
     )
 
 
+def _canonicalize_row9(row: np.ndarray) -> tuple[int, ...]:
+    # Fast canonicalization for GA genomes:
+    # - first 6 slots are ordered gear IDs
+    # - last 3 slots (minis) are order-invariant
+    g0 = int(row[0])
+    g1 = int(row[1])
+    g2 = int(row[2])
+    g3 = int(row[3])
+    g4 = int(row[4])
+    g5 = int(row[5])
+    m0 = int(row[6])
+    m1 = int(row[7])
+    m2 = int(row[8])
+    if m1 < m0:
+        m0, m1 = m1, m0
+    if m2 < m1:
+        m1, m2 = m2, m1
+    if m1 < m0:
+        m0, m1 = m1, m0
+    return (g0, g1, g2, g3, g4, g5, m0, m1, m2)
+
+
 def build_steady_state_initial_population_ids(
     initial_populations: Any,
     *,
@@ -81,9 +103,7 @@ def build_steady_state_initial_population_ids(
     selected: list[np.ndarray] = []
     seen: set[tuple[int, ...]] = set()
     for row in flat:
-        key = canonicalize_genome_ids(row)
-        if key is None:
-            key = tuple(int(x) for x in np.asarray(row, dtype=np.int32).tolist())
+        key = _canonical_row_key(row)
         if key in seen:
             continue
         seen.add(key)
@@ -130,17 +150,40 @@ def _sample_fresh_population_row(
 
 
 def _canonical_row_key(row: Any) -> tuple[int, ...]:
+    # Hotloop: keep this lightweight. Population rows are almost always numpy arrays.
+    if isinstance(row, np.ndarray):
+        try:
+            arr = row.reshape(-1)
+        except Exception:
+            arr = row
+        if int(getattr(arr, "size", 0) or 0) >= 9:
+            return _canonicalize_row9(arr)
+        try:
+            arr_i32 = arr.astype(np.int32, copy=False)
+        except Exception:
+            arr_i32 = np.asarray(arr, dtype=np.int32).reshape(-1)
+        return tuple(int(x) for x in arr_i32.tolist())
+
     canon = canonicalize_genome_ids(row)
     if canon is not None:
         return tuple(int(x) for x in canon)
+
     arr = np.asarray(row, dtype=np.int32).reshape(-1)
+    if int(arr.size) >= 9:
+        return _canonicalize_row9(arr)
     return tuple(int(x) for x in arr.tolist())
 
 
 def _normalize_seen_archive_keys(seen_archive_keys: Any) -> set[tuple[int, ...]]:
-    out: set[tuple[int, ...]] = set()
     if seen_archive_keys is None:
-        return out
+        return set()
+    # Fast path: callers maintain this as a set of canonical row keys.
+    if isinstance(seen_archive_keys, set):
+        return seen_archive_keys
+    if isinstance(seen_archive_keys, frozenset):
+        return set(seen_archive_keys)
+
+    out: set[tuple[int, ...]] = set()
     for value in seen_archive_keys:
         try:
             out.add(_canonical_row_key(value))
@@ -177,6 +220,10 @@ def build_steady_state_next_population_ids(
         raise ValueError("current_population_ids has invalid shape")
 
     scores_arr = np.asarray(scores, dtype=np.int32).reshape(-1)
+    if int(scores_arr.size) < int(n_genomes):
+        raise ValueError(f"scores must have at least {n_genomes} entries; got {scores_arr.size}")
+    if int(scores_arr.size) > int(n_genomes):
+        scores_arr = scores_arr[: int(n_genomes)]
     slot_start_arr = np.asarray(slot_start, dtype=np.int32).reshape(-1)
     slot_count_arr = np.asarray(slot_count, dtype=np.int32).reshape(-1)
     seen_archive = _normalize_seen_archive_keys(seen_archive_keys)
@@ -196,15 +243,17 @@ def build_steady_state_next_population_ids(
     survivor_target = max(1, int(n_genomes) - int(refresh_count_i))
     elite_keep_target = max(0, min(int(survivor_target), int(elite_keep_count)))
     order = np.argsort(-scores_arr, kind="stable")
+    order_list = [int(x) for x in order.tolist()]
+    row_keys = [_canonical_row_key(pop_ids[i]) for i in range(int(n_genomes))]
 
     selected: list[np.ndarray] = []
     selected_keys: set[tuple[int, ...]] = set()
     duplicate_survivors = 0
     archive_rejected = 0
 
-    for idx in order.tolist():
-        row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
-        key = _canonical_row_key(row)
+    for idx in order_list:
+        row = pop_ids[idx]
+        key = row_keys[idx]
         if key in selected_keys:
             duplicate_survivors += 1
             continue
@@ -213,9 +262,9 @@ def build_steady_state_next_population_ids(
         if len(selected) >= int(elite_keep_target):
             break
 
-    for idx in order.tolist():
-        row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
-        key = _canonical_row_key(row)
+    for idx in order_list:
+        row = pop_ids[idx]
+        key = row_keys[idx]
         if key in selected_keys:
             duplicate_survivors += 1
             continue
@@ -251,9 +300,9 @@ def build_steady_state_next_population_ids(
     fallback_archive_reused = 0
     fallback_duplicates = 0
     if len(selected) < int(n_genomes):
-        for idx in order.tolist():
-            row = np.asarray(pop_ids[int(idx)], dtype=np.int32)
-            key = _canonical_row_key(row)
+        for idx in order_list:
+            row = pop_ids[idx]
+            key = row_keys[idx]
             if key in selected_keys:
                 continue
             selected_keys.add(key)
@@ -262,8 +311,8 @@ def build_steady_state_next_population_ids(
             if len(selected) >= int(n_genomes):
                 break
     if len(selected) < int(n_genomes):
-        for idx in order.tolist():
-            selected.append(np.asarray(pop_ids[int(idx)], dtype=np.int32).copy())
+        for idx in order_list:
+            selected.append(pop_ids[idx].copy())
             fallback_duplicates += 1
             if len(selected) >= int(n_genomes):
                 break

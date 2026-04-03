@@ -1,3 +1,6 @@
+import queue
+
+import gear_optimizer.solver.gpu_executor as gpu_executor_module
 from gear_optimizer.solver.gpu_executor import _BatchPlan, GpuExecutor, GpuRequest, GpuRequestType
 
 
@@ -93,3 +96,48 @@ def test_record_workload_batch_accumulates_mode_counters():
     assert ex._last_batch_plan_mode == "throughput"
     assert len(ex._workload_recent_batches) == 2
     assert sum(ex._workload_units_samples) == 190.0
+
+
+class _CaptureTimeoutQueue:
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def get(self, *, timeout: float = 0.0):
+        self.timeouts.append(float(timeout))
+        raise queue.Empty
+
+
+def test_gather_batch_inproc_idle_wait_uses_recent_timeout(monkeypatch):
+    ex = _fresh_executor()
+    ex._in_process_queues = True
+    ex._request_queue = _CaptureTimeoutQueue()
+    ex._short_wait_spin_sec = 0.0
+    ex._last_work_end_ts = 100.0
+
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS", "5")
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS", "250")
+    monkeypatch.setattr(gpu_executor_module, "perf_counter", lambda: 100.05, raising=True)
+
+    out = ex._gather_batch(max_wait_ms=6, max_batch_size=8)
+
+    assert out == []
+    assert ex._request_queue.timeouts[0] == 0.005
+
+
+def test_gather_batch_inproc_idle_wait_falls_back_to_idle_timeout(monkeypatch):
+    ex = _fresh_executor()
+    ex._in_process_queues = True
+    ex._request_queue = _CaptureTimeoutQueue()
+    ex._short_wait_spin_sec = 0.0
+    ex._last_work_end_ts = 100.0
+
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS", "5")
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS", "25")
+    monkeypatch.setattr(gpu_executor_module, "perf_counter", lambda: 100.10, raising=True)
+
+    out = ex._gather_batch(max_wait_ms=6, max_batch_size=8)
+
+    assert out == []
+    assert ex._request_queue.timeouts[0] == 0.1
