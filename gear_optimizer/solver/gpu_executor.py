@@ -55,7 +55,7 @@ from gear_optimizer.solver.windows_timer import (
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
 _WARMUP_SENTINEL_SCHEMA = 2
-_GA_WARMUP_PROFILE = "v2_compile_use_hints"
+_GA_WARMUP_PROFILE = "v3_compile_update_global"
 
 
 def _system_timer_override_allowed() -> bool:
@@ -671,6 +671,7 @@ class GpuExecutor:
         self._profile_loop_start_ts: Optional[float] = None
         self._profile_first_work_ts: Optional[float] = None
         self._profile_last_work_end_ts: Optional[float] = None
+        self._last_work_end_ts: Optional[float] = None
         self._profile_shutdown_ts: Optional[float] = None
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
@@ -1281,6 +1282,7 @@ class GpuExecutor:
         self._profile_loop_start_ts = None
         self._profile_first_work_ts = None
         self._profile_last_work_end_ts = None
+        self._last_work_end_ts = None
         self._profile_shutdown_ts = None
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
@@ -1922,6 +1924,22 @@ class GpuExecutor:
                 except Exception:
                     pass
 
+        # When GA phase timing is enabled, callers usually care about stable per-phase measurements.
+        # Even with offline caches, the first-hit JIT/load cost for template-specialized kernels can
+        # show up as a single massive outlier in `evaluate.max_ms`. Keep a lightweight per-process
+        # warmup enabled in that mode so the first real GA request doesn't pay that spike.
+        try:
+            warmup_ga_light = bool(warmup_ga) and bool(env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0"))
+        except Exception:
+            warmup_ga_light = False
+        if warmup_ga_light:
+            try:
+                from .taichi_gem.api import ga_operations as ga_ops
+
+                ga_ops.warmup_ga_kernels_light()
+            except Exception:
+                pass
+
         self._write_heartbeat(phase="ready", force=True)
 
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
@@ -2441,8 +2459,10 @@ class GpuExecutor:
                         self._live_type_counts[req.request_type] += 1
                         self._maybe_live_report()
 
+                work_end_ts = perf_counter()
+                self._last_work_end_ts = float(work_end_ts)
                 if self._profile_enabled:
-                    self._profile_last_work_end_ts = perf_counter()
+                    self._profile_last_work_end_ts = float(work_end_ts)
                 if saw_fg_work and self._in_process_queues and int(fg_burst_window_ms) > 0:
                     # Start the burst window *after* finishing the batch. The previous behavior anchored
                     # the window at gather time, which can expire during long GPU kernels and fail to
@@ -2546,6 +2566,8 @@ class GpuExecutor:
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
         inproc_idle_wait_s = 0.1
+        recent_idle_wait_s = 0.0
+        recent_idle_grace_s = 0.0
         inproc_yields_left = 0
         if self._in_process_queues:
             # In-process queues can be extremely latency sensitive when there is already work in-flight, but when
@@ -2556,6 +2578,18 @@ class GpuExecutor:
             except Exception:
                 inproc_idle_wait_s = 0.1
             inproc_idle_wait_s = max(0.0, min(float(inproc_idle_wait_s), 1.0))
+            try:
+                raw_idle_recent_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS", "10")
+                recent_idle_wait_s = float(str(raw_idle_recent_ms).strip()) / 1000.0
+            except Exception:
+                recent_idle_wait_s = 0.01
+            recent_idle_wait_s = max(0.0, min(float(recent_idle_wait_s), float(inproc_idle_wait_s)))
+            try:
+                raw_grace_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS", "250")
+                recent_idle_grace_s = float(str(raw_grace_ms).strip()) / 1000.0
+            except Exception:
+                recent_idle_grace_s = 0.25
+            recent_idle_grace_s = max(0.0, min(float(recent_idle_grace_s), 5.0))
             try:
                 raw_yields = _ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_YIELD_ROUNDS")
                 if raw_yields is None or str(raw_yields).strip() == "":
@@ -2600,6 +2634,14 @@ class GpuExecutor:
                     if len(batch) == 0:
                         if float(inproc_idle_wait_s) > 0.0:
                             timeout = float(inproc_idle_wait_s)
+                            last_end = self._last_work_end_ts
+                            if (
+                                last_end is not None
+                                and float(recent_idle_wait_s) > 0.0
+                                and float(recent_idle_grace_s) > 0.0
+                                and (perf_counter() - float(last_end)) <= float(recent_idle_grace_s)
+                            ):
+                                timeout = min(float(timeout), float(recent_idle_wait_s))
                         else:
                             timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.0, float(remaining))
                     else:

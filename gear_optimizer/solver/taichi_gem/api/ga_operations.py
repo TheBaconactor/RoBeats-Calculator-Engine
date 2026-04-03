@@ -1953,6 +1953,7 @@ def ga_island_migration_runs(
 
 
 _GA_KERNELS_WARMED = False
+_GA_KERNELS_LIGHT_WARMED = False
 
 
 def warmup_ga_kernels() -> None:
@@ -2020,6 +2021,7 @@ def warmup_ga_kernels() -> None:
 
     # Initialize + run a minimal 1-generation evaluation.
     ga_init_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
+    ga_init_global_best()
     ga_evaluate_population(
         n_total,
         n_slots=n_slots,
@@ -2038,8 +2040,13 @@ def warmup_ga_kernels() -> None:
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
         use_hints=1,
-        materialize_mode="store_hints",
+        materialize_mode="update_global",
     )
+    try:
+        # Best-effort: ensure the global-best pack/download kernels are JIT'd too.
+        _ = ga_download_global_best()
+    except Exception:
+        pass
     ga_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)
 
     # Warm migration + fused next-gen kernels (typical path in GPU-native GA).
@@ -2080,3 +2087,99 @@ def warmup_ga_kernels() -> None:
     )
 
     _GA_KERNELS_WARMED = True
+
+
+def warmup_ga_kernels_light() -> None:
+    """
+    Lightweight per-process warmup for GPU-native GA kernels.
+
+    This is intentionally smaller than `warmup_ga_kernels()`:
+    - It targets the per-process first-hit JIT/loading costs for the kernels that dominate GA runtime
+      (evaluate cold+warm, plus fused next-gen and initial population generation).
+    - It avoids downloads and GA->FG packing/selection to keep runtime bounded.
+
+    This is useful when offline caches are already built and we just want to avoid the first real GA
+    request paying a multi-second spike (which can skew phase-timing profiles).
+
+    Notes:
+    - Outputs are discarded; correctness is irrelevant.
+    - Idempotent per process.
+    """
+    global _GA_KERNELS_LIGHT_WARMED
+    if _GA_KERNELS_LIGHT_WARMED or _GA_KERNELS_WARMED:
+        return
+
+    ensure_ready()
+
+    import taichi as ti
+
+    n_slots = 9
+    n_genomes = min(64, int(getattr(fields, "MAX_GA_RUN_GENOMES", 250) or 250))
+    if n_genomes < 1:
+        n_genomes = 1
+    n_genomes = min(int(n_genomes), int(fields.MAX_GENOMES))
+
+    # Small but non-zero budget so combo tables are populated and the FT/FF kernels are exercised.
+    total_budget = 1
+    gem_scale_fever = 3
+    song_slot = 0
+
+    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
+    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
+    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
+    ga_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
+    ga_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+
+    ga_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
+    pop = np.zeros((int(n_genomes), int(n_slots)), dtype=np.int32)
+    ga_upload_population_indices(pop, n_slots=int(n_slots))
+
+    ga_init_global_best()
+
+    # Compile/load both evaluation template paths (cold + warm).
+    ga_evaluate_population(
+        int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        use_hints=0,
+        materialize_mode="update_global",
+    )
+    ti.sync()
+    ga_evaluate_population(
+        int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        use_hints=1,
+        materialize_mode="update_global",
+    )
+    ti.sync()
+
+    # Warm the common GPU-generated population path (used when CPU prebuilt pops are absent).
+    try:
+        ga_generate_initial_populations(
+            run_idx_start=0, n_runs=1, n_genomes=int(n_genomes), n_slots=n_slots, seed=12345
+        )
+        ti.sync()
+    except Exception:
+        pass
+
+    # Warm fused next-gen path (single-run).
+    try:
+        ga_next_generation_fused(
+            n_genomes=int(n_genomes),
+            n_slots=n_slots,
+            mutation_rate=0.0,
+            immigrant_rate=0.0,
+            tournament_k=1,
+            n_islands=1,
+            elites_per_island=1,
+        )
+        ti.sync()
+    except Exception:
+        pass
+
+    _GA_KERNELS_LIGHT_WARMED = True

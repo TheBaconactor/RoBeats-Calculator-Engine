@@ -1976,11 +1976,13 @@ def _run_gpu_native_ga_runs_payload_steady_state(
             n_slots=int(n_slots),
         )
         _raise_if_abort_requested(abort_requested, "after steady-state GA payload download")
+        pop_snapshot_i32 = pop_snapshot
+        scores_i32 = scores
         current_population_ids, refresh_stats = build_steady_state_next_population_ids(
-            current_population_ids=np.asarray(pop_snapshot, dtype=np.int32),
-            scores=np.asarray(scores, dtype=np.int32),
-            slot_start=np.asarray(slot_start, dtype=np.int32),
-            slot_count=np.asarray(slot_count, dtype=np.int32),
+            current_population_ids=pop_snapshot_i32,
+            scores=scores_i32,
+            slot_start=slot_start,
+            slot_count=slot_count,
             refresh_count=int(steady_state.refresh_count),
             seed=((42 if ga_seed is None else int(ga_seed)) ^ ((int(epoch_idx) + 1) * 747796405)),
             seen_archive_keys=seen_archive_keys,
@@ -1988,7 +1990,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
         )
         extend_seen_archive_keys(
             seen_archive_keys=seen_archive_keys,
-            population_ids=np.asarray(pop_snapshot, dtype=np.int32),
+            population_ids=pop_snapshot_i32,
         )
         logger.info(
             "  Steady-state refresh %d/%d: survivors=%d dropped_dupes=%d archive_rejected=%d fresh=%d fresh_collisions=%d fallback_archive=%d fallback_dupes=%d",
