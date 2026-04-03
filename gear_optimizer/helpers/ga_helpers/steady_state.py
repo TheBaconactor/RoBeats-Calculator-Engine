@@ -132,6 +132,10 @@ def _sample_fresh_population_row(
 ) -> np.ndarray:
     row = np.zeros((int(n_slots),), dtype=np.int32)
     for slot_idx in range(int(n_slots)):
+        # Minis occupy slots 6..8 and are sampled without replacement below.
+        if int(n_slots) >= 9 and 6 <= int(slot_idx) < 9:
+            row[slot_idx] = 0
+            continue
         count = int(slot_count[slot_idx]) if slot_idx < int(slot_count.shape[0]) else 0
         start = int(slot_start[slot_idx]) if slot_idx < int(slot_start.shape[0]) else 0
         if count <= 0:
@@ -144,8 +148,22 @@ def _sample_fresh_population_row(
         mini_count = int(slot_count[mini_slot]) if int(slot_count.shape[0]) > mini_slot else 0
         mini_start = int(slot_start[mini_slot]) if int(slot_start.shape[0]) > mini_slot else 0
         if mini_count >= 3:
-            picks = rng.choice(int(mini_count), size=3, replace=False).astype(np.int32)
-            row[6:9] = int(mini_start) + picks
+            # Fast uniform sampling of 3 distinct minis without replacement.
+            # This avoids the heavier `rng.choice(..., replace=False)` path in the refresh hotloop.
+            a = int(rng.integers(0, int(mini_count)))
+            b_raw = int(rng.integers(0, int(mini_count) - 1))
+            b = b_raw + 1 if b_raw >= a else b_raw
+            lo = a if a < b else b
+            hi = b if a < b else a
+            c_raw = int(rng.integers(0, int(mini_count) - 2))
+            c = c_raw
+            if c >= lo:
+                c += 1
+            if c >= hi:
+                c += 1
+            row[6] = int(mini_start) + int(a)
+            row[7] = int(mini_start) + int(b)
+            row[8] = int(mini_start) + int(c)
     return row
 
 
