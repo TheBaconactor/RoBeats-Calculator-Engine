@@ -57,7 +57,7 @@ Without that sufficiency story, the GA side is a plausible caching tactic rather
 
 The bundled prototype combines two effects:
 
-1) changing the cache key (raw genome → coarser signature), and  
+1) changing the cache key (raw genome → coarser signature), and
 2) changing the search schedule (multi-start restarts → steady-state).
 
 To separate them, I re-ran the GA portion holding the *multi-start schedule fixed*, and computed the unique-eval cut under:
@@ -121,7 +121,7 @@ The most compelling “math-first” additions in the proposed rewrite are:
 
 This is the specific math-first direction that seems most “breakthrough-shaped” (in the sense of shrinking exact state space / exact-work cost rather than adding more plumbing):
 
-1) **Gem allocation timing-regime quotient (GA-side)**  
+1) **Gem allocation timing-regime quotient (GA-side)**
    Fever walk structure depends combinatorially on only the fill and duration terms:
 
    - `q = ceil((N-L) * 0.333 * FF)`
@@ -131,7 +131,7 @@ This is the specific math-first direction that seems most “breakthrough-shaped
 
    Under a budget of `B` gems across 10 stats, raw allocations scale like `C(B+9,9)`, while `(g_FF, g_FT)` pairs scale like `C(B+2,2)`. For `B = 20`, that’s `10,015,005` vs `231`. Even if within-regime scoring still needs work, this is the kind of reduction that helps even when *every genome is unique* and cache hits are zero.
 
-2) **FG interval-DP + a dual safe bound (FG-side)**  
+2) **FG interval-DP + a dual safe bound (FG-side)**
    Keep the exact interval-DP framing, but strengthen pruning using the dual identity for “sum of k smallest”:
 
    ```
@@ -140,7 +140,7 @@ This is the specific math-first direction that seems most “breakthrough-shaped
 
    For any chosen `tau`, this yields an exact-safe upper bound that can be used to prune DP transitions more aggressively than a raw suffix-bonus cap, while remaining proof-backed.
 
-3) **GA semantic keys as a sufficient-statistic theorem**  
+3) **GA semantic keys as a sufficient-statistic theorem**
    The GA reuse story becomes “mathematical” only if phrased as:
 
    > there exists a computable κ(genome) such that exact base score (and exact FG score, if applicable) are functions only of κ.
