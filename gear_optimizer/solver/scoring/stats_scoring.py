@@ -13,7 +13,7 @@ import numpy as np
 from math import floor
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
-from ...core.utils import human_hitsim_timing_context, safe_int, safe_float
+from ...core.utils import human_hitsim_full_context, human_hitsim_timing_context, safe_int, safe_float
 
 from ..fever_timeline import (
     calculate_fever_activations_grid,
@@ -313,3 +313,48 @@ def _song_cache_key(calc_song):
         apply_to,
         sim_seed,
     ) + human_hitsim_timing_context(calc_song)
+
+
+def _song_cache_key_for_fg_timeline(calc_song):
+    """
+    Generate cache key for ForceGreats timeline evaluation.
+
+    This key MUST vary when fg_timestamps / fg_great_candidate_timestamps vary (e.g. HumanHitSim ApplyTo=FG),
+    otherwise FG timeline caches can cross-contaminate between different simulated runs.
+    """
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
+    try:
+        n = int(len(timestamps))
+    except Exception:
+        n = 0
+
+    first_ms = 0
+    last_ms = 0
+    try:
+        if n:
+            first_ms = int(float(timestamps[0]) * 1000.0)
+            last_ms = int(float(timestamps[n - 1]) * 1000.0)
+    except Exception:
+        first_ms = 0
+        last_ms = 0
+
+    great_candidates = song_data.get("fg_great_candidate_timestamps")
+    has_great_candidates = 0
+    try:
+        has_great_candidates = 1 if great_candidates is not None and int(len(great_candidates)) == int(n) else 0
+    except Exception:
+        has_great_candidates = 0
+
+    return (
+        str(meta.get("Song Name", "")),
+        str(meta.get("Difficulty", "")),
+        n,
+        safe_int(first_ms, 0),
+        safe_int(last_ms, 0),
+        safe_float(meta.get("Last Note Time", 0) or 0, 0.0),
+        safe_int(meta.get("Long Notes", 0) or 0, 0),
+        int(has_great_candidates),
+    ) + human_hitsim_full_context(calc_song)

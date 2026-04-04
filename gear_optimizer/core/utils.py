@@ -212,6 +212,77 @@ def human_hitsim_timing_context(calc_song):
     )
 
 
+def human_hitsim_full_context(calc_song):
+    """
+    Return HumanHitSim settings that can affect FG timing/carry.
+
+    Unlike `human_hitsim_timing_context`, this includes ApplyTo=FG because FG evaluation
+    depends on fg_timestamps/fg_great_candidate_timestamps even when GA/base scoring does not.
+    """
+    if not isinstance(calc_song, dict):
+        return ("", "", "", 0)
+
+    meta = calc_song.get("metadata", {}) or {}
+    if not isinstance(meta, dict) or not (meta.get("HumanHitSimApplied") or meta.get("HumanHitSimPlanned")):
+        return ("", "", "", 0)
+
+    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
+    great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
+    seed = safe_int(meta.get("HumanHitSimSeed", 0) or 0, 0)
+
+    return (
+        apply_to,
+        dist,
+        great_mode,
+        int(seed),
+    )
+
+
+def full_pipeline_signature(stats, calc_song, selected_color):
+    """
+    Compute an exact-safe cache key for the full base + FG scoring pipeline.
+
+    This is a sufficient key (not necessarily minimal). Equal signatures imply identical
+    scoring results under the repo's semantics for a fixed calc_song.
+    """
+    meta = calc_song["metadata"]
+    p_color = meta.get("Primary Color", "")
+    s_color = meta.get("Secondary Color", "")
+
+    gs = stats.get
+
+    # Mirror the same Beat/Vibe mapping the solver uses
+    base_beat = gs("Beat", 0)
+    base_vibe = gs("Vibe", 0)
+
+    def get_val_inline(k):
+        if k == "Beat":
+            return base_beat
+        if k == "Vibe":
+            return base_vibe
+        return gs(k, 0)
+
+    # Only capture elemental values that actually feed into P/S lanes
+    base_p_val = get_val_inline(p_color)
+    base_s_val = get_val_inline(s_color)
+
+    return (
+        meta.get("Song Name", ""),
+        meta.get("Difficulty", ""),
+        selected_color,
+        p_color,
+        s_color,
+        gs("Perfect Points", 0),
+        gs("Combo Multiplier", 0),
+        gs("Fever Multiplier", 0),
+        gs("Fever Fill Rate", 0),
+        gs("Fever Time", 0),
+        base_p_val,
+        base_s_val,
+    ) + human_hitsim_full_context(calc_song)
+
+
 def get_selected_element(data: object, default: str = "") -> str:
     """
     Normalize the "selected element" field across historical key spellings.

@@ -32,7 +32,7 @@ from ...core.constants import (
     FEVER_TIME_OFFSET,
 )
 from ...core.color_flags import build_color_flags
-from ...core.utils import safe_int, safe_float, stats_signature
+from ...core.utils import full_pipeline_signature, safe_int, safe_float
 from ...core.time_quantize import quantize_to_int_ms
 
 from ..fever_timeline import (
@@ -46,7 +46,7 @@ from ..scoring_core import (
 )
 
 from .gpu_solver import FORCE_GREATS_ALGO_VERSION, FG_CACHE
-from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key
+from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key_for_fg_timeline
 from .stats_ops import apply_gems_to_base_stats
 
 
@@ -722,7 +722,7 @@ def evaluate_fg_with_gem_iteration(
 
     non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
     force_counts = list(forced_counts or [])
-    song_key = _song_cache_key(calc_song)
+    song_key = _song_cache_key_for_fg_timeline(calc_song)
 
     start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
 
@@ -1328,8 +1328,9 @@ def apply_force_greats_to_result(
     # the FT/FF values already in stats (from the main gem solver)
     # Our "optimized" version was broken because optimize_core_jit doesn't allocate FT/FF
 
-    # Build cache key from stats signature + FG parameters
-    sig = stats_signature(stats, calc_song, selected_color)
+    # Build cache key from an exact-safe full-pipeline signature + FG parameters.
+    # This must vary when FG timing/carry inputs vary (e.g. HumanHitSim ApplyTo=FG).
+    sig = full_pipeline_signature(stats, calc_song, selected_color)
     manual_tuple = tuple(manual_counts) if manual_counts else ()
     if use_finder:
         # Finder depends on the FT/FF search window center and (optionally) GPU mode.
