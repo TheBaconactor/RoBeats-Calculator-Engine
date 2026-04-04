@@ -227,6 +227,7 @@ def _cpu_ceiling_timeline(
     last_note_time: float,
     ff_factor: float,
     ft_factor: float,
+    end_mode: str = "max",
 ) -> tuple[_TimelineSig, list[dict[str, int]]]:
     """
     CPU reimplementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
@@ -361,6 +362,79 @@ def _cpu_ceiling_timeline(
         b_minus = max(start_g, min(b_minus, gcount))
         b_plus = max(start_g, min(b_plus, gcount))
 
+        if str(end_mode) == "min":
+            # End fever as early as possible (first reachable out-group in the swing band).
+            lo = r_act
+            hi = r_act
+
+            g = start_g
+            while g < b_minus:
+                lo, hi = _prop(lo, hi, g)
+                g += 1
+
+            out_group = -1
+            out_carry = 0
+            g = b_minus
+            while g < b_plus and g < gcount:
+                lo, hi = _prop(lo, hi, g)
+
+                c_g = int(group_base[g])
+                out_threshold = int(Q - c_g)
+                if int(hi) >= int(out_threshold):
+                    out_group = int(g)
+                    out_carry = max(int(lo), int(out_threshold))
+                    break
+
+                remain_hi = int(out_threshold - 1)
+                lo = max(int(lo), -40)
+                hi = min(int(hi), int(remain_hi))
+                g += 1
+
+            if out_group >= 0:
+                fever_end = int(group_starts[out_group])
+            else:
+                if b_plus < gcount:
+                    out_group = int(b_plus)
+                    out_lo, _out_hi = _prop(lo, hi, out_group)
+                    out_carry = int(out_lo)
+                    fever_end = int(group_starts[out_group])
+                else:
+                    fever_end = n
+
+            fever_end = max(activation_note, min(int(fever_end), n))
+
+            # Mark head range + count body range.
+            if activation_note < head_len:
+                head_mask[activation_note : min(head_len, fever_end)] = True
+            body_fever_start = max(activation_note, 100)
+            if fever_end > body_fever_start:
+                body_fever += int(fever_end - body_fever_start)
+
+            if 0 <= int(out_group) < int(gcount):
+                prev_group = int(out_group)
+                prev_carry = int(out_carry)
+            else:
+                prev_group = int(s)
+                prev_carry = int(r_act)
+
+            last_fever_end_idx = int(fever_end)
+            current_note = int(fever_end)
+
+            trace.append(
+                {
+                    "activation_note": int(activation_note),
+                    "fever_end_idx": int(fever_end),
+                    "activation_group": int(s),
+                    "r_act": int(r_act),
+                    "Q": int(Q),
+                    "b_minus": int(b_minus),
+                    "b_plus": int(b_plus),
+                    "last_fever_group": int(out_group),
+                    "last_fever_hi": int(out_carry),
+                }
+            )
+            continue
+
         lo = r_act
         hi = r_act
         last_fever_group = s
@@ -448,6 +522,382 @@ def _cpu_ceiling_timeline(
         gap=int(gap),
     )
     return sig, trace
+
+
+def _cpu_ceiling_timeline_normal_lo(
+    chart_timestamps: np.ndarray,
+    note_types: np.ndarray,
+    *,
+    long_notes: int,
+    last_note_time: float,
+    ff_factor: float,
+    ft_factor: float,
+    end_mode: str = "max",
+) -> tuple[_TimelineSig, list[dict[str, int]]]:
+    """
+    CPU reimplementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
+
+    This variant chooses the earliest nominal carry (group_low) in non-fever segments.
+    """
+    from math import ceil
+    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+
+    ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
+    nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
+    n = int(ts.shape[0])
+
+    non_fever_cas = float(max(0, n - int(long_notes))) * 0.333
+    fill_count = int(ceil(non_fever_cas * float(ff_factor)))
+    fill_count = max(1, fill_count)
+
+    fever_time_cas = float(last_note_time) * 0.15 + 0.15
+    d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
+    d_ms = max(0, d_ms)
+
+    prepared = prepare_perfect_hit_simulation(
+        ts,
+        nt,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+
+    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
+    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
+    group_base = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
+    group_low = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
+    group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
+    gcount = int(group_starts.shape[0])
+    if n > 0 and gcount <= 0:
+        raise ValueError("prepare_perfect_hit_simulation produced no groups")
+
+    note_group_idx = np.full(n, -1, dtype=np.int32)
+    for g in range(gcount):
+        s = int(group_starts[g])
+        e = int(group_ends[g])
+        note_group_idx[s:e] = int(g)
+    if n > 0 and int(np.any(note_group_idx < 0)):
+        raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+
+    head_len = min(n, 100)
+    head_mask = np.zeros(head_len, dtype=np.bool_)
+    body_fever = 0
+    body_normal = 0
+    fever_activations = 0
+    last_fever_end_idx = 0
+
+    prev_group = -1
+    prev_carry = 0
+
+    def _delta_ms(g: int, prev_g: int) -> int:
+        d = int(group_base[g]) - int(group_base[prev_g])
+        return d if d >= 1 else 1
+
+    def _prop(lo: int, hi: int, g: int) -> tuple[int, int]:
+        d = _delta_ms(int(g), int(g - 1))
+        l_g = int(group_low[g])
+        u_g = int(group_high[g])
+        out_lo = max(l_g, int(lo) - d)
+        out_hi = max(u_g, int(hi) - d)
+        return int(out_lo), int(out_hi)
+
+    trace: list[dict[str, int]] = []
+
+    current_note = 0
+    section = 0
+    while current_note < n:
+        section += 1
+        notes_to_fill = (fill_count - 1) if section == 1 else fill_count
+        if notes_to_fill < 0:
+            notes_to_fill = 0
+
+        start_normal = int(current_note)
+        end_normal = int(min(n, int(current_note) + int(notes_to_fill)))
+
+        body_normal_start = max(start_normal, 100)
+        if end_normal > body_normal_start:
+            body_normal += int(end_normal - body_normal_start)
+
+        walk_note = int(start_normal)
+        while walk_note < end_normal:
+            g = int(note_group_idx[walk_note]) if walk_note < n else 0
+            if g < 0 or g >= gcount:
+                break
+            if g != prev_group:
+                u_g = int(group_low[g])
+                if prev_group < 0:
+                    prev_carry = u_g
+                else:
+                    prev_carry = max(u_g, int(prev_carry) - _delta_ms(g, int(prev_group)))
+                prev_group = g
+            group_end = n if (g + 1) >= gcount else int(group_starts[g + 1])
+            walk_note = min(group_end, end_normal)
+
+        current_note = end_normal
+        if current_note >= n or current_note <= 0:
+            break
+
+        fever_activations += 1
+        activation_note = int(current_note)
+        s = int(note_group_idx[activation_note])
+        if s < 0 or s >= gcount:
+            break
+
+        if s != prev_group:
+            u_s = int(group_low[s])
+            if prev_group < 0:
+                prev_carry = u_s
+            else:
+                prev_carry = max(u_s, int(prev_carry) - _delta_ms(s, int(prev_group)))
+            prev_group = s
+
+        r_act = int(prev_carry)
+        c_s = int(group_base[s])
+        Q = int(c_s + r_act + int(d_ms))
+
+        b_minus = int(np.searchsorted(group_base, int(Q - 80), side="left"))
+        b_plus = int(np.searchsorted(group_base, int(Q + 40), side="left"))
+
+        start_g = int(s + 1)
+        b_minus = max(start_g, min(b_minus, gcount))
+        b_plus = max(start_g, min(b_plus, gcount))
+
+        if str(end_mode) == "min":
+            lo = r_act
+            hi = r_act
+
+            g = start_g
+            while g < b_minus:
+                lo, hi = _prop(lo, hi, g)
+                g += 1
+
+            out_group = -1
+            out_carry = 0
+            g = b_minus
+            while g < b_plus and g < gcount:
+                lo, hi = _prop(lo, hi, g)
+
+                c_g = int(group_base[g])
+                out_threshold = int(Q - c_g)
+                if int(hi) >= int(out_threshold):
+                    out_group = int(g)
+                    out_carry = max(int(lo), int(out_threshold))
+                    break
+
+                remain_hi = int(out_threshold - 1)
+                lo = max(int(lo), -40)
+                hi = min(int(hi), int(remain_hi))
+                g += 1
+
+            if out_group >= 0:
+                fever_end = int(group_starts[out_group])
+            else:
+                if b_plus < gcount:
+                    out_group = int(b_plus)
+                    out_lo, _out_hi = _prop(lo, hi, out_group)
+                    out_carry = int(out_lo)
+                    fever_end = int(group_starts[out_group])
+                else:
+                    fever_end = n
+
+            fever_end = max(activation_note, min(int(fever_end), n))
+
+            if activation_note < head_len:
+                head_mask[activation_note : min(head_len, fever_end)] = True
+            body_fever_start = max(activation_note, 100)
+            if fever_end > body_fever_start:
+                body_fever += int(fever_end - body_fever_start)
+
+            if 0 <= int(out_group) < int(gcount):
+                prev_group = int(out_group)
+                prev_carry = int(out_carry)
+            else:
+                prev_group = int(s)
+                prev_carry = int(r_act)
+
+            last_fever_end_idx = int(fever_end)
+            current_note = int(fever_end)
+
+            trace.append(
+                {
+                    "activation_note": int(activation_note),
+                    "fever_end_idx": int(fever_end),
+                    "activation_group": int(s),
+                    "r_act": int(r_act),
+                    "Q": int(Q),
+                    "b_minus": int(b_minus),
+                    "b_plus": int(b_plus),
+                    "last_fever_group": int(out_group),
+                    "last_fever_hi": int(out_carry),
+                }
+            )
+            continue
+
+        lo = r_act
+        hi = r_act
+        last_fever_group = s
+        last_fever_hi = hi
+
+        # Interior region propagation.
+        g = start_g
+        while g < b_minus:
+            lo, hi = _prop(lo, hi, g)
+            last_fever_group = g
+            last_fever_hi = hi
+            g += 1
+
+        # Boundary band scan.
+        exit_group = -1
+        g = b_minus
+        while g < b_plus and g < gcount:
+            prev_lo = lo
+            prev_hi = hi
+            lo, hi = _prop(lo, hi, g)
+
+            c_g = int(group_base[g])
+            remain_hi = int(Q - c_g - 1)
+            keep_hi = min(int(hi), int(remain_hi))
+            if int(lo) <= int(keep_hi):
+                hi = int(keep_hi)
+                last_fever_group = g
+                last_fever_hi = hi
+                g += 1
+                continue
+
+            exit_group = g
+            lo = prev_lo
+            hi = prev_hi
+            break
+
+        if exit_group >= 0:
+            fever_end = int(group_starts[exit_group])
+        else:
+            if b_plus < gcount:
+                fever_end = int(group_starts[b_plus])
+            else:
+                fever_end = n
+
+        fever_end = max(activation_note, min(int(fever_end), n))
+
+        # Mark head range + count body range.
+        if activation_note < head_len:
+            head_mask[activation_note : min(head_len, fever_end)] = True
+        body_fever_start = max(activation_note, 100)
+        if fever_end > body_fever_start:
+            body_fever += int(fever_end - body_fever_start)
+
+        prev_group = int(last_fever_group)
+        prev_carry = int(last_fever_hi)
+        last_fever_end_idx = int(fever_end)
+        current_note = int(fever_end)
+
+        trace.append(
+            {
+                "activation_note": int(activation_note),
+                "fever_end_idx": int(fever_end),
+                "activation_group": int(s),
+                "r_act": int(r_act),
+                "Q": int(Q),
+                "b_minus": int(b_minus),
+                "b_plus": int(b_plus),
+                "last_fever_group": int(last_fever_group),
+                "last_fever_hi": int(last_fever_hi),
+            }
+        )
+
+    body_normal_start = max(int(current_note), 100)
+    if n > body_normal_start:
+        body_normal += int(n - body_normal_start)
+
+    head_bits = _pack_head_bits(head_mask, head_len)
+    gap = int(n - int(last_fever_end_idx))
+    sig = _TimelineSig(
+        head_len=int(head_len),
+        head_bits=head_bits,
+        body_fever=int(body_fever),
+        body_normal=int(body_normal),
+        fever_activations=int(fever_activations),
+        gap=int(gap),
+    )
+    return sig, trace
+
+
+def _cpu_ceiling_timeline_dual(
+    chart_timestamps: np.ndarray,
+    note_types: np.ndarray,
+    *,
+    long_notes: int,
+    last_note_time: float,
+    ff_factor: float,
+    ft_factor: float,
+) -> tuple[_TimelineSig, list[dict[str, int]]]:
+    """
+    CPU ceiling reimplementation: evaluate (normal-hi/normal-lo) × (fever-max/fever-min) and select
+    the best outcome using the same deterministic score ordering as the GPU kernel.
+    """
+    candidates: list[tuple[_TimelineSig, list[dict[str, int]]]] = []
+
+    candidates.append(
+        _cpu_ceiling_timeline(
+            chart_timestamps,
+            note_types,
+            long_notes=long_notes,
+            last_note_time=last_note_time,
+            ff_factor=ff_factor,
+            ft_factor=ft_factor,
+            end_mode="max",
+        )
+    )
+    candidates.append(
+        _cpu_ceiling_timeline(
+            chart_timestamps,
+            note_types,
+            long_notes=long_notes,
+            last_note_time=last_note_time,
+            ff_factor=ff_factor,
+            ft_factor=ft_factor,
+            end_mode="min",
+        )
+    )
+    candidates.append(
+        _cpu_ceiling_timeline_normal_lo(
+            chart_timestamps,
+            note_types,
+            long_notes=long_notes,
+            last_note_time=last_note_time,
+            ff_factor=ff_factor,
+            ft_factor=ft_factor,
+            end_mode="max",
+        )
+    )
+    candidates.append(
+        _cpu_ceiling_timeline_normal_lo(
+            chart_timestamps,
+            note_types,
+            long_notes=long_notes,
+            last_note_time=last_note_time,
+            ff_factor=ff_factor,
+            ft_factor=ft_factor,
+            end_mode="min",
+        )
+    )
+
+    best_sig = None
+    best_trace = None
+    best_key = None
+    for sig, trace in candidates:
+        score = _score_from_sig(sig, base=10000.0, combo=2.6, fever=5.25)
+        bits = tuple(int(x) for x in sig.head_bits)
+        key = (int(score), int(sig.body_fever), int(bits[3]), int(bits[2]), int(bits[1]), int(bits[0]))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_sig = sig
+            best_trace = trace
+
+    assert best_sig is not None and best_trace is not None
+    return best_sig, best_trace
 
 
 def _gpu_ceiling_timeline(calc_song: dict, ref_arrays: dict, *, ft_idx: int, ff_idx: int) -> _TimelineSig:
@@ -620,7 +1070,7 @@ def main() -> int:
 
     # CPU ceiling reimplementation.
     t2 = time.perf_counter()
-    ceiling_sig_cpu, ceiling_trace = _cpu_ceiling_timeline(
+    ceiling_sig_cpu, ceiling_trace = _cpu_ceiling_timeline_dual(
         chart_ts,
         note_types,
         long_notes=long_notes,

@@ -108,3 +108,29 @@ A reference-only exact DP was added to help validate and characterize the ceilin
   ceiling kernel is not optimal under that objective (the DP finds a strictly higher total-fever signature).
 
 This does not change production behavior; the GPU ceiling timeline remains the greedy interval-propagation kernel.
+
+### Follow-up: score-robust ceiling variants (2026-04-04)
+
+A real-song comparison against Monte Carlo best-of-N found a failure mode where the greedy "keep fever as long as
+feasible" ceiling can score *below* the best sampled MC seed (even when total fever-note count is unchanged).
+
+Concrete example (via `tools/bench/bench_ceiling_vs_mc25.py`):
+
+- Song: `Data/Hard/Baby I Don't Care (Hard) by Johnny  Michiko Hamada [Nash Music Library].txt`
+- Cell: `FT=0, FF=160`
+- Symptom (pre-fix): ceiling was `-5440` under MC best-of-500 due to a boundary flip trading `1` body-fever note for
+  `1` head-fever note (`i=91`).
+
+Change (GPU + CPU reference + bench):
+
+- `compute_timeline_grid_ceiling_hitsim_kernel` now evaluates 4 fully-feasible per-cell variants:
+  - normal-hi / normal-lo: carry choice during non-fever fill segments
+  - fever-max / fever-min: extend fever as long as feasible vs end fever at the earliest reachable out-group in the
+    swing band
+- The kernel emits the best variant using the same deterministic score proxy (`_ceiling_compare_score`) and tie-breaks.
+
+Verification:
+
+- `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_cpu_gpu_exact.py`
+- `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_mc_upper_bound.py`
+- `python tools/bench/bench_ceiling_vs_mc25.py --song "Data/Hard/Baby I Don't Care (Hard) by Johnny  Michiko Hamada [Nash Music Library].txt" --ft 0 --ff 160 --seeds 500 --strict`

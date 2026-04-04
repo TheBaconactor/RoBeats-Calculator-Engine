@@ -75,17 +75,6 @@ def _cpu_ceiling_sig_for_cell(
 
     MAX_HEAD = 100
     head_len = int(min(n, MAX_HEAD))
-    m = [0, 0, 0, 0]  # uint32 bits as Python ints
-    body_fever = 0
-    body_normal = 0
-    fever_activations = 0
-    last_fever_end_idx = 0
-
-    current_note = 0
-    fever_section = 0
-
-    prev_group = -1
-    prev_carry = 0
 
     def _delta_ms_to(prev_g: int, g: int) -> int:
         d = int(group_base[g]) - int(group_base[prev_g])
@@ -99,150 +88,269 @@ def _cpu_ceiling_sig_for_cell(
         out_hi = max(int(group_high[g]), int(hi) - int(d))
         return int(out_lo), int(out_hi)
 
-    def _or_head_mask_range(start: int, end: int) -> None:
-        s = max(0, int(start))
-        e = min(int(end), head_len)
-        for i in range(s, e):
-            w = i >> 5
-            b = i & 31
-            m[w] |= 1 << b
+    def _compare_score(head_bits: tuple[int, int, int, int], body_fever: int, body_normal: int) -> int:
+        base_f = np.float32(10000.0)
+        combo_mul_f = np.float32(2.6)
+        fever_mul_f = np.float32(5.25)
 
-    while current_note < n:
-        fever_section += 1
-        notes_to_fill = (fill_count - 1) if fever_section == 1 else fill_count
-        if notes_to_fill < 0:
-            notes_to_fill = 0
+        combo_val_per_note = int(base_f * combo_mul_f)
+        fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
+        body_score = (int(body_fever) * int(fever_val_per_note)) + (int(body_normal) * int(combo_val_per_note))
 
-        start_normal_idx = int(current_note)
-        end_normal_idx = int(min(n, int(current_note) + int(notes_to_fill)))
+        factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
+        total_head = 0
+        for i in range(int(head_len)):
+            current_ramp_val = base_f + (np.float32(i + 1) * factor)
+            w = int(i) >> 5
+            b = int(i) & 31
+            is_fever = (int(head_bits[w]) >> int(b)) & 1
+            if is_fever:
+                total_head += int(current_ramp_val * fever_mul_f)
+            else:
+                total_head += int(current_ramp_val)
+        return int(body_score + int(total_head))
 
-        body_normal_start = max(int(current_note), MAX_HEAD)
-        if end_normal_idx > body_normal_start:
-            body_normal += int(end_normal_idx - body_normal_start)
+    def _simulate(
+        *, pick_high: bool, end_mode: int
+    ) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
+        m = [0, 0, 0, 0]  # uint32 bits as Python ints
+        body_fever = 0
+        body_normal = 0
+        fever_activations = 0
+        last_fever_end_idx = 0
 
-        walk_note = int(start_normal_idx)
-        while walk_note < end_normal_idx:
-            g = int(note_group_idx[walk_note])
-            if g < 0:
-                g = 0
-            if g >= gcount:
+        current_note = 0
+        fever_section = 0
+
+        prev_group = -1
+        prev_carry = 0
+
+        def _anchor(g: int) -> int:
+            return int(group_high[g]) if pick_high else int(group_low[g])
+
+        def _or_head_mask_range(start: int, end: int) -> None:
+            s = max(0, int(start))
+            e = min(int(end), int(head_len))
+            for i in range(s, e):
+                w = i >> 5
+                b = i & 31
+                m[w] |= 1 << b
+
+        while current_note < n:
+            fever_section += 1
+            notes_to_fill = (fill_count - 1) if fever_section == 1 else fill_count
+            if notes_to_fill < 0:
+                notes_to_fill = 0
+
+            start_normal_idx = int(current_note)
+            end_normal_idx = int(min(n, int(current_note) + int(notes_to_fill)))
+
+            body_normal_start = max(int(current_note), MAX_HEAD)
+            if end_normal_idx > body_normal_start:
+                body_normal += int(end_normal_idx - body_normal_start)
+
+            walk_note = int(start_normal_idx)
+            while walk_note < end_normal_idx:
+                g = int(note_group_idx[walk_note])
+                if g < 0:
+                    g = 0
+                if g >= gcount:
+                    break
+
+                if g != prev_group:
+                    anchor = _anchor(int(g))
+                    if prev_group < 0:
+                        prev_carry = anchor
+                    else:
+                        prev_carry = max(anchor, int(prev_carry) - _delta_ms_to(int(prev_group), int(g)))
+                    prev_group = g
+
+                group_end = n if (g + 1) >= gcount else int(group_starts[g + 1])
+                walk_note = min(int(group_end), int(end_normal_idx))
+
+            current_note = int(end_normal_idx)
+            if current_note >= n:
                 break
 
-            if g != prev_group:
-                u_g = int(group_high[g])
+            if current_note <= 0:
+                break
+
+            fever_activations += 1
+            activation_note = int(current_note)
+            if activation_note >= n:
+                break
+
+            s = int(note_group_idx[activation_note])
+            if s < 0:
+                s = 0
+            if s >= gcount:
+                break
+
+            if s != prev_group:
+                anchor = _anchor(int(s))
                 if prev_group < 0:
-                    prev_carry = u_g
+                    prev_carry = anchor
                 else:
-                    prev_carry = max(u_g, int(prev_carry) - _delta_ms_to(int(prev_group), int(g)))
-                prev_group = g
+                    prev_carry = max(anchor, int(prev_carry) - _delta_ms_to(int(prev_group), int(s)))
+                prev_group = s
 
-            group_end = n if (g + 1) >= gcount else int(group_starts[g + 1])
-            walk_note = min(int(group_end), int(end_normal_idx))
+            r_act = int(prev_carry)
+            c_s = int(group_base[s])
+            Q = int(c_s + r_act + int(d_ms))
 
-        current_note = int(end_normal_idx)
-        if current_note >= n:
-            break
+            b_minus = int(np.searchsorted(group_base, int(Q - 80), side="left"))
+            b_plus = int(np.searchsorted(group_base, int(Q + 40), side="left"))
 
-        if current_note <= 0:
-            break
+            start_g = int(s + 1)
+            b_minus = max(start_g, min(b_minus, gcount))
+            b_plus = max(start_g, min(b_plus, gcount))
 
-        fever_activations += 1
-        activation_note = int(current_note)
-        if activation_note >= n:
-            break
+            if int(end_mode) != 0:
+                # End fever as early as possible: first reachable out-group in the swing band.
+                lo = int(r_act)
+                hi = int(r_act)
 
-        s = int(note_group_idx[activation_note])
-        if s < 0:
-            s = 0
-        if s >= gcount:
-            break
+                g = int(start_g)
+                while g < b_minus:
+                    lo, hi = _propagate_interval(lo, hi, g)
+                    g += 1
 
-        if s != prev_group:
-            u_s = int(group_high[s])
-            if prev_group < 0:
-                prev_carry = u_s
-            else:
-                prev_carry = max(u_s, int(prev_carry) - _delta_ms_to(int(prev_group), int(s)))
-            prev_group = s
+                out_group = -1
+                out_carry = 0
 
-        r_act = int(prev_carry)
-        c_s = int(group_base[s])
-        Q = int(c_s + r_act + int(d_ms))
+                g = int(b_minus)
+                while g < b_plus and g < gcount:
+                    lo, hi = _propagate_interval(lo, hi, g)
 
-        b_minus = int(np.searchsorted(group_base, int(Q - 80), side="left"))
-        b_plus = int(np.searchsorted(group_base, int(Q + 40), side="left"))
+                    c_g = int(group_base[g])
+                    out_threshold = int(Q - c_g)
+                    if int(hi) >= int(out_threshold):
+                        out_group = int(g)
+                        out_carry = max(int(lo), int(out_threshold))
+                        break
 
-        start_g = int(s + 1)
-        b_minus = max(start_g, min(b_minus, gcount))
-        b_plus = max(start_g, min(b_plus, gcount))
+                    remain_hi = int(out_threshold - 1)
+                    lo = max(int(lo), -40)
+                    hi = min(int(hi), int(remain_hi))
+                    g += 1
 
-        lo = int(r_act)
-        hi = int(r_act)
-        last_fever_group = int(s)
-        last_fever_hi = int(r_act)
+                if out_group >= 0:
+                    fever_end_idx = int(group_starts[out_group])
+                else:
+                    if b_plus < gcount:
+                        out_group = int(b_plus)
+                        out_lo, _out_hi = _propagate_interval(lo, hi, out_group)
+                        out_carry = int(out_lo)
+                        fever_end_idx = int(group_starts[out_group])
+                    else:
+                        fever_end_idx = n
 
-        g = int(start_g)
-        while g < b_minus:
-            lo, hi = _propagate_interval(lo, hi, g)
-            last_fever_group = int(g)
-            last_fever_hi = int(hi)
-            g += 1
+                fever_end_idx = max(int(activation_note), min(int(fever_end_idx), n))
 
-        exit_group = -1
-        g = int(b_minus)
-        while g < b_plus and g < gcount:
-            prev_lo = int(lo)
-            prev_hi = int(hi)
-            lo, hi = _propagate_interval(lo, hi, g)
+                _or_head_mask_range(int(activation_note), int(fever_end_idx))
 
-            c_g = int(group_base[g])
-            remain_hi = int(Q - c_g - 1)
-            keep_lo = max(int(lo), -40)
-            keep_hi = min(int(hi), int(remain_hi))
+                body_fever_start = max(int(activation_note), MAX_HEAD)
+                if fever_end_idx > body_fever_start:
+                    body_fever += int(fever_end_idx - body_fever_start)
 
-            if keep_lo <= keep_hi:
-                lo = int(keep_lo)
-                hi = int(keep_hi)
+                if 0 <= int(out_group) < int(gcount):
+                    prev_group = int(out_group)
+                    prev_carry = int(out_carry)
+                else:
+                    prev_group = int(s)
+                    prev_carry = int(r_act)
+
+                last_fever_end_idx = int(fever_end_idx)
+                current_note = int(fever_end_idx)
+                continue
+
+            lo = int(r_act)
+            hi = int(r_act)
+            last_fever_group = int(s)
+            last_fever_hi = int(r_act)
+
+            g = int(start_g)
+            while g < b_minus:
+                lo, hi = _propagate_interval(lo, hi, g)
                 last_fever_group = int(g)
                 last_fever_hi = int(hi)
                 g += 1
-                continue
 
-            exit_group = int(g)
-            lo = int(prev_lo)
-            hi = int(prev_hi)
-            break
+            exit_group = -1
+            g = int(b_minus)
+            while g < b_plus and g < gcount:
+                prev_lo = int(lo)
+                prev_hi = int(hi)
+                lo, hi = _propagate_interval(lo, hi, g)
 
-        if exit_group >= 0:
-            fever_end_idx = int(group_starts[exit_group])
-        else:
-            if b_plus < gcount:
-                g = int(b_plus)
-                _ = _propagate_interval(lo, hi, g)  # One-step propagate to the always-out group (debug parity).
-                fever_end_idx = int(group_starts[g])
+                c_g = int(group_base[g])
+                remain_hi = int(Q - c_g - 1)
+                keep_lo = max(int(lo), -40)
+                keep_hi = min(int(hi), int(remain_hi))
+
+                if keep_lo <= keep_hi:
+                    lo = int(keep_lo)
+                    hi = int(keep_hi)
+                    last_fever_group = int(g)
+                    last_fever_hi = int(hi)
+                    g += 1
+                    continue
+
+                exit_group = int(g)
+                lo = int(prev_lo)
+                hi = int(prev_hi)
+                break
+
+            if exit_group >= 0:
+                fever_end_idx = int(group_starts[exit_group])
             else:
-                fever_end_idx = n
+                if b_plus < gcount:
+                    g = int(b_plus)
+                    _ = _propagate_interval(lo, hi, g)  # One-step propagate to the always-out group (debug parity).
+                    fever_end_idx = int(group_starts[g])
+                else:
+                    fever_end_idx = n
 
-        fever_end_idx = max(int(activation_note), min(int(fever_end_idx), n))
+            fever_end_idx = max(int(activation_note), min(int(fever_end_idx), n))
 
-        _or_head_mask_range(int(activation_note), int(fever_end_idx))
+            _or_head_mask_range(int(activation_note), int(fever_end_idx))
 
-        body_fever_start = max(int(activation_note), MAX_HEAD)
-        if fever_end_idx > body_fever_start:
-            body_fever += int(fever_end_idx - body_fever_start)
+            body_fever_start = max(int(activation_note), MAX_HEAD)
+            if fever_end_idx > body_fever_start:
+                body_fever += int(fever_end_idx - body_fever_start)
 
-        prev_group = int(last_fever_group)
-        prev_carry = int(last_fever_hi)
-        last_fever_end_idx = int(fever_end_idx)
-        current_note = int(fever_end_idx)
+            prev_group = int(last_fever_group)
+            prev_carry = int(last_fever_hi)
+            last_fever_end_idx = int(fever_end_idx)
+            current_note = int(fever_end_idx)
 
-    body_normal_start = max(int(current_note), MAX_HEAD)
-    if n > body_normal_start:
-        body_normal += int(n - body_normal_start)
+        body_normal_start = max(int(current_note), MAX_HEAD)
+        if n > body_normal_start:
+            body_normal += int(n - body_normal_start)
 
-    gap = int(n - int(last_fever_end_idx))
-    head_bits = tuple(int(x & 0xFFFFFFFF) for x in m)  # type: ignore[assignment]
-    return (int(head_len), head_bits, int(body_fever), int(body_normal), int(fever_activations), int(gap))
+        gap = int(n - int(last_fever_end_idx))
+        head_bits = tuple(int(x & 0xFFFFFFFF) for x in m)  # type: ignore[assignment]
+        return (int(head_len), head_bits, int(body_fever), int(body_normal), int(fever_activations), int(gap))
+
+    candidates = [
+        _simulate(pick_high=True, end_mode=0),
+        _simulate(pick_high=True, end_mode=1),
+        _simulate(pick_high=False, end_mode=0),
+        _simulate(pick_high=False, end_mode=1),
+    ]
+
+    best = None
+    best_key = None
+    for sig in candidates:
+        score = int(_compare_score(sig[1], sig[2], sig[3]))
+        bits = tuple(int(x) for x in sig[1])
+        key = (score, int(sig[2]), int(bits[3]), int(bits[2]), int(bits[1]), int(bits[0]))
+        if best_key is None or key > best_key:
+            best_key = key
+            best = sig
+
+    assert best is not None
+    return best
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")

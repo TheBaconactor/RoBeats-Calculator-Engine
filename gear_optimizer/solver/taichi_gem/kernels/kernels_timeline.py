@@ -305,6 +305,355 @@ def _propagate_carry_interval(lo: ti.i32, hi: ti.i32, g: ti.i32) -> ti.types.vec
     return ti.Vector([out_lo, out_hi])
 
 
+@ti.func
+def _ceiling_anchor_ms(g: ti.i32, pick_high: ti.i32) -> ti.i32:
+    lo = ti.cast(kernels_helpers.song_group_low_ms[g], ti.i32)
+    hi = ti.cast(kernels_helpers.song_group_high_ms[g], ti.i32)
+    return ti.select(pick_high != 0, hi, lo)
+
+
+@ti.func
+def _ceiling_head_bit(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, i: ti.i32) -> ti.i32:
+    w = i >> 5
+    b = i & 31
+    bit = ti.u32(0)
+    if w == 0:
+        bit = (m0 >> ti.u32(b)) & ti.u32(1)
+    elif w == 1:
+        bit = (m1 >> ti.u32(b)) & ti.u32(1)
+    elif w == 2:
+        bit = (m2 >> ti.u32(b)) & ti.u32(1)
+    else:
+        bit = (m3 >> ti.u32(b)) & ti.u32(1)
+    return ti.cast(bit, ti.i32)
+
+
+@ti.func
+def _ceiling_compare_score(
+    head_len: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    body_fever: ti.i32,
+    body_normal: ti.i32,
+) -> ti.i32:
+    base_f = ti.f32(10000.0)
+    combo_mul_f = ti.f32(2.6)
+    fever_mul_f = ti.f32(5.25)
+
+    combo_val_per_note = ti.cast(base_f * combo_mul_f, ti.i32)
+    fever_val_per_note = ti.cast(base_f * combo_mul_f * fever_mul_f, ti.i32)
+    body_score = (body_fever * fever_val_per_note) + (body_normal * combo_val_per_note)
+
+    factor = (combo_mul_f - ti.f32(1.0)) * base_f / ti.f32(100.0)
+    total_head = ti.i32(0)
+    i = ti.i32(0)
+    while i < head_len:
+        current_ramp_val = base_f + (ti.cast(i + 1, ti.f32) * factor)
+        if _ceiling_head_bit(m0, m1, m2, m3, i) != 0:
+            total_head += ti.cast(current_ramp_val * fever_mul_f, ti.i32)
+        else:
+            total_head += ti.cast(current_ramp_val, ti.i32)
+        i += 1
+
+    return body_score + total_head
+
+
+_CeilingCellResult = ti.types.struct(
+    m0=ti.u32,
+    m1=ti.u32,
+    m2=ti.u32,
+    m3=ti.u32,
+    body_fever=ti.i32,
+    body_normal=ti.i32,
+    fever_activations=ti.i32,
+    gap=ti.i32,
+)
+
+
+@ti.func
+def _simulate_ceiling_cell(
+    n: ti.i32,
+    gcount: ti.i32,
+    fill_count: ti.i32,
+    d_ms: ti.i32,
+    pick_high: ti.i32,
+    end_mode: ti.i32,
+) -> _CeilingCellResult:
+    MAX_HEAD: ti.i32 = 100
+    head_len: ti.i32 = ti.min(n, MAX_HEAD)
+
+    m0 = ti.u32(0)
+    m1 = ti.u32(0)
+    m2 = ti.u32(0)
+    m3 = ti.u32(0)
+    body_fever = ti.i32(0)
+    body_normal = ti.i32(0)
+    fever_activations = ti.i32(0)
+    last_fever_end_idx = ti.i32(0)
+
+    current_note = ti.i32(0)
+    fever_section = ti.i32(0)
+
+    prev_group = ti.i32(-1)
+    prev_carry = ti.i32(0)
+
+    while current_note < n:
+        fever_section += 1
+        notes_to_fill = fill_count - 1 if fever_section == 1 else fill_count
+        if notes_to_fill < 0:
+            notes_to_fill = 0
+
+        start_normal_idx = current_note
+        end_normal_idx = ti.min(current_note + notes_to_fill, n)
+
+        body_normal_start = ti.max(start_normal_idx, MAX_HEAD)
+        if end_normal_idx > body_normal_start:
+            body_normal += end_normal_idx - body_normal_start
+
+        walk_note = start_normal_idx
+        while walk_note < end_normal_idx:
+            g = ti.cast(kernels_helpers.song_note_group_idx[walk_note], ti.i32)
+            if g < 0:
+                g = 0
+            if g >= gcount:
+                break
+
+            if g != prev_group:
+                anchor = _ceiling_anchor_ms(g, pick_high)
+                if prev_group < 0:
+                    prev_carry = anchor
+                else:
+                    c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+                    c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
+                    delta = c_g - c_prev
+                    if delta < 1:
+                        delta = 1
+                    prev_carry = ti.max(anchor, prev_carry - delta)
+                prev_group = g
+
+            group_end = n
+            if (g + 1) < gcount:
+                group_end = ti.cast(kernels_helpers.song_group_starts[g + 1], ti.i32)
+            walk_note = ti.min(group_end, end_normal_idx)
+
+        current_note = end_normal_idx
+        if current_note >= n:
+            break
+
+        if current_note <= 0:
+            break
+
+        fever_activations += 1
+        activation_note = current_note
+        if activation_note >= n:
+            break
+
+        s = ti.cast(kernels_helpers.song_note_group_idx[activation_note], ti.i32)
+        if s < 0:
+            s = 0
+        if s >= gcount:
+            break
+
+        if s != prev_group:
+            anchor = _ceiling_anchor_ms(s, pick_high)
+            if prev_group < 0:
+                prev_carry = anchor
+            else:
+                c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
+                c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
+                delta = c_s - c_prev
+                if delta < 1:
+                    delta = 1
+                prev_carry = ti.max(anchor, prev_carry - delta)
+            prev_group = s
+
+        r_act = prev_carry
+        c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
+        Q = c_s + r_act + d_ms
+
+        b_minus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q - 80)
+        b_plus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q + 40)
+
+        start_g = s + 1
+        if b_minus < start_g:
+            b_minus = start_g
+        if b_plus < start_g:
+            b_plus = start_g
+        if b_minus > gcount:
+            b_minus = gcount
+        if b_plus > gcount:
+            b_plus = gcount
+
+        if end_mode != 0:
+            # Variant: end fever as early as possible (first reachable out-group in the swing band).
+            #
+            # This intentionally sacrifices swing groups to shift subsequent activation indices earlier
+            # (cascade), which can improve score vs the greedy "keep fever as long as feasible" variant.
+            lo = r_act
+            hi = r_act
+
+            # Propagate through groups that are always in-fever under the global max offset bound (+80ms).
+            g = start_g
+            while g < b_minus:
+                out = _propagate_carry_interval(lo, hi, g)
+                lo = out[0]
+                hi = out[1]
+                g += 1
+
+            out_group = ti.i32(-1)
+            out_carry = ti.i32(0)
+
+            g = b_minus
+            while g < b_plus and g < gcount:
+                out = _propagate_carry_interval(lo, hi, g)
+                lo = out[0]
+                hi = out[1]
+
+                c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+                out_threshold = Q - c_g
+
+                if hi >= out_threshold:
+                    out_group = g
+                    # Choose the smallest carry that still forces this group out of fever.
+                    out_carry = ti.max(lo, out_threshold)
+                    break
+
+                remain_hi = out_threshold - 1
+                lo = ti.max(lo, ti.i32(-40))
+                hi = ti.min(hi, remain_hi)
+                g += 1
+
+            fever_end_idx = n
+            if out_group >= 0:
+                fever_end_idx = ti.cast(kernels_helpers.song_group_starts[out_group], ti.i32)
+            else:
+                if b_plus < gcount:
+                    out_group = b_plus
+                    out = _propagate_carry_interval(lo, hi, out_group)
+                    out_carry = out[0]
+                    fever_end_idx = ti.cast(kernels_helpers.song_group_starts[out_group], ti.i32)
+                else:
+                    fever_end_idx = n
+
+            if fever_end_idx < activation_note:
+                fever_end_idx = activation_note
+            if fever_end_idx > n:
+                fever_end_idx = n
+
+            masks = _or_head_mask_range(m0, m1, m2, m3, activation_note, fever_end_idx)
+            m0 = masks[0]
+            m1 = masks[1]
+            m2 = masks[2]
+            m3 = masks[3]
+
+            body_fever_start = ti.max(activation_note, MAX_HEAD)
+            if fever_end_idx > body_fever_start:
+                body_fever += fever_end_idx - body_fever_start
+
+            # Carry state after fever: we must instantiate an explicit carry for the out-group
+            # (otherwise the early-end signature may be infeasible).
+            if out_group >= 0 and out_group < gcount:
+                prev_group = out_group
+                prev_carry = out_carry
+            else:
+                prev_group = s
+                prev_carry = r_act
+
+            last_fever_end_idx = fever_end_idx
+            current_note = fever_end_idx
+            continue
+
+        lo = r_act
+        hi = r_act
+        last_fever_group = s
+        last_fever_hi = r_act
+        g = start_g
+        while g < b_minus:
+            out = _propagate_carry_interval(lo, hi, g)
+            lo = out[0]
+            hi = out[1]
+            last_fever_group = g
+            last_fever_hi = hi
+            g += 1
+
+        exit_group = ti.i32(-1)
+        g = b_minus
+        while g < b_plus and g < gcount:
+            prev_lo = lo
+            prev_hi = hi
+            out = _propagate_carry_interval(lo, hi, g)
+            lo = out[0]
+            hi = out[1]
+
+            c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+            remain_hi = Q - c_g - 1
+
+            keep_lo = ti.max(lo, ti.i32(-40))
+            keep_hi = ti.min(hi, remain_hi)
+
+            if keep_lo <= keep_hi:
+                lo = keep_lo
+                hi = keep_hi
+                last_fever_group = g
+                last_fever_hi = hi
+                g += 1
+                continue
+
+            exit_group = g
+            lo = prev_lo
+            hi = prev_hi
+            break
+
+        fever_end_idx = n
+        if exit_group >= 0:
+            fever_end_idx = ti.cast(kernels_helpers.song_group_starts[exit_group], ti.i32)
+        else:
+            if b_plus < gcount:
+                g = b_plus
+                _ = _propagate_carry_interval(lo, hi, g)
+                fever_end_idx = ti.cast(kernels_helpers.song_group_starts[g], ti.i32)
+            else:
+                fever_end_idx = n
+
+        if fever_end_idx < activation_note:
+            fever_end_idx = activation_note
+        if fever_end_idx > n:
+            fever_end_idx = n
+
+        masks = _or_head_mask_range(m0, m1, m2, m3, activation_note, fever_end_idx)
+        m0 = masks[0]
+        m1 = masks[1]
+        m2 = masks[2]
+        m3 = masks[3]
+
+        body_fever_start = ti.max(activation_note, MAX_HEAD)
+        if fever_end_idx > body_fever_start:
+            body_fever += fever_end_idx - body_fever_start
+
+        prev_group = last_fever_group
+        prev_carry = last_fever_hi
+        last_fever_end_idx = fever_end_idx
+        current_note = fever_end_idx
+
+    body_normal_start = ti.max(current_note, MAX_HEAD)
+    if n > body_normal_start:
+        body_normal += n - body_normal_start
+
+    gap = n - last_fever_end_idx
+    return _CeilingCellResult(
+        m0=m0,
+        m1=m1,
+        m2=m2,
+        m3=m3,
+        body_fever=body_fever,
+        body_normal=body_normal,
+        fever_activations=fever_activations,
+        gap=gap,
+    )
+
+
 @ti.kernel
 def compute_timeline_grid_ceiling_hitsim_kernel(
     total_notes: ti.i32,
@@ -318,9 +667,20 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
     Compute all 161×161 fever timeline entries using Analytical HitSim (ceiling mode).
 
     This models per-chord Perfect-window offsets (with held-tail multiplier) and enforces
-    non-decreasing event times. For each fever window, we pick the *latest* activation
-    carry (max window) and then extend fever as far as possible (existence-based interval
-    propagation) to maximize fever note count.
+    non-decreasing event times.
+
+    For each (FT, FF) cell we evaluate fast, fully-feasible variants that differ in:
+      (a) how they choose a concrete carry during non-fever ("fill") segments, and
+      (b) whether they greedily extend fever as long as feasible ("max") or end fever as early as possible ("min").
+
+    Variants:
+      - normal-hi: choose the latest nominal carry (group_high)
+      - normal-lo: choose the earliest nominal carry (group_low)
+      - fever-max: keep swing groups in fever whenever feasible
+      - fever-min: end fever at the earliest reachable out-group in the swing band
+
+    We emit the better variant via
+    `_ceiling_compare_score()` (deterministic selection).
 
     Output format matches compute_timeline_grid_kernel: bitpacked head-fever masks + body counts + signatures.
     """
@@ -352,207 +712,97 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
         if d_ms < 0:
             d_ms = 0
 
-        # (2) Timeline simulation.
-        m0 = ti.u32(0)
-        m1 = ti.u32(0)
-        m2 = ti.u32(0)
-        m3 = ti.u32(0)
-        body_fever = ti.i32(0)
-        body_normal = ti.i32(0)
-        fever_activations = ti.i32(0)
-        last_fever_end_idx = ti.i32(0)
+        # (2) Timeline simulation (4 variants) + deterministic selection.
+        hi_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(0))
+        hi_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(1))
+        lo_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(0))
+        lo_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(1))
 
-        current_note = ti.i32(0)
-        fever_section = ti.i32(0)
+        best = hi_max
+        best_score = _ceiling_compare_score(
+            head_len, best.m0, best.m1, best.m2, best.m3, best.body_fever, best.body_normal
+        )
 
-        # Carry state across the whole song (chord-grouped hit timing).
-        # `prev_group` is the last chord group we've assigned a carry to.
-        prev_group = ti.i32(-1)
-        prev_carry = ti.i32(0)
+        cand = hi_min
+        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
 
-        while current_note < n:
-            fever_section += 1
-            notes_to_fill = fill_count - 1 if fever_section == 1 else fill_count
-            if notes_to_fill < 0:
-                notes_to_fill = 0
+        cand = lo_max
+        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
 
-            start_normal_idx = current_note
-            end_normal_idx = ti.min(current_note + notes_to_fill, n)
+        cand = lo_min
+        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
 
-            # Count body normal notes (>= MAX_HEAD) in this non-fever segment.
-            body_normal_start = ti.max(current_note, MAX_HEAD)
-            if end_normal_idx > body_normal_start:
-                body_normal += end_normal_idx - body_normal_start
-
-            # Propagate carry through the normal segment. We choose the latest feasible carry
-            # in normal segments to maximize future activation carries (ceiling behavior).
-            walk_note = start_normal_idx
-            while walk_note < end_normal_idx:
-                g = ti.cast(kernels_helpers.song_note_group_idx[walk_note], ti.i32)
-                if g < 0:
-                    g = 0
-                if g >= gcount:
-                    break
-
-                if g != prev_group:
-                    u_g = ti.cast(kernels_helpers.song_group_high_ms[g], ti.i32)
-                    if prev_group < 0:
-                        prev_carry = u_g
-                    else:
-                        c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
-                        c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
-                        delta = c_g - c_prev
-                        if delta < 1:
-                            delta = 1
-                        prev_carry = ti.max(u_g, prev_carry - delta)
-                    prev_group = g
-
-                group_end = n
-                if (g + 1) < gcount:
-                    group_end = ti.cast(kernels_helpers.song_group_starts[g + 1], ti.i32)
-                walk_note = ti.min(group_end, end_normal_idx)
-
-            current_note = end_normal_idx
-            if current_note >= n:
-                break
-
-            # Match the legacy behavior: if activation would occur at note 0, skip fever entirely.
-            if current_note <= 0:
-                break
-
-            # Fever activates.
-            fever_activations += 1
-            activation_note = current_note
-            if activation_note >= n:
-                break
-
-            # Resolve activation group and assign activation carry if we ended exactly on a group boundary.
-            s = ti.cast(kernels_helpers.song_note_group_idx[activation_note], ti.i32)
-            if s < 0:
-                s = 0
-            if s >= gcount:
-                # Safety: if grouping data is missing/invalid, fall back to deterministic behavior (no more fever).
-                break
-
-            if s != prev_group:
-                u_s = ti.cast(kernels_helpers.song_group_high_ms[s], ti.i32)
-                if prev_group < 0:
-                    prev_carry = u_s
-                else:
-                    c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
-                    c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
-                    delta = c_s - c_prev
-                    if delta < 1:
-                        delta = 1
-                    prev_carry = ti.max(u_s, prev_carry - delta)
-                prev_group = s
-
-            # Activation carry is the latest carry reachable at this group given the timeline so far.
-            r_act = prev_carry
-            c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
-            Q = c_s + r_act + d_ms
-
-            # Compute boundary-band group indices.
-            b_minus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q - 80)
-            b_plus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q + 40)
-
-            start_g = s + 1
-            if b_minus < start_g:
-                b_minus = start_g
-            if b_plus < start_g:
-                b_plus = start_g
-            if b_minus > gcount:
-                b_minus = gcount
-            if b_plus > gcount:
-                b_plus = gcount
-
-            # Propagate carries through guaranteed-interior groups up to b_minus-1.
-            lo = r_act
-            hi = r_act
-            last_fever_group = s
-            last_fever_hi = r_act
-            g = start_g
-            while g < b_minus:
-                out = _propagate_carry_interval(lo, hi, g)
-                lo = out[0]
-                hi = out[1]
-                last_fever_group = g
-                last_fever_hi = hi
-                g += 1
-
-            # Sweep boundary band [b_minus, b_plus) until the in-fever interval becomes empty.
-            exit_group = ti.i32(-1)
-            g = b_minus
-            while g < b_plus and g < gcount:
-                prev_lo = lo
-                prev_hi = hi
-                out = _propagate_carry_interval(lo, hi, g)
-                lo = out[0]
-                hi = out[1]
-
-                c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
-                remain_hi = Q - c_g - 1
-
-                # Clip to carries that keep this group in fever.
-                keep_lo = ti.max(lo, ti.i32(-40))
-                keep_hi = ti.min(hi, remain_hi)
-
-                if keep_lo <= keep_hi:
-                    lo = keep_lo
-                    hi = keep_hi
-                    last_fever_group = g
-                    last_fever_hi = hi
-                    g += 1
-                    continue
-
-                # Exit occurs at group g.
-                exit_group = g
-                lo = prev_lo
-                hi = prev_hi
-                break
-
-            # If we never exited inside the boundary band, we either exit at the always-out group b_plus
-            # (when it exists), or the fever lasts to the end of the song.
-            fever_end_idx = n
-            if exit_group >= 0:
-                fever_end_idx = ti.cast(kernels_helpers.song_group_starts[exit_group], ti.i32)
-            else:
-                if b_plus < gcount:
-                    g = b_plus
-                    # One-step propagate to the always-out group.
-                    out = _propagate_carry_interval(lo, hi, g)
-                    lo = out[0]
-                    fever_end_idx = ti.cast(kernels_helpers.song_group_starts[g], ti.i32)
-                else:
-                    # Fever reaches song end.
-                    fever_end_idx = n
-
-            if fever_end_idx < activation_note:
-                fever_end_idx = activation_note
-            if fever_end_idx > n:
-                fever_end_idx = n
-
-            # Mark fever notes in bitmask (only first MAX_HEAD notes are represented).
-            masks = _or_head_mask_range(m0, m1, m2, m3, activation_note, fever_end_idx)
-            m0 = masks[0]
-            m1 = masks[1]
-            m2 = masks[2]
-            m3 = masks[3]
-
-            # Count fever body notes (notes >= MAX_HEAD) without per-note looping.
-            body_fever_start = ti.max(activation_note, MAX_HEAD)
-            if fever_end_idx > body_fever_start:
-                body_fever += fever_end_idx - body_fever_start
-
-            prev_group = last_fever_group
-            prev_carry = last_fever_hi
-            last_fever_end_idx = fever_end_idx
-            current_note = fever_end_idx
-
-        # Remaining notes after last fever are non-fever.
-        body_normal_start = ti.max(current_note, MAX_HEAD)
-        if n > body_normal_start:
-            body_normal += n - body_normal_start
+        m0 = best.m0
+        m1 = best.m1
+        m2 = best.m2
+        m3 = best.m3
+        body_fever = best.body_fever
+        body_normal = best.body_normal
+        fever_activations = best.fever_activations
+        gap = best.gap
 
         # Write outputs to specified song slot.
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
@@ -563,7 +813,6 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
 
-        gap = ti.cast(n - last_fever_end_idx, ti.i32)
         kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap, ti.i16)
         kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
 
