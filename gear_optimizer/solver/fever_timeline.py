@@ -565,23 +565,52 @@ class SongTimelineGrid:
             )
         )
 
-        # Copy the head slice (buffer is reused)
-        result = (fever_mask_head.copy(), count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
-
         if self._bucket_mode == "a":
             # Canonicalize by computed signature (always safe).
-            # This can unify timelines even when factors differ but the discrete
-            # stepping ends up identical for this song.
+            #
+            # Important performance detail:
+            # - We MUST avoid eager `fever_mask_head.copy()` for every cell, otherwise
+            #   signature bucketing can't reduce allocations on the first-pass build.
+            # - Compute signature from the returned head slice first; only copy when
+            #   the signature is new.
             try:
-                sig = (result[0].tobytes(), int(result[1]), int(result[2]), int(result[3]), int(result[4]))
+                sig = (
+                    fever_mask_head.tobytes(),
+                    int(count_body_fever),
+                    int(count_body_normal),
+                    int(fever_activations),
+                    int(last_fever_end_idx),
+                )
                 existing = self._bucket_sig.get(sig)
                 if existing is not None:
                     result = existing
                 else:
+                    result = (
+                        fever_mask_head.copy(),
+                        count_body_fever,
+                        count_body_normal,
+                        fever_activations,
+                        last_fever_end_idx,
+                    )
                     self._bucket_sig[sig] = result
             except Exception:
                 # Never fail due to signature issues; fall back to per-index caching.
-                pass
+                result = (
+                    fever_mask_head.copy(),
+                    count_body_fever,
+                    count_body_normal,
+                    fever_activations,
+                    last_fever_end_idx,
+                )
+        else:
+            # Copy the head slice (buffer is reused)
+            result = (
+                fever_mask_head.copy(),
+                count_body_fever,
+                count_body_normal,
+                fever_activations,
+                last_fever_end_idx,
+            )
 
         self._timeline_grid[ft_idx][ff_idx] = result
         return result

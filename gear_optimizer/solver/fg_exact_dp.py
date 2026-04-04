@@ -186,6 +186,7 @@ def solve_force_greats_exact_dp(
     calc_song: dict,
     ref_arrays: dict,
     mode: Literal["count_only", "timing_aware"] = "timing_aware",
+    prune: bool = False,
 ) -> FGExactDPSolution:
     """
     Exact DP for a fixed (FT,FF,...) stat point.
@@ -257,6 +258,9 @@ def solve_force_greats_exact_dp(
     w_prefix = _build_fever_bonus_prefix(
         total_notes=total_notes, base_value=base_value, combo_mul=combo_mul, fever_mul=fever_mul
     )
+    # Upper bound: total remaining (fever - normal) bonus if every remaining note were fever.
+    # With fever_mul>=1, per-note deltas are non-negative in practice, so this is a safe bound.
+    suffix_bonus = w_prefix[-1] - w_prefix
     c_prefix = _build_forced_great_penalty_prefix(
         total_notes=total_notes,
         base_value=base_value,
@@ -317,6 +321,10 @@ def solve_force_greats_exact_dp(
         best_p = 0
         best_k = 0
 
+        forced_start_base = i if first else (i + 1)
+        if forced_start_base < 0:
+            forced_start_base = 0
+
         # Iterate p in increasing order so we can break once end_normal runs past song end.
         for p in range(p_max + 1):
             notes_to_fill = int(non_fever_base + p)
@@ -328,6 +336,35 @@ def solve_force_greats_exact_dp(
             end_normal = i + notes_to_fill
             if end_normal >= total_notes:
                 break
+
+            if prune and best_val > 0:
+                # Monotone safe stopping rule: for later activations, the remaining suffix_bonus decreases
+                # while the minimum forced-great penalty needed to reach that activation increases.
+                ks = p_to_ks[p] if p < len(p_to_ks) else (0,)
+                k_min = int(ks[0]) if ks else 0
+                if k_min < 0:
+                    k_min = 0
+                if k_min > non_fever_base:
+                    k_min = int(non_fever_base)
+
+                actual_notes = int(end_normal - i)
+                if actual_notes < 0:
+                    actual_notes = 0
+
+                forced_applied_min = int(k_min)
+                if forced_applied_min > actual_notes:
+                    forced_applied_min = actual_notes
+
+                penalty_min = 0
+                if forced_applied_min > 0 and forced_start_base < total_notes:
+                    end_excl_min = forced_start_base + forced_applied_min
+                    if end_excl_min > total_notes:
+                        end_excl_min = total_notes
+                    penalty_min = int(c_prefix[end_excl_min] - c_prefix[forced_start_base])
+
+                ub = int(suffix_bonus[end_normal]) - int(penalty_min)
+                if ub <= best_val:
+                    break
 
             # Fever bonus for this window depends on fever_end (carry may extend it).
             # Penalty/carry update depends on which k we choose inside this plateau.
@@ -349,9 +386,7 @@ def solve_force_greats_exact_dp(
                 if forced_applied > actual_notes:
                     forced_applied = actual_notes
 
-                forced_start = i if first else (i + 1)
-                if forced_start < 0:
-                    forced_start = 0
+                forced_start = forced_start_base
 
                 # Forced Great penalty uses the clamped `forced_applied` count and the repo's placement rule.
                 penalty = 0

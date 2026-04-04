@@ -327,6 +327,12 @@ def main() -> int:
     # Use reference DB for seeding (read-only); we will run in defer_post mode to avoid writes.
     os.environ["EVOLUTION_DB_PATH"] = str(ref_db_path)
 
+    # This benchmark explicitly simulates HumanHitSim (Seed=0) to match how many reference
+    # DBs were produced. GPU scoring has an optional analytical "ceiling" timeline that
+    # ignores the simulated timestamps; if enabled, our CPU-side recompute sanity check
+    # becomes meaningless. Force ceiling off for apples-to-apples verification.
+    os.environ["GPU_TIMELINE_CEILING_HITSIM"] = "0"
+
     from gear_optimizer.app import GearOptimizerApp
     from gear_optimizer.core.config import load_config, load_paths_cache, read_iteration_engine_settings
     from gear_optimizer.core.constants import PATHS

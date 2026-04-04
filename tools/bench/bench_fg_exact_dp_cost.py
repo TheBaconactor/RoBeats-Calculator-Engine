@@ -103,6 +103,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--song-fp", type=str, default=None, help="Path to chart .txt (Data/<diff>/<name>.txt).")
     ap.add_argument("--mode", type=str, default="timing_aware", choices=("count_only", "timing_aware"))
+    ap.add_argument("--prune", type=int, default=0, help="Enable monotone upper-bound pruning (default 0).")
     ap.add_argument("--hitsim", type=int, default=1, help="Apply HumanHitSim to enable carry semantics (default 1).")
     ap.add_argument("--hitsim-seed", type=int, default=1337, help="HumanHitSim seed (default 1337).")
     ap.add_argument("--hitsim-great-mode", type=str, default="late", choices=("late", "early", "full"))
@@ -175,12 +176,19 @@ def main() -> None:
     n = len(ts) if ts is not None else 0
     use_carry = bool(song_data.get("fg_great_candidate_timestamps") is not None)
     print(
-        f"[fg-dp] song_fp={song_fp!r} notes={n} mode={args.mode} hitsim={bool(_truthy(args.hitsim))} carry_ts={use_carry}"
+        f"[fg-dp] song_fp={song_fp!r} notes={n} mode={args.mode} prune={bool(_truthy(args.prune))} "
+        f"hitsim={bool(_truthy(args.hitsim))} carry_ts={use_carry}"
     )
     print(f"[fg-dp] stats(pp,cm,fm,ff,ft)=({args.pp},{args.cm},{args.fm},{args.ff},{args.ft})")
 
     t0 = time.perf_counter()
-    sol = solve_force_greats_exact_dp(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode=str(args.mode))
+    sol = solve_force_greats_exact_dp(
+        stats=stats,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        mode=str(args.mode),
+        prune=bool(_truthy(args.prune)),
+    )
     dt = time.perf_counter() - t0
 
     print(
