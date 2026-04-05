@@ -11,18 +11,16 @@ Outputs JSON metrics and can optionally print human-readable tables.
 from __future__ import annotations
 
 import argparse
-import bisect
 import itertools
 import json
 import math
 import random
 import statistics
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 

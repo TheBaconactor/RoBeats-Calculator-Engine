@@ -26,13 +26,9 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           python -m pip install -r requirements-dev.txt
 
-      - name: Lint
+      - name: Quality Check (CI Harness)
         run: |
-          python -m ruff check .
-
-      - name: Tests (CPU Reference Only)
-        run: |
-          python -m pytest -m "not gpu" tests/
+          powershell -ExecutionPolicy Bypass -File tools/dev/quality_check.ps1 -CI
 
   gpu-regression-guards:
     # Opt-in job for a self-hosted GPU runner.
