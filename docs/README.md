@@ -1,10 +1,11 @@
 # Documentation Index
 
-This directory is organized by how the docs are used:
+This directory is organized by how docs are used:
 
 - Current references: architecture, schema, math, and runtime behavior.
-- Active plans: roadmaps, maintenance notes, and refactoring guidance.
-- Historical records: implementation notes, ADRs, and investigation logs.
+- Active plans: roadmaps and operating notes.
+- Research bundles: standalone writeups and exploratory submissions.
+- Archived legacy docs: historical notes and superseded reports.
 
 If you want the file-level code map, start with [NAVIGATION.md](NAVIGATION.md).
 If you want the decision-log index, open [Implementation Records/README.md](Implementation%20Records/README.md).
@@ -17,6 +18,11 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [HUMAN_HIT_SIM.md](HUMAN_HIT_SIM.md) - hit simulation behavior and settings.
 - [STATS_VERIFIER.md](STATS_VERIFIER.md) - stats and loadout verification notes.
 - [FORMULA EXPLANATION.txt](FORMULA%20EXPLANATION.txt) - legacy formula reference.
+
+## Integration and Correspondence
+
+- [integration/DB_READY_FOR_FRONTEND.md](integration/DB_READY_FOR_FRONTEND.md) - compact DB integration status and frontend-facing guidance.
+- [correspondence/DEVELOPER_LETTER_INVENTORY_META.md](correspondence/DEVELOPER_LETTER_INVENTORY_META.md) - external-facing inventory-meta problem brief.
 
 ## Active Plans and Operating Notes
 
@@ -32,16 +38,14 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [REFACTORING_VALIDATION.md](REFACTORING_VALIDATION.md) - refactor validation notes and historical context.
 - [DUPLICATION_REDUCTION.md](DUPLICATION_REDUCTION.md) - duplication cleanup map.
 
-## Historical Context and Reports
+## Research
 
-- [ARCHITECTURE_IMPROVEMENTS.md](ARCHITECTURE_IMPROVEMENTS.md) - older architecture proposal.
-- [CHANGES_SUMMARY.md](CHANGES_SUMMARY.md) - summary of a past task set.
+- [research/README.md](research/README.md) - index of standalone research assets and submission bundles.
+
+## Archive and Logs
+
+- [archive/README.md](archive/README.md) - index for legacy/superseded docs and scratch text artifacts.
 - [CODEX_WORKLOG.md](CODEX_WORKLOG.md) - durable long-context agent worklog and handoff diary.
-- [ECLIPSE_GA_FG_SUBMISSION_SECOND_PASS.md](ECLIPSE_GA_FG_SUBMISSION_SECOND_PASS.md) - second-pass review of the bundled ECLIPSE GA→FG research submission (net-new vs baseline engineering).
-- [ANALYTICAL_GEM_OPTIMIZATION_STUDY.md](ANALYTICAL_GEM_OPTIMIZATION_STUDY.md) - research notes on gem optimization.
-- [FG_PRECISION_PROPOSAL_LETTER.md](FG_PRECISION_PROPOSAL_LETTER.md) - proposal for FG precision work.
-- [DATABASE_MERGE_BUG_FIX.md](DATABASE_MERGE_BUG_FIX.md) - investigation into a database merge bug.
-- [HELPER_EXTRACTION.md](HELPER_EXTRACTION.md) - historical helper extraction note.
 
 ## Implementation Records
 

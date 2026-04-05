@@ -5,6 +5,8 @@
 - Human-friendly index: `docs/README.md`
 - Current code map: this file
 - Historical implementation records: `docs/Implementation Records/README.md`
+- Research bundles: `docs/research/README.md`
+- Legacy archive: `docs/archive/README.md`
 
 ## Primary Entry Points
 
@@ -52,6 +54,7 @@
 
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
+- Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`
 - Fever timeline math: `docs/FEVER_TIMELINE_MATH.md`
 - Human HitSim details: `docs/HUMAN_HIT_SIM.md`
 - Stats verifier: `docs/STATS_VERIFIER.md`
