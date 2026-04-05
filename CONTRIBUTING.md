@@ -3,9 +3,10 @@
 ## Branch policy
 - `main` is the stable branch.
   - Changes land via pull request (no direct pushes).
-  - The required CI check(s) must pass before merge.
-- Research/bench/experimental work should happen on the `research` branch (or a branch off of it).
-  - Validate research work on the research branch (benchmarks, feature toggles, prototype scripts) before proposing any merge to `main`.
+  - The required build status check must pass before merge.
+- Research/bench/experimental work must happen on the `research` branch (or a branch off of it).
+  - If you are doing research work, explicitly check out `research` first.
+  - Validate research work on `research` (benchmarks, feature toggles, prototypes) before proposing any merge to `main`.
 
 ## Verification harness (preferred)
 This repo standardizes verification through the harness under `tools/dev/quality_check.ps1`.
@@ -20,4 +21,5 @@ Notes:
 
 ## CI notes
 - CI uses the harness in `-CI` mode.
+- Required check context for `main` is `build (3.11)`.
 - The GPU regression job is opt-in and requires a self-hosted Windows GPU runner.
