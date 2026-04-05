@@ -2179,8 +2179,7 @@ def save_team_buff_loadouts_batch(
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
                         WHEN excluded.fg_score = fg_score AND excluded.score > score AND excluded.force_details_json IS NOT NULL
                             THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.score = score AND force_details_json IS NULL
-                            AND excluded.force_details_json IS NOT NULL
+                        WHEN excluded.fg_score = fg_score AND excluded.score = score AND excluded.force_details_json IS NOT NULL
                             THEN excluded.force_details_json
                         ELSE force_details_json
                     END,

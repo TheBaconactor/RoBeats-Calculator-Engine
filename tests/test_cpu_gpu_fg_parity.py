@@ -17,6 +17,8 @@ import numpy as np
 from math import ceil
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 # Ensure we can import gear_optimizer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
