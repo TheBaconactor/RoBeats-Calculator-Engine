@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
@@ -6,6 +7,8 @@ from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
     _select_signature_frontier_cpu,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.api import fg_select_signature_frontier_batch
+
+pytestmark = pytest.mark.gpu
 
 
 def _sig(name: str, distribution: str = "", great_mode: str = "", seed: int = 0) -> tuple:
