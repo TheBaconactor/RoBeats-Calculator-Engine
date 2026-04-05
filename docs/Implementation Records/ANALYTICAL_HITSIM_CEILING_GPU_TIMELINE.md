@@ -156,9 +156,15 @@ Implementation:
   - `compute_timeline_grid_ceiling_hitsim_reps_kernel(...)`
   - `scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(...)`
 - Wiring:
-  - `precompute_timeline_gpu(...)` uses the dedup path when `GPU_TIMELINE_CEILING_DEDUP=1` (default) and the number
-    of unique pairs is smaller than the full grid.
+  - `precompute_timeline_gpu(...)` uses the dedup path when `GPU_TIMELINE_CEILING_DEDUP=1` (default: **off**) and the
+    number of unique pairs is smaller than the full grid.
   - Falls back to `compute_timeline_grid_ceiling_hitsim_kernel(...)` when dedup is not beneficial or on any rep-map error.
+
+Note on default:
+
+- On Taichi/Vulkan (AMD), “dedup then scatter” can reduce parallelism enough to lose against the fully-parallel baseline
+  kernel, even when many cells share the same `(fill_count, d_ms)`. The switch remains for experiments/regressions, but
+  is not enabled by default.
 
 Verification (GPU):
 

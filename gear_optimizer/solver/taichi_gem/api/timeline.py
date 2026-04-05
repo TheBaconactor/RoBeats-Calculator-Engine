@@ -401,7 +401,9 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
     if use_ceiling:
-        use_dedup = bool(env_flag("GPU_TIMELINE_CEILING_DEDUP", "1"))
+        # Default OFF: On Taichi/Vulkan (AMD), “dedup then scatter” often reduces parallelism enough
+        # to lose against the fully-parallel baseline kernel. Keep as an opt-in experiment.
+        use_dedup = bool(env_flag("GPU_TIMELINE_CEILING_DEDUP", "0"))
         rep_ft = None
         rep_ff = None
         unique_pairs = GRID_SIZE * GRID_SIZE
