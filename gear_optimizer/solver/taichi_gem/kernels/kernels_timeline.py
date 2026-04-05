@@ -382,7 +382,6 @@ def _simulate_ceiling_cell(
     end_mode: ti.i32,
 ) -> _CeilingCellResult:
     MAX_HEAD: ti.i32 = 100
-    head_len: ti.i32 = ti.min(n, MAX_HEAD)
 
     m0 = ti.u32(0)
     m1 = ti.u32(0)
@@ -724,7 +723,9 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
         )
 
         cand = hi_min
-        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
         better = ti.i32(0)
         if cand_score > best_score:
             better = 1
@@ -748,7 +749,9 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
             best_score = cand_score
 
         cand = lo_max
-        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
         better = ti.i32(0)
         if cand_score > best_score:
             better = 1
@@ -772,7 +775,9 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
             best_score = cand_score
 
         cand = lo_min
-        cand_score = _ceiling_compare_score(head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal)
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
         better = ti.i32(0)
         if cand_score > best_score:
             better = 1
@@ -825,6 +830,235 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
             fever_activations,
             gap,
         )
+
+
+@ti.kernel
+def compute_timeline_grid_ceiling_hitsim_reps_kernel(
+    total_notes: ti.i32,
+    long_notes: ti.i32,
+    last_note_time: ti.f32,
+    group_count: ti.i32,
+    song_slot: ti.i32,
+    write_unpacked_masks: ti.i32,
+    rep_ft: ti.types.ndarray(dtype=ti.i16, ndim=2),
+    rep_ff: ti.types.ndarray(dtype=ti.i16, ndim=2),
+):
+    """
+    Ceiling timeline precompute with exact cell deduplication by (fill_count, d_ms).
+
+    For a fixed song, the ceiling kernel's output for a cell depends only on:
+      - `fill_count` (a function of FF index), and
+      - `d_ms` (a function of FT index).
+
+    The caller supplies per-cell representative indices (rep_ft, rep_ff) such that
+    all cells mapping to the same (fill_count, d_ms) pair share one representative
+    cell, and only the representative cells satisfy:
+      rep_ft[ft, ff] == ft and rep_ff[ft, ff] == ff.
+
+    This kernel computes ONLY those representative cells. A follow-up scatter kernel
+    must copy representative outputs into the rest of the grid.
+
+    Correctness: exact, by construction, because the simulated signature is a pure
+    function of (fill_count, d_ms) for a fixed song.
+    """
+    # `write_unpacked_masks` is intentionally ignored: unpacked masks are derived from bits via
+    # unpack_timeline_grid_masks_kernel() (debug/tests only).
+
+    n_stat: ti.i32 = 161
+    n: ti.i32 = ti.max(total_notes, 0)
+    gcount: ti.i32 = ti.max(group_count, 0)
+    MAX_HEAD: ti.i32 = 100
+    head_len: ti.i32 = ti.min(n, MAX_HEAD)
+
+    non_fever_cas: ti.f32 = ti.cast(ti.max(0, total_notes - long_notes), ti.f32) * ti.f32(0.333)
+    fever_time_cas: ti.f32 = last_note_time * ti.f32(0.15) + ti.f32(0.15)
+
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for ft_idx, ff_idx in ti.ndrange(n_stat, n_stat):
+        rft = ti.cast(rep_ft[ft_idx, ff_idx], ti.i32)
+        rff = ti.cast(rep_ff[ft_idx, ff_idx], ti.i32)
+        if rft != ft_idx or rff != ff_idx:
+            continue
+
+        # (1) Parameters for this (FT, FF) cell.
+        ft_factor: ti.f32 = kernels_helpers.ref_ft_field[ft_idx]
+        ff_factor: ti.f32 = kernels_helpers.ref_ff_field[ff_idx]
+
+        raw_fill: ti.f32 = non_fever_cas * ff_factor
+        fill_count: ti.i32 = ti.cast(ti.ceil(raw_fill), ti.i32)
+        if fill_count < 1:
+            fill_count = 1
+
+        fever_time_sec: ti.f32 = fever_time_cas * ft_factor
+        d_ms: ti.i32 = ti.cast(ti.ceil(fever_time_sec * ti.f32(1000.0)), ti.i32)
+        if d_ms < 0:
+            d_ms = 0
+
+        # (2) Timeline simulation (4 variants) + deterministic selection.
+        hi_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(0))
+        hi_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(1))
+        lo_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(0))
+        lo_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(1))
+
+        best = hi_max
+        best_score = _ceiling_compare_score(
+            head_len, best.m0, best.m1, best.m2, best.m3, best.body_fever, best.body_normal
+        )
+
+        cand = hi_min
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
+
+        cand = lo_max
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
+
+        cand = lo_min
+        cand_score = _ceiling_compare_score(
+            head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
+        )
+        better = ti.i32(0)
+        if cand_score > best_score:
+            better = 1
+        elif cand_score == best_score:
+            if cand.body_fever > best.body_fever:
+                better = 1
+            elif cand.body_fever == best.body_fever:
+                if cand.m3 > best.m3:
+                    better = 1
+                elif cand.m3 == best.m3:
+                    if cand.m2 > best.m2:
+                        better = 1
+                    elif cand.m2 == best.m2:
+                        if cand.m1 > best.m1:
+                            better = 1
+                        elif cand.m1 == best.m1:
+                            if cand.m0 > best.m0:
+                                better = 1
+        if better != 0:
+            best = cand
+            best_score = cand_score
+
+        m0 = best.m0
+        m1 = best.m1
+        m2 = best.m2
+        m3 = best.m3
+        body_fever = best.body_fever
+        body_normal = best.body_normal
+        fever_activations = best.fever_activations
+        gap = best.gap
+
+        # Write outputs to specified song slot (representatives only).
+        kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
+        kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
+        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
+
+        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap, ti.i16)
+        kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
+
+        # Store compact signatures used for GA plateau bucketing / pruning.
+        kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
+        kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(
+            body_fever,
+            body_normal,
+            head_len,
+            fever_activations,
+            gap,
+        )
+
+
+@ti.kernel
+def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
+    song_slot: ti.i32,
+    rep_ft: ti.types.ndarray(dtype=ti.i16, ndim=2),
+    rep_ff: ti.types.ndarray(dtype=ti.i16, ndim=2),
+):
+    """
+    Fill the full 161×161 grid by copying representative-cell outputs.
+
+    Must be called after compute_timeline_grid_ceiling_hitsim_reps_kernel().
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for ft_idx, ff_idx in ti.ndrange(161, 161):
+        rft = ti.cast(rep_ft[ft_idx, ff_idx], ti.i32)
+        rff = ti.cast(rep_ff[ft_idx, ff_idx], ti.i32)
+
+        kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_count_body_fever[
+            song_slot, rft, rff
+        ]
+        kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_count_body_normal[
+            song_slot, rft, rff
+        ]
+        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_head_len[song_slot, rft, rff]
+
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = kernels_helpers.grid_fever_masks_bits[
+            song_slot, rft, rff, 0
+        ]
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = kernels_helpers.grid_fever_masks_bits[
+            song_slot, rft, rff, 1
+        ]
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = kernels_helpers.grid_fever_masks_bits[
+            song_slot, rft, rff, 2
+        ]
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = kernels_helpers.grid_fever_masks_bits[
+            song_slot, rft, rff, 3
+        ]
+
+        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_gap[song_slot, rft, rff]
+        kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_fever_activations[
+            song_slot, rft, rff
+        ]
+
+        kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_sig0[song_slot, rft, rff]
+        kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_sig1[song_slot, rft, rff]
 
 
 @ti.kernel

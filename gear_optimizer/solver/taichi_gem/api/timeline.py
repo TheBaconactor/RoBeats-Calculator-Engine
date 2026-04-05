@@ -205,6 +205,63 @@ def _get_or_build_ceiling_group_payload(
     return payload
 
 
+def _build_ceiling_cell_rep_maps(
+    *,
+    total_notes: int,
+    long_notes: int,
+    last_note_time: float,
+    ref_arrays: dict,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    Build per-cell representative index maps for exact ceiling-grid deduplication.
+
+    For a fixed song, ceiling-kernel outputs for a (ft_idx, ff_idx) cell depend only on:
+      - `fill_count = ceil(non_fever_cas * ff_factor)` (clamped to >= 1)
+      - `d_ms = ceil(fever_time_cas * ft_factor * 1000)` (clamped to >= 0)
+
+    This helper groups cells by the integer pair (fill_count, d_ms) and assigns a
+    deterministic representative cell per pair:
+      rep cell = (first ft_idx yielding that d_ms, first ff_idx yielding that fill_count)
+
+    Returns:
+      - rep_ft[ft, ff] i16: representative ft_idx for each cell
+      - rep_ff[ft, ff] i16: representative ff_idx for each cell
+      - unique_pairs: number of unique (fill_count, d_ms) pairs in the grid
+
+    NOTE: math uses float32 semantics to match Taichi kernel behavior.
+    """
+    ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
+    if int(ff.shape[0]) != int(GRID_SIZE):
+        raise ValueError(f"ref_arrays['Fever Fill Rate'] must be shape ({GRID_SIZE},), got {ff.shape}")
+    if int(ft.shape[0]) != int(GRID_SIZE):
+        raise ValueError(f"ref_arrays['Fever Time'] must be shape ({GRID_SIZE},), got {ft.shape}")
+
+    non_fever_cas = np.float32(max(0, int(total_notes) - int(long_notes))) * np.float32(0.333)
+    fever_time_cas = np.float32(float(last_note_time)) * np.float32(0.15) + np.float32(0.15)
+
+    fill_counts = np.ceil(non_fever_cas * ff).astype(np.int32)
+    fill_counts = np.maximum(fill_counts, np.int32(1))
+
+    d_ms = np.ceil(fever_time_cas * ft * np.float32(1000.0)).astype(np.int32)
+    d_ms = np.maximum(d_ms, np.int32(0))
+
+    unique_fc, fc_first = np.unique(fill_counts, return_index=True)
+    unique_d, d_first = np.unique(d_ms, return_index=True)
+    unique_pairs = int(unique_fc.shape[0]) * int(unique_d.shape[0])
+
+    rep_ff_for_fc = dict(zip((int(x) for x in unique_fc.tolist()), (int(x) for x in fc_first.tolist())))
+    rep_ft_for_d = dict(zip((int(x) for x in unique_d.tolist()), (int(x) for x in d_first.tolist())))
+
+    rep_ff_by_ff = np.asarray([rep_ff_for_fc[int(x)] for x in fill_counts.tolist()], dtype=np.int16)
+    rep_ft_by_ft = np.asarray([rep_ft_for_d[int(x)] for x in d_ms.tolist()], dtype=np.int16)
+
+    rep_ft_grid = np.ascontiguousarray(np.broadcast_to(rep_ft_by_ft.reshape(GRID_SIZE, 1), (GRID_SIZE, GRID_SIZE)))
+    rep_ff_grid = np.ascontiguousarray(np.broadcast_to(rep_ff_by_ff.reshape(1, GRID_SIZE), (GRID_SIZE, GRID_SIZE)))
+
+    return rep_ft_grid, rep_ff_grid, int(unique_pairs)
+
+
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
     Precompute all 161×161 fever timeline entries on GPU.
@@ -344,14 +401,44 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
     if use_ceiling:
-        kernels.compute_timeline_grid_ceiling_hitsim_kernel(
-            total_notes,
-            long_notes,
-            last_note_time,
-            int(group_count),
-            song_slot,  # Grid slot for batch coalescing
-            int(write_unpacked_masks),
-        )
+        use_dedup = bool(env_flag("GPU_TIMELINE_CEILING_DEDUP", "1"))
+        rep_ft = None
+        rep_ff = None
+        unique_pairs = GRID_SIZE * GRID_SIZE
+        if use_dedup:
+            try:
+                rep_ft, rep_ff, unique_pairs = _build_ceiling_cell_rep_maps(
+                    total_notes=int(total_notes),
+                    long_notes=int(long_notes),
+                    last_note_time=float(last_note_time),
+                    ref_arrays=ref_arrays,
+                )
+            except Exception:
+                rep_ft = None
+                rep_ff = None
+                unique_pairs = GRID_SIZE * GRID_SIZE
+
+        if rep_ft is not None and rep_ff is not None and unique_pairs < (GRID_SIZE * GRID_SIZE):
+            kernels.compute_timeline_grid_ceiling_hitsim_reps_kernel(
+                total_notes,
+                long_notes,
+                last_note_time,
+                int(group_count),
+                song_slot,  # Grid slot for batch coalescing
+                int(write_unpacked_masks),
+                rep_ft,
+                rep_ff,
+            )
+            kernels.scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(int(song_slot), rep_ft, rep_ff)
+        else:
+            kernels.compute_timeline_grid_ceiling_hitsim_kernel(
+                total_notes,
+                long_notes,
+                last_note_time,
+                int(group_count),
+                song_slot,  # Grid slot for batch coalescing
+                int(write_unpacked_masks),
+            )
     else:
         kernels.compute_timeline_grid_kernel(
             total_notes,

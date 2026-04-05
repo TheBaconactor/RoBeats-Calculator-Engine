@@ -110,9 +110,7 @@ def _cpu_ceiling_sig_for_cell(
                 total_head += int(current_ramp_val)
         return int(body_score + int(total_head))
 
-    def _simulate(
-        *, pick_high: bool, end_mode: int
-    ) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
+    def _simulate(*, pick_high: bool, end_mode: int) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
         m = [0, 0, 0, 0]  # uint32 bits as Python ints
         body_fever = 0
         body_normal = 0
@@ -442,3 +440,75 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
         assert gpu_sig == cpu_sig, (
             f"CPU/GPU ceiling mismatch for cell (ft={ft_idx},ff={ff_idx}): cpu={cpu_sig} gpu={gpu_sig}"
         )
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
+    """
+    Ensure deduplicated ceiling-grid execution produces identical grid outputs.
+
+    This guards the optimization that computes only unique (fill_count, d_ms) cells and
+    scatters representative results across the full 161×161 grid.
+    """
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.solver.taichi_gem.runtime import init_taichi
+    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+    init_taichi()
+
+    n_notes = 420
+    gap_ms = 27
+    ts_ms = (np.arange(n_notes, dtype=np.int32) * np.int32(gap_ms)).astype(np.int32)
+    timestamps = (ts_ms.astype(np.float32) * np.float32(0.001)).astype(np.float32)
+
+    note_types = np.ones(n_notes, dtype=np.int16)
+    note_types[::13] = np.int16(3)
+
+    calc_song = {
+        "metadata": {
+            "Song Name": "CeilingHitSim Dedup Parity",
+            "Difficulty": "Hard",
+            "Primary Color": "Beat",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+            "Total Notes": int(n_notes),
+        },
+        "song_data": {
+            "timestamps": timestamps,
+            "chart_timestamps": timestamps,
+            "note_types": note_types,
+        },
+    }
+
+    rows = int(TOTAL_ROWS) + 1
+    ref_arrays = {
+        "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
+        "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
+        "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
+        # Force maximal deduplication: all cells share one (fill_count, d_ms) pair.
+        "Fever Fill Rate": np.full((rows,), 1.0, dtype=np.float32),
+        "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
+    }
+
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "0")
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "1")
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=1)
+
+    def _eq(field) -> bool:
+        arr = field.to_numpy()
+        return bool(np.array_equal(arr[0], arr[1]))
+
+    assert _eq(gpu_fields.grid_head_len)
+    assert _eq(gpu_fields.grid_fever_masks_bits)
+    assert _eq(gpu_fields.grid_count_body_fever)
+    assert _eq(gpu_fields.grid_count_body_normal)
+    assert _eq(gpu_fields.grid_gap)
+    assert _eq(gpu_fields.grid_fever_activations)
+    assert _eq(gpu_fields.grid_sig0)
+    assert _eq(gpu_fields.grid_sig1)

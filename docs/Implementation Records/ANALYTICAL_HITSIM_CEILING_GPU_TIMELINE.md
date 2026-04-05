@@ -134,3 +134,33 @@ Verification:
 - `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_cpu_gpu_exact.py`
 - `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_mc_upper_bound.py`
 - `python tools/bench/bench_ceiling_vs_mc25.py --song "Data/Hard/Baby I Don't Care (Hard) by Johnny  Michiko Hamada [Nash Music Library].txt" --ft 0 --ff 160 --seeds 500 --strict`
+
+### Follow-up: exact ceiling-grid deduplication by `(fill_count, d_ms)` (2026-04-05)
+
+The ceiling kernelâ€™s per-cell output for a fixed song is a pure function of the integer pair:
+
+- `fill_count = ceil(non_fever_cas * ff_factor)` (depends only on `ff_idx`)
+- `d_ms = ceil(fever_time_cas * ft_factor * 1000)` (depends only on `ft_idx`)
+
+Therefore, if multiple indices map to the same `(fill_count, d_ms)`, they must produce identical final signatures.
+This enables an **exact** speed optimization:
+
+- Compute only one deterministic representative cell per unique `(fill_count, d_ms)` pair.
+- Scatter/copy those representative outputs to fill the full 161Ã—161 grid.
+
+Implementation:
+
+- New API helper that builds representative maps with float32-matching math:
+  - `gear_optimizer/solver/taichi_gem/api/timeline.py::_build_ceiling_cell_rep_maps`
+- New Taichi kernels:
+  - `compute_timeline_grid_ceiling_hitsim_reps_kernel(...)`
+  - `scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(...)`
+- Wiring:
+  - `precompute_timeline_gpu(...)` uses the dedup path when `GPU_TIMELINE_CEILING_DEDUP=1` (default) and the number
+    of unique pairs is smaller than the full grid.
+  - Falls back to `compute_timeline_grid_ceiling_hitsim_kernel(...)` when dedup is not beneficial or on any rep-map error.
+
+Verification (GPU):
+
+- `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_cpu_gpu_exact.py`
+  - Includes `test_gpu_ceiling_timeline_dedup_matches_baseline` (dedup off vs on, exact grid equality).
