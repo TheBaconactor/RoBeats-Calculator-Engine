@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 import sys
 import threading
 import time
@@ -218,41 +219,211 @@ def _maybe_set_vulkan_visible_device() -> None:
     Taichi's Vulkan backend will pick a default device if multiple adapters are present.
     You can force a specific device index (as seen by Taichi) via:
       - `TAICHI_VULKAN_VISIBLE_DEVICE=1`
+    Or ask RoBeats MetaFinder to auto-select the first discrete GPU via:
+      - `TAICHI_VULKAN_VISIBLE_DEVICE=discrete`
 
     Notes:
     - This must run before `ti.init()`.
     - We intentionally only accept simple comma-separated integer lists to avoid
       crashing Taichi with unexpected strings.
     """
-    raw = str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
-    if not raw:
-        return
+    def _enumerate_vulkan_physical_devices() -> list[dict[str, object]]:
+        try:
+            import ctypes
 
-    # Allow: "0", "1", "0,1"
-    ok = True
-    for tok in raw.split(","):
-        tok = tok.strip()
-        if not tok.isdigit():
-            ok = False
-            break
-    if not ok:
-        warn_fallback(
-            "taichi_runtime.vulkan_visible_device",
-            "ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE value",
-            context={"value": raw},
+            if os.name == "nt":
+                lib = ctypes.WinDLL("vulkan-1.dll")  # noqa: S404
+            else:
+                lib = ctypes.CDLL("libvulkan.so.1")  # noqa: S404
+        except Exception:
+            return []
+
+        VK_SUCCESS = 0
+        VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
+        VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
+
+        VkInstance = ctypes.c_void_p
+        VkPhysicalDevice = ctypes.c_void_p
+
+        class VkApplicationInfo(ctypes.Structure):
+            _fields_ = [
+                ("sType", ctypes.c_uint32),
+                ("pNext", ctypes.c_void_p),
+                ("pApplicationName", ctypes.c_char_p),
+                ("applicationVersion", ctypes.c_uint32),
+                ("pEngineName", ctypes.c_char_p),
+                ("engineVersion", ctypes.c_uint32),
+                ("apiVersion", ctypes.c_uint32),
+            ]
+
+        class VkInstanceCreateInfo(ctypes.Structure):
+            _fields_ = [
+                ("sType", ctypes.c_uint32),
+                ("pNext", ctypes.c_void_p),
+                ("flags", ctypes.c_uint32),
+                ("pApplicationInfo", ctypes.c_void_p),
+                ("enabledLayerCount", ctypes.c_uint32),
+                ("ppEnabledLayerNames", ctypes.c_void_p),
+                ("enabledExtensionCount", ctypes.c_uint32),
+                ("ppEnabledExtensionNames", ctypes.c_void_p),
+            ]
+
+        try:
+            vkCreateInstance = lib.vkCreateInstance
+            vkCreateInstance.restype = ctypes.c_int32
+            vkCreateInstance.argtypes = [
+                ctypes.POINTER(VkInstanceCreateInfo),
+                ctypes.c_void_p,
+                ctypes.POINTER(VkInstance),
+            ]
+
+            vkDestroyInstance = lib.vkDestroyInstance
+            vkDestroyInstance.restype = None
+            vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
+
+            vkEnumeratePhysicalDevices = lib.vkEnumeratePhysicalDevices
+            vkEnumeratePhysicalDevices.restype = ctypes.c_int32
+            vkEnumeratePhysicalDevices.argtypes = [VkInstance, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+
+            vkGetPhysicalDeviceProperties = lib.vkGetPhysicalDeviceProperties
+            vkGetPhysicalDeviceProperties.restype = None
+            vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
+        except Exception:
+            return []
+
+        app = VkApplicationInfo(
+            sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            pNext=None,
+            pApplicationName=b"robeats-metafinder",
+            applicationVersion=1,
+            pEngineName=b"metafinder",
+            engineVersion=1,
+            apiVersion=0,
         )
-        return
+        ci = VkInstanceCreateInfo(
+            sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            pNext=None,
+            flags=0,
+            pApplicationInfo=ctypes.cast(ctypes.pointer(app), ctypes.c_void_p),
+            enabledLayerCount=0,
+            ppEnabledLayerNames=None,
+            enabledExtensionCount=0,
+            ppEnabledExtensionNames=None,
+        )
+
+        inst = VkInstance()
+        res = int(vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst)))
+        if res != VK_SUCCESS or not inst:
+            return []
+
+        try:
+            count = ctypes.c_uint32(0)
+            res = int(vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None))
+            if res != VK_SUCCESS or int(count.value) <= 0:
+                return []
+            n = int(count.value)
+            arr = (VkPhysicalDevice * n)()
+            res = int(vkEnumeratePhysicalDevices(inst, ctypes.byref(count), ctypes.cast(arr, ctypes.c_void_p)))
+            if res != VK_SUCCESS:
+                return []
+
+            out: list[dict[str, object]] = []
+            for i in range(n):
+                buf = ctypes.create_string_buffer(4096)
+                try:
+                    vkGetPhysicalDeviceProperties(arr[i], ctypes.cast(buf, ctypes.c_void_p))
+                except Exception:
+                    continue
+
+                try:
+                    # VkPhysicalDeviceProperties starts with:
+                    # apiVersion, driverVersion, vendorID, deviceID, deviceType, ...
+                    api_v, drv_v, vendor_id, device_id, device_type = struct.unpack_from("<IIIII", buf.raw, 0)
+                except Exception:
+                    continue
+
+                name_raw = bytes(buf.raw[20 : 20 + 256])
+                name = name_raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                out.append(
+                    {
+                        "index": int(i),
+                        "name": str(name),
+                        "device_type": int(device_type),
+                        "vendor_id": int(vendor_id),
+                        "device_id": int(device_id),
+                        "api_version": int(api_v),
+                        "driver_version": int(drv_v),
+                    }
+                )
+            return out
+        finally:
+            try:
+                vkDestroyInstance(inst, None)
+            except Exception:
+                pass
+
+    def _pick_first_discrete_index(devs: list[dict[str, object]]) -> int | None:
+        # VkPhysicalDeviceType: 2 = DISCRETE_GPU
+        for d in devs:
+            try:
+                if int(d.get("device_type", -1) or -1) == 2:
+                    return int(d.get("index", 0) or 0)
+            except Exception:
+                continue
+        return None
+
+    raw = str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
+    auto_discrete = (not raw) or (raw.strip().lower() in {"discrete", "dgpu", "auto"})
+
+    target = ""
+    if auto_discrete:
+        devs = _enumerate_vulkan_physical_devices()
+        idx = _pick_first_discrete_index(devs)
+        if idx is None:
+            if raw:
+                warn_fallback(
+                    "taichi_runtime.vulkan_visible_device",
+                    "TAICHI_VULKAN_VISIBLE_DEVICE requested discrete GPU but none were found; using default device",
+                    context={"value": raw, "devices": devs},
+                    fatal=False,
+                )
+            return
+        target = str(idx)
+        os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = target
+    else:
+        # Allow: "0", "1", "0,1"
+        ok = True
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if not tok.isdigit():
+                ok = False
+                break
+        if not ok:
+            warn_fallback(
+                "taichi_runtime.vulkan_visible_device",
+                "ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE value",
+                context={"value": raw},
+                fatal=False,
+            )
+            return
+        target = raw
 
     try:
         import taichi._lib.core as ti_core
 
-        ti_core.set_vulkan_visible_device(raw)
+        ti_core.set_vulkan_visible_device(target)
+        if auto_discrete:
+            try:
+                print(f"[Taichi] Using TAICHI_VULKAN_VISIBLE_DEVICE={target}", flush=True)
+            except Exception:
+                pass
     except Exception as exc:
         warn_fallback(
             "taichi_runtime.vulkan_visible_device",
             "failed to set TAICHI_VULKAN_VISIBLE_DEVICE",
-            context={"value": raw},
+            context={"value": target},
             exc=exc,
+            fatal=False,
         )
 
 
@@ -270,8 +441,8 @@ def _maybe_print_vulkan_device_hint() -> None:
     if str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
         return
     logger.debug(
-        "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=1 (or another index) "
-        "to force the discrete GPU."
+        "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=discrete "
+        "(or a specific index like 1) to force the discrete GPU."
     )
 
 
