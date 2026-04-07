@@ -2,11 +2,16 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Keep the required build check on a local runner to avoid GitHub-hosted billing.
+    runs-on: [self-hosted, windows, x64]
     strategy:
       fail-fast: false
       matrix:
