@@ -33,6 +33,46 @@ FG_MAX_FTFF = int(_fg_max_ftff_env)
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
 FG_SIGNATURE_FRONTIER_MAX = MAX_GENOMES  # Max signatures per FG frontier-selection batch
+_FG_EXACT_DP_MAX_NOTES_DEFAULT = 128
+try:
+    _fg_exact_dp_max_notes_env = int(os.environ.get("FG_EXACT_DP_MAX_NOTES", _FG_EXACT_DP_MAX_NOTES_DEFAULT) or 0)
+except Exception:
+    _fg_exact_dp_max_notes_env = _FG_EXACT_DP_MAX_NOTES_DEFAULT
+# Keep this small by default: exact DP state scales ~O(n^2) in the timing-aware carry model.
+_fg_exact_dp_max_notes_env = max(32, min(int(_fg_exact_dp_max_notes_env), 512))
+FG_EXACT_DP_MAX_NOTES = int(_fg_exact_dp_max_notes_env)
+
+
+def _next_pow2(x: int) -> int:
+    v = 1
+    while v < int(x):
+        v <<= 1
+    return int(v)
+
+
+_FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT = 4096
+try:
+    _fg_exact_dp_sparse_states_env = int(
+        os.environ.get("FG_EXACT_DP_SPARSE_MAX_STATES", _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT)
+        or _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT
+    )
+except Exception:
+    _fg_exact_dp_sparse_states_env = _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT
+_fg_exact_dp_sparse_states_env = max(256, min(int(_fg_exact_dp_sparse_states_env), 65536))
+FG_EXACT_DP_SPARSE_MAX_STATES = int(_fg_exact_dp_sparse_states_env)
+
+try:
+    _fg_exact_dp_sparse_hash_env = int(os.environ.get("FG_EXACT_DP_SPARSE_HASH_SIZE", "0") or "0")
+except Exception:
+    _fg_exact_dp_sparse_hash_env = 0
+if int(_fg_exact_dp_sparse_hash_env) <= 0:
+    _fg_exact_dp_sparse_hash_env = _next_pow2(int(FG_EXACT_DP_SPARSE_MAX_STATES) * 4)
+else:
+    _fg_exact_dp_sparse_hash_env = _next_pow2(int(_fg_exact_dp_sparse_hash_env))
+_fg_exact_dp_sparse_hash_env = max(1024, min(int(_fg_exact_dp_sparse_hash_env), 262144))
+FG_EXACT_DP_SPARSE_HASH_SIZE = int(_fg_exact_dp_sparse_hash_env)
+
+FG_EXACT_DP_FULL_PREFIX_LEN = FG_MAX_SONG_NOTES + 1
 try:
     _fg_signature_frontier_batch_env = int(os.environ.get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
 except Exception:
@@ -188,6 +228,32 @@ fg_frontier_selected_indices_batch: ti.Field | None = None  # (FG_SIGNATURE_FRON
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
 fg_genome_hint_allocation: ti.Field | None = None  # (MAX_GENOMES, 4) i32
 
+# Exact FG DP (reference / research-only): small scratch buffers.
+fg_exact_dp_w_prefix: ti.Field | None = None  # (FG_EXACT_DP_MAX_NOTES+1,) i64
+fg_exact_dp_c_prefix: ti.Field | None = None  # (FG_EXACT_DP_MAX_NOTES+1,) i64
+fg_exact_dp_dp: ti.Field | None = None  # (FG_EXACT_DP_MAX_NOTES+1, FG_EXACT_DP_MAX_NOTES+1) i64
+fg_exact_dp_best_delta: ti.Field | None = None  # () i64
+fg_exact_dp_counts: ti.Field | None = None  # (FG_MAX_SECTIONS,) i32
+
+# Exact FG DP (sparse, full charts): scratch buffers.
+fg_exact_dp_full_w_prefix: ti.Field | None = None  # (FG_EXACT_DP_FULL_PREFIX_LEN,) i64
+fg_exact_dp_full_c_prefix: ti.Field | None = None  # (FG_EXACT_DP_FULL_PREFIX_LEN,) i64
+fg_exact_dp_sparse_hash_keys: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_HASH_SIZE,) i64
+fg_exact_dp_sparse_hash_vals: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_HASH_SIZE,) i32
+fg_exact_dp_sparse_state_i: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_state_first: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_state_carry: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_dp: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i64
+fg_exact_dp_sparse_policy_p: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_policy_k: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_order: ti.Field | None = None  # (FG_EXACT_DP_SPARSE_MAX_STATES,) i32
+fg_exact_dp_sparse_state_count: ti.Field | None = None  # () i32
+fg_exact_dp_sparse_best_delta: ti.Field | None = None  # () i64
+fg_exact_dp_sparse_counts: ti.Field | None = None  # (FG_MAX_SECTIONS,) i32
+fg_exact_dp_sparse_states: ti.Field | None = None  # () i32
+fg_exact_dp_sparse_transitions: ti.Field | None = None  # () i32
+fg_exact_dp_sparse_overflow: ti.Field | None = None  # () i32
+
 
 # ============================================================================
 # ALLOCATION STATE
@@ -225,6 +291,15 @@ def reset_fields_state() -> None:
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
     global fg_flat_work_genome, fg_flat_work_ftff
+    global fg_exact_dp_w_prefix, fg_exact_dp_c_prefix, fg_exact_dp_dp
+    global fg_exact_dp_best_delta, fg_exact_dp_counts
+    global fg_exact_dp_full_w_prefix, fg_exact_dp_full_c_prefix
+    global fg_exact_dp_sparse_hash_keys, fg_exact_dp_sparse_hash_vals
+    global fg_exact_dp_sparse_state_i, fg_exact_dp_sparse_state_first, fg_exact_dp_sparse_state_carry
+    global fg_exact_dp_sparse_dp, fg_exact_dp_sparse_policy_p, fg_exact_dp_sparse_policy_k
+    global fg_exact_dp_sparse_order, fg_exact_dp_sparse_state_count
+    global fg_exact_dp_sparse_best_delta, fg_exact_dp_sparse_counts
+    global fg_exact_dp_sparse_states, fg_exact_dp_sparse_transitions, fg_exact_dp_sparse_overflow
 
     song_timestamps = None
     song_timestamps_great_candidate = None
@@ -345,6 +420,30 @@ def reset_fields_state() -> None:
     fg_frontier_selected_indices_batch = None
     fg_genome_hint_allocation = None
 
+    fg_exact_dp_w_prefix = None
+    fg_exact_dp_c_prefix = None
+    fg_exact_dp_dp = None
+    fg_exact_dp_best_delta = None
+    fg_exact_dp_counts = None
+
+    fg_exact_dp_full_w_prefix = None
+    fg_exact_dp_full_c_prefix = None
+    fg_exact_dp_sparse_hash_keys = None
+    fg_exact_dp_sparse_hash_vals = None
+    fg_exact_dp_sparse_state_i = None
+    fg_exact_dp_sparse_state_first = None
+    fg_exact_dp_sparse_state_carry = None
+    fg_exact_dp_sparse_dp = None
+    fg_exact_dp_sparse_policy_p = None
+    fg_exact_dp_sparse_policy_k = None
+    fg_exact_dp_sparse_order = None
+    fg_exact_dp_sparse_state_count = None
+    fg_exact_dp_sparse_best_delta = None
+    fg_exact_dp_sparse_counts = None
+    fg_exact_dp_sparse_states = None
+    fg_exact_dp_sparse_transitions = None
+    fg_exact_dp_sparse_overflow = None
+
     _fields_allocated = False
 
 
@@ -440,6 +539,31 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_frontier_selected_indices_batch = fg_frontier_selected_indices_batch
     kernels_module.fg_genome_hint_allocation = fg_genome_hint_allocation
 
+    # Exact FG DP (reference / research-only)
+    kernels_module.fg_exact_dp_w_prefix = fg_exact_dp_w_prefix
+    kernels_module.fg_exact_dp_c_prefix = fg_exact_dp_c_prefix
+    kernels_module.fg_exact_dp_dp = fg_exact_dp_dp
+    kernels_module.fg_exact_dp_best_delta = fg_exact_dp_best_delta
+    kernels_module.fg_exact_dp_counts = fg_exact_dp_counts
+
+    kernels_module.fg_exact_dp_full_w_prefix = fg_exact_dp_full_w_prefix
+    kernels_module.fg_exact_dp_full_c_prefix = fg_exact_dp_full_c_prefix
+    kernels_module.fg_exact_dp_sparse_hash_keys = fg_exact_dp_sparse_hash_keys
+    kernels_module.fg_exact_dp_sparse_hash_vals = fg_exact_dp_sparse_hash_vals
+    kernels_module.fg_exact_dp_sparse_state_i = fg_exact_dp_sparse_state_i
+    kernels_module.fg_exact_dp_sparse_state_first = fg_exact_dp_sparse_state_first
+    kernels_module.fg_exact_dp_sparse_state_carry = fg_exact_dp_sparse_state_carry
+    kernels_module.fg_exact_dp_sparse_dp = fg_exact_dp_sparse_dp
+    kernels_module.fg_exact_dp_sparse_policy_p = fg_exact_dp_sparse_policy_p
+    kernels_module.fg_exact_dp_sparse_policy_k = fg_exact_dp_sparse_policy_k
+    kernels_module.fg_exact_dp_sparse_order = fg_exact_dp_sparse_order
+    kernels_module.fg_exact_dp_sparse_state_count = fg_exact_dp_sparse_state_count
+    kernels_module.fg_exact_dp_sparse_best_delta = fg_exact_dp_sparse_best_delta
+    kernels_module.fg_exact_dp_sparse_counts = fg_exact_dp_sparse_counts
+    kernels_module.fg_exact_dp_sparse_states = fg_exact_dp_sparse_states
+    kernels_module.fg_exact_dp_sparse_transitions = fg_exact_dp_sparse_transitions
+    kernels_module.fg_exact_dp_sparse_overflow = fg_exact_dp_sparse_overflow
+
 
 def allocate_fields() -> None:
     """Allocate ForceGreats GPU fields. Must be called after ti.init()."""
@@ -465,6 +589,15 @@ def allocate_fields() -> None:
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_flat_work_genome, fg_flat_work_ftff
+    global fg_exact_dp_w_prefix, fg_exact_dp_c_prefix, fg_exact_dp_dp
+    global fg_exact_dp_best_delta, fg_exact_dp_counts
+    global fg_exact_dp_full_w_prefix, fg_exact_dp_full_c_prefix
+    global fg_exact_dp_sparse_hash_keys, fg_exact_dp_sparse_hash_vals
+    global fg_exact_dp_sparse_state_i, fg_exact_dp_sparse_state_first, fg_exact_dp_sparse_state_carry
+    global fg_exact_dp_sparse_dp, fg_exact_dp_sparse_policy_p, fg_exact_dp_sparse_policy_k
+    global fg_exact_dp_sparse_order, fg_exact_dp_sparse_state_count
+    global fg_exact_dp_sparse_best_delta, fg_exact_dp_sparse_counts
+    global fg_exact_dp_sparse_states, fg_exact_dp_sparse_transitions, fg_exact_dp_sparse_overflow
     global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
     global \
         fg_frontier_base_score, \
@@ -648,6 +781,31 @@ def allocate_fields() -> None:
     # Warm-start hints for FG gem allocation
     global fg_genome_hint_allocation
     fg_genome_hint_allocation = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
+
+    # Exact FG DP (reference / research-only)
+    fg_exact_dp_w_prefix = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_MAX_NOTES + 1))
+    fg_exact_dp_c_prefix = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_MAX_NOTES + 1))
+    fg_exact_dp_dp = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_MAX_NOTES + 1, FG_EXACT_DP_MAX_NOTES + 1))
+    fg_exact_dp_best_delta = ti.field(dtype=ti.i64, shape=())
+    fg_exact_dp_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_SECTIONS,))
+
+    fg_exact_dp_full_w_prefix = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_FULL_PREFIX_LEN,))
+    fg_exact_dp_full_c_prefix = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_FULL_PREFIX_LEN,))
+    fg_exact_dp_sparse_hash_keys = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_SPARSE_HASH_SIZE,))
+    fg_exact_dp_sparse_hash_vals = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_HASH_SIZE,))
+    fg_exact_dp_sparse_state_i = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_state_first = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_state_carry = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_dp = ti.field(dtype=ti.i64, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_policy_p = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_policy_k = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_order = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_SPARSE_MAX_STATES,))
+    fg_exact_dp_sparse_state_count = ti.field(dtype=ti.i32, shape=())
+    fg_exact_dp_sparse_best_delta = ti.field(dtype=ti.i64, shape=())
+    fg_exact_dp_sparse_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_SECTIONS,))
+    fg_exact_dp_sparse_states = ti.field(dtype=ti.i32, shape=())
+    fg_exact_dp_sparse_transitions = ti.field(dtype=ti.i32, shape=())
+    fg_exact_dp_sparse_overflow = ti.field(dtype=ti.i32, shape=())
 
     _fields_allocated = True
 

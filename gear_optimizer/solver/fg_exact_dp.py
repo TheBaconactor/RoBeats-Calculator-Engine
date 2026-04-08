@@ -1,15 +1,16 @@
 """
-Exact Force Greats DP (reference / experimental).
+Exact Force Greats DP.
 
 This module implements an exact dynamic program for Force Greats that matches the repo's
 timeline semantics:
   - fill-delay via notes_to_fill(k) = ceil(raw_fill + 0.5*k) with the section-1 offset
   - optional timing-aware carry via great-candidate timestamps (prefix-max carry_time)
 
-IMPORTANT:
-  - This is NOT wired into production ForceGreatsFinder by default.
-  - Intended usage is via tools/bench scripts to estimate computational cost and validate
-    modelling assumptions before any GPU port.
+Production usage:
+  - Wired into the orthogonal FG exact-DP path
+    (`OuterSearchEngine=exact` + `FG_SolverMode=exact_dp`) via
+    gear_optimizer.solver.fused_exact.process_fg_exact_dp.
+  - Also available via tools/bench scripts for cost estimation and validation.
 """
 
 from __future__ import annotations
@@ -44,6 +45,20 @@ class FGExactDPSolution:
     best_delta: int
     section_counts: list[int]
     profile: FGExactDPProfile
+
+
+@dataclass(frozen=True)
+class FGExactDPPreparedInputs:
+    timestamps: np.ndarray
+    great_candidates: np.ndarray | None
+    total_notes: int
+    last_note_time: float
+    raw_fill: float
+    non_fever_base: int
+    fever_duration: float
+    ft_idx: int
+    w_prefix: np.ndarray
+    c_prefix: np.ndarray
 
 
 def _extract_timestamps_for_fg(calc_song: dict) -> tuple[np.ndarray, np.ndarray | None]:
@@ -180,6 +195,90 @@ def _build_fp_actions(raw_fill: float, non_fever_base: int) -> list[tuple[int, .
     return out
 
 
+def prepare_force_greats_exact_dp_inputs(
+    *,
+    stats: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+) -> FGExactDPPreparedInputs | None:
+    if not isinstance(stats, dict) or not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return None
+
+    timestamps, great_candidates = _extract_timestamps_for_fg(calc_song)
+    total_notes = int(timestamps.shape[0])
+    if total_notes <= 0:
+        return None
+
+    metadata = calc_song.get("metadata", {}) or {}
+    long_notes = safe_int(metadata.get("Long Notes", 0), 0)
+
+    song_data = calc_song.get("song_data", {}) or {}
+    base_ts = song_data.get("timestamps", timestamps)
+    try:
+        default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
+    except Exception:
+        default_last_note = 0.0
+    last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
+
+    try:
+        ref_pp = ref_arrays["Perfect Points"]
+        ref_cm = ref_arrays["Combo Multiplier"]
+        ref_fm = ref_arrays["Fever Multiplier"]
+        ref_ff = ref_arrays["Fever Fill Rate"]
+        ref_ft = ref_arrays["Fever Time"]
+    except Exception:
+        return None
+
+    pp_factor = float(lookup_reference_py(stats.get("Perfect Points", 0), ref_pp, TOTAL_ROWS))
+    combo_mul = float(lookup_reference_py(stats.get("Combo Multiplier", 0), ref_cm, TOTAL_ROWS))
+    fever_mul = float(lookup_reference_py(stats.get("Fever Multiplier", 0), ref_fm, TOTAL_ROWS))
+    fever_fill_rate = float(lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS))
+    fever_time_stat = float(lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS))
+
+    p_color = str(metadata.get("Primary Color", "") or "")
+    s_color = str(metadata.get("Secondary Color", "") or "")
+    primary_val = safe_int(stats.get(p_color, 0), 0)
+    secondary_val = safe_int(stats.get(s_color, 0), 0)
+
+    base_value = float((primary_val * 2) + secondary_val) + float(pp_factor)
+
+    non_fever_cas = (total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)
+    if non_fever_cas < 0.0:
+        non_fever_cas = 0.0
+    raw_fill = float(non_fever_cas) * float(fever_fill_rate)
+    non_fever_base = int(ceil(raw_fill))
+
+    fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+    fever_duration = float(fever_time_cas) * float(fever_time_stat)
+
+    w_prefix = _build_fever_bonus_prefix(
+        total_notes=total_notes,
+        base_value=base_value,
+        combo_mul=combo_mul,
+        fever_mul=fever_mul,
+    )
+    c_prefix = _build_forced_great_penalty_prefix(
+        total_notes=total_notes,
+        base_value=base_value,
+        combo_mul=combo_mul,
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
+    )
+
+    return FGExactDPPreparedInputs(
+        timestamps=timestamps,
+        great_candidates=great_candidates,
+        total_notes=int(total_notes),
+        last_note_time=float(last_note_time),
+        raw_fill=float(raw_fill),
+        non_fever_base=int(non_fever_base),
+        fever_duration=float(fever_duration),
+        ft_idx=max(0, min(TOTAL_ROWS, safe_int(stats.get("Fever Time", 0), 0))),
+        w_prefix=w_prefix,
+        c_prefix=c_prefix,
+    )
+
+
 def solve_force_greats_exact_dp(
     *,
     stats: dict,
@@ -198,76 +297,25 @@ def solve_force_greats_exact_dp(
     """
     profile = FGExactDPProfile()
 
-    if not isinstance(stats, dict) or not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+    prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+    if prepared is None:
         return FGExactDPSolution(best_delta=0, section_counts=[], profile=profile)
-
-    timestamps, great_candidates = _extract_timestamps_for_fg(calc_song)
-    total_notes = int(timestamps.shape[0])
-    if total_notes <= 0:
-        return FGExactDPSolution(best_delta=0, section_counts=[], profile=profile)
-
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes", 0), 0)
-
-    # last_note_time is derived from chart length, not simulated hits.
-    song_data = calc_song.get("song_data", {}) or {}
-    base_ts = song_data.get("timestamps", timestamps)
-    try:
-        default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
-    except Exception:
-        default_last_note = 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
-
-    # Stat multipliers
-    try:
-        ref_pp = ref_arrays["Perfect Points"]
-        ref_cm = ref_arrays["Combo Multiplier"]
-        ref_fm = ref_arrays["Fever Multiplier"]
-        ref_ff = ref_arrays["Fever Fill Rate"]
-        ref_ft = ref_arrays["Fever Time"]
-    except Exception:
-        return FGExactDPSolution(best_delta=0, section_counts=[], profile=profile)
-
-    pp_factor = float(lookup_reference_py(stats.get("Perfect Points", 0), ref_pp, TOTAL_ROWS))
-    combo_mul = float(lookup_reference_py(stats.get("Combo Multiplier", 0), ref_cm, TOTAL_ROWS))
-    fever_mul = float(lookup_reference_py(stats.get("Fever Multiplier", 0), ref_fm, TOTAL_ROWS))
-    fever_fill_rate = float(lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS))
-    fever_time_stat = float(lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS))
-
-    p_color = str(metadata.get("Primary Color", "") or "")
-    s_color = str(metadata.get("Secondary Color", "") or "")
-    primary_val = safe_int(stats.get(p_color, 0), 0)
-    secondary_val = safe_int(stats.get(s_color, 0), 0)
-
-    base_value = float((primary_val * 2) + secondary_val) + float(pp_factor)
-
-    # Timeline constants (repo parity: FEVER_FILL_BASE_RATE / TIME_SCALE/OFFSET)
-    non_fever_cas = (total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)
-    if non_fever_cas < 0.0:
-        non_fever_cas = 0.0
-    raw_fill = float(non_fever_cas) * float(fever_fill_rate)
-    non_fever_base = int(ceil(raw_fill))
-
-    fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
-    fever_duration = float(fever_time_cas) * float(fever_time_stat)
+    timestamps = prepared.timestamps
+    great_candidates = prepared.great_candidates
+    total_notes = int(prepared.total_notes)
+    raw_fill = float(prepared.raw_fill)
+    non_fever_base = int(prepared.non_fever_base)
+    fever_duration = float(prepared.fever_duration)
 
     # If we don't have great-candidate timestamps, timing-aware mode collapses to count-only.
     use_timing_carry = bool(mode == "timing_aware" and great_candidates is not None)
 
     # Precompute reward ingredients.
-    w_prefix = _build_fever_bonus_prefix(
-        total_notes=total_notes, base_value=base_value, combo_mul=combo_mul, fever_mul=fever_mul
-    )
+    w_prefix = prepared.w_prefix
     # Upper bound: total remaining (fever - normal) bonus if every remaining note were fever.
     # With fever_mul>=1, per-note deltas are non-negative in practice, so this is a safe bound.
     suffix_bonus = w_prefix[-1] - w_prefix
-    c_prefix = _build_forced_great_penalty_prefix(
-        total_notes=total_notes,
-        base_value=base_value,
-        combo_mul=combo_mul,
-        primary_val=int(primary_val),
-        secondary_val=int(secondary_val),
-    )
+    c_prefix = prepared.c_prefix
 
     # Fever end lookup tables (match Taichi FG tables: end idx depends on start-time source).
     end_times_song = timestamps.astype(np.float64) + float(fever_duration)

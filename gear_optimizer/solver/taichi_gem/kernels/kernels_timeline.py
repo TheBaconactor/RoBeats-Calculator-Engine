@@ -131,6 +131,40 @@ def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: t
     return ti.Vector([m0, m1, m2, m3])
 
 
+@ti.func
+def _head_mask_coefficients(
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+) -> ti.types.vector(4, ti.i32):
+    n_hn: ti.i32 = 0
+    n_hf: ti.i32 = 0
+    sigma_hn: ti.i32 = 0
+    sigma_hf: ti.i32 = 0
+    i = ti.i32(0)
+    while i < head_len:
+        pos = i + 1
+        bit = ti.i32(0)
+        if i < 32:
+            bit = ti.cast((m0 >> ti.cast(i, ti.u32)) & ti.u32(1), ti.i32)
+        elif i < 64:
+            bit = ti.cast((m1 >> ti.cast(i - 32, ti.u32)) & ti.u32(1), ti.i32)
+        elif i < 96:
+            bit = ti.cast((m2 >> ti.cast(i - 64, ti.u32)) & ti.u32(1), ti.i32)
+        else:
+            bit = ti.cast((m3 >> ti.cast(i - 96, ti.u32)) & ti.u32(1), ti.i32)
+        if bit != 0:
+            n_hf += 1
+            sigma_hf += pos
+        else:
+            n_hn += 1
+            sigma_hn += pos
+        i += 1
+    return ti.Vector([n_hn, n_hf, sigma_hn, sigma_hf])
+
+
 @ti.kernel
 def compute_timeline_grid_kernel(
     total_notes: ti.i32,
@@ -245,9 +279,14 @@ def compute_timeline_grid_kernel(
                 break
 
         # Write outputs to specified song slot
+        coeffs = _head_mask_coefficients(m0, m1, m2, m3, head_len)
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
         kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
         kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
+        kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[0], ti.i16)
+        kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[1], ti.i16)
+        kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[2], ti.i16)
+        kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[3], ti.i16)
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
@@ -810,9 +849,14 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
         gap = best.gap
 
         # Write outputs to specified song slot.
+        coeffs = _head_mask_coefficients(m0, m1, m2, m3, head_len)
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
         kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
         kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
+        kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[0], ti.i16)
+        kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[1], ti.i16)
+        kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[2], ti.i16)
+        kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[3], ti.i16)
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
@@ -840,8 +884,10 @@ def compute_timeline_grid_ceiling_hitsim_reps_kernel(
     group_count: ti.i32,
     song_slot: ti.i32,
     write_unpacked_masks: ti.i32,
-    rep_ft: ti.types.ndarray(dtype=ti.i16, ndim=2),
-    rep_ff: ti.types.ndarray(dtype=ti.i16, ndim=2),
+    rep_ft_values: ti.types.ndarray(dtype=ti.i16, ndim=1),
+    rep_ff_values: ti.types.ndarray(dtype=ti.i16, ndim=1),
+    rep_ft_n: ti.i32,
+    rep_ff_n: ti.i32,
 ):
     """
     Ceiling timeline precompute with exact cell deduplication by (fill_count, d_ms).
@@ -873,11 +919,14 @@ def compute_timeline_grid_ceiling_hitsim_reps_kernel(
     non_fever_cas: ti.f32 = ti.cast(ti.max(0, total_notes - long_notes), ti.f32) * ti.f32(0.333)
     fever_time_cas: ti.f32 = last_note_time * ti.f32(0.15) + ti.f32(0.15)
 
+    rep_ft_n_i: ti.i32 = ti.max(rep_ft_n, 0)
+    rep_ff_n_i: ti.i32 = ti.max(rep_ff_n, 0)
+
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for ft_idx, ff_idx in ti.ndrange(n_stat, n_stat):
-        rft = ti.cast(rep_ft[ft_idx, ff_idx], ti.i32)
-        rff = ti.cast(rep_ff[ft_idx, ff_idx], ti.i32)
-        if rft != ft_idx or rff != ff_idx:
+    for rep_i, rep_j in ti.ndrange(rep_ft_n_i, rep_ff_n_i):
+        ft_idx = ti.cast(rep_ft_values[rep_i], ti.i32)
+        ff_idx = ti.cast(rep_ff_values[rep_j], ti.i32)
+        if ft_idx < 0 or ft_idx >= n_stat or ff_idx < 0 or ff_idx >= n_stat:
             continue
 
         # (1) Parameters for this (FT, FF) cell.
@@ -993,9 +1042,14 @@ def compute_timeline_grid_ceiling_hitsim_reps_kernel(
         gap = best.gap
 
         # Write outputs to specified song slot (representatives only).
+        coeffs = _head_mask_coefficients(m0, m1, m2, m3, head_len)
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
         kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
         kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
+        kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[0], ti.i16)
+        kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[1], ti.i16)
+        kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[2], ti.i16)
+        kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[3], ti.i16)
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
@@ -1018,8 +1072,8 @@ def compute_timeline_grid_ceiling_hitsim_reps_kernel(
 @ti.kernel
 def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
     song_slot: ti.i32,
-    rep_ft: ti.types.ndarray(dtype=ti.i16, ndim=2),
-    rep_ff: ti.types.ndarray(dtype=ti.i16, ndim=2),
+    rep_ft_by_ft: ti.types.ndarray(dtype=ti.i16, ndim=1),
+    rep_ff_by_ff: ti.types.ndarray(dtype=ti.i16, ndim=1),
 ):
     """
     Fill the full 161×161 grid by copying representative-cell outputs.
@@ -1028,8 +1082,8 @@ def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for ft_idx, ff_idx in ti.ndrange(161, 161):
-        rft = ti.cast(rep_ft[ft_idx, ff_idx], ti.i32)
-        rff = ti.cast(rep_ff[ft_idx, ff_idx], ti.i32)
+        rft = ti.cast(rep_ft_by_ft[ft_idx], ti.i32)
+        rff = ti.cast(rep_ff_by_ff[ff_idx], ti.i32)
 
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_count_body_fever[
             song_slot, rft, rff
@@ -1038,6 +1092,10 @@ def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
             song_slot, rft, rff
         ]
         kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_head_len[song_slot, rft, rff]
+        kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_N_hn[song_slot, rft, rff]
+        kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_N_hf[song_slot, rft, rff]
+        kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_Sigma_hn[song_slot, rft, rff]
+        kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_Sigma_hf[song_slot, rft, rff]
 
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = kernels_helpers.grid_fever_masks_bits[
             song_slot, rft, rff, 0
@@ -1082,6 +1140,11 @@ def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
         hl = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
         fa = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
         gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
+        coeffs = _head_mask_coefficients(m0, m1, m2, m3, hl)
+        kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[0], ti.i16)
+        kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[1], ti.i16)
+        kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[2], ti.i16)
+        kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(coeffs[3], ti.i16)
 
         kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
         kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(bf, bn, hl, fa, gap)

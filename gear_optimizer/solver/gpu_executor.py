@@ -80,6 +80,7 @@ class GpuRequestType(Enum):
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
+    SOLVE_FORCE_GREATS_EXACT_DP = "solve_force_greats_exact_dp_gpu_batch"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
@@ -547,6 +548,7 @@ class GpuExecutor:
     _FG_REQUEST_TYPES = frozenset(
         {
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
@@ -743,6 +745,7 @@ class GpuExecutor:
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP: self._execute_solve_force_greats_exact_dp,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
             GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
@@ -971,6 +974,10 @@ class GpuExecutor:
             if isinstance(ftff_chunks, (list, tuple)) and ftff_chunks:
                 return float(max(1, len(ftff_chunks)))
             return 1.0
+
+        if req_type == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
+            stats_list = payload.get("stats_list")
+            return float(max(1, self._size_hint(stats_list)))
 
         if req_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
             payloads = payload.get("payloads")
@@ -3320,6 +3327,7 @@ class GpuExecutor:
             "song_slot",
             "total_budget",
             "gem_scale_fever",
+            "use_exact_inner_solver",
             "is_p_ft",
             "is_s_ft",
             "is_p_ff",
@@ -3614,6 +3622,7 @@ class GpuExecutor:
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
                         song_slot=song_slot,
+                        use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 0)),
                     )
                     dt_kernel = perf_counter() - t_kernel0
                     dt_total = perf_counter() - t_pack0
@@ -3686,6 +3695,7 @@ class GpuExecutor:
             total_budget=payload.get("total_budget", 90),
             gem_scale_fever=payload.get("gem_scale_fever", 3),
             song_slot=song_slot,
+            use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 0)),
         )
 
         return GpuResponse(
@@ -3917,6 +3927,50 @@ class GpuExecutor:
                 result = solve_force_greats_finder_gpu(*base_args, **kwargs)
         else:
             result = solve_force_greats_finder_gpu(*args, **kwargs)
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=result,
+        )
+
+    def _execute_solve_force_greats_exact_dp(self, request: GpuRequest) -> GpuResponse:
+        """Execute the production exact FG DP batch on the GPU owner thread."""
+        from .taichi_gem.force_greats.api import solve_force_greats_exact_dp_gpu_batch
+
+        payload = request.payload or {}
+        stats_list = payload.get("stats_list")
+        calc_song = payload.get("calc_song")
+        ref_arrays = payload.get("ref_arrays")
+
+        if not isinstance(stats_list, (list, tuple)):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (stats_list must be list/tuple)",
+            )
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (calc_song/ref_arrays must be dict)",
+            )
+
+        try:
+            result = solve_force_greats_exact_dp_gpu_batch(
+                stats_list=list(stats_list),
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                timing_aware=bool(payload.get("timing_aware", True)),
+                prune=bool(payload.get("prune", True)),
+                song_slot=int(payload.get("song_slot", 0) or 0),
+            )
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"SOLVE_FORCE_GREATS_EXACT_DP: {type(e).__name__}: {e}",
+            )
+
         return GpuResponse(
             request_id=request.request_id,
             success=True,
@@ -5482,6 +5536,7 @@ def submit_gpu_solve_genomes_from_registry(
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
+    use_exact_inner_solver: bool = False,
     timeout: float = 60.0,
 ) -> list:
     """
@@ -5526,6 +5581,7 @@ def submit_gpu_solve_genomes_from_registry(
             "total_budget": int(total_budget),
             "gem_scale_fever": int(gem_scale_fever),
             "song_slot": int(song_slot),
+            "use_exact_inner_solver": int(bool(use_exact_inner_solver)),
         }
         if inline_static:
             payload.update(
@@ -5577,4 +5633,47 @@ def submit_gpu_solve_genomes_from_registry(
         n_expected = 0
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
+    return result
+
+
+def submit_gpu_solve_force_greats_exact_dp(
+    *,
+    stats_list,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    timing_aware: bool = True,
+    prune: bool = True,
+    song_slot: int = 0,
+    timeout: float = 180.0,
+) -> list[dict[str, Any]]:
+    """Submit the exact FG DP batch request via IPC from a GPU worker process."""
+    global _REQUEST_COUNTER
+
+    if not _WORKER_MODE:
+        raise RuntimeError("submit_gpu_solve_force_greats_exact_dp called but not in worker mode")
+
+    _REQUEST_COUNTER += 1
+    request_id = _REQUEST_COUNTER
+    request = GpuRequest(
+        request_type=GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+        request_id=request_id,
+        worker_id=_WORKER_ID,
+        payload={
+            "stats_list": list(stats_list or []),
+            "calc_song": calc_song,
+            "ref_arrays": ref_arrays,
+            "timing_aware": bool(timing_aware),
+            "prune": bool(prune),
+            "song_slot": int(song_slot or 0),
+        },
+        submit_perf_ns=time.perf_counter_ns(),
+    )
+    _ensure_worker_response_router_started()
+    _REQUEST_QUEUE.put(request)
+    response = _wait_for_worker_response(request_id, float(timeout))
+    if not response.success:
+        raise RuntimeError(f"GPU executor error: {response.error}")
+    result = response.result
+    if not isinstance(result, list):
+        raise RuntimeError("GPU executor returned invalid exact FG DP result payload")
     return result

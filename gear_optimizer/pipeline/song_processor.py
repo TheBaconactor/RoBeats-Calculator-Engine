@@ -24,8 +24,9 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from io import StringIO
-from typing import cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from cachetools import LRUCache
@@ -40,7 +41,13 @@ from ..core.constants import (
     PATHS,
 )
 
-from ..core.config import read_fg_candidate_limit, read_fg_search_radius
+from ..core.config import (
+    read_fg_candidate_limit,
+    read_fg_search_radius,
+    read_fg_solver_mode,
+    read_outer_search_engine,
+    read_pre_prune_mode,
+)
 from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
     GEM_SOLVER_CACHE,
@@ -49,6 +56,7 @@ from ..solver.scoring import (
     solve_best_fever_combination,
 )
 from ..solver.gpu_profiler import get_gpu_profiler
+from ..solver.solver_common import SolverContext, prepare_solver_context
 from ..core.memory import log_memory_usage
 from ..core.utils import cfg_from_dict
 from ..core.array_signature import array_sig16
@@ -86,6 +94,84 @@ _CAPTURE_SONG_LOG_PAYLOAD = str(os.environ.get("SONG_CAPTURE_LOG_PAYLOAD", "0") 
 
 # GPU profiler for songs/hour tracking
 _gpu_profiler = get_gpu_profiler()
+
+
+@dataclass
+class SongContext:
+    fp: str
+    found_song_name: str
+    queue_label: str
+    effective_difficulty: str
+    cfg_dict: dict[str, Any]
+    cfg: Any
+    paths: Any
+    ref_arrays: dict[str, Any]
+    all_gears: list[dict]
+    all_minis: list[dict]
+    gears_by_name: dict[str, Any]
+    minis_by_name: dict[str, Any]
+    use_evo_db: bool
+    auto_buff: bool
+    ga_depth: int
+    status_queue: Any
+    defer_post: bool
+    emit: Callable[[str], None]
+    stage_timing: dict[str, float]
+    repeat_index: int
+    repeat_total: int
+    fg_debug: bool
+    calc_song: dict[str, Any]
+    meta_primary_color: str
+    meta_secondary_color: str
+    ga_settings: Any
+    fixed_stats: dict[str, Any]
+    current_gear_stats: dict[str, Any]
+    current_gear_list: list[dict]
+    current_mini_stats: dict[str, Any]
+    current_mini_list: list[dict]
+    meta_finder: bool
+    enable_fever: bool
+    enable_mini: bool
+    enable_gear: bool
+    force_greats_mode: bool
+    force_greats_finder: bool
+    force_greats_config: Any
+    manual_force_greats: bool
+    baseline_team_buff: str
+    db_key: str
+    prev_record: Any
+    known_loadouts: Any
+    db_best_score: int
+    db_best_fg_score: int
+    attempt_lifetime: int
+    attempts_first: int
+    prev_attempts_first: int
+    db_baseline_valid: bool
+    outer_engine: str = "ga"
+    pre_prune_mode: str = "auto"
+    fg_solver_mode: str = "finder"
+    fg_search_radius: int | None = None
+    gpu_mode: bool = True
+    gpu_song_slot: int = 0
+    ga_seed: int | None = None
+    solver_ctx: SolverContext | None = None
+
+
+@dataclass
+class OuterSearchResult:
+    best_data: dict[str, Any] | None
+    best_gear: list[dict]
+    best_minis: list[dict]
+    all_evaluated: list[dict[str, Any]]
+    ga_candidates: list[dict[str, Any]]
+    wall_sec: float = 0.0
+
+
+@dataclass
+class FGResult:
+    fg_variants: list[dict[str, Any]] = field(default_factory=list)
+    loadout_entries: Any = None
+    wall_sec: float = 0.0
 
 
 class _NullLogBuffer:
@@ -590,6 +676,696 @@ def read_song_file(fp):
         return data
 
 
+def _setup_song_context(
+    *,
+    fp: str,
+    found_song_name: str,
+    effective_difficulty: str,
+    cfg_dict: dict[str, Any],
+    paths: Any,
+    ref_arrays: dict[str, Any],
+    all_gears: list[dict],
+    all_minis: list[dict],
+    gears_by_name: dict[str, Any],
+    minis_by_name: dict[str, Any],
+    use_evo_db: bool,
+    auto_buff: bool,
+    ga_depth: int,
+    status_queue: Any,
+    fg_debug: bool,
+    defer_post: bool,
+    preloaded_calc_song: dict[str, Any] | None,
+    repeat_index: int,
+    repeat_total: int,
+    ga_seed: int | None,
+    emit: Callable[[str], None],
+    stage_timing: dict[str, float],
+) -> SongContext:
+    cfg = cfg_from_dict(cfg_dict)
+    gpu_mode_requested = True
+    try:
+        gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
+    except Exception:
+        gpu_mode_requested = True
+    if not gpu_mode_requested:
+        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+    gpu_mode = True
+
+    if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
+        calc_song = clone_calc_song(preloaded_calc_song)
+        stage_timing["cpu_read_sec"] = 0.0
+    else:
+        t_read0 = time.perf_counter()
+        base_calc_song = get_base_calc_song(fp, cfg_dict)
+        calc_song = clone_calc_song(base_calc_song)
+        stage_timing["cpu_read_sec"] = time.perf_counter() - t_read0
+
+    try:
+        song_data = calc_song.get("song_data", {}) or {}
+        if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
+            song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
+    except Exception:
+        pass
+
+    try:
+        from ..solver.hit_simulation import apply_human_hit_sim
+
+        t_sim0 = time.perf_counter()
+        sim_info = apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+        if sim_info is not None:
+            stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - t_sim0
+            try:
+                sim_dbg = sim_info.get("debug") or {}
+                print(
+                    f"[HumanHitSim] Enabled (ApplyTo={sim_info.get('apply_to')}, dist={sim_info.get('distribution')}, "
+                    f"seed={sim_info.get('seed')}, groups={sim_dbg.get('groups')}, "
+                    f"forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    meta_primary_color = calc_song["metadata"].get("Primary Color", "")
+    meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
+
+    t_setup0 = time.perf_counter()
+    (
+        ga_settings,
+        fixed_stats,
+        current_gear_stats,
+        current_gear_list,
+        current_mini_stats,
+        current_mini_list,
+        meta_finder,
+        enable_fever,
+        enable_mini,
+        enable_gear,
+        force_greats_mode,
+        force_greats_finder,
+        force_greats_config,
+        manual_force_greats,
+    ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+    stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
+
+    try:
+        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+
+        baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
+    except Exception:
+        baseline_team_buff = "T5"
+
+    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+
+    db_key = build_db_key(found_song_name, calc_song)
+
+    t_db0 = time.perf_counter()
+    (
+        prev_record,
+        known_loadouts,
+        db_best_score,
+        db_best_fg_score,
+        attempt_lifetime,
+        prev_attempts_first,
+        db_baseline_valid,
+    ) = load_database_progress_baseline(
+        db_key,
+        use_evo_db,
+        gears_by_name,
+        minis_by_name,
+        allow_fallback=False,
+        team_buff=str(baseline_team_buff or "T5"),
+    )
+    stage_timing["cpu_db_load_sec"] = time.perf_counter() - t_db0
+
+    attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
+    emit("START")
+    stage_timing["cpu_prep_sec"] = sum(
+        float(stage_timing.get(key, 0.0) or 0.0)
+        for key in ("cpu_read_sec", "cpu_human_hit_sim_sec", "cpu_setup_sec", "cpu_db_load_sec")
+    )
+
+    outer_engine = "ga"
+    pre_prune_mode = "auto"
+    fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
+    fg_search_radius = read_fg_search_radius(cfg)
+    if enable_gear or enable_mini:
+        outer_engine = read_outer_search_engine(cfg, default="exact")
+        pre_prune_mode = read_pre_prune_mode(cfg, default="auto")
+
+    return SongContext(
+        fp=fp,
+        found_song_name=found_song_name,
+        queue_label=str(found_song_name),
+        effective_difficulty=effective_difficulty,
+        cfg_dict=cfg_dict,
+        cfg=cfg,
+        paths=paths,
+        ref_arrays=ref_arrays,
+        all_gears=all_gears,
+        all_minis=all_minis,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        use_evo_db=bool(use_evo_db),
+        auto_buff=bool(auto_buff),
+        ga_depth=int(ga_depth),
+        status_queue=status_queue,
+        defer_post=bool(defer_post),
+        emit=emit,
+        stage_timing=stage_timing,
+        repeat_index=int(repeat_index),
+        repeat_total=int(repeat_total),
+        fg_debug=bool(fg_debug),
+        calc_song=calc_song,
+        meta_primary_color=str(meta_primary_color or ""),
+        meta_secondary_color=str(meta_secondary_color or ""),
+        ga_settings=ga_settings,
+        fixed_stats=fixed_stats,
+        current_gear_stats=current_gear_stats,
+        current_gear_list=current_gear_list,
+        current_mini_stats=current_mini_stats,
+        current_mini_list=current_mini_list,
+        meta_finder=bool(meta_finder),
+        enable_fever=bool(enable_fever),
+        enable_mini=bool(enable_mini),
+        enable_gear=bool(enable_gear),
+        force_greats_mode=bool(force_greats_mode),
+        force_greats_finder=bool(force_greats_finder),
+        force_greats_config=force_greats_config,
+        manual_force_greats=bool(manual_force_greats),
+        baseline_team_buff=str(baseline_team_buff or "T5"),
+        db_key=db_key,
+        prev_record=prev_record,
+        known_loadouts=known_loadouts,
+        db_best_score=int(db_best_score or 0),
+        db_best_fg_score=int(db_best_fg_score or 0),
+        attempt_lifetime=int(attempt_lifetime or 0),
+        attempts_first=int(attempts_first),
+        prev_attempts_first=int(prev_attempts_first or 0),
+        db_baseline_valid=bool(db_baseline_valid),
+        outer_engine=outer_engine,
+        pre_prune_mode=pre_prune_mode,
+        fg_solver_mode=fg_solver_mode,
+        fg_search_radius=fg_search_radius,
+        gpu_mode=bool(gpu_mode),
+        gpu_song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
+        ga_seed=ga_seed,
+    )
+
+
+def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
+    if ctx.enable_gear or ctx.enable_mini:
+        if ctx.gpu_mode:
+            try:
+                ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
+            except Exception:
+                ctx.gpu_song_slot = 0
+            try:
+                ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
+            except Exception:
+                pass
+            try:
+                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+                gpu_fields.configure_ga_run_buffers(
+                    max_runs=ctx.ga_settings.multi_start,
+                    max_genomes=GA_POPULATION_SIZE,
+                )
+            except Exception:
+                pass
+
+        solver_pre_prune = ctx.pre_prune_mode if ctx.outer_engine == "exact" else "none"
+        ctx.solver_ctx = prepare_solver_context(
+            ctx.cfg,
+            ctx.fixed_stats,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            ctx.all_gears,
+            ctx.all_minis,
+            optimize_gear=ctx.enable_gear,
+            optimize_minis=ctx.enable_mini,
+            fixed_gear=ctx.current_gear_list,
+            fixed_minis=ctx.current_mini_list,
+            pre_prune_mode=solver_pre_prune,
+            status_cb=lambda message: ctx.emit(message),
+            song_slot=int(ctx.gpu_song_slot),
+        )
+
+        ga_start = time.perf_counter()
+        if ctx.outer_engine == "exact":
+            from gear_optimizer.solver.exact_skyline import solve_exact_skyline
+
+            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_exact_skyline(
+                ctx.cfg,
+                ctx.fixed_stats,
+                ctx.paths,
+                ctx.calc_song,
+                ctx.ref_arrays,
+                ctx.all_gears,
+                ctx.all_minis,
+                ctx.gears_by_name,
+                ctx.minis_by_name,
+                optimize_gear=ctx.enable_gear,
+                optimize_minis=ctx.enable_mini,
+                fixed_gear=ctx.current_gear_list,
+                fixed_minis=ctx.current_mini_list,
+                ga_depth=ctx.ga_depth,
+                db_seed=ctx.prev_record if ctx.prev_record else None,
+                ga_settings=ctx.ga_settings,
+                status_cb=lambda message: ctx.emit(message),
+                executor=None,
+                known_loadouts=ctx.known_loadouts,
+                song_slot=int(ctx.gpu_song_slot),
+                ga_seed=ctx.ga_seed,
+                pre_prune_mode=ctx.pre_prune_mode,
+                solver_ctx=ctx.solver_ctx,
+            )
+        else:
+            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
+                ctx.cfg,
+                ctx.fixed_stats,
+                ctx.paths,
+                ctx.calc_song,
+                ctx.ref_arrays,
+                ctx.all_gears,
+                ctx.all_minis,
+                ctx.gears_by_name,
+                ctx.minis_by_name,
+                optimize_gear=ctx.enable_gear,
+                optimize_minis=ctx.enable_mini,
+                fixed_gear=ctx.current_gear_list,
+                fixed_minis=ctx.current_mini_list,
+                ga_depth=ctx.ga_depth,
+                db_seed=ctx.prev_record if ctx.prev_record else None,
+                ga_settings=ctx.ga_settings,
+                status_cb=lambda message: ctx.emit(message),
+                executor=None,
+                known_loadouts=ctx.known_loadouts,
+                song_slot=int(ctx.gpu_song_slot),
+                ga_seed=ctx.ga_seed,
+                solver_ctx=ctx.solver_ctx,
+            )
+        wall_sec = time.perf_counter() - ga_start
+        if PERF_TIMING_ENABLED:
+            print(f"[PERF] GA: {wall_sec:.2f}s")
+        if ctx.known_loadouts:
+            ctx.known_loadouts.clear()
+    else:
+        all_evaluated = []
+        if not ctx.enable_fever:
+            print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
+
+        combined_stats = ctx.fixed_stats.copy()
+        for key, value in ctx.current_gear_stats.items():
+            combined_stats[key] = combined_stats.get(key, 0) + value
+        for key, value in ctx.current_mini_stats.items():
+            combined_stats[key] = combined_stats.get(key, 0) + value
+
+        best_data = solve_best_fever_combination(
+            ctx.cfg,
+            combined_stats,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            silent=ctx.enable_fever,
+            skip_optimizer=not ctx.enable_fever,
+        )
+        best_gear = ctx.current_gear_list
+        best_minis = ctx.current_mini_list
+        if best_data:
+            base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
+            all_evaluated = [
+                {
+                    "Score": base_score,
+                    "BaseScore": base_score,
+                    "Gear": best_gear,
+                    "Minis": best_minis,
+                    "Data": best_data,
+                }
+            ]
+        wall_sec = 0.0
+
+    ga_candidates = list(all_evaluated or [])
+    if best_data and best_gear and best_minis:
+        base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
+        ga_candidates.append(
+            {
+                "Score": base_score,
+                "BaseScore": base_score,
+                "Gear": best_gear,
+                "Minis": best_minis,
+                "Data": best_data,
+            }
+        )
+
+    return OuterSearchResult(
+        best_data=best_data,
+        best_gear=list(best_gear or []),
+        best_minis=list(best_minis or []),
+        all_evaluated=list(all_evaluated or []),
+        ga_candidates=ga_candidates,
+        wall_sec=float(wall_sec),
+    )
+
+
+def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
+    ga_candidates = list(outer.ga_candidates or [])
+    fg_candidate_limit = read_fg_candidate_limit(
+        ctx.cfg,
+        default=FG_CANDIDATE_LIMIT,
+        min_limit=LOADOUTS_PER_SONG_LIMIT,
+    )
+    if ctx.manual_force_greats or ctx.force_greats_finder or ctx.fg_solver_mode == "exact_dp":
+        ga_candidates = select_fg_candidates(
+            ga_candidates,
+            limit=fg_candidate_limit,
+            primary_color=str(ctx.meta_primary_color or ""),
+            secondary_color=str(ctx.meta_secondary_color or ""),
+        )
+
+    build_details = make_build_details_fn(ctx.meta_primary_color, ctx.meta_secondary_color, ctx.effective_difficulty)
+    fg_variants: list[dict[str, Any]] = []
+    loadout_entries = None
+    fg_wall_sec = 0.0
+
+    if ctx.fg_solver_mode == "exact_dp":
+        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+
+        fg_start = time.perf_counter()
+        fg_variants = process_fg_exact_dp(
+            ga_candidates,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            use_gpu=ctx.gpu_mode,
+            gpu_client=None,
+            song_slot=int(ctx.gpu_song_slot or 0),
+        )
+        fg_wall_sec = time.perf_counter() - fg_start
+        if PERF_TIMING_ENABLED:
+            print(f"[PERF] ForceGreats (exact DP): {fg_wall_sec:.2f}s ({len(ga_candidates)} candidates)")
+    elif ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
+        direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
+        loadout_entries = build_loadout_entries(
+            ctx.found_song_name,
+            ctx.use_evo_db,
+            [] if direct_ga_candidates_for_fg else ga_candidates,
+            fg_candidate_limit,
+            ctx.gears_by_name,
+            ctx.minis_by_name,
+            build_details,
+            team_buff=str(ctx.baseline_team_buff or "T5"),
+            materialize_ga_details=False,
+        )
+
+        fg_start = time.perf_counter()
+        fg_variants = process_force_greats(
+            loadout_entries,
+            ctx.manual_force_greats,
+            ctx.force_greats_finder,
+            ctx.force_greats_config,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            ctx.meta_primary_color,
+            build_details,
+            use_gpu=ctx.gpu_mode,
+            fg_search_radius=ctx.fg_search_radius,
+            perf_timing=PERF_TIMING_ENABLED,
+            ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
+            ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
+        )
+        fg_wall_sec = time.perf_counter() - fg_start
+        if PERF_TIMING_ENABLED:
+            n_loadouts = len(loadout_entries) if loadout_entries else 0
+            print(f"[PERF] ForceGreats: {fg_wall_sec:.2f}s ({n_loadouts} loadouts, finder={ctx.force_greats_finder})")
+
+    try:
+        _attach_hitsim_delta_for_fg_variants(ctx.calc_song, fg_variants, ctx.ref_arrays)
+    except Exception:
+        pass
+
+    outer.ga_candidates = ga_candidates
+    return FGResult(fg_variants=fg_variants, loadout_entries=loadout_entries, wall_sec=float(fg_wall_sec))
+
+
+def _build_and_persist(
+    ctx: SongContext,
+    outer: OuterSearchResult,
+    fg: FGResult,
+    *,
+    buf: Any,
+    capture_log_payload: bool,
+) -> SongResultPayload:
+    build_details = make_build_details_fn(ctx.meta_primary_color, ctx.meta_secondary_color, ctx.effective_difficulty)
+    db_payload = None
+    persist_entries = None
+    buf_content = ""
+
+    if ctx.defer_post and outer.best_data:
+
+        def _compact_items(items):
+            return names_list(items)
+
+        def _compact_fg_variants(variants):
+            out = []
+            for variant in variants or []:
+                if not isinstance(variant, dict):
+                    continue
+                out.append(
+                    {
+                        "score": variant.get("score", 0),
+                        "fg_score": variant.get("fg_score", 0),
+                        "gear": _compact_items(variant.get("gear")),
+                        "minis": _compact_items(variant.get("minis")),
+                        "data": variant.get("data") or {},
+                    }
+                )
+            return out
+
+        def _compact_ga_candidates(candidates):
+            out = []
+            for candidate in candidates or []:
+                if not isinstance(candidate, dict):
+                    continue
+                gear_names, mini_names = materialize_candidate_names(candidate, mutate=False)
+                out.append(
+                    {
+                        "Score": candidate.get("Score", 0),
+                        "BaseScore": candidate.get("BaseScore", candidate.get("Score", 0)),
+                        "Gear": list(gear_names),
+                        "Minis": list(mini_names),
+                        "Data": candidate.get("Data") or {},
+                        "_fg_priority": candidate.get("_fg_priority", 0),
+                    }
+                )
+            return out
+
+        def _compact_loadout_entries(entries):
+            if entries is None:
+                return None
+            out = {}
+            for key, value in entries.items():
+                if not isinstance(value, dict):
+                    continue
+                gear_names, mini_names = materialize_entry_names(value, mutate=False)
+                out[str(key)] = {
+                    "score": value.get("score", 0),
+                    "base_score": value.get("base_score", value.get("score", 0)),
+                    "fg_score": value.get("fg_score", 0),
+                    "gear": list(gear_names),
+                    "minis": list(mini_names),
+                    "details": value.get("details") or {},
+                    "force": value.get("force"),
+                }
+            return out
+
+        def _compact_prev_record(record):
+            if not isinstance(record, dict):
+                return None
+            out = dict(record)
+            out["gear"] = _compact_items(record.get("gear"))
+            out["minis"] = _compact_items(record.get("minis"))
+            loadout = out.get("loadout")
+            if isinstance(loadout, (list, tuple)):
+                out["loadout"] = [str(item) if item is not None else "" for item in loadout]
+            force_obj = out.get("force")
+            if isinstance(force_obj, dict):
+                force_copy = dict(force_obj)
+                force_gear = force_copy.get("gear")
+                if isinstance(force_gear, (list, tuple)):
+                    force_copy["gear"] = [str(item) if item is not None else "" for item in force_gear]
+                force_minis = force_copy.get("minis")
+                if isinstance(force_minis, (list, tuple)):
+                    force_copy["minis"] = [str(item) if item is not None else "" for item in force_minis]
+                out["force"] = force_copy
+            return out
+
+        if capture_log_payload:
+            buf_content = buf.getvalue() if buf else ""
+
+        try:
+            record_info = evaluate_progress_record_update(
+                outer.best_data,
+                ctx.prev_record,
+                fg.fg_variants,
+                db_best_fg_score=ctx.db_best_fg_score,
+                baseline_valid=bool(ctx.db_baseline_valid),
+            )
+        except Exception:
+            record_info = None
+
+        return cast(
+            SongResultPayload,
+            {
+                "_deferred_post": True,
+                "song": ctx.found_song_name,
+                "_queue_key": ctx.queue_label,
+                "_queue_label": ctx.queue_label,
+                "_repeat_index": int(ctx.repeat_index),
+                "_repeat_total": int(ctx.repeat_total),
+                "_ga_seed": int(ctx.ga_seed) if ctx.ga_seed is not None else None,
+                "db_key": ctx.db_key,
+                "file_path": ctx.fp,
+                "difficulty": ctx.effective_difficulty,
+                "use_evo_db": bool(ctx.use_evo_db),
+                "cfg_dict": ctx.cfg_dict,
+                "ref_arrays": ctx.ref_arrays,
+                "calc_song": ctx.calc_song,
+                "best_data": outer.best_data,
+                "best_gear": _compact_items(outer.best_gear),
+                "best_minis": _compact_items(outer.best_minis),
+                "current_gear": _compact_items(ctx.current_gear_list),
+                "current_minis": _compact_items(ctx.current_mini_list),
+                "enable_gear": bool(ctx.enable_gear),
+                "enable_mini": bool(ctx.enable_mini),
+                "fg_variants": _compact_fg_variants(fg.fg_variants),
+                "ga_candidates": _compact_ga_candidates(outer.ga_candidates),
+                "loadout_entries": _compact_loadout_entries(fg.loadout_entries),
+                "prev_record": _compact_prev_record(ctx.prev_record),
+                "attempt_lifetime": ctx.attempt_lifetime,
+                "prev_attempts_first": ctx.prev_attempts_first,
+                "db_best_score": ctx.db_best_score,
+                "db_best_fg_score": ctx.db_best_fg_score,
+                "db_baseline_valid": bool(ctx.db_baseline_valid),
+                "meta_primary_color": ctx.meta_primary_color,
+                "meta_secondary_color": ctx.meta_secondary_color,
+                "fg_debug": bool(ctx.fg_debug),
+                "_record": record_info,
+                "log": buf_content,
+            },
+        )
+
+    if outer.best_data:
+        try:
+            from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
+
+            if outer.best_data.get("hitsim_offset_deltas_ms") is None:
+                deltas = summarize_hitsim_offset_deltas_ms_for_base(ctx.calc_song, outer.best_data, ctx.ref_arrays)
+                if deltas:
+                    try:
+                        outer.best_data["hitsim_offset_deltas_ms"] = [int(item) for item in deltas]
+                    except Exception:
+                        pass
+            outer.best_data.pop("hitsim_offset_delta_ms", None)
+        except Exception:
+            pass
+
+        t_db0 = time.perf_counter()
+        db_payload = build_db_payload(
+            outer.best_data,
+            outer.best_gear,
+            outer.best_minis,
+            ctx.prev_record,
+            ctx.attempt_lifetime,
+            ctx.attempts_first,
+            fg.fg_variants,
+            build_details,
+            db_best_fg_score=ctx.db_best_fg_score,
+        )
+        ctx.stage_timing["_db_payload_sec"] = time.perf_counter() - t_db0
+
+        t_persist0 = time.perf_counter()
+        persist_entries = build_persistence_entries(
+            db_payload,
+            outer.ga_candidates,
+            fg.loadout_entries,
+            build_details,
+            calc_song=ctx.calc_song,
+            ref_arrays=ctx.ref_arrays,
+        )
+        ctx.stage_timing["_persist_build_sec"] = time.perf_counter() - t_persist0
+
+        t_report0 = time.perf_counter()
+        print_results(
+            ctx.found_song_name,
+            outer.best_data,
+            outer.best_gear,
+            outer.best_minis,
+            ctx.current_gear_list,
+            ctx.current_mini_list,
+            ctx.enable_gear,
+            ctx.enable_mini,
+            fg.fg_variants,
+            ctx.emit,
+            fg_debug=ctx.fg_debug,
+            ref_arrays=ctx.ref_arrays,
+            calc_song=ctx.calc_song,
+            cfg=ctx.cfg,
+            db_best_fg_score=ctx.db_best_fg_score,
+            prev_record=ctx.prev_record,
+        )
+        ctx.stage_timing["_report_sec"] = time.perf_counter() - t_report0
+
+        if PERF_TIMING_ENABLED:
+            print(
+                f"[PERF] DB/Persist/Report: payload={ctx.stage_timing.get('_db_payload_sec', 0.0):.3f}s "
+                f"persist={ctx.stage_timing.get('_persist_build_sec', 0.0):.3f}s "
+                f"report={ctx.stage_timing.get('_report_sec', 0.0):.3f}s"
+            )
+    else:
+        print(f"[ERROR] Optimization failed for {ctx.found_song_name} - best_data is None")
+        log_tail = buf.getvalue()[-500:] if buf else "No log buffer"
+        db_payload = {
+            "score": 0,
+            "fg_score": 0,
+            "gear": [],
+            "minis": [],
+            "details": {"Error": "Optimization failed - no valid loadout found", "LogTail": log_tail},
+            "force": None,
+        }
+
+    if capture_log_payload:
+        buf_content = buf.getvalue() if buf else ""
+
+    return cast(
+        SongResultPayload,
+        {
+            "song": ctx.found_song_name,
+            "_queue_key": ctx.queue_label,
+            "_queue_label": ctx.queue_label,
+            "_repeat_index": int(ctx.repeat_index),
+            "_repeat_total": int(ctx.repeat_total),
+            "_ga_seed": int(ctx.ga_seed) if ctx.ga_seed is not None else None,
+            "db_key": ctx.db_key,
+            "file_path": ctx.fp,
+            "difficulty": ctx.effective_difficulty,
+            "cfg_dict": ctx.cfg_dict,
+            "db_payload": db_payload,
+            "_record": db_payload.get("_record") if isinstance(db_payload, dict) else None,
+            "prev_record": ctx.prev_record,
+            "fg_variants": fg.fg_variants,
+            "attempt_lifetime": ctx.attempt_lifetime,
+            "prev_attempts_first": ctx.prev_attempts_first,
+            "db_best_score": ctx.db_best_score,
+            "db_best_fg_score": ctx.db_best_fg_score,
+            "db_baseline_valid": bool(ctx.db_baseline_valid),
+            "best_data": outer.best_data,
+            "best_gear": outer.best_gear,
+            "best_minis": outer.best_minis,
+            "persist_entries": persist_entries if outer.best_data else [],
+            "log": buf_content,
+        },
+    )
+
+
 def process_song_task(args) -> SongResultPayload:
     """
     Run a single song end-to-end optimization.
@@ -682,8 +1458,6 @@ def process_song_task(args) -> SongResultPayload:
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     loadout_entries = None
     known_loadouts = None
-    persist_entries = None
-    buf_content = ""  # Capture buffer content before closing
 
     # Capture logs only when explicitly requested; otherwise sink output without growing
     # per-song buffers that are discarded by the coordinator.
@@ -712,127 +1486,8 @@ def process_song_task(args) -> SongResultPayload:
     report_time_sec = 0.0
     # GPU timeline slot reuse (GA -> FG). Keep these in outer scope for cleanup.
     _gpu_song_slot = 0
-    _prefetch_mgr = None
-    gpu_mode = False
 
     try:
-        best_data = None
-        best_gear = []
-        best_minis = []
-        db_payload = None
-
-        cfg = cfg_from_dict(cfg_dict)
-        gpu_mode_requested = True
-        try:
-            gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
-        except Exception:
-            gpu_mode_requested = True
-        if not gpu_mode_requested:
-            print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-        gpu_mode = True
-
-        if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
-            calc_song = clone_calc_song(preloaded_calc_song)
-            stage_timing["cpu_read_sec"] = 0.0
-        else:
-            _t_read0 = time.perf_counter()
-            base_calc_song = get_base_calc_song(fp, cfg_dict)
-            calc_song = clone_calc_song(base_calc_song)
-            stage_timing["cpu_read_sec"] = time.perf_counter() - _t_read0
-        try:
-            # Ensure chart_timestamps is always available for "HumanHitSim OFF" comparisons.
-            song_data = calc_song.get("song_data", {}) or {}
-            if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
-                song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
-        except Exception:
-            pass
-
-        # ------------------------------------------------------------------
-        # Optional: Synthetic human hit-time simulation (Perfect-only).
-        # Stores an alternative timestamp sequence for ForceGreats modeling.
-        # ------------------------------------------------------------------
-        try:
-            from ..solver.hit_simulation import apply_human_hit_sim
-
-            _t_sim0 = time.perf_counter()
-            sim_info = apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
-            if sim_info is not None:
-                stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
-                try:
-                    sim_dbg = sim_info.get("debug") or {}
-                    print(
-                        f"[HumanHitSim] Enabled (ApplyTo={sim_info.get('apply_to')}, dist={sim_info.get('distribution')}, "
-                        f"seed={sim_info.get('seed')}, groups={sim_dbg.get('groups')}, "
-                        f"forced_monotonic={sim_dbg.get('forced_monotonic')})"
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        meta_primary_color = calc_song["metadata"].get("Primary Color", "")
-        meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
-
-        # Setup configuration and load current stats
-        _t_setup0 = time.perf_counter()
-        (
-            ga_settings,
-            fixed_stats,
-            current_gear_stats,
-            current_gear_list,
-            current_mini_stats,
-            current_mini_list,
-            meta_finder,
-            enable_fever,
-            enable_mini,
-            enable_gear,
-            force_greats_mode,
-            force_greats_finder,
-            force_greats_config,
-            manual_force_greats,
-        ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
-        stage_timing["cpu_setup_sec"] = time.perf_counter() - _t_setup0
-
-        # Persist/load baseline candidates under the baseline TeamBuff tier for this run.
-        # Default config is auto mode => T5, but this must not be hardcoded.
-        try:
-            from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
-
-            baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
-        except Exception:
-            baseline_team_buff = "T5"
-
-        # --- DB KEY ---
-        # HumanHitSim MUST NOT affect DB keying: HitSim is intended to explore/visualize
-        # alternate timelines while accumulating results under the same song key.
-        from gear_optimizer.helpers.song_helpers.database_context import build_db_key
-
-        db_key = build_db_key(found_song_name, calc_song)
-
-        # Load database context (prev_record, known_loadouts)
-        _t_db0 = time.perf_counter()
-        (
-            prev_record,
-            known_loadouts,
-            db_best_score,
-            db_best_fg_score,
-            attempt_lifetime,
-            prev_attempts_first,
-            db_baseline_valid,
-        ) = load_database_progress_baseline(
-            db_key,
-            use_evo_db,
-            gears_by_name,
-            minis_by_name,
-            allow_fallback=False,
-            team_buff=str(baseline_team_buff or "T5"),
-        )
-        stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
-
-        db_seed = prev_record if prev_record else None
-        # Note: per-song attempt counters are now tracked in `songs` and updated in the DB-writer
-        # (post-processor / async saver). This local value is best-effort metadata only.
-        attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
-
         def emit(msg):
             if not status_queue:
                 return
@@ -847,457 +1502,53 @@ def process_song_task(args) -> SongResultPayload:
                 else:
                     status_queue.put(payload, block=False)
             except Exception:
-                # Never allow progress reporting to stall a worker.
                 pass
 
-        emit("START")
+        song_ctx = _setup_song_context(
+            fp=fp,
+            found_song_name=found_song_name,
+            effective_difficulty=effective_difficulty,
+            cfg_dict=cfg_dict,
+            paths=paths,
+            ref_arrays=ref_arrays,
+            all_gears=all_gears,
+            all_minis=all_minis,
+            gears_by_name=gears_by_name,
+            minis_by_name=minis_by_name,
+            use_evo_db=use_evo_db,
+            auto_buff=auto_buff,
+            ga_depth=ga_depth,
+            status_queue=status_queue,
+            fg_debug=fg_debug,
+            defer_post=defer_post,
+            preloaded_calc_song=preloaded_calc_song,
+            repeat_index=repeat_index,
+            repeat_total=repeat_total,
+            ga_seed=ga_seed,
+            emit=emit,
+            stage_timing=stage_timing,
+        )
+        song_ctx.queue_label = queue_label
 
-        stage_timing["cpu_prep_sec"] = time.perf_counter() - _cpu_prep_t0
+        outer_result = _run_outer_search(song_ctx)
+        fg_result = _run_force_greats(song_ctx, outer_result)
+        loadout_entries = fg_result.loadout_entries
+        known_loadouts = song_ctx.known_loadouts
+        _gpu_song_slot = int(song_ctx.gpu_song_slot)
 
-        # --- LOGIC BRANCHING BASED ON FINDERS ---
-        # Performance timing variables (opt-in; enable via PERF_TIMING=1)
-
-        if enable_gear or enable_mini:
-            # Get GPU slot for timeline prefetch (prefetched or on-demand)
-            if gpu_mode:
-                try:
-                    _gpu_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
-                except Exception:
-                    _gpu_song_slot = 0
-                # Propagate song_slot into calc_song so downstream FG can reuse the same GPU timeline slot.
-                try:
-                    calc_song["_gpu_song_slot"] = int(_gpu_song_slot)
-                except Exception:
-                    pass
-
-                try:
-                    # Configure GPU-native GA run buffers BEFORE any Taichi field allocation
-                    # (prefetch triggers `precompute_timeline_gpu()` -> `ensure_ready()`).
-                    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-                    gpu_fields.configure_ga_run_buffers(
-                        max_runs=ga_settings.multi_start,
-                        max_genomes=GA_POPULATION_SIZE,
-                    )
-                except Exception:
-                    pass  # Prefetch should still run even if sizing fails.
-
-            # Run Genetic Algorithm (now memetic-enhanced)
-            ga_start = time.perf_counter()
-            (
-                best_data,
-                best_gear,
-                best_minis,
-                _,
-                _,
-                _,
-                all_evaluated,  # All unique loadouts from GA
-            ) = solve_coevolution_genetic(
-                cfg,
-                fixed_stats,
-                paths,
-                calc_song,
-                ref_arrays,
-                all_gears,
-                all_minis,
-                gears_by_name,
-                minis_by_name,
-                optimize_gear=enable_gear,
-                optimize_minis=enable_mini,
-                fixed_gear=current_gear_list,
-                fixed_minis=current_mini_list,
-                ga_depth=ga_depth,
-                db_seed=db_seed,
-                ga_settings=ga_settings,
-                status_cb=lambda m: emit(m),
-                executor=None,
-                known_loadouts=known_loadouts,
-                song_slot=_gpu_song_slot,  # Use prefetched GPU slot
-                ga_seed=ga_seed,
-            )
-            ga_time_sec = time.perf_counter() - ga_start
-
-            if PERF_TIMING_ENABLED:
-                print(f"[PERF] GA: {ga_time_sec:.2f}s")
-
-            # Memory leak fix: Clear known_loadouts after GA completes
-            # This dict now caps at the per-song loadout limit (small footprint)
-            if known_loadouts:
-                known_loadouts.clear()
-
-        else:
-            # Run Gem Solver only (enable_fever) or Calculate-Only Mode (nothing enabled)
-            # No GA population; include the current fixed loadout as a single
-            # "evaluated candidate" so downstream ForceGreatsFinder can still
-            # evaluate the active configuration even when MetaFinder is disabled.
-            all_evaluated = []
-            if not enable_fever:
-                print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
-
-            # Common logic: combine fixed_stats + gear_stats + mini_stats
-            combined_stats = fixed_stats.copy()
-            for k, v in current_gear_stats.items():
-                combined_stats[k] = combined_stats.get(k, 0) + v
-            for k, v in current_mini_stats.items():
-                combined_stats[k] = combined_stats.get(k, 0) + v
-
-            best_data = solve_best_fever_combination(
-                cfg,
-                combined_stats,
-                calc_song,
-                ref_arrays,
-                silent=enable_fever,  # Silent if enable_fever, verbose otherwise
-                skip_optimizer=not enable_fever,  # Skip optimizer if no finders enabled
-            )
-            best_gear = current_gear_list
-            best_minis = current_mini_list
-            if best_data:
-                base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
-                all_evaluated = [
-                    {
-                        "Score": base_score,
-                        "BaseScore": base_score,
-                        "Gear": best_gear,
-                        "Minis": best_minis,
-                        "Data": best_data,
-                    }
-                ]
-
-        # Cap GA candidates for downstream processing.
-        # Ranked by Score (base score) for DB seeding. We keep a wider funnel so
-        # ForceGreatsFinder can evaluate more unique loadouts even on a cold start
-        # (empty DB). The final DB save still truncates to LOADOUTS_PER_SONG_LIMIT (51).
-        ga_candidates = list(all_evaluated or [])
-        if best_data and best_gear and best_minis:
-            base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
-            ga_candidates.append(
-                {
-                    "Score": base_score,
-                    "BaseScore": base_score,
-                    "Gear": best_gear,
-                    "Minis": best_minis,
-                    "Data": best_data,
-                }
-            )
-        fg_candidate_limit = read_fg_candidate_limit(
-            cfg,
-            default=FG_CANDIDATE_LIMIT,
-            min_limit=LOADOUTS_PER_SONG_LIMIT,
+        result_payload = _build_and_persist(
+            song_ctx,
+            outer_result,
+            fg_result,
+            buf=buf,
+            capture_log_payload=_CAPTURE_SONG_LOG_PAYLOAD,
         )
 
-        fg_search_radius = read_fg_search_radius(cfg)
-        # `FG_SearchRadius` semantics:
-        # - unset/empty => use default radius (FG_SEARCH_RADIUS / env default 5)
-        # - -1 => full window over all FT/FF gem allocations within TOTAL_GEM_BUDGET
-        # - >=0 => radius in gem-space around each loadout's (FT, FF) center
-        if manual_force_greats or force_greats_finder:
-            ga_candidates = select_fg_candidates(
-                ga_candidates,
-                limit=fg_candidate_limit,
-                primary_color=str(meta_primary_color or ""),
-                secondary_color=str(meta_secondary_color or ""),
-            )
-
-        build_details = make_build_details_fn(meta_primary_color, meta_secondary_color, effective_difficulty)
-
-        # --- APPLY FORCE GREATS TO ALL EVALUATED LOADOUTS ---
-        fg_variants = []
-        loadout_entries = None
-        direct_ga_candidates_for_fg = bool(force_greats_finder and gpu_mode)
-        if manual_force_greats or force_greats_finder:
-            # Keep DB rows in the shared loadout map. In GPU finder mode, GA rows flow
-            # directly into FG and only the retained subset is merged back afterward.
-            loadout_entries = build_loadout_entries(
-                found_song_name,
-                use_evo_db,
-                [] if direct_ga_candidates_for_fg else ga_candidates,
-                fg_candidate_limit,  # Pass the larger budget to build_loadout_entries
-                gears_by_name,
-                minis_by_name,
-                build_details,
-                team_buff=str(baseline_team_buff or "T5"),
-                materialize_ga_details=False,
-            )
-
-            # Process force greats
-            fg_start = time.perf_counter()
-            fg_variants = process_force_greats(
-                loadout_entries,
-                manual_force_greats,
-                force_greats_finder,
-                force_greats_config,
-                calc_song,
-                ref_arrays,
-                meta_primary_color,
-                build_details,
-                use_gpu=gpu_mode,
-                fg_search_radius=fg_search_radius,
-                perf_timing=PERF_TIMING_ENABLED,
-                ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
-                ga_registry=None,
-            )
-            fg_time_sec = time.perf_counter() - fg_start
-
-            if PERF_TIMING_ENABLED:
-                n_loadouts = len(loadout_entries) if loadout_entries else 0
-                print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
-
-        # HumanHitSim timing summary for FG variants.
-        # Keep this on all improved variants so T5 + tiered leaderboards stay consistent.
-        try:
-            _attach_hitsim_delta_for_fg_variants(calc_song, fg_variants, ref_arrays)
-        except Exception:
-            pass
-
-        # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
-        if defer_post and best_data:
-
-            def _compact_items(items):
-                return names_list(items)
-
-            def _compact_fg_variants(variants):
-                out = []
-                for v in variants or []:
-                    if not isinstance(v, dict):
-                        continue
-                    out.append(
-                        {
-                            "score": v.get("score", 0),
-                            "fg_score": v.get("fg_score", 0),
-                            "gear": _compact_items(v.get("gear")),
-                            "minis": _compact_items(v.get("minis")),
-                            "data": v.get("data") or {},
-                        }
-                    )
-                return out
-
-            def _compact_ga_candidates(candidates):
-                out = []
-                for c in candidates or []:
-                    if not isinstance(c, dict):
-                        continue
-                    gear_names, mini_names = materialize_candidate_names(c, mutate=False)
-                    out.append(
-                        {
-                            "Score": c.get("Score", 0),
-                            "BaseScore": c.get("BaseScore", c.get("Score", 0)),
-                            "Gear": list(gear_names),
-                            "Minis": list(mini_names),
-                            "Data": c.get("Data") or {},
-                            "_fg_priority": c.get("_fg_priority", 0),
-                        }
-                    )
-                return out
-
-            def _compact_loadout_entries(entries):
-                if entries is None:
-                    return None
-                out = {}
-                for k, v in entries.items():
-                    if not isinstance(v, dict):
-                        continue
-                    gear_names, mini_names = materialize_entry_names(v, mutate=False)
-                    out[str(k)] = {
-                        "score": v.get("score", 0),
-                        "base_score": v.get("base_score", v.get("score", 0)),
-                        "fg_score": v.get("fg_score", 0),
-                        "gear": list(gear_names),
-                        "minis": list(mini_names),
-                        "details": v.get("details") or {},
-                        "force": v.get("force"),
-                    }
-                return out
-
-            def _compact_prev_record(record):
-                if not isinstance(record, dict):
-                    return None
-                out = dict(record)
-                out["gear"] = _compact_items(record.get("gear"))
-                out["minis"] = _compact_items(record.get("minis"))
-                loadout = out.get("loadout")
-                if isinstance(loadout, (list, tuple)):
-                    out["loadout"] = [str(x) if x is not None else "" for x in loadout]
-                force_obj = out.get("force")
-                if isinstance(force_obj, dict):
-                    force_copy = dict(force_obj)
-                    force_gear = force_copy.get("gear")
-                    if isinstance(force_gear, (list, tuple)):
-                        force_copy["gear"] = [str(x) if x is not None else "" for x in force_gear]
-                    force_minis = force_copy.get("minis")
-                    if isinstance(force_minis, (list, tuple)):
-                        force_copy["minis"] = [str(x) if x is not None else "" for x in force_minis]
-                    out["force"] = force_copy
-                return out
-
-            if _CAPTURE_SONG_LOG_PAYLOAD:
-                # Capture buffer content before finally block closes it.
-                buf_content = buf.getvalue() if buf else ""
-
-            try:
-                record_info = evaluate_progress_record_update(
-                    best_data,
-                    prev_record,
-                    fg_variants,
-                    db_best_fg_score=db_best_fg_score,
-                    baseline_valid=bool(db_baseline_valid),
-                )
-            except Exception:
-                record_info = None
-
-            result_payload = {
-                "_deferred_post": True,
-                "song": found_song_name,
-                "_queue_key": queue_label,
-                "_queue_label": queue_label,
-                "_repeat_index": int(repeat_index),
-                "_repeat_total": int(repeat_total),
-                "_ga_seed": int(ga_seed) if ga_seed is not None else None,
-                "db_key": db_key,
-                "file_path": fp,
-                "difficulty": effective_difficulty,
-                "use_evo_db": bool(use_evo_db),
-                "cfg_dict": cfg_dict,
-                "ref_arrays": ref_arrays,
-                "calc_song": calc_song,
-                "best_data": best_data,
-                "best_gear": _compact_items(best_gear),
-                "best_minis": _compact_items(best_minis),
-                "current_gear": _compact_items(current_gear_list),
-                "current_minis": _compact_items(current_mini_list),
-                "enable_gear": bool(enable_gear),
-                "enable_mini": bool(enable_mini),
-                "fg_variants": _compact_fg_variants(fg_variants),
-                "ga_candidates": _compact_ga_candidates(ga_candidates),
-                "loadout_entries": _compact_loadout_entries(loadout_entries),
-                "prev_record": _compact_prev_record(prev_record),
-                "attempt_lifetime": attempt_lifetime,
-                "prev_attempts_first": prev_attempts_first,
-                "db_best_score": db_best_score,
-                "db_best_fg_score": db_best_fg_score,
-                "db_baseline_valid": bool(db_baseline_valid),
-                "meta_primary_color": meta_primary_color,
-                "meta_secondary_color": meta_secondary_color,
-                "fg_debug": bool(fg_debug),
-                "_record": record_info,
-                "log": buf_content,
-            }
-            return cast(SongResultPayload, result_payload)
-
-        if best_data:
-            # Optional: HumanHitSim timing summary for base fever activations (ApplyTo=ALL only).
-            try:
-                from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
-
-                if best_data.get("hitsim_offset_deltas_ms") is None:
-                    deltas = summarize_hitsim_offset_deltas_ms_for_base(calc_song, best_data, ref_arrays)
-                    if deltas:
-                        try:
-                            best_data["hitsim_offset_deltas_ms"] = [int(x) for x in deltas]
-                        except Exception:
-                            pass
-                best_data.pop("hitsim_offset_delta_ms", None)
-            except Exception:
-                pass
-
-            # Build database payload
-            _t_db0 = time.perf_counter()
-            db_payload = build_db_payload(
-                best_data,
-                best_gear,
-                best_minis,
-                prev_record,
-                attempt_lifetime,
-                attempts_first,
-                fg_variants,
-                build_details,
-                db_best_fg_score=db_best_fg_score,
-            )
-            db_payload_time_sec = time.perf_counter() - _t_db0
-
-            # Build persistence entries
-            _t_persist0 = time.perf_counter()
-            persist_entries = build_persistence_entries(
-                db_payload,
-                ga_candidates,
-                loadout_entries,
-                build_details,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-            )
-            persist_build_time_sec = time.perf_counter() - _t_persist0
-
-            # Print results
-            _t_report0 = time.perf_counter()
-            print_results(
-                found_song_name,
-                best_data,
-                best_gear,
-                best_minis,
-                current_gear_list,
-                current_mini_list,
-                enable_gear,
-                enable_mini,
-                fg_variants,
-                emit,
-                fg_debug=fg_debug,
-                ref_arrays=ref_arrays,
-                calc_song=calc_song,
-                cfg=cfg,
-                db_best_fg_score=db_best_fg_score,
-                prev_record=prev_record,
-            )
-            report_time_sec = time.perf_counter() - _t_report0
-
-            if PERF_TIMING_ENABLED:
-                print(
-                    f"[PERF] DB/Persist/Report: payload={db_payload_time_sec:.3f}s "
-                    f"persist={persist_build_time_sec:.3f}s report={report_time_sec:.3f}s"
-                )
-
-        else:
-            # OPTIMIZATION FAILED: Provide fallback payload to diagnose "N/A" score issues
-            print(f"[ERROR] Optimization failed for {found_song_name} - best_data is None")
-            # Try to capture log tail from buffer
-            log_tail = buf.getvalue()[-500:] if buf else "No log buffer"
-            db_payload = {
-                "score": 0,
-                "fg_score": 0,
-                "gear": [],
-                "minis": [],
-                "details": {"Error": "Optimization failed - no valid loadout found", "LogTail": log_tail},
-                "force": None,
-            }
-
-        if _CAPTURE_SONG_LOG_PAYLOAD:
-            # Capture buffer content before finally block closes it.
-            buf_content = buf.getvalue() if buf else ""
-
-        result_payload = {
-            "song": found_song_name,
-            "_queue_key": queue_label,
-            "_queue_label": queue_label,
-            "_repeat_index": int(repeat_index),
-            "_repeat_total": int(repeat_total),
-            "_ga_seed": int(ga_seed) if ga_seed is not None else None,
-            "db_key": db_key,
-            "file_path": fp,
-            "difficulty": effective_difficulty,
-            "cfg_dict": cfg_dict,
-            "db_payload": db_payload,
-            "_record": db_payload.get("_record") if isinstance(db_payload, dict) else None,
-            "prev_record": prev_record,
-            "fg_variants": fg_variants,
-            "attempt_lifetime": attempt_lifetime,
-            "prev_attempts_first": prev_attempts_first,
-            "db_best_score": db_best_score,
-            "db_best_fg_score": db_best_fg_score,
-            "db_baseline_valid": bool(db_baseline_valid),
-            "best_data": best_data,
-            "best_gear": best_gear,
-            "best_minis": best_minis,
-            "persist_entries": persist_entries if best_data else [],
-            "log": buf_content,
-        }
+        ga_time_sec = float(outer_result.wall_sec)
+        fg_time_sec = float(fg_result.wall_sec)
+        db_payload_time_sec = float(song_ctx.stage_timing.get("_db_payload_sec", 0.0) or 0.0)
+        persist_build_time_sec = float(song_ctx.stage_timing.get("_persist_build_sec", 0.0) or 0.0)
+        report_time_sec = float(song_ctx.stage_timing.get("_report_sec", 0.0) or 0.0)
         return cast(SongResultPayload, result_payload)
     finally:
         # Memory leak tracking: Log before cleanup
@@ -1358,13 +1609,6 @@ def process_song_task(args) -> SongResultPayload:
 
         redirect_ctx.__exit__(None, None, None)
         redirect_err_ctx.__exit__(None, None, None)
-
-        # Release GPU timeline slot after GA + FG (and any deferred-post early returns).
-        if gpu_mode and int(_gpu_song_slot) > 0 and _prefetch_mgr is not None:
-            try:
-                _prefetch_mgr.release(int(_gpu_song_slot))
-            except Exception:
-                pass
 
 
 def safe_process_song_task(args) -> SongResultPayload:

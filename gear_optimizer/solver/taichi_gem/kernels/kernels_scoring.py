@@ -302,6 +302,27 @@ def calc_score_cached_device(
 
 
 @ti.func
+def _semi_exact_upper_bound(
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    n_hn: ti.i32,
+    n_hf: ti.i32,
+    sigma_hn: ti.i32,
+    sigma_hf: ti.i32,
+) -> ti.f32:
+    UB_EPS: ti.f32 = 1024.0
+    body_score = _calc_body_score_i32(base_value, combo_mul, fever_mul, count_fever, count_normal)
+    factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
+    head_upper = base_value * (ti.cast(n_hn, ti.f32) + (fever_mul * ti.cast(n_hf, ti.f32))) + factor * (
+        ti.cast(sigma_hn, ti.f32) + (fever_mul * ti.cast(sigma_hf, ti.f32))
+    )
+    return ti.cast(body_score, ti.f32) + head_upper + UB_EPS
+
+
+@ti.func
 def local_search_from_hint(
     hint_pp: ti.i32,
     hint_cm: ti.i32,
@@ -926,6 +947,233 @@ def _optimize_core_device_impl(
 
 
 @ti.func
+def _optimize_core_device_exact_bound_preloaded_bits_impl(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    greedy = _optimize_core_device_impl(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        head_len,
+        count_fever,
+        count_normal,
+        song_slot,
+        ft_idx,
+        ff_idx,
+        m0,
+        m1,
+        m2,
+        m3,
+        1,
+    )
+    best_pp: ti.i32 = greedy[1]
+    best_cm: ti.i32 = greedy[2]
+    best_fm: ti.i32 = greedy[3]
+    best_ov: ti.i32 = greedy[4]
+    best_p: ti.i32 = greedy[5]
+    best_s: ti.i32 = greedy[6]
+
+    # Normalize greedy seed score through the canonical cached scorer.
+    # The greedy path's fused score can differ by +/-1 at float32 truncation
+    # boundaries even when the allocation is identical.
+    greedy_pp_stat: ti.i32 = cur_pp + (best_pp * GEM_SCALE_NORMAL)
+    greedy_cm_stat: ti.i32 = cur_cm + (best_cm * GEM_SCALE_NORMAL)
+    greedy_fm_stat: ti.i32 = cur_fm + (best_fm * GEM_SCALE_FEVER)
+    greedy_base: ti.f32 = ti.cast((best_p * 2) + best_s, ti.f32) + kernels_helpers.lookup_ref_pp(greedy_pp_stat)
+    greedy_c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(greedy_cm_stat)
+    greedy_f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(greedy_fm_stat)
+    best_score: ti.i32 = calc_score_cached_device(
+        greedy_base,
+        greedy_c_mul,
+        greedy_f_mul,
+        head_len,
+        count_fever,
+        count_normal,
+        m0,
+        m1,
+        m2,
+        m3,
+    )
+
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
+    w_pp: ti.i32 = (pp_p_delta << 1) + pp_s_delta
+    w_cm: ti.i32 = (cm_p_delta << 1) + cm_s_delta
+    w_fm: ti.i32 = (fm_p_delta << 1) + fm_s_delta
+    w_ov: ti.i32 = (ov_p_delta << 1) + ov_s_delta
+    base_init: ti.i32 = (cur_p_val << 1) + cur_s_val
+
+    allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
+    allow_cm_color: ti.i32 = ti.cast((is_p_cm != 0) | (is_s_cm != 0), ti.i32)
+
+    max_pp_gems: ti.i32 = 0
+    if allow_pp != 0 and cur_pp < MAX_STAT:
+        rem_pp = MAX_STAT - cur_pp
+        max_pp_gems = rem_pp // GEM_SCALE_NORMAL
+        if rem_pp % GEM_SCALE_NORMAL != 0:
+            max_pp_gems += 1
+
+    max_cm_gems: ti.i32 = 0
+    if cur_cm < MAX_STAT:
+        if allow_cm_color != 0:
+            rem_cm = MAX_STAT - cur_cm
+            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+            if rem_cm % GEM_SCALE_NORMAL != 0:
+                max_cm_gems += 1
+        elif cur_cm <= 50:
+            max_cm_gems = ((50 - cur_cm) // GEM_SCALE_NORMAL) + 1
+
+    max_fm_gems: ti.i32 = 0
+    if cur_fm < MAX_STAT:
+        rem_fm = MAX_STAT - cur_fm
+        max_fm_gems = rem_fm // GEM_SCALE_FEVER
+        if rem_fm % GEM_SCALE_FEVER != 0:
+            max_fm_gems += 1
+
+    if max_pp_gems > budget:
+        max_pp_gems = budget
+    if max_cm_gems > budget:
+        max_cm_gems = budget
+    if max_fm_gems > budget:
+        max_fm_gems = budget
+
+    n_hn: ti.i32 = kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx]
+    n_hf: ti.i32 = kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx]
+    sigma_hn: ti.i32 = kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx]
+    sigma_hf: ti.i32 = kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx]
+
+    g_cm: ti.i32 = 0
+    while g_cm <= max_cm_gems:
+        leftover_after_cm: ti.i32 = budget - g_cm
+        if leftover_after_cm < 0:
+            break
+
+        cm_stat: ti.i32 = cur_cm + (g_cm * GEM_SCALE_NORMAL)
+        c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+
+        max_fm_here: ti.i32 = max_fm_gems
+        if max_fm_here > leftover_after_cm:
+            max_fm_here = leftover_after_cm
+
+        g_fm: ti.i32 = 0
+        while g_fm <= max_fm_here:
+            leftover: ti.i32 = budget - g_cm - g_fm
+            if leftover < 0:
+                break
+
+            fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+            max_pp_here: ti.i32 = max_pp_gems
+            if max_pp_here > leftover:
+                max_pp_here = leftover
+
+            delta_pp_vs_ov: ti.i32 = w_pp - w_ov
+            best_pp_extra: ti.f32 = kernels_helpers.lookup_ref_pp(cur_pp)
+            g_pp_best: ti.i32 = 0
+            g_pp: ti.i32 = 1
+            while g_pp <= max_pp_here:
+                pp_stat: ti.i32 = cur_pp + (g_pp * GEM_SCALE_NORMAL)
+                pp_extra = ti.cast(g_pp * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+                if pp_extra > best_pp_extra:
+                    best_pp_extra = pp_extra
+                    g_pp_best = g_pp
+                g_pp += 1
+
+            g_ov: ti.i32 = leftover - g_pp_best
+            base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
+            base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+            ub = _semi_exact_upper_bound(
+                base_value,
+                c_mul,
+                f_mul,
+                count_fever,
+                count_normal,
+                n_hn,
+                n_hf,
+                sigma_hn,
+                sigma_hf,
+            )
+            if ub > ti.cast(best_score, ti.f32):
+                score = calc_score_cached_device(
+                    base_value,
+                    c_mul,
+                    f_mul,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    m0,
+                    m1,
+                    m2,
+                    m3,
+                )
+                if score > best_score:
+                    best_score = score
+                    best_pp = g_pp_best
+                    best_cm = g_cm
+                    best_fm = g_fm
+                    best_ov = g_ov
+                    best_p = cur_p_val + (g_pp_best * pp_p_delta) + (g_cm * cm_p_delta) + (g_fm * fm_p_delta) + (
+                        g_ov * ov_p_delta
+                    )
+                    best_s = cur_s_val + (g_pp_best * pp_s_delta) + (g_cm * cm_s_delta) + (g_fm * fm_s_delta) + (
+                        g_ov * ov_s_delta
+                    )
+
+            g_fm += 1
+        g_cm += 1
+
+    return ti.Vector([best_score, best_pp, best_cm, best_fm, best_ov, best_p, best_s])
+
+
+@ti.func
 def optimize_core_device(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -974,6 +1222,61 @@ def optimize_core_device(
         ti.u32(0),
         ti.u32(0),
         0,
+    )
+
+
+@ti.func
+def optimize_core_device_exact_bound(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+    return _optimize_core_device_exact_bound_preloaded_bits_impl(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+        song_slot,
+        ft_idx,
+        ff_idx,
     )
 
 

@@ -113,6 +113,69 @@ def _clear_fg_resident_owner(calc_song: Any) -> None:
     calc_song.pop("_fg_resident_owner_task", None)
 
 
+def _solve_exactlike_outer_sync(
+    song: _NativeSong,
+    gpu_client: Optional[GpuServiceClient] = None,
+) -> tuple[dict, list, list, list[dict]]:
+    pre_prune_mode = "auto"
+    try:
+        pre_prune_mode = str((song.cfg_data or {}).get("pre_prune_mode") or "auto").strip().lower() or "auto"
+    except Exception:
+        pre_prune_mode = "auto"
+
+    from gear_optimizer.solver.exact_skyline import solve_exact_skyline as solve_outer
+
+    (
+        best_data,
+        best_gear,
+        best_minis,
+        _best_timestamps,
+        _final_population,
+        _gene_pool,
+        all_evaluated,
+    ) = solve_outer(
+        song.cfg,
+        song.fixed_stats,
+        song.paths,
+        song.calc_song,
+        song.ref_arrays,
+        song.all_gears,
+        song.all_minis,
+        song.gears_by_name,
+        song.minis_by_name,
+        optimize_gear=bool(song.enable_gear),
+        optimize_minis=bool(song.enable_mini),
+        fixed_gear=list(song.current_gear_list or [])[:6],
+        fixed_minis=list(song.current_mini_list or [])[:3],
+        song_slot=int(getattr(song, "song_slot", 0) or 0),
+        ga_seed=song.ga_seed,
+        gpu_client=gpu_client,
+        pre_prune_mode=pre_prune_mode,
+    )
+
+    ga_candidates = list(all_evaluated or [])
+    if best_data and best_gear and best_minis:
+        base_score = best_data.get("BaseScore")
+        if base_score is None:
+            base_score = best_data.get("Score", 0)
+        ga_candidates.append(
+            {
+                "Score": int(base_score or 0),
+                "BaseScore": int(base_score or 0),
+                "Gear": list(best_gear),
+                "Minis": list(best_minis),
+                "Data": dict(best_data) if isinstance(best_data, dict) else best_data,
+            }
+        )
+
+    return (
+        dict(best_data) if isinstance(best_data, dict) else (best_data or {}),
+        list(best_gear or []),
+        list(best_minis or []),
+        ga_candidates,
+    )
+
+
 def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     """
     Choose conservative default worker counts for low-end CPUs.
@@ -1579,6 +1642,26 @@ def run_native_inflight_song_pipeline(
 
                 can_submit_ga = bool(prepared) and len(ga_inflight) < ga_queue_limit_effective
 
+                # Exact skyline outer search is substantially heavier than GPU-native GA.
+                # Keep it single-in-flight to avoid CPU/RAM blow-ups and excessive GPU queue interleaving.
+                if can_submit_ga:
+                    try:
+                        head = prepared[0]
+                        head_engine = str((getattr(head, "cfg_data", None) or {}).get("outer_engine") or "ga")
+                        head_engine = head_engine.strip().lower()
+                    except Exception:
+                        head_engine = "ga"
+                    if head_engine != "ga":
+                        exact_inflight = 0
+                        try:
+                            for s in ga_inflight:
+                                if str(getattr(s, "_outer_engine", "")) != "ga":
+                                    exact_inflight += 1
+                        except Exception:
+                            exact_inflight = 0
+                        if exact_inflight >= 1:
+                            can_submit_ga = False
+
                 if can_submit_ga:
                     song = prepared.popleft()
                     # Reserve a per-song GPU timeline slot so GA -> FG can reuse the resident grid
@@ -1597,69 +1680,110 @@ def run_native_inflight_song_pipeline(
                             song.calc_song["_gpu_song_slot"] = int(song.song_slot)
                         except Exception:
                             pass
-                    setattr(song, "_ga_submit_t0", time.perf_counter())
-                    payload = {
-                        "calc_song": song.calc_song,
-                        "ref_arrays": song.ref_arrays,
-                        "song_slot": int(song.song_slot),
-                        "item_stats": song.item_stats,
-                        "slot_start": song.slot_start,
-                        "slot_count": song.slot_count,
-                        "base_fixed_stats_arr": song.base_fixed_stats_arr,
-                        "initial_populations": getattr(song, "ga_initial_populations", None),
-                        "num_runs": int(song.num_runs),
-                        "n_genomes": int(song.n_genomes),
-                        "init_heuristic_topk": song.init_heuristic_topk,
-                        "init_heuristic_k": int(song.init_heuristic_k),
-                        "init_heuristic_copies": int(song.init_heuristic_copies),
-                        "db_seed_ids": song.db_seed_ids,
-                        "db_seed_prob": float(song.db_seed_prob),
-                        "db_seed_copies": int(song.db_seed_copies),
-                        "db_seed_mutations": int(song.db_seed_mutations),
-                        "n_generations": int(song.gens_per_run),
-                        "elite_count": int(song.elite_count),
-                        "mutation_rate": float(song.mutation_rate),
-                        "immigrant_rate": float(song.immigrant_rate),
-                        "tournament_k": int(song.tournament_k),
-                        "color_flags": dict(song.color_flags),
-                        "cfg_data": dict(song.cfg_data),
-                        "ga_seed": song.ga_seed,
-                    }
+                    outer_engine = "ga"
                     try:
-                        handle = gpu_client.submit_gpu_native_ga_run(payload)
-                    except Exception as exc:
-                        # Ensure we don't leak the reserved slot on submission failure.
+                        outer_engine = str((song.cfg_data or {}).get("outer_engine") or "ga").strip().lower() or "ga"
+                    except Exception:
+                        outer_engine = "ga"
+                    if outer_engine not in {"ga", "exact"}:
+                        outer_engine = "ga"
+                    setattr(song, "_outer_engine", outer_engine)
+
+                    setattr(song, "_ga_submit_t0", time.perf_counter())
+                    if outer_engine != "ga":
                         try:
-                            _clear_fg_resident_owner(getattr(song, "calc_song", None))
-                            slot_pool.release(int(song.song_slot))
-                            song.song_slot = 0
+                            song.ga_future = decode_executor.submit(_solve_exactlike_outer_sync, song, gpu_client)
+                        except Exception as exc:
+                            # Ensure we don't leak the reserved slot on submission failure.
+                            try:
+                                _clear_fg_resident_owner(getattr(song, "calc_song", None))
+                                slot_pool.release(int(song.song_slot))
+                                song.song_slot = 0
+                            except Exception:
+                                pass
+                            payload = build_error_payload(
+                                song_name=str(song.song_name),
+                                queue_key=str(song.task_key),
+                                queue_label=str(song.task_key),
+                                exc=exc,
+                                trace=traceback.format_exc(),
+                            )
+                            bundle_parent = getattr(song, "_bundle_parent_task", None)
+                            if bundle_parent is not None:
+                                payload["_suppress_progress"] = True
+                            _post(payload)
+                            if bundle_parent is not None:
+                                _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
+                            else:
+                                completed_songs.add(song.task_key)
+                                if memory_resume_tracker:
+                                    memory_resume_tracker.mark_completed(song.song_name)
+                            did_work = True
+                            continue
+                    else:
+                        payload = {
+                            "calc_song": song.calc_song,
+                            "ref_arrays": song.ref_arrays,
+                            "song_slot": int(song.song_slot),
+                            "item_stats": song.item_stats,
+                            "slot_start": song.slot_start,
+                            "slot_count": song.slot_count,
+                            "base_fixed_stats_arr": song.base_fixed_stats_arr,
+                            "initial_populations": getattr(song, "ga_initial_populations", None),
+                            "num_runs": int(song.num_runs),
+                            "n_genomes": int(song.n_genomes),
+                            "init_heuristic_topk": song.init_heuristic_topk,
+                            "init_heuristic_k": int(song.init_heuristic_k),
+                            "init_heuristic_copies": int(song.init_heuristic_copies),
+                            "db_seed_ids": song.db_seed_ids,
+                            "db_seed_prob": float(song.db_seed_prob),
+                            "db_seed_copies": int(song.db_seed_copies),
+                            "db_seed_mutations": int(song.db_seed_mutations),
+                            "n_generations": int(song.gens_per_run),
+                            "elite_count": int(song.elite_count),
+                            "mutation_rate": float(song.mutation_rate),
+                            "immigrant_rate": float(song.immigrant_rate),
+                            "tournament_k": int(song.tournament_k),
+                            "color_flags": dict(song.color_flags),
+                            "cfg_data": dict(song.cfg_data),
+                            "ga_seed": song.ga_seed,
+                        }
+                        try:
+                            handle = gpu_client.submit_gpu_native_ga_run(payload)
+                        except Exception as exc:
+                            # Ensure we don't leak the reserved slot on submission failure.
+                            try:
+                                _clear_fg_resident_owner(getattr(song, "calc_song", None))
+                                slot_pool.release(int(song.song_slot))
+                                song.song_slot = 0
+                            except Exception:
+                                pass
+                            payload = build_error_payload(
+                                song_name=str(song.song_name),
+                                queue_key=str(song.task_key),
+                                queue_label=str(song.task_key),
+                                exc=exc,
+                                trace=traceback.format_exc(),
+                            )
+                            bundle_parent = getattr(song, "_bundle_parent_task", None)
+                            if bundle_parent is not None:
+                                payload["_suppress_progress"] = True
+                            _post(payload)
+                            if bundle_parent is not None:
+                                _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
+                            else:
+                                completed_songs.add(song.task_key)
+                                if memory_resume_tracker:
+                                    memory_resume_tracker.mark_completed(song.song_name)
+                            did_work = True
+                            continue
+
+                        song.ga_future = handle.future
+                        try:
+                            song.ga_initial_populations = None
                         except Exception:
                             pass
-                        payload = build_error_payload(
-                            song_name=str(song.song_name),
-                            queue_key=str(song.task_key),
-                            queue_label=str(song.task_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
-                        bundle_parent = getattr(song, "_bundle_parent_task", None)
-                        if bundle_parent is not None:
-                            payload["_suppress_progress"] = True
-                        _post(payload)
-                        if bundle_parent is not None:
-                            _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
-                        else:
-                            completed_songs.add(song.task_key)
-                            if memory_resume_tracker:
-                                memory_resume_tracker.mark_completed(song.song_name)
-                        did_work = True
-                        continue
 
-                    song.ga_future = handle.future
-                    try:
-                        song.ga_initial_populations = None
-                    except Exception:
-                        pass
                     _register_completion_future(song.ga_future)
                     ga_inflight.append(song)
                     did_work = True
@@ -1755,7 +1879,7 @@ def run_native_inflight_song_pipeline(
                 did_work = True
 
                 try:
-                    runs_payload = song.ga_future.result()
+                    ga_result = song.ga_future.result()
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
@@ -1859,7 +1983,13 @@ def run_native_inflight_song_pipeline(
                         pass
 
                 setattr(song, "_decode_submit_t0", time.perf_counter())
-                song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, runs_payload)
+                outer_engine = str(getattr(song, "_outer_engine", "ga") or "ga")
+                if outer_engine != "ga":
+                    fut: concurrent.futures.Future = concurrent.futures.Future()
+                    fut.set_result(ga_result)
+                    song.decode_future = fut
+                else:
+                    song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, ga_result)
                 _register_completion_future(song.decode_future)
                 decode_inflight.append(song)
 
@@ -2689,22 +2819,37 @@ def _run_fg_job_sync(
     except Exception:
         pass
 
-    fg_variants = process_force_greats(
-        song.loadout_entries or {},
-        bool(song.manual_force_greats),
-        bool(song.force_greats_finder),
-        song.force_greats_config,
-        song.calc_song,
-        song.ref_arrays,
-        song.meta_primary_color,
-        build_details,
-        use_gpu=True,
-        fg_search_radius=song.fg_search_radius,
-        perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
-        gpu_client=gpu_client,
-        ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
-        ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
-    )
+    fg_solver_mode = str((getattr(song, "cfg_data", None) or {}).get("fg_solver_mode") or "finder").strip().lower()
+    if fg_solver_mode == "exact_dp":
+        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+
+        fg_variants = process_fg_exact_dp(
+            list(song.ga_candidates or []),
+            song.calc_song,
+            song.ref_arrays,
+            use_gpu=True,
+            gpu_client=gpu_client,
+            song_slot=int(getattr(song, "song_slot", 0) or 0),
+        )
+    elif fg_solver_mode == "off":
+        fg_variants = []
+    else:
+        fg_variants = process_force_greats(
+            song.loadout_entries or {},
+            bool(song.manual_force_greats),
+            bool(song.force_greats_finder),
+            song.force_greats_config,
+            song.calc_song,
+            song.ref_arrays,
+            song.meta_primary_color,
+            build_details,
+            use_gpu=True,
+            fg_search_radius=song.fg_search_radius,
+            perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
+            gpu_client=gpu_client,
+            ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+            ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+        )
 
     song.fg_variants = list(fg_variants or [])
     _attach_hitsim_delta_for_fg_variant(song.fg_variants, song.calc_song, song.ref_arrays)

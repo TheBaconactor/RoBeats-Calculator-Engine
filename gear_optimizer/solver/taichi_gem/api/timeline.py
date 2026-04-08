@@ -211,21 +211,23 @@ def _build_ceiling_cell_rep_maps(
     long_notes: int,
     last_note_time: float,
     ref_arrays: dict,
-) -> tuple[np.ndarray, np.ndarray, int]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
-    Build per-cell representative index maps for exact ceiling-grid deduplication.
+    Build representative index maps for exact ceiling-grid deduplication.
 
     For a fixed song, ceiling-kernel outputs for a (ft_idx, ff_idx) cell depend only on:
       - `fill_count = ceil(non_fever_cas * ff_factor)` (clamped to >= 1)
       - `d_ms = ceil(fever_time_cas * ft_factor * 1000)` (clamped to >= 0)
 
-    This helper groups cells by the integer pair (fill_count, d_ms) and assigns a
-    deterministic representative cell per pair:
+    This helper groups cells by the integer pair (fill_count, d_ms) and assigns a deterministic
+    representative cell per pair:
       rep cell = (first ft_idx yielding that d_ms, first ff_idx yielding that fill_count)
 
     Returns:
-      - rep_ft[ft, ff] i16: representative ft_idx for each cell
-      - rep_ff[ft, ff] i16: representative ff_idx for each cell
+      - rep_ft_by_ft[ft] i16: representative ft_idx for each ft_idx (same d_ms)
+      - rep_ff_by_ff[ff] i16: representative ff_idx for each ff_idx (same fill_count)
+      - rep_ft_values[i] i16: unique representative ft indices (one per unique d_ms)
+      - rep_ff_values[i] i16: unique representative ff indices (one per unique fill_count)
       - unique_pairs: number of unique (fill_count, d_ms) pairs in the grid
 
     NOTE: math uses float32 semantics to match Taichi kernel behavior.
@@ -256,10 +258,12 @@ def _build_ceiling_cell_rep_maps(
     rep_ff_by_ff = np.asarray([rep_ff_for_fc[int(x)] for x in fill_counts.tolist()], dtype=np.int16)
     rep_ft_by_ft = np.asarray([rep_ft_for_d[int(x)] for x in d_ms.tolist()], dtype=np.int16)
 
-    rep_ft_grid = np.ascontiguousarray(np.broadcast_to(rep_ft_by_ft.reshape(GRID_SIZE, 1), (GRID_SIZE, GRID_SIZE)))
-    rep_ff_grid = np.ascontiguousarray(np.broadcast_to(rep_ff_by_ff.reshape(1, GRID_SIZE), (GRID_SIZE, GRID_SIZE)))
+    rep_ft_values = np.asarray(d_first, dtype=np.int16)
+    rep_ff_values = np.asarray(fc_first, dtype=np.int16)
+    rep_ft_values.sort()
+    rep_ff_values.sort()
 
-    return rep_ft_grid, rep_ff_grid, int(unique_pairs)
+    return rep_ft_by_ft, rep_ff_by_ff, rep_ft_values, rep_ff_values, int(unique_pairs)
 
 
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
@@ -401,26 +405,37 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
     if use_ceiling:
-        # Default OFF: On Taichi/Vulkan (AMD), “dedup then scatter” often reduces parallelism enough
-        # to lose against the fully-parallel baseline kernel. Keep as an opt-in experiment.
+        # Default OFF: On GPU/Vulkan, "dedup then scatter" often reduces parallelism enough
+        # to lose against the fully-parallel baseline kernel, even when many cells share
+        # identical (fill_count, d_ms) pairs. Keep the option for experiments/regressions.
         use_dedup = bool(env_flag("GPU_TIMELINE_CEILING_DEDUP", "0"))
-        rep_ft = None
-        rep_ff = None
+        rep_ft_by_ft = None
+        rep_ff_by_ff = None
+        rep_ft_values = None
+        rep_ff_values = None
         unique_pairs = GRID_SIZE * GRID_SIZE
         if use_dedup:
             try:
-                rep_ft, rep_ff, unique_pairs = _build_ceiling_cell_rep_maps(
+                rep_ft_by_ft, rep_ff_by_ff, rep_ft_values, rep_ff_values, unique_pairs = _build_ceiling_cell_rep_maps(
                     total_notes=int(total_notes),
                     long_notes=int(long_notes),
                     last_note_time=float(last_note_time),
                     ref_arrays=ref_arrays,
                 )
             except Exception:
-                rep_ft = None
-                rep_ff = None
+                rep_ft_by_ft = None
+                rep_ff_by_ff = None
+                rep_ft_values = None
+                rep_ff_values = None
                 unique_pairs = GRID_SIZE * GRID_SIZE
 
-        if rep_ft is not None and rep_ff is not None and unique_pairs < (GRID_SIZE * GRID_SIZE):
+        if (
+            rep_ft_by_ft is not None
+            and rep_ff_by_ff is not None
+            and rep_ft_values is not None
+            and rep_ff_values is not None
+            and unique_pairs < (GRID_SIZE * GRID_SIZE)
+        ):
             kernels.compute_timeline_grid_ceiling_hitsim_reps_kernel(
                 total_notes,
                 long_notes,
@@ -428,10 +443,16 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
                 int(group_count),
                 song_slot,  # Grid slot for batch coalescing
                 int(write_unpacked_masks),
-                rep_ft,
-                rep_ff,
+                rep_ft_values,
+                rep_ff_values,
+                int(rep_ft_values.shape[0]),
+                int(rep_ff_values.shape[0]),
             )
-            kernels.scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(int(song_slot), rep_ft, rep_ff)
+            kernels.scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
+                int(song_slot),
+                rep_ft_by_ft,
+                rep_ff_by_ff,
+            )
         else:
             kernels.compute_timeline_grid_ceiling_hitsim_kernel(
                 total_notes,
