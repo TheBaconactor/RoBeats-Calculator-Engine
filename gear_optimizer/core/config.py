@@ -491,7 +491,7 @@ def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
     return default_c
 
 
-def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
+def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
     """Read `[IterationEngine].FG_SolverMode` with legacy alias fallback."""
 
     def _canon(raw: Any) -> str:
@@ -509,7 +509,7 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
             return "off"
         return value
 
-    default_c = _canon(default) or "finder"
+    default_c = _canon(default) or "exact_dp"
     try:
         raw = cfg.get("IterationEngine", "FG_SolverMode", fallback="")
     except Exception as exc:
