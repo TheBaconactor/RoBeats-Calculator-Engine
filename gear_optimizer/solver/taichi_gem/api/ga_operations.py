@@ -613,7 +613,7 @@ def ga_evaluate_population(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     use_hints: int = 0,
-    use_exact_inner_solver: bool = False,
+    use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
     materialize_mode: str = "none",

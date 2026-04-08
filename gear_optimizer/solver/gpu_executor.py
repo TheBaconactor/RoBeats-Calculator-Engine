@@ -3622,7 +3622,7 @@ class GpuExecutor:
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
                         song_slot=song_slot,
-                        use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 0)),
+                        use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 1)),
                     )
                     dt_kernel = perf_counter() - t_kernel0
                     dt_total = perf_counter() - t_pack0
@@ -3695,7 +3695,7 @@ class GpuExecutor:
             total_budget=payload.get("total_budget", 90),
             gem_scale_fever=payload.get("gem_scale_fever", 3),
             song_slot=song_slot,
-            use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 0)),
+            use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 1)),
         )
 
         return GpuResponse(
@@ -5536,7 +5536,7 @@ def submit_gpu_solve_genomes_from_registry(
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
-    use_exact_inner_solver: bool = False,
+    use_exact_inner_solver: bool = True,
     timeout: float = 60.0,
 ) -> list:
     """

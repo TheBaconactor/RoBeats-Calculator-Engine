@@ -35,7 +35,7 @@ class RegistrySolveRequest:
     total_budget: int = TOTAL_GEM_BUDGET
     gem_scale_fever: int = GEM_SCALE_FEVER
     song_slot: int = 0
-    use_exact_inner_solver: bool = False
+    use_exact_inner_solver: bool = True
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
