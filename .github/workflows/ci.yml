@@ -21,10 +21,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Use Local Python
+        shell: powershell
+        run: |
+          $pythonRoot = 'D:\Python3.11'
+          $pythonExe = Join-Path $pythonRoot 'python.exe'
+          if (-not (Test-Path $pythonExe)) {
+            throw "Expected self-hosted Python at $pythonExe"
+          }
+          $pythonRoot | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          (Join-Path $pythonRoot 'Scripts') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $pythonExe --version
 
       - name: Install Dependencies
         run: |
