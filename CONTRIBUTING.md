@@ -2,8 +2,9 @@
 
 ## Branch policy
 - `main` is the stable branch.
-  - Changes land via pull request (no direct pushes).
-  - The required build status check must pass before merge.
+  - Major changes land via pull request.
+  - Small, low-risk maintenance or documentation changes may be pushed directly to `main` when a PR is unnecessary.
+  - The required build status check must pass before a direct push or PR merge.
 - Research/bench/experimental work must happen on the `research` branch (or a branch off of it).
   - If you are doing research work, explicitly check out `research` first.
   - Validate research work on `research` (benchmarks, feature toggles, prototypes) before proposing any merge to `main`.
