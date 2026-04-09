@@ -161,5 +161,13 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
     assert calls["kwargs"]["use_gpu"] is True
     assert calls["kwargs"]["gpu_client"] is gpu_client
     assert calls["kwargs"]["song_slot"] == 9
+    assert calls["kwargs"]["loadout_entries"] == {}
+    assert calls["kwargs"]["manual_force_greats"] is False
+    assert calls["kwargs"]["force_greats_finder"] is True
+    assert calls["kwargs"]["meta_primary_color"] == "Rush"
+    assert callable(calls["kwargs"]["build_details_fn"])
+    assert calls["kwargs"]["fg_search_radius"] == 5
+    assert calls["kwargs"]["finder_ga_candidates"] is None
+    assert calls["kwargs"]["ga_registry"] is None
     assert song.fg_variants == calls["attach"]["fg_variants"]
     assert int(song.fg_variants[0]["fg_score"]) == 140

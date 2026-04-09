@@ -3,7 +3,11 @@ import itertools
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.solver.fg_exact_dp import solve_force_greats_exact_dp
+from gear_optimizer.solver.fg_exact_dp import (
+    prepare_force_greats_exact_dp_inputs,
+    score_force_greats_exact_dp_bonus_from_prepared,
+    solve_force_greats_exact_dp,
+)
 from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
 from gear_optimizer.solver.scoring_core import fast_calculate_score, lookup_reference_py
 
@@ -180,3 +184,38 @@ def test_fg_exact_dp_matches_bruteforce_timing_aware():
 
     normal_score = _normal_all_perfect_score(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
     assert int(sol.best_delta) == int(out["final_score"]) - int(normal_score)
+
+
+def test_fg_exact_dp_bonus_converts_to_real_baseline_delta():
+    ref_arrays = _make_constant_ref_arrays(pp=0.0, cm=1.20, fm=2.0, ff=0.30, ft=0.55)
+    calc_song = _make_synth_song(n=32, spacing_s=0.10, with_great_candidates=True, great_offset_s=0.20)
+
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Red": 900,
+        "Blue": 450,
+    }
+
+    sol = solve_force_greats_exact_dp(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="timing_aware")
+    out = evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=sol.section_counts)
+    baseline = evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=[])
+    prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+
+    assert out is not None
+    assert baseline is not None
+    assert prepared is not None
+
+    normal_score = _normal_all_perfect_score(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+    baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
+    actual_bonus = score_force_greats_exact_dp_bonus_from_prepared(
+        prepared=prepared,
+        section_counts=sol.section_counts,
+    )
+
+    assert int(normal_score) + int(baseline_bonus) == int(baseline["final_score"])
+    assert int(normal_score) + int(actual_bonus) == int(out["final_score"])
+    assert int(actual_bonus) - int(baseline_bonus) == int(out["final_score"]) - int(baseline["final_score"])

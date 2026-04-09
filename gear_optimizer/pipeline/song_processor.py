@@ -1046,24 +1046,9 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
     fg_variants: list[dict[str, Any]] = []
     loadout_entries = None
     fg_wall_sec = 0.0
+    direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
 
-    if ctx.fg_solver_mode == "exact_dp":
-        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
-
-        fg_start = time.perf_counter()
-        fg_variants = process_fg_exact_dp(
-            ga_candidates,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            use_gpu=ctx.gpu_mode,
-            gpu_client=None,
-            song_slot=int(ctx.gpu_song_slot or 0),
-        )
-        fg_wall_sec = time.perf_counter() - fg_start
-        if PERF_TIMING_ENABLED:
-            print(f"[PERF] ForceGreats (exact DP): {fg_wall_sec:.2f}s ({len(ga_candidates)} candidates)")
-    elif ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
-        direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
+    if ctx.fg_solver_mode in {"exact_dp", "finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
         loadout_entries = build_loadout_entries(
             ctx.found_song_name,
             ctx.use_evo_db,
@@ -1076,6 +1061,31 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             materialize_ga_details=False,
         )
 
+    if ctx.fg_solver_mode == "exact_dp":
+        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+
+        fg_start = time.perf_counter()
+        fg_variants = process_fg_exact_dp(
+            ga_candidates,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            use_gpu=ctx.gpu_mode,
+            gpu_client=None,
+            song_slot=int(ctx.gpu_song_slot or 0),
+            loadout_entries=loadout_entries if isinstance(loadout_entries, dict) else None,
+            manual_force_greats=ctx.manual_force_greats,
+            force_greats_finder=ctx.force_greats_finder,
+            force_greats_config=ctx.force_greats_config,
+            meta_primary_color=ctx.meta_primary_color,
+            build_details_fn=build_details if (ctx.manual_force_greats or ctx.force_greats_finder) else None,
+            fg_search_radius=ctx.fg_search_radius,
+            finder_ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
+            ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
+        )
+        fg_wall_sec = time.perf_counter() - fg_start
+        if PERF_TIMING_ENABLED:
+            print(f"[PERF] ForceGreats (exact DP): {fg_wall_sec:.2f}s ({len(ga_candidates)} candidates)")
+    elif ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
         fg_start = time.perf_counter()
         fg_variants = process_force_greats(
             loadout_entries,

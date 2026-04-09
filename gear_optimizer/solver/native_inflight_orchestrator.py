@@ -2830,6 +2830,15 @@ def _run_fg_job_sync(
             use_gpu=True,
             gpu_client=gpu_client,
             song_slot=int(getattr(song, "song_slot", 0) or 0),
+            loadout_entries=song.loadout_entries if isinstance(song.loadout_entries, dict) else None,
+            manual_force_greats=bool(song.manual_force_greats),
+            force_greats_finder=bool(song.force_greats_finder),
+            force_greats_config=song.force_greats_config,
+            meta_primary_color=song.meta_primary_color,
+            build_details_fn=build_details,
+            fg_search_radius=song.fg_search_radius,
+            finder_ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+            ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
         )
     elif fg_solver_mode == "off":
         fg_variants = []

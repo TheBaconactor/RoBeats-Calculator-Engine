@@ -279,6 +279,125 @@ def prepare_force_greats_exact_dp_inputs(
     )
 
 
+def score_force_greats_exact_dp_bonus_from_prepared(
+    *,
+    prepared: FGExactDPPreparedInputs,
+    section_counts: list[int] | tuple[int, ...] | None,
+) -> int:
+    """
+    Return the exact DP objective value for an explicit forced-count path.
+
+    This is the fixed-stat bonus relative to the all-normal timeline:
+      (fever bonus gained) - (forced Great penalties paid)
+
+    The production FG path uses this to convert exact-DP `best_delta` against the
+    correct zero-force baseline for the same resolved stat point.
+    """
+
+    if not isinstance(prepared, FGExactDPPreparedInputs):
+        return 0
+
+    timestamps = prepared.timestamps
+    great_candidates = prepared.great_candidates
+    total_notes = int(prepared.total_notes)
+    raw_fill = float(prepared.raw_fill)
+    non_fever_base = int(prepared.non_fever_base)
+    fever_duration = float(prepared.fever_duration)
+    w_prefix = prepared.w_prefix
+    c_prefix = prepared.c_prefix
+    if total_notes <= 0:
+        return 0
+
+    counts = [int(x) for x in list(section_counts or [])]
+    use_timing_carry = great_candidates is not None
+
+    end_times_song = timestamps.astype(np.float64) + float(fever_duration)
+    fever_end_song = np.searchsorted(timestamps, end_times_song, side="left").astype(np.int32, copy=False)
+    if use_timing_carry:
+        assert great_candidates is not None
+        end_times_gc = great_candidates.astype(np.float64) + float(fever_duration)
+        fever_end_gc = np.searchsorted(timestamps, end_times_gc, side="left").astype(np.int32, copy=False)
+    else:
+        fever_end_gc = None
+
+    def _canon_carry(i: int, carry_idx: int) -> int:
+        if (not use_timing_carry) or int(carry_idx) < 0:
+            return -1
+        if int(i) >= int(total_notes):
+            return -1
+        assert great_candidates is not None
+        cidx = int(carry_idx)
+        return -1 if float(great_candidates[cidx]) <= float(timestamps[int(i)]) else cidx
+
+    total_bonus = 0
+    i = 0
+    is_first = True
+    carry_idx = -1
+    section_idx = 0
+
+    while i < total_notes:
+        carry_idx = _canon_carry(int(i), int(carry_idx))
+
+        min_notes_to_fill = int(non_fever_base - 1 if is_first else non_fever_base)
+        if min_notes_to_fill < 0:
+            min_notes_to_fill = 0
+        if int(i) + int(min_notes_to_fill) >= int(total_notes):
+            break
+
+        forced_val = int(counts[section_idx]) if section_idx < len(counts) else 0
+        if forced_val < 0:
+            forced_val = 0
+        if forced_val > non_fever_base:
+            forced_val = int(non_fever_base)
+
+        notes_to_fill = int(ceil(float(raw_fill) + 0.5 * float(forced_val)))
+        if is_first:
+            notes_to_fill -= 1
+        if notes_to_fill < 0:
+            notes_to_fill = 0
+
+        end_normal = int(i + notes_to_fill)
+        if end_normal >= total_notes:
+            break
+
+        forced_start = int(i if is_first else (i + 1))
+        if forced_start < 0:
+            forced_start = 0
+
+        actual_notes = max(0, int(end_normal - i))
+        forced_applied = min(int(forced_val), int(actual_notes))
+
+        penalty = 0
+        if forced_applied > 0 and forced_start < total_notes:
+            end_excl = min(int(total_notes), int(forced_start + forced_applied))
+            penalty = int(c_prefix[end_excl] - c_prefix[forced_start])
+
+            if use_timing_carry:
+                assert great_candidates is not None
+                forced_end = forced_start + forced_applied - 1
+                if forced_end >= forced_start and forced_end < end_normal and forced_end < total_notes:
+                    cand_t = float(great_candidates[forced_end])
+                    if carry_idx < 0 or cand_t > float(great_candidates[carry_idx]):
+                        carry_idx = int(forced_end)
+
+        fever_end_idx = int(fever_end_song[end_normal])
+        if use_timing_carry and carry_idx >= 0:
+            assert great_candidates is not None and fever_end_gc is not None
+            if float(great_candidates[carry_idx]) > float(timestamps[end_normal]):
+                fever_end_idx = int(fever_end_gc[carry_idx])
+        if fever_end_idx <= end_normal:
+            fever_end_idx = min(total_notes, end_normal + 1)
+
+        total_bonus += int(w_prefix[fever_end_idx] - w_prefix[end_normal]) - int(penalty)
+
+        carry_idx = _canon_carry(int(fever_end_idx), int(carry_idx))
+        i = int(fever_end_idx)
+        is_first = False
+        section_idx += 1
+
+    return int(total_bonus)
+
+
 def solve_force_greats_exact_dp(
     *,
     stats: dict,

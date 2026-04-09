@@ -1,5 +1,5 @@
-from types import SimpleNamespace
-
+import sys
+from types import ModuleType, SimpleNamespace
 
 def _common_cfg(**iteration_engine: str) -> dict:
     return {
@@ -98,7 +98,9 @@ def test_process_song_task_routes_exact_when_enabled(monkeypatch):
         raise AssertionError("GA solver should not be called when OuterSearchEngine=exact")
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
-    monkeypatch.setattr("gear_optimizer.solver.exact_skyline.solve_exact_skyline", _fake_exact)
+    fake_module = ModuleType("gear_optimizer.solver.exact_skyline")
+    fake_module.solve_exact_skyline = _fake_exact
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.exact_skyline", fake_module)
 
     result = song_processor.process_song_task(_common_args(_common_cfg(OuterSearchEngine="exact"), song_name="pytest exact routing"))
 
@@ -124,7 +126,9 @@ def test_process_song_task_routes_exact_with_marginal_pre_prune(monkeypatch):
         raise AssertionError("GA solver should not be called when OuterSearchEngine=exact")
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
-    monkeypatch.setattr("gear_optimizer.solver.exact_skyline.solve_exact_skyline", _fake_exact)
+    fake_module = ModuleType("gear_optimizer.solver.exact_skyline")
+    fake_module.solve_exact_skyline = _fake_exact
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.exact_skyline", fake_module)
 
     cfg = _common_cfg(OuterSearchEngine="exact", PrePruneMode="marginal")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest marginal pre-prune routing"))
@@ -158,6 +162,9 @@ def test_process_song_task_routes_exact_fg_dp_orthogonally_for_ga(monkeypatch):
         calls["fg_exact"] += 1
         assert kwargs.get("use_gpu") is True
         assert kwargs.get("song_slot") == 0
+        assert kwargs.get("loadout_entries") is None
+        assert kwargs.get("force_greats_finder") is False
+        assert kwargs.get("build_details_fn") is None
         return []
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)

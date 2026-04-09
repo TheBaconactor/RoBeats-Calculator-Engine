@@ -293,6 +293,15 @@ def _run_song(
         use_gpu=True,
         gpu_client=gpu_client,
         song_slot=int(ctx.song_slot or 0),
+        loadout_entries={},
+        manual_force_greats=False,
+        force_greats_finder=True,
+        force_greats_config=[],
+        meta_primary_color=primary_color,
+        build_details_fn=build_details,
+        fg_search_radius=fg_search_radius,
+        finder_ga_candidates=fg_candidates,
+        ga_registry=ctx.registry,
     )
     exact_runtime_s = float(time.perf_counter() - t0)
 
