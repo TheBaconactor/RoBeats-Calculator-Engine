@@ -323,6 +323,75 @@ def _semi_exact_upper_bound(
 
 
 @ti.func
+def _exact_bound_ub_for_cm_fm(
+    budget: ti.i32,
+    g_cm: ti.i32,
+    g_fm: ti.i32,
+    max_pp_gems: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    base_init: ti.i32,
+    w_cm: ti.i32,
+    w_fm: ti.i32,
+    w_ov: ti.i32,
+    flags_idx: ti.i32,
+    cur_pp_idx: ti.i32,
+    delta_pp_vs_ov: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    n_hn: ti.i32,
+    n_hf: ti.i32,
+    sigma_hn: ti.i32,
+    sigma_hf: ti.i32,
+) -> ti.f32:
+    """
+    Cheap semi-exact upper bound for a fixed (CM gems, FM gems) choice.
+
+    Leaves PP/OV distribution to the precomputed prefix argmax table.
+    Used to seed the bounded exact solver without running the 90-step greedy loop.
+    """
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+
+    ub: ti.f32 = ti.f32(-1.0e30)
+    leftover: ti.i32 = budget - g_cm - g_fm
+    if leftover >= 0:
+        cm_stat: ti.i32 = cur_cm + (g_cm * GEM_SCALE_NORMAL)
+        c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+
+        fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
+        f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+        max_pp_here: ti.i32 = max_pp_gems
+        if max_pp_here > leftover:
+            max_pp_here = leftover
+
+        g_pp_best: ti.i32 = ti.cast(
+            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here], ti.i32
+        )
+        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+
+        base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
+        base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+
+        ub = _semi_exact_upper_bound(
+            base_value,
+            c_mul,
+            f_mul,
+            count_fever,
+            count_normal,
+            n_hn,
+            n_hf,
+            sigma_hn,
+            sigma_hf,
+        )
+
+    return ub
+
+
+@ti.func
 def local_search_from_hint(
     hint_pp: ti.i32,
     hint_cm: ti.i32,
@@ -979,62 +1048,6 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
-    greedy = _optimize_core_device_impl(
-        budget,
-        cur_pp,
-        cur_cm,
-        cur_fm,
-        cur_p_val,
-        cur_s_val,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        head_len,
-        count_fever,
-        count_normal,
-        song_slot,
-        ft_idx,
-        ff_idx,
-        m0,
-        m1,
-        m2,
-        m3,
-        1,
-    )
-    best_pp: ti.i32 = greedy[1]
-    best_cm: ti.i32 = greedy[2]
-    best_fm: ti.i32 = greedy[3]
-    best_ov: ti.i32 = greedy[4]
-    best_p: ti.i32 = greedy[5]
-    best_s: ti.i32 = greedy[6]
-
-    # Normalize greedy seed score through the canonical cached scorer.
-    # The greedy path's fused score can differ by +/-1 at float32 truncation
-    # boundaries even when the allocation is identical.
-    greedy_pp_stat: ti.i32 = cur_pp + (best_pp * GEM_SCALE_NORMAL)
-    greedy_cm_stat: ti.i32 = cur_cm + (best_cm * GEM_SCALE_NORMAL)
-    greedy_fm_stat: ti.i32 = cur_fm + (best_fm * GEM_SCALE_FEVER)
-    greedy_base: ti.f32 = ti.cast((best_p * 2) + best_s, ti.f32) + kernels_helpers.lookup_ref_pp(greedy_pp_stat)
-    greedy_c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(greedy_cm_stat)
-    greedy_f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(greedy_fm_stat)
-    best_score: ti.i32 = calc_score_cached_device(
-        greedy_base,
-        greedy_c_mul,
-        greedy_f_mul,
-        head_len,
-        count_fever,
-        count_normal,
-        m0,
-        m1,
-        m2,
-        m3,
-    )
-
     pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
     pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
     cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
@@ -1049,6 +1062,16 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     w_fm: ti.i32 = (fm_p_delta << 1) + fm_s_delta
     w_ov: ti.i32 = (ov_p_delta << 1) + ov_s_delta
     base_init: ti.i32 = (cur_p_val << 1) + cur_s_val
+
+    # PP-vs-OV prefix argmax table lookup key (16 flag combos).
+    # This makes PP selection O(1) per (CM,FM) pair instead of an inner O(B) scan.
+    f_p_pp: ti.i32 = ti.cast(is_p_pp != 0, ti.i32)
+    f_s_pp: ti.i32 = ti.cast(is_s_pp != 0, ti.i32)
+    f_p_ov: ti.i32 = ti.cast(is_p_ov != 0, ti.i32)
+    f_s_ov: ti.i32 = ti.cast(is_s_ov != 0, ti.i32)
+    flags_idx: ti.i32 = f_p_pp | (f_s_pp << 1) | (f_p_ov << 2) | (f_s_ov << 3)
+    cur_pp_idx: ti.i32 = ti.max(0, ti.min(MAX_STAT, cur_pp))
+    delta_pp_vs_ov: ti.i32 = w_pp - w_ov
 
     allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
     allow_cm_color: ti.i32 = ti.cast((is_p_cm != 0) | (is_s_cm != 0), ti.i32)
@@ -1089,6 +1112,269 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     sigma_hn: ti.i32 = kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx]
     sigma_hf: ti.i32 = kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx]
 
+    # ---------------------------------------------------------------------
+    # Incumbent seed (no hints): cheap UB-guided greedy over (CM, FM) counts.
+    #
+    # The bounded solver's prune effectiveness depends heavily on the starting
+    # incumbent score. Historically we ran the full 90-step greedy solver here,
+    # which dominates cold exact runtime in the warmstart kernel.
+    #
+    # Instead, do a tiny greedy walk using the semi-exact upper bound to pick
+    # a promising (CM, FM) point, then evaluate that point exactly once to
+    # initialize best_score.
+    # ---------------------------------------------------------------------
+    best_score: ti.i32 = -1
+    best_pp: ti.i32 = 0
+    best_cm: ti.i32 = 0
+    best_fm: ti.i32 = 0
+    best_ov: ti.i32 = 0
+    best_p: ti.i32 = cur_p_val
+    best_s: ti.i32 = cur_s_val
+
+    # Two tie-break variants (prefer CM vs prefer FM) to mitigate UB ties.
+    seed_best_cm0: ti.i32 = 0
+    seed_best_fm0: ti.i32 = 0
+    seed_best_ub0: ti.f32 = _exact_bound_ub_for_cm_fm(
+        budget,
+        0,
+        0,
+        max_pp_gems,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        base_init,
+        w_cm,
+        w_fm,
+        w_ov,
+        flags_idx,
+        cur_pp_idx,
+        delta_pp_vs_ov,
+        count_fever,
+        count_normal,
+        n_hn,
+        n_hf,
+        sigma_hn,
+        sigma_hf,
+    )
+    seed_ub_init: ti.f32 = seed_best_ub0
+    seed_cm0: ti.i32 = 0
+    seed_fm0: ti.i32 = 0
+    step0: ti.i32 = 0
+    while step0 < budget:
+        can_add_cm = ti.cast((seed_cm0 < max_cm_gems) & ((seed_cm0 + seed_fm0 + 1) <= budget), ti.i32)
+        can_add_fm = ti.cast((seed_fm0 < max_fm_gems) & ((seed_cm0 + seed_fm0 + 1) <= budget), ti.i32)
+        if can_add_cm == 0 and can_add_fm == 0:
+            break
+
+        ub_cm = ti.f32(-1.0e30)
+        ub_fm = ti.f32(-1.0e30)
+        if can_add_cm != 0:
+            ub_cm = _exact_bound_ub_for_cm_fm(
+                budget,
+                seed_cm0 + 1,
+                seed_fm0,
+                max_pp_gems,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_init,
+                w_cm,
+                w_fm,
+                w_ov,
+                flags_idx,
+                cur_pp_idx,
+                delta_pp_vs_ov,
+                count_fever,
+                count_normal,
+                n_hn,
+                n_hf,
+                sigma_hn,
+                sigma_hf,
+            )
+        if can_add_fm != 0:
+            ub_fm = _exact_bound_ub_for_cm_fm(
+                budget,
+                seed_cm0,
+                seed_fm0 + 1,
+                max_pp_gems,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_init,
+                w_cm,
+                w_fm,
+                w_ov,
+                flags_idx,
+                cur_pp_idx,
+                delta_pp_vs_ov,
+                count_fever,
+                count_normal,
+                n_hn,
+                n_hf,
+                sigma_hn,
+                sigma_hf,
+            )
+
+        # Prefer CM when tied.
+        cur_ub = ub_fm
+        if ub_cm >= ub_fm:
+            seed_cm0 += 1
+            cur_ub = ub_cm
+        else:
+            seed_fm0 += 1
+
+        if cur_ub > seed_best_ub0:
+            seed_best_ub0 = cur_ub
+            seed_best_cm0 = seed_cm0
+            seed_best_fm0 = seed_fm0
+
+        step0 += 1
+
+    seed_best_cm1: ti.i32 = 0
+    seed_best_fm1: ti.i32 = 0
+    seed_best_ub1: ti.f32 = seed_ub_init
+    seed_cm1: ti.i32 = 0
+    seed_fm1: ti.i32 = 0
+    step1: ti.i32 = 0
+    while step1 < budget:
+        can_add_cm = ti.cast((seed_cm1 < max_cm_gems) & ((seed_cm1 + seed_fm1 + 1) <= budget), ti.i32)
+        can_add_fm = ti.cast((seed_fm1 < max_fm_gems) & ((seed_cm1 + seed_fm1 + 1) <= budget), ti.i32)
+        if can_add_cm == 0 and can_add_fm == 0:
+            break
+
+        ub_cm = ti.f32(-1.0e30)
+        ub_fm = ti.f32(-1.0e30)
+        if can_add_cm != 0:
+            ub_cm = _exact_bound_ub_for_cm_fm(
+                budget,
+                seed_cm1 + 1,
+                seed_fm1,
+                max_pp_gems,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_init,
+                w_cm,
+                w_fm,
+                w_ov,
+                flags_idx,
+                cur_pp_idx,
+                delta_pp_vs_ov,
+                count_fever,
+                count_normal,
+                n_hn,
+                n_hf,
+                sigma_hn,
+                sigma_hf,
+            )
+        if can_add_fm != 0:
+            ub_fm = _exact_bound_ub_for_cm_fm(
+                budget,
+                seed_cm1,
+                seed_fm1 + 1,
+                max_pp_gems,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_init,
+                w_cm,
+                w_fm,
+                w_ov,
+                flags_idx,
+                cur_pp_idx,
+                delta_pp_vs_ov,
+                count_fever,
+                count_normal,
+                n_hn,
+                n_hf,
+                sigma_hn,
+                sigma_hf,
+            )
+
+        # Prefer FM when tied.
+        cur_ub = ub_cm
+        if ub_fm >= ub_cm:
+            seed_fm1 += 1
+            cur_ub = ub_fm
+        else:
+            seed_cm1 += 1
+
+        if cur_ub > seed_best_ub1:
+            seed_best_ub1 = cur_ub
+            seed_best_cm1 = seed_cm1
+            seed_best_fm1 = seed_fm1
+
+        step1 += 1
+
+    # Evaluate both seed candidates exactly to initialize best_score.
+    # Candidate 0 (prefer CM ties)
+    seed_cm = seed_best_cm0
+    seed_fm = seed_best_fm0
+    for _seed_pass in ti.static(range(2)):
+        leftover: ti.i32 = budget - seed_cm - seed_fm
+        max_pp_here: ti.i32 = max_pp_gems
+        if max_pp_here > leftover:
+            max_pp_here = leftover
+
+        g_pp_best: ti.i32 = ti.cast(
+            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
+            ti.i32,
+        )
+        g_ov: ti.i32 = leftover - g_pp_best
+
+        cm_stat: ti.i32 = cur_cm + (seed_cm * GEM_SCALE_NORMAL)
+        fm_stat: ti.i32 = cur_fm + (seed_fm * GEM_SCALE_FEVER)
+        c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+        f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+
+        base_linear: ti.i32 = base_init + (seed_cm * w_cm) + (seed_fm * w_fm) + (leftover * w_ov)
+        base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+        score = calc_score_cached_device(
+            base_value,
+            c_mul,
+            f_mul,
+            head_len,
+            count_fever,
+            count_normal,
+            m0,
+            m1,
+            m2,
+            m3,
+        )
+
+        better = 0
+        if score > best_score:
+            better = 1
+        elif score == best_score:
+            if seed_cm < best_cm:
+                better = 1
+            elif seed_cm == best_cm:
+                if seed_fm < best_fm:
+                    better = 1
+                elif seed_fm == best_fm:
+                    if g_pp_best < best_pp:
+                        better = 1
+
+        if better != 0:
+            best_score = score
+            best_pp = g_pp_best
+            best_cm = seed_cm
+            best_fm = seed_fm
+            best_ov = g_ov
+            best_p = cur_p_val + (g_pp_best * pp_p_delta) + (seed_cm * cm_p_delta) + (seed_fm * fm_p_delta) + (
+                g_ov * ov_p_delta
+            )
+            best_s = cur_s_val + (g_pp_best * pp_s_delta) + (seed_cm * cm_s_delta) + (seed_fm * fm_s_delta) + (
+                g_ov * ov_s_delta
+            )
+
+        # Candidate 1 (prefer FM ties)
+        seed_cm = seed_best_cm1
+        seed_fm = seed_best_fm1
+
     g_cm: ti.i32 = 0
     while g_cm <= max_cm_gems:
         leftover_after_cm: ti.i32 = budget - g_cm
@@ -1115,17 +1401,12 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
             if max_pp_here > leftover:
                 max_pp_here = leftover
 
-            delta_pp_vs_ov: ti.i32 = w_pp - w_ov
-            best_pp_extra: ti.f32 = kernels_helpers.lookup_ref_pp(cur_pp)
-            g_pp_best: ti.i32 = 0
-            g_pp: ti.i32 = 1
-            while g_pp <= max_pp_here:
-                pp_stat: ti.i32 = cur_pp + (g_pp * GEM_SCALE_NORMAL)
-                pp_extra = ti.cast(g_pp * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
-                if pp_extra > best_pp_extra:
-                    best_pp_extra = pp_extra
-                    g_pp_best = g_pp
-                g_pp += 1
+            g_pp_best: ti.i32 = ti.cast(
+                kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
+                ti.i32,
+            )
+            pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+            best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
 
             g_ov: ti.i32 = leftover - g_pp_best
             base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
@@ -1154,7 +1435,13 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
                     m2,
                     m3,
                 )
-                if score > best_score:
+                if score > best_score or (
+                    score == best_score
+                    and (
+                        (g_cm < best_cm)
+                        or (g_cm == best_cm and ((g_fm < best_fm) or (g_fm == best_fm and g_pp_best < best_pp)))
+                    )
+                ):
                     best_score = score
                     best_pp = g_pp_best
                     best_cm = g_cm

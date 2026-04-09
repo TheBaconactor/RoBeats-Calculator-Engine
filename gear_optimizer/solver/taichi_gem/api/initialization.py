@@ -305,6 +305,39 @@ def load_ref_arrays(ref_arrays: dict):
     fields.ref_cm_field.from_numpy(ref_arrays["Combo Multiplier"].astype(np.float32))
     fields.ref_fm_field.from_numpy(ref_arrays["Fever Multiplier"].astype(np.float32))
 
+    # Precompute a tiny helper table for the bounded exact inner solver:
+    # PP-vs-OV prefix argmax for a fixed base PP stat and color-flag combination.
+    #
+    # This removes the inner O(B) PP scan from each (CM, FM) pair and turns the
+    # cold exact solver from O(B^3) into O(B^2) per fixed (FT,FF) combo.
+    pp_ref = np.asarray(ref_arrays["Perfect Points"], dtype=np.float32)
+    max_budget = int(fields.MAX_TOTAL_BUDGET)
+    pp_best_prefix = np.zeros((16, GRID_SIZE, max_budget + 1), dtype=np.int16)
+    for flags in range(16):
+        is_p_pp = flags & 1
+        is_s_pp = (flags >> 1) & 1
+        is_p_ov = (flags >> 2) & 1
+        is_s_ov = (flags >> 3) & 1
+
+        w_pp = (6 * is_p_pp) + (3 * is_s_pp)
+        w_ov = (12 * is_p_ov) + (6 * is_s_ov)
+        delta = np.int32(w_pp - w_ov)
+
+        for cur_pp in range(GRID_SIZE):
+            best_g = 0
+            best_extra = np.float32(pp_ref[cur_pp])
+            pp_best_prefix[flags, cur_pp, 0] = 0
+            for g_pp in range(1, max_budget + 1):
+                pp_stat = cur_pp + (g_pp * 2)
+                if pp_stat > 160:
+                    pp_stat = 160
+                extra = np.float32(g_pp * delta) + np.float32(pp_ref[pp_stat])
+                if extra > best_extra:
+                    best_extra = extra
+                    best_g = g_pp
+                pp_best_prefix[flags, cur_pp, g_pp] = best_g
+    fields.exact_pp_best_gems_prefix.from_numpy(pp_best_prefix)
+
     # Optional FT/FF uploads
     if "Fever Time" in ref_arrays:
         arr = np.asarray(ref_arrays["Fever Time"])
