@@ -1,5 +1,5 @@
 """
-Taichi Kernels - Warm-start GA evaluation.
+Taichi Kernels - exact GA evaluation.
 
 Includes:
 - ga_find_best_combo_warmstart_kernel
@@ -11,7 +11,6 @@ import taichi as ti
 
 from .. import kernels_helpers
 from ..kernels_scoring import (
-    local_search_from_hint,
     optimize_core_device_exact_bound,
     optimize_core_device_refined as optimize_core_device,
 )
@@ -60,7 +59,6 @@ def _compute_combo_key_warmstart_preloaded(
     base_ff_stat: ti.i32,
     max_ft_gems: ti.i32,
     max_ff_gems: ti.i32,
-    use_hints: ti.template(),
     prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
 ) -> ti.u64:
@@ -152,13 +150,8 @@ def _compute_combo_key_warmstart_preloaded(
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
             score: ti.i32 = -1
-            if ti.static(use_hints):
-                hint = kernels_helpers.genome_hint_allocation[genome_idx]
-                score = local_search_from_hint(
-                    hint[0],
-                    hint[1],
-                    hint[2],
-                    hint[3],
+            if ti.static(use_exact_inner_solver):
+                score = optimize_core_device_exact_bound(
                     budget,
                     base_pp,
                     base_cm,
@@ -181,52 +174,28 @@ def _compute_combo_key_warmstart_preloaded(
                     ff_idx,
                 )[0]
             else:
-                if ti.static(use_exact_inner_solver):
-                    score = optimize_core_device_exact_bound(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                    )[0]
-                else:
-                    score = optimize_core_device(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                    )[0]
+                score = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )[0]
 
             if score >= 0:
                 out_key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
@@ -255,24 +224,17 @@ def ga_find_best_combo_warmstart_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_hints: ti.template(),  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
     use_exact_inner_solver: ti.template(),  # 0 = greedy/refined, 1 = bounded exact fixed-(FT,FF) solve
     reuse_exact_eval_results: ti.template(),
 ):
     """
-    GPU-parallel evaluation with optional warm-start from hints.
-
-    When use_hints=1, uses local_search_from_hint() with the genome's stored hint.
-    When use_hints=0, falls back to full optimize_core_device() (cold start).
+    GPU-parallel evaluation with exact or refined per-(genome, FT/FF) solving.
 
     Vulkan path reduces the winning key into `chunk_best_key` via an exact
     per-genome `ti.atomic_max` and intentionally does NOT write
     `chunk_best_results` (materialization validates cached payloads and recomputes
     when needed).
-
-    This enables fast evaluation after Gen 0 by reusing previous generation's
-    best allocations as starting points for local refinement.
 
     Args:
         n_genomes: Number of genomes to evaluate
@@ -283,7 +245,6 @@ def ga_find_best_combo_warmstart_kernel(
         gem_scale_fever: Gems per fever stat point
         is_*: Color contribution flags (0/1)
         song_slot: Grid slot for batch coalescing
-        use_hints: 0=cold start, 1=warm start from hints
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
 
@@ -348,7 +309,6 @@ def ga_find_best_combo_warmstart_kernel(
                 base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                use_hints,
                 prune_plateaus,
                 use_exact_inner_solver,
             )
@@ -360,8 +320,8 @@ def ga_find_best_combo_warmstart_kernel(
     else:
         # Vulkan: deterministic per-genome atomic reduction.
         #
-        # The active cold/warm evaluation path must be deterministic across hard
-        # resets for the exact same population. The atomic-free subgroup/shared
+        # The active exact-eval path must be deterministic across hard resets
+        # for the exact same population. The atomic-free subgroup/shared
         # reduction can still become unstable on Vulkan when physical invocation
         # grouping diverges from logical combo lanes after Taichi resets, so keep
         # combo coverage on loop-index lanes and combine the per-lane maxima into
@@ -435,7 +395,6 @@ def ga_find_best_combo_warmstart_kernel(
                     base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                use_hints,
                 prune_plateaus,
                 use_exact_inner_solver,
             )

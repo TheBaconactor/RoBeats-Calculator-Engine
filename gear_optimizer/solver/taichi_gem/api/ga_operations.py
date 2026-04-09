@@ -62,6 +62,8 @@ _GA_BASE_STATS_REUSE_RAW: str | None = None
 _GA_BASE_STATS_REUSE_ENABLED: int = 0
 _GA_EXACT_EVAL_RESULTS_REUSE_RAW: str | None = None
 _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED: int = 0
+_GA_EXACT_STATS_REUSE_RAW: str | None = None
+_GA_EXACT_STATS_REUSE_ENABLED: int = 0
 
 
 def _ga_eval_budget() -> int:
@@ -116,6 +118,23 @@ def _ga_exact_genome_eval_results_reuse_enabled() -> int:
     else:
         _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED = 1
     return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
+
+
+def _ga_exact_genome_stats_signature_reuse_enabled() -> int:
+    global _GA_EXACT_STATS_REUSE_RAW, _GA_EXACT_STATS_REUSE_ENABLED
+    raw = os.environ.get("GPU_NATIVE_GA_EXACT_STATS_REUSE", None)
+    if raw is None:
+        raw = os.environ.get("GPU_NATIVE_GA_SCORE_SIGNATURE_REUSE", None)
+    raw_norm = str(raw or "").strip().lower()
+    if raw_norm == _GA_EXACT_STATS_REUSE_RAW:
+        return int(_GA_EXACT_STATS_REUSE_ENABLED)
+
+    _GA_EXACT_STATS_REUSE_RAW = raw_norm
+    if raw_norm in {"", "0", "false", "no", "off"}:
+        _GA_EXACT_STATS_REUSE_ENABLED = 0
+    else:
+        _GA_EXACT_STATS_REUSE_ENABLED = 1
+    return int(_GA_EXACT_STATS_REUSE_ENABLED)
 
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -612,7 +631,6 @@ def ga_evaluate_population(
     is_s_fm: int = 0,
     is_p_ov: int = 0,
     is_s_ov: int = 0,
-    use_hints: int = 0,
     use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
@@ -644,20 +662,15 @@ def ga_evaluate_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    use_hints_i = int(use_hints)
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
-    # Warm-start local search is not result-stable enough on the current Metal path
-    # to safely collapse duplicate rows without changing convergence behavior.
-    # Keep exact-eval reuse limited to cold-start generations.
-    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled()) and use_hints_i == 0
+    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
+    # Stronger exact reduction: collapse rows that share the same aggregated score-relevant
+    # base stat vector, even when the underlying loadout IDs differ.
+    exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
 
-    if exact_genome_base_stats_reuse or exact_genome_eval_results_reuse:
-        kernels.ga_build_exact_eval_reuse_map_kernel(
-            int(n_genomes),
-            int(n_slots),
-            int(exact_genome_eval_results_reuse and use_hints_i != 0),
-        )
+    if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
+        kernels.ga_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
 
     # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
     kernels.ga_aggregate_and_init_best_kernel(
@@ -681,12 +694,14 @@ def ga_evaluate_population(
     if exact_genome_base_stats_reuse:
         kernels.ga_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
 
+    if exact_genome_stats_signature_reuse:
+        kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
+
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
 
-    # Warm-start logic: Default to cold start (0) unless specified
     # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
     prune_plateaus_i = _GA_PLATEAU_PRUNE_ENABLED
 
@@ -742,14 +757,13 @@ def ga_evaluate_population(
             int(is_p_ov),
             int(is_s_ov),
             song_slot_i,
-            use_hints_i,
             int(prune_plateaus_i),
             use_exact_inner_solver_i,
-            int(exact_genome_eval_results_reuse),
+            int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
         )
         offset += int(chunk_len)
 
-    if exact_genome_eval_results_reuse:
+    if exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse:
         kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
 
     _ga_materialize_population_results(
@@ -825,12 +839,6 @@ def _ga_materialize_population_results(
 
     if mode in {"results", "results_only", "write_results"}:
         kernels.ga_write_best_results_from_key_kernel(*common_args)
-        if update_global_best:
-            kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
-        return
-
-    if mode in {"hints", "store_hints", "write_hints"}:
-        kernels.ga_write_best_and_store_hints_kernel(*common_args)
         if update_global_best:
             kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
         return
@@ -921,72 +929,6 @@ def ga_write_best_and_update_global(
     )
 
 
-def ga_write_best_and_store_hints(
-    n_genomes: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    *,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-) -> None:
-    """
-    Materialize best results + store hints (no global-best update).
-
-    This is used for batched multi-run execution where each run is packed into
-    a segment of the population arrays and per-run best is computed at packing time.
-    """
-    ensure_ready()
-    _ga_materialize_population_results(
-        n_genomes=int(n_genomes),
-        n_slots=0,
-        total_budget=int(total_budget),
-        gem_scale_fever=int(gem_scale_fever),
-        is_p_ft=int(is_p_ft),
-        is_s_ft=int(is_s_ft),
-        is_p_ff=int(is_p_ff),
-        is_s_ff=int(is_s_ff),
-        is_p_pp=int(is_p_pp),
-        is_s_pp=int(is_s_pp),
-        is_p_cm=int(is_p_cm),
-        is_s_cm=int(is_s_cm),
-        is_p_fm=int(is_p_fm),
-        is_s_fm=int(is_s_fm),
-        is_p_ov=int(is_p_ov),
-        is_s_ov=int(is_s_ov),
-        song_slot=int(song_slot),
-        materialize_mode="store_hints",
-    )
-
-
-def ga_store_hints(n_genomes: int) -> None:
-    """
-    Store current best gem allocations as hints for next generation.
-    Call this AFTER evaluation, BEFORE crossover.
-    """
-    ensure_ready()
-    kernels.ga_store_hints_kernel(int(n_genomes))
-
-
-def ga_inherit_hints(n_genomes: int) -> None:
-    """
-    Inherit hints from parents to children.
-    Call this AFTER crossover, BEFORE next evaluation.
-    """
-    ensure_ready()
-    kernels.ga_inherit_hints_kernel(int(n_genomes))
-
-
 def ga_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
     """Upload fitness scores to GPU (fields.ga_scores). Returns n_genomes used."""
     ensure_ready()
@@ -1071,7 +1013,7 @@ def ga_next_generation(
         mr_fp,
         np.uint32(0),  # no immigrants in this call shape
     )
-    kernels.ga_swap_and_inherit_hints_kernel(int(n_genomes), int(n_slots))
+    kernels.ga_swap_population_kernel(int(n_genomes), int(n_slots))
 
 
 def ga_next_generation_gpu_elites(
@@ -1130,7 +1072,7 @@ def ga_next_generation_gpu_elites(
         mr_fp,
         np.uint32(0),  # no immigrants in this API
     )
-    kernels.ga_swap_and_inherit_hints_kernel(int(n_genomes), int(n_slots))
+    kernels.ga_swap_population_kernel(int(n_genomes), int(n_slots))
 
 
 def ga_next_generation_fused(
@@ -1148,7 +1090,7 @@ def ga_next_generation_fused(
 
     This combines:
     1. ga_next_generation_full_islands_kernel: select + crossover + mutate + island elites (computed on-the-fly)
-    2. ga_swap_and_inherit_hints_kernel: swap + hint inheritance
+    2. ga_swap_population_kernel: swap
 
     Args:
         n_genomes: Population size
@@ -1210,8 +1152,8 @@ def ga_next_generation_fused(
         ir_fp,
     )
 
-    # FUSED: Swap + Hint Inheritance (second kernel)
-    kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)
+    # FUSED: swap active/next populations (second kernel)
+    kernels.ga_swap_population_kernel(n_genomes, n_slots)
 
 
 def ga_next_generation_fused_runs(
@@ -1230,7 +1172,7 @@ def ga_next_generation_fused_runs(
 
     Executes:
     1) ga_next_generation_full_runs_kernel (select+crossover+mutate+elitism within each run)
-    2) ga_swap_and_inherit_hints_kernel (swap + hint inheritance) for the combined population
+    2) ga_swap_population_kernel (swap) for the combined population
     """
     ensure_ready()
     n_runs = int(n_runs)
@@ -1280,7 +1222,7 @@ def ga_next_generation_fused_runs(
         mr_fp,
         ir_fp,
     )
-    kernels.ga_swap_and_inherit_hints_kernel(int(n_total), n_slots)
+    kernels.ga_swap_population_kernel(int(n_total), n_slots)
 
 
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
@@ -2036,18 +1978,6 @@ def warmup_ga_kernels() -> None:
         total_budget=total_budget,
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
-        use_hints=0,
-        materialize_mode="store_hints",
-    )
-    # Compile the warm-start (`use_hints=1`) specialization too; this path dominates
-    # real runs after Gen 0 and otherwise incurs a first-hit JIT spike.
-    ga_evaluate_population(
-        n_total,
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-        use_hints=1,
         materialize_mode="update_global",
     )
     try:
@@ -2144,24 +2074,13 @@ def warmup_ga_kernels_light() -> None:
 
     ga_init_global_best()
 
-    # Compile/load both evaluation template paths (cold + warm).
+    # Compile/load the exact evaluation path.
     ga_evaluate_population(
         int(n_genomes),
         n_slots=n_slots,
         total_budget=total_budget,
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
-        use_hints=0,
-        materialize_mode="update_global",
-    )
-    ti.sync()
-    ga_evaluate_population(
-        int(n_genomes),
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-        use_hints=1,
         materialize_mode="update_global",
     )
     ti.sync()

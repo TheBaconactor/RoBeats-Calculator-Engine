@@ -7,9 +7,8 @@ Purpose:
 
 What it does:
 1) Runs a small baseline set of GPU regression tests (expected PASS).
-2) "Bug injection" scenario A (no file edits): disables winner refinement and asserts the refinement test FAILS.
-3) "Bug injection" scenario B (temporary file edit): reintroduces in-place hint inheritance and asserts the hint test FAILS.
-4) "Bug injection" scenario C (temporary file edit): breaks warmstart best-key reduction and asserts parity test FAILS.
+2) "Bug injection" scenario A (temporary file edit): disables CM lookahead and asserts the plateau guard FAILS.
+3) "Bug injection" scenario B (temporary file edit): breaks warmstart best-key reduction and asserts parity test FAILS.
 
 This is designed to catch the kind of multi-day debugging incidents caused by subtle GPU races and
 "hidden top-1 misses" (suboptimal winners that look like regressions).
@@ -54,37 +53,6 @@ def _require_clean_worktree() -> None:
         raise RuntimeError("git status failed; is git installed and is this a git repo?")
     if (proc.stdout or "").strip():
         raise RuntimeError("Worktree must be clean (git status --porcelain not empty).")
-
-
-def _mutate_ga_inherit_hints_in_place(path: Path) -> str:
-    original = path.read_text(encoding="utf-8")
-
-    old_a = "kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]"
-    new_a = "kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]"
-
-    old_b = "kernels_helpers.genome_hint_allocation_next[g][i] = 0"
-    new_b = "kernels_helpers.genome_hint_allocation[g][i] = 0"
-
-    # Only mutate the specific kernel we are guarding (avoid rewriting other helper kernels).
-    start = original.find("def ga_inherit_hints_kernel")
-    if start < 0:
-        raise RuntimeError("Failed to locate ga_inherit_hints_kernel() in kernels_ga.py")
-    # Find the next kernel decorator (end of this kernel's body).
-    end = original.find("@ti.kernel", start)
-    if end < 0:
-        end = len(original)
-
-    block = original[start:end]
-    mutated_block = block.replace(old_a, new_a).replace(old_b, new_b)
-    if mutated_block == block:
-        raise RuntimeError("Failed to apply hint-inheritance mutation (expected patterns not found in kernel).")
-    if old_a in mutated_block or old_b in mutated_block:
-        raise RuntimeError("Hint-inheritance mutation did not fully apply inside ga_inherit_hints_kernel().")
-
-    mutated = original[:start] + mutated_block + original[end:]
-
-    _write_text_lf(path, mutated)
-    return original
 
 
 def _mutate_warmstart_no_best_key_write(path: Path) -> str:
@@ -170,7 +138,6 @@ def main() -> int:
     baseline_tests = [
         "-q",
         "tests/test_solve_genomes_from_registry_score_parity.py::test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow",
-        "tests/test_gpu_ga_hint_inheritance_race_free.py::test_ga_inherit_hints_uses_next_buffer_and_does_not_mutate_parents_in_place",
         "tests/test_gem_optimizer_cm_lookahead.py::test_optimize_core_jit_cm_lookahead_breaks_plateau_trap",
         "tests/test_gpu_local_search_cm_plateau.py::test_local_search_from_hint_cm_jump_breaks_plateau_trap",
     ]
@@ -220,23 +187,7 @@ def main() -> int:
     finally:
         _write_text_lf(kernels_scoring_path, kernels_scoring_original)
 
-    print("[mutation-guards] Injection C: reintroduce in-place hint inheritance; expect FAIL")
-    kernels_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/kernels_ga.py"
-    original = _mutate_ga_inherit_hints_in_place(kernels_path)
-    try:
-        rc = _pytest(
-            [
-                "-q",
-                "tests/test_gpu_ga_hint_inheritance_race_free.py::test_ga_inherit_hints_uses_next_buffer_and_does_not_mutate_parents_in_place",
-            ]
-        )
-        if rc == 0:
-            print("[mutation-guards] ERROR: mutated hint inheritance unexpectedly PASSED (guard is too weak).")
-            return 4
-    finally:
-        _write_text_lf(kernels_path, original)
-
-    print("[mutation-guards] Injection D: break warmstart best-key reduction; expect FAIL")
+    print("[mutation-guards] Injection C: break warmstart best-key reduction; expect FAIL")
     warmstart_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/ga_eval/warmstart.py"
     warmstart_original = _mutate_warmstart_no_best_key_write(warmstart_path)
     try:
@@ -248,7 +199,7 @@ def main() -> int:
         )
         if rc == 0:
             print("[mutation-guards] ERROR: mutated warmstart unexpectedly PASSED (guard is too weak).")
-            return 5
+            return 4
     finally:
         _write_text_lf(warmstart_path, warmstart_original)
 

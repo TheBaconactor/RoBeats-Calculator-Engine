@@ -1,5 +1,5 @@
 """
-Benchmark GPU-native GA evaluation (warmstart kernel path).
+Benchmark GPU-native GA evaluation (exact no-hints path).
 
 Focus: measure wall time of `ga_evaluate_population()` which is dominated by
 FT/FF combo evaluation and any associated reductions/atomics.
@@ -171,7 +171,6 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=int(os.environ.get("BENCH_GA_ITERS", "10")))
     ap.add_argument("--warmup", type=int, default=int(os.environ.get("BENCH_GA_WARMUP", "2")))
     ap.add_argument("--seed", type=int, default=int(os.environ.get("BENCH_GA_SEED", "1337")))
-    ap.add_argument("--use-hints", type=int, default=int(os.environ.get("BENCH_GA_USE_HINTS", "0")))
     ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
     ap.add_argument(
         "--base-ft",
@@ -249,7 +248,6 @@ def main() -> int:
                 total_budget=int(args.budget),
                 gem_scale_fever=GEM_SCALE_FEVER,
                 song_slot=0,
-                use_hints=int(args.use_hints),
                 is_p_ft=flags["is_p_ft"],
                 is_s_ft=flags["is_s_ft"],
                 is_p_ff=flags["is_p_ff"],
@@ -278,7 +276,6 @@ def main() -> int:
                 total_budget=int(args.budget),
                 gem_scale_fever=GEM_SCALE_FEVER,
                 song_slot=0,
-                use_hints=int(args.use_hints),
                 is_p_ft=flags["is_p_ft"],
                 is_s_ft=flags["is_s_ft"],
                 is_p_ff=flags["is_p_ff"],
@@ -304,7 +301,7 @@ def main() -> int:
     per_iter = elapsed / iters
     print(
         f"ga_evaluate_population: genomes={int(args.genomes)} budget={int(args.budget)} "
-        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} "
+        f"iters={iters} warmup={int(args.warmup)} mode=exact_no_hints "
         f"prune_arg={int(args.prune_plateaus)} prune_effective={prune_effective} "
         f"base_ft={int(args.base_ft)} base_ff={int(args.base_ff)} "
         f"item_ft_max={int(args.item_ft_max)} item_ff_max={int(args.item_ff_max)}"

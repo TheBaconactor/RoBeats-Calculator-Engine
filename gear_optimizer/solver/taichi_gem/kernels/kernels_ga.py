@@ -86,22 +86,18 @@ def _fg_proxy_for_genome(genome_idx: ti.i32) -> ti.i64:
 
 
 @ti.func
-def _hash_exact_eval_input_for_genome(genome_idx: ti.i32, n_slots: ti.i32, include_hints: ti.i32) -> ti.u32:
+def _hash_exact_eval_input_for_genome(genome_idx: ti.i32, n_slots: ti.i32) -> ti.u32:
     h = ti.u32(2166136261)
     for s in ti.static(range(9)):
         v = ti.i32(0)
         if s < n_slots:
             v = kernels_helpers.population_indices[genome_idx, s]
         h = (h ^ ti.cast(v + 1, ti.u32)) * ti.u32(16777619)
-    if include_hints != 0:
-        for i in ti.static(range(4)):
-            v = kernels_helpers.genome_hint_allocation[genome_idx][i]
-            h = (h ^ ti.cast(v + 1, ti.u32)) * ti.u32(16777619)
     return h
 
 
 @ti.func
-def _exact_eval_key_matches(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32, include_hints: ti.i32) -> ti.i32:
+def _exact_eval_key_matches(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32) -> ti.i32:
     match = ti.i32(1)
     for s in ti.static(range(9)):
         want = ti.i32(0)
@@ -109,18 +105,11 @@ def _exact_eval_key_matches(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32, in
             want = kernels_helpers.population_indices[genome_idx, s]
         if kernels_helpers.ga_exact_eval_hash_keys[pos, s] != want:
             match = 0
-    if include_hints != 0:
-        for i in ti.static(range(4)):
-            if (
-                kernels_helpers.ga_exact_eval_hash_keys[pos, 9 + i]
-                != kernels_helpers.genome_hint_allocation[genome_idx][i]
-            ):
-                match = 0
     return match
 
 
 @ti.func
-def _exact_eval_input_matches_genomes(a: ti.i32, b: ti.i32, n_slots: ti.i32, include_hints: ti.i32) -> ti.i32:
+def _exact_eval_input_matches_genomes(a: ti.i32, b: ti.i32, n_slots: ti.i32) -> ti.i32:
     match = ti.i32(1)
     for s in ti.static(range(9)):
         va = ti.i32(0)
@@ -130,29 +119,57 @@ def _exact_eval_input_matches_genomes(a: ti.i32, b: ti.i32, n_slots: ti.i32, inc
             vb = kernels_helpers.population_indices[b, s]
         if va != vb:
             match = 0
-    if include_hints != 0:
-        for i in ti.static(range(4)):
-            if kernels_helpers.genome_hint_allocation[a][i] != kernels_helpers.genome_hint_allocation[b][i]:
-                match = 0
     return match
 
 
 @ti.func
-def _store_exact_eval_key(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32, include_hints: ti.i32) -> None:
+def _store_exact_eval_key(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32) -> None:
     for s in ti.static(range(9)):
         value = ti.i32(0)
         if s < n_slots:
             value = kernels_helpers.population_indices[genome_idx, s]
         kernels_helpers.ga_exact_eval_hash_keys[pos, s] = value
-    for i in ti.static(range(4)):
-        value = ti.i32(0)
-        if include_hints != 0:
-            value = kernels_helpers.genome_hint_allocation[genome_idx][i]
-        kernels_helpers.ga_exact_eval_hash_keys[pos, 9 + i] = value
+
+
+@ti.func
+def _hash_exact_eval_base_stats_for_genome(genome_idx: ti.i32) -> ti.u32:
+    h = ti.u32(2166136261)
+    for i in ti.static(range(7)):
+        # genome_base_stats is i16-backed; bias to keep negative values stable in the hash stream.
+        v = ti.cast(kernels_helpers.genome_base_stats[genome_idx][i], ti.i32)
+        h = (h ^ ti.cast(v + 32769, ti.u32)) * ti.u32(16777619)
+    return h
+
+
+@ti.func
+def _exact_eval_base_stats_key_matches(pos: ti.i32, genome_idx: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for i in ti.static(range(7)):
+        want = ti.cast(kernels_helpers.genome_base_stats[genome_idx][i], ti.i32)
+        if kernels_helpers.ga_exact_eval_hash_keys[pos, i] != want:
+            match = 0
+    return match
+
+
+@ti.func
+def _exact_eval_base_stats_matches_genomes(a: ti.i32, b: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for i in ti.static(range(7)):
+        if kernels_helpers.genome_base_stats[a][i] != kernels_helpers.genome_base_stats[b][i]:
+            match = 0
+    return match
+
+
+@ti.func
+def _store_exact_eval_base_stats_key(pos: ti.i32, genome_idx: ti.i32) -> None:
+    for i in ti.static(range(7)):
+        kernels_helpers.ga_exact_eval_hash_keys[pos, i] = ti.cast(kernels_helpers.genome_base_stats[genome_idx][i], ti.i32)
+    for i in ti.static(range(7, 9)):
+        kernels_helpers.ga_exact_eval_hash_keys[pos, i] = 0
 
 
 @ti.kernel
-def _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+def _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
     Prepare hash keys + indices for parallel sort grouping.
 
@@ -161,7 +178,7 @@ def _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes: ti.i32, n_slots: 
     sentinel = ti.i32(2147483647)
     for i in range(kernels_helpers.ga_exact_eval_hash_sort_keys.shape[0]):
         if i < n_genomes:
-            h = _hash_exact_eval_input_for_genome(i, n_slots, include_hints)
+            h = _hash_exact_eval_input_for_genome(i, n_slots)
             kernels_helpers.ga_exact_eval_hash_sort_keys[i] = ti.cast(h, ti.i32)
             kernels_helpers.ga_exact_eval_hash_sort_indices[i] = i
         else:
@@ -171,7 +188,7 @@ def _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes: ti.i32, n_slots: 
 
 
 @ti.kernel
-def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
     Build `ga_exact_eval_rep_idx` after sorting hash keys.
 
@@ -196,7 +213,7 @@ def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots
         while j >= 0 and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
             cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
             if cand >= 0 and cand < n_genomes0:
-                if _exact_eval_input_matches_genomes(cand, g, n_slots, include_hints) != 0:
+                if _exact_eval_input_matches_genomes(cand, g, n_slots) != 0:
                     rep = ti.min(rep, cand)
             j -= 1
 
@@ -204,7 +221,7 @@ def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots
         while j < n_total and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
             cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
             if cand >= 0 and cand < n_genomes0:
-                if _exact_eval_input_matches_genomes(cand, g, n_slots, include_hints) != 0:
+                if _exact_eval_input_matches_genomes(cand, g, n_slots) != 0:
                     rep = ti.min(rep, cand)
             j += 1
 
@@ -214,7 +231,7 @@ def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots
 
 
 @ti.kernel
-def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
     Original open-addressing implementation (serialized).
 
@@ -226,7 +243,7 @@ def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.
 
     ti.loop_config(serialize=True)
     for g in range(n_genomes):
-        h = _hash_exact_eval_input_for_genome(g, n_slots, include_hints)
+        h = _hash_exact_eval_input_for_genome(g, n_slots)
         mask = kernels_helpers.ga_exact_eval_hash_used.shape[0] - 1
         pos = ti.cast(h & ti.u32(mask), ti.i32)
         rep = g
@@ -236,13 +253,13 @@ def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.
             entry = kernels_helpers.ga_exact_eval_hash_used[pos]
             if entry == 0:
                 kernels_helpers.ga_exact_eval_hash_used[pos] = g + 1
-                _store_exact_eval_key(pos, g, n_slots, include_hints)
+                _store_exact_eval_key(pos, g, n_slots)
                 kernels_helpers.ga_exact_eval_unique_count[0] = kernels_helpers.ga_exact_eval_unique_count[0] + 1
                 rep = g
                 handled = 1
                 break
 
-            if _exact_eval_key_matches(pos, g, n_slots, include_hints) != 0:
+            if _exact_eval_key_matches(pos, g, n_slots) != 0:
                 rep = entry - 1
                 handled = 1
                 break
@@ -254,13 +271,9 @@ def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.
         kernels_helpers.ga_exact_eval_rep_idx[g] = rep
 
 
-def ga_build_exact_eval_reuse_map_kernel(n_genomes: int, n_slots: int, include_hints: int) -> None:
+def ga_build_exact_eval_reuse_map_kernel(n_genomes: int, n_slots: int) -> None:
     """
     Build a representative map for exact duplicate evaluation inputs.
-
-    When `include_hints` is enabled, the map is keyed on both the encoded genome
-    and the current warm-start hint allocation. This keeps exact-eval reuse
-    limited to rows that would follow the same local-search path.
     """
     n_genomes_i = int(n_genomes)
     if n_genomes_i <= 1:
@@ -271,17 +284,129 @@ def ga_build_exact_eval_reuse_map_kernel(n_genomes: int, n_slots: int, include_h
         return
 
     n_slots_i = int(n_slots)
-    include_hints_i = int(include_hints)
-
     if IS_METAL:
-        _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes_i, n_slots_i, include_hints_i)
+        _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes_i, n_slots_i)
         return
 
-    _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes_i, n_slots_i, include_hints_i)
+    _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes_i, n_slots_i)
     from taichi.algorithms import parallel_sort as _parallel_sort
 
     _parallel_sort(kernels_helpers.ga_exact_eval_hash_sort_keys, kernels_helpers.ga_exact_eval_hash_sort_indices)
-    _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes_i, n_slots_i, include_hints_i)
+    _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes_i, n_slots_i)
+
+
+@ti.kernel
+def _ga_prepare_exact_eval_base_stats_reuse_sort_arrays_kernel(n_genomes: ti.i32):
+    sentinel = ti.i32(2147483647)
+    for i in range(kernels_helpers.ga_exact_eval_hash_sort_keys.shape[0]):
+        if i < n_genomes:
+            h = _hash_exact_eval_base_stats_for_genome(i)
+            kernels_helpers.ga_exact_eval_hash_sort_keys[i] = ti.cast(h, ti.i32)
+            kernels_helpers.ga_exact_eval_hash_sort_indices[i] = i
+        else:
+            kernels_helpers.ga_exact_eval_hash_sort_keys[i] = sentinel
+            kernels_helpers.ga_exact_eval_hash_sort_indices[i] = -1
+    kernels_helpers.ga_exact_eval_unique_count[0] = 0
+
+
+@ti.kernel
+def _ga_build_exact_eval_reuse_map_from_base_stats_sorted_kernel(n_genomes: ti.i32):
+    n_genomes0 = ti.max(ti.i32(0), n_genomes)
+    for g in range(n_genomes0):
+        kernels_helpers.ga_exact_eval_rep_idx[g] = g
+
+    n_total = kernels_helpers.ga_exact_eval_hash_sort_keys.shape[0]
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i in range(n_total):
+        g = kernels_helpers.ga_exact_eval_hash_sort_indices[i]
+        if g < 0 or g >= n_genomes0:
+            continue
+
+        key = kernels_helpers.ga_exact_eval_hash_sort_keys[i]
+        rep = g
+
+        j = i - 1
+        while j >= 0 and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
+            cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
+            if cand >= 0 and cand < n_genomes0:
+                if _exact_eval_base_stats_matches_genomes(cand, g) != 0:
+                    rep = ti.min(rep, cand)
+            j -= 1
+
+        j = i + 1
+        while j < n_total and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
+            cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
+            if cand >= 0 and cand < n_genomes0:
+                if _exact_eval_base_stats_matches_genomes(cand, g) != 0:
+                    rep = ti.min(rep, cand)
+            j += 1
+
+        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+        if rep == g:
+            ti.atomic_add(kernels_helpers.ga_exact_eval_unique_count[0], 1)
+
+
+@ti.kernel
+def _ga_build_exact_eval_reuse_map_from_base_stats_serial_kernel(n_genomes: ti.i32):
+    for i in range(kernels_helpers.ga_exact_eval_hash_used.shape[0]):
+        kernels_helpers.ga_exact_eval_hash_used[i] = 0
+    kernels_helpers.ga_exact_eval_unique_count[0] = 0
+
+    ti.loop_config(serialize=True)
+    for g in range(n_genomes):
+        h = _hash_exact_eval_base_stats_for_genome(g)
+        mask = kernels_helpers.ga_exact_eval_hash_used.shape[0] - 1
+        pos = ti.cast(h & ti.u32(mask), ti.i32)
+        rep = g
+        handled = ti.i32(0)
+
+        for _ in range(kernels_helpers.ga_exact_eval_hash_used.shape[0]):
+            entry = kernels_helpers.ga_exact_eval_hash_used[pos]
+            if entry == 0:
+                kernels_helpers.ga_exact_eval_hash_used[pos] = g + 1
+                _store_exact_eval_base_stats_key(pos, g)
+                kernels_helpers.ga_exact_eval_unique_count[0] = kernels_helpers.ga_exact_eval_unique_count[0] + 1
+                rep = g
+                handled = 1
+                break
+
+            if _exact_eval_base_stats_key_matches(pos, g) != 0:
+                rep = entry - 1
+                handled = 1
+                break
+
+            pos = (pos + 1) & mask
+
+        if handled == 0:
+            rep = g
+        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+
+
+def ga_build_exact_eval_reuse_map_from_base_stats_kernel(n_genomes: int) -> None:
+    """
+    Build a representative map for exact-cold evaluations keyed on aggregated base stats.
+
+    Within a single song/run, `genome_base_stats` is the exact score-relevant state for the
+    base gem solver. Reusing by this key is therefore stronger than raw-genome dedup while
+    preserving exactness for cold evaluations.
+    """
+    n_genomes_i = int(n_genomes)
+    if n_genomes_i <= 1:
+        kernels_helpers.ga_exact_eval_unique_count[0] = 0
+        if n_genomes_i == 1:
+            kernels_helpers.ga_exact_eval_rep_idx[0] = 0
+            kernels_helpers.ga_exact_eval_unique_count[0] = 1
+        return
+
+    if IS_METAL:
+        _ga_build_exact_eval_reuse_map_from_base_stats_serial_kernel(n_genomes_i)
+        return
+
+    _ga_prepare_exact_eval_base_stats_reuse_sort_arrays_kernel(n_genomes_i)
+    from taichi.algorithms import parallel_sort as _parallel_sort
+
+    _parallel_sort(kernels_helpers.ga_exact_eval_hash_sort_keys, kernels_helpers.ga_exact_eval_hash_sort_indices)
+    _ga_build_exact_eval_reuse_map_from_base_stats_sorted_kernel(n_genomes_i)
 
 
 @ti.kernel
@@ -1065,62 +1190,6 @@ def ga_select_crossover_mutate_kernel(
             kernels_helpers.population_next_indices[g, 8] = m2
 
         kernels_helpers.ga_rng_state[g] = state
-
-
-@ti.kernel
-def ga_store_hints_kernel(n_genomes: ti.i32):
-    """
-    Store current best gem allocation as hints for next generation.
-
-    Reads from genome_result_stats[g] = [score, ft, ff, pp, cm, fm, ov]
-    Writes to genome_hint_allocation[g] = [pp, cm, fm, ov]
-
-    Call this AFTER evaluation, BEFORE crossover/mutation.
-    The hints will be used to warm-start the solver in the next generation.
-
-    Args:
-        n_genomes: Number of genomes
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
-        result = kernels_helpers.genome_result_stats[g]
-        # genome_result_stats layout: [score, ft, ff, pp, cm, fm, ov]
-        # genome_hint_allocation layout: [pp, cm, fm, ov]
-        kernels_helpers.genome_hint_allocation[g][0] = result[3]  # pp gems
-        kernels_helpers.genome_hint_allocation[g][1] = result[4]  # cm gems
-        kernels_helpers.genome_hint_allocation[g][2] = result[5]  # fm gems
-        kernels_helpers.genome_hint_allocation[g][3] = result[6]  # ov gems
-
-
-@ti.kernel
-def ga_inherit_hints_kernel(n_genomes: ti.i32):
-    """
-    Inherit hints from parents to children after crossover.
-
-    Each child inherits the hint from parent A (the first parent).
-    This provides a warm-start point for the next evaluation.
-
-    Call this AFTER crossover/mutation, BEFORE evaluation.
-
-    The hint_next buffer is used to store inherited hints, then swapped.
-    For simplicity, we just copy from parent A's hint to child's hint.
-
-    Args:
-        n_genomes: Number of genomes
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
-        parent_a = kernels_helpers.ga_parent_a[g]
-        # IMPORTANT: do not overwrite `genome_hint_allocation` in-place; other
-        # threads may still need to read parent hints. Always write into the
-        # next buffer.
-        for i in range(4):
-            if parent_a >= 0:
-                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]
-            else:
-                kernels_helpers.genome_hint_allocation_next[g][i] = 0
-
-
 @ti.kernel
 def ga_next_generation_full_kernel(
     n_genomes: ti.i32,
@@ -1131,18 +1200,18 @@ def ga_next_generation_full_kernel(
     immigrant_rate_fp: ti.u32,
 ):
     """
-    FULLY FUSED: Selection + Crossover + Mutation + Elitism + Swap + Hint Inheritance.
+    FULLY FUSED: Selection + Crossover + Mutation + Elitism + Swap.
 
     This kernel combines 4 separate kernels into 1 to reduce launch overhead:
     1. Tournament selection (picks pa, pb)
     2. Crossover + mutation (writes to population_next_indices)
     3. Elite copy (from GPU-resident island_elite_indices)
-    4. Swap (next -> current) + hint inheritance
+    4. Swap (next -> current)
 
     The kernel operates in two phases:
     - Phase 1 (g >= n_elites): Tournament + crossover + mutation for non-elite slots
     - Phase 2 (g < n_elites): Copy elites directly
-    - Phase 3: Swap and inherit hints (done in same iteration)
+    - Phase 3: Swap population buffers (done in the follow-up kernel)
 
     Args:
         n_genomes: Population size
@@ -1155,7 +1224,7 @@ def ga_next_generation_full_kernel(
 
     for g in range(n_genomes):
         state = kernels_helpers.ga_rng_state[g]
-        pa = 0  # Initialize pa (used for hint inheritance)
+        pa = 0  # Initialize parent A index for diagnostics / compatibility
 
         # For elites (g < n_elites): copy from original population
         # For non-elites (g >= n_elites): do tournament + crossover + mutation
@@ -1164,8 +1233,7 @@ def ga_next_generation_full_kernel(
             src_genome = kernels_helpers.island_elite_indices[g]
             for s in range(n_slots):
                 kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[src_genome, s]
-            # Inherit hint from source elite
-            pa = src_genome  # For hint inheritance
+            pa = src_genome
         else:
             # Non-elite path: tournament selection + crossover + mutation
             # Pick parent A
@@ -1286,25 +1354,11 @@ def ga_next_generation_full_kernel(
                         kernels_helpers.population_next_indices[g, 7] = m1
                         kernels_helpers.population_next_indices[g, 8] = m2
 
-                    # Do not inherit warm-start hints for immigrants.
                     pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
 
-        # Store parent_a for hint inheritance (used in second pass)
         kernels_helpers.ga_parent_a[g] = pa
-
-        # Build next-gen warm-start hints without mutating the current hint field.
-        # In-place hint inheritance is race-prone on GPU (other threads may still
-        # need to read parent hints). Always write into the next buffer and let
-        # the swap kernel commit it.
-        if pa >= 0:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
-        else:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = 0
-
 
 @ti.kernel
 def ga_next_generation_full_islands_kernel(
@@ -1530,20 +1584,10 @@ def ga_next_generation_full_islands_kernel(
                     kernels_helpers.population_next_indices[g, 7] = m1
                     kernels_helpers.population_next_indices[g, 8] = m2
 
-                # Do not inherit warm-start hints for immigrants.
                 pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
-
-        # Build next-gen warm-start hints (race-free).
-        if pa >= 0:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
-        else:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = 0
-
 
 @ti.kernel
 def ga_next_generation_full_runs_kernel(
@@ -1775,30 +1819,18 @@ def ga_next_generation_full_runs_kernel(
                     kernels_helpers.population_next_indices[g, 7] = m1
                     kernels_helpers.population_next_indices[g, 8] = m2
 
-                # Do not inherit warm-start hints for immigrants.
                 pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
 
-        # Build next-gen warm-start hints (race-free).
-        if pa >= 0:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
-        else:
-            for i in range(4):
-                kernels_helpers.genome_hint_allocation_next[g][i] = 0
-
-
 @ti.kernel
-def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
+def ga_swap_population_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
-    FUSED: Swap populations AND inherit hints in one kernel.
+    FUSED: swap the next-generation population into the active buffer.
 
     This is Phase 2 of the fused next-generation operation:
     1. Copy population_next_indices -> population_indices (swap)
-    2. Commit next-gen hints (written into genome_hint_allocation_next by the
-       next-generation kernels)
 
     Args:
         n_genomes: Population size
@@ -1809,7 +1841,3 @@ def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
         # Swap
         for s in range(n_slots):
             kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
-
-        # Commit next-gen hints (race-free).
-        for i in range(4):
-            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation_next[g][i]

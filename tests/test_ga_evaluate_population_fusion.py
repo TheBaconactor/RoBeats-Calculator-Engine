@@ -25,10 +25,6 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
             calls.append("write_global")
 
         @staticmethod
-        def ga_write_best_and_store_hints_kernel(*_args):
-            calls.append("write_hints")
-
-        @staticmethod
         def ga_write_best_results_from_key_kernel(*_args):
             calls.append("write_results")
 
@@ -66,7 +62,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
     assert calls == ["aggregate", "evaluate", "write_results", "update_global"]
 
 
-def test_ga_evaluate_population_reuses_exact_eval_results_on_cold_start(monkeypatch):
+def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import ga_operations
 
     calls = []
@@ -89,8 +85,8 @@ def test_ga_evaluate_population_reuses_exact_eval_results_on_cold_start(monkeypa
             calls.append(("propagate_chunk", args))
 
         @staticmethod
-        def ga_write_best_and_store_hints_kernel(*_args):
-            calls.append("write_hints")
+        def ga_write_best_results_from_key_kernel(*_args):
+            calls.append("write_results")
 
     monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
     monkeypatch.setattr(ga_operations, "kernels", _Kernels())
@@ -106,13 +102,12 @@ def test_ga_evaluate_population_reuses_exact_eval_results_on_cold_start(monkeypa
         n_slots=9,
         total_budget=90,
         gem_scale_fever=3,
-        use_hints=0,
-        materialize_mode="store_hints",
+        materialize_mode="results_only",
     )
 
-    assert calls[0] == ("build_reuse", (8, 9, 0))
+    assert calls[0] == ("build_reuse", (8, 9))
     assert calls[1] == "aggregate"
     assert calls[2][0] == "evaluate"
     assert calls[2][1][-1] == 1
     assert calls[3] == ("propagate_chunk", (8,))
-    assert calls[4] == "write_hints"
+    assert calls[4] == "write_results"

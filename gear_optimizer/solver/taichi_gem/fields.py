@@ -105,6 +105,10 @@ ref_cm_field: ti.Field = None
 ref_fm_field: ti.Field = None
 ref_ft_field: ti.Field = None  # Fever Time multipliers
 ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
+
+# Exact-solver helper tables (small, ref-derived).
+# Prefix argmax for PP-vs-OV choice inside the bounded exact inner solver.
+# Shape: (flags16, pp_base_idx161, max_pp_gems<=MAX_TOTAL_BUDGET+1) -> best_pp_gems.
 exact_pp_best_gems_prefix: ti.Field = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 
 # Timeline grid with song slots (MAX_SONG_SLOTS, 161, 161)
@@ -159,7 +163,7 @@ ga_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluati
 ga_rng_state: ti.Field = None  # (MAX_GENOMES,) uint32 RNG state per genome/thread
 ga_parent_a: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index A
 ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
-GA_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS + 4  # 9 slot IDs + 4 reserved cols kept for layout stability
+GA_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS  # encoded gear/minis genome IDs
 GA_EXACT_EVAL_HASH_SIZE = 16384  # Open-addressing table for exact duplicate-genome detection.
 ga_exact_eval_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy (0=empty, else rep_idx+1)
 ga_exact_eval_hash_keys: ti.Field = None  # (HASH_SIZE, KEY_COLS) i32 exact genome key (trailing cols reserved)
@@ -241,8 +245,6 @@ genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm,
 # Typical workloads use GA_POPULATION_SIZE ~= 250, so a small staging field avoids transferring MAX_GENOMES (4096).
 genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
 genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
-genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
-genome_hint_allocation_next: ti.Field = None  # Next-gen warm-start hints (race-free inheritance buffer)
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
@@ -294,7 +296,8 @@ def reset_fields_state() -> None:
     global _fields_allocated, _grid_fields_allocated, _last_uploaded_grid_id
     global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
 
-    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field, exact_pp_best_gems_prefix
+    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
     global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
     global grid_fever_masks, grid_fever_masks_bits
@@ -313,7 +316,6 @@ def reset_fields_state() -> None:
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
-    global genome_hint_allocation, genome_hint_allocation_next
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
@@ -426,8 +428,6 @@ def reset_fields_state() -> None:
     genome_result_stats = None
     genome_result_stats_download_staging_256 = None
     genome_result_stats_download_staging_1024 = None
-    genome_hint_allocation = None
-    genome_hint_allocation_next = None
     chunk_best_key = None
     chunk_best_score = None
     chunk_best_idx = None
@@ -529,7 +529,8 @@ def allocate_fields():
 
     This allocates the baseline Taichi fields used by the solvers and GPU-native GA.
     """
-    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field, exact_pp_best_gems_prefix
+    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global exact_pp_best_gems_prefix
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global \
@@ -546,7 +547,6 @@ def allocate_fields():
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
-    global genome_hint_allocation, genome_hint_allocation_next
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
@@ -621,9 +621,6 @@ def allocate_fields():
     # Bounded download staging buffers (reduce padded Vulkan `to_numpy()` transfers).
     genome_result_stats_download_staging_256 = ti.Vector.field(n=7, dtype=ti.i32, shape=256)
     genome_result_stats_download_staging_1024 = ti.Vector.field(n=7, dtype=ti.i32, shape=1024)
-    # Warm-start hints for local search optimization [pp_gems, cm_gems, fm_gems, ov_gems]
-    genome_hint_allocation = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
-    genome_hint_allocation_next = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
     # Per-genome reduction key: ((score + 1) << 32) | combo_idx
     # NOTE: u64 atomics are not supported on Metal, so we use separate 32-bit fields on macOS.
     if not IS_METAL:
@@ -892,8 +889,6 @@ def bind_fields(kernels_module):
 
     # Genome results
     target.genome_result_stats = genome_result_stats
-    target.genome_hint_allocation = genome_hint_allocation
-    target.genome_hint_allocation_next = genome_hint_allocation_next
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
     else:
@@ -987,8 +982,6 @@ def ensure_fields_allocated():
             kernels_metal.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
             kernels_metal.ftff_combo_ft = ftff_combo_ft
             kernels_metal.ftff_combo_ff = ftff_combo_ff
-            kernels_metal.genome_hint_allocation = genome_hint_allocation
-            kernels_metal.genome_hint_allocation_next = genome_hint_allocation_next
             kernels_metal.ga_global_best_score = ga_global_best_score
             kernels_metal.ga_global_best_genome = ga_global_best_genome
             kernels_metal.ga_global_best_results = ga_global_best_results

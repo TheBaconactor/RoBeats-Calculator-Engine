@@ -173,7 +173,6 @@ def test_gpu_native_ga_plateau_prune_score_regression_off_vs_on() -> None:
                 is_s_fm=flags["is_s_fm"],
                 is_p_ov=flags["is_p_ov"],
                 is_s_ov=flags["is_s_ov"],
-                use_hints=0,
             )
             ga_write_best_and_update_global(
                 n_genomes=n_genomes,

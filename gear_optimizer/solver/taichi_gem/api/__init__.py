@@ -91,12 +91,8 @@ try:
         # GPU-side island migration
         ga_island_migration,
         ga_island_migration_runs,
-        # Warm-start
-        ga_store_hints,
-        ga_inherit_hints,
         # FUSED kernel APIs
         ga_write_best_and_update_global,
-        ga_write_best_and_store_hints,
     )
 except ImportError:
     pass
@@ -160,10 +156,6 @@ __all__ = [
     # GPU-side island migration
     "ga_island_migration",
     "ga_island_migration_runs",
-    # Warm-start
-    "ga_store_hints",
-    "ga_inherit_hints",
     # FUSED kernel APIs
     "ga_write_best_and_update_global",
-    "ga_write_best_and_store_hints",
 ]
