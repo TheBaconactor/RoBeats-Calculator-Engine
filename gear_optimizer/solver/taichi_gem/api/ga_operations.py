@@ -880,14 +880,14 @@ def ga_write_best_and_update_global(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
 ) -> None:
     """
-    FUSED: Write best results + store hints + update global best (3 kernels -> 1).
+    FUSED: Write best results + update global best.
 
     Call this AFTER evaluation (ga_evaluate_population) to:
     1. Finalize best combo from chunk_best_key
-    2. Store hints for next generation (warm-start)
-    3. Update GPU-side global best
+    2. Update GPU-side global best
 
     Args:
         n_genomes: Number of genomes
@@ -916,6 +916,7 @@ def ga_write_best_and_update_global(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         song_slot=int(song_slot),
+        use_exact_inner_solver=bool(use_exact_inner_solver),
         materialize_mode="update_global",
     )
 

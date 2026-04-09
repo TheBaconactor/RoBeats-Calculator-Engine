@@ -44,6 +44,7 @@ ref_cm_field = None
 ref_fm_field = None
 ref_ft_field = None
 ref_ff_field = None
+exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 
 # Grid fields
 grid_count_body_fever = None

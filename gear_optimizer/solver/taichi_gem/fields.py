@@ -105,6 +105,7 @@ ref_cm_field: ti.Field = None
 ref_fm_field: ti.Field = None
 ref_ft_field: ti.Field = None  # Fever Time multipliers
 ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
+exact_pp_best_gems_prefix: ti.Field = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 
 # Timeline grid with song slots (MAX_SONG_SLOTS, 161, 161)
 # Slot 0 is default for single-song mode; slots 1..MAX_SONG_SLOTS-1 for batch mode
@@ -293,7 +294,7 @@ def reset_fields_state() -> None:
     global _fields_allocated, _grid_fields_allocated, _last_uploaded_grid_id
     global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
 
-    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field, exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
     global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
     global grid_fever_masks, grid_fever_masks_bits
@@ -338,6 +339,7 @@ def reset_fields_state() -> None:
     ref_fm_field = None
     ref_ft_field = None
     ref_ff_field = None
+    exact_pp_best_gems_prefix = None
 
     # Grid fields
     grid_count_body_fever = None
@@ -527,7 +529,7 @@ def allocate_fields():
 
     This allocates the baseline Taichi fields used by the solvers and GPU-native GA.
     """
-    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field, exact_pp_best_gems_prefix
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global \
@@ -574,6 +576,7 @@ def allocate_fields():
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
+    exact_pp_best_gems_prefix = ti.field(dtype=ti.i16, shape=(16, GRID_SIZE, MAX_TOTAL_BUDGET + 1))
 
     # Breakpoint detection kernel inputs/outputs (small, always-on)
     bp_pair_ft = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
@@ -838,6 +841,7 @@ def bind_fields(kernels_module):
     target.ref_fm_field = ref_fm_field
     target.ref_ft_field = ref_ft_field
     target.ref_ff_field = ref_ff_field
+    target.exact_pp_best_gems_prefix = exact_pp_best_gems_prefix
 
     # Grid fields
     target.grid_count_body_fever = grid_count_body_fever
