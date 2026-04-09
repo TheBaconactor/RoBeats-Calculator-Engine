@@ -134,3 +134,44 @@ def test_executor_managed_deps_breakpoints_requires_calc_song_and_ref_arrays(mon
     resp = ex._execute_fg_compute_breakpoints(req)
     assert not resp.success
     assert "calc_song" in (resp.error or "")
+
+
+def test_execute_solve_force_greats_exact_dp_routes_batch_api(monkeypatch):
+    calls = _install_fake_taichi_deps_for_executor_managed_fg(monkeypatch)
+
+    fake_force_api = sys.modules["gear_optimizer.solver.taichi_gem.force_greats.api"]
+
+    def _fake_exact_batch(*, stats_list, calc_song, ref_arrays, timing_aware, prune, song_slot=0):
+        calls["exact_batch"] = [
+            {
+                "stats_list": list(stats_list),
+                "calc_song": calc_song,
+                "ref_arrays": ref_arrays,
+                "timing_aware": bool(timing_aware),
+                "prune": bool(prune),
+                "song_slot": int(song_slot),
+            }
+        ]
+        return [{"best_delta": 11, "section_counts": [1], "profile": {"states": 2, "transitions": 3}}]
+
+    fake_force_api.solve_force_greats_exact_dp_gpu_batch = _fake_exact_batch
+
+    ex = GpuExecutor()
+    req = GpuRequest(
+        request_type=GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+        request_id=4,
+        worker_id=1,
+        payload={
+            "stats_list": [{"Perfect Points": 1}],
+            "calc_song": {"metadata": {}, "song_data": {}},
+            "ref_arrays": {"dummy": True},
+            "timing_aware": True,
+            "prune": True,
+            "song_slot": 6,
+        },
+    )
+    resp = ex._execute_solve_force_greats_exact_dp(req)
+    assert resp.success
+    assert resp.result == [{"best_delta": 11, "section_counts": [1], "profile": {"states": 2, "transitions": 3}}]
+    assert calls["exact_batch"][0]["stats_list"] == [{"Perfect Points": 1}]
+    assert calls["exact_batch"][0]["song_slot"] == 6

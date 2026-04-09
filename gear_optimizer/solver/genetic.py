@@ -95,6 +95,7 @@ from ..helpers.song_helpers.fg_combo_booster import (
 )
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .item_registry import ItemRegistry
+from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
@@ -2812,6 +2813,7 @@ def solve_coevolution_genetic(
     known_loadouts=None,
     song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
     ga_seed: int | None = None,
+    solver_ctx: SolverContext | None = None,
 ):
     """
     Main genetic algorithm solver for gear and mini co-evolution.
@@ -2863,28 +2865,35 @@ def solve_coevolution_genetic(
 
     ga_settings = ga_settings or GASettings.from_cfg(cfg)
 
-    p_color = calc_song["metadata"].get("Primary Color", "Rush")
-    s_color = calc_song["metadata"].get("Secondary Color", "")
-    selected_color = p_color  # For overflow gems (could be customized per loadout)
+    if solver_ctx is None:
+        p_color = calc_song["metadata"].get("Primary Color", "Rush")
+        s_color = calc_song["metadata"].get("Secondary Color", "")
+        selected_color = p_color
+        slots = list(GEAR_SLOTS)
 
-    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+        pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
+        if pools is None:
+            gear_pool = None
+            whitelisted_minis = []
+        elif len(pools) == 4:
+            gear_pool, mini_pool, total_before, total_after = pools
+            whitelisted_minis = []
+        else:
+            gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
+        if gear_pool is None:
+            logger.error(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
+            return None, [], [], None, [], [], []
 
-    # Initialize pools and apply dominance pruning
-    pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
-    if pools is None:
-        gear_pool = None
-        whitelisted_minis = []
-    elif len(pools) == 4:
-        gear_pool, mini_pool, total_before, total_after = pools
-        whitelisted_minis = []
+        if whitelisted_minis:
+            logger.info(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
     else:
-        gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
-    if gear_pool is None:
-        logger.error(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
-        return None, [], [], None, [], [], []
-
-    if whitelisted_minis:
-        logger.info(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
+        p_color = str(solver_ctx.p_color or "Rush")
+        s_color = str(solver_ctx.s_color or "")
+        selected_color = str(solver_ctx.selected_color or p_color)
+        slots = list(GEAR_SLOTS)
+        gear_pool = solver_ctx.gear_pool
+        mini_pool = solver_ctx.mini_pool
+        whitelisted_minis = []
 
     # Build configuration data
     # GPU-only policy: ignore any attempt to disable GPU via config.
@@ -2932,24 +2941,44 @@ def solve_coevolution_genetic(
     if use_gpu_mode:
         logger.info(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
 
-    cfg_data = {
-        "selected_color": selected_color,
-        "primary_color": str(p_color or ""),
-        "secondary_color": str(s_color or ""),
-        "use_gpu": use_gpu_mode,
-        "use_gpu_native": use_gpu_native,
-        "fg_candidate_limit": read_fg_candidate_limit(
-            cfg,
-            default=FG_CANDIDATE_LIMIT,
-            min_limit=LOADOUTS_PER_SONG_LIMIT,
-        ),
-        "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
-        "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
-        "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
-        "user_cm": safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)),
-        "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
-        "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
-    }
+    cfg_data = (
+        dict(solver_ctx.cfg_data)
+        if solver_ctx is not None
+        else {
+            "selected_color": selected_color,
+            "primary_color": str(p_color or ""),
+            "secondary_color": str(s_color or ""),
+            "use_gpu": use_gpu_mode,
+            "use_gpu_native": use_gpu_native,
+            "fg_candidate_limit": read_fg_candidate_limit(
+                cfg,
+                default=FG_CANDIDATE_LIMIT,
+                min_limit=LOADOUTS_PER_SONG_LIMIT,
+            ),
+            "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
+            "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
+            "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
+            "user_cm": safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)),
+            "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
+            "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
+        }
+    )
+    cfg_data["selected_color"] = selected_color
+    cfg_data["primary_color"] = str(p_color or "")
+    cfg_data["secondary_color"] = str(s_color or "")
+    cfg_data["use_gpu"] = use_gpu_mode
+    cfg_data["use_gpu_native"] = use_gpu_native
+    cfg_data["fg_candidate_limit"] = int(
+        cfg_data.get(
+            "fg_candidate_limit",
+            read_fg_candidate_limit(
+                cfg,
+                default=FG_CANDIDATE_LIMIT,
+                min_limit=LOADOUTS_PER_SONG_LIMIT,
+            ),
+        )
+        or FG_CANDIDATE_LIMIT
+    )
     # DEV / DEBUG: convergence trace flags
     # (GAConvergenceTrace, GAConvergenceTraceEvery, GAConvergenceTraceOutDir,
     #  GAConvergenceTraceSongFilter).
@@ -3003,10 +3032,13 @@ def solve_coevolution_genetic(
     # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
     try:
-        from ..core.config import read_iteration_engine_settings
+        from ..core.config import read_fg_solver_mode, read_iteration_engine_settings
 
         ie = read_iteration_engine_settings(cfg)
-        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
+        fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
+        fg_enabled = bool(fg_solver_mode == "exact_dp") or (
+            bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
+        )
     except Exception:
         fg_enabled = False
     cfg_data["fg_require_stats"] = bool(fg_enabled)
@@ -3017,15 +3049,16 @@ def solve_coevolution_genetic(
         logger.info("=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
         logger.info(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
 
-        # 3. Create Registry (restrict pools only for non-optimized slots).
-        registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
-        registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
-        registry = ItemRegistry(
-            gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis
-        )
-
-        gpu_data = registry.to_gpu_arrays()
-        base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
+        if solver_ctx is None:
+            registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
+            registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
+            registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis)
+            gpu_data = registry.to_gpu_arrays()
+            base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
+        else:
+            registry = solver_ctx.registry
+            gpu_data = solver_ctx.gpu_arrays
+            base_stats_arr = solver_ctx.base_fixed_stats_arr
         num_runs = max(1, int(ga_settings.multi_start or 1))
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
         logger.info(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
@@ -3258,5 +3291,3 @@ def solve_coevolution_genetic(
             pass
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated
-
-    raise RuntimeError("CPU GA path removed (GPU-only policy). Enable GPU-native GA and Taichi/Vulkan support.")

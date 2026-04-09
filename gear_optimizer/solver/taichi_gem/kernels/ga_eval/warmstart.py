@@ -10,7 +10,11 @@ import sys
 import taichi as ti
 
 from .. import kernels_helpers
-from ..kernels_scoring import local_search_from_hint, optimize_core_device_refined as optimize_core_device
+from ..kernels_scoring import (
+    local_search_from_hint,
+    optimize_core_device_exact_bound,
+    optimize_core_device_refined as optimize_core_device,
+)
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
@@ -58,6 +62,7 @@ def _compute_combo_key_warmstart_preloaded(
     max_ff_gems: ti.i32,
     use_hints: ti.template(),
     prune_plateaus: ti.template(),
+    use_exact_inner_solver: ti.template(),
 ) -> ti.u64:
     """
     Compute a packed max-key for a single (genome, combo) work item.
@@ -176,28 +181,52 @@ def _compute_combo_key_warmstart_preloaded(
                     ff_idx,
                 )[0]
             else:
-                score = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )[0]
+                if ti.static(use_exact_inner_solver):
+                    score = optimize_core_device_exact_bound(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )[0]
+                else:
+                    score = optimize_core_device(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )[0]
 
             if score >= 0:
                 out_key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
@@ -228,6 +257,7 @@ def ga_find_best_combo_warmstart_kernel(
     song_slot: ti.i32,
     use_hints: ti.template(),  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
+    use_exact_inner_solver: ti.template(),  # 0 = greedy/refined, 1 = bounded exact fixed-(FT,FF) solve
     reuse_exact_eval_results: ti.template(),
 ):
     """
@@ -320,6 +350,7 @@ def ga_find_best_combo_warmstart_kernel(
                 max_ff_gems,
                 use_hints,
                 prune_plateaus,
+                use_exact_inner_solver,
             )
             if key != 0:
                 score = ti.cast((key >> 32), ti.i32) - 1
@@ -402,11 +433,12 @@ def ga_find_best_combo_warmstart_kernel(
                     base_s_val,
                     base_ft_stat,
                     base_ff_stat,
-                    max_ft_gems,
-                    max_ff_gems,
-                    use_hints,
-                    prune_plateaus,
-                )
+                max_ft_gems,
+                max_ff_gems,
+                use_hints,
+                prune_plateaus,
+                use_exact_inner_solver,
+            )
                 if key > local_best_key:
                     local_best_key = key
                 local_c += block_dim

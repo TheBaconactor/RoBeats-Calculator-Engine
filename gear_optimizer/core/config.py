@@ -20,6 +20,9 @@ from .constants import (
 from .utils import safe_int, safe_float
 
 
+_LEGACY_OUTER_ENGINE_WARNED: set[str] = set()
+
+
 def get_config_path(default: str = "config.ini") -> str:
     """
     Resolve the effective config path.
@@ -366,6 +369,173 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     if not raw:
         return None
     return safe_int(raw, -1)
+
+
+def _canon_outer_search_engine(raw: Any) -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    value = "_".join(part for part in value.split("_") if part)
+    if not value:
+        return ""
+    if value in {"ga", "genetic", "genetic_algorithm", "geneticalgorithm"}:
+        return "ga"
+    if value in {"exact", "skyline", "exact_skyline", "exact_skyline_dp", "skyline_exact"}:
+        return "exact"
+    if value in {"marginal", "marginal_prune", "marginal_pruning", "slot_prune", "slot_pruning"}:
+        return "legacy_marginal"
+    if value in {"marginal_fused", "fused_marginal", "marginal_fused_dp", "marginal_exact_fg"}:
+        return "legacy_marginal_fused"
+    if value in {"fused", "fused_exact", "fused_exact_dp", "exact_fused"}:
+        return "legacy_fused_exact"
+    return value
+
+
+def _warn_legacy_outer_engine_once(raw: Any, replacement: str) -> None:
+    key = str(raw or "").strip()
+    if not key or key in _LEGACY_OUTER_ENGINE_WARNED:
+        return
+    _LEGACY_OUTER_ENGINE_WARNED.add(key)
+    logging.warning("[Config] OuterSearchEngine=%s is deprecated; use %s.", key, replacement)
+
+
+def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
+    default_c = _canon_outer_search_engine(default) or "exact"
+    raw_env = os.environ.get("METAFINDER_OUTER_SEARCH_ENGINE")
+    if raw_env is None or not str(raw_env).strip():
+        raw_env = os.environ.get("OUTER_SEARCH_ENGINE")
+    if raw_env is not None and str(raw_env).strip():
+        return raw_env, default_c
+    try:
+        raw = cfg.get("IterationEngine", "OuterSearchEngine", fallback=default_c)
+    except Exception as exc:
+        warn_fallback(
+            "config.outer_search_engine.read",
+            "failed reading OuterSearchEngine; using default",
+            context={"default": default_c},
+            exc=exc,
+        )
+        raw = default_c
+    return raw, default_c
+
+
+def read_outer_search_engine(cfg: Any, *, default: str = "exact") -> str:
+    """Read `[IterationEngine].OuterSearchEngine` as the canonical outer engine."""
+
+    raw, default_c = _read_outer_search_engine_raw(cfg, default=default)
+    value = _canon_outer_search_engine(raw)
+    if value in {"ga", "exact"}:
+        return value
+    if value == "legacy_marginal":
+        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=exact plus PrePruneMode=marginal")
+        return "exact"
+    if value == "legacy_fused_exact":
+        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=exact plus FG_SolverMode=exact_dp")
+        return "exact"
+    if value == "legacy_marginal_fused":
+        _warn_legacy_outer_engine_once(
+            raw,
+            "OuterSearchEngine=exact plus PrePruneMode=marginal and FG_SolverMode=exact_dp",
+        )
+        return "exact"
+    if not value:
+        return "exact" if default_c.startswith("legacy_") else default_c
+    warn_fallback(
+        "config.outer_search_engine.invalid",
+        "invalid OuterSearchEngine; using default",
+        context={"value": str(raw), "default": default_c},
+    )
+    return "exact" if default_c.startswith("legacy_") else default_c
+
+
+def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
+    """Read `[IterationEngine].PrePruneMode` with legacy alias fallback."""
+
+    def _canon(raw: Any) -> str:
+        value = str(raw or "").strip().lower().replace("-", "_")
+        value = "_".join(part for part in value.split("_") if part)
+        if not value:
+            return ""
+        if value in {"none", "off", "disabled"}:
+            return "none"
+        if value in {"marginal", "marginal_prune", "marginal_pruning"}:
+            return "marginal"
+        if value in {"auto", "automatic"}:
+            return "auto"
+        return value
+
+    default_c = _canon(default) or "auto"
+    try:
+        raw = cfg.get("IterationEngine", "PrePruneMode", fallback="")
+    except Exception as exc:
+        warn_fallback(
+            "config.pre_prune_mode.read",
+            "failed reading PrePruneMode; using default",
+            context={"default": default_c},
+            exc=exc,
+        )
+        raw = ""
+    value = _canon(raw)
+    if value in {"none", "marginal", "auto"}:
+        return value
+    if value:
+        warn_fallback(
+            "config.pre_prune_mode.invalid",
+            "invalid PrePruneMode; using default",
+            context={"value": str(raw), "default": default_c},
+        )
+        return default_c
+
+    legacy_raw, _ = _read_outer_search_engine_raw(cfg, default="exact")
+    legacy_value = _canon_outer_search_engine(legacy_raw)
+    if legacy_value in {"legacy_marginal", "legacy_marginal_fused"}:
+        return "marginal"
+    return default_c
+
+
+def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
+    """Read `[IterationEngine].FG_SolverMode` with legacy alias fallback."""
+
+    def _canon(raw: Any) -> str:
+        value = str(raw or "").strip().lower().replace("-", "_")
+        value = "_".join(part for part in value.split("_") if part)
+        if not value:
+            return ""
+        if value in {"finder", "auto_finder"}:
+            return "finder"
+        if value in {"manual", "enumeration", "legacy"}:
+            return "manual"
+        if value in {"exact_dp", "dp", "exact"}:
+            return "exact_dp"
+        if value in {"off", "disabled", "none"}:
+            return "off"
+        return value
+
+    default_c = _canon(default) or "exact_dp"
+    try:
+        raw = cfg.get("IterationEngine", "FG_SolverMode", fallback="")
+    except Exception as exc:
+        warn_fallback(
+            "config.fg_solver_mode.read",
+            "failed reading FG_SolverMode; using default",
+            context={"default": default_c},
+            exc=exc,
+        )
+        raw = ""
+    value = _canon(raw)
+    if value in {"finder", "manual", "exact_dp", "off"}:
+        return value
+    if value:
+        warn_fallback(
+            "config.fg_solver_mode.invalid",
+            "invalid FG_SolverMode; using default",
+            context={"value": str(raw), "default": default_c},
+        )
+        return default_c
+
+    legacy_raw, _ = _read_outer_search_engine_raw(cfg, default="exact")
+    legacy_value = _canon_outer_search_engine(legacy_raw)
+    if legacy_value in {"legacy_fused_exact", "legacy_marginal_fused"}:
+        return "exact_dp"
+    return default_c
 
 
 def find_and_cache_paths():

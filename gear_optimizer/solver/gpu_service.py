@@ -458,6 +458,28 @@ class GpuServiceClient:
             {"args": args, "kwargs": kwargs},
         )
 
+    def submit_solve_force_greats_exact_dp(
+        self,
+        *,
+        stats_list,
+        calc_song: dict[str, Any],
+        ref_arrays: dict[str, Any],
+        timing_aware: bool = True,
+        prune: bool = True,
+        song_slot: int = 0,
+    ) -> GpuJobHandle:
+        return self.submit(
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+            {
+                "stats_list": list(stats_list or []),
+                "calc_song": calc_song,
+                "ref_arrays": ref_arrays,
+                "timing_aware": bool(timing_aware),
+                "prune": bool(prune),
+                "song_slot": int(song_slot or 0),
+            },
+        )
+
     def submit_fg_compute_breakpoints(
         self,
         *,
@@ -746,6 +768,7 @@ class GpuServiceClient:
             return 240.0
         if request_type in {
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,

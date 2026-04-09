@@ -613,6 +613,7 @@ def ga_evaluate_population(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     use_hints: int = 0,
+    use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
     materialize_mode: str = "none",
@@ -644,6 +645,7 @@ def ga_evaluate_population(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     use_hints_i = int(use_hints)
+    use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
     # Warm-start local search is not result-stable enough on the current Metal path
     # to safely collapse duplicate rows without changing convergence behavior.
@@ -742,6 +744,7 @@ def ga_evaluate_population(
             song_slot_i,
             use_hints_i,
             int(prune_plateaus_i),
+            use_exact_inner_solver_i,
             int(exact_genome_eval_results_reuse),
         )
         offset += int(chunk_len)
@@ -767,6 +770,7 @@ def ga_evaluate_population(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         song_slot=song_slot_i,
+        use_exact_inner_solver=bool(use_exact_inner_solver_i),
         materialize_mode=materialize_mode,
         update_global_best=bool(update_global_best),
     )
@@ -791,6 +795,7 @@ def _ga_materialize_population_results(
     is_p_ov: int,
     is_s_ov: int,
     song_slot: int,
+    use_exact_inner_solver: bool,
     materialize_mode: str,
     update_global_best: bool = False,
 ) -> None:
@@ -815,6 +820,7 @@ def _ga_materialize_population_results(
         int(is_p_ov),
         int(is_s_ov),
         int(song_slot),
+        int(bool(use_exact_inner_solver)),
     )
 
     if mode in {"results", "results_only", "write_results"}:
@@ -848,6 +854,7 @@ def _ga_materialize_population_results(
             int(is_p_ov),
             int(is_s_ov),
             int(song_slot),
+            int(bool(use_exact_inner_solver)),
         )
         return
 
@@ -873,14 +880,14 @@ def ga_write_best_and_update_global(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
 ) -> None:
     """
-    FUSED: Write best results + store hints + update global best (3 kernels -> 1).
+    FUSED: Write best results + update global best.
 
     Call this AFTER evaluation (ga_evaluate_population) to:
     1. Finalize best combo from chunk_best_key
-    2. Store hints for next generation (warm-start)
-    3. Update GPU-side global best
+    2. Update GPU-side global best
 
     Args:
         n_genomes: Number of genomes
@@ -909,6 +916,7 @@ def ga_write_best_and_update_global(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         song_slot=int(song_slot),
+        use_exact_inner_solver=bool(use_exact_inner_solver),
         materialize_mode="update_global",
     )
 

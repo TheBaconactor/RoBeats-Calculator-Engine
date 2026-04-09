@@ -44,11 +44,16 @@ ref_cm_field = None
 ref_fm_field = None
 ref_ft_field = None
 ref_ff_field = None
+exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 
 # Grid fields
 grid_count_body_fever = None
 grid_count_body_normal = None
 grid_head_len = None
+grid_N_hn = None
+grid_N_hf = None
+grid_Sigma_hn = None
+grid_Sigma_hf = None
 grid_fever_masks = None
 grid_fever_masks_bits = None
 grid_sig0 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)

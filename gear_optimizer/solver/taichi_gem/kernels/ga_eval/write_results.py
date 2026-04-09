@@ -11,7 +11,10 @@ import sys
 import taichi as ti
 
 from .. import kernels_helpers
-from ..kernels_scoring import optimize_core_device_refined as optimize_core_device
+from ..kernels_scoring import (
+    optimize_core_device_exact_bound,
+    optimize_core_device_refined as optimize_core_device,
+)
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
@@ -135,6 +138,7 @@ def ga_write_best_results_from_key_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
 ):
     """
     Finalize best (ft, ff, gem counts) per genome from chunk_best_key.
@@ -186,6 +190,8 @@ def ga_write_best_results_from_key_kernel(
         cm_gems: ti.i32 = 0
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
+        res_vec = ti.Vector([ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
+        res_vec = ti.Vector([ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
 
         if ti.static(not IS_METAL):
             pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
@@ -218,6 +224,7 @@ def ga_write_best_results_from_key_kernel(
                     is_s_ov,
                     song_slot,
                 )
+                res_vec = ti.Vector([score, pp_gems, cm_gems, fm_gems, ov_gems, ti.i32(0), ti.i32(0)])
             else:
                 # Cache missing/invalid: recompute to keep behavior correct.
                 GEM_STAT_TO_ELEMENT: ti.i32 = 3
@@ -243,34 +250,53 @@ def ga_write_best_results_from_key_kernel(
                 p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                 s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+                if ti.static(use_exact_inner_solver):
+                    res_vec = optimize_core_device_exact_bound(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
+                else:
+                    res_vec = optimize_core_device(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
 
-                score = res_vec[0]
-                pp_gems = res_vec[1]
-                cm_gems = res_vec[2]
-                fm_gems = res_vec[3]
-                ov_gems = res_vec[4]
         else:
             # Metal: eval kernels do not cache allocations.
             GEM_STAT_TO_ELEMENT: ti.i32 = 3
@@ -296,34 +322,64 @@ def ga_write_best_results_from_key_kernel(
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+            if ti.static(use_exact_inner_solver):
+                res_vec = optimize_core_device_exact_bound(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+            else:
+                res_vec = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
 
             score = res_vec[0]
             pp_gems = res_vec[1]
             cm_gems = res_vec[2]
             fm_gems = res_vec[3]
             ov_gems = res_vec[4]
+
+        score = res_vec[0]
+        pp_gems = res_vec[1]
+        cm_gems = res_vec[2]
+        fm_gems = res_vec[3]
+        ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
             [
@@ -363,6 +419,7 @@ def ga_write_best_and_update_global_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
 ):
     """
     FUSED: Write best results + store hints + update global best in one kernel.
@@ -415,6 +472,7 @@ def ga_write_best_and_update_global_kernel(
         cm_gems: ti.i32 = 0
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
+        res_vec = ti.Vector([ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
 
         if ti.static(not IS_METAL):
             pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
@@ -471,28 +529,52 @@ def ga_write_best_and_update_global_kernel(
                 p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                 s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+                if ti.static(use_exact_inner_solver):
+                    res_vec = optimize_core_device_exact_bound(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
+                else:
+                    res_vec = optimize_core_device(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
 
                 score = res_vec[0]
                 pp_gems = res_vec[1]
@@ -523,28 +605,52 @@ def ga_write_best_and_update_global_kernel(
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+            if ti.static(use_exact_inner_solver):
+                res_vec = optimize_core_device_exact_bound(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+            else:
+                res_vec = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
 
             score = res_vec[0]
             pp_gems = res_vec[1]
@@ -623,6 +729,7 @@ def ga_write_best_and_store_hints_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
 ):
     """
     Materialize best results + store hints (no global-best update).
@@ -717,28 +824,52 @@ def ga_write_best_and_store_hints_kernel(
                 p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                 s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+                if ti.static(use_exact_inner_solver):
+                    res_vec = optimize_core_device_exact_bound(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
+                else:
+                    res_vec = optimize_core_device(
+                        budget,
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        p_val,
+                        s_val,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                    )
 
                 score = res_vec[0]
                 pp_gems = res_vec[1]
@@ -769,28 +900,52 @@ def ga_write_best_and_store_hints_kernel(
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+            if ti.static(use_exact_inner_solver):
+                res_vec = optimize_core_device_exact_bound(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+            else:
+                res_vec = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
 
             score = res_vec[0]
             pp_gems = res_vec[1]

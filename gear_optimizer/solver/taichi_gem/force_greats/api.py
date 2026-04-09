@@ -1,8 +1,9 @@
 """
-ForceGreatsFinder GPU - Python wrapper (Taichi/Vulkan).
+Force Greats GPU APIs (Taichi/Vulkan).
 
-Public entrypoint:
+Public entrypoints:
   - solve_force_greats_finder_gpu(...)
+  - solve_force_greats_exact_dp_gpu_batch(...)
 
 This module is called from the scoring pipeline and must remain API-stable.
 """
@@ -19,6 +20,7 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.solver.fg_exact_dp import prepare_force_greats_exact_dp_inputs
 
 from .. import api as gem_api
 from ..api.sync_policy import maybe_sync
@@ -1339,6 +1341,109 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     _fg_last_great_ptr_key = ptr_key
     _fg_last_great_key = content_key
     _fg_use_great_candidate_field()
+
+
+def _strip_fg_exact_dp_counts(raw_counts: np.ndarray) -> list[int]:
+    counts: list[int] = []
+    for value in np.asarray(raw_counts, dtype=np.int32).tolist():
+        iv = int(value)
+        if iv < 0:
+            break
+        counts.append(iv)
+    return counts
+
+
+def solve_force_greats_exact_dp_gpu_batch(
+    *,
+    stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    calc_song: dict,
+    ref_arrays: dict,
+    timing_aware: bool = True,
+    prune: bool = True,
+    song_slot: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Run the production exact FG DP kernel for a batch of fixed stat points.
+
+    This is the stable Taichi/Vulkan entrypoint for the exact FG stage. The
+    kernel remains single-stat-point internally, but batching at the Python API
+    keeps song/timeline uploads shared across candidates.
+    """
+    _ = int(song_slot or 0)
+
+    if not isinstance(stats_list, (list, tuple)):
+        raise TypeError("solve_force_greats_exact_dp_gpu_batch stats_list must be a list/tuple of dicts")
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        raise TypeError("solve_force_greats_exact_dp_gpu_batch requires calc_song/ref_arrays dicts")
+
+    if not stats_list:
+        return []
+
+    first_prepared = None
+    for stats in stats_list:
+        if isinstance(stats, dict):
+            first_prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+            if first_prepared is not None:
+                break
+
+    if first_prepared is None:
+        return [{"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}} for _ in stats_list]
+
+    gem_api.ensure_ready(ref_arrays)
+    fg_fields.ensure_ready_with_warmup()
+
+    total_notes = int(first_prepared.total_notes)
+    _fg_upload_song_timestamps(first_prepared.timestamps)
+    if first_prepared.great_candidates is None:
+        global _fg_last_great_key
+        _fg_last_great_key = _fg_last_song_key
+        _fg_use_great_candidate_alias()
+    else:
+        _fg_upload_great_candidate_timestamps(first_prepared.great_candidates, total_notes)
+    _ensure_fever_end_tables(total_notes, float(first_prepared.last_note_time))
+
+    out: list[dict[str, Any]] = []
+    timing_flag = 1 if timing_aware else 0
+    prune_flag = 1 if prune else 0
+
+    for stats in stats_list:
+        prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+        if prepared is None:
+            out.append({"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
+            continue
+
+        n = int(prepared.total_notes)
+        fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64))
+        fg_kernels.fg_upload_exact_dp_full_c_prefix_kernel(int(n), np.ascontiguousarray(prepared.c_prefix, dtype=np.int64))
+        fg_kernels.fg_exact_dp_sparse_full_kernel(
+            int(n),
+            float(prepared.raw_fill),
+            int(prepared.non_fever_base),
+            int(prepared.ft_idx),
+            int(timing_flag),
+            int(prune_flag),
+        )
+        ti.sync()
+
+        overflow = int(fg_fields.fg_exact_dp_sparse_overflow.to_numpy())
+        if overflow != 0:
+            raise RuntimeError(
+                "FG exact DP sparse kernel overflowed scratch buffers; increase "
+                "FG_EXACT_DP_SPARSE_MAX_STATES / FG_EXACT_DP_SPARSE_HASH_SIZE"
+            )
+
+        out.append(
+            {
+                "best_delta": int(fg_fields.fg_exact_dp_sparse_best_delta.to_numpy()),
+                "section_counts": _strip_fg_exact_dp_counts(fg_fields.fg_exact_dp_sparse_counts.to_numpy()),
+                "profile": {
+                    "states": int(fg_fields.fg_exact_dp_sparse_states.to_numpy()),
+                    "transitions": int(fg_fields.fg_exact_dp_sparse_transitions.to_numpy()),
+                },
+            }
+        )
+
+    return out
 
 
 def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:

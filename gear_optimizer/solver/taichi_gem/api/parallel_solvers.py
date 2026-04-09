@@ -354,6 +354,7 @@ def solve_genomes_from_registry(
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
 ) -> list:
     """
     V3: GPU-RESIDENT stat aggregation path.
@@ -440,6 +441,7 @@ def solve_genomes_from_registry(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         use_hints=0,
+        use_exact_inner_solver=bool(use_exact_inner_solver),
         materialize_mode="results_only",
     )
 
