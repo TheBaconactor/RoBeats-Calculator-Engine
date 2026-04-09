@@ -5,7 +5,7 @@ This module provides `process_fg_exact_dp`, the production FG path for
 `FG_SolverMode=exact_dp`.
 
 Current routing is orthogonal:
-  Stage 1: outer search (`ga` or `exact`) produces base candidates
+  Stage 1: GA outer search produces base candidates on main
   Stage 2: `FG_SolverMode=exact_dp` preserves the full FG finder surface
            (FT/FF + gem re-optimization) and then uses exact DP to refine the
            forced-Great configuration on the resolved FG stat points
@@ -13,8 +13,8 @@ Current routing is orthogonal:
 
 Legacy note:
   Earlier revisions exposed this via `OuterSearchEngine=fused_exact`. That name
-  now survives only as a backward-compatible alias for
-  `OuterSearchEngine=exact` + `FG_SolverMode=exact_dp`.
+  now survives only as a backward-compatible config alias that falls back to the
+  mainline production route (`OuterSearchEngine=ga`, `FG_SolverMode=exact_dp`).
 """
 
 from __future__ import annotations

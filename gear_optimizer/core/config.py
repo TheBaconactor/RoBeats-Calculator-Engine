@@ -394,11 +394,11 @@ def _warn_legacy_outer_engine_once(raw: Any, replacement: str) -> None:
     if not key or key in _LEGACY_OUTER_ENGINE_WARNED:
         return
     _LEGACY_OUTER_ENGINE_WARNED.add(key)
-    logging.warning("[Config] OuterSearchEngine=%s is deprecated; use %s.", key, replacement)
+    logging.warning("[Config] OuterSearchEngine=%s is research-only on main; using %s.", key, replacement)
 
 
 def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
-    default_c = _canon_outer_search_engine(default) or "exact"
+    default_c = "ga"
     raw_env = os.environ.get("METAFINDER_OUTER_SEARCH_ENGINE")
     if raw_env is None or not str(raw_env).strip():
         raw_env = os.environ.get("OUTER_SEARCH_ENGINE")
@@ -417,37 +417,28 @@ def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
     return raw, default_c
 
 
-def read_outer_search_engine(cfg: Any, *, default: str = "exact") -> str:
-    """Read `[IterationEngine].OuterSearchEngine` as the canonical outer engine."""
+def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
+    """Read `[IterationEngine].OuterSearchEngine` for mainline production routing."""
 
     raw, default_c = _read_outer_search_engine_raw(cfg, default=default)
     value = _canon_outer_search_engine(raw)
-    if value in {"ga", "exact"}:
+    if value == "ga":
         return value
-    if value == "legacy_marginal":
-        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=exact plus PrePruneMode=marginal")
-        return "exact"
-    if value == "legacy_fused_exact":
-        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=exact plus FG_SolverMode=exact_dp")
-        return "exact"
-    if value == "legacy_marginal_fused":
-        _warn_legacy_outer_engine_once(
-            raw,
-            "OuterSearchEngine=exact plus PrePruneMode=marginal and FG_SolverMode=exact_dp",
-        )
-        return "exact"
+    if value in {"exact", "legacy_marginal", "legacy_fused_exact", "legacy_marginal_fused"}:
+        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=ga")
+        return "ga"
     if not value:
-        return "exact" if default_c.startswith("legacy_") else default_c
+        return default_c
     warn_fallback(
         "config.outer_search_engine.invalid",
         "invalid OuterSearchEngine; using default",
         context={"value": str(raw), "default": default_c},
     )
-    return "exact" if default_c.startswith("legacy_") else default_c
+    return default_c
 
 
-def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
-    """Read `[IterationEngine].PrePruneMode` with legacy alias fallback."""
+def read_pre_prune_mode(cfg: Any, *, default: str = "none") -> str:
+    """Read `[IterationEngine].PrePruneMode` without outer-engine alias coupling."""
 
     def _canon(raw: Any) -> str:
         value = str(raw or "").strip().lower().replace("-", "_")
@@ -462,7 +453,7 @@ def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
             return "auto"
         return value
 
-    default_c = _canon(default) or "auto"
+    default_c = _canon(default) or "none"
     try:
         raw = cfg.get("IterationEngine", "PrePruneMode", fallback="")
     except Exception as exc:
@@ -483,11 +474,6 @@ def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
             context={"value": str(raw), "default": default_c},
         )
         return default_c
-
-    legacy_raw, _ = _read_outer_search_engine_raw(cfg, default="exact")
-    legacy_value = _canon_outer_search_engine(legacy_raw)
-    if legacy_value in {"legacy_marginal", "legacy_marginal_fused"}:
-        return "marginal"
     return default_c
 
 
@@ -531,10 +517,6 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
         )
         return default_c
 
-    legacy_raw, _ = _read_outer_search_engine_raw(cfg, default="exact")
-    legacy_value = _canon_outer_search_engine(legacy_raw)
-    if legacy_value in {"legacy_fused_exact", "legacy_marginal_fused"}:
-        return "exact_dp"
     return default_c
 
 
