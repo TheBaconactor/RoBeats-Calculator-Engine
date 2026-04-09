@@ -39,7 +39,6 @@ grid_head_len = None
 grid_fever_masks_bits = None
 grid_sig0 = None
 grid_sig1 = None
-genome_hint_allocation = None  # Warm-start hints for local search
 ga_global_best_score = None
 ga_global_best_genome = None
 ga_global_best_results = None
@@ -70,8 +69,9 @@ def create_metal_kernels():
     if _kernels_created:
         return
 
-    # Import optimize_core_device and local_search_from_hint at kernel creation time
-    from .kernels import optimize_core_device, local_search_from_hint
+    # Import scoring solvers at kernel creation time
+    from .kernels import optimize_core_device
+    from .kernels_scoring import optimize_core_device_exact_bound
 
     @ti.kernel
     def _ga_find_best_combo_key_kernel(
@@ -291,11 +291,11 @@ def create_metal_kernels():
         is_p_ov: ti.i32,
         is_s_ov: ti.i32,
         song_slot: ti.i32,
-        use_hints: ti.i32,
         prune_plateaus: ti.i32,
+        use_exact_inner_solver: ti.i32,
         reuse_exact_eval_results: ti.i32,
     ):
-        """Metal-safe warm-start kernel using 32-bit atomics."""
+        """Metal-safe exact-eval kernel using 32-bit atomics."""
         ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
         GEM_STAT_TO_ELEMENT: ti.i32 = 3
         MAX_STAT: ti.i32 = 160
@@ -427,13 +427,8 @@ def create_metal_kernels():
 
             res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
 
-            if use_hints != 0:
-                hint = genome_hint_allocation[genome_idx]
-                res_vec = local_search_from_hint(
-                    hint[0],
-                    hint[1],
-                    hint[2],
-                    hint[3],
+            if use_exact_inner_solver != 0:
+                res_vec = optimize_core_device_exact_bound(
                     budget,
                     base_pp,
                     base_cm,
@@ -536,7 +531,7 @@ def create_metal_kernels():
         # Replace the fused kernel (which used 64-bit atomics) with 2 Metal-safe kernels.
         from . import kernels as base_kernels
 
-        base_kernels.ga_write_best_and_store_hints_kernel(
+        base_kernels.ga_write_best_results_from_key_kernel(
             int(n_genomes),
             int(total_budget),
             int(gem_scale_fever),
@@ -553,6 +548,7 @@ def create_metal_kernels():
             int(is_p_ov),
             int(is_s_ov),
             int(song_slot),
+            1,
         )
         _ga_update_global_best_kernel(int(n_genomes), int(n_slots))
 

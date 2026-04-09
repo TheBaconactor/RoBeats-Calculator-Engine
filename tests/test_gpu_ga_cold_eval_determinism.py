@@ -132,7 +132,6 @@ def test_gpu_ga_cold_eval_is_stable_across_hard_resets(monkeypatch: pytest.Monke
                 total_budget=int(song.cfg_data.get("TotalBudget", 90)),
                 gem_scale_fever=int(song.cfg_data.get("GemScaleFever", GEM_SCALE_FEVER)),
                 song_slot=0,
-                use_hints=0,
                 materialize_mode="update_global",
                 **song.color_flags,
             )

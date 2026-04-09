@@ -21,7 +21,6 @@ from .payload import (
 )
 from .warmstart import ga_find_best_combo_warmstart_kernel
 from .write_results import (
-    ga_write_best_and_store_hints_kernel,
     ga_write_best_and_update_global_kernel,
     ga_write_best_results_from_key_kernel,
 )
@@ -30,7 +29,6 @@ __all__ = [
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
     "ga_write_best_and_update_global_kernel",
-    "ga_write_best_and_store_hints_kernel",
     "ga_init_global_best_kernel",
     "ga_pack_global_best_kernel",
     "ga_update_global_best_kernel",

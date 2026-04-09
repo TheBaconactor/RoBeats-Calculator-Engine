@@ -44,7 +44,7 @@ ref_cm_field = None
 ref_fm_field = None
 ref_ft_field = None
 ref_ff_field = None
-exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
+exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16 - PP-vs-OV prefix argmax for exact bound solver
 
 # Grid fields
 grid_count_body_fever = None
@@ -91,7 +91,7 @@ ga_rng_state = None
 ga_parent_a = None
 ga_parent_b = None
 ga_exact_eval_hash_used = None  # (HASH_SIZE,) i32 - open-addressing table for exact duplicate-genome reuse
-ga_exact_eval_hash_keys = None  # (HASH_SIZE, 13) i32 - [slots(9), reserved(4)]
+ga_exact_eval_hash_keys = None  # (HASH_SIZE, 9) i32 - encoded genome key
 ga_exact_eval_hash_sort_keys = None  # (MAX_GENOMES,) i32 - hash keys for parallel sort grouping
 ga_exact_eval_hash_sort_indices = None  # (MAX_GENOMES,) i32 - genome indices permuted with hash_sort_keys
 ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
@@ -102,8 +102,6 @@ slot_count = None  # (MAX_SLOTS,) per-slot item count
 # Genome results
 genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
-genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
-genome_hint_allocation_next = None  # next-gen warm-start hints (race-free inheritance buffer)
 chunk_best_key = None  # u64 packed key per genome for safe reduction
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index (Metal)

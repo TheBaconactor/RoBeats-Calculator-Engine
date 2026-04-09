@@ -305,18 +305,13 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
         raise RuntimeError(f"GpuExecutor aborted: {where}")
 
 
-# PRODUCTION: GA_FORCE_COLD_START is a production runtime override for the GPU-native GA path.
-# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS, GPU_NATIVE_GA_COLD_TAIL_GENS.
-_GA_FORCE_COLD_START = _env_flag("GA_FORCE_COLD_START", "")
+# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS.
 _PERF_TIMING = _env_flag("PERF_TIMING", "0")
 _GPU_NATIVE_GA_LOG_ISLAND_MODEL = _env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
 _GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = _env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
 _GPU_NATIVE_GA_VULKAN_RETRIES = _env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
 _GPU_NATIVE_GA_BATCH_RUNS = _env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
 _GPU_NATIVE_GA_LOG_PROGRESS = _env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
-# Warm-start (use_hints=1) uses a bounded local search that can under-score some genomes.
-# Force a cold-scored tail so the final persisted winner is selected under canonical scoring.
-_GPU_NATIVE_GA_COLD_TAIL_GENS = _env_int("GPU_NATIVE_GA_COLD_TAIL_GENS", 1)
 # Prune FT/FF combo tables to globally feasible caps derived from base-stat ceilings.
 _GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = _env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
 
@@ -1507,10 +1502,6 @@ def _run_gpu_native_ga(
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
 
-    # Warm-start control: force cold start on Gen 0
-    gen_use_hints = 0
-    cold_tail_gens = max(0, int(_GPU_NATIVE_GA_COLD_TAIL_GENS))
-
     # Upload island boundaries to GPU (once per run)
     island_boundaries_np = np.array(island_starts, dtype=np.int32)
     gpu_api.ga_upload_island_boundaries(island_boundaries_np)
@@ -1521,9 +1512,6 @@ def _run_gpu_native_ga(
     # Main GPU-native GA loop with island migration (GPU-resident elitism)
     for gen in range(n_generations):
         _raise_if_abort_requested(abort_requested, f"before GPU-native GA generation {int(gen)}")
-        eval_use_hints = int(gen_use_hints)
-        if cold_tail_gens > 0 and int(gen) >= (int(n_generations) - int(cold_tail_gens)):
-            eval_use_hints = 0
         # Evaluate ENTIRE population on GPU (all islands at once - efficient)
         t0 = time.perf_counter() if phase_timing else 0.0
         gpu_api.ga_evaluate_population(
@@ -1544,7 +1532,6 @@ def _run_gpu_native_ga(
             is_s_fm=is_s_fm,
             is_p_ov=is_p_ov,
             is_s_ov=is_s_ov,
-            use_hints=int(eval_use_hints),  # 0=cold, 1=warm
             max_ft_gems_global=int(max_ft_gems_global),
             max_ff_gems_global=int(max_ff_gems_global),
             materialize_mode="update_global",
@@ -1556,7 +1543,7 @@ def _run_gpu_native_ga(
                 phase="evaluate",
                 ms=(time.perf_counter() - t0) * 1000.0,
                 gen=int(gen),
-                use_hints=int(eval_use_hints),
+                use_hints=0,
             )
 
         if trace_writer is not None and (int(gen) % int(trace_every) == 0):
@@ -1590,20 +1577,14 @@ def _run_gpu_native_ga(
                     phase="migration",
                     ms=(time.perf_counter() - t0) * 1000.0,
                     gen=int(gen),
-                    use_hints=int(gen_use_hints),
+                    use_hints=0,
                 )
-
-            # Force cold start after migration, as hints are scrambled
-            gen_use_hints = 0
-        else:
-            # Enable warm start for next generation (unless overridden by migration)
-            gen_use_hints = 1
 
         # Skip ga_next_generation on final iteration - we don't use that population
         # This saves one generation step per run (30 total per song)
         if gen < n_generations - 1:
             # Run next generation using FUSED kernel (2 launches instead of 4!)
-            # Includes: select + crossover + mutate + island elitism + swap + hint inheritance
+            # Includes: select + crossover + mutate + island elitism + swap
             t0 = time.perf_counter() if phase_timing else 0.0
             gpu_api.ga_next_generation_fused(
                 n_genomes=n_genomes,
@@ -1621,7 +1602,7 @@ def _run_gpu_native_ga(
                     phase="next_generation",
                     ms=(time.perf_counter() - t0) * 1000.0,
                     gen=int(gen),
-                    use_hints=int(gen_use_hints),
+                    use_hints=0,
                 )
 
     if phase_events_enabled and phase_samples_current:
@@ -2494,16 +2475,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     if trace_writer is not None:
                         gpu_api.ga_init_global_best()
 
-                    gen_use_hints = 0  # Force cold start on Gen 0
-                    cold_tail_gens = max(0, int(_GPU_NATIVE_GA_COLD_TAIL_GENS))
                     n_total = int(batch_len) * int(n_genomes)
                     phase_samples_current = {} if phase_events_enabled else None
 
                     for gen in range(int(n_generations)):
                         _raise_if_abort_requested(abort_requested, f"before GPU-native GA generation {int(gen)}")
-                        eval_use_hints = int(gen_use_hints)
-                        if cold_tail_gens > 0 and int(gen) >= (int(n_generations) - int(cold_tail_gens)):
-                            eval_use_hints = 0
                         t0 = time.perf_counter() if phase_timing else 0.0
                         gpu_api.ga_evaluate_population(
                             n_genomes=n_total,
@@ -2523,10 +2499,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_s_fm=is_s_fm,
                             is_p_ov=is_p_ov,
                             is_s_ov=is_s_ov,
-                            use_hints=int(eval_use_hints),
                             max_ft_gems_global=int(max_ft_gems_global),
                             max_ff_gems_global=int(max_ff_gems_global),
-                            materialize_mode="store_hints",
+                            materialize_mode="results",
                         )
                         _sync()
                         _raise_if_abort_requested(
@@ -2539,7 +2514,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 runs=int(batch_len),
                                 pop=int(n_genomes),
                                 gen=int(gen),
-                                use_hints=int(eval_use_hints),
+                                use_hints=0,
                                 combos=int(n_combos),
                             )
 
@@ -2557,7 +2532,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 runs=int(batch_len),
                                 pop=int(n_genomes),
                                 gen=int(gen),
-                                use_hints=int(eval_use_hints),
+                                use_hints=0,
                                 combos=int(n_combos),
                             )
 
@@ -2599,7 +2574,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 runs=int(batch_len),
                                 pop=int(n_genomes),
                                 gen=int(gen),
-                                use_hints=int(eval_use_hints),
+                                use_hints=0,
                                 combos=int(n_combos),
                             )
 
@@ -2629,12 +2604,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     runs=int(batch_len),
                                     pop=int(n_genomes),
                                     gen=int(gen),
-                                    use_hints=int(gen_use_hints),
+                                    use_hints=0,
                                     combos=int(n_combos),
                                 )
-                            gen_use_hints = 0
-                        else:
-                            gen_use_hints = 1
 
                         if gen < int(n_generations) - 1:
                             t0 = time.perf_counter() if phase_timing else 0.0
@@ -2659,7 +2631,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     runs=int(batch_len),
                                     pop=int(n_genomes),
                                     gen=int(gen),
-                                    use_hints=int(gen_use_hints),
+                                    use_hints=0,
                                     combos=int(n_combos),
                                 )
 
@@ -2696,7 +2668,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             runs=int(batch_len),
                             pop=int(n_genomes),
                             gen=int(n_generations),
-                            use_hints=0,
                             combos=int(n_combos),
                         )
                     if phase_samples_current:
@@ -3141,14 +3112,9 @@ def solve_coevolution_genetic(
 
         # Winner refinement:
         #
-        # GPU-native GA uses warm-start scoring (`use_hints=1`) for throughput, but warm-start relies on a bounded
-        # local search that can under-score some genomes (and even pick a different FT/FF combo) when hints are stale
-        # or inherited across mutated/crossover children. When that happens, the GA payload can represent a suboptimal
-        # gem allocation for the correct gear/minis loadout, which later shows up as "same loadout_hash improved by
-        # gem split" inconsistencies.
-        #
-        # To keep persisted winners stable, we always re-solve the final GA winner with the canonical cold (no-hints)
-        # GPU gem solver and replace the payload when it improves score.
+        # GPU-native GA candidate evaluation is now exact and hint-free, so the selected payload should already reflect
+        # the canonical gem solve for that candidate. Keep the final solve as a defensive cross-check against
+        # integration bugs or payload drift in the surrounding GA plumbing.
         refine_winner = env_flag("GPU_GA_WINNER_REFINEMENT", "1")
         exact_check = env_flag("GPU_GA_WINNER_EXACT_CHECK", "0")
         if refine_winner or exact_check:

@@ -45,7 +45,6 @@ from .kernels_helpers import (
     slot_start,
     slot_count,
     genome_result_stats,
-    genome_hint_allocation,  # Warm-start hints for local search optimization
     chunk_best_key,
     ftff_combo_ft,
     ftff_combo_ff,
@@ -81,6 +80,7 @@ from .kernels_ga import (
     ga_upload_item_stats_and_slots_kernel,
     ga_copy_population_indices_from_ndarray_kernel,
     ga_build_exact_eval_reuse_map_kernel,
+    ga_build_exact_eval_reuse_map_from_base_stats_kernel,
     ga_propagate_exact_eval_reuse_base_stats_kernel,
     ga_propagate_exact_eval_reuse_chunk_best_kernel,
     ga_select_parents_tournament_kernel,
@@ -90,16 +90,13 @@ from .kernels_ga import (
     ga_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
     ga_aggregate_genome_stats_kernel,
     ga_copy_scores_kernel,
-    # Warm-start optimization
-    ga_store_hints_kernel,
-    ga_inherit_hints_kernel,
     # FUSED kernels
     ga_aggregate_and_init_best_kernel,
     ga_select_crossover_mutate_kernel,
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
     ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
     ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
-    ga_swap_and_inherit_hints_kernel,  # FUSED: swap+hints
+    ga_swap_population_kernel,  # FUSED: swap
 )
 
 # Import scoring functions and optimize_core_device
@@ -107,7 +104,6 @@ from .kernels_scoring import (
     _calc_head_score_grid,
     calc_score_cached_device,
     optimize_core_device,
-    local_search_from_hint,  # Warm-start local search function
 )
 
 # Import batch solver kernels
@@ -143,11 +139,10 @@ from .ga_eval import (
     # GPU-side island migration
     ga_island_migration_kernel,
     ga_island_migration_runs_kernel,
-    # Warm-start evaluation
+    # Exact GA evaluation
     ga_find_best_combo_warmstart_kernel,
     # FUSED kernels
     ga_write_best_and_update_global_kernel,
-    ga_write_best_and_store_hints_kernel,
 )
 
 # Import timeline kernel
@@ -216,6 +211,7 @@ __all__ = [
     "ga_upload_item_stats_and_slots_kernel",
     "ga_copy_population_indices_from_ndarray_kernel",
     "ga_build_exact_eval_reuse_map_kernel",
+    "ga_build_exact_eval_reuse_map_from_base_stats_kernel",
     "ga_propagate_exact_eval_reuse_base_stats_kernel",
     "ga_propagate_exact_eval_reuse_chunk_best_kernel",
     "ga_select_parents_tournament_kernel",
@@ -231,9 +227,8 @@ __all__ = [
     "ga_next_generation_full_kernel",
     "ga_next_generation_full_islands_kernel",
     "ga_next_generation_full_runs_kernel",
-    "ga_swap_and_inherit_hints_kernel",
+    "ga_swap_population_kernel",
     "ga_write_best_and_update_global_kernel",
-    "ga_write_best_and_store_hints_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
@@ -272,12 +267,8 @@ __all__ = [
     "ga_island_migration_runs_kernel",
     # GPU-side island elitism
     "ga_find_island_elites_kernel",
-    # Warm-start optimization
-    "genome_hint_allocation",
-    "ga_store_hints_kernel",
-    "ga_inherit_hints_kernel",
+    # Exact GA evaluation
     "ga_find_best_combo_warmstart_kernel",
-    "local_search_from_hint",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",

@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     try:
         print("=" * 70)
-        print("GEAR OPTIMIZER - WARM (HOT) PROFILING MODE")
+        print("GEAR OPTIMIZER - EXACT (HOT) PROFILING MODE")
         print("=" * 70)
 
         # Initialize app
@@ -52,12 +52,10 @@ if __name__ == "__main__":
         print("   Compiling kernels (Evaluation, Selection, Crossover)...")
         # Dummy evaluation
         gem_api.ga_evaluate_population(
-            n_genomes=250, n_slots=9, total_budget=20, gem_scale_fever=3, song_slot=0, is_p_ft=1, is_s_ff=1, use_hints=0
+            n_genomes=250, n_slots=9, total_budget=20, gem_scale_fever=3, song_slot=0, is_p_ft=1, is_s_ff=1
         )
         # Dummy next generation
         gem_api.ga_next_generation(n_genomes=250, n_slots=9)
-        # Dummy storage
-        gem_api.ga_store_hints(250)
         gem_api.ga_update_global_best(250, 9)
         gem_api.ga_find_island_elites(250, 5, 2)
 
@@ -80,7 +78,7 @@ if __name__ == "__main__":
         # Save results
         output_file = os.path.join(project_root, "tests", "main_profile_hot_results.txt")
         with open(output_file, "w") as f:
-            f.write("MAIN.PY HOT PROFILING RESULTS (WARM START)\n")
+            f.write("MAIN.PY HOT PROFILING RESULTS (EXACT NO-HINTS)\n")
             f.write("=" * 70 + "\n\n")
 
             f.write("TOP 50 BY TOTAL (SELF) TIME:\n")

@@ -440,7 +440,6 @@ def solve_genomes_from_registry(
         is_s_fm=int(is_s_fm),
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
-        use_hints=0,
         use_exact_inner_solver=bool(use_exact_inner_solver),
         materialize_mode="results_only",
     )

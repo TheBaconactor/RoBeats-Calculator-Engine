@@ -154,79 +154,77 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
             pop_indices = registry.encode_population(genomes)
             ga_upload_population_indices(pop_indices, n_slots=9)
 
-            # Run one cold pass to seed hints, then multiple warm passes to stress
-            # the warmstart reduction path where hidden misses previously appeared.
-            for use_hints_mode, n_repeats in ((0, 1), (1, 3)):
-                for _rep in range(n_repeats):
-                    ga_evaluate_population(
-                        n_genomes=n_genomes,
-                        n_slots=9,
-                        total_budget=total_budget,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        song_slot=0,
-                        is_p_ft=flags["is_p_ft"],
-                        is_s_ft=flags["is_s_ft"],
-                        is_p_ff=flags["is_p_ff"],
-                        is_s_ff=flags["is_s_ff"],
-                        is_p_pp=flags["is_p_pp"],
-                        is_s_pp=flags["is_s_pp"],
-                        is_p_cm=flags["is_p_cm"],
-                        is_s_cm=flags["is_s_cm"],
-                        is_p_fm=flags["is_p_fm"],
-                        is_s_fm=flags["is_s_fm"],
-                        is_p_ov=flags["is_p_ov"],
-                        is_s_ov=flags["is_s_ov"],
-                        use_hints=int(use_hints_mode),
-                    )
-                    ga_write_best_and_update_global(
-                        n_genomes=n_genomes,
-                        n_slots=9,
-                        total_budget=total_budget,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        song_slot=0,
-                        is_p_ft=flags["is_p_ft"],
-                        is_s_ft=flags["is_s_ft"],
-                        is_p_ff=flags["is_p_ff"],
-                        is_s_ff=flags["is_s_ff"],
-                        is_p_pp=flags["is_p_pp"],
-                        is_s_pp=flags["is_s_pp"],
-                        is_p_cm=flags["is_p_cm"],
-                        is_s_cm=flags["is_s_cm"],
-                        is_p_fm=flags["is_p_fm"],
-                        is_s_fm=flags["is_s_fm"],
-                        is_p_ov=flags["is_p_ov"],
-                        is_s_ov=flags["is_s_ov"],
-                    )
+            # Repeat the exact no-hints evaluation several times to stress the
+            # reduction/materialization path where hidden misses previously appeared.
+            for _rep in range(4):
+                ga_evaluate_population(
+                    n_genomes=n_genomes,
+                    n_slots=9,
+                    total_budget=total_budget,
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                    song_slot=0,
+                    is_p_ft=flags["is_p_ft"],
+                    is_s_ft=flags["is_s_ft"],
+                    is_p_ff=flags["is_p_ff"],
+                    is_s_ff=flags["is_s_ff"],
+                    is_p_pp=flags["is_p_pp"],
+                    is_s_pp=flags["is_s_pp"],
+                    is_p_cm=flags["is_p_cm"],
+                    is_s_cm=flags["is_s_cm"],
+                    is_p_fm=flags["is_p_fm"],
+                    is_s_fm=flags["is_s_fm"],
+                    is_p_ov=flags["is_p_ov"],
+                    is_s_ov=flags["is_s_ov"],
+                )
+                ga_write_best_and_update_global(
+                    n_genomes=n_genomes,
+                    n_slots=9,
+                    total_budget=total_budget,
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                    song_slot=0,
+                    is_p_ft=flags["is_p_ft"],
+                    is_s_ft=flags["is_s_ft"],
+                    is_p_ff=flags["is_p_ff"],
+                    is_s_ff=flags["is_s_ff"],
+                    is_p_pp=flags["is_p_pp"],
+                    is_s_pp=flags["is_s_pp"],
+                    is_p_cm=flags["is_p_cm"],
+                    is_s_cm=flags["is_s_cm"],
+                    is_p_fm=flags["is_p_fm"],
+                    is_s_fm=flags["is_s_fm"],
+                    is_p_ov=flags["is_p_ov"],
+                    is_s_ov=flags["is_s_ov"],
+                )
 
-                    results = ga_download_results(n_genomes)
-                    scores = ga_download_scores(n_genomes)
-                    assert np.array_equal(results[:, 0], scores)
+                results = ga_download_results(n_genomes)
+                scores = ga_download_scores(n_genomes)
+                assert np.array_equal(results[:, 0], scores)
 
-                    if gpu_fields.chunk_best_key is not None:
-                        best_keys = np.asarray(gpu_fields.chunk_best_key.to_numpy()[:n_genomes], dtype=np.uint64)
-                        best_scores = (best_keys >> np.uint64(32)).astype(np.int64) - 1
-                        best_combo = (best_keys & np.uint64(0xFFFFFFFF)).astype(np.int64)
-                        # When no valid combo exists, key is 0 and score is -1.
-                        assert np.array_equal(best_scores.astype(np.int32), results[:, 0])
-                    else:
-                        best_combo = np.asarray(gpu_fields.chunk_best_idx.to_numpy()[:n_genomes], dtype=np.int32)
-                        # Metal uses split score/index reduction buffers; final score is
-                        # re-materialized into ga_scores/genome_result_stats after the
-                        # winning combo index is finalized.
-                        assert np.array_equal(scores, results[:, 0])
+                if gpu_fields.chunk_best_key is not None:
+                    best_keys = np.asarray(gpu_fields.chunk_best_key.to_numpy()[:n_genomes], dtype=np.uint64)
+                    best_scores = (best_keys >> np.uint64(32)).astype(np.int64) - 1
+                    best_combo = (best_keys & np.uint64(0xFFFFFFFF)).astype(np.int64)
+                    # When no valid combo exists, key is 0 and score is -1.
+                    assert np.array_equal(best_scores.astype(np.int32), results[:, 0])
+                else:
+                    best_combo = np.asarray(gpu_fields.chunk_best_idx.to_numpy()[:n_genomes], dtype=np.int32)
+                    # Metal uses split score/index reduction buffers; final score is
+                    # re-materialized into ga_scores/genome_result_stats after the
+                    # winning combo index is finalized.
+                    assert np.array_equal(scores, results[:, 0])
 
-                    combo_ft = np.asarray(gpu_fields.ftff_combo_ft.to_numpy(), dtype=np.int32)
-                    combo_ff = np.asarray(gpu_fields.ftff_combo_ff.to_numpy(), dtype=np.int32)
+                combo_ft = np.asarray(gpu_fields.ftff_combo_ft.to_numpy(), dtype=np.int32)
+                combo_ff = np.asarray(gpu_fields.ftff_combo_ff.to_numpy(), dtype=np.int32)
 
-                    valid = best_combo >= 0
-                    valid &= best_combo < combo_ft.shape[0]
-                    valid &= results[:, 0] >= 0
+                valid = best_combo >= 0
+                valid &= best_combo < combo_ft.shape[0]
+                valid &= results[:, 0] >= 0
 
-                    if np.any(valid):
-                        ft = combo_ft[best_combo[valid]]
-                        ff = combo_ff[best_combo[valid]]
-                        assert np.array_equal(ft, results[valid, 1])
-                        assert np.array_equal(ff, results[valid, 2])
+                if np.any(valid):
+                    ft = combo_ft[best_combo[valid]]
+                    ff = combo_ff[best_combo[valid]]
+                    assert np.array_equal(ft, results[valid, 1])
+                    assert np.array_equal(ff, results[valid, 2])
     finally:
         if old_prune is None:
             os.environ.pop("GPU_NATIVE_GA_PLATEAU_PRUNE", None)
