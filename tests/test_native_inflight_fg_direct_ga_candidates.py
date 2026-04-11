@@ -120,7 +120,7 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
             "ref_arrays": ref_arrays,
         }
 
-    monkeypatch.setattr("gear_optimizer.solver.fused_exact.process_fg_exact_dp", _fake_process_fg_exact_dp)
+    monkeypatch.setattr("gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp", _fake_process_fg_exact_dp)
     monkeypatch.setattr(orchestrator, "_attach_hitsim_delta_for_fg_variant", _fake_attach)
 
     song = SimpleNamespace(

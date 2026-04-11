@@ -2693,7 +2693,7 @@ def _run_fg_job_sync(
 
     fg_solver_mode = str((getattr(song, "cfg_data", None) or {}).get("fg_solver_mode") or "finder").strip().lower()
     if fg_solver_mode == "exact_dp":
-        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+        from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
 
         fg_variants = process_fg_exact_dp(
             list(song.ga_candidates or []),

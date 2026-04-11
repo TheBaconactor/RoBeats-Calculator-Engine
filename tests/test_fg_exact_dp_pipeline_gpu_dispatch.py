@@ -1,5 +1,5 @@
 def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypatch):
-    from gear_optimizer.solver import fused_exact
+    from gear_optimizer.solver import fg_exact_dp_pipeline
 
     seen = {}
 
@@ -22,7 +22,7 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
             },
         ]
 
-    monkeypatch.setattr(fused_exact, "_solve_force_greats_exact_dp_gpu_batch", _fake_gpu_batch)
+    monkeypatch.setattr(fg_exact_dp_pipeline, "_solve_force_greats_exact_dp_gpu_batch", _fake_gpu_batch)
 
     def _fake_compute_exact_dp_improvement(*, stats, calc_song, ref_arrays, sol):
         seen.setdefault("stats", []).append(dict(stats))
@@ -30,7 +30,7 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
             return 0, [0], {"states": 3, "transitions": 5}
         return 125, [2, 1], {"states": 17, "transitions": 43}
 
-    monkeypatch.setattr(fused_exact, "_compute_exact_dp_improvement", _fake_compute_exact_dp_improvement)
+    monkeypatch.setattr(fg_exact_dp_pipeline, "_compute_exact_dp_improvement", _fake_compute_exact_dp_improvement)
 
     candidates = [
         {
@@ -49,7 +49,7 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
         },
     ]
 
-    out = fused_exact.process_fg_exact_dp(
+    out = fg_exact_dp_pipeline.process_fg_exact_dp(
         candidates,
         {"metadata": {}, "song_data": {}},
         {"dummy": True},
@@ -72,7 +72,7 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
 
 
 def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
-    from gear_optimizer.solver import fused_exact
+    from gear_optimizer.solver import fg_exact_dp_pipeline
 
     seen = {}
 
@@ -137,10 +137,10 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
         "gear_optimizer.helpers.song_helpers.force_greats.process_force_greats",
         _fake_process_force_greats,
     )
-    monkeypatch.setattr(fused_exact, "_solve_force_greats_exact_dp_gpu_batch", _fake_gpu_batch)
-    monkeypatch.setattr(fused_exact, "_compute_exact_dp_improvement", _fake_compute_exact_dp_improvement)
+    monkeypatch.setattr(fg_exact_dp_pipeline, "_solve_force_greats_exact_dp_gpu_batch", _fake_gpu_batch)
+    monkeypatch.setattr(fg_exact_dp_pipeline, "_compute_exact_dp_improvement", _fake_compute_exact_dp_improvement)
 
-    out = fused_exact.process_fg_exact_dp(
+    out = fg_exact_dp_pipeline.process_fg_exact_dp(
         [{"Score": 100, "BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}}}],
         {"metadata": {}, "song_data": {}},
         {"dummy": True},
@@ -177,7 +177,7 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
 
 
 def test_process_fg_exact_dp_requires_gpu():
-    from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+    from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
 
     try:
         process_fg_exact_dp([], {"metadata": {}, "song_data": {}}, {}, use_gpu=False)

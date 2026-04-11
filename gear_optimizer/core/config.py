@@ -385,7 +385,7 @@ def _canon_outer_search_engine(raw: Any) -> str:
     if value in {"marginal_fused", "fused_marginal", "marginal_fused_dp", "marginal_exact_fg"}:
         return "legacy_marginal_fused"
     if value in {"fused", "fused_exact", "fused_exact_dp", "exact_fused"}:
-        return "legacy_fused_exact"
+        return "legacy_research_exact"
     return value
 
 
@@ -424,7 +424,7 @@ def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
     value = _canon_outer_search_engine(raw)
     if value == "ga":
         return value
-    if value in {"exact", "legacy_marginal", "legacy_fused_exact", "legacy_marginal_fused"}:
+    if value in {"exact", "legacy_marginal", "legacy_research_exact", "legacy_marginal_fused"}:
         _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=ga")
         return "ga"
     if not value:

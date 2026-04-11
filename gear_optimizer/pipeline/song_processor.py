@@ -1030,7 +1030,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
         )
 
     if ctx.fg_solver_mode == "exact_dp":
-        from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+        from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
 
         fg_start = time.perf_counter()
         fg_variants = process_fg_exact_dp(

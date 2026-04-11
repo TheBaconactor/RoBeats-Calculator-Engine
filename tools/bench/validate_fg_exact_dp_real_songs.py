@@ -40,7 +40,7 @@ from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
-from gear_optimizer.solver.fused_exact import process_fg_exact_dp
+from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
 from gear_optimizer.solver.genetic import solve_coevolution_genetic
 from gear_optimizer.solver.gpu_executor import GpuExecutor, get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient

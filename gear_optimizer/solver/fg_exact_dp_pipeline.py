@@ -12,9 +12,9 @@ Current routing is orthogonal:
   Stage 3: persistence keeps the best `fg_score`
 
 Legacy note:
-  Earlier revisions exposed this via `OuterSearchEngine=fused_exact`. That name
-  now survives only as a backward-compatible config alias that falls back to the
-  mainline production route (`OuterSearchEngine=ga`, `FG_SolverMode=exact_dp`).
+  Earlier revisions exposed this via `OuterSearchEngine=fused_exact`. On
+  `main`, that name is intentionally retired; production routing is the FG
+  exact-DP pipeline layered on `OuterSearchEngine=ga`.
 """
 
 from __future__ import annotations

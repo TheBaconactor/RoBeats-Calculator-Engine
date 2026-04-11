@@ -9,7 +9,7 @@ timeline semantics:
 Production usage:
   - Wired into the orthogonal FG exact-DP path
     (`OuterSearchEngine=ga` + `FG_SolverMode=exact_dp`) via
-    gear_optimizer.solver.fused_exact.process_fg_exact_dp.
+    gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp.
   - Also available via tools/bench scripts for cost estimation and validation.
 """
 

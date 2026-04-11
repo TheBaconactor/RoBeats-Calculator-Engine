@@ -150,7 +150,7 @@ def test_process_song_task_keeps_fg_exact_dp_with_ga_outer(monkeypatch):
         return []
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
-    monkeypatch.setattr("gear_optimizer.solver.fused_exact.process_fg_exact_dp", _fake_fg_exact)
+    monkeypatch.setattr("gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp", _fake_fg_exact)
 
     cfg = _common_cfg(OuterSearchEngine="ga", FG_SolverMode="exact_dp")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest ga exact-fg routing"))
