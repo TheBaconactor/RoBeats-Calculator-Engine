@@ -1967,7 +1967,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
 
-        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+        # Default to the reference set-based collector for stability. On this workload, the NumPy mask+argwhere path
+        # caused large, repeatable pre-first-submit stalls.
+        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "0") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
         sig_list = list(reduced_sig_lists.get((sel_color, n_sections, max_per_section), list(sig_map.keys())))
         if len(sig_list) < len(sig_map):

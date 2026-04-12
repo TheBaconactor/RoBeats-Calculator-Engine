@@ -16,9 +16,11 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import prepare_fg_combo_booster_candidates_job
 from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
+from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_caches import get_cached_chart_scorer
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 
+from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
@@ -107,6 +109,47 @@ def _thread_cpu_time_s() -> float:
         return float(time.thread_time())
     except Exception:
         return 0.0
+
+
+def _hitsim_apply_to(calc_song: Any) -> str:
+    try:
+        if not isinstance(calc_song, dict):
+            return ""
+        meta = calc_song.get("metadata", {}) or {}
+        if not meta.get("HumanHitSimApplied"):
+            return ""
+        return str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    except Exception:
+        return ""
+
+
+def _maybe_prewarm_fg_chart_scorer(song: Any) -> None:
+    """
+    Precompute the expensive per-song AnalyticalFGScorer during FG prep.
+
+    This moves one-time per-song CPU work out of the FG dispatch pre-first-submit window so
+    the GPU stays fed when FG work exists.
+
+    Safe-by-default:
+    - Only runs for GPU finder + HitSim ApplyTo=FG (the same condition the dispatch path uses for caching).
+    - Uses the shared LRU cache, so the later dispatch sees a cheap cache hit.
+    """
+    try:
+        if not bool(getattr(song, "force_greats_finder", False)):
+            return
+        calc_song = getattr(song, "calc_song", None)
+        ref_arrays = getattr(song, "ref_arrays", None)
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+            return
+        if _hitsim_apply_to(calc_song) != "FG":
+            return
+        if bool(getattr(song, "_fg_chart_scorer_prewarmed", False)):
+            return
+
+        get_cached_chart_scorer(calc_song, ref_arrays, create_chart_scorer_from_calc_song)
+        setattr(song, "_fg_chart_scorer_prewarmed", True)
+    except Exception:
+        return
 
 
 def _cfg_section_ci(cfg_dict: dict, name: str) -> dict:
@@ -410,7 +453,10 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     except Exception:
         pass
 
-    ga_candidates = list(song.ga_candidates or [])
+    # Prime expensive per-song FG structures early so FG dispatch doesn't stall before the first GPU submit.
+    _maybe_prewarm_fg_chart_scorer(song)
+
+    ga_candidates = song.ga_candidates if isinstance(song.ga_candidates, list) else list(song.ga_candidates or [])
     # If GA came from the GPU-native "selected payload" path, candidates are already GPU-selected
     # (bounded + deduped) and re-running the CPU selector is pure overhead on slower machines.
     is_gpu_selected_payload = False
