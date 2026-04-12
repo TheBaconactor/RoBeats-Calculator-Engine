@@ -176,6 +176,61 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
     assert out[1]["data"]["ForceGreats"]["config"] == {"NonFever1": 3, "NonFever2": 0}
 
 
+def test_process_fg_exact_dp_full_finder_surface_ignores_direct_ga_first_env(monkeypatch):
+    from gear_optimizer.solver import fg_exact_dp_pipeline
+
+    monkeypatch.setenv("FG_EXACT_DP_DIRECT_GA_FIRST", "1")
+    monkeypatch.setenv("FG_EXACT_DP_DIRECT_GA_MIN_VARIANTS", "1")
+    monkeypatch.setenv("FG_EXACT_DP_DIRECT_GA_MIN_DELTA", "1")
+    monkeypatch.setenv("FG_EXACT_DP_DIRECT_GA_MAX_CANDIDATES", "999")
+
+    monkeypatch.setattr(
+        fg_exact_dp_pipeline,
+        "_run_exact_dp_on_candidates",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("full finder surface must not bypass into direct-only exact DP")),
+    )
+
+    seen: dict[str, object] = {}
+
+    def _fake_process_force_greats(*args, **kwargs):
+        seen["ga_candidates"] = kwargs.get("ga_candidates")
+        return [
+            {
+                "score": 100,
+                "base_score": 100,
+                "fg_score": 130,
+                "gear": ["FG"],
+                "minis": ["FM"],
+                "data": {"Stats": {"Perfect Points": 1}, "ForceGreats": {"solver": "finder"}},
+            }
+        ]
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.force_greats.process_force_greats",
+        _fake_process_force_greats,
+    )
+    monkeypatch.setattr(fg_exact_dp_pipeline, "_refine_finder_variants_with_exact_dp", lambda **kwargs: list(kwargs["finder_variants"]))
+
+    out = fg_exact_dp_pipeline.process_fg_exact_dp(
+        [{"Score": 100, "BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}}}],
+        {"metadata": {}, "song_data": {}},
+        {"dummy": True},
+        use_gpu=True,
+        loadout_entries={"db": {"score": 1}},
+        manual_force_greats=False,
+        force_greats_finder=True,
+        force_greats_config=[],
+        meta_primary_color="Rush",
+        build_details_fn=lambda _data: {},
+        finder_ga_candidates=[{"Score": 1}, {"Score": 2}],
+        ga_registry="reg",
+    )
+
+    assert seen["ga_candidates"] == [{"Score": 1}, {"Score": 2}]
+    assert len(out) == 1
+    assert out[0]["data"]["ForceGreats"]["solver"] == "finder"
+
+
 def test_process_fg_exact_dp_requires_gpu():
     from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
 
