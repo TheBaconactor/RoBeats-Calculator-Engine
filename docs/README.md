@@ -12,6 +12,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 
 ## Current Reference
 
+- [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md) - repo-wide engineering doctrine, harness layout, and root-cause fix policy.
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system overview and package boundaries.
 - [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) - SQLite schema and persistence layout.
 - [FEVER_TIMELINE_MATH.md](FEVER_TIMELINE_MATH.md) - fever timeline and scoring math.

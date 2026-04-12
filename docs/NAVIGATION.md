@@ -52,6 +52,7 @@
 
 ## Reference Docs
 
+- Engineering doctrine and harness layout: `docs/ENGINEERING_PRINCIPLES.md`
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
 - Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`

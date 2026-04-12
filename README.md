@@ -138,7 +138,7 @@ export GPU_EXECUTOR_PROFILE=1
 
 ## Project Structure
 
-Quick navigation: see `docs/README.md` for the docs index and `docs/NAVIGATION.md` for the code map.
+Quick navigation: see `docs/README.md` for the docs index, `docs/NAVIGATION.md` for the code map, and `docs/ENGINEERING_PRINCIPLES.md` for repo-wide engineering doctrine.
 
 High-level layout (current):
 
@@ -531,7 +531,9 @@ This project is for personal use. All rights reserved.
 
 ## Contributing
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details and [docs/ENGINEERING_PRINCIPLES.md](docs/ENGINEERING_PRINCIPLES.md) for the repo's root-cause, ownership, and refactoring standards.
+
+Repo-wide agent routing starts in [AGENTS.md](AGENTS.md). Subtree-specific guidance lives in nested `AGENTS.md` files close to the code they govern.
 
 Use `python -m tools list` to discover centralized tooling entry points.
 

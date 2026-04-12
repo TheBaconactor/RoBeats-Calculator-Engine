@@ -9,6 +9,15 @@
   - If you are doing research work, explicitly check out `research` first.
   - Validate research work on `research` (benchmarks, feature toggles, prototypes) before proposing any merge to `main`.
 
+## Instruction harnesses
+This repo keeps contributor and model guidance in three layers:
+
+- `AGENTS.md` at the repo root is the router and non-negotiable contract.
+- Nested `AGENTS.md` files keep local rules close to the code or docs they govern.
+- `docs/ENGINEERING_PRINCIPLES.md` holds durable doctrine such as root-cause fixes, ownership boundaries, and refactoring standards.
+
+When changing the harness itself, keep the root file short, move doctrine into docs, and keep specialized rules near the owning subtree.
+
 ## Verification harness (preferred)
 This repo standardizes verification through the harness under `tools/dev/quality_check.ps1`.
 
