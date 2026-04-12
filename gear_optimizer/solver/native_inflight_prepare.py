@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 
-from gear_optimizer.core.config import read_fg_candidate_limit
+from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_solver_mode
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
@@ -403,6 +403,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         default=FG_CANDIDATE_LIMIT,
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
+    fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
 
     cfg_data = {
         "selected_color": selected_color,
@@ -411,6 +412,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "use_gpu": True,
         "use_gpu_native": True,
         "fg_candidate_limit": int(fg_candidate_limit),
+        "fg_solver_mode": str(fg_solver_mode or "finder"),
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0), 0),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0), 0),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0), 0),
