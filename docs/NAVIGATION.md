@@ -48,11 +48,13 @@
 - Unified script discovery: `python -m tools list` (`--all` includes private/scratch scripts)
 - Unified inventory audit: `python -m tools audit`
 - Unified script execution: `python -m tools run <id> -- <args>`
+- Repo-local MCP harness: `python -m tools.mcp_server`
 - GeneralMeta: `python general_meta_main.py`
 
 ## Reference Docs
 
 - Engineering doctrine and harness layout: `docs/ENGINEERING_PRINCIPLES.md`
+- MCP harness contract: `docs/MCP_HARNESS_CHARTER.md`
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
 - Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`

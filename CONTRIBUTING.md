@@ -29,6 +29,13 @@ Notes:
 - `-CI` runs the CPU reference test suite (`pytest -m "not gpu" tests/`).
 - Formatting enforcement is intentionally non-blocking by default; use `-StrictFormat` locally if you want formatting failures to error.
 
+## MCP engineering harness
+
+- Repo-local MCP server entrypoint: `python -m tools.mcp_server`
+- Install dev dependencies before using it: `pip install -r requirements-dev.txt`
+- The MCP harness is intended to answer common repo questions in 1-2 calls and should be updated when new repeated engineering surfaces appear that materially improve speed, safety, or token efficiency.
+- The repo ships `.codex/config.toml` for project-local Codex usage. Note that `codex mcp ...` inspection commands still read `~/.codex/config.toml`, so local CLI inspection may require an explicit global entry or temporary `-c` overrides when debugging registration.
+
 ## CI notes
 - CI uses the harness in `-CI` mode.
 - Required check context for `main` is `build (3.11)`.

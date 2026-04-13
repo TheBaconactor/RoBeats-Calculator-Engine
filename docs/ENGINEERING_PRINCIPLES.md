@@ -11,6 +11,24 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - This document holds long-lived engineering doctrine so the root harness can stay short.
 - `tools/dev` and CI are enforcement harnesses.
 - `tools/bench`, `tools/profile`, and replay scripts are evaluation harnesses.
+- The repo-local MCP server under `tools/` is the engineering-query harness for compact repo-specific answers in 1-2 calls.
+
+## MCP harness doctrine
+
+- Prefer the repo-local MCP harness over repeated manual file spelunking for:
+  - effective settings and env precedence,
+  - worklog / ADR lookup,
+  - DB state,
+  - profile artifact analysis,
+  - verification planning,
+  - benchmark protocol guidance.
+- Keep the MCP harness typed and repo-specific. Do not turn it into a generic shell passthrough.
+- Do not add repo-local custom Codex skills for this surface. The supported extension layer is the repo-local MCP server plus official OpenAI/Codex capabilities.
+- The MCP harness is self-maintaining:
+  - if a change introduces a stable repeated engineering surface,
+  - and that surface would materially improve speed, reduce mistakes, or lower token cost,
+  - the task should update the harness in the same change unless the user explicitly says not to.
+- Common repo questions should stay answerable in 1-2 MCP calls. If a new workflow breaks that property, treat the missing MCP coverage as incomplete engineering work.
 
 ## Root-cause-first fixes
 
