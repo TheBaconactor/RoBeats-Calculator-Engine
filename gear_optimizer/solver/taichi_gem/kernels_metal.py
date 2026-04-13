@@ -71,7 +71,7 @@ def create_metal_kernels():
 
     # Import scoring solvers at kernel creation time
     from .kernels import optimize_core_device
-    from .kernels_scoring import optimize_core_device_exact_bound
+    from .kernels.kernels_scoring import optimize_core_device_exact_bound
 
     @ti.kernel
     def _ga_find_best_combo_key_kernel(
@@ -193,6 +193,7 @@ def create_metal_kernels():
         is_p_ov: ti.i32,
         is_s_ov: ti.i32,
         song_slot: ti.i32,
+        use_exact_inner_solver: ti.i32,
     ):
         """Finalize best (ft, ff, gem counts) per genome from chunk_best_score/idx."""
         ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
@@ -233,28 +234,53 @@ def create_metal_kernels():
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+            res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
+            if use_exact_inner_solver != 0:
+                res_vec = optimize_core_device_exact_bound(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+            else:
+                res_vec = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
 
             final_score: ti.i32 = res_vec[0]
             genome_result_stats[genome_idx] = ti.Vector(
@@ -527,6 +553,7 @@ def create_metal_kernels():
         is_p_ov: int,
         is_s_ov: int,
         song_slot: int,
+        use_exact_inner_solver: int,
     ) -> None:
         # Replace the fused kernel (which used 64-bit atomics) with 2 Metal-safe kernels.
         from . import kernels as base_kernels
@@ -548,7 +575,7 @@ def create_metal_kernels():
             int(is_p_ov),
             int(is_s_ov),
             int(song_slot),
-            1,
+            int(use_exact_inner_solver),
         )
         _ga_update_global_best_kernel(int(n_genomes), int(n_slots))
 
