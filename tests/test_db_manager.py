@@ -238,6 +238,10 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr(
+        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
+        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
+    )
 
     captured: dict[str, object] = {}
 
@@ -246,6 +250,7 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
         captured["cfg_dict"] = dict(cfg_dict)
         captured["tiers"] = tuple(tiers)
         captured["target_team_color_override"] = target_team_color_override
+        captured["hitsim_applied"] = bool((calc_song.get("metadata") or {}).get("HumanHitSimApplied"))
         return {"tiers": {"T10": {"base_top51": [{"score": 1234, "fg_score": 1234}]}}}
 
     monkeypatch.setattr(
@@ -258,6 +263,7 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
+    assert captured["hitsim_applied"] is True
     assert out["tiers"]["T10"]["base_top51"][0]["score"] == 1234
 
 
@@ -284,12 +290,17 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr(
+        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
+        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
+    )
 
     captured: dict[str, object] = {}
 
     def fake_build(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
         captured["entries"] = list(entries)
         captured["tiers"] = tuple(tiers)
+        captured["hitsim_applied"] = bool((calc_song.get("metadata") or {}).get("HumanHitSimApplied"))
         return {"T10": [{"score": 2222, "fg_score": 2222}]}
 
     monkeypatch.setattr(
@@ -304,6 +315,7 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
+    assert captured["hitsim_applied"] is True
     assert out is not None
     assert out["song_name"] == "Leaderboard Song"
     assert out["tier"] == "T10"
@@ -370,3 +382,63 @@ def test_db_manager_get_leaderboard_entry_uses_fg_base_score_context(tmp_path: P
     assert out["tier"] == "T5"
     assert int(out["fg_score"] or 0) == 95
     assert int(out["fg_base_score"] or 0) == 90
+
+
+def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "leaderboard_derived_fg.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr(
+        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
+        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
+    )
+
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
+    monkeypatch.setattr(
+        EvolutionDbManager,
+        "get_best_loadouts",
+        lambda self, _song_name, **kwargs: [{"score": 100, "fg_score": 130, "fg_base_score": 140}],
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
+        lambda **kwargs: {
+            "T10": [
+                {
+                    "score": 110,
+                    "fg_base_score": 110,
+                    "source_fg_base_score": 140,
+                    "fg_score": 120,
+                    "gear": [],
+                    "minis": [],
+                    "details": {},
+                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                }
+            ]
+        },
+    )
+
+    db = EvolutionDbManager.from_env()
+    out = db.get_leaderboard_entry("Derived FG Song", tier="T10", leaderboard="fg", rank=1)
+
+    assert out is not None
+    assert out["song_name"] == "Derived FG Song"
+    assert out["tier"] == "T10"
+    assert int(out["score"] or 0) == 110
+    assert int(out["fg_score"] or 0) == 120
+    assert int(out["fg_base_score"] or 0) == 110
+    assert int(out["source_fg_base_score"] or 0) == 140

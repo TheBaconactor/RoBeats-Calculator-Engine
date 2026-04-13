@@ -287,6 +287,79 @@ class EvolutionDbManager:
     # Leaderboard views (on-demand compute)
     # ---------------------------------------------------------------------
 
+    def _prepare_team_buff_tier_replay(
+        self,
+        *,
+        song_name: str,
+        song_file: str,
+        limit: int,
+        element: str,
+        team_color: Optional[str],
+        cfg_dict: Optional[Mapping[str, Any]] = None,
+        ref_arrays: Optional[Mapping[str, Any]] = None,
+    ) -> tuple[dict, dict, list[dict], dict, Optional[str]]:
+        """
+        Build the shared replay context for on-demand TeamBuff tier views.
+
+        Keep this aligned with `tools/db/compute_team_buff_tiers_on_demand.py` so
+        DB-manager callers and the CLI helper cannot silently diverge on replayed
+        scores.
+        """
+        if cfg_dict is None:
+            from ..core.config import load_config
+            from ..core.utils import cfg_to_dict
+
+            cfg_dict_local = cfg_to_dict(load_config())
+        else:
+            cfg_dict_local = dict(cfg_dict) if not isinstance(cfg_dict, dict) else dict(cfg_dict)
+
+        if ref_arrays is None:
+            from ..app_async_db import _get_team_buff_ref_arrays_cached
+
+            ref_arrays_local = _get_team_buff_ref_arrays_cached()
+            if ref_arrays_local is None:
+                raise RuntimeError("ref_arrays unavailable (failed to load Stats lookup tables)")
+        else:
+            ref_arrays_local = dict(ref_arrays) if not isinstance(ref_arrays, dict) else dict(ref_arrays)
+
+        from ..core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+        from ..pipeline.song_processor import clone_calc_song, get_base_calc_song
+
+        baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
+        entries = self.get_best_loadouts(
+            str(song_name),
+            limit=int(limit),
+            team_buff=str(baseline_team_buff),
+            allow_fallback=True,
+        )
+
+        base_calc_song = get_base_calc_song(str(song_file), cfg_dict_local)
+        calc_song = clone_calc_song(base_calc_song)
+
+        # Match the standalone tier replay helper so public DB-manager callers
+        # see the same deterministic HitSim-adjusted replay scores.
+        try:
+            from ..solver.hit_simulation import apply_human_hit_sim
+
+            apply_human_hit_sim(calc_song, cfg_dict=cfg_dict_local)
+        except Exception:
+            pass
+
+        target_team_color_override = None
+        if team_color:
+            target_team_color_override = str(team_color)
+        else:
+            mode = str(element or "selected").strip().lower()
+            meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+            p0 = str(meta0.get("Primary Color", "") or "").strip()
+            s0 = str(meta0.get("Secondary Color", "") or "").strip()
+            if mode == "primary" and p0:
+                target_team_color_override = p0
+            elif mode == "secondary":
+                target_team_color_override = s0 or p0 or None
+
+        return cfg_dict_local, ref_arrays_local, entries, calc_song, target_team_color_override
+
     def get_leaderboard_entry(
         self,
         song_name: str,
@@ -318,45 +391,21 @@ class EvolutionDbManager:
             return None
 
         # Lazy imports keep this module lightweight.
-        from ..core.config import load_config
-        from ..core.utils import cfg_to_dict
-        from ..app_async_db import _get_team_buff_ref_arrays_cached
-        from ..core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-        from ..pipeline.song_processor import clone_calc_song, get_base_calc_song
         from ..helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-        cfg_dict = cfg_to_dict(load_config())
-        ref_arrays = _get_team_buff_ref_arrays_cached()
-        if ref_arrays is None:
-            raise RuntimeError("ref_arrays unavailable (failed to load Stats lookup tables)")
-
-        baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-        entries = self.get_best_loadouts(
-            song_name, limit=limit_i, team_buff=str(baseline_team_buff), allow_fallback=True
+        cfg_dict, ref_arrays, entries, calc_song, target_team_color_override = self._prepare_team_buff_tier_replay(
+            song_name=song_name,
+            song_file=str(song_file),
+            limit=limit_i,
+            element=str(element),
+            team_color=team_color,
         )
-
-        base_calc_song = get_base_calc_song(str(song_file), cfg_dict)
-        calc_song = clone_calc_song(base_calc_song)
-
-        # Resolve element override into an explicit TeamColor target (optional).
-        target_team_color_override = None
-        if team_color:
-            target_team_color_override = str(team_color)
-        else:
-            mode = str(element or "selected").strip().lower()
-            meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
-            p0 = str(meta0.get("Primary Color", "") or "").strip()
-            s0 = str(meta0.get("Secondary Color", "") or "").strip()
-            if mode == "primary" and p0:
-                target_team_color_override = p0
-            elif mode == "secondary":
-                target_team_color_override = s0 or p0 or None
 
         batches = build_team_buff_tier_db_batches(
             entries=entries,
             calc_song=calc_song,
-            ref_arrays=dict(ref_arrays),
-            cfg_dict=dict(cfg_dict),
+            ref_arrays=ref_arrays,
+            cfg_dict=cfg_dict,
             limit=limit_i,
             tiers=(tier,),
             target_team_color_override=target_team_color_override,
@@ -496,55 +545,25 @@ class EvolutionDbManager:
             cfg_dict: Optional config dict; defaults to repo config resolution
             ref_arrays: Optional ref_arrays table; defaults to cached Stats-derived lookup arrays
         """
-        # Lazy imports to keep db_manager import-safe/lightweight.
-        if cfg_dict is None:
-            from ..core.config import load_config
-            from ..core.utils import cfg_to_dict
-
-            cfg_dict = cfg_to_dict(load_config())
-
-        if ref_arrays is None:
-            from ..app_async_db import _get_team_buff_ref_arrays_cached
-
-            ref_arrays = _get_team_buff_ref_arrays_cached()
-            if ref_arrays is None:
-                raise RuntimeError("ref_arrays unavailable (failed to load Stats lookup tables)")
-
-        from ..core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-
-        baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-        entries = self.get_best_loadouts(
-            str(song_name),
-            limit=int(limit),
-            team_buff=str(baseline_team_buff),
-            allow_fallback=True,
-        )
-
-        from ..pipeline.song_processor import clone_calc_song, get_base_calc_song
         from ..helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
-        base_calc_song = get_base_calc_song(str(song_file), cfg_dict)
-        calc_song = clone_calc_song(base_calc_song)
-
-        # Resolve element override into an explicit TeamColor target (optional).
-        target_team_color_override = None
-        if team_color:
-            target_team_color_override = str(team_color)
-        else:
-            mode = str(element or "selected").strip().lower()
-            meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
-            p0 = str(meta0.get("Primary Color", "") or "").strip()
-            s0 = str(meta0.get("Secondary Color", "") or "").strip()
-            if mode == "primary" and p0:
-                target_team_color_override = p0
-            elif mode == "secondary":
-                target_team_color_override = s0 or p0 or None
+        cfg_dict_local, ref_arrays_local, entries, calc_song, target_team_color_override = (
+            self._prepare_team_buff_tier_replay(
+                song_name=str(song_name),
+                song_file=str(song_file),
+                limit=int(limit),
+                element=str(element),
+                team_color=team_color,
+                cfg_dict=cfg_dict,
+                ref_arrays=ref_arrays,
+            )
+        )
 
         return compute_team_buff_tier_leaderboards(
             entries=entries,
             calc_song=calc_song,
-            ref_arrays=dict(ref_arrays),
-            cfg_dict=dict(cfg_dict) if isinstance(cfg_dict, dict) else dict(cfg_dict),
+            ref_arrays=ref_arrays_local,
+            cfg_dict=cfg_dict_local,
             limit=int(limit),
             tiers=tuple(str(t) for t in tiers),
             target_team_color_override=target_team_color_override,

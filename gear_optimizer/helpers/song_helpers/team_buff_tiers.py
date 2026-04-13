@@ -1033,9 +1033,16 @@ def compute_team_buff_tier_leaderboards(
                 if fg_scores_for_tier is not None and i < int(len(fg_scores_for_tier)):
                     fg_score = int(fg_scores_for_tier[i] or 0)
                 fg = e.get("fg")
-                fg_base_compare_score = int(e.get("source_fg_base_score") or 0)
-                if fg_base_compare_score <= 0:
-                    fg_base_compare_score = int(base_score)
+                source_fg_base_compare_score = int(e.get("source_fg_base_score") or 0)
+                if source_fg_base_compare_score <= 0:
+                    source_fg_base_compare_score = int(base_score)
+                # Public derived-tier views should surface FG rows when the replayed
+                # target-tier FG score beats the replayed target-tier base score.
+                # Preserve the source compact DB pairing separately for debugging and
+                # baseline-tier canonical semantics.
+                fg_visibility_compare_score = int(base_score)
+                if str(tier).strip().upper() == str(base_team_buff).strip().upper():
+                    fg_visibility_compare_score = int(source_fg_base_compare_score)
 
                 out_row = {
                     "loadout_hash": e.get("loadout_hash") or "",
@@ -1048,14 +1055,14 @@ def compute_team_buff_tier_leaderboards(
                 }
                 base_ranked.append(out_row)
 
-                if isinstance(fg, dict) and int(fg_score) > int(fg_base_compare_score):
+                if isinstance(fg, dict) and int(fg_score) > int(fg_visibility_compare_score):
                     fg_ranked.append(
                         {
                             "loadout_hash": e.get("loadout_hash") or "",
                             "gear": e.get("gear") or [],
                             "minis": e.get("minis") or [],
                             "score": int(base_score),
-                            "fg_base_score": int(fg_base_compare_score),
+                            "fg_base_score": int(fg_visibility_compare_score),
                             "fg_score": int(fg_score),
                             "source_score": int(e.get("source_score") or 0),
                             "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
