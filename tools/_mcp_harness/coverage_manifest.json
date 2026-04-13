@@ -1,0 +1,204 @@
+{
+  "version": 2,
+  "principles": [
+    "Prefer 1-2 MCP calls for common repo questions.",
+    "Add or refine MCP coverage automatically when new repeated engineering surfaces materially improve development speed, mistake reduction, or token efficiency.",
+    "Keep the harness repo-specific and typed; do not turn it into a generic shell wrapper."
+  ],
+  "subsystems": [
+    {
+      "id": "repo_context",
+      "title": "Repo context and guardrails",
+      "path_prefixes": [
+        "AGENTS.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs/NAVIGATION.md",
+        "docs/ENGINEERING_PRINCIPLES.md",
+        ".codex/config.toml",
+        "tools/mcp_server.py",
+        "tools/_mcp_harness/"
+      ],
+      "tool_names": [
+        "repo.get_context",
+        "repo.get_guardrails",
+        "repo.get_effective_settings",
+        "repo.list_tools",
+        "repo.audit_tools",
+        "repo.get_harness_charter",
+        "repo.get_harness_coverage",
+        "repo.find_harness_gaps"
+      ],
+      "resource_uris": [
+        "repo://context",
+        "repo://guardrails",
+        "repo://modules",
+        "tools://catalog",
+        "config://effective/{workflow}"
+      ],
+      "token_savings": "high",
+      "safety_impact": "high",
+      "reuse": "high"
+    },
+    {
+      "id": "history",
+      "title": "Worklog and implementation records",
+      "path_prefixes": [
+        "docs/CODEX_WORKLOG.md",
+        "docs/Implementation Records/"
+      ],
+      "tool_names": [
+        "history.find_relevant_records",
+        "history.get_recent_handoff",
+        "history.search_worklog",
+        "history.get_record"
+      ],
+      "resource_uris": [
+        "history://record/{slug}",
+        "history://worklog/{query}"
+      ],
+      "token_savings": "high",
+      "safety_impact": "medium",
+      "reuse": "high"
+    },
+    {
+      "id": "database",
+      "title": "Persistence and leaderboard insight",
+      "path_prefixes": [
+        "gear_optimizer/data/",
+        "general_meta/db.py",
+        "inventory_optimizer/db.py",
+        "tools/db/",
+        "scripts/db/",
+        "evolution.db"
+      ],
+      "tool_names": [
+        "db.get_summary",
+        "db.query_song",
+        "db.compare_song_to_db_top"
+      ],
+      "resource_uris": [
+        "db://song/{song_name}"
+      ],
+      "token_savings": "high",
+      "safety_impact": "high",
+      "reuse": "high"
+    },
+    {
+      "id": "profile",
+      "title": "Profiling and artifact triage",
+      "path_prefixes": [
+        "tools/profile/",
+        "artifacts/profile/",
+        "bin/"
+      ],
+      "tool_names": [
+        "artifacts.list_recent",
+        "profile.get_run_summary",
+        "profile.analyze_run"
+      ],
+      "resource_uris": [
+        "profile://run/{run_id}"
+      ],
+      "token_savings": "high",
+      "safety_impact": "medium",
+      "reuse": "high"
+    },
+    {
+      "id": "verification",
+      "title": "Verification planning and gated execution",
+      "path_prefixes": [
+        "tests/",
+        "tools/dev/",
+        ".github/workflows/",
+        "pyproject.toml",
+        "requirements-dev.txt"
+      ],
+      "tool_names": [
+        "verify.get_matrix",
+        "verify.suggest_checks",
+        "verify.run_quality_check",
+        "verify.run_pytest_slice",
+        "verify.run_repo_tool",
+        "verify.run_db_audit"
+      ],
+      "resource_uris": [
+        "verify://matrix"
+      ],
+      "token_savings": "medium",
+      "safety_impact": "high",
+      "reuse": "high"
+    },
+    {
+      "id": "benchmark",
+      "title": "Reproducible benchmark protocol",
+      "path_prefixes": [
+        "tools/bench/",
+        "docs/INFLIGHT_GA_FG_THROUGHPUT.md",
+        "config.ini",
+        "gear_optimizer/core/config.py",
+        "gear_optimizer/core/env_config.py"
+      ],
+      "tool_names": [
+        "bench.summarize_protocol",
+        "bench.run_protocol",
+        "bench.compare_runs"
+      ],
+      "resource_uris": [],
+      "token_savings": "high",
+      "safety_impact": "high",
+      "reuse": "high"
+    }
+  ],
+  "review_triggers": [
+    {
+      "name": "Public tool introduced",
+      "path_prefixes": [
+        "tools/bench/",
+        "tools/db/",
+        "tools/profile/",
+        "tools/verify/",
+        "scripts/query/",
+        "scripts/regression/"
+      ],
+      "reason": "Changed or newly added public engineering scripts may deserve first-class MCP wrappers."
+    },
+    {
+      "name": "Config or env semantics changed",
+      "path_prefixes": [
+        "config.ini",
+        "gear_optimizer/core/config.py",
+        "gear_optimizer/core/env_config.py",
+        "gear_optimizer/core/team_buff.py"
+      ],
+      "reason": "The effective-settings surface must stay current because it is a primary 1-2 call token saver."
+    },
+    {
+      "name": "DB semantics changed",
+      "path_prefixes": [
+        "gear_optimizer/data/",
+        "tools/db/"
+      ],
+      "reason": "DB summary and song query tools must evolve with new schema or leaderboard semantics."
+    },
+    {
+      "name": "Profile or benchmark workflow changed",
+      "path_prefixes": [
+        "tools/profile/",
+        "tools/bench/",
+        "artifacts/profile/"
+      ],
+      "reason": "Profile and benchmark wrappers should expose stable compact summaries instead of forcing manual artifact spelunking."
+    }
+  ],
+  "ignore_path_prefixes": [
+    "Data/",
+    "artifacts/",
+    "bin/",
+    ".pytest_cache/",
+    ".ruff_cache/",
+    "__pycache__/",
+    "analysis.txt",
+    "database ref.db"
+  ]
+}
