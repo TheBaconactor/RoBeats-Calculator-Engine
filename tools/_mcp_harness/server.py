@@ -18,10 +18,14 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from gear_optimizer.core.config import get_config_path, load_config
-from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 from gear_optimizer.data.database import get_db_connection_readonly, get_evolution_db_path
 from tools.cli import discover_scripts, repo_root as tools_repo_root
 from tools.profile.analyze_run import analyze_summary
+
+try:
+    from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+except ModuleNotFoundError:  # pragma: no cover - compatibility for older branches
+    resolve_baseline_team_buff_from_cfg = None
 
 
 REPO_ROOT = tools_repo_root()
@@ -469,10 +473,14 @@ def _resolve_profile_summary(run_id: str) -> tuple[Path | None, dict[str, Any] |
 
 
 def _resolve_default_team_buff(cfg: Any) -> str:
-    try:
-        return resolve_baseline_team_buff_from_cfg(cfg, default="T5")
-    except Exception:
-        return "T5"
+    if callable(resolve_baseline_team_buff_from_cfg):
+        try:
+            return resolve_baseline_team_buff_from_cfg(cfg, default="T5")
+        except Exception:
+            pass
+
+    fallback = str(_cfg_get(cfg, "TeamContributionBuffConstant", "TeamBuff", "T5")).strip().upper()
+    return fallback or "T5"
 
 
 def _effective_settings(workflow: str = "optimizer") -> dict[str, Any]:
