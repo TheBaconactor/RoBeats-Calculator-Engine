@@ -124,7 +124,7 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
         ).fetchone()
         best_score = int(row[0] or 0) if row is not None else 0
 
-    # Reference DB `songs.best_fg_score` may reflect a different TeamBuff tier than the baseline row under test.
+        # Reference DB `songs.best_fg_score` may reflect a different TeamBuff tier than the baseline row under test.
         # computed in post-processing. `process_song_task()` evaluates the canonical T5 tier,
         # so for apples-to-apples comparisons we use the T5 FG leaderboard max.
         fg_row = conn.execute(

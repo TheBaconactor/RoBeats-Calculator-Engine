@@ -115,6 +115,9 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     valid_color_key = next((k for k in TEAM_BUFF_ELEMENTS if k.lower() == color.lower()), None)
     if valid_color_key and elem_add:
         out[valid_color_key] = elem_add
+    elif color and pp_add:
+        # Preserve the historical invalid-TeamColor fallback used by fixed-stats readers.
+        out["Perfect Points"] = out.get("Perfect Points", 0) + pp_add
     return out
 
 

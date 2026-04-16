@@ -10,7 +10,9 @@ TIERS = {
     "T1": {"PP": 25, "Elem": 35},
     "T5": {"PP": 25, "Elem": 30},
     "T10": {"PP": 20, "Elem": 25},
-    "T15": {"PP": 15, "Elem": 20},
+    "T20": {"PP": 15, "Elem": 20},
+    "T50": {"PP": 10, "Elem": 15},
+    "T51": {"PP": 5, "Elem": 10},
 }
 for tier, vals in TIERS.items():
     print(f"  {tier:4s}: PP +{vals['PP']:2d}, Color Element +{vals['Elem']:2d}")

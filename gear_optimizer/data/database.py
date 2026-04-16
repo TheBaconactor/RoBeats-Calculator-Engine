@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
+
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.env_config import env_flag
 from ..core.fallback_monitor import warn_fallback

@@ -73,6 +73,7 @@ def build_base_stats_from_config(cfg_dict):
     team_section = cfg_dict.get("TeamContributionBuffConstant", {}) or {}
     team_buff = str(team_section.get("teambuff", team_section.get("TeamBuff", ""))).strip().upper()
     team_color = str(team_section.get("teamcolor", team_section.get("TeamColor", ""))).strip()
+
     for stat_name, delta in team_buff_effect(team_buff, team_color).items():
         base_stats[stat_name] = base_stats.get(stat_name, 0) + int(delta)
 
