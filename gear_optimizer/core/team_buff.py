@@ -115,8 +115,6 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     valid_color_key = next((k for k in TEAM_BUFF_ELEMENTS if k.lower() == color.lower()), None)
     if valid_color_key and elem_add:
         out[valid_color_key] = elem_add
-    elif color and pp_add:
-        out["Perfect Points"] = int(out.get("Perfect Points", 0) or 0) + pp_add
     return out
 
 

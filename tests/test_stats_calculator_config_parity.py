@@ -35,3 +35,23 @@ TeamColor = Vibe
 
     cfg_dict = cfg_to_dict(cfg)
     assert build_base_stats_from_config(cfg_dict) == get_fixed_stats(cfg)
+
+
+def test_build_base_stats_from_config_invalid_team_color_does_not_double_count_pp():
+    from gear_optimizer.core.stats_calculator import build_base_stats_from_config
+
+    cfg_dict = {
+        "TeamContributionBuffConstant": {
+            "TeamBuff": "T5",
+            "TeamColor": "NotARealColor",
+        }
+    }
+
+    stats = build_base_stats_from_config(cfg_dict)
+
+    assert stats["Perfect Points"] == 25
+    assert stats["Chill"] == 0
+    assert stats["Flow"] == 0
+    assert stats["Rush"] == 0
+    assert stats["Beat"] == 0
+    assert stats["Vibe"] == 0
