@@ -32,6 +32,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from ..core.team_buff import (
+    DEFAULT_TEAM_BUFF_REPLAY_TIERS,
+    normalize_team_buff,
+    normalize_team_buff_sequence,
+    team_buff_query_values,
+)
 from ..core.types import PersistenceEntry
 from .database import (
     get_db_connection_with_timeout,
@@ -231,6 +237,9 @@ class EvolutionDbManager:
             from ..core.utils import cfg_to_dict
 
             resolved_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_to_dict(load_config()), default="T5")
+        else:
+            resolved_team_buff = normalize_team_buff(resolved_team_buff, default="T5")
+        query_team_buffs = team_buff_query_values(resolved_team_buff, default=resolved_team_buff)
         max_rank_i = max(1, int(max_rank))
         song_limit_i = int(limit_songs) if limit_songs is not None else None
 
@@ -238,10 +247,12 @@ class EvolutionDbManager:
         try:
             base_counts: dict[str, int] = {}
             fg_counts: dict[str, int] = {}
+            placeholders = ",".join("?" for _ in query_team_buffs)
             try:
                 rows = conn.execute(
-                    "SELECT song_name, COUNT(*) AS cnt FROM team_buff_loadouts WHERE team_buff = ? GROUP BY song_name",
-                    (resolved_team_buff,),
+                    f"SELECT song_name, COUNT(*) AS cnt FROM team_buff_loadouts "
+                    f"WHERE UPPER(team_buff) IN ({placeholders}) GROUP BY song_name",
+                    query_team_buffs,
                 ).fetchall()
                 for r in rows or []:
                     if not r:
@@ -252,8 +263,9 @@ class EvolutionDbManager:
 
             try:
                 rows = conn.execute(
-                    "SELECT song_name, COUNT(*) AS cnt FROM team_buff_fg_loadouts WHERE team_buff = ? GROUP BY song_name",
-                    (resolved_team_buff,),
+                    f"SELECT song_name, COUNT(*) AS cnt FROM team_buff_fg_loadouts "
+                    f"WHERE UPPER(team_buff) IN ({placeholders}) GROUP BY song_name",
+                    query_team_buffs,
                 ).fetchall()
                 for r in rows or []:
                     if not r:
@@ -382,7 +394,7 @@ class EvolutionDbManager:
         lb = _norm_leaderboard_key(leaderboard)
         if not lb:
             return None
-        tier = str(tier or "").strip().upper() or "T5"
+        tier = normalize_team_buff(tier, default="T5")
         rank_i = max(1, int(rank))
         limit_i = max(1, int(limit))
 
@@ -415,6 +427,7 @@ class EvolutionDbManager:
             return None
 
         if lb == "fg":
+
             def _fg_compare_score(row: dict) -> int:
                 try:
                     fg_base_score = int(row.get("fg_base_score", 0) or 0)
@@ -428,9 +441,19 @@ class EvolutionDbManager:
                     return 0
 
             rows = [r for r in rows if int(r.get("fg_score", 0) or 0) > int(_fg_compare_score(r))]
-            rows.sort(key=lambda r: int(r.get("fg_score", 0) or 0), reverse=True)
+            rows.sort(
+                key=lambda r: (
+                    -int(r.get("fg_score", 0) or 0),
+                    str(r.get("loadout_hash") or ""),
+                )
+            )
         else:
-            rows.sort(key=lambda r: int(r.get("score", 0) or 0), reverse=True)
+            rows.sort(
+                key=lambda r: (
+                    -int(r.get("score", 0) or 0),
+                    str(r.get("loadout_hash") or ""),
+                )
+            )
 
         if rank_i > len(rows):
             return None
@@ -520,7 +543,7 @@ class EvolutionDbManager:
         song_name: str,
         *,
         song_file: str,
-        tiers: Sequence[str] = ("NONE", "T1", "T5", "T10", "T15"),
+        tiers: Sequence[str] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
         limit: int = 51,
         element: str = "selected",
         team_color: Optional[str] = None,
@@ -538,7 +561,7 @@ class EvolutionDbManager:
         Args:
             song_name: DB song key (songs.name / loadouts.song_name)
             song_file: Path to the song .txt used to parse chart timestamps
-            tiers: Tier list to compute (default: NONE,T1,T5,T10,T15)
+            tiers: Tier list to compute (default: NONE,T1,T5,T10,T20,T50,T51)
             limit: Top-N retained candidates (default: 51)
             element: TeamColor override mode: selected (default), primary, secondary
             team_color: Explicit TeamColor override; supersedes `element`
@@ -565,6 +588,6 @@ class EvolutionDbManager:
             ref_arrays=ref_arrays_local,
             cfg_dict=cfg_dict_local,
             limit=int(limit),
-            tiers=tuple(str(t) for t in tiers),
+            tiers=normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS),
             target_team_color_override=target_team_color_override,
         )

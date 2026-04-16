@@ -38,12 +38,13 @@ The default `evolution.db` workflow persists only the **baseline** TeamBuff tier
 - `team_buff_loadouts`
 - `team_buff_fg_loadouts`
 
-Derived tiers (`NONE/T1/T10/T15`) are recomputed on demand (not persisted).
+Derived tiers (`NONE/T1/T10/T20/T50/T51`) are recomputed on demand (not persisted).
 See: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`.
 
 Legacy DB note:
 - Pre-compact DBs that still store `gear_json` / `minis_json` are upgraded in place on schema init.
 - Current reads use the compact BLOB columns after that repair/backfill step.
+- Historical rows labeled `T15` are no longer aliased into canonical reads.
 
 ## Queueing
 
@@ -132,7 +133,7 @@ View a single leaderboard entry by `(song, tier, leaderboard, rank)`.
 row = db.get_leaderboard_entry(
     "Rainshower (Easy) by Silentroom",
     leaderboard="fg",   # "base" or "fg"
-    tier="T10",         # NONE/T1/T5/T10/T15 (computed on demand)
+    tier="T10",         # NONE/T1/T5/T10/T20/T50/T51 (computed on demand)
     rank=1,
     element="selected", # selected|primary|secondary
     # team_color="Rush", # optional explicit override (wins over element)

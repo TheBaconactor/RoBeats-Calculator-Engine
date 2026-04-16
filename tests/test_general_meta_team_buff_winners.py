@@ -65,9 +65,9 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
     assert "Chill/All" not in results["results"]
     combo = results["results"]["Chill/Vibe"]
 
-    assert combo["team_buff_tiers"] == ["None", "T1", "T5", "T10", "T15"]
+    assert combo["team_buff_tiers"] == ["None", "T1", "T5", "T10", "T20", "T50", "T51"]
     winners = combo["team_buff_winners"]
-    assert set(winners.keys()) == {"None", "T1", "T5", "T10", "T15"}
+    assert set(winners.keys()) == {"None", "T1", "T5", "T10", "T20", "T50", "T51"}
 
     assert winners["T5"]["songs_count_with_data"] == 2
     assert winners["T5"]["winner"]["gear"] == baseline_gears
@@ -77,6 +77,15 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
 
     assert winners["T1"]["songs_count_with_data"] == 0
     assert winners["T1"]["winner"] is None
+
+    assert winners["T20"]["songs_count_with_data"] == 0
+    assert winners["T20"]["winner"] is None
+
+    assert winners["T50"]["songs_count_with_data"] == 0
+    assert winners["T50"]["winner"] is None
+
+    assert winners["T51"]["songs_count_with_data"] == 0
+    assert winners["T51"]["winner"] is None
 
     assert winners["None"]["songs_count_with_data"] == 0
     assert winners["None"]["winner"] is None

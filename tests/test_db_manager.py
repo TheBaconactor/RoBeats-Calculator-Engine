@@ -192,6 +192,55 @@ def test_get_song_catalog_defaults_to_resolved_baseline_team_buff(tmp_path: Path
     ]
 
 
+def test_get_best_loadouts_does_not_read_legacy_t15_rows_when_requesting_t20(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.database import get_best_loadouts, get_db_connection, init_db, save_loadouts_batch
+
+    db_path = tmp_path / "legacy_t15_alias.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+    save_loadouts_batch("Alias Song", [_entry(score=4321)], team_buff="T20")
+
+    conn = get_db_connection(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE team_buff_loadouts SET team_buff = 'T15' WHERE song_name = ?",
+            ("Alias Song",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rows = get_best_loadouts("Alias Song", limit=5, team_buff="T20", allow_fallback=False, db_path=str(db_path))
+
+    assert rows == []
+
+
+def test_get_song_catalog_does_not_read_legacy_t15_rows_when_baseline_is_t20(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "catalog_legacy_t15_alias.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+    save_loadouts_batch("Catalog Alias Song", [_entry(score=2468)], team_buff="T20")
+
+    conn = get_db_connection(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE team_buff_loadouts SET team_buff = 'T15' WHERE song_name = ?",
+            ("Catalog Alias Song",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = EvolutionDbManager.from_env()
+    catalog = db.get_song_catalog(team_buff="T20")
+
+    assert catalog["team_buff"] == "T20"
+    assert catalog["songs"] == []
+
+
 def test_save_loadouts_batch_persists_under_explicit_baseline_team_buff(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
 
@@ -442,3 +491,50 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
     assert int(out["fg_score"] or 0) == 120
     assert int(out["fg_base_score"] or 0) == 110
     assert int(out["source_fg_base_score"] or 0) == 140
+
+
+def test_db_manager_get_leaderboard_entry_breaks_ties_by_loadout_hash(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "leaderboard_ties.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr(
+        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
+        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
+    )
+
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
+    monkeypatch.setattr(
+        EvolutionDbManager,
+        "get_best_loadouts",
+        lambda self, _song_name, **kwargs: [{"score": 100, "fg_score": 100}],
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
+        lambda **kwargs: {
+            "T5": [
+                {"loadout_hash": "b_hash", "score": 100, "fg_score": 100, "gear": [], "minis": [], "details": {}},
+                {"loadout_hash": "a_hash", "score": 100, "fg_score": 100, "gear": [], "minis": [], "details": {}},
+            ]
+        },
+    )
+
+    db = EvolutionDbManager.from_env()
+    out = db.get_leaderboard_entry("Tie Song", tier="T5", leaderboard="base", rank=1)
+
+    assert out is not None
+    assert out["loadout_hash"] == "a_hash"

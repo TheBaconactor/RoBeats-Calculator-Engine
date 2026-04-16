@@ -42,10 +42,10 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     # Stats here are assumed to already include the base TeamBuff=T5.
-    # Under T15, PP decreases by 10 vs T5, pushing Entry A below the PP breakpoint
+    # Under T20, PP decreases by 10 vs T5, pushing Entry A below the PP breakpoint
     # while keeping Entry B at/above it, which should flip the ordering.
     stats_a = {
-        "Perfect Points": 119,  # T15 => 109 (below breakpoint), T5 => 119 (above)
+        "Perfect Points": 119,  # T20 => 109 (below breakpoint), T5 => 119 (above)
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
         "Fever Fill Rate": 0,
@@ -57,7 +57,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
         "Chill": 0,
     }
     stats_b = {
-        "Perfect Points": 120,  # T15 => 110 (at breakpoint), T5 => 120 (above)
+        "Perfect Points": 120,  # T20 => 110 (at breakpoint), T5 => 120 (above)
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
         "Fever Fill Rate": 0,
@@ -98,7 +98,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
 
     assert "NONE" in tiers
     assert tiers["T5"]["base_top51"][0]["gear"] == entry_a["gear"]
-    assert tiers["T15"]["base_top51"][0]["gear"] == entry_b["gear"]
+    assert tiers["T20"]["base_top51"][0]["gear"] == entry_b["gear"]
 
 
 def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
@@ -128,7 +128,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
     # - TeamColor=Primary Color
     cfg_dict = {
         "IterationEngine": {"AutoSelectBuffAndColor": "true"},
-        "TeamContributionBuffConstant": {"TeamBuff": "T15", "TeamColor": "Rush"},
+        "TeamContributionBuffConstant": {"TeamBuff": "T20", "TeamColor": "Rush"},
     }
 
     # Stats represent the base run under auto TeamBuff=T5 + TeamColor=Vibe already applied.
@@ -253,11 +253,11 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         ref_arrays=ref_arrays,
         cfg_dict=cfg_dict,
         limit=1,
-        tiers=("NONE", "T5", "T10", "T15"),
+        tiers=("NONE", "T5", "T10", "T20", "T50", "T51"),
     )
 
     # All produced Stats should be non-negative PP.
-    for tier in ("NONE", "T5", "T10", "T15"):
+    for tier in ("NONE", "T5", "T10", "T20", "T50", "T51"):
         out = batches[tier][0]
         pp = out["details"]["Stats"]["Perfect Points"]
         assert pp >= 0
@@ -365,14 +365,14 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         cfg_dict=cfg_dict,
-        tiers=("T5", "T15"),
+        tiers=("T5", "T51"),
     )
 
     t5 = out["tiers"]["T5"]["base_top51"][0]
-    t15 = out["tiers"]["T15"]["base_top51"][0]
+    t51 = out["tiers"]["T51"]["base_top51"][0]
 
-    assert t5["score"] != t15["score"]
-    assert t5["fg_score"] != t15["fg_score"]
+    assert t5["score"] != t51["score"]
+    assert t5["fg_score"] != t51["fg_score"]
 
 
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
@@ -453,10 +453,8 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     assert tier["fg_top51"][0]["score"] == 110
 
 
-@pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T15"])
-def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(
-    monkeypatch, tier_name: str
-):
+@pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T20", "T50", "T51"])
+def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(monkeypatch, tier_name: str):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 

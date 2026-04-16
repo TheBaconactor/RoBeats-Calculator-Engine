@@ -12,6 +12,7 @@ from .constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     SKIP_ITEM_KEYS,
 )
+from .team_buff import team_buff_effect
 
 
 def build_base_stats_from_config(cfg_dict):
@@ -72,23 +73,8 @@ def build_base_stats_from_config(cfg_dict):
     team_section = cfg_dict.get("TeamContributionBuffConstant", {}) or {}
     team_buff = str(team_section.get("teambuff", team_section.get("TeamBuff", ""))).strip().upper()
     team_color = str(team_section.get("teamcolor", team_section.get("TeamColor", ""))).strip()
-
-    buff_tiers = {
-        "T1": {"PP": 25, "Elem": 35},
-        "T5": {"PP": 25, "Elem": 30},
-        "T10": {"PP": 20, "Elem": 25},
-        "T15": {"PP": 15, "Elem": 20},
-    }
-
-    if team_buff in buff_tiers:
-        buff_data = buff_tiers[team_buff]
-        base_stats["Perfect Points"] += buff_data["PP"]
-        valid_color_key = next((k for k in elements if k.lower() == team_color.lower()), None)
-        if valid_color_key:
-            base_stats[valid_color_key] += buff_data["Elem"]
-        elif team_color:
-            # Match csv_parser.get_fixed_stats() fallback behavior.
-            base_stats["Perfect Points"] += buff_data["PP"]
+    for stat_name, delta in team_buff_effect(team_buff, team_color).items():
+        base_stats[stat_name] = base_stats.get(stat_name, 0) + int(delta)
 
     return base_stats
 

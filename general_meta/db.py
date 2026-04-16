@@ -11,6 +11,7 @@ from gear_optimizer.data.database import (
     get_db_connection,
     get_evolution_db_path,
 )
+from gear_optimizer.core.team_buff import normalize_team_buff, team_buff_query_values
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 
 
@@ -26,7 +27,8 @@ def get_all_loadouts_from_db(*, team_buff: str = "T5") -> List[dict]:
     if not os.path.exists(db_path):
         return []
 
-    resolved_team_buff = str(team_buff or "").strip().upper() or "T5"
+    resolved_team_buff = normalize_team_buff(team_buff, default="T5")
+    query_team_buffs = team_buff_query_values(resolved_team_buff, default=resolved_team_buff)
 
     conn = get_db_connection(db_path)
     try:
@@ -76,15 +78,16 @@ def get_all_loadouts_from_db(*, team_buff: str = "T5") -> List[dict]:
                 )
 
         # Baseline-only workflow: GeneralMeta reads the baseline tier rows persisted in compact DB mode.
+        placeholders = ",".join("?" for _ in query_team_buffs)
         _select_all_from(
             "team_buff_loadouts",
-            where="WHERE UPPER(team_buff) = ?",
-            params=(resolved_team_buff,),
+            where=f"WHERE UPPER(team_buff) IN ({placeholders})",
+            params=query_team_buffs,
         )
         _select_all_from(
             "team_buff_fg_loadouts",
-            where="WHERE UPPER(team_buff) = ?",
-            params=(resolved_team_buff,),
+            where=f"WHERE UPPER(team_buff) IN ({placeholders})",
+            params=query_team_buffs,
         )
         return results
     finally:

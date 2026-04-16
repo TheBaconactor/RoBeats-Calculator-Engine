@@ -49,9 +49,11 @@ def _load_baseline_candidates_from_legacy(
     limit: int,
 ) -> list[dict]:
     from gear_optimizer.data.database import _unpack_stats_after_load
+    from gear_optimizer.core.team_buff import normalize_team_buff, team_buff_query_values
 
     song_name = str(song_name or "").strip()
-    baseline_team_buff = str(baseline_team_buff or "").strip().upper() or "T5"
+    baseline_team_buff = normalize_team_buff(baseline_team_buff, default="T5")
+    query_team_buffs = team_buff_query_values(baseline_team_buff, default=baseline_team_buff)
     limit = max(1, int(limit))
 
     by_hash: dict[str, dict] = {}
@@ -97,29 +99,30 @@ def _load_baseline_candidates_from_legacy(
             entry["force"] = force_obj
 
     # 1) Base leaderboard rows
+    placeholders = ",".join("?" for _ in query_team_buffs)
     base_rows = conn.execute(
-        """
+        f"""
         SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
         FROM team_buff_loadouts
-        WHERE song_name = ? AND team_buff = ?
+        WHERE song_name = ? AND UPPER(team_buff) IN ({placeholders})
         ORDER BY score DESC
         LIMIT ?
         """,
-        (song_name, baseline_team_buff, int(limit)),
+        (song_name, *query_team_buffs, int(limit)),
     ).fetchall()
     for r in base_rows:
         ingest_row(r)
 
     # 2) FG leaderboard rows (union in top-N by fg_score)
     fg_rows = conn.execute(
-        """
+        f"""
         SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
         FROM team_buff_fg_loadouts
-        WHERE song_name = ? AND team_buff = ?
+        WHERE song_name = ? AND UPPER(team_buff) IN ({placeholders})
         ORDER BY fg_score DESC
         LIMIT ?
         """,
-        (song_name, baseline_team_buff, int(limit)),
+        (song_name, *query_team_buffs, int(limit)),
     ).fetchall()
     for r in fg_rows:
         ingest_row(r)
@@ -134,32 +137,36 @@ def _load_legacy_top_lists(
     team_buff: str,
     limit: int,
 ) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
+    from gear_optimizer.core.team_buff import normalize_team_buff, team_buff_query_values
+
     song_name = str(song_name or "").strip()
-    team_buff = str(team_buff or "").strip().upper()
+    team_buff = normalize_team_buff(team_buff, default="T5")
+    query_team_buffs = team_buff_query_values(team_buff, default=team_buff)
     limit = max(1, int(limit))
+    placeholders = ",".join("?" for _ in query_team_buffs)
 
     base_rows = conn.execute(
-        """
+        f"""
         SELECT score, fg_score, loadout_hash
         FROM team_buff_loadouts
-        WHERE song_name = ? AND team_buff = ?
+        WHERE song_name = ? AND UPPER(team_buff) IN ({placeholders})
         ORDER BY score DESC
         LIMIT ?
         """,
-        (song_name, team_buff, int(limit)),
+        (song_name, *query_team_buffs, int(limit)),
     ).fetchall()
     base_list = [(int(r["score"] or 0), int(r["fg_score"] or 0), str(r["loadout_hash"] or "")) for r in base_rows]
     base_list.sort(key=lambda t: (-int(t[0] or 0), str(t[2] or "")))
 
     fg_rows = conn.execute(
-        """
+        f"""
         SELECT fg_score, score, loadout_hash
         FROM team_buff_fg_loadouts
-        WHERE song_name = ? AND team_buff = ?
+        WHERE song_name = ? AND UPPER(team_buff) IN ({placeholders})
         ORDER BY fg_score DESC
         LIMIT ?
         """,
-        (song_name, team_buff, int(limit)),
+        (song_name, *query_team_buffs, int(limit)),
     ).fetchall()
     fg_list = [(int(r["fg_score"] or 0), int(r["score"] or 0), str(r["loadout_hash"] or "")) for r in fg_rows]
     fg_list.sort(key=lambda t: (-int(t[0] or 0), str(t[2] or "")))
@@ -214,11 +221,22 @@ def _first_diff(a: list[tuple], b: list[tuple]) -> int | None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Compare on-demand tier recompute vs legacy DB tier materialization.")
-    p.add_argument("--legacy", type=str, default="evolution_legacy.db", help="Legacy v17 DB path (default: evolution_legacy.db).")
-    p.add_argument("--song", type=str, required=True, help="Song name as stored in DB (songs.name / loadouts.song_name).")
+    p.add_argument(
+        "--legacy", type=str, default="evolution_legacy.db", help="Legacy v17 DB path (default: evolution_legacy.db)."
+    )
+    p.add_argument(
+        "--song", type=str, required=True, help="Song name as stored in DB (songs.name / loadouts.song_name)."
+    )
     p.add_argument("--file", type=str, required=True, help="Path to the song .txt file (used to build calc_song).")
-    p.add_argument("--baseline", type=str, default="T5", help="Baseline tier key to load candidates from (default: T5).")
-    p.add_argument("--tiers", type=str, default="NONE,T1,T5,T10,T15", help="Comma tier list to compare.")
+    p.add_argument(
+        "--baseline", type=str, default="T5", help="Baseline tier key to load candidates from (default: T5)."
+    )
+    p.add_argument(
+        "--tiers",
+        type=str,
+        default="NONE,T1,T5,T10,T20,T50,T51",
+        help="Comma tier list to compare.",
+    )
     p.add_argument("--limit", type=int, default=51, help="Top-N limit (default: 51).")
     p.add_argument(
         "--hitsim",
@@ -232,7 +250,9 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    legacy_db = (PROJECT_ROOT / str(args.legacy)) if not Path(str(args.legacy)).is_absolute() else Path(str(args.legacy))
+    legacy_db = (
+        (PROJECT_ROOT / str(args.legacy)) if not Path(str(args.legacy)).is_absolute() else Path(str(args.legacy))
+    )
     if not legacy_db.exists():
         raise SystemExit(f"Legacy DB not found: {legacy_db}")
 
@@ -241,8 +261,10 @@ def main() -> None:
     if not song_file.exists():
         raise SystemExit(f"Song file not found: {song_file}")
 
-    baseline = str(args.baseline or "").strip().upper() or "T5"
-    tiers = tuple(t.strip().upper() for t in str(args.tiers or "").split(",") if t.strip())
+    from gear_optimizer.core.team_buff import normalize_team_buff, normalize_team_buff_sequence
+
+    baseline = normalize_team_buff(args.baseline, default="T5")
+    tiers = normalize_team_buff_sequence([t.strip().upper() for t in str(args.tiers or "").split(",") if t.strip()])
     limit = max(1, int(args.limit))
 
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
@@ -268,7 +290,9 @@ def main() -> None:
     conn = sqlite3.connect(str(legacy_db))
     conn.row_factory = sqlite3.Row
     try:
-        candidates = _load_baseline_candidates_from_legacy(conn, song_name=song_name, baseline_team_buff=baseline, limit=limit)
+        candidates = _load_baseline_candidates_from_legacy(
+            conn, song_name=song_name, baseline_team_buff=baseline, limit=limit
+        )
         if not candidates:
             raise SystemExit("No baseline candidates loaded from legacy DB.")
 

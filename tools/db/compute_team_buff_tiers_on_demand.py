@@ -13,9 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _parse_tiers(text: str) -> tuple[str, ...]:
+    from gear_optimizer.core.team_buff import DEFAULT_TEAM_BUFF_REPLAY_TIERS, normalize_team_buff_sequence
+
     raw = [t.strip().upper() for t in str(text or "").split(",")]
     cleaned = [t for t in raw if t]
-    return tuple(cleaned) if cleaned else ("NONE", "T1", "T5", "T10", "T15")
+    return normalize_team_buff_sequence(cleaned, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
 
 def _print_top(label: str, rows: Iterable[dict], *, score_key: str) -> None:
@@ -40,15 +42,15 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Re-score the persisted baseline (typically T5) loadouts under TeamBuff tiers on demand.\n\n"
             "Intended for the default compact `evolution.db` workflow where we do NOT store derived tiers "
-            "(T1/T10/T15/NONE) in SQLite."
+            "(NONE/T1/T10/T20/T50/T51) in SQLite."
         )
     )
-    parser.add_argument("--song", required=True, help="DB song key (e.g. \"Rainshower (Easy) by Silentroom\")")
+    parser.add_argument("--song", required=True, help='DB song key (e.g. "Rainshower (Easy) by Silentroom")')
     parser.add_argument("--file", required=True, help="Path to the song file (.txt) matching the DB song key")
     parser.add_argument(
         "--tiers",
-        default="NONE,T1,T5,T10,T15",
-        help="Comma-separated tiers to compute (default: NONE,T1,T5,T10,T15)",
+        default="NONE,T1,T5,T10,T20,T50,T51",
+        help="Comma-separated tiers to compute (default: NONE,T1,T5,T10,T20,T50,T51)",
     )
     parser.add_argument("--limit", type=int, default=51, help="Top-N retained candidates to consider (default: 51)")
     parser.add_argument(
@@ -120,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Resolve baseline tier to seed from.
     try:
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+        from gear_optimizer.core.team_buff import normalize_team_buff, resolve_baseline_team_buff_from_cfg_dict
 
         cfg_base_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
     except Exception:
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     elif available_tiers:
         if base_team_buff not in available_tiers:
             base_team_buff = "T5" if "T5" in available_tiers else available_tiers[0]
+    base_team_buff = normalize_team_buff(base_team_buff, default="T5")
 
     # Ensure the tier scorer uses the same baseline tier as the persisted rows.
     cfg_dict_for_tiering = dict(cfg_dict)

@@ -20,6 +20,12 @@ from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.env_config import env_flag
 from ..core.fallback_monitor import warn_fallback
+from ..core.team_buff import (
+    canonicalize_team_buff,
+    normalize_team_buff,
+    team_buff_effect,
+    team_buff_query_values,
+)
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
 from .loadout_equivalence import (
@@ -1098,24 +1104,8 @@ def _ensure_stats_in_details(
                 or ""
             ).strip()
 
-        buff_tiers = {
-            "T1": {"PP": 25, "Elem": 35},
-            "T5": {"PP": 25, "Elem": 30},
-            "T10": {"PP": 20, "Elem": 25},
-            "T15": {"PP": 15, "Elem": 20},
-            "NONE": {"PP": 0, "Elem": 0},
-        }
-        if buff_tier in buff_tiers:
-            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(
-                buff_tiers[buff_tier]["PP"]
-            )
-            # TeamBuff applies to the team color element (auto mode uses song primary color).
-            elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-            valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
-            if valid_color_key:
-                base_stats[valid_color_key] = int(base_stats.get(valid_color_key, 0) or 0) + int(
-                    buff_tiers[buff_tier]["Elem"]
-                )
+        for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
+            base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
 
         # Get gem counts and FT/FF from details
         gem_counts = dict(details.get("GemCounts", {}) or {})
@@ -1304,7 +1294,7 @@ def save_loadouts_batch(
     song_name = str(song_name or "").strip()
     if not song_name:
         return
-    team_buff = str(team_buff or "").strip().upper() or "T5"
+    team_buff = normalize_team_buff(team_buff, default="T5")
 
     def _coerce_int(v: Any) -> int:
         try:
@@ -1440,12 +1430,12 @@ def save_team_buff_loadouts_batch(
     """
     Batch insert/update tiered leaderboards for a song in a single transaction.
 
-    Mirrors `save_loadouts_batch`, but partitions by `team_buff` (T1/T5/T10/T15) into:
+    Mirrors `save_loadouts_batch`, but partitions by `team_buff` (`NONE/T1/T5/T10/T20/T50/T51`) into:
     - team_buff_loadouts (base leaderboard for that tier)
     - team_buff_fg_loadouts (FG leaderboard for that tier; FG strictly beats base)
     """
     song_name = str(song_name or "").strip()
-    team_buff = str(team_buff or "").strip().upper()
+    team_buff = canonicalize_team_buff(team_buff)
     if not song_name or not team_buff or not entries:
         return
 
@@ -1768,23 +1758,8 @@ def save_team_buff_loadouts_batch(
                 or ""
             ).strip()
 
-        buff_tiers = {
-            "T1": {"PP": 25, "Elem": 35},
-            "T5": {"PP": 25, "Elem": 30},
-            "T10": {"PP": 20, "Elem": 25},
-            "T15": {"PP": 15, "Elem": 20},
-            "NONE": {"PP": 0, "Elem": 0},
-        }
-        if buff_tier in buff_tiers:
-            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(
-                buff_tiers[buff_tier]["PP"]
-            )
-            elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-            valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
-            if valid_color_key:
-                base_stats[valid_color_key] = int(base_stats.get(valid_color_key, 0) or 0) + int(
-                    buff_tiers[buff_tier]["Elem"]
-                )
+        for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
+            base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
 
         gem_counts = details_obj.get("GemCounts")
         if isinstance(gem_counts, dict):
@@ -2411,7 +2386,8 @@ def get_best_loadouts(
 
     song_name = str(song_name or "").strip()
 
-    team_buff = str(team_buff or "").strip().upper() or "T5"
+    team_buff = normalize_team_buff(team_buff, default="T5")
+    query_team_buffs = team_buff_query_values(team_buff, default=team_buff)
     strict_seed_hash = str(os.environ.get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
         "1",
         "true",
@@ -2509,15 +2485,16 @@ def get_best_loadouts(
             return gear_data, minis_data
 
         # 1. Fetch Top Base Score Loadouts (canonical base seed rows)
+        query_placeholders = ",".join("?" for _ in query_team_buffs)
         cursor = conn.execute(
-            """
+            f"""
             SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM team_buff_loadouts
-            WHERE song_name = ? AND team_buff = ?
+            WHERE song_name = ? AND UPPER(team_buff) IN ({query_placeholders})
             ORDER BY score DESC
             LIMIT ?
             """,
-            (song_name, team_buff, limit),
+            (song_name, *query_team_buffs, limit),
         )
         for row in cursor:
             loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)
@@ -2539,14 +2516,14 @@ def get_best_loadouts(
 
         # 2. Fetch Top ForceGreats Loadouts (paired base+fg scores)
         cursor = conn.execute(
-            """
+            f"""
             SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
             FROM team_buff_fg_loadouts
-            WHERE song_name = ? AND team_buff = ?
+            WHERE song_name = ? AND UPPER(team_buff) IN ({query_placeholders})
             ORDER BY fg_score DESC
             LIMIT ?
             """,
-            (song_name, team_buff, limit),
+            (song_name, *query_team_buffs, limit),
         )
         for row in cursor:
             loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)

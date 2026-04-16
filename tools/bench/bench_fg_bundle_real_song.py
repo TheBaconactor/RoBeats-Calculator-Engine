@@ -64,9 +64,7 @@ def _resolve_song_fp(cfg_dict: dict, song_fp: str | None) -> str:
         return matches[0]
     if not matches:
         raise SystemExit(f"No chart match for {song_name!r} in {folder!r}. Pass --song-fp.")
-    raise SystemExit(
-        "Multiple chart matches; pass --song-fp:\n" + "\n".join(f"  - {m}" for m in matches[:30])
-    )
+    raise SystemExit("Multiple chart matches; pass --song-fp:\n" + "\n".join(f"  - {m}" for m in matches[:30]))
 
 
 def _analyze_trace(trace_path: str) -> None:
@@ -106,7 +104,7 @@ def _analyze_trace(trace_path: str) -> None:
     exec_total = sum(float(r["exec_sec"]) for r in window if r.get("event") == "exec")
     busy = exec_total / (exec_total + wait_total) * 100.0 if (exec_total + wait_total) > 0 else 0.0
     print(
-        f"[fg-bundle] trace_fg_window={start:.3f}s->{end:.3f}s dur={end-start:.3f}s "
+        f"[fg-bundle] trace_fg_window={start:.3f}s->{end:.3f}s dur={end - start:.3f}s "
         f"executor_wait={wait_total:.3f}s exec={exec_total:.3f}s busy={busy:.1f}%"
     )
 
@@ -137,10 +135,16 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=100, help="Number of FG jobs to run.")
     ap.add_argument("--workers", type=int, default=12, help="CPU worker threads (FG jobs in flight).")
     ap.add_argument("--candidate-limit", type=int, default=0, help="Override FG_CandidateLimit (0=use config).")
-    ap.add_argument("--team-buff", default="", help="Override TeamBuff tier (e.g., T1/T5/T10/T15/NONE).")
+    ap.add_argument(
+        "--team-buff",
+        default="",
+        help="Override TeamBuff tier (e.g., NONE/T1/T5/T10/T20/T50/T51).",
+    )
     ap.add_argument("--trace", default="artifacts/bench/fg_bundle/gpu_executor_trace.csv", help="GPU trace CSV path.")
     ap.add_argument("--no-trace", action="store_true", help="Disable GPU executor trace output.")
-    ap.add_argument("--no-profiler", action="store_true", help="Disable GPU_PROFILER (DebugProfile gate still applies).")
+    ap.add_argument(
+        "--no-profiler", action="store_true", help="Disable GPU_PROFILER (DebugProfile gate still applies)."
+    )
     ap.add_argument("--debug-profile", action="store_true", help="Enable METAFINDER_DEBUG_PROFILE=1 for this run.")
     args = ap.parse_args()
 
@@ -293,7 +297,7 @@ def main() -> int:
         p50 = durs_sorted[len(durs_sorted) // 2]
         p95 = durs_sorted[int(0.95 * (len(durs_sorted) - 1))]
         print(
-            f"[fg-bundle] wall={wall:.3f}s jobs={len(durs)} jobs/s={len(durs)/max(0.001,wall):.2f} "
+            f"[fg-bundle] wall={wall:.3f}s jobs={len(durs)} jobs/s={len(durs) / max(0.001, wall):.2f} "
             f"p50={p50:.3f}s p95={p95:.3f}s max={max(durs_sorted):.3f}s"
         )
 

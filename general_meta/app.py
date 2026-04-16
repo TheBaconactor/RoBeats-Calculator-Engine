@@ -7,7 +7,12 @@ from typing import Any, Dict
 
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.stats_calculator import compute_full_stats
-from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+from gear_optimizer.core.team_buff import (
+    DEFAULT_TEAM_BUFF_REPLAY_TIERS,
+    resolve_baseline_team_buff_from_cfg,
+    team_buff_display_label,
+    team_buff_effect,
+)
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 
@@ -60,7 +65,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
     gears_by_name = {g["Name"]: g for g in all_gears}
     minis_by_name = {m["Name"]: m for m in all_minis}
 
-    team_buff_tiers = ["None", "T1", "T5", "T10", "T15"]
+    team_buff_tiers = [team_buff_display_label(tier, default="NONE") for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS]
 
     def _resolve_team_color(default_color: str) -> str:
         try:
@@ -76,27 +81,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         return str(default_color or "").strip()
 
     def _team_buff_base_stats(team_buff: str, team_color: str) -> dict:
-        team_buff = str(team_buff or "").strip().upper()
-        team_color = str(team_color or "").strip()
-        tiers = {
-            "NONE": {"PP": 0, "Elem": 0},
-            "T1": {"PP": 25, "Elem": 35},
-            "T5": {"PP": 25, "Elem": 30},
-            "T10": {"PP": 20, "Elem": 25},
-            "T15": {"PP": 15, "Elem": 20},
-        }
-        tier = tiers.get(team_buff) or {"PP": 0, "Elem": 0}
-        pp_add = int(tier["PP"])
-        elem_add = int(tier["Elem"])
-        out: dict[str, int] = {"Perfect Points": pp_add}
-        elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-        valid_color_key = next((k for k in elements if k.lower() == team_color.lower()), None)
-        if valid_color_key:
-            out[valid_color_key] = elem_add
-        elif team_color:
-            # Match `gear_optimizer/core/stats_calculator.py::build_base_stats_from_config` fallback.
-            out["Perfect Points"] = int(out.get("Perfect Points", 0)) + pp_add
-        return out
+        return team_buff_effect(team_buff, team_color)
 
     def _empty_team_buff_winners() -> dict[str, dict]:
         return {tier: {"songs_count_with_data": 0, "winner": None} for tier in team_buff_tiers}
@@ -135,7 +120,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         print(f"  {combo[0]}/{combo[1]}: {len(songs)} songs")
 
     baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg, default="T5")
-    baseline_label = "None" if str(baseline_team_buff) == "NONE" else str(baseline_team_buff)
+    baseline_label = team_buff_display_label(baseline_team_buff, default="T5")
     print(f"\nQuerying loadouts from database (baseline TeamBuff={baseline_label})...")
     all_loadouts = get_all_loadouts_from_db(team_buff=baseline_team_buff)
     print(f"  Found {len(all_loadouts)} loadout records")

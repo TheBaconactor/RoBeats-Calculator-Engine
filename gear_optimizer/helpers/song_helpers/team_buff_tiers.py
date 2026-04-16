@@ -8,19 +8,18 @@ from typing import Any
 import numpy as np
 
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
+from ...core.team_buff import (
+    DEFAULT_TEAM_BUFF_REPLAY_TIERS,
+    TEAM_BUFF_ELEMENTS,
+    canonicalize_team_buff,
+    normalize_team_buff_sequence,
+    team_buff_effect,
+)
 from ...core.time_quantize import quantize_to_int_ms
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
 
-_TEAM_BUFF_TIERS: dict[str, dict[str, int]] = {
-    "NONE": {"PP": 0, "Elem": 0},
-    "T1": {"PP": 25, "Elem": 35},
-    "T5": {"PP": 25, "Elem": 30},
-    "T10": {"PP": 20, "Elem": 25},
-    "T15": {"PP": 15, "Elem": 20},
-}
-
-_ELEMENTS = ("Chill", "Flow", "Rush", "Beat", "Vibe")
+_ELEMENTS = TEAM_BUFF_ELEMENTS
 
 
 def _norm_text(v: object) -> str:
@@ -203,8 +202,7 @@ def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
 
 
 def _norm_team_buff(v: object) -> str:
-    s = _norm_text(v).upper()
-    return s if s in _TEAM_BUFF_TIERS else ""
+    return canonicalize_team_buff(v)
 
 
 def _resolve_team_section(cfg_dict: dict) -> dict:
@@ -268,26 +266,7 @@ def _resolve_team_colors_for_tiering(
 
 
 def _team_buff_effect(team_buff: str, team_color: str) -> dict[str, int]:
-    """
-    Return the raw stat deltas applied by TeamBuff for the given color.
-
-    Matches `gear_optimizer/core/stats_calculator.py::build_base_stats_from_config`.
-    """
-    tier = _TEAM_BUFF_TIERS.get(_norm_team_buff(team_buff))
-    if not tier:
-        return {}
-
-    pp_add = int(tier["PP"])
-    elem_add = int(tier["Elem"])
-    out: dict[str, int] = {"Perfect Points": pp_add}
-
-    team_color = _norm_text(team_color)
-    valid_color_key = next((k for k in _ELEMENTS if k.lower() == team_color.lower()), None)
-    if valid_color_key:
-        out[valid_color_key] = elem_add
-    elif team_color:
-        out["Perfect Points"] += pp_add
-    return out
+    return team_buff_effect(team_buff, team_color)
 
 
 def _dict_cfg_to_counts(cfg: dict) -> list[int]:
@@ -631,6 +610,7 @@ def _stats_get_int(stats: dict, key: str, default: int = 0) -> int:
         return default
     return _safe_int(stats.get(key, default), default)
 
+
 def compute_team_buff_tier_leaderboards(
     *,
     entries: list[dict],
@@ -638,7 +618,7 @@ def compute_team_buff_tier_leaderboards(
     ref_arrays: dict,
     cfg_dict: dict,
     limit: int = 51,
-    tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
+    tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
     target_team_color_override: object = None,
 ) -> dict:
@@ -671,7 +651,7 @@ def compute_team_buff_tier_leaderboards(
     base_team_buff = _resolve_base_team_buff(cfg_dict)
 
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
-    tier_list = tuple(t for t in tiers if _norm_team_buff(t))
+    tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
     # Group entries by persisted HumanHitSim context (if any). This matters when
     # HumanHitSim.Seed=0 chooses a different random seed per run; persisted rows
@@ -1109,7 +1089,7 @@ def build_team_buff_tier_db_batches(
     ref_arrays: dict,
     cfg_dict: dict,
     limit: int = 51,
-    tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
+    tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
     target_team_color_override: object = None,
 ) -> dict[str, list[dict]]:
@@ -1122,13 +1102,15 @@ def build_team_buff_tier_db_batches(
     Selection:
     - union(top-N by base score, top-N by FG score) per tier
     """
+    tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
+
     payload = compute_team_buff_tier_leaderboards(
         entries=entries,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         cfg_dict=cfg_dict,
         limit=limit,
-        tiers=tiers,
+        tiers=tier_list,
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
@@ -1367,6 +1349,7 @@ def build_team_buff_tier_db_batches(
 
             out_entries.append(
                 {
+                    "loadout_hash": str(orig.get("loadout_hash") or ""),
                     "score": score_out,
                     "fg_score": fg_score_out,
                     "fg_base_score": fg_base_score_out,

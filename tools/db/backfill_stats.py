@@ -8,7 +8,7 @@ import json
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
-from gear_optimizer.core.team_buff import normalize_team_buff
+from gear_optimizer.core.team_buff import normalize_team_buff, team_buff_effect
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.data.database import (
     _load_piece_name_encoding_maps,
@@ -123,27 +123,8 @@ def main():
             auto_row = bool(auto_select) and str(row_team_buff) == "T5"
             team_color = primary if auto_row else (cfg_team_color or primary)
 
-            tiers = {
-                "NONE": {"PP": 0, "Elem": 0},
-                "T1": {"PP": 25, "Elem": 35},
-                "T5": {"PP": 25, "Elem": 30},
-                "T10": {"PP": 20, "Elem": 25},
-                "T15": {"PP": 15, "Elem": 20},
-            }
-            tier = tiers.get(str(row_team_buff)) or {"PP": 0, "Elem": 0}
-            pp_add = int(tier["PP"])
-            elem_add = int(tier["Elem"])
-
-            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + pp_add
-            valid_color_key = next(
-                (k for k in ("Chill", "Flow", "Rush", "Beat", "Vibe") if k.lower() == str(team_color).lower()),
-                None,
-            )
-            if valid_color_key:
-                base_stats[valid_color_key] = int(base_stats.get(valid_color_key, 0) or 0) + elem_add
-            elif team_color:
-                # Match gear_optimizer.core.stats_calculator.build_base_stats_from_config fallback behavior.
-                base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + pp_add
+            for stat_name, delta in team_buff_effect(row_team_buff, team_color).items():
+                base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
 
             # Compute Stats (unconditionally recompute for consistency)
             computed_stats = compute_full_stats(

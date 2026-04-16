@@ -3,7 +3,12 @@
 ## Summary
 
 The default DB (`evolution.db`) is optimized for size: it persists only the **baseline** TeamBuff tier rows (usually `T5`)
-and does **not** materialize `NONE/T1/T10/T15` rows.
+and does **not** materialize `NONE/T1/T10/T20/T50/T51` rows.
+
+Tier note:
+
+- `NONE` is the true zero-effect view
+- `T51` models the `51st+` non-zero cutoff (`+10 chosen-color stat`, `+5 Perfect Points`)
 
 When you need tiered leaderboards, compute them **on demand** from the persisted baseline candidates.
 
@@ -20,7 +25,7 @@ Compact DB writes:
 - `team_buff_loadouts` (base leaderboard) for the baseline tier only
 - `team_buff_fg_loadouts` (FG leaderboard) for the baseline tier only
 
-Derived tier rows (`NONE/T1/T10/T15`) are never persisted. They are recomputed on demand.
+Derived tier rows (`NONE/T1/T10/T20/T50/T51`) are never persisted. They are recomputed on demand.
 
 ## How To Recompute Tier Leaderboards
 
@@ -33,7 +38,7 @@ results per tier.
 python tools/db/compute_team_buff_tiers_on_demand.py `
   --song "Rainshower (Easy) by Silentroom" `
   --file "Data/Normal/Rainshower.txt" `
-  --tiers "NONE,T1,T5,T10,T15" `
+  --tiers "NONE,T1,T5,T10,T20,T50,T51" `
   --limit 51 `
   --element selected
 ```
@@ -88,7 +93,7 @@ payload = compute_team_buff_tier_leaderboards(
     calc_song=calc_song,
     ref_arrays=ref_arrays,
     cfg_dict=cfg_dict,
-    tiers=("NONE", "T1", "T5", "T10", "T15"),
+    tiers=("NONE", "T1", "T5", "T10", "T20", "T50", "T51"),
     target_team_color_override=None,  # or "Rush" / "Flow" / etc
 )
 ```

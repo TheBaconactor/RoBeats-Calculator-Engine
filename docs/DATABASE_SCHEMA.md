@@ -7,7 +7,7 @@ The Gear Optimizer uses a SQLite database to store song metadata and loadout con
 Default persistence behavior (`evolution.db`):
 
 - Persist only the **baseline** TeamBuff tier rows (typically `T5`).
-- Derived tiers (`NONE/T1/T10/T15`) are computed **on demand** (not persisted).
+- Derived tiers (`NONE/T1/T10/T20/T50/T51`) are computed **on demand** (not persisted).
 - On-demand scoring entrypoint: `gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards(...)`
   (tool helper: `tools/db/compute_team_buff_tiers_on_demand.py`).
 - Guide: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`
@@ -56,13 +56,14 @@ CREATE TABLE pending_fg_jobs (
 Stores the **baseline** base leaderboard for a song under the run's baseline TeamBuff tier (typically `T5`).
 
 Note:
-- The schema allows `team_buff` values like `NONE/T1/T10/T15`, but the optimizer does not persist derived tiers.
-  Older DBs may contain those values.
+- The schema allows `team_buff` values like `NONE/T1/T10/T20/T50/T51`, but the optimizer does not persist derived tiers.
+- `NONE` is the true zero-effect view; the `51st+` non-zero cutoff is modeled separately as `T51`.
+- Historical DBs may still contain the stale `T15` label, but current readers no longer alias those rows into canonical lookups.
 
 ```sql
 CREATE TABLE team_buff_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T15'
+    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T20' | 'T50' | 'T51'
     loadout_hash TEXT,             -- Effective hash of (gear + mini signatures)
     score INTEGER,                 -- Base Score under this TeamBuff tier (PRIMARY RANKING METRIC)
     fg_score INTEGER DEFAULT 0,    -- Force Greats score under this tier (Contextual; may be 0)
@@ -86,7 +87,7 @@ Note:
 ```sql
 CREATE TABLE team_buff_fg_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T15'
+    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T20' | 'T50' | 'T51'
     loadout_hash TEXT,
     score INTEGER,                 -- Base score under this TeamBuff tier (Contextual)
     fg_score INTEGER,              -- Force Greats score under this tier (PRIMARY RANKING METRIC)
@@ -191,7 +192,7 @@ catalog = db.get_song_catalog(max_rank=51)
 row = db.get_leaderboard_entry(
     "Rainshower (Easy) by Silentroom",
     leaderboard="fg",   # "base" or "fg"
-    tier="T10",         # NONE/T1/T5/T10/T15 (computed on demand)
+    tier="T10",         # NONE/T1/T5/T10/T20/T50/T51 (computed on demand)
     rank=1,
     element="selected", # selected|primary|secondary
 )
