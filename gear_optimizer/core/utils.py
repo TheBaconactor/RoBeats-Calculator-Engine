@@ -19,10 +19,6 @@ STAT_KEYS = [
     "Vibe",
 ]
 
-# Alias for gear dominance pruning (same keys used for dominance comparison)
-DOMINANCE_KEYS = STAT_KEYS
-
-
 def cfg_to_dict(cfg):
     """
     Serialize ConfigParser to a plain dict for safe process transport.
@@ -431,57 +427,3 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
             break
 
     return survivors
-
-
-def is_dominated_by(a, b):
-    """
-    Check if gear 'a' is strictly dominated by gear 'b'.
-
-    Returns True if:
-      - b[stat] >= a[stat] for ALL stats in DOMINANCE_KEYS, AND
-      - b[stat] > a[stat] for AT LEAST ONE stat
-
-    This means 'a' can never be optimal if 'b' is available.
-
-    Args:
-        a: First gear item (dict)
-        b: Second gear item (dict)
-
-    Returns:
-        bool: True if 'a' is dominated by 'b'
-    """
-    dominated = all(b.get(k, 0) >= a.get(k, 0) for k in DOMINANCE_KEYS)
-    if not dominated:
-        return False
-    strictly_better = any(b.get(k, 0) > a.get(k, 0) for k in DOMINANCE_KEYS)
-    return strictly_better
-
-
-def prune_dominated_gear(gear_list):
-    """
-    Remove gear items that are strictly dominated by another gear in the list.
-
-    For each gear, check if any other gear in the list dominates it.
-    Only keep gear that is NOT dominated by any other.
-
-    Args:
-        gear_list: List of gear dictionaries
-
-    Returns:
-        list: New list with dominated gear removed
-    """
-    if len(gear_list) <= 1:
-        return gear_list
-
-    pruned = []
-    for g in gear_list:
-        dominated = False
-        for other in gear_list:
-            if other is g:
-                continue
-            if is_dominated_by(g, other):
-                dominated = True
-                break
-        if not dominated:
-            pruned.append(g)
-    return pruned

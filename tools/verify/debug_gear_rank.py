@@ -6,13 +6,12 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list
+from gear_optimizer.data.csv_parser import load_all_gears_list
 from gear_optimizer.core.config import load_paths_cache
-from gear_optimizer.core.utils import prune_dominated_gear
+from gear_optimizer.core.utils import prune_gear_pool_lossless_for_song
 
 paths = load_paths_cache()
 all_gears = load_all_gears_list(paths)
-all_minis = load_all_minis_list(paths)
 
 p_color = "Chill"  # Take Your Time uses Chill
 s_color = "Beat"  # Secondary color
@@ -56,9 +55,9 @@ for g in all_gears:
     if g["type"] in gear_pool:
         gear_pool[g["type"]].append(g)
 
-# Prune dominated
+# Apply the live song-aware exact-safe gear prune.
 for s in slots:
-    gear_pool[s] = prune_dominated_gear(gear_pool[s])
+    gear_pool[s] = prune_gear_pool_lossless_for_song(gear_pool[s], p_color, s_color)
 
 # Rank by heuristic
 gear_rank_cache = {s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:10] for s in slots}

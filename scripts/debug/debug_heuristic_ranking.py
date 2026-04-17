@@ -1,15 +1,17 @@
 """
 Debug script to probe the heuristic ranking for gear items.
-Checks what's in the top 10 for each slot on a Vibe primary song.
+Checks what's in the top 10 for each slot on a Vibe primary song after the
+live exact-safe single-song gear pruning pass.
 """
 
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _REPO_ROOT)
 
 from gear_optimizer.data.csv_parser import parse_gear_rows
-from gear_optimizer.core.utils import prune_dominated_gear
+from gear_optimizer.core.utils import prune_gear_pool_lossless_for_song
 
 # Song colors for "Feeling Alright (Hard)"
 P_COLOR = "Vibe"
@@ -43,8 +45,7 @@ def score_candidate_modern(x, p_color, s_color):
 
 def main():
     # Load paths
-    base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    gears_csv = os.path.join(base_path, "Data", "Gear", "Gears.csv")
+    gears_csv = os.path.join(_REPO_ROOT, "Data", "Gear", "Gears.csv")
 
     all_gears = parse_gear_rows(gears_csv)
     print(f"Loaded {len(all_gears)} gear items")
@@ -56,18 +57,18 @@ def main():
         if g["type"] in gear_pool:
             gear_pool[g["type"]].append(g)
 
-    print("\n=== BEFORE DOMINANCE PRUNING ===")
+    print("\n=== BEFORE EXACT-SAFE PRUNING ===")
     for s in slots:
         print(f"  {s}: {len(gear_pool[s])} items")
 
-    # Apply dominance pruning
+    # Apply the live song-aware exact-safe gear prune.
     total_before = sum(len(gear_pool[s]) for s in slots)
     for s in slots:
-        gear_pool[s] = prune_dominated_gear(gear_pool[s])
+        gear_pool[s] = prune_gear_pool_lossless_for_song(gear_pool[s], P_COLOR, S_COLOR)
     total_after = sum(len(gear_pool[s]) for s in slots)
 
-    print(f"\n=== AFTER DOMINANCE PRUNING ===")
-    print(f"Removed {total_before - total_after} dominated items")
+    print(f"\n=== AFTER EXACT-SAFE SONG-AWARE PRUNING ===")
+    print(f"Removed {total_before - total_after} items")
     for s in slots:
         print(f"  {s}: {len(gear_pool[s])} items")
 
@@ -80,12 +81,12 @@ def main():
                 if g.get("Name") == ref_item:
                     found = True
                     score = score_candidate_modern(g, P_COLOR, S_COLOR)
-                    print(f"✓ '{ref_item}' survived in {s} pool (heuristic score: {score})")
+                    print(f"[OK] '{ref_item}' survived in {s} pool (heuristic score: {score})")
                     break
             if found:
                 break
         if not found:
-            print(f"✗ '{ref_item}' was PRUNED!")
+            print(f"[MISS] '{ref_item}' was pruned")
 
     # Show top 10 for key slots
     print(f"\n=== TOP 10 RANKINGS (Vibe primary, Chill secondary) ===")
