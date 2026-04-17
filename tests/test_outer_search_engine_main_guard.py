@@ -93,13 +93,13 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
     return prepared
 
 
-@pytest.mark.parametrize("requested_mode", ["exact", "skyline", "exact_skyline", "marginal", "fused_exact"])
+@pytest.mark.parametrize("requested_mode", ["ga", "genetic", "genetic_algorithm", "geneticalgorithm", "unsupported"])
 def test_read_outer_search_engine_forces_ga_on_main(requested_mode):
     cfg = cfg_from_dict(_common_cfg(OuterSearchEngine=requested_mode))
     assert read_outer_search_engine(cfg, default="ga") == "ga"
 
 
-def test_process_song_task_ignores_research_outer_engine_and_pre_prune(monkeypatch):
+def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkeypatch):
     from gear_optimizer.pipeline import song_processor
 
     prepared = _patch_common(monkeypatch, song_processor)
@@ -112,7 +112,7 @@ def test_process_song_task_ignores_research_outer_engine_and_pre_prune(monkeypat
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
 
-    cfg = _common_cfg(OuterSearchEngine="exact", PrePruneMode="marginal")
+    cfg = _common_cfg(OuterSearchEngine="unsupported", PrePruneMode="marginal")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest main guard"))
 
     assert calls["ga"] == 1

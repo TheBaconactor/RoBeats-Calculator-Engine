@@ -19,10 +19,6 @@ from .constants import (
 )
 from .utils import safe_int, safe_float
 
-
-_LEGACY_OUTER_ENGINE_WARNED: set[str] = set()
-
-
 def get_config_path(default: str = "config.ini") -> str:
     """
     Resolve the effective config path.
@@ -378,23 +374,7 @@ def _canon_outer_search_engine(raw: Any) -> str:
         return ""
     if value in {"ga", "genetic", "genetic_algorithm", "geneticalgorithm"}:
         return "ga"
-    if value in {"exact", "skyline", "exact_skyline", "exact_skyline_dp", "skyline_exact"}:
-        return "exact"
-    if value in {"marginal", "marginal_prune", "marginal_pruning", "slot_prune", "slot_pruning"}:
-        return "legacy_marginal"
-    if value in {"marginal_fused", "fused_marginal", "marginal_fused_dp", "marginal_exact_fg"}:
-        return "legacy_marginal_fused"
-    if value in {"fused", "fused_exact", "fused_exact_dp", "exact_fused"}:
-        return "legacy_research_exact"
     return value
-
-
-def _warn_legacy_outer_engine_once(raw: Any, replacement: str) -> None:
-    key = str(raw or "").strip()
-    if not key or key in _LEGACY_OUTER_ENGINE_WARNED:
-        return
-    _LEGACY_OUTER_ENGINE_WARNED.add(key)
-    logging.warning("[Config] OuterSearchEngine=%s is research-only on main; using %s.", key, replacement)
 
 
 def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
@@ -424,9 +404,6 @@ def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
     value = _canon_outer_search_engine(raw)
     if value == "ga":
         return value
-    if value in {"exact", "legacy_marginal", "legacy_research_exact", "legacy_marginal_fused"}:
-        _warn_legacy_outer_engine_once(raw, "OuterSearchEngine=ga")
-        return "ga"
     if not value:
         return default_c
     warn_fallback(
