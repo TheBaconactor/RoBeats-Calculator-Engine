@@ -13,14 +13,22 @@ to improve code modularity and maintainability. These functions handle:
 - Diversity and stagnation handling
 """
 
-from ...core.utils import prune_dominated_gear
+from ...core.utils import prune_gear_pool_lossless_for_song, prune_mini_pool_lossless_for_song
 
-_PRUNED_GEAR_POOL_CACHE: dict[tuple[int, int, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]] = {}
+_PRUNED_GEAR_POOL_CACHE: dict[
+    tuple[int, int, str, str, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]
+] = {}
 
 
-def _get_pruned_gear_pool(all_gears, slots):
+def _get_pruned_gear_pool(all_gears, slots, p_color, s_color=None):
     slots_key = tuple(str(s) for s in slots)
-    cache_key = (int(id(all_gears)), int(len(all_gears or [])), slots_key)
+    cache_key = (
+        int(id(all_gears)),
+        int(len(all_gears or [])),
+        str(p_color or ""),
+        str(s_color or ""),
+        slots_key,
+    )
     cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
     if cached is not None:
         gear_pool_cached, total_before, total_after = cached
@@ -34,7 +42,7 @@ def _get_pruned_gear_pool(all_gears, slots):
 
     total_before = sum(len(gear_pool[s]) for s in slots_key)
     for s in slots_key:
-        gear_pool[s] = prune_dominated_gear(gear_pool[s])
+        gear_pool[s] = prune_gear_pool_lossless_for_song(gear_pool[s], p_color, s_color)
     total_after = sum(len(gear_pool[s]) for s in slots_key)
 
     _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
@@ -52,7 +60,9 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
     A mini is included if:
     - Mini primary matches song primary OR secondary, OR
     - Mini secondary matches song primary
-    Applies dominance pruning to remove strictly inferior gear items.
+    Applies exact-safe song-aware pruning for the current single-song GA runtime:
+    - gear: relevant-signature quotient + timing-neutral dominance
+    - minis: relevant-signature cap-to-3 + timing-neutral singleton support-set prune
 
     Args:
         all_gears: List of all gear items
@@ -101,14 +111,15 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
 
         return False
 
-    # Filter minis: include only if mini's PRIMARY color matches song's primary/secondary
+    # Filter minis first, then run the exact-safe shared-pool mini prune for this song pair.
     mini_pool = [m for m in all_minis if mini_matches_song(m, p_color, s_color)]
+    mini_pool = prune_mini_pool_lossless_for_song(mini_pool, p_color, s_color)
 
     if not mini_pool:
         print("No valid minis found (Primary Color check).")
         return None, [], 0, 0, []
 
-    # Initialize/prune gear pools once per gear dataset (song-independent).
-    gear_pool, total_before, total_after, from_cache = _get_pruned_gear_pool(all_gears, slots)
+    # Initialize/prune gear pools once per gear dataset + song color pair.
+    gear_pool, total_before, total_after, from_cache = _get_pruned_gear_pool(all_gears, slots, p_color, s_color)
 
     return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis

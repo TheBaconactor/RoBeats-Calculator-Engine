@@ -301,6 +301,138 @@ def get_selected_element(data: object, default: str = "") -> str:
     return str(v or "")
 
 
+def _row_stat_value(row, key):
+    """Return a row stat as an int, tolerating missing/invalid values."""
+    if not key:
+        return 0
+    try:
+        return int(row.get(key, 0) or 0)
+    except Exception:
+        return safe_int(row.get(key, 0), 0)
+
+
+def relevant_row_projection(row, primary_color, secondary_color=""):
+    """
+    Project a row onto the exact score-relevant axes for the current single-song GA pool build.
+
+    The current runtime fixes `selected_color = primary_color` before `initialize_pools(...)`
+    is used, so only the song's primary/secondary elemental lanes remain score-relevant here.
+    """
+    return (
+        _row_stat_value(row, "Perfect Points"),
+        _row_stat_value(row, "Combo Multiplier"),
+        _row_stat_value(row, "Fever Multiplier"),
+        _row_stat_value(row, "Fever Time"),
+        _row_stat_value(row, "Fever Fill Rate"),
+        _row_stat_value(row, str(primary_color or "")),
+        _row_stat_value(row, str(secondary_color or "")),
+    )
+
+
+def timing_neutral_relevant_dominates(candidate, other, primary_color, secondary_color=""):
+    """
+    Return True when `candidate` exactly-safe dominates `other` for the current song context.
+
+    Safe dominance for the live single-song pool build requires:
+    - equal timing coordinates `(FT, FF)`, and
+    - coordinatewise dominance on the remaining score-relevant axes
+      `(PP, CM, FM, val_primary, val_secondary)`,
+    - with at least one strict improvement.
+    """
+    cand_sig = relevant_row_projection(candidate, primary_color, secondary_color)
+    other_sig = relevant_row_projection(other, primary_color, secondary_color)
+
+    if cand_sig[3] != other_sig[3] or cand_sig[4] != other_sig[4]:
+        return False
+
+    strictly_better = False
+    for idx in (0, 1, 2, 5, 6):
+        if cand_sig[idx] < other_sig[idx]:
+            return False
+        if cand_sig[idx] > other_sig[idx]:
+            strictly_better = True
+    return strictly_better
+
+
+def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=""):
+    """
+    Exact-safe pre-GA gear pruning for the current single-song pool initialization path.
+
+    Steps:
+    1. Collapse same-slot rows with identical relevant projections (keep the first witness).
+    2. Remove rows timing-neutrally dominated in the same song context.
+    """
+    gear_items = list(gear_list or [])
+    if len(gear_items) <= 1:
+        return gear_items
+
+    unique_rows = []
+    seen_signatures = set()
+    for row in gear_items:
+        sig = relevant_row_projection(row, primary_color, secondary_color)
+        if sig in seen_signatures:
+            continue
+        seen_signatures.add(sig)
+        unique_rows.append(row)
+
+    pruned = []
+    for idx, row in enumerate(unique_rows):
+        dominated = False
+        for other_idx, other in enumerate(unique_rows):
+            if other_idx == idx:
+                continue
+            if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+                dominated = True
+                break
+        if not dominated:
+            pruned.append(row)
+    return pruned
+
+
+def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=""):
+    """
+    Exact-safe pre-GA mini pruning for the current single-song shared distinct-3 pool.
+
+    Safe reductions:
+    - cap exact relevant-signature multiplicity at 3 (any legal triple can use at most 3 rows),
+    - iteratively remove a row only when 3 distinct dominators still remain in the *current* pool.
+    """
+    mini_items = list(mini_list or [])
+    if len(mini_items) <= 1:
+        return mini_items
+
+    capped_rows = []
+    multiplicities = {}
+    for row in mini_items:
+        sig = relevant_row_projection(row, primary_color, secondary_color)
+        seen = multiplicities.get(sig, 0)
+        if seen >= 3:
+            continue
+        multiplicities[sig] = seen + 1
+        capped_rows.append(row)
+
+    survivors = list(capped_rows)
+    while len(survivors) > 3:
+        removed_any = False
+        for idx, row in enumerate(survivors):
+            dominators = 0
+            for other_idx, other in enumerate(survivors):
+                if other_idx == idx:
+                    continue
+                if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+                    dominators += 1
+                    if dominators >= 3:
+                        break
+            if dominators >= 3:
+                del survivors[idx]
+                removed_any = True
+                break
+        if not removed_any:
+            break
+
+    return survivors
+
+
 def is_dominated_by(a, b):
     """
     Check if gear 'a' is strictly dominated by gear 'b'.
