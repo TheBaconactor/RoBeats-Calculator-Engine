@@ -21,16 +21,6 @@ logger = logging.getLogger(__name__)
 GEAR_SLOTS: tuple[str, ...] = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
 
-@dataclass(frozen=True)
-class BitPack:
-    shifts: tuple[int, ...]
-    masks: tuple[int, ...]
-    total_bits: int
-
-    def unpack(self, code: int) -> tuple[int, ...]:
-        return tuple((int(code) >> shift) & mask for shift, mask in zip(self.shifts, self.masks, strict=True))
-
-
 @dataclass
 class SolverContext:
     cfg: Any
@@ -47,10 +37,6 @@ class SolverContext:
     gpu_arrays: dict[str, np.ndarray]
     base_fixed_stats_arr: np.ndarray
     color_flags: dict[str, int]
-    mini_points: np.ndarray
-    mini_codes: np.ndarray
-    gear_pack: BitPack
-    mini_pack: BitPack
     slot_item_ids: list[np.ndarray]
     mini_item_ids: np.ndarray
     optimize_gear: bool = True
@@ -60,49 +46,6 @@ class SolverContext:
     song_slot: int = 0
     gpu_client: Any | None = None
     status_cb: Callable[[str], None] | None = None
-
-
-def make_pack(sizes: Iterable[int]) -> BitPack:
-    shifts: list[int] = []
-    masks: list[int] = []
-    shift = 0
-    for size in sizes:
-        size = int(size)
-        if size <= 0:
-            raise ValueError("BitPack sizes must be positive")
-        bits = max(1, int(size - 1).bit_length())
-        shifts.append(shift)
-        masks.append((1 << bits) - 1)
-        shift += bits
-    if shift > 64:
-        raise ValueError(f"BitPack overflow: need {shift} bits > 64")
-    return BitPack(shifts=tuple(shifts), masks=tuple(masks), total_bits=int(shift))
-
-
-def gear_ids_from_code(
-    code: int,
-    *,
-    pack: BitPack,
-    slot_item_ids: list[np.ndarray],
-) -> np.ndarray:
-    idxs = pack.unpack(code)
-    out = np.zeros(len(GEAR_SLOTS), dtype=np.int32)
-    for idx, item_idx in enumerate(idxs):
-        out[idx] = int(slot_item_ids[idx][int(item_idx)])
-    return out
-
-
-def mini_ids_from_code(
-    code: int,
-    *,
-    pack: BitPack,
-    mini_item_ids: np.ndarray,
-) -> np.ndarray:
-    idxs = pack.unpack(code)
-    out = np.zeros(3, dtype=np.int32)
-    for idx, item_idx in enumerate(idxs):
-        out[idx] = int(mini_item_ids[int(item_idx)])
-    return out
 
 
 def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_color: str) -> dict[str, Any]:
@@ -313,8 +256,6 @@ def prepare_solver_context(
     song_slot: int = 0,
     gpu_client: Any | None = None,
 ) -> SolverContext | None:
-    from gear_optimizer.solver.mini_skyline import mini_combo_skyline
-
     p_color = str((calc_song or {}).get("metadata", {}).get("Primary Color", "Rush") or "Rush")
     s_color = str((calc_song or {}).get("metadata", {}).get("Secondary Color", "") or "")
     selected_color = p_color
@@ -370,16 +311,6 @@ def prepare_solver_context(
     if len(mini_pool) <= 0:
         return None
 
-    gear_pack = make_pack([len(gear_pool.get(slot, []) or []) for slot in GEAR_SLOTS])
-    mini_pack = make_pack([len(mini_pool), len(mini_pool), len(mini_pool)])
-
-    _mini_stats, mini_points, mini_codes = mini_combo_skyline(
-        mini_pool,
-        p_color=p_color,
-        s_color=s_color,
-        pack=mini_pack,
-    )
-
     registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
     registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
     registry = ItemRegistry(
@@ -408,10 +339,6 @@ def prepare_solver_context(
         gpu_arrays=gpu_arrays,
         base_fixed_stats_arr=base_fixed_stats_arr,
         color_flags=color_flags,
-        mini_points=mini_points,
-        mini_codes=mini_codes,
-        gear_pack=gear_pack,
-        mini_pack=mini_pack,
         slot_item_ids=slot_item_ids,
         mini_item_ids=mini_item_ids,
         optimize_gear=bool(optimize_gear),
