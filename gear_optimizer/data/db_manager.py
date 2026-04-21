@@ -72,6 +72,18 @@ def _norm_leaderboard_key(v: object) -> str:
     return ""
 
 
+def _replay_seed_limit(limit: int) -> int:
+    """
+    Oversample baseline DB rows before replaying them.
+
+    Stored baseline scores can drift from the replay contract over time, so fetching exactly
+    top-N by the raw DB score can exclude rows that should bubble back into the canonical
+    replayed T5 ordering. Keep the oversample bounded to avoid pathological work.
+    """
+    limit_i = max(1, int(limit))
+    return max(limit_i, min(512, max(limit_i * 8, 128)))
+
+
 _SONG_INDEX_LOCK = threading.Lock()
 _SONG_INDEX_BY_DIFFICULTY: dict[str, dict[str, str]] = {}
 _PATHS_CACHE: dict | None = None
@@ -340,22 +352,27 @@ class EvolutionDbManager:
         baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
         entries = self.get_best_loadouts(
             str(song_name),
-            limit=int(limit),
+            limit=_replay_seed_limit(int(limit)),
             team_buff=str(baseline_team_buff),
             allow_fallback=True,
         )
 
         base_calc_song = get_base_calc_song(str(song_file), cfg_dict_local)
         calc_song = clone_calc_song(base_calc_song)
-
-        # Match the standalone tier replay helper so public DB-manager callers
-        # see the same deterministic HitSim-adjusted replay scores.
+        # Leave HumanHitSim application to `team_buff_tiers.py`, which replays rows
+        # against their persisted `details["hs"]` context. Pre-applying here can hide
+        # per-row timing differences and creates a second replay authority.
         try:
-            from ..solver.hit_simulation import apply_human_hit_sim
+            from ..helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
 
-            apply_human_hit_sim(calc_song, cfg_dict=cfg_dict_local)
+            entries = canonicalize_baseline_persist_entries(
+                list(entries),
+                calc_song=calc_song,
+                ref_arrays=ref_arrays_local,
+                cfg_dict=cfg_dict_local,
+            )
         except Exception:
-            pass
+            entries = list(entries)
 
         target_team_color_override = None
         if team_color:

@@ -287,10 +287,6 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
-    monkeypatch.setattr(
-        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
-        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
-    )
 
     captured: dict[str, object] = {}
 
@@ -312,8 +308,64 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
-    assert captured["hitsim_applied"] is True
+    assert captured["hitsim_applied"] is False
     assert out["tiers"]["T10"]["base_top51"][0]["score"] == 1234
+
+
+def test_db_manager_on_demand_replay_canonicalizes_baseline_seed_rows(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "canonical_seed.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": [0]})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+
+    requested_limits: list[int] = []
+
+    def _fake_get_best_loadouts(self, _song_name, **kwargs):
+        requested_limits.append(int(kwargs.get("limit", 0) or 0))
+        return [{"score": 77477622, "fg_score": 0, "gear": ["G1"], "minis": ["M1"], "details": {"Stats": {"Rush": 1}}}]
+
+    monkeypatch.setattr(EvolutionDbManager, "get_best_loadouts", _fake_get_best_loadouts)
+
+    def _fake_canonicalize(entries, **kwargs):
+        out = [dict(entry) for entry in entries]
+        out[0]["score"] = 64849540
+        return out
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
+        _fake_canonicalize,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_compute(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
+        captured["entries"] = list(entries)
+        return {"tiers": {"T5": {"base_top51": [{"score": int(entries[0].get("score", 0) or 0)}]}}}
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        fake_compute,
+    )
+
+    db = EvolutionDbManager.from_env()
+    db.compute_team_buff_tier_leaderboards_on_demand("Canonical Seed Song", song_file="dummy.txt", tiers=("T5",), limit=51)
+
+    assert requested_limits == [408]
+    assert captured["entries"][0]["score"] == 64849540
 
 
 def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_path: Path, monkeypatch):
@@ -339,10 +391,6 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
-    monkeypatch.setattr(
-        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
-        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
-    )
 
     captured: dict[str, object] = {}
 
@@ -364,7 +412,7 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
-    assert captured["hitsim_applied"] is True
+    assert captured["hitsim_applied"] is False
     assert out is not None
     assert out["song_name"] == "Leaderboard Song"
     assert out["tier"] == "T10"

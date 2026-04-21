@@ -323,6 +323,7 @@ def main() -> int:
             ga_candidates,
             loadout_entries,
             build_details_fn,
+            cfg_dict=item.get("cfg_dict") if isinstance(item, dict) else None,
         )
 
         best_fg_improving = _best_fg_improving(persist_entries)

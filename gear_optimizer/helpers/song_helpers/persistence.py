@@ -522,6 +522,7 @@ def build_persistence_entries(
     *,
     calc_song: dict | None = None,
     ref_arrays: dict | None = None,
+    cfg_dict: dict | None = None,
 ):
     """
     Build all persistence entries.
@@ -531,6 +532,9 @@ def build_persistence_entries(
         ga_candidates: List of GA candidate loadouts
         loadout_entries: Dictionary of loadout entries (or None)
         build_details_fn: Function to build details dict from data dict
+        calc_song: Optional calc-song payload used to canonicalize replayable persisted scores
+        ref_arrays: Optional stats lookup arrays used for canonical replay scoring
+        cfg_dict: Optional runtime config dict used to resolve the baseline TeamBuff tier
 
     Returns:
         list: List of persistence entries
@@ -1171,4 +1175,11 @@ def build_persistence_entries(
                 fg_base_score_val=entry.get("fg_base_score") if isinstance(entry, dict) else None,
             )
 
-    return persist_entries
+    from .baseline_replay import canonicalize_baseline_persist_entries
+
+    return canonicalize_baseline_persist_entries(
+        persist_entries,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+    )

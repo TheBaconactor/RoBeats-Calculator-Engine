@@ -1268,6 +1268,7 @@ def _build_and_persist(
             build_details,
             calc_song=ctx.calc_song,
             ref_arrays=ctx.ref_arrays,
+            cfg_dict=ctx.cfg_dict,
         )
         ctx.stage_timing["_persist_build_sec"] = time.perf_counter() - t_persist0
 
