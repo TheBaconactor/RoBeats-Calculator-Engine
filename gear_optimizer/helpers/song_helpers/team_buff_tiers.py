@@ -1169,7 +1169,6 @@ def build_team_buff_tier_db_batches(
         base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-
         ordered_keys: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         ordered_key_set: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 

@@ -517,7 +517,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     build_details,
                     calc_song=item.get("calc_song"),
                     ref_arrays=item.get("ref_arrays"),
-                    cfg_dict=item.get("cfg_dict"),
+                    cfg_dict=item.get("cfg_dict") or {},
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)

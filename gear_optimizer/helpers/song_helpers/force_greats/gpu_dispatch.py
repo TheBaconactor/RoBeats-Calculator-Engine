@@ -13,6 +13,7 @@ from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 
 from . import cache_validation, result_application
 from .entry_utils import (
+    _normalize_fg_group_key as _coerce_fg_group_key,
     eval_data_from_entry,
     expected_selected_element,
     fg_group_meta_from_eval_data,
@@ -814,6 +815,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_task_tile_splits = 0
     fg_fused_tile_batches = 0
     fg_fused_tile_splits = 0
+    fg_genome_stats_staged_batches = 0
+    fg_genome_stats_uploaded_batches = 0
+    fg_genome_stats_uploaded_bytes_est = 0
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -1387,12 +1391,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
         if isinstance(fg_group_meta, dict):
             sel_color = str(fg_group_meta.get("selected_element", "") or "")
-            key = tuple(fg_group_meta.get("group_key") or ())
-            sig = fg_group_meta.get("signature")
-            proxy_i = int(fg_group_meta.get("fg_proxy_score", 0) or 0)
-            ga_run_idx = fg_group_meta.get("ga_run_idx")
-            ga_row_idx = fg_group_meta.get("ga_row_idx")
-        else:
+            coerced_key = _coerce_fg_group_key(fg_group_meta.get("group_key"))
+            if coerced_key is not None:
+                key = (sel_color or coerced_key[0], int(coerced_key[1]), int(coerced_key[2]))
+                sig = fg_group_meta.get("signature")
+                proxy_i = int(fg_group_meta.get("fg_proxy_score", 0) or 0)
+                ga_run_idx = fg_group_meta.get("ga_run_idx")
+                ga_row_idx = fg_group_meta.get("ga_row_idx")
+            else:
+                fg_group_meta = None
+        if not isinstance(fg_group_meta, dict):
             sel_color = expected_selected_element(entry, meta_primary_color)
             n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
             if n_sections <= 0:
@@ -1948,9 +1956,20 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         fused_ctx_batch.clear()
 
     # Process each group in GPU batches
-    for (sel_color, n_sections, max_per_section), sig_map in groups.items():
+    for group_key, sig_map in groups.items():
+        if not (isinstance(group_key, tuple) and len(group_key) == 3):
+            if not hasattr(process_force_greats_gpu_finder, "_fg_bad_group_key_warned"):
+                process_force_greats_gpu_finder._fg_bad_group_key_warned = True
+                warn_fallback(
+                    "fg.group_key.bad_shape",
+                    "invalid FG group key shape; skipping group",
+                    context={"group_key": repr(group_key)},
+                    fatal=False,
+                )
+            continue
+        sel_color, n_sections, max_per_section = group_key
         _t_cfg0 = time.perf_counter() if perf else 0.0
-        sig_rows_map = group_signature_rows.get((sel_color, n_sections, max_per_section), {}) or {}
+        sig_rows_map = group_signature_rows.get(group_key, {}) or {}
 
         # Use configurable window around loadout centers for FT/FF search.
         # - fg_search_radius < 0: full search over all FT/FF gem allocations (within TOTAL_GEM_BUDGET).
@@ -1962,7 +1981,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             search_radius = int(FG_SEARCH_RADIUS)
 
         # Collect all centers from this group.
-        centers = group_centers.get((sel_color, n_sections, max_per_section), set())
+        centers = group_centers.get(group_key, set())
         # Clamp to gem budget; any radius >= TOTAL_GEM_BUDGET implies full window.
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
@@ -1971,7 +1990,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         # caused large, repeatable pre-first-submit stalls.
         fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "0") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
-        sig_list = list(reduced_sig_lists.get((sel_color, n_sections, max_per_section), list(sig_map.keys())))
+        sig_list = list(reduced_sig_lists.get(group_key, list(sig_map.keys())))
         if len(sig_list) < len(sig_map):
             centers = {
                 tuple((sig_rows_map.get(sig0) or {}).get("center") or (0, 0))
@@ -1979,7 +1998,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 if isinstance(sig_rows_map.get(sig0), dict)
             }
             if not centers:
-                centers = group_centers.get((sel_color, n_sections, max_per_section), set())
+                centers = group_centers.get(group_key, set())
 
         # Rebuild the FT/FF window from the reduced signature frontier so the exact
         # solve volume actually drops, not just the post-solve materialization volume.
@@ -2246,7 +2265,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     fatal=False,
                 )
                 ga_candidate_owner_mismatch_warned = True
-            if ga_candidate_table_slot_held and (gpu_client is None or in_process) and bool(use_gpu) and sig_rows_map:
+            if ga_candidate_table_slot_held and bool(use_gpu) and sig_rows_map:
                 try:
                     coords_list = [
                         (sig_rows_map.get(sig0) or {}).get("ga_coord")
@@ -2298,6 +2317,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 if coords_arr is None:
                     raise RuntimeError("genome_stats_preuploaded=True but coords_arr is None")
 
+                fg_genome_stats_staged_batches += 1
                 genome_stats_uploaded = True
                 if gpu_client is not None:
                     ga_stage_coords_pending = coords_arr
@@ -2347,6 +2367,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
                 # New genome batch => require a fresh upload on the first request.
                 genome_stats_uploaded = False
+                fg_genome_stats_uploaded_batches += 1
+                fg_genome_stats_uploaded_bytes_est += int(n_pending) * 7 * 4
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
@@ -3695,10 +3717,23 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 t_genome_build_sec * 1000.0,
                 t_result_apply_sec * 1000.0,
             )
+            logger.debug(
+                "[PERF] FG Transfers: genome_stage_batches=%s genome_upload_batches=%s upload_bytes_est=%.2fMB",
+                fg_genome_stats_staged_batches,
+                fg_genome_stats_uploaded_batches,
+                float(fg_genome_stats_uploaded_bytes_est) / (1024.0 * 1024.0),
+            )
             if gpu_call_shapes:
                 logger.debug("[PERF] FG GPU call shapes (n_genomes,n_cfg,n_ftff,n_sections): %s", gpu_call_shapes)
         except Exception:
             pass
+
+    try:
+        meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
+        meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
+        meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
+    except Exception:
+        pass
 
     if frontier_total_before > 0:
         try:

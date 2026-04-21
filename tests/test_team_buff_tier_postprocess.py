@@ -213,6 +213,65 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     assert out["minis"] == ["M1", "M2", "M3"]
 
 
+def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_and_fg_rows(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
+    ref_arrays = _ref_arrays(11)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 0,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    entries = [
+        {"score": 1, "fg_score": 0, "gear": ["B"], "minis": ["M2"], "details": {"Stats": stats}, "force": None},
+        {"score": 2, "fg_score": 0, "gear": ["A"], "minis": ["M1"], "details": {"Stats": stats}, "force": None},
+        {"score": 3, "fg_score": 0, "gear": ["C"], "minis": ["M3"], "details": {"Stats": stats}, "force": None},
+    ]
+
+    def fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T5": {
+                    "base_top51": [
+                        {"gear": ["B"], "minis": ["M2"], "score": 20, "fg_score": 0},
+                        {"gear": ["A"], "minis": ["M1"], "score": 10, "fg_score": 0},
+                    ],
+                    "fg_top51": [
+                        {"gear": ["C"], "minis": ["M3"], "score": 30, "fg_score": 40, "fg_base_score": 15},
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=entries,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        limit=3,
+        tiers=("T5",),
+    )
+
+    assert [row["gear"][0] for row in batches["T5"]] == ["B", "A", "C"]
+
+
 def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp():
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches

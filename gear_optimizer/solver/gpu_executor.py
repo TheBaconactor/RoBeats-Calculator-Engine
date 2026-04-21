@@ -3769,12 +3769,6 @@ class GpuExecutor:
         # Optional: stage genome_base_stats from GPU-native GA -> FG candidate table within
         # the same request to avoid a GA_STAGE_FG_GENOME_BASE_STATS boundary.
         if ga_stage_coords is not None:
-            if not self._in_process_queues:
-                return GpuResponse(
-                    request_id=request.request_id,
-                    success=False,
-                    error="SOLVE_FORCE_GREATS_FINDER GA staging requires in-process queues",
-                )
             try:
                 from .taichi_gem.api import ga_stage_genome_base_stats_from_fg_candidates_table
 
