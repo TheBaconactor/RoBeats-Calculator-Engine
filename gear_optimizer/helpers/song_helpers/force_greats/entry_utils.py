@@ -49,6 +49,47 @@ def fg_proxy_from_base_stats(stats: dict[str, Any] | None, primary_color: str, s
     return int(score)
 
 
+def _normalize_fg_group_key(value: Any) -> tuple[str, int, int] | None:
+    if isinstance(value, tuple):
+        parts = value
+    elif isinstance(value, list):
+        parts = tuple(value)
+    else:
+        return None
+    if len(parts) != 3:
+        return None
+    try:
+        return (
+            str(parts[0] or ""),
+            int(parts[1]),
+            int(parts[2]),
+        )
+    except Exception:
+        return None
+
+
+def _cached_fg_group_meta_is_reusable(meta: dict[str, Any] | None) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    if bool(meta.get("skip")):
+        return True
+    group_key = _normalize_fg_group_key(meta.get("group_key"))
+    if group_key is None:
+        return False
+    try:
+        if int(meta.get("n_sections", 0) or 0) <= 0:
+            return False
+    except Exception:
+        return False
+    try:
+        if int(meta.get("max_per_section", 0) or 0) < 0:
+            return False
+    except Exception:
+        return False
+    signature = meta.get("signature")
+    return signature is not None
+
+
 def build_fg_group_meta(
     *,
     base_stats: dict[str, Any] | None,
@@ -114,7 +155,7 @@ def fg_group_meta_from_eval_data(
         return None
 
     cached = eval_data.get("_fg_group_meta")
-    if isinstance(cached, dict):
+    if _cached_fg_group_meta_is_reusable(cached):
         return cached
 
     base_stats_obj = base_stats if isinstance(base_stats, dict) else eval_data.get("BaseStats")
