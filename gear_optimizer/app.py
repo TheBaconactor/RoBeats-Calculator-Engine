@@ -811,18 +811,7 @@ class GearOptimizerApp:
             # processes (one context per worker). Starting the in-process GPU executor here would
             # create an extra (idle) Taichi context in the coordinator, wasting VRAM and slowing
             # cold-start warmups.
-            inflight_instances = 1
-            try:
-                inflight_instances = max(
-                    1,
-                    safe_int(cfg.get("IterationEngine", "InFlightInstances", fallback=1), 1),
-                )
-            except Exception:
-                inflight_instances = 1
-            raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
-            if raw_env_instances is not None and str(raw_env_instances).strip() != "":
-                inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
-
+            inflight_instances = self._get_effective_inflight_instances(cfg)
             if int(inflight_instances) > 1:
                 return
             try:
@@ -2772,6 +2761,61 @@ class GearOptimizerApp:
 
         return inflight_songs
 
+    def _get_inflight_instances_requested(self, cfg_or_dict) -> int:
+        inflight_instances = 1
+        try:
+            if isinstance(cfg_or_dict, dict):
+                ie = cfg_or_dict.get("IterationEngine")
+                if not isinstance(ie, dict):
+                    ie = cfg_or_dict.get("iterationengine", {})
+                inflight_instances = safe_int(
+                    ie.get("inflightinstances", ie.get("InFlightInstances", 1)) if isinstance(ie, dict) else 1,
+                    1,
+                )
+            else:
+                inflight_instances = safe_int(cfg_or_dict.get("IterationEngine", "InFlightInstances", fallback=1), 1)
+        except Exception:
+            inflight_instances = 1
+
+        raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
+        if raw_env_instances is not None and str(raw_env_instances).strip() != "":
+            inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
+
+        return max(1, min(int(inflight_instances), 8))
+
+    def _dual_process_inflight_allowed(self) -> bool:
+        return self._truthy(os.environ.get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
+
+    def _get_effective_inflight_instances(self, cfg_or_dict) -> int:
+        requested_instances = self._get_inflight_instances_requested(cfg_or_dict)
+        if int(requested_instances) <= 1:
+            return 1
+        if self._dual_process_inflight_allowed():
+            return int(requested_instances)
+
+        if not bool(getattr(self, "_logged_dual_process_quarantine", False)):
+            try:
+                logger.warning(
+                    "[InFlight] Dual-process mode is quarantined on main; forcing single-process GPU ownership. "
+                    "Set INFLIGHT_ALLOW_DUAL_PROCESS=1 to re-enable the experimental path."
+                )
+            except Exception:
+                pass
+            try:
+                emit_profile_event(
+                    component="app",
+                    event="inflight_dual_process_quarantined",
+                    metrics={"requested_instances": int(requested_instances)},
+                )
+            except Exception:
+                pass
+            try:
+                self._logged_dual_process_quarantine = True
+            except Exception:
+                pass
+
+        return 1
+
     def _apply_inflight_overrides(self, cfg) -> None:
         """Normalize config so InFlightSongs behaves predictably.
 
@@ -3068,22 +3112,13 @@ class GearOptimizerApp:
         song_task_count = max(0, int(len(tasks)))
         total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
         inflight_songs = 0
-        inflight_instances = 1
         try:
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
             inflight_songs = safe_int(raw, 0)
-            raw_instances = ie.get("inflightinstances", 1) if isinstance(ie, dict) else 1
-            inflight_instances = max(1, safe_int(raw_instances, 1))
         except Exception:
             inflight_songs = 0
-            inflight_instances = 1
-
-        raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
-        if raw_env_instances is not None and str(raw_env_instances).strip() != "":
-            inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
-        # Defensive cap: avoid accidental huge process counts from env/config typos.
-        inflight_instances = max(1, min(int(inflight_instances), 8))
+        inflight_instances = self._get_effective_inflight_instances(cfg_dict0)
 
         if inflight_songs <= 0:
             inflight_songs = min(12, max(1, song_task_count))

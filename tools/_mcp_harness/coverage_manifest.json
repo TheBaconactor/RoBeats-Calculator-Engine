@@ -156,6 +156,7 @@
       "path_prefixes": [
         "tools/bench/",
         "tools/db/",
+        "tools/dev/",
         "tools/profile/",
         "tools/verify/",
         "scripts/query/",

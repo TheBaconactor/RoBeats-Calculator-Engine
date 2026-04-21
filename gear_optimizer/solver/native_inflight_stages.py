@@ -23,6 +23,7 @@ from gear_optimizer.helpers.song_helpers.persistence import make_build_details_f
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.native_inflight_hitsim_delta import _attach_hitsim_delta_for_base
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
@@ -384,6 +385,7 @@ def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, 
             FG_CANDIDATE_LIMIT,
         ),
     )
+    _attach_hitsim_delta_for_base(best_data, getattr(song, "calc_song", None), getattr(song, "ref_arrays", None))
 
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:

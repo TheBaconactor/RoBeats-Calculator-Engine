@@ -1169,6 +1169,9 @@ def build_team_buff_tier_db_batches(
         base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
+        source_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
+        source_fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
+        source_fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         ordered_keys: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         ordered_key_set: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
@@ -1178,6 +1181,12 @@ def build_team_buff_tier_db_batches(
             k = _stable_key_from_payload(r)
             base_score_by_key[k] = _safe_int(r.get("score"), 0)
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
+            if "source_score" in r:
+                source_score_by_key[k] = _safe_int(r.get("source_score"), 0)
+            if "source_fg_base_score" in r:
+                source_fg_base_score_by_key[k] = _safe_int(r.get("source_fg_base_score"), 0)
+            if "source_fg_score" in r:
+                source_fg_score_by_key[k] = _safe_int(r.get("source_fg_score"), 0)
             if k not in ordered_key_set:
                 ordered_keys.append(k)
                 ordered_key_set.add(k)
@@ -1190,6 +1199,12 @@ def build_team_buff_tier_db_batches(
             fg_base_score_by_key[k] = _safe_int(r.get("fg_base_score"), 0)
             if k not in base_score_by_key:
                 base_score_by_key[k] = _safe_int(r.get("score"), 0)
+            if "source_score" in r:
+                source_score_by_key[k] = _safe_int(r.get("source_score"), 0)
+            if "source_fg_base_score" in r:
+                source_fg_base_score_by_key[k] = _safe_int(r.get("source_fg_base_score"), 0)
+            if "source_fg_score" in r:
+                source_fg_score_by_key[k] = _safe_int(r.get("source_fg_score"), 0)
             if k not in ordered_key_set:
                 ordered_keys.append(k)
                 ordered_key_set.add(k)
@@ -1351,18 +1366,32 @@ def build_team_buff_tier_db_batches(
                     force_out = dict(force_out)
                     force_out["ForceGreats"] = fg1
 
-            out_entries.append(
-                {
-                    "loadout_hash": str(orig.get("loadout_hash") or ""),
-                    "score": score_out,
-                    "fg_score": fg_score_out,
-                    "fg_base_score": fg_base_score_out,
-                    "gear": _flat_item_names(orig.get("gear")),
-                    "minis": _representative_mini_names_from_any(orig.get("minis")),
-                    "details": details_out,
-                    "force": force_out,
-                }
-            )
+            out_row = {
+                "loadout_hash": str(orig.get("loadout_hash") or ""),
+                "score": score_out,
+                "fg_score": fg_score_out,
+                "fg_base_score": fg_base_score_out,
+                "gear": _flat_item_names(orig.get("gear")),
+                "minis": _representative_mini_names_from_any(orig.get("minis")),
+                "details": details_out,
+                "force": force_out,
+            }
+            source_meta_by_key = {
+                "source_score": source_score_by_key,
+                "source_fg_base_score": source_fg_base_score_by_key,
+                "source_fg_score": source_fg_score_by_key,
+            }
+            for src_key, src_map in source_meta_by_key.items():
+                if k in src_map:
+                    out_row[src_key] = int(src_map.get(k, 0) or 0)
+                    continue
+                if src_key in orig:
+                    try:
+                        out_row[src_key] = int(orig.get(src_key, 0) or 0)
+                    except Exception:
+                        out_row[src_key] = 0
+
+            out_entries.append(out_row)
         batches[str(tier)] = out_entries
 
     return batches

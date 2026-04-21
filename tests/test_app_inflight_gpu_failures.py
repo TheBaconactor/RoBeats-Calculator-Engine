@@ -22,8 +22,8 @@ def _make_minimal_app() -> GearOptimizerApp:
     return app
 
 
-def _build_tasks(*, inflight_songs: int = 2, count: int = 2):
-    cfg = {"IterationEngine": {"inflightsongs": inflight_songs}}
+def _build_tasks(*, inflight_songs: int = 2, inflight_instances: int = 1, count: int = 2):
+    cfg = {"IterationEngine": {"inflightsongs": inflight_songs, "inflightinstances": inflight_instances}}
     return [(f"song-{idx}", None, None, cfg, None, None) for idx in range(count)]
 
 
@@ -118,6 +118,49 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
 
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+
+def test_dual_process_inflight_is_quarantined_on_main_without_explicit_env(monkeypatch):
+    app = _make_minimal_app()
+    tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
+    native_calls: list[dict] = []
+    dual_calls: list[dict] = []
+
+    def _record_run(*args, **kwargs):
+        native_calls.append({"args": args, "kwargs": kwargs})
+
+    app._run_dual_process_inflight = lambda *args, **kwargs: dual_calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.solver.native_inflight_orchestrator",
+        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
+    )
+    monkeypatch.delenv("INFLIGHT_ALLOW_DUAL_PROCESS", raising=False)
+
+    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+    assert len(native_calls) == 1
+    assert dual_calls == []
+
+
+def test_dual_process_inflight_requires_explicit_allow_env(monkeypatch):
+    app = _make_minimal_app()
+    tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
+    dual_calls: list[dict] = []
+
+    app._run_dual_process_inflight = lambda *args, **kwargs: dual_calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setenv("INFLIGHT_ALLOW_DUAL_PROCESS", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.solver.native_inflight_orchestrator",
+        types.SimpleNamespace(run_native_inflight_song_pipeline=lambda *_args, **_kwargs: None),
+    )
+
+    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+    assert len(dual_calls) == 1
 
 
 def test_request_stop_requests_gpu_abort(monkeypatch):

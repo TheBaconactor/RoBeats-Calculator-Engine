@@ -52,6 +52,7 @@ from gear_optimizer.solver.inflight_wait import (
 )
 from gear_optimizer.solver.native_inflight_prepare import _prepare_song, bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
+    _closed_loop_bubble_kpi,
     _continuous_fg_should_start,
     _continuous_fg_submit_budget,
     _continuous_ga_warm_queue_limit,
@@ -79,7 +80,6 @@ from gear_optimizer.solver.inflight_utils import (
     _truthy,
 )
 from gear_optimizer.solver.native_inflight_hitsim_delta import (
-    _attach_hitsim_delta_for_base,
     _attach_hitsim_delta_for_fg_variant,
 )
 from gear_optimizer.solver.native_inflight_stages import (
@@ -1247,6 +1247,20 @@ def run_native_inflight_song_pipeline(
             return 0.0
         return max(0.0, float(now_s) - float(oldest_t0))
 
+    def _ready_pending_fg_count() -> int:
+        ready = 0
+        for candidate in pending_fg:
+            fut = candidate.fg_prep_future
+            if fut is None:
+                ready += 1
+                continue
+            try:
+                if fut.done():
+                    ready += 1
+            except Exception:
+                continue
+        return int(ready)
+
     def _continuous_note_ga_submit() -> None:
         nonlocal fg_ga_credit
         if pending_fg:
@@ -1297,6 +1311,62 @@ def run_native_inflight_song_pipeline(
             completed_baseline = int(len(completed_songs))
         except Exception:
             completed_baseline = 0
+        bubble_total_idle_s = 0.0
+        bubble_peak_kpi = 0.0
+        bubble_peak_ready_ga = 0
+        bubble_peak_ready_fg = 0
+        bubble_peak_backlog = 0
+        bubble_peak_oldest_fg_wait_s = 0.0
+        bubble_active_started: float | None = None
+
+        def _bubble_snapshot(now_mono: float, *, oldest_fg_wait_s: float = 0.0) -> dict[str, float | int]:
+            ready_ga_count = int(len(prepared))
+            ready_fg_count = int(_ready_pending_fg_count())
+            backlog_count = int(
+                len(pending_tasks)
+                + len(prepared)
+                + len(prep_inflight)
+                + len(decode_inflight)
+                + len(pending_fg)
+                + len(fg_prep_inflight)
+            )
+            gpu_idle = (not ga_inflight) and (not fg_futures)
+            idle_sec = max(0.0, float(now_mono) - float(last_progress)) if gpu_idle else 0.0
+            bubble_kpi = _closed_loop_bubble_kpi(
+                idle_sec=float(idle_sec),
+                ready_ga_count=int(ready_ga_count),
+                ready_fg_count=int(ready_fg_count),
+                backlog_count=int(backlog_count),
+                oldest_fg_wait_s=float(oldest_fg_wait_s),
+            )
+            return {
+                "idle_sec": float(idle_sec),
+                "bubble_kpi": float(bubble_kpi),
+                "ready_ga_count": int(ready_ga_count),
+                "ready_fg_count": int(ready_fg_count),
+                "backlog_count": int(backlog_count),
+                "gpu_idle": int(bool(gpu_idle)),
+            }
+
+        def _note_bubble_snapshot(snapshot: dict[str, float | int], *, now_mono: float, oldest_fg_wait_s: float) -> None:
+            nonlocal bubble_total_idle_s, bubble_peak_kpi, bubble_peak_ready_ga, bubble_peak_ready_fg
+            nonlocal bubble_peak_backlog, bubble_peak_oldest_fg_wait_s, bubble_active_started
+
+            bubble_kpi = float(snapshot.get("bubble_kpi", 0.0) or 0.0)
+            if bubble_kpi > 0.0:
+                if bubble_active_started is None:
+                    bubble_active_started = float(now_mono)
+                if bubble_kpi >= float(bubble_peak_kpi):
+                    bubble_peak_kpi = float(bubble_kpi)
+                    bubble_peak_ready_ga = int(snapshot.get("ready_ga_count", 0) or 0)
+                    bubble_peak_ready_fg = int(snapshot.get("ready_fg_count", 0) or 0)
+                    bubble_peak_backlog = int(snapshot.get("backlog_count", 0) or 0)
+                    bubble_peak_oldest_fg_wait_s = max(0.0, float(oldest_fg_wait_s))
+                return
+
+            if bubble_active_started is not None:
+                bubble_total_idle_s += max(0.0, float(now_mono) - float(bubble_active_started))
+                bubble_active_started = None
 
         stopping = False
         while (
@@ -1546,8 +1616,10 @@ def run_native_inflight_song_pipeline(
                         fg_oldest_wait_s = _oldest_pending_fg_wait_s(time.monotonic())
                     except Exception:
                         fg_oldest_wait_s = 0.0
+                    ready_fg_count = _ready_pending_fg_count()
                     if _continuous_fg_should_start(
                         pending_fg_count=len(pending_fg),
+                        ready_fg_count=int(ready_fg_count),
                         ga_credit=int(fg_ga_credit),
                         oldest_wait_s=float(fg_oldest_wait_s),
                         blocked_on_slot=bool(blocked_on_slot_acquire),
@@ -1555,6 +1627,9 @@ def run_native_inflight_song_pipeline(
                         fg_drain_at_end=bool(fg_drain_at_end),
                         aging_trigger_s=float(fg_aging_trigger_s),
                         aging_hard_s=float(fg_aging_hard_s),
+                        ga_inflight_count=len(ga_inflight),
+                        ga_queue_limit=int(_current_ga_queue_limit()),
+                        fg_slot_reserve=int(fg_slot_reserve),
                     ):
                         break
                 ga_queue_limit_effective = _current_ga_queue_limit()
@@ -1920,7 +1995,6 @@ def run_native_inflight_song_pipeline(
                 song.best_gear = best_gear
                 song.best_minis = best_minis
                 song.ga_candidates = list(ga_candidates or [])
-                _attach_hitsim_delta_for_base(song.best_data, song.calc_song, song.ref_arrays)
 
                 if song.manual_force_greats or song.force_greats_finder:
                     pending_fg.append(song)
@@ -2214,6 +2288,13 @@ def run_native_inflight_song_pipeline(
                     fg_oldest_wait_s = _oldest_pending_fg_wait_s(float(now))
             except Exception:
                 fg_oldest_wait_s = 0.0
+            ready_fg_count = _ready_pending_fg_count()
+            bubble_snapshot = _bubble_snapshot(float(now), oldest_fg_wait_s=float(fg_oldest_wait_s))
+            _note_bubble_snapshot(
+                bubble_snapshot,
+                now_mono=float(now),
+                oldest_fg_wait_s=float(fg_oldest_wait_s),
+            )
 
             if not pending_fg:
                 fg_ga_credit = int(fg_ga_credit_budget)
@@ -2270,6 +2351,7 @@ def run_native_inflight_song_pipeline(
 
             should_start_fg = _continuous_fg_should_start(
                 pending_fg_count=len(pending_fg),
+                ready_fg_count=int(ready_fg_count),
                 ga_credit=int(fg_ga_credit),
                 oldest_wait_s=float(fg_oldest_wait_s),
                 blocked_on_slot=bool(blocked_on_slot_acquire),
@@ -2277,6 +2359,9 @@ def run_native_inflight_song_pipeline(
                 fg_drain_at_end=bool(fg_drain_at_end),
                 aging_trigger_s=float(fg_aging_trigger_s),
                 aging_hard_s=float(fg_aging_hard_s),
+                ga_inflight_count=len(ga_inflight),
+                ga_queue_limit=int(_current_ga_queue_limit()),
+                fg_slot_reserve=int(fg_slot_reserve),
             )
             ga_queue_limit_effective = _current_ga_queue_limit()
 
@@ -2288,6 +2373,12 @@ def run_native_inflight_song_pipeline(
                             reasons.append("drain_end")
                         if blocked_on_slot_acquire:
                             reasons.append("slot_pressure")
+                        if (
+                            int(fg_slot_reserve) > 0
+                            and int(ready_fg_count) > 0
+                            and len(ga_inflight) >= max(1, int(ga_queue_limit_effective))
+                        ):
+                            reasons.append("reserve_ready")
                         if fg_oldest_wait_s >= float(fg_aging_hard_s) and float(fg_aging_hard_s) > 0.0:
                             reasons.append("aging_hard")
                         elif fg_oldest_wait_s >= float(fg_aging_trigger_s) and float(fg_aging_trigger_s) > 0.0:
@@ -2315,6 +2406,7 @@ def run_native_inflight_song_pipeline(
 
                 submit_budget = _continuous_fg_submit_budget(
                     pending_fg_count=len(pending_fg),
+                    ready_fg_count=int(ready_fg_count),
                     fg_inflight_count=len(fg_futures),
                     fg_workers=int(fg_workers),
                     fg_batch_max=int(fg_batch_max),
@@ -2328,6 +2420,7 @@ def run_native_inflight_song_pipeline(
                     ga_queue_limit=int(ga_queue_limit_effective),
                     adaptive_submit=bool(fg_adaptive_submit_enabled),
                     adaptive_max_burst=int(fg_adaptive_submit_max_burst),
+                    fg_slot_reserve=int(fg_slot_reserve),
                 )
 
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
@@ -2398,6 +2491,7 @@ def run_native_inflight_song_pipeline(
             if not did_work:
                 if heartbeat_sec > 0.0 and (time.monotonic() - last_heartbeat) >= heartbeat_sec:
                     last_heartbeat = time.monotonic()
+                    heartbeat_bubble = _bubble_snapshot(float(last_heartbeat), oldest_fg_wait_s=float(fg_oldest_wait_s))
                     oldest_ga_s = None
                     try:
                         now = time.perf_counter()
@@ -2420,6 +2514,12 @@ def run_native_inflight_song_pipeline(
                             msg += " blocked_slots=1"
                         if oldest_ga_s is not None:
                             msg += f" oldest_ga={oldest_ga_s:.1f}s"
+                        if float(heartbeat_bubble.get("bubble_kpi", 0.0) or 0.0) > 0.0:
+                            msg += (
+                                f" bubble_kpi={float(heartbeat_bubble.get('bubble_kpi', 0.0)):.2f}"
+                                f" ready_ga={int(heartbeat_bubble.get('ready_ga_count', 0) or 0)}"
+                                f" ready_fg={int(heartbeat_bubble.get('ready_fg_count', 0) or 0)}"
+                            )
                         logger.debug(msg)
                     except Exception:
                         pass
@@ -2438,6 +2538,11 @@ def run_native_inflight_song_pipeline(
                             "fg_futures": int(len(fg_futures)),
                             "blocked_slots": int(bool(blocked_on_slot_acquire)),
                             "oldest_ga_sec": float(oldest_ga_s) if oldest_ga_s is not None else -1.0,
+                            "bubble_kpi": float(heartbeat_bubble.get("bubble_kpi", 0.0) or 0.0),
+                            "bubble_ready_ga": int(heartbeat_bubble.get("ready_ga_count", 0) or 0),
+                            "bubble_ready_fg": int(heartbeat_bubble.get("ready_fg_count", 0) or 0),
+                            "bubble_backlog": int(heartbeat_bubble.get("backlog_count", 0) or 0),
+                            "bubble_oldest_fg_wait_sec": float(fg_oldest_wait_s),
                         },
                     )
 
@@ -2487,6 +2592,11 @@ def run_native_inflight_song_pipeline(
                             "fg_prep_inflight": int(len(fg_prep_inflight)),
                             "fg_inflight": int(fg_inflight) if fg_inflight is not None else -1,
                             "fg_done": int(fg_done) if fg_done is not None else -1,
+                            "bubble_kpi": float(bubble_snapshot.get("bubble_kpi", 0.0) or 0.0),
+                            "bubble_ready_ga": int(bubble_snapshot.get("ready_ga_count", 0) or 0),
+                            "bubble_ready_fg": int(bubble_snapshot.get("ready_fg_count", 0) or 0),
+                            "bubble_backlog": int(bubble_snapshot.get("backlog_count", 0) or 0),
+                            "bubble_oldest_fg_wait_sec": float(fg_oldest_wait_s),
                         },
                     )
 
@@ -2528,6 +2638,25 @@ def run_native_inflight_song_pipeline(
         _log_abort(exc)
         raise
     finally:
+        try:
+            now_mono = time.monotonic()
+            if bubble_active_started is not None:
+                bubble_total_idle_s += max(0.0, float(now_mono) - float(bubble_active_started))
+                bubble_active_started = None
+            emit_profile_event(
+                component="inflight_orchestrator",
+                event="bubble_summary",
+                metrics={
+                    "bubble_total_idle_sec": float(bubble_total_idle_s),
+                    "bubble_peak_kpi": float(bubble_peak_kpi),
+                    "bubble_peak_ready_ga": int(bubble_peak_ready_ga),
+                    "bubble_peak_ready_fg": int(bubble_peak_ready_fg),
+                    "bubble_peak_backlog": int(bubble_peak_backlog),
+                    "bubble_peak_oldest_fg_wait_sec": float(bubble_peak_oldest_fg_wait_s),
+                },
+            )
+        except Exception:
+            pass
         try:
             stage_profiler.emit()
         except Exception:

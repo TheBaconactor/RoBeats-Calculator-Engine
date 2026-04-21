@@ -125,6 +125,60 @@ def test_results_printer_prints_db_best_fg_score_when_no_variants(capsys):
     assert "Best FG Score Found: 456" in out
 
 
+def test_results_printer_strict_sanity_output_displays_base_and_fg_hitsim_offsets(capsys):
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    print_results(
+        "Strict Sanity Song",
+        best_data={
+            "Score": 320,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {},
+            "Selected Element": "Rush",
+            "hitsim_offset_deltas_ms": [3, -1],
+        },
+        best_gear=[],
+        best_minis=[],
+        current_gear_list=[],
+        current_mini_list=[],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[
+            {
+                "data": {
+                    "Score": 350,
+                    "FT": 1,
+                    "FF": 2,
+                    "GemCounts": {
+                        "Fever Multiplier": 0,
+                        "Combo Multiplier": 0,
+                        "Perfect Points": 0,
+                        "Element": 0,
+                    },
+                    "Selected Element": "Rush",
+                    "ForceGreats": {
+                        "config": {"NonFever1": 1},
+                        "final_score": 350,
+                        "hitsim_offset_deltas_ms": [4, -2],
+                    },
+                },
+                "gear": [{"Name": "G1", "type": "Hat"}],
+                "minis": [{"Name": "M1"}],
+                "score": 320,
+                "fg_score": 350,
+            }
+        ],
+        status_emit_fn=_noop_status_emit,
+    )
+
+    out = capsys.readouterr().out
+    assert "Best Base Score Found: 320" in out
+    assert "Best FG Score Found: 350" in out
+    assert "HitSim Offset Deltas (Base): [+3ms, -1ms]" in out
+    assert "HitSim Offset Deltas: [+4ms, -2ms]" in out
+
+
 def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys):
     """
     Regression test:

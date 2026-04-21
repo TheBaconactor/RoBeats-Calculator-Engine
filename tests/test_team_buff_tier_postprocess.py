@@ -901,6 +901,218 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
     assert row["force"]["ForceGreats"]["config"] == {"NonFever1": 1}
 
 
+def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_top_rows(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    entry = {
+        "score": 100,
+        "fg_score": 95,
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": {}},
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T10": {
+                    "base_top51": [
+                        {
+                            "gear": list(entry["gear"]),
+                            "minis": list(entry["minis"]),
+                            "score": 110,
+                            "fg_score": 95,
+                        }
+                    ],
+                    "fg_top51": [
+                        {
+                            "gear": list(entry["gear"]),
+                            "minis": list(entry["minis"]),
+                            "score": 110,
+                            "fg_score": 120,
+                            "fg_base_score": 110,
+                            "source_score": 100,
+                            "source_fg_base_score": 90,
+                            "source_fg_score": 95,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T10",),
+        limit=1,
+    )
+
+    row = batches["T10"][0]
+    assert row["source_score"] == 100
+    assert row["source_fg_base_score"] == 90
+    assert row["source_fg_score"] == 95
+
+
+def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_and_target_team_color(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.core.team_buff import team_buff_effect
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 125,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 210,
+        "Flow": 55,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    def _entry(loadout_hash: str, gear_name: str, mini_name: str, *, score: int, fg_score: int, fg_base_score: int) -> dict:
+        return {
+            "loadout_hash": loadout_hash,
+            "score": score,
+            "fg_score": fg_score,
+            "fg_base_score": fg_base_score,
+            "gear": [gear_name, "G2", "G3", "G4", "G5", "G6"],
+            "minis": [mini_name, "M2", "M3"],
+            "details": {
+                "Stats": dict(stats),
+                "SelectedElement": "Rush",
+                "hitsim_offset_deltas_ms": [3, -1],
+            },
+            "force": {
+                "Score": fg_score,
+                "BaseStats": dict(stats),
+                "ForceGreats": {
+                    "config": {"NonFever1": 1},
+                    "final_score": fg_score,
+                    "hitsim_offset_deltas_ms": [4, -2],
+                },
+            },
+        }
+
+    entry_a = _entry("hash-a", "GA", "MA", score=100, fg_score=120, fg_base_score=90)
+    entry_b = _entry("hash-b", "GB", "MB", score=101, fg_score=0, fg_base_score=0)
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Flow", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T20": {
+                    "base_top51": [
+                        {
+                            "loadout_hash": entry_b["loadout_hash"],
+                            "gear": list(entry_b["gear"]),
+                            "minis": list(entry_b["minis"]),
+                            "score": 330,
+                            "fg_score": 0,
+                            "source_score": 101,
+                            "source_fg_score": 0,
+                        },
+                        {
+                            "loadout_hash": entry_a["loadout_hash"],
+                            "gear": list(entry_a["gear"]),
+                            "minis": list(entry_a["minis"]),
+                            "score": 320,
+                            "fg_score": 120,
+                            "source_score": 100,
+                            "source_fg_score": 120,
+                        },
+                    ],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": entry_a["loadout_hash"],
+                            "gear": list(entry_a["gear"]),
+                            "minis": list(entry_a["minis"]),
+                            "score": 320,
+                            "fg_score": 350,
+                            "fg_base_score": 320,
+                            "source_score": 100,
+                            "source_fg_base_score": 90,
+                            "source_fg_score": 120,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry_a, entry_b],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T20",),
+        limit=2,
+        target_team_color_override="Flow",
+    )
+
+    rows = batches["T20"]
+    assert [str(row.get("loadout_hash") or "") for row in rows] == ["hash-b", "hash-a"]
+
+    base_effect = team_buff_effect("T5", "Rush")
+    target_effect = team_buff_effect("T20", "Flow")
+    expected_delta_pp = int(target_effect.get("Perfect Points", 0) - base_effect.get("Perfect Points", 0))
+    expected_delta_rush = int(target_effect.get("Rush", 0) - base_effect.get("Rush", 0))
+    expected_delta_flow = int(target_effect.get("Flow", 0) - base_effect.get("Flow", 0))
+
+    base_row = rows[0]
+    fg_row = rows[1]
+
+    assert int(base_row["score"]) == 330
+    assert int(base_row["source_score"]) == 101
+    assert base_row["details"]["hitsim_offset_deltas_ms"] == [3, -1]
+    assert int(base_row["details"]["Stats"]["Perfect Points"]) == int(stats["Perfect Points"]) + expected_delta_pp
+    assert int(base_row["details"]["Stats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
+    assert int(base_row["details"]["Stats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
+
+    assert int(fg_row["score"]) == 320
+    assert int(fg_row["fg_score"]) == 350
+    assert int(fg_row["fg_base_score"]) == 320
+    assert int(fg_row["source_score"]) == 100
+    assert int(fg_row["source_fg_base_score"]) == 90
+    assert int(fg_row["source_fg_score"]) == 120
+    assert fg_row["details"]["hitsim_offset_deltas_ms"] == [3, -1]
+    assert int(fg_row["details"]["Stats"]["Perfect Points"]) == int(stats["Perfect Points"]) + expected_delta_pp
+    assert int(fg_row["details"]["Stats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
+    assert int(fg_row["details"]["Stats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
+    assert int(fg_row["force"]["Score"]) == 350
+    assert int(fg_row["force"]["BaseStats"]["Perfect Points"]) == int(stats["Perfect Points"]) + expected_delta_pp
+    assert int(fg_row["force"]["BaseStats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
+    assert int(fg_row["force"]["BaseStats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
+    assert int(fg_row["force"]["ForceGreats"]["final_score"]) == 350
+    assert fg_row["force"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [4, -2]
+
+
 def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches

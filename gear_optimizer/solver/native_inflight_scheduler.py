@@ -254,6 +254,7 @@ def _continuous_ga_warm_queue_limit(
 def _continuous_fg_should_start(
     *,
     pending_fg_count: int,
+    ready_fg_count: int,
     ga_credit: int,
     oldest_wait_s: float,
     blocked_on_slot: bool,
@@ -261,12 +262,21 @@ def _continuous_fg_should_start(
     fg_drain_at_end: bool,
     aging_trigger_s: float,
     aging_hard_s: float,
+    ga_inflight_count: int,
+    ga_queue_limit: int,
+    fg_slot_reserve: int,
 ) -> bool:
     if int(pending_fg_count) <= 0:
         return False
     if bool(no_ga_remaining):
         return bool(fg_drain_at_end)
     if bool(blocked_on_slot):
+        return True
+    if (
+        int(fg_slot_reserve) > 0
+        and int(ready_fg_count) > 0
+        and int(ga_inflight_count) >= max(1, int(ga_queue_limit))
+    ):
         return True
     if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
         return True
@@ -278,6 +288,7 @@ def _continuous_fg_should_start(
 def _continuous_fg_submit_budget(
     *,
     pending_fg_count: int,
+    ready_fg_count: int,
     fg_inflight_count: int,
     fg_workers: int,
     fg_batch_max: int,
@@ -291,6 +302,7 @@ def _continuous_fg_submit_budget(
     ga_queue_limit: int,
     adaptive_submit: bool,
     adaptive_max_burst: int,
+    fg_slot_reserve: int,
 ) -> int:
     capacity = max(0, min(int(fg_workers) - int(fg_inflight_count), int(fg_batch_max), int(pending_fg_count)))
     if capacity <= 0:
@@ -301,6 +313,13 @@ def _continuous_fg_submit_budget(
 
     budget = 1
     max_burst = max(1, int(adaptive_max_burst))
+
+    if (
+        int(fg_slot_reserve) > 0
+        and int(ready_fg_count) > 0
+        and int(ga_inflight_count) >= max(1, int(ga_queue_limit))
+    ):
+        budget = max(int(budget), 1)
 
     if bool(blocked_on_slot):
         budget = max(int(budget), min(int(capacity), int(max_burst)))
@@ -329,3 +348,28 @@ def _continuous_fg_submit_budget(
             budget = max(int(budget), min(int(capacity), int(max_burst)))
 
     return max(0, min(int(capacity), int(budget)))
+
+
+def _closed_loop_bubble_kpi(
+    *,
+    idle_sec: float,
+    ready_ga_count: int,
+    ready_fg_count: int,
+    backlog_count: int,
+    oldest_fg_wait_s: float,
+) -> float:
+    idle = max(0.0, float(idle_sec))
+    if idle <= 0.0:
+        return 0.0
+
+    ready_depth = max(0, int(ready_ga_count)) + max(0, int(ready_fg_count))
+    backlog_depth = max(0, int(backlog_count))
+    fg_wait = max(0.0, float(oldest_fg_wait_s))
+
+    if ready_depth <= 0 and backlog_depth <= 0 and fg_wait <= 0.0:
+        return 0.0
+
+    backlog_term = min(4.0, float(backlog_depth) / 4.0)
+    fg_wait_term = min(5.0, float(fg_wait))
+    pressure = 1.0 + float(ready_depth) + float(backlog_term) + float(fg_wait_term)
+    return float(idle) * float(pressure)

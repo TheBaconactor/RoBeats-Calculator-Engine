@@ -541,6 +541,122 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
     assert int(out["source_fg_base_score"] or 0) == 140
 
 
+def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_and_source_scores(
+    tmp_path: Path, monkeypatch
+):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "leaderboard_strict_sanity.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
+    monkeypatch.setattr(
+        "gear_optimizer.core.utils.cfg_to_dict",
+        lambda _cfg: {
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
+        },
+    )
+    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
+    monkeypatch.setattr(
+        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+    )
+    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
+    monkeypatch.setattr(
+        EvolutionDbManager,
+        "get_best_loadouts",
+        lambda self, _song_name, **kwargs: [
+            {"score": 100, "fg_score": 120, "fg_base_score": 90, "gear": ["G1"], "minis": ["M1"], "details": {}},
+            {"score": 101, "fg_score": 0, "gear": ["G2"], "minis": ["M2"], "details": {}},
+        ],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_build(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
+        captured["tiers"] = tuple(tiers)
+        captured["target_team_color_override"] = target_team_color_override
+        return {
+            "T20": [
+                {
+                    "loadout_hash": "hash-a",
+                    "score": 320,
+                    "fg_score": 350,
+                    "fg_base_score": 320,
+                    "source_score": 100,
+                    "source_fg_base_score": 90,
+                    "source_fg_score": 120,
+                    "gear": ["G1"],
+                    "minis": ["M1"],
+                    "details": {
+                        "Stats": {"Flow": 75},
+                        "hitsim_offset_deltas_ms": [3, -1],
+                    },
+                    "force": {
+                        "Score": 350,
+                        "ForceGreats": {
+                            "config": {"NonFever1": 1},
+                            "final_score": 350,
+                            "hitsim_offset_deltas_ms": [4, -2],
+                        },
+                    },
+                },
+                {
+                    "loadout_hash": "hash-b",
+                    "score": 330,
+                    "fg_score": 0,
+                    "fg_base_score": 0,
+                    "source_score": 101,
+                    "gear": ["G2"],
+                    "minis": ["M2"],
+                    "details": {
+                        "Stats": {"Flow": 88},
+                        "hitsim_offset_deltas_ms": [1],
+                    },
+                    "force": None,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
+        fake_build,
+    )
+
+    db = EvolutionDbManager.from_env()
+    base_out = db.get_leaderboard_entry("Strict Sanity Song", tier="T20", leaderboard="base", rank=1, team_color="Flow")
+    fg_out = db.get_leaderboard_entry("Strict Sanity Song", tier="T20", leaderboard="fg", rank=1, team_color="Flow")
+
+    assert captured["tiers"] == ("T20",)
+    assert captured["target_team_color_override"] == "Flow"
+
+    assert base_out is not None
+    assert base_out["leaderboard"] == "base"
+    assert base_out["tier"] == "T20"
+    assert base_out["loadout_hash"] == "hash-b"
+    assert int(base_out["score"] or 0) == 330
+    assert int(base_out["source_score"] or 0) == 101
+    assert base_out["details"]["hitsim_offset_deltas_ms"] == [1]
+    assert int(base_out["details"]["Stats"]["Flow"] or 0) == 88
+
+    assert fg_out is not None
+    assert fg_out["leaderboard"] == "fg"
+    assert fg_out["tier"] == "T20"
+    assert fg_out["loadout_hash"] == "hash-a"
+    assert int(fg_out["score"] or 0) == 320
+    assert int(fg_out["fg_base_score"] or 0) == 320
+    assert int(fg_out["fg_score"] or 0) == 350
+    assert int(fg_out["source_score"] or 0) == 100
+    assert int(fg_out["source_fg_base_score"] or 0) == 90
+    assert int(fg_out["source_fg_score"] or 0) == 120
+    assert fg_out["details"]["hitsim_offset_deltas_ms"] == [3, -1]
+    assert int(fg_out["details"]["Stats"]["Flow"] or 0) == 75
+    assert int(fg_out["force"]["Score"] or 0) == 350
+    assert fg_out["force"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [4, -2]
+    assert int(fg_out["force"]["ForceGreats"]["final_score"] or 0) == 350
+
+
 def test_db_manager_get_leaderboard_entry_breaks_ties_by_loadout_hash(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.db_manager import EvolutionDbManager
 

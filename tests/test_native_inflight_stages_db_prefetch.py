@@ -99,3 +99,36 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
     assert seen["allow_db_query"] is False
     # Keep the future attached so FG run can consume it later if it completes.
     assert song.db_loadouts_future is pending
+
+
+def test_decode_ga_payload_sync_attaches_base_hitsim_delta(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def _fake_decode_gpu_native_ga_runs_payload(**_kwargs):
+        return {"score": 123}, ["G1"], ["M1"], []
+
+    def _fake_attach(best_data, calc_song, ref_arrays):
+        seen["best_data"] = best_data
+        seen["calc_song"] = calc_song
+        seen["ref_arrays"] = ref_arrays
+        best_data["hitsim_offset_deltas_ms"] = [1, 2, 3]
+
+    monkeypatch.setattr(stages, "decode_gpu_native_ga_runs_payload", _fake_decode_gpu_native_ga_runs_payload)
+    monkeypatch.setattr(stages, "_attach_hitsim_delta_for_base", _fake_attach)
+
+    song = SimpleNamespace(
+        registry=None,
+        cfg_data={},
+        fixed_stats={},
+        calc_song={"metadata": {}},
+        ref_arrays={"timeline": []},
+    )
+
+    best_data, best_gear, best_minis, ga_candidates = stages._decode_ga_payload_sync(song, runs_payload=None)
+
+    assert best_data["hitsim_offset_deltas_ms"] == [1, 2, 3]
+    assert best_gear == ["G1"]
+    assert best_minis == ["M1"]
+    assert ga_candidates == []
+    assert seen["calc_song"] == song.calc_song
+    assert seen["ref_arrays"] == song.ref_arrays

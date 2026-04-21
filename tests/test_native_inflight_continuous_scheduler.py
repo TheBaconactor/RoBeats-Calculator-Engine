@@ -2,6 +2,7 @@ import configparser
 
 import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
+    _closed_loop_bubble_kpi,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
     _continuous_ga_warm_queue_limit,
@@ -63,6 +64,7 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
     assert (
         _continuous_fg_should_start(
             pending_fg_count=3,
+            ready_fg_count=0,
             ga_credit=0,
             oldest_wait_s=0.0,
             blocked_on_slot=False,
@@ -70,12 +72,16 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+            ga_inflight_count=0,
+            ga_queue_limit=12,
+            fg_slot_reserve=0,
         )
         is True
     )
     assert (
         _continuous_fg_should_start(
             pending_fg_count=3,
+            ready_fg_count=0,
             ga_credit=9,
             oldest_wait_s=3.0,
             blocked_on_slot=False,
@@ -83,12 +89,16 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+            ga_inflight_count=0,
+            ga_queue_limit=12,
+            fg_slot_reserve=0,
         )
         is True
     )
     assert (
         _continuous_fg_should_start(
             pending_fg_count=1,
+            ready_fg_count=0,
             ga_credit=9,
             oldest_wait_s=0.0,
             blocked_on_slot=True,
@@ -96,6 +106,9 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+            ga_inflight_count=0,
+            ga_queue_limit=12,
+            fg_slot_reserve=0,
         )
         is True
     )
@@ -105,6 +118,7 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
     assert (
         _continuous_fg_should_start(
             pending_fg_count=0,
+            ready_fg_count=0,
             ga_credit=0,
             oldest_wait_s=10.0,
             blocked_on_slot=True,
@@ -112,9 +126,54 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+            ga_inflight_count=0,
+            ga_queue_limit=12,
+            fg_slot_reserve=0,
         )
         is False
     )
+
+
+def test_continuous_fg_should_start_when_reserved_capacity_has_ready_fg():
+    assert (
+        _continuous_fg_should_start(
+            pending_fg_count=3,
+            ready_fg_count=1,
+            ga_credit=9,
+            oldest_wait_s=0.0,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            fg_drain_at_end=True,
+            aging_trigger_s=0.75,
+            aging_hard_s=2.5,
+            ga_inflight_count=4,
+            ga_queue_limit=4,
+            fg_slot_reserve=1,
+        )
+        is True
+    )
+
+
+def test_continuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
+    budget = _continuous_fg_submit_budget(
+        pending_fg_count=3,
+        ready_fg_count=1,
+        fg_inflight_count=0,
+        fg_workers=2,
+        fg_batch_max=2,
+        no_ga_remaining=False,
+        fg_drain_at_end=True,
+        blocked_on_slot=False,
+        oldest_wait_s=0.0,
+        aging_trigger_s=0.75,
+        aging_hard_s=2.5,
+        ga_inflight_count=4,
+        ga_queue_limit=4,
+        adaptive_submit=False,
+        adaptive_max_burst=3,
+        fg_slot_reserve=1,
+    )
+    assert budget == 1
 
 
 def test_read_continuous_ga_dispatch_burst_defaults_and_env_override(monkeypatch):
@@ -228,6 +287,7 @@ def test_continuous_ga_warm_queue_limit_skips_cap_when_fg_disabled_or_staging_sh
 def test_continuous_fg_submit_budget_adaptive_behavior():
     control_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,
+        ready_fg_count=0,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -241,11 +301,13 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
         ga_queue_limit=12,
         adaptive_submit=False,
         adaptive_max_burst=3,
+        fg_slot_reserve=0,
     )
     assert control_budget == 1
 
     adaptive_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,
+        ready_fg_count=0,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -259,6 +321,7 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
+        fg_slot_reserve=0,
     )
     assert adaptive_budget == 3
 
@@ -266,6 +329,7 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
 def test_continuous_fg_submit_budget_honors_end_of_run_drain():
     budget = _continuous_fg_submit_budget(
         pending_fg_count=5,
+        ready_fg_count=0,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -279,6 +343,7 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
+        fg_slot_reserve=0,
     )
     assert budget == 4
 
@@ -297,6 +362,7 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
 
     budget_no_drain = _continuous_fg_submit_budget(
         pending_fg_count=5,
+        ready_fg_count=0,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -310,11 +376,13 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
+        fg_slot_reserve=0,
     )
     assert budget_no_drain == 0
     assert (
         _continuous_fg_should_start(
             pending_fg_count=3,
+            ready_fg_count=0,
             ga_credit=5,
             oldest_wait_s=0.0,
             blocked_on_slot=False,
@@ -322,6 +390,9 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
             fg_drain_at_end=False,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+            ga_inflight_count=0,
+            ga_queue_limit=12,
+            fg_slot_reserve=0,
         )
         is False
     )
@@ -385,3 +456,23 @@ def test_wait_for_completion_event_long_timeout_uses_direct_wait():
     done = _wait_for_completion_event(event, timeout_s=0.02, short_spin_s=0.003)
     assert done is False
     assert event.waits == [0.02]
+
+
+def test_closed_loop_bubble_kpi_increases_with_ready_work_and_fg_wait():
+    quiet = _closed_loop_bubble_kpi(
+        idle_sec=0.5,
+        ready_ga_count=1,
+        ready_fg_count=0,
+        backlog_count=2,
+        oldest_fg_wait_s=0.0,
+    )
+    pressured = _closed_loop_bubble_kpi(
+        idle_sec=0.5,
+        ready_ga_count=2,
+        ready_fg_count=1,
+        backlog_count=6,
+        oldest_fg_wait_s=2.0,
+    )
+
+    assert quiet > 0.0
+    assert pressured > quiet
