@@ -342,7 +342,7 @@ RoBeats-Calculator-Engine/
 ### Key Algorithms
 
 #### Genetic Algorithm ([genetic.py](gear_optimizer/solver/genetic.py))
-- **Population:** 250 individuals (configurable)
+- **Population:** 470 individuals (configurable)
 - **Generations:** 75 (configurable via `GA_SearchDepth`)
 - **Multi-Start:** 3-30 restarts to escape local optima
 - **Selection:** Tournament selection (k=3)
