@@ -22,8 +22,8 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
         default_worker_threads=lambda **_kwargs: 3,
     )
 
-    assert settings.workers == 4
-    assert settings.batch_max == 4
+    assert settings.workers == 8
+    assert settings.batch_max == 8
     assert settings.prep_workers == 3
     assert settings.ga_credit_budget == 12
 
@@ -41,6 +41,20 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     assert settings.batch_max == 5
     assert settings.prep_workers == 5
     assert settings.ga_credit_budget == 2
+
+    monkeypatch.setenv("INFLIGHT_FG_WORKERS", "12")
+    monkeypatch.setenv("INFLIGHT_FG_BATCH_MAX", "12")
+    monkeypatch.setenv("INFLIGHT_FG_PREP_WORKERS", "12")
+    settings = read_native_fg_pipeline_settings(
+        None,
+        inflight_limit=16,
+        ga_credit_budget_cfg=2,
+        default_worker_threads=lambda **_kwargs: 1,
+    )
+
+    assert settings.workers == 8
+    assert settings.batch_max == 8
+    assert settings.prep_workers == 8
 
 
 def test_native_fg_pipeline_queue_pop_credit_and_submit():

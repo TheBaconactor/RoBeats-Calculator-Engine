@@ -62,11 +62,11 @@ def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
     assert explicit is True
 
 
-def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
+def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
     assert (
         _continuous_fg_should_start(
             pending_fg_count=3,
-            ready_fg_count=0,
+            ready_fg_count=1,
             ga_credit=0,
             oldest_wait_s=0.0,
             blocked_on_slot=False,
@@ -83,7 +83,7 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
     assert (
         _continuous_fg_should_start(
             pending_fg_count=3,
-            ready_fg_count=0,
+            ready_fg_count=1,
             ga_credit=9,
             oldest_wait_s=3.0,
             blocked_on_slot=False,
@@ -114,6 +114,24 @@ def test_continuous_fg_should_start_on_credit_or_aging_or_slot_pressure():
         )
         is True
     )
+
+
+def test_continuous_fg_should_not_start_unready_fg_while_ga_can_continue():
+    base = {
+        "pending_fg_count": 3,
+        "ready_fg_count": 0,
+        "blocked_on_slot": False,
+        "no_ga_remaining": False,
+        "fg_drain_at_end": True,
+        "aging_trigger_s": 0.75,
+        "aging_hard_s": 2.5,
+        "ga_inflight_count": 0,
+        "ga_queue_limit": 12,
+        "fg_slot_reserve": 0,
+    }
+
+    assert _continuous_fg_should_start(**base, ga_credit=0, oldest_wait_s=0.0) is False
+    assert _continuous_fg_should_start(**base, ga_credit=9, oldest_wait_s=3.0) is False
 
 
 def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
@@ -284,7 +302,7 @@ def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
         assert _continuous_fg_should_fill_song_lanes(**args) is False
 
 
-def test_continuous_ga_warm_queue_limit_caps_cold_start_backlog():
+def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():
     limit = _continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -296,10 +314,10 @@ def test_continuous_ga_warm_queue_limit_caps_cold_start_backlog():
         fg_prep_inflight_count=0,
         fg_inflight_count=0,
     )
-    assert limit == 4
+    assert limit == 12
 
 
-def test_continuous_ga_warm_queue_limit_restores_full_limit_once_fg_pipeline_starts():
+def test_continuous_ga_warm_queue_limit_keeps_full_limit_once_fg_pipeline_starts():
     limit = _continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -314,7 +332,7 @@ def test_continuous_ga_warm_queue_limit_restores_full_limit_once_fg_pipeline_sta
     assert limit == 12
 
 
-def test_continuous_ga_warm_queue_limit_skips_cap_when_fg_disabled_or_staging_shallow():
+def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_disabled_or_staging_shallow():
     disabled_limit = _continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -342,10 +360,10 @@ def test_continuous_ga_warm_queue_limit_skips_cap_when_fg_disabled_or_staging_sh
     assert shallow_limit == 12
 
 
-def test_continuous_fg_submit_budget_adaptive_behavior():
+def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
     control_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,
-        ready_fg_count=0,
+        ready_fg_count=8,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -361,11 +379,11 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
-    assert control_budget == 1
+    assert control_budget == 4
 
     adaptive_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,
-        ready_fg_count=0,
+        ready_fg_count=8,
         fg_inflight_count=0,
         fg_workers=4,
         fg_batch_max=4,
@@ -381,7 +399,51 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
-    assert adaptive_budget == 3
+    assert adaptive_budget == 4
+
+
+def test_continuous_fg_submit_budget_waits_for_ready_fg_while_ga_can_continue():
+    budget = _continuous_fg_submit_budget(
+        pending_fg_count=8,
+        ready_fg_count=0,
+        fg_inflight_count=0,
+        fg_workers=4,
+        fg_batch_max=4,
+        no_ga_remaining=False,
+        fg_drain_at_end=True,
+        blocked_on_slot=False,
+        oldest_wait_s=3.0,
+        aging_trigger_s=0.75,
+        aging_hard_s=2.5,
+        ga_inflight_count=1,
+        ga_queue_limit=12,
+        adaptive_submit=True,
+        adaptive_max_burst=3,
+        fg_slot_reserve=0,
+    )
+    assert budget == 0
+
+
+def test_continuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
+    budget = _continuous_fg_submit_budget(
+        pending_fg_count=16,
+        ready_fg_count=16,
+        fg_inflight_count=0,
+        fg_workers=8,
+        fg_batch_max=8,
+        no_ga_remaining=False,
+        fg_drain_at_end=True,
+        blocked_on_slot=False,
+        oldest_wait_s=0.0,
+        aging_trigger_s=0.75,
+        aging_hard_s=2.5,
+        ga_inflight_count=16,
+        ga_queue_limit=16,
+        adaptive_submit=True,
+        adaptive_max_burst=3,
+        fg_slot_reserve=0,
+    )
+    assert budget == 8
 
 
 def test_continuous_fg_submit_budget_honors_end_of_run_drain():

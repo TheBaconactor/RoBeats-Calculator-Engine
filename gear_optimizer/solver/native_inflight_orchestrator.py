@@ -1551,7 +1551,6 @@ def run_native_inflight_song_pipeline(
             except Exception:
                 fg_oldest_wait_s = 0.0
 
-            ga_dispatch_count = 0
             while True:
                 # Submit GA jobs whenever we have prepared work and GPU queue capacity.
                 # We allow `ga_inflight` to exceed `inflight_limit` to create a backlog
@@ -1559,38 +1558,6 @@ def run_native_inflight_song_pipeline(
                 if stopping:
                     break
                 ga_queue_limit_effective = _current_ga_queue_limit()
-                if pending_fg:
-                    try:
-                        fg_oldest_wait_s = _oldest_pending_fg_wait_s(time.monotonic())
-                    except Exception:
-                        fg_oldest_wait_s = 0.0
-                    ready_fg_count = _ready_pending_fg_count()
-                    ready_ga_for_lane_fill = len(prepared) if len(ga_inflight) < int(ga_queue_limit_effective) else 0
-                    if _continuous_fg_should_fill_song_lanes(
-                        target_song_lanes=int(target_song_lanes),
-                        active_song_lanes=int(_active_song_lane_count()),
-                        ready_ga_count=int(ready_ga_for_lane_fill),
-                        blocked_on_slot=bool(blocked_on_slot_acquire),
-                        no_ga_remaining=False,
-                        oldest_wait_s=float(fg_oldest_wait_s),
-                        aging_hard_s=float(fg_aging_hard_s),
-                    ):
-                        lane_fill_hold_count += 1
-                    elif _continuous_fg_should_start(
-                        pending_fg_count=len(pending_fg),
-                        ready_fg_count=int(ready_fg_count),
-                        ga_credit=int(fg_pipeline.ga_credit),
-                        oldest_wait_s=float(fg_oldest_wait_s),
-                        blocked_on_slot=bool(blocked_on_slot_acquire),
-                        no_ga_remaining=False,
-                        fg_drain_at_end=bool(fg_drain_at_end),
-                        aging_trigger_s=float(fg_aging_trigger_s),
-                        aging_hard_s=float(fg_aging_hard_s),
-                        ga_inflight_count=len(ga_inflight),
-                        ga_queue_limit=int(ga_queue_limit_effective),
-                        fg_slot_reserve=int(fg_slot_reserve),
-                    ):
-                        break
                 if ga_queue_debug and ga_queue_limit_effective != last_ga_queue_limit_effective:
                     last_ga_queue_limit_effective = int(ga_queue_limit_effective)
                     try:
@@ -1699,7 +1666,6 @@ def run_native_inflight_song_pipeline(
                     ga_inflight.append(song)
                     did_work = True
                     _continuous_note_ga_submit()
-                    ga_dispatch_count += 1
 
                     # Prefetch DB loadouts early so FG prep after GA decode doesn't stall
                     # waiting on SQLite reads (keeps the GPU fed during song boundaries).
@@ -1735,10 +1701,6 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             song.db_loadouts_future = None
 
-                    # Continuous scheduler: cap GA micro-bursts so FG gets frequent dispatch
-                    # opportunities instead of waiting for large GA-only phases to complete.
-                    if pending_fg and int(ga_dispatch_count) >= int(continuous_ga_dispatch_burst):
-                        break
                     continue
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue

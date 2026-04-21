@@ -28,7 +28,7 @@ def read_native_fg_pipeline_settings(
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
 
-    fg_workers_default = min(4, inflight_limit_i)
+    fg_workers_default = min(8, inflight_limit_i)
     fg_workers = fg_workers_default
     if cfg0 is not None:
         try:
@@ -44,7 +44,7 @@ def read_native_fg_pipeline_settings(
             fg_workers = int(raw)
         except Exception:
             pass
-    fg_workers = max(1, min(int(fg_workers), inflight_limit_i))
+    fg_workers = max(1, min(int(fg_workers), int(inflight_limit_i), 8))
 
     fg_batch_max = int(fg_workers)
     try:
@@ -53,7 +53,7 @@ def read_native_fg_pipeline_settings(
             fg_batch_max = int(raw)
     except Exception:
         fg_batch_max = int(fg_workers)
-    fg_batch_max = max(1, min(int(fg_batch_max), int(fg_workers)))
+    fg_batch_max = max(1, min(int(fg_batch_max), int(fg_workers), 8))
 
     fg_prep_workers = 0
     if cfg0 is not None:
@@ -69,7 +69,7 @@ def read_native_fg_pipeline_settings(
             pass
     if fg_prep_workers <= 0:
         fg_prep_workers = default_worker_threads(inflight_limit=inflight_limit_i, kind="fg_prep")
-    fg_prep_workers = max(1, min(int(fg_prep_workers), inflight_limit_i))
+    fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
 
     return NativeFGPipelineSettings(
         workers=int(fg_workers),
