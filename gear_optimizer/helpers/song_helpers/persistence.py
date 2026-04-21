@@ -898,6 +898,36 @@ def build_persistence_entries(
             elif "fg_base_score" in new_entry and "fg_base_score" not in existing:
                 existing["fg_base_score"] = new_entry.get("fg_base_score")
 
+    def _canonicalize_retained_entries(entries_to_normalize: list[dict]) -> list[dict]:
+        """
+        Normalize retained rows before we merge them into the persistence payload.
+
+        Why this exists:
+        - seeded `loadout_entries` can inherit stale base scores from DB/FG staging
+        - the final baseline canonicalizer repairs the persisted output, but the deferred
+          pre-persistence surface would still expose the stale rows
+
+        Running the same replay canonicalization here keeps the retained frontier aligned with
+        the write-path contract and makes deferred/pre-persist inspection reflect the rows we
+        actually mean to expose.
+        """
+        if not entries_to_normalize:
+            return entries_to_normalize
+        if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
+            return entries_to_normalize
+
+        try:
+            from .baseline_replay import canonicalize_baseline_persist_entries
+
+            return canonicalize_baseline_persist_entries(
+                entries_to_normalize,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                cfg_dict=cfg_dict,
+            )
+        except Exception:
+            return entries_to_normalize
+
     # Top 1 (base) - store with its OWN fg_score and force data (if available)
     # This ensures the force_details_json matches the loadout gear
     top1_details = db_payload.get("details", {})
@@ -1078,6 +1108,8 @@ def build_persistence_entries(
             fg_valid_fn=_fg_valid,
         )
 
+        retained_entries: list[dict[str, Any]] = []
+
         for h, entry in items:
             if str(h) not in selected_hashes:
                 continue
@@ -1165,14 +1197,30 @@ def build_persistence_entries(
                     force_obj = _maybe_backfill_fg_hitsim_deltas(force_obj, stats_obj=stats_obj)
 
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
+            retained_entry = {
+                "loadout_hash": str(h),
+                "score": entry.get("base_score") or entry.get("score", 0),
+                "fg_score": fg_score_to_save,
+                "gear": gear_names,
+                "minis": mini_names,
+                "details": details_obj,
+                "force": force_obj,
+            }
+            if isinstance(entry, dict) and entry.get("fg_base_score") is not None:
+                retained_entry["fg_base_score"] = entry.get("fg_base_score")
+            retained_entries.append(retained_entry)
+
+        for entry in _canonicalize_retained_entries(retained_entries):
+            if not isinstance(entry, dict):
+                continue
             _append_entry(
-                entry.get("base_score") or entry.get("score", 0),
-                gear_names,
-                mini_names,
-                details_obj,
-                fg_score_to_save,
-                force_obj,
-                fg_base_score_val=entry.get("fg_base_score") if isinstance(entry, dict) else None,
+                entry.get("score", 0),
+                entry.get("gear", []),
+                entry.get("minis", []),
+                entry.get("details", {}),
+                entry.get("fg_score", 0),
+                entry.get("force"),
+                fg_base_score_val=entry.get("fg_base_score"),
             )
 
     from .baseline_replay import canonicalize_baseline_persist_entries

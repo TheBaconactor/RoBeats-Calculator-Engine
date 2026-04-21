@@ -132,3 +132,70 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
     assert int(captured["limit"]) == len(out)
     assert int(entry.get("score", 0) or 0) == 64849540
     assert (entry.get("details") or {}).get("marker") == "canonical"
+
+
+def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(monkeypatch):
+    """
+    Deferred/pre-persistence callers inspect the retained frontier before the final DB write.
+
+    Regression: seeded loadout entries could carry a stale base score/details pairing until the
+    final baseline canonicalizer ran, which meant the deferred surface did not match replay.
+    Normalize the retained entries first so both surfaces share the same score contract.
+    """
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+
+    db_payload = {
+        "score": 999,
+        "gear": ["TOP_GEAR"],
+        "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
+        "details": {"marker": "top1"},
+        "fg_score": 0,
+        "force": None,
+    }
+
+    loadout_entries = {
+        "stale_hash": {
+            "score": 100,
+            "base_score": 100,
+            "gear": list(gear),
+            "minis": list(minis),
+            "details": {"marker": "stale"},
+            "fg_score": 130,
+            "force": {"ForceGreats": {"config": {"NonFever1": 1, "NonFever2": 0}}},
+        }
+    }
+
+    calls = {"count": 0}
+
+    def _fake_canonicalize(entries, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            assert len(entries) == 1
+            row = dict(entries[0])
+            row["score"] = 120
+            row["details"] = {"marker": "precanonical"}
+            row["fg_base_score"] = 110
+            return [row]
+        return entries
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
+        _fake_canonicalize,
+    )
+
+    out = build_persistence_entries(
+        db_payload,
+        ga_candidates=[],
+        loadout_entries=loadout_entries,
+        build_details_fn=lambda data: dict(data or {}),
+        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
+        ref_arrays={"Perfect Points": [0]},
+        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
+    )
+
+    entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
+    assert calls["count"] == 2
+    assert int(entry.get("score", 0) or 0) == 120
+    assert int(entry.get("fg_base_score", 0) or 0) == 110
+    assert (entry.get("details") or {}).get("marker") == "precanonical"
