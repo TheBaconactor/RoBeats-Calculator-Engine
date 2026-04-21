@@ -429,8 +429,110 @@ def _prefetch_db_loadouts_sync(
         return []
 
 
+def _prepare_fg_static_sync(song: Any) -> None:
+    """
+    Prepare the GA-invariant part of FG while GA is still running.
+
+    Finder-mode FG consumes GA candidates directly, so `loadout_entries` can be
+    built from DB rows before GA decode finishes. The late FG prep still owns
+    candidate selection and any work that depends on GA output.
+    """
+    cpu_t0 = _thread_cpu_time_s()
+    cfg = song.cfg
+
+    fg_candidate_limit = read_fg_candidate_limit(
+        cfg,
+        default=FG_CANDIDATE_LIMIT,
+        min_limit=LOADOUTS_PER_SONG_LIMIT,
+    )
+    song.fg_candidate_limit = int(fg_candidate_limit)
+    song.fg_search_radius = read_fg_search_radius(cfg)
+    song.fg_direct_ga_candidates = bool(song.force_greats_finder)
+    song.fg_build_details = make_build_details_fn(
+        song.meta_primary_color,
+        song.meta_secondary_color,
+        song.effective_difficulty,
+    )
+
+    # Manual-only FG needs GA candidates merged into loadout_entries, so it stays
+    # in the late prep phase. Finder-mode can use DB/static entries immediately.
+    if not bool(song.fg_direct_ga_candidates):
+        try:
+            setattr(song, "_fg_static_prep_done", True)
+            setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+        except Exception:
+            pass
+        return
+
+    if getattr(song, "loadout_entries", None) is not None:
+        try:
+            setattr(song, "_fg_static_prep_done", True)
+            setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+        except Exception:
+            pass
+        return
+
+    db_loadouts_full = song.db_loadouts_full
+    prefetch_pending = False
+    if db_loadouts_full is None and song.db_loadouts_future is not None:
+        try:
+            fut = song.db_loadouts_future
+            if fut.done():
+                try:
+                    db_loadouts_full = fut.result(timeout=0)
+                    song.db_loadouts_full = db_loadouts_full
+                    if isinstance(db_loadouts_full, list):
+                        _fg_db_cache_put(
+                            song.db_key,
+                            limit=int(fg_candidate_limit),
+                            rows=db_loadouts_full,
+                            team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
+                        )
+                except Exception:
+                    db_loadouts_full = None
+                finally:
+                    song.db_loadouts_future = None
+            else:
+                prefetch_pending = True
+                db_loadouts_full = None
+        except Exception:
+            db_loadouts_full = None
+
+    song.loadout_entries = build_loadout_entries(
+        song.db_key,
+        bool(song.use_evo_db),
+        [],
+        int(fg_candidate_limit),
+        song.gears_by_name,
+        song.minis_by_name,
+        song.fg_build_details,
+        team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
+        db_loadouts_full=db_loadouts_full,
+        allow_db_query=not bool(prefetch_pending),
+        materialize_ga_details=False,
+        ga_registry=song.registry,
+    )
+    try:
+        setattr(song, "_fg_static_prep_done", True)
+        setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+    except Exception:
+        pass
+
+
 def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = _thread_cpu_time_s()
+    static_future = getattr(song, "fg_static_prep_future", None)
+    if static_future is not None:
+        try:
+            static_future.result()
+        finally:
+            try:
+                song.fg_static_prep_future = None
+            except Exception:
+                pass
+    if not bool(getattr(song, "_fg_static_prep_done", False)):
+        _prepare_fg_static_sync(song)
+
     cfg = song.cfg
 
     perf = _truthy(os.environ.get("PERF_TIMING", "0"))
@@ -552,28 +654,32 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             db_loadouts_full = None
     t_db = time.perf_counter() if perf else 0.0
 
-    build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+    build_details = getattr(song, "fg_build_details", None)
+    if not callable(build_details):
+        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+        song.fg_build_details = build_details
     song.fg_direct_ga_candidates = bool(song.force_greats_finder)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
     # only the retained GA subset is merged back into `song.loadout_entries` after FG.
     loadout_ga_candidates = [] if bool(song.fg_direct_ga_candidates) else list(ga_candidates or [])
-    song.loadout_entries = build_loadout_entries(
-        song.db_key,
-        bool(song.use_evo_db),
-        loadout_ga_candidates,
-        fg_candidate_limit,
-        song.gears_by_name,
-        song.minis_by_name,
-        build_details,
-        team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
-        db_loadouts_full=db_loadouts_full,
-        # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
-        allow_db_query=not bool(prefetch_pending),
-        # FG grouping reads eval_data/BaseStats directly; defer details materialization
-        # until persistence/retained-output paths so CPU prep does not stall the GPU.
-        materialize_ga_details=False,
-        ga_registry=song.registry,
-    )
+    if getattr(song, "loadout_entries", None) is None or not bool(song.fg_direct_ga_candidates):
+        song.loadout_entries = build_loadout_entries(
+            song.db_key,
+            bool(song.use_evo_db),
+            loadout_ga_candidates,
+            fg_candidate_limit,
+            song.gears_by_name,
+            song.minis_by_name,
+            build_details,
+            team_buff=_resolve_baseline_team_buff_for_db(song.cfg_dict),
+            db_loadouts_full=db_loadouts_full,
+            # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
+            allow_db_query=not bool(prefetch_pending),
+            # FG grouping reads eval_data/BaseStats directly; defer details materialization
+            # until persistence/retained-output paths so CPU prep does not stall the GPU.
+            materialize_ga_details=False,
+            ga_registry=song.registry,
+        )
     t_build = time.perf_counter() if perf else 0.0
 
     # Native in-flight optimization: submit the combo-booster GPU eval early (during FG prep)

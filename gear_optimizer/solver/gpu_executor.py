@@ -561,22 +561,17 @@ class GpuExecutor:
         {
             GpuRequestType.GPU_NATIVE_GA_RUN,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
     )
-    # These request types should never be batched in the executor loop. In practice, batching these can create
-    # multi-second continuous GPU work that risks Windows UI freezes / TDR.
-    _NO_BATCH_REQUEST_TYPES = frozenset(
-        {
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
-            GpuRequestType.GPU_NATIVE_GA_RUN,
-        }
-    )
+    # Request batching is now controlled by per-family coalescers/chunk caps instead of a
+    # hard gather barrier. Keeping this empty lets the owner drain ready GPU work in one
+    # pass while `_execute_*_batch` methods keep long families bounded.
+    _NO_BATCH_REQUEST_TYPES = frozenset()
     _NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _NO_BATCH_REQUEST_TYPES})
 
     @classmethod
@@ -2004,6 +1999,7 @@ class GpuExecutor:
         fg_burst_until = 0.0
         fg_burst_request_types = {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -2015,6 +2011,7 @@ class GpuExecutor:
         cached_batch_wait_overridden = False
         cached_batch_max_overridden = False
         cached_fg_burst_window_ms = 6
+        cached_fg_burst_batch_wait_ms = 2
         profile_events_enabled = bool(
             str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
         )
@@ -2059,6 +2056,15 @@ class GpuExecutor:
                     except Exception:
                         cached_fg_burst_window_ms = 6
                     cached_fg_burst_window_ms = max(0, int(cached_fg_burst_window_ms))
+                    try:
+                        raw = _ENV_GET("GPU_EXECUTOR_FG_BURST_BATCH_WAIT_MS")
+                        if raw is not None and str(raw).strip() != "":
+                            cached_fg_burst_batch_wait_ms = int(str(raw).strip())
+                        else:
+                            cached_fg_burst_batch_wait_ms = 2
+                    except Exception:
+                        cached_fg_burst_batch_wait_ms = 2
+                    cached_fg_burst_batch_wait_ms = max(0, min(int(cached_fg_burst_batch_wait_ms), 10))
                 env_refresh_counter = (env_refresh_counter + 1) % 64
 
                 batch_wait_ms = int(cached_batch_wait_ms)
@@ -2068,13 +2074,13 @@ class GpuExecutor:
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
                     if not cached_batch_max_overridden:
-                        batch_max = max(int(batch_max), 8)
+                        batch_max = max(int(batch_max), 16)
                     if not cached_batch_wait_overridden:
                         # Keep a modest default coalescing window so we can batch/coalesce without
                         # forcing the owner loop into sub-ms yield-spin behavior.
                         batch_wait_ms = min(int(batch_wait_ms), 6)
                         if int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until):
-                            batch_wait_ms = 0
+                            batch_wait_ms = min(int(batch_wait_ms), int(cached_fg_burst_batch_wait_ms))
                 if batch_wait_ms < 0:
                     batch_wait_ms = 0
                 if batch_max <= 0:
@@ -2192,6 +2198,7 @@ class GpuExecutor:
                 ga_native_requests: list[GpuRequest] = []
                 fg_requests: list[GpuRequest] = []
                 fg_bundle_requests: list[GpuRequest] = []
+                exact_dp_requests: list[GpuRequest] = []
                 fg_ga_fused_requests: list[GpuRequest] = []
                 reg_requests: list[GpuRequest] = []
                 remaining: list[GpuRequest] = []
@@ -2203,6 +2210,8 @@ class GpuExecutor:
                         fg_requests.append(req)
                     elif rt == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
                         fg_bundle_requests.append(req)
+                    elif rt == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
+                        exact_dp_requests.append(req)
                     elif rt == GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS:
                         fg_ga_fused_requests.append(req)
                     elif rt == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
@@ -2336,6 +2345,48 @@ class GpuExecutor:
                         self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(
                             fg_bundle_requests
                         )
+                        self._maybe_live_report()
+
+                if exact_dp_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
+                    exec_start_ns = time.perf_counter_ns()
+                    responses = self._coalesce_solve_force_greats_exact_dp_requests(exact_dp_requests)
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(exact_dp_requests))
+                    for _ in exact_dp_requests:
+                        self._req_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += 1
+                        self._req_type_exec_sec[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += per_req
+                        self._last_work_req_type = GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP
+
+                    for req, resp in zip(exact_dp_requests, responses):
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor exact-DP batch returned no response (internal error)",
+                            )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(exact_dp_requests),
+                            types=f"{GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP.value}:{len(exact_dp_requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += len(exact_dp_requests)
                         self._maybe_live_report()
 
                 if fg_ga_fused_requests:
@@ -2613,6 +2664,12 @@ class GpuExecutor:
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
         if int(max_wait_ms) <= 0:
             inproc_after_first_ms = 0
+        try:
+            ga_owner_batch_limit = int(_ENV_GET("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "2") or "2")
+        except Exception:
+            ga_owner_batch_limit = 2
+        ga_owner_batch_limit = max(1, min(int(ga_owner_batch_limit), 16))
+        ga_owner_batch_count = 0
 
         deferred = self._deferred_request
         if deferred is not None:
@@ -2622,6 +2679,8 @@ class GpuExecutor:
             except Exception:
                 pass
             batch.append(deferred)
+            if deferred.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+                ga_owner_batch_count += 1
             if deferred.request_type == GpuRequestType.SHUTDOWN:
                 return batch
             if self._is_no_batch_request_type(deferred.request_type):
@@ -2704,6 +2763,10 @@ class GpuExecutor:
                     break
 
                 batch.append(request)
+                if request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+                    ga_owner_batch_count += 1
+                    if int(ga_owner_batch_count) >= int(ga_owner_batch_limit):
+                        break
                 if self._is_no_batch_request_type(request.request_type):
                     break
 
@@ -3027,14 +3090,14 @@ class GpuExecutor:
             return [self._execute_request(req) for req in requests]
 
         try:
-            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16") or "16")
+            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
         except Exception:
-            max_payloads = 16
+            max_payloads = 64
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
-            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "32768") or "32768")
+            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "65536") or "65536")
         except Exception:
-            max_pairs = 32768
+            max_pairs = 65536
         max_pairs = max(0, int(max_pairs))
         if max_pairs > 0:
             import numpy as np
@@ -3304,6 +3367,122 @@ class GpuExecutor:
 
         by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]
+
+    def _coalesce_solve_force_greats_exact_dp_requests(
+        self, requests: list["GpuRequest"]
+    ) -> list["GpuResponse"]:
+        """
+        Drain many exact-DP requests in one owner pass.
+
+        Exact DP is song-context sensitive (`calc_song`/`ref_arrays`/slot), so only
+        requests sharing one context are merged into a larger GPU API call. Different
+        song contexts are still executed in the same owner turn, which removes the
+        one-request dequeue bubble without pretending unrelated song timelines can be
+        fused into a single exact-DP kernel.
+        """
+        from .taichi_gem.force_greats.api import solve_force_greats_exact_dp_gpu_batch
+
+        if not requests:
+            return []
+
+        try:
+            max_rows = int(os.environ.get("FG_EXACT_DP_COALESCE_MAX_ROWS", "128") or "128")
+        except Exception:
+            max_rows = 128
+        max_rows = max(1, min(int(max_rows), 4096))
+
+        groups: dict[tuple[Any, ...], list[tuple[GpuRequest, list[dict[str, Any]], dict[str, Any]]]] = {}
+        direct: dict[int, GpuResponse] = {}
+
+        for req in requests:
+            payload = self._payload_dict(req)
+            stats_list = payload.get("stats_list")
+            calc_song = payload.get("calc_song")
+            ref_arrays = payload.get("ref_arrays")
+            if not isinstance(stats_list, (list, tuple)):
+                direct[int(req.request_id)] = GpuResponse(
+                    request_id=req.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (stats_list must be list/tuple)",
+                )
+                continue
+            if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+                direct[int(req.request_id)] = GpuResponse(
+                    request_id=req.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (calc_song/ref_arrays must be dict)",
+                )
+                continue
+
+            key = (
+                int(id(calc_song)),
+                int(id(ref_arrays)),
+                bool(payload.get("timing_aware", True)),
+                bool(payload.get("prune", True)),
+                int(payload.get("song_slot", 0) or 0),
+            )
+            groups.setdefault(key, []).append((req, list(stats_list), payload))
+
+        out_by_id: dict[int, GpuResponse] = dict(direct)
+
+        for _key, items in groups.items():
+            if not items:
+                continue
+            req0, _stats0, payload0 = items[0]
+            calc_song = payload0.get("calc_song")
+            ref_arrays = payload0.get("ref_arrays")
+            timing_aware = bool(payload0.get("timing_aware", True))
+            prune = bool(payload0.get("prune", True))
+            song_slot = int(payload0.get("song_slot", 0) or 0)
+
+            merged_stats: list[dict[str, Any]] = []
+            slices: list[tuple[GpuRequest, int, int]] = []
+            for req, stats_rows, _payload in items:
+                start = len(merged_stats)
+                merged_stats.extend([dict(row) if isinstance(row, dict) else row for row in stats_rows])
+                slices.append((req, int(start), int(len(stats_rows))))
+
+            try:
+                merged_results: list[dict[str, Any]] = []
+                for start in range(0, len(merged_stats), int(max_rows)):
+                    chunk = merged_stats[start : start + int(max_rows)]
+                    chunk_result = solve_force_greats_exact_dp_gpu_batch(
+                        stats_list=list(chunk),
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        timing_aware=bool(timing_aware),
+                        prune=bool(prune),
+                        song_slot=int(song_slot),
+                    )
+                    if len(chunk_result or []) != len(chunk):
+                        raise RuntimeError(
+                            "coalesced exact-DP chunk returned "
+                            f"{len(chunk_result or [])} results for {len(chunk)} stats rows"
+                        )
+                    merged_results.extend(list(chunk_result or []))
+
+                if len(merged_results) != len(merged_stats):
+                    raise RuntimeError(
+                        "coalesced exact-DP returned "
+                        f"{len(merged_results)} results for {len(merged_stats)} stats rows"
+                    )
+
+                for req, start, count in slices:
+                    out_by_id[int(req.request_id)] = GpuResponse(
+                        request_id=req.request_id,
+                        success=True,
+                        result=list(merged_results[int(start) : int(start) + int(count)]),
+                    )
+            except Exception as exc:
+                err = f"SOLVE_FORCE_GREATS_EXACT_DP coalesced: {type(exc).__name__}: {exc}"
+                for req, _start, _count in slices:
+                    out_by_id[int(req.request_id)] = GpuResponse(
+                        request_id=req.request_id,
+                        success=False,
+                        error=err,
+                    )
+
+        return [out_by_id.get(int(req.request_id)) for req in requests]
 
     def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
@@ -4005,15 +4184,15 @@ class GpuExecutor:
             return [self._execute_gpu_native_ga_run(requests[0])]
 
         try:
-            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "3") or "3")
+            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "4") or "4")
         except Exception:
-            max_reqs = 3
+            max_reqs = 4
         max_reqs = max(1, min(int(max_reqs), 64))
 
         try:
-            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "60000") or "60000")
+            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "180000") or "180000")
         except Exception:
-            max_work_units = 60000.0
+            max_work_units = 180000.0
         if max_work_units <= 0.0:
             max_work_units = float("inf")
 

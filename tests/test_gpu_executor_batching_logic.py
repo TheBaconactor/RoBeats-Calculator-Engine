@@ -94,7 +94,7 @@ def test_gather_batch_inproc_short_wait_uses_nonblocking_poll_after_first(monkey
     assert abs(ex._request_queue.get_calls[0] - 0.1) < 1e-6
 
 
-def test_gather_batch_stops_when_no_batch_type_seen() -> None:
+def test_gather_batch_collects_coalescable_gpu_work() -> None:
     class _SeqQueue:
         def __init__(self, items: list[GpuRequest]):
             self.items = list(items)
@@ -128,22 +128,49 @@ def test_gather_batch_stops_when_no_batch_type_seen() -> None:
     ex._request_queue = _SeqQueue([req1, req2, req3])
 
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
-    # No-batch barrier types should NOT be batched behind unrelated work; they are deferred to
-    # become the first item of the next batch.
-    assert [r.request_id for r in batch] == [301]
+    # Heavy families are now bounded by their family coalescers/chunk caps, not by
+    # a hard one-request gather barrier.
+    assert [r.request_id for r in batch] == [301, 302, 303]
     assert [r.request_type for r in batch] == [
         GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+        GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
     ]
+    assert len(ex._request_queue.items) == 0
+
+
+def test_gather_batch_caps_gpu_native_ga_owner_batch(monkeypatch) -> None:
+    class _SeqQueue:
+        def __init__(self, items: list[GpuRequest]):
+            self.items = list(items)
+
+        def get(self, timeout=None):
+            if self.items:
+                return self.items.pop(0)
+            raise queue.Empty()
+
+    requests = [
+        GpuRequest(
+            request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+            request_id=req_id,
+            worker_id=1,
+            payload={},
+        )
+        for req_id in (401, 402, 403)
+    ]
+
+    ex = GpuExecutor()
+    ex._in_process_queues = True
+    ex._request_queue = _SeqQueue(requests)
+
+    monkeypatch.setenv("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "2")
+
+    batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch] == [401, 402]
     assert len(ex._request_queue.items) == 1
 
-    batch2 = ex._gather_batch(max_wait_ms=0, max_batch_size=8)
-    assert [r.request_id for r in batch2] == [302]
-    assert [r.request_type for r in batch2] == [GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS]
-    assert len(ex._request_queue.items) == 1
-
-    batch3 = ex._gather_batch(max_wait_ms=0, max_batch_size=8)
-    assert [r.request_id for r in batch3] == [303]
-    assert [r.request_type for r in batch3] == [GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS]
+    batch2 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch2] == [403]
     assert len(ex._request_queue.items) == 0
 
 

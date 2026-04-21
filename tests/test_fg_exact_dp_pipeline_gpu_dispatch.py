@@ -82,6 +82,51 @@ def test_solve_force_greats_exact_dp_gpu_batch_rejects_dropped_chunk_results():
             raise AssertionError("exact-DP dispatch must reject dropped GPU results")
 
 
+def test_solve_force_greats_exact_dp_gpu_batch_submits_client_chunks_before_waiting():
+    from gear_optimizer.solver.fg_exact_dp_pipeline import _solve_force_greats_exact_dp_gpu_batch
+
+    class _Handle:
+        def __init__(self):
+            self.future = Future()
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+            self.handles: list[tuple[_Handle, list[dict]]] = []
+
+        def submit_solve_force_greats_exact_dp(
+            self,
+            *,
+            stats_list,
+            calc_song,
+            ref_arrays,
+            timing_aware,
+            prune,
+            song_slot,
+        ):
+            handle = _Handle()
+            rows = list(stats_list or [])
+            self.calls.append(rows)
+            self.handles.append((handle, rows))
+            if len(self.calls) == 3:
+                for pending_handle, pending_rows in self.handles:
+                    pending_handle.future.set_result([{"row": row["row"]} for row in pending_rows])
+            return handle
+
+    client = _Client()
+    out = _solve_force_greats_exact_dp_gpu_batch(
+        stats_list=[{"row": idx} for idx in range(5)],
+        calc_song={"song": "x"},
+        ref_arrays={"refs": True},
+        gpu_client=client,
+        song_slot=3,
+        exact_dp_chunk_size=2,
+    )
+
+    assert [len(call) for call in client.calls] == [2, 2, 1]
+    assert [item["row"] for item in out] == [0, 1, 2, 3, 4]
+
+
 def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypatch):
     from gear_optimizer.solver import fg_exact_dp_pipeline
 

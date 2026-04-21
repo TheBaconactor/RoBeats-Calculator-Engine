@@ -114,23 +114,23 @@ class GpuServiceClient:
         self._client_profile_samples: dict[str, list[float]] = defaultdict(list)
         self._profile_sample_cap = 5000
 
-        # FG job coalescing (optional, in-process only).
-        # Default to disabled: extra coalescing can create very large breakpoints batches that risk
-        # multi-second continuous GPU work on Windows (TDR / UI freezes). Enable explicitly via env.
-        self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "0")
+        # FG job coalescing (in-process only). This keeps async FG lanes from
+        # degenerating into many tiny one-request GPU submissions; executor-side
+        # pair/payload caps still bound the actual GPU work per owner pass.
+        self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
-            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192") or "192")
+            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "256") or "256")
         except Exception:
             self._fg_coalesce_max_payloads = 128
         try:
-            executor_max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16") or "16")
+            executor_max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
         except Exception:
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
         try:
-            self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "1") or "1")
+            self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "8") or "8")
         except Exception:
-            self._fg_coalesce_max_wait_ms = 1
+            self._fg_coalesce_max_wait_ms = 8
         self._fg_coalesce_max_payloads = max(1, int(self._fg_coalesce_max_payloads))
         self._fg_coalesce_max_payloads = min(int(self._fg_coalesce_max_payloads), int(executor_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))

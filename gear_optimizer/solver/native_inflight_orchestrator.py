@@ -93,6 +93,7 @@ from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
+    _prepare_fg_static_sync,
     _prepare_fg_job_sync,
     _warmup_fg_jit,
 )
@@ -1701,6 +1702,21 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             song.db_loadouts_future = None
 
+                    if song.manual_force_greats or song.force_greats_finder:
+                        try:
+                            if getattr(song, "fg_static_prep_future", None) is None and not bool(
+                                getattr(song, "_fg_static_prep_done", False)
+                            ):
+                                setattr(song, "_fg_static_prep_submit_t0", time.perf_counter())
+                                static_future = fg_pipeline.prep_executor.submit(_prepare_fg_static_sync, song)
+                                song.fg_static_prep_future = static_future
+                                _register_completion_future(static_future)
+                        except Exception:
+                            try:
+                                song.fg_static_prep_future = None
+                            except Exception:
+                                pass
+
                     continue
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
@@ -2694,7 +2710,13 @@ def _run_fg_job_sync(
         finally:
             song.db_loadouts_future = None
 
-    build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+    build_details = getattr(song, "fg_build_details", None)
+    if not callable(build_details):
+        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+        try:
+            song.fg_build_details = build_details
+        except Exception:
+            pass
 
     # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
     # without rebuilding the full GA union.

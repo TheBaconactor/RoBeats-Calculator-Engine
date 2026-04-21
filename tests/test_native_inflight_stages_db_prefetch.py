@@ -101,6 +101,104 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
     assert song.db_loadouts_future is pending
 
 
+def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monkeypatch):
+    seen = {"ga_candidates": None}
+
+    def _fake_build_loadout_entries(
+        found_song_name,
+        use_evo_db,
+        ga_candidates,
+        db_loadouts_limit,
+        gears_by_name,
+        minis_by_name,
+        build_details_fn,
+        **_kwargs,
+    ):
+        seen["ga_candidates"] = list(ga_candidates or [])
+        return {"db": {"score": 100}}
+
+    monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+
+    song = SimpleNamespace(
+        cfg=cfg,
+        cfg_dict={},
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        force_greats_finder=True,
+        db_loadouts_full=[{"score": 100}],
+        db_loadouts_future=None,
+        db_key="song-db-key",
+        use_evo_db=True,
+        gears_by_name={},
+        minis_by_name={},
+        registry=None,
+        loadout_entries=None,
+    )
+
+    stages._prepare_fg_static_sync(song)
+
+    assert seen["ga_candidates"] == []
+    assert song.loadout_entries == {"db": {"score": 100}}
+    assert song.fg_direct_ga_candidates is True
+    assert song._fg_static_prep_done is True
+
+
+def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
+    calls = {"build": 0}
+
+    def _fake_build_loadout_entries(*_args, **_kwargs):
+        calls["build"] += 1
+        return {"rebuilt": True}
+
+    monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+
+    song = SimpleNamespace(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {}},
+        cfg_dict={},
+        ga_candidates=[
+            {
+                "Score": 100,
+                "BaseScore": 100,
+                "Gear": ["G1"],
+                "Minis": ["M1"],
+                "Data": {"Stats": {"Perfect Points": 1}},
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_loadouts_full=None,
+        db_loadouts_future=None,
+        db_key="song-db-key",
+        use_evo_db=True,
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        force_greats_finder=True,
+        registry=None,
+        fixed_stats={},
+        cfg_data={},
+        ref_arrays={},
+        song_slot=1,
+        loadout_entries={"static": {"score": 100}},
+        fg_static_prep_future=None,
+        _fg_static_prep_done=True,
+    )
+
+    stages._prepare_fg_job_sync(song, gpu_client=None)
+
+    assert calls["build"] == 0
+    assert song.loadout_entries == {"static": {"score": 100}}
+    assert song.ga_candidates
+
+
 def test_decode_ga_payload_sync_attaches_base_hitsim_delta(monkeypatch):
     seen: dict[str, object] = {}
 

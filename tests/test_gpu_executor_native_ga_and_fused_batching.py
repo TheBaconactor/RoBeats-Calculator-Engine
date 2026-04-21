@@ -12,6 +12,7 @@ def _req(req_id: int, req_type: GpuRequestType, payload: dict | None = None) -> 
 
 def test_execute_gpu_native_ga_run_batch_preserves_order(monkeypatch):
     executor = GpuExecutor()
+    executor.clear_abort()
     calls: list[int] = []
 
     def _fake_single(req: GpuRequest) -> GpuResponse:
@@ -34,6 +35,7 @@ def test_execute_gpu_native_ga_run_batch_preserves_order(monkeypatch):
 
 def test_execute_gpu_native_ga_run_chunk_aborts_remaining_requests(monkeypatch):
     executor = GpuExecutor()
+    executor.clear_abort()
     calls: list[int] = []
 
     def _fake_single(req: GpuRequest) -> GpuResponse:
@@ -208,3 +210,52 @@ def test_coalesce_fg_breakpoints_splits_when_pairs_exceed_cap(monkeypatch):
     assert out[0].success is True
     assert isinstance(out[0].result, list)
     assert len(out[0].result) == 3
+
+
+def test_coalesce_exact_dp_merges_same_song_context(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
+
+    executor = GpuExecutor()
+    calc_song = {"metadata": {}, "song_data": {}}
+    ref_arrays = {"refs": True}
+    calls: list[list[int]] = []
+
+    def _fake_exact_batch(*, stats_list, calc_song, ref_arrays, timing_aware=True, prune=True, song_slot=0):
+        rows = list(stats_list or [])
+        calls.append([int(row["row"]) for row in rows])
+        assert timing_aware is True
+        assert prune is True
+        assert song_slot == 5
+        return [{"row": int(row["row"])} for row in rows]
+
+    monkeypatch.setattr(fg_api, "solve_force_greats_exact_dp_gpu_batch", _fake_exact_batch)
+
+    reqs = [
+        _req(
+            601,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+            {
+                "stats_list": [{"row": 1}],
+                "calc_song": calc_song,
+                "ref_arrays": ref_arrays,
+                "song_slot": 5,
+            },
+        ),
+        _req(
+            602,
+            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
+            {
+                "stats_list": [{"row": 2}, {"row": 3}],
+                "calc_song": calc_song,
+                "ref_arrays": ref_arrays,
+                "song_slot": 5,
+            },
+        ),
+    ]
+
+    out = executor._coalesce_solve_force_greats_exact_dp_requests(reqs)
+
+    assert calls == [[1, 2, 3]]
+    assert [r.request_id for r in out] == [601, 602]
+    assert [item["row"] for item in out[0].result] == [1]
+    assert [item["row"] for item in out[1].result] == [2, 3]

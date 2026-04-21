@@ -164,15 +164,55 @@ def _solve_force_greats_exact_dp_gpu_batch(
                 f"Exact FG DP GPU chunk returned {len(chunk_result)} results for {len(chunk_rows)} stats rows"
             )
 
-    if len(stats_rows) <= int(chunk_size):
-        result = list(_submit_once(stats_rows) or [])
-        _validate_chunk_result(result, stats_rows)
+    total_rows = len(stats_rows)
+    chunks = [stats_rows[start : start + int(chunk_size)] for start in range(0, total_rows, int(chunk_size))]
+
+    # Submit all client-backed chunks before waiting so the single GPU owner can
+    # coalesce exact-DP work across FG lanes instead of receiving one blocking
+    # request at a time from each FG worker.
+    async_client = gpu_client
+    if async_client is None and len(chunks) > 1:
+        try:
+            from .gpu_executor import is_gpu_worker_mode
+        except Exception:
+            def is_gpu_worker_mode() -> bool:  # type: ignore[no-redef]
+                return True
+        try:
+            if not is_gpu_worker_mode():
+                async_client = _get_inprocess_exact_fg_gpu_client()
+        except Exception:
+            async_client = None
+
+    if async_client is not None and len(chunks) > 1:
+        jobs: list[tuple[list[dict[str, Any]], Any]] = []
+        for chunk_rows in chunks:
+            jobs.append(
+                (
+                    chunk_rows,
+                    async_client.submit_solve_force_greats_exact_dp(
+                        stats_list=chunk_rows,
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        timing_aware=True,
+                        prune=True,
+                        song_slot=int(song_slot or 0),
+                    ).future,
+                )
+            )
+        out: list[dict[str, Any]] = []
+        for chunk_rows, fut in jobs:
+            chunk_result = list(fut.result() or [])
+            _validate_chunk_result(chunk_result, chunk_rows)
+            out.extend(chunk_result)
+        return out
+
+    if len(chunks) == 1:
+        result = list(_submit_once(chunks[0]) or [])
+        _validate_chunk_result(result, chunks[0])
         return result
 
     out: list[dict[str, Any]] = []
-    total_rows = len(stats_rows)
-    for start in range(0, total_rows, int(chunk_size)):
-        chunk_rows = stats_rows[start : start + int(chunk_size)]
+    for chunk_rows in chunks:
         chunk_result = list(_submit_once(chunk_rows) or [])
         _validate_chunk_result(chunk_result, chunk_rows)
         out.extend(chunk_result)
