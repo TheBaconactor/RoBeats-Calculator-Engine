@@ -367,6 +367,50 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     return safe_int(raw, -1)
 
 
+def read_fg_exact_dp_chunk_size(cfg: Any, *, default: int = 16) -> int:
+    """Read `[IterationEngine].FG_ExactDPChunkSize` with sane clamping."""
+
+    try:
+        default_i = int(default)
+    except Exception:
+        default_i = 16
+    default_i = max(1, min(default_i, 512))
+
+    try:
+        raw = str(cfg.get("IterationEngine", "FG_ExactDPChunkSize", fallback="") or "").strip()
+    except Exception as exc:
+        warn_fallback(
+            "config.fg_exact_dp_chunk_size.read",
+            "failed reading FG_ExactDPChunkSize; using default",
+            context={"default": default_i},
+            exc=exc,
+        )
+        raw = ""
+
+    if not raw:
+        raw_env = os.environ.get("FG_EXACT_DP_CHUNK_SIZE")
+        if raw_env is not None and str(raw_env).strip() != "":
+            raw = str(raw_env).strip()
+        else:
+            return int(default_i)
+    else:
+        raw_env = os.environ.get("FG_EXACT_DP_CHUNK_SIZE")
+        if raw_env is not None and str(raw_env).strip() != "":
+            raw = str(raw_env).strip()
+
+    try:
+        value = int(raw)
+    except Exception:
+        warn_fallback(
+            "config.fg_exact_dp_chunk_size.invalid",
+            "invalid FG_ExactDPChunkSize; using default",
+            context={"value": raw, "default": default_i},
+        )
+        return int(default_i)
+
+    return max(1, min(int(value), 512))
+
+
 def _canon_outer_search_engine(raw: Any) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     value = "_".join(part for part in value.split("_") if part)

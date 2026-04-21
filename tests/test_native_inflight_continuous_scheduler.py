@@ -3,6 +3,7 @@ import configparser
 import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _closed_loop_bubble_kpi,
+    _continuous_fg_should_fill_song_lanes,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
     _continuous_ga_warm_queue_limit,
@@ -12,6 +13,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     _read_fg_ga_credit_budget,
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
+    _read_inflight_target_song_lanes,
     _read_inflight_event_wait_gpu_cap_s,
     _read_inflight_event_wait_short_spin_s,
     _read_inflight_event_wait_timeout_s,
@@ -224,6 +226,62 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
     monkeypatch.setenv("INFLIGHT_FG_SLOT_RESERVE", "0")
     reserve = _read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
     assert reserve == 0
+
+
+def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_TARGET_SONG_LANES", raising=False)
+
+    cfg = _cfg_with_iteration_engine()
+    assert _read_inflight_target_song_lanes(cfg, inflight_limit=1) == 1
+    assert _read_inflight_target_song_lanes(cfg, inflight_limit=4) == 2
+
+    cfg2 = _cfg_with_iteration_engine(InFlight_TargetSongLanes="3")
+    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 3
+
+    monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "9")
+    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 4
+
+    monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "0")
+    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 1
+
+
+def test_continuous_fg_should_fill_song_lanes_before_fg_when_safe():
+    assert (
+        _continuous_fg_should_fill_song_lanes(
+            target_song_lanes=2,
+            active_song_lanes=1,
+            ready_ga_count=1,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            oldest_wait_s=0.2,
+            aging_hard_s=2.5,
+        )
+        is True
+    )
+
+
+def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
+    base = {
+        "target_song_lanes": 2,
+        "active_song_lanes": 1,
+        "ready_ga_count": 1,
+        "blocked_on_slot": False,
+        "no_ga_remaining": False,
+        "oldest_wait_s": 0.2,
+        "aging_hard_s": 2.5,
+    }
+
+    for override in (
+        {"target_song_lanes": 1},
+        {"active_song_lanes": 2},
+        {"ready_ga_count": 0},
+        {"blocked_on_slot": True},
+        {"no_ga_remaining": True},
+        {"oldest_wait_s": 2.5},
+    ):
+        args = dict(base)
+        args.update(override)
+        assert _continuous_fg_should_fill_song_lanes(**args) is False
 
 
 def test_continuous_ga_warm_queue_limit_caps_cold_start_backlog():

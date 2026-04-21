@@ -43,6 +43,7 @@ from ..core.constants import (
 
 from ..core.config import (
     read_fg_candidate_limit,
+    read_fg_exact_dp_chunk_size,
     read_fg_search_radius,
     read_fg_solver_mode,
     read_outer_search_engine,
@@ -1049,6 +1050,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             fg_search_radius=ctx.fg_search_radius,
             finder_ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
             ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
+            exact_dp_chunk_size=read_fg_exact_dp_chunk_size(ctx.cfg),
         )
         fg_wall_sec = time.perf_counter() - fg_start
         if PERF_TIMING_ENABLED:

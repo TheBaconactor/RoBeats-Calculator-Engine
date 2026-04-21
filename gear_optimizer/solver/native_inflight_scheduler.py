@@ -205,6 +205,39 @@ def _read_fg_slot_reserve(
     return max(1, min(int(reserve), int(reserve_cap)))
 
 
+def _read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
+    """
+    Target number of concurrently active song lanes for the single-owner pipeline.
+
+    Default to two lanes whenever overlap is enabled so GA/FG can interleave across
+    songs instead of collapsing back into a single-song phase train.
+    """
+    try:
+        inflight_limit_i = int(inflight_limit)
+    except Exception:
+        inflight_limit_i = 1
+    inflight_limit_i = max(1, int(inflight_limit_i))
+
+    target = 2 if int(inflight_limit_i) > 1 else 1
+    try:
+        if cfg0 is not None and cfg0.has_option("IterationEngine", "InFlight_TargetSongLanes"):
+            target = safe_int(
+                cfg0.get("IterationEngine", "InFlight_TargetSongLanes", fallback=str(target)),
+                target,
+            )
+    except Exception:
+        pass
+
+    raw = os.environ.get("INFLIGHT_TARGET_SONG_LANES")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            target = int(raw)
+        except Exception:
+            pass
+
+    return max(1, min(int(target), int(inflight_limit_i)))
+
+
 def _continuous_ga_warm_queue_limit(
     *,
     ga_queue_limit: int,
@@ -249,6 +282,36 @@ def _continuous_ga_warm_queue_limit(
         return limit
 
     return max(1, min(limit, warm_limit))
+
+
+def _continuous_fg_should_fill_song_lanes(
+    *,
+    target_song_lanes: int,
+    active_song_lanes: int,
+    ready_ga_count: int,
+    blocked_on_slot: bool,
+    no_ga_remaining: bool,
+    oldest_wait_s: float,
+    aging_hard_s: float,
+) -> bool:
+    """
+    Prefer filling the next GA song lane before starting FG when we have immediate GA work.
+
+    This turns the in-flight queue into a real two-lane conveyor on one GPU owner:
+    keep song B entering GA while song A is already headed toward FG, unless FG has
+    aged hard enough that fairness must override the lane-fill preference.
+    """
+    if int(target_song_lanes) <= 1:
+        return False
+    if int(active_song_lanes) >= int(target_song_lanes):
+        return False
+    if int(ready_ga_count) <= 0:
+        return False
+    if bool(blocked_on_slot) or bool(no_ga_remaining):
+        return False
+    if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
+        return False
+    return True
 
 
 def _continuous_fg_should_start(

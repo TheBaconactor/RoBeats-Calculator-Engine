@@ -20,6 +20,7 @@ Legacy note:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable
@@ -35,6 +36,23 @@ logger = logging.getLogger(__name__)
 _FG_EXACT_GPU_CLIENT_LOCK = threading.Lock()
 _FG_EXACT_GPU_CLIENT = None
 _FG_EXACT_GPU_CLIENT_DISABLED = False
+
+
+def _resolve_exact_dp_chunk_size(explicit_chunk_size: int | None = None) -> int:
+    try:
+        chunk_size = int(explicit_chunk_size) if explicit_chunk_size is not None else 0
+    except Exception:
+        chunk_size = 0
+    if chunk_size <= 0:
+        raw = os.environ.get("FG_EXACT_DP_CHUNK_SIZE")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                chunk_size = int(raw)
+            except Exception:
+                chunk_size = 0
+    if chunk_size <= 0:
+        chunk_size = 16
+    return max(1, min(int(chunk_size), 512))
 
 
 def _get_inprocess_exact_fg_gpu_client():
@@ -86,11 +104,51 @@ def _solve_force_greats_exact_dp_gpu_batch(
     ref_arrays: dict,
     gpu_client=None,
     song_slot: int = 0,
+    exact_dp_chunk_size: int | None = None,
 ) -> list[dict[str, Any]]:
-    if gpu_client is not None:
+    chunk_size = _resolve_exact_dp_chunk_size(exact_dp_chunk_size)
+    stats_rows = list(stats_list or [])
+    if not stats_rows:
+        return []
+
+    def _submit_once(chunk_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if gpu_client is not None:
+            return list(
+                gpu_client.submit_solve_force_greats_exact_dp(
+                    stats_list=chunk_rows,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    timing_aware=True,
+                    prune=True,
+                    song_slot=int(song_slot or 0),
+                ).future.result()
+                or []
+            )
+
+        try:
+            from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_force_greats_exact_dp
+        except Exception as exc:
+            raise RuntimeError(f"Exact FG DP GPU dispatch unavailable: {type(exc).__name__}: {exc}") from exc
+
+        if is_gpu_worker_mode():
+            return list(
+                submit_gpu_solve_force_greats_exact_dp(
+                    stats_list=chunk_rows,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    timing_aware=True,
+                    prune=True,
+                    song_slot=int(song_slot or 0),
+                )
+                or []
+            )
+
+        local_client = _get_inprocess_exact_fg_gpu_client()
+        if local_client is None:
+            raise RuntimeError("Exact FG DP requires GPU executor access; no in-process GPU client is available")
         return list(
-            gpu_client.submit_solve_force_greats_exact_dp(
-                stats_list=stats_list,
+            local_client.submit_solve_force_greats_exact_dp(
+                stats_list=chunk_rows,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 timing_aware=True,
@@ -100,38 +158,25 @@ def _solve_force_greats_exact_dp_gpu_batch(
             or []
         )
 
-    try:
-        from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_force_greats_exact_dp
-    except Exception as exc:
-        raise RuntimeError(f"Exact FG DP GPU dispatch unavailable: {type(exc).__name__}: {exc}") from exc
-
-    if is_gpu_worker_mode():
-        return list(
-            submit_gpu_solve_force_greats_exact_dp(
-                stats_list=stats_list,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                timing_aware=True,
-                prune=True,
-                song_slot=int(song_slot or 0),
+    def _validate_chunk_result(chunk_result: list[dict[str, Any]], chunk_rows: list[dict[str, Any]]) -> None:
+        if len(chunk_result) != len(chunk_rows):
+            raise RuntimeError(
+                f"Exact FG DP GPU chunk returned {len(chunk_result)} results for {len(chunk_rows)} stats rows"
             )
-            or []
-        )
 
-    local_client = _get_inprocess_exact_fg_gpu_client()
-    if local_client is None:
-        raise RuntimeError("Exact FG DP requires GPU executor access; no in-process GPU client is available")
-    return list(
-        local_client.submit_solve_force_greats_exact_dp(
-            stats_list=stats_list,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            timing_aware=True,
-            prune=True,
-            song_slot=int(song_slot or 0),
-        ).future.result()
-        or []
-    )
+    if len(stats_rows) <= int(chunk_size):
+        result = list(_submit_once(stats_rows) or [])
+        _validate_chunk_result(result, stats_rows)
+        return result
+
+    out: list[dict[str, Any]] = []
+    total_rows = len(stats_rows)
+    for start in range(0, total_rows, int(chunk_size)):
+        chunk_rows = stats_rows[start : start + int(chunk_size)]
+        chunk_result = list(_submit_once(chunk_rows) or [])
+        _validate_chunk_result(chunk_result, chunk_rows)
+        out.extend(chunk_result)
+    return out
 
 
 def _materialize_stats_for_exact_dp(data: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +271,7 @@ def _run_exact_dp_on_candidates(
     ref_arrays: dict,
     gpu_client=None,
     song_slot: int = 0,
+    exact_dp_chunk_size: int | None = None,
 ) -> list[dict[str, Any]]:
     fg_variants: list[dict[str, Any]] = []
     solve_candidates: list[tuple[dict[str, Any], dict[str, Any], int, list[str], list[str], bool]] = []
@@ -254,6 +300,7 @@ def _run_exact_dp_on_candidates(
         ref_arrays=ref_arrays,
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
+        exact_dp_chunk_size=exact_dp_chunk_size,
     )
     computed = len(solve_candidates)
     if len(gpu_results) != computed:
@@ -313,6 +360,7 @@ def _refine_finder_variants_with_exact_dp(
     ref_arrays: dict,
     gpu_client=None,
     song_slot: int = 0,
+    exact_dp_chunk_size: int | None = None,
 ) -> list[dict[str, Any]]:
     if not finder_variants:
         return []
@@ -357,6 +405,7 @@ def _refine_finder_variants_with_exact_dp(
         ref_arrays=ref_arrays,
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
+        exact_dp_chunk_size=exact_dp_chunk_size,
     )
     computed = len(pending_rows)
     if len(gpu_results) != computed:
@@ -425,6 +474,7 @@ def process_fg_exact_dp(
     fg_search_radius: int | None = None,
     finder_ga_candidates: list[dict[str, Any]] | None = None,
     ga_registry=None,
+    exact_dp_chunk_size: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     Process FG candidates using the production exact-DP path.
@@ -476,6 +526,7 @@ def process_fg_exact_dp(
             ref_arrays=ref_arrays,
             gpu_client=gpu_client,
             song_slot=int(song_slot or 0),
+            exact_dp_chunk_size=exact_dp_chunk_size,
         )
 
     return _run_exact_dp_on_candidates(
@@ -484,4 +535,5 @@ def process_fg_exact_dp(
         ref_arrays=ref_arrays,
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
+        exact_dp_chunk_size=exact_dp_chunk_size,
     )

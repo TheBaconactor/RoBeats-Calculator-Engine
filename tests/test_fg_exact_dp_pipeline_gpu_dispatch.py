@@ -1,14 +1,99 @@
+from concurrent.futures import Future
+
+
+def test_solve_force_greats_exact_dp_gpu_batch_chunks_without_dropping_rows():
+    from gear_optimizer.solver.fg_exact_dp_pipeline import _solve_force_greats_exact_dp_gpu_batch
+
+    class _Handle:
+        def __init__(self, rows):
+            self.future = Future()
+            self.future.set_result([{"row": row["row"]} for row in rows])
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def submit_solve_force_greats_exact_dp(
+            self,
+            *,
+            stats_list,
+            calc_song,
+            ref_arrays,
+            timing_aware,
+            prune,
+            song_slot,
+        ):
+            rows = list(stats_list or [])
+            self.calls.append(
+                {
+                    "rows": rows,
+                    "calc_song": calc_song,
+                    "ref_arrays": ref_arrays,
+                    "timing_aware": timing_aware,
+                    "prune": prune,
+                    "song_slot": song_slot,
+                }
+            )
+            return _Handle(rows)
+
+    client = _Client()
+    stats = [{"row": idx} for idx in range(5)]
+
+    out = _solve_force_greats_exact_dp_gpu_batch(
+        stats_list=stats,
+        calc_song={"song": "x"},
+        ref_arrays={"refs": True},
+        gpu_client=client,
+        song_slot=7,
+        exact_dp_chunk_size=2,
+    )
+
+    assert [len(call["rows"]) for call in client.calls] == [2, 2, 1]
+    assert [item["row"] for item in out] == [0, 1, 2, 3, 4]
+    assert all(call["song_slot"] == 7 for call in client.calls)
+    assert all(call["timing_aware"] is True for call in client.calls)
+    assert all(call["prune"] is True for call in client.calls)
+
+
+def test_solve_force_greats_exact_dp_gpu_batch_rejects_dropped_chunk_results():
+    from gear_optimizer.solver.fg_exact_dp_pipeline import _solve_force_greats_exact_dp_gpu_batch
+
+    class _Handle:
+        def __init__(self):
+            self.future = Future()
+            self.future.set_result([])
+
+    class _Client:
+        def submit_solve_force_greats_exact_dp(self, **_kwargs):
+            return _Handle()
+
+    for chunk_size in (1, 99):
+        try:
+            _solve_force_greats_exact_dp_gpu_batch(
+                stats_list=[{"row": 1}, {"row": 2}],
+                calc_song={},
+                ref_arrays={},
+                gpu_client=_Client(),
+                exact_dp_chunk_size=chunk_size,
+            )
+        except RuntimeError as exc:
+            assert "Exact FG DP GPU chunk returned" in str(exc)
+        else:
+            raise AssertionError("exact-DP dispatch must reject dropped GPU results")
+
+
 def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypatch):
     from gear_optimizer.solver import fg_exact_dp_pipeline
 
     seen = {}
 
-    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0):
+    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0, exact_dp_chunk_size=None):
         seen["stats_n"] = len(list(stats_list or []))
         seen["calc_song"] = calc_song
         seen["ref_arrays"] = ref_arrays
         seen["gpu_client"] = gpu_client
         seen["song_slot"] = song_slot
+        seen["exact_dp_chunk_size"] = exact_dp_chunk_size
         return [
             {
                 "best_delta": 250,
@@ -61,6 +146,7 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
     assert seen["stats_n"] == 2
     assert seen["gpu_client"] == "gpu-client"
     assert seen["song_slot"] == 7
+    assert seen["exact_dp_chunk_size"] is None
     assert len(out) == 1
     assert out[0]["fg_score"] == 1125
     assert out[0]["gear"] == ["Hat A"]
@@ -119,10 +205,11 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
             },
         ]
 
-    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0):
+    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0, exact_dp_chunk_size=None):
         seen["stats_n"] = len(list(stats_list or []))
         seen["gpu_client"] = gpu_client
         seen["song_slot"] = song_slot
+        seen["exact_dp_chunk_size"] = exact_dp_chunk_size
         return [
             {"best_delta": 999, "section_counts": [3], "profile": {"states": 11, "transitions": 29}},
             {"best_delta": 999, "section_counts": [4], "profile": {"states": 7, "transitions": 13}},
@@ -164,6 +251,7 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
     assert seen["stats_n"] == 2
     assert seen["gpu_client"] == "gpu-client"
     assert seen["song_slot"] == 9
+    assert seen["exact_dp_chunk_size"] is None
 
     assert len(out) == 2
     assert out[0]["gear"] == ["G2"]
