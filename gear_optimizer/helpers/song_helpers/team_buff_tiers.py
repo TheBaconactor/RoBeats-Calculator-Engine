@@ -1142,8 +1142,8 @@ def build_team_buff_tier_db_batches(
     base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
     fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
 
-    # Map original entries by a stable key (order-invariant names).
-    def _stable_key_from_entry(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Match replay rows back to persisted entries using order-invariant gear/mini names.
+    def _stable_key_from_payload(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return (
             tuple(sorted(_flat_item_names(e.get("gear")))),
             tuple(sorted(_representative_mini_names_from_any(e.get("minis")))),
@@ -1153,7 +1153,7 @@ def build_team_buff_tier_db_batches(
     for e in entries or []:
         if not isinstance(e, dict):
             continue
-        orig_by_key[_stable_key_from_entry(e)] = e
+        orig_by_key[_stable_key_from_payload(e)] = e
 
     batches: dict[str, list[dict]] = {}
     for tier, tier_payload in (payload.get("tiers") or {}).items():
@@ -1170,31 +1170,36 @@ def build_team_buff_tier_db_batches(
         fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
         fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
 
+        ordered_keys: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        ordered_key_set: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+
         for r in base_top:
             if not isinstance(r, dict):
                 continue
-            k = (
-                tuple(sorted(_flat_item_names(r.get("gear")))),
-                tuple(sorted(_representative_mini_names_from_any(r.get("minis")))),
-            )
+            k = _stable_key_from_payload(r)
             base_score_by_key[k] = _safe_int(r.get("score"), 0)
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
+            if k not in ordered_key_set:
+                ordered_keys.append(k)
+                ordered_key_set.add(k)
 
         for r in fg_top:
             if not isinstance(r, dict):
                 continue
-            k = (
-                tuple(sorted(_flat_item_names(r.get("gear")))),
-                tuple(sorted(_representative_mini_names_from_any(r.get("minis")))),
-            )
+            k = _stable_key_from_payload(r)
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
             fg_base_score_by_key[k] = _safe_int(r.get("fg_base_score"), 0)
             if k not in base_score_by_key:
                 base_score_by_key[k] = _safe_int(r.get("score"), 0)
+            if k not in ordered_key_set:
+                ordered_keys.append(k)
+                ordered_key_set.add(k)
 
         selected_keys = set(base_score_by_key.keys()) | set(fg_score_by_key.keys())
+        if len(ordered_key_set) < len(selected_keys):
+            ordered_keys.extend(sorted(selected_keys - ordered_key_set))
         out_entries: list[dict] = []
-        for k in selected_keys:
+        for k in ordered_keys:
             orig = orig_by_key.get(k)
             if not isinstance(orig, dict):
                 continue

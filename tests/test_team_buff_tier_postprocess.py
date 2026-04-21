@@ -842,6 +842,99 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
     assert row["force"]["ForceGreats"]["config"] == {"NonFever1": 1}
 
 
+def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 150,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    def _entry(loadout_hash: str, gear_name: str, mini_name: str) -> dict:
+        return {
+            "loadout_hash": loadout_hash,
+            "score": 0,
+            "fg_score": 0,
+            "gear": [gear_name, "G2", "G3", "G4", "G5", "G6"],
+            "minis": [mini_name, "M2", "M3"],
+            "details": {"Stats": dict(stats)},
+            "force": {"Stats": dict(stats), "ForceGreats": {"config": {"NonFever1": 1}}},
+        }
+
+    entry_a = _entry("hash-a", "GA", "MA")
+    entry_b = _entry("hash-b", "GB", "MB")
+    entry_c = _entry("hash-c", "GC", "MC")
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T10": {
+                    "base_top51": [
+                        {
+                            "loadout_hash": entry_b["loadout_hash"],
+                            "gear": list(entry_b["gear"]),
+                            "minis": list(entry_b["minis"]),
+                            "score": 220,
+                            "fg_score": 0,
+                        },
+                        {
+                            "loadout_hash": entry_a["loadout_hash"],
+                            "gear": list(entry_a["gear"]),
+                            "minis": list(entry_a["minis"]),
+                            "score": 210,
+                            "fg_score": 0,
+                        },
+                    ],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": entry_c["loadout_hash"],
+                            "gear": list(entry_c["gear"]),
+                            "minis": list(entry_c["minis"]),
+                            "score": 190,
+                            "fg_score": 260,
+                            "fg_base_score": 190,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry_a, entry_b, entry_c],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T10",),
+        limit=3,
+    )
+
+    rows = batches["T10"]
+    assert [str(row.get("loadout_hash") or "") for row in rows] == ["hash-b", "hash-a", "hash-c"]
+    assert [int(row.get("score") or 0) for row in rows] == [220, 210, 190]
+    assert int(rows[2].get("fg_score") or 0) == 260
+    assert int(rows[2].get("fg_base_score") or 0) == 190
+
+
 def test_team_buff_tier_leaderboards_respects_persisted_hitsim_seed(monkeypatch):
     import gear_optimizer.solver.hit_simulation as hs
     from gear_optimizer.core.constants import TOTAL_ROWS
