@@ -514,6 +514,24 @@ def build_db_payload(
     return updated_payload
 
 
+def _canonicalize_retained_baseline_persist_entries(
+    persist_entries: list[dict],
+    *,
+    calc_song: dict | None,
+    ref_arrays: dict | None,
+    cfg_dict: dict | None,
+) -> list[dict]:
+    """Route retained baseline rows through the shared replay canonicalizer."""
+    from .baseline_replay import canonicalize_baseline_persist_entries
+
+    return canonicalize_baseline_persist_entries(
+        persist_entries,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+    )
+
+
 def build_persistence_entries(
     db_payload,
     ga_candidates,
@@ -1223,9 +1241,7 @@ def build_persistence_entries(
                 fg_base_score_val=entry.get("fg_base_score"),
             )
 
-    from .baseline_replay import canonicalize_baseline_persist_entries
-
-    return canonicalize_baseline_persist_entries(
+    return _canonicalize_retained_baseline_persist_entries(
         persist_entries,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
