@@ -881,6 +881,24 @@ def run_native_inflight_song_pipeline(
     fg_workers = int(fg_pipeline.workers)
     fg_batch_max = int(fg_pipeline.batch_max)
     fg_prep_workers = int(fg_pipeline.prep_workers)
+    fg_static_prep_max_inflight = 0
+    if cfg0 is not None:
+        try:
+            fg_static_prep_max_inflight = safe_int(
+                cfg0.get("IterationEngine", "InFlight_FGStaticPrepMaxInflight", fallback="0"),
+                0,
+            )
+        except Exception:
+            fg_static_prep_max_inflight = 0
+    raw = os.environ.get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            fg_static_prep_max_inflight = int(raw)
+        except Exception:
+            pass
+    if fg_static_prep_max_inflight <= 0:
+        fg_static_prep_max_inflight = max(1, min(2, int(fg_prep_workers)))
+    fg_static_prep_max_inflight = max(1, min(int(fg_static_prep_max_inflight), int(inflight_limit), 8))
 
     db_prefetch_workers = 0
     if cfg0 is not None:
@@ -939,6 +957,41 @@ def run_native_inflight_song_pipeline(
                 keys.add(key)
         keys.update(fg_pipeline.active_song_keys())
         return int(len(keys))
+
+    def _active_fg_static_prep_count() -> int:
+        count = 0
+        seen_ids: set[int] = set()
+
+        def _track(song: _NativeSong) -> None:
+            nonlocal count
+            try:
+                sid = int(id(song))
+            except Exception:
+                return
+            if sid in seen_ids:
+                return
+            seen_ids.add(sid)
+            fut = getattr(song, "fg_static_prep_future", None)
+            if fut is None:
+                return
+            try:
+                if fut.done():
+                    return
+            except Exception:
+                return
+            count += 1
+
+        for s in ga_inflight:
+            _track(s)
+        for s in decode_inflight:
+            _track(s)
+        for s in pending_fg:
+            _track(s)
+        for s in fg_prep_inflight:
+            _track(s)
+        for s, _fut, _t_submit in fg_futures:
+            _track(s)
+        return int(count)
 
     def _register_completion_future(fut: concurrent.futures.Future | None) -> None:
         if fut is None:
@@ -1707,10 +1760,12 @@ def run_native_inflight_song_pipeline(
                             if getattr(song, "fg_static_prep_future", None) is None and not bool(
                                 getattr(song, "_fg_static_prep_done", False)
                             ):
-                                setattr(song, "_fg_static_prep_submit_t0", time.perf_counter())
-                                static_future = fg_pipeline.prep_executor.submit(_prepare_fg_static_sync, song)
-                                song.fg_static_prep_future = static_future
-                                _register_completion_future(static_future)
+                                active_static = _active_fg_static_prep_count()
+                                if int(active_static) < int(fg_static_prep_max_inflight):
+                                    setattr(song, "_fg_static_prep_submit_t0", time.perf_counter())
+                                    static_future = fg_pipeline.prep_executor.submit(_prepare_fg_static_sync, song)
+                                    song.fg_static_prep_future = static_future
+                                    _register_completion_future(static_future)
                         except Exception:
                             try:
                                 song.fg_static_prep_future = None

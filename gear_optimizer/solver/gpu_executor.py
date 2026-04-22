@@ -2074,7 +2074,8 @@ class GpuExecutor:
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
                     if not cached_batch_max_overridden:
-                        batch_max = max(int(batch_max), 16)
+                        # Keep owner turns broad enough to drain local producer bursts.
+                        batch_max = max(int(batch_max), 32)
                     if not cached_batch_wait_overridden:
                         # Keep a modest default coalescing window so we can batch/coalesce without
                         # forcing the owner loop into sub-ms yield-spin behavior.
@@ -2665,10 +2666,14 @@ class GpuExecutor:
         if int(max_wait_ms) <= 0:
             inproc_after_first_ms = 0
         try:
-            ga_owner_batch_limit = int(_ENV_GET("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "2") or "2")
+            ga_owner_batch_limit = int(_ENV_GET("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "0") or "0")
         except Exception:
-            ga_owner_batch_limit = 2
-        ga_owner_batch_limit = max(1, min(int(ga_owner_batch_limit), 16))
+            ga_owner_batch_limit = 0
+        ga_owner_batch_cap = max(1, min(int(max_batch_size), 256))
+        if int(ga_owner_batch_limit) <= 0:
+            ga_owner_batch_limit = int(ga_owner_batch_cap)
+        else:
+            ga_owner_batch_limit = max(1, min(int(ga_owner_batch_limit), int(ga_owner_batch_cap)))
         ga_owner_batch_count = 0
 
         deferred = self._deferred_request
@@ -3386,9 +3391,9 @@ class GpuExecutor:
             return []
 
         try:
-            max_rows = int(os.environ.get("FG_EXACT_DP_COALESCE_MAX_ROWS", "128") or "128")
+            max_rows = int(os.environ.get("FG_EXACT_DP_COALESCE_MAX_ROWS", "256") or "256")
         except Exception:
-            max_rows = 128
+            max_rows = 256
         max_rows = max(1, min(int(max_rows), 4096))
 
         groups: dict[tuple[Any, ...], list[tuple[GpuRequest, list[dict[str, Any]], dict[str, Any]]]] = {}
@@ -4184,15 +4189,17 @@ class GpuExecutor:
             return [self._execute_gpu_native_ga_run(requests[0])]
 
         try:
-            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "4") or "4")
+            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "8") or "8")
         except Exception:
-            max_reqs = 4
-        max_reqs = max(1, min(int(max_reqs), 64))
+            max_reqs = 8
+        max_reqs = max(1, min(int(max_reqs), 128))
 
         try:
-            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "180000") or "180000")
+            max_work_units = float(
+                os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000"
+            )
         except Exception:
-            max_work_units = 180000.0
+            max_work_units = 720000.0
         if max_work_units <= 0.0:
             max_work_units = float("inf")
 

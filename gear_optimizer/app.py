@@ -1079,7 +1079,8 @@ class GearOptimizerApp:
             restart_process_for_memory_guard()
             return False  # Process replaced
         elif loop_forever:
-            self._handle_loop_restart(wait_time=3)
+            restart_wait_s = self._loop_restart_wait_seconds(cfg, default_seconds=0.0)
+            self._handle_loop_restart(wait_time=restart_wait_s)
             return True
         else:
             logger.info("LoopForever=FALSE; exiting after completing queue.")
@@ -4198,12 +4199,36 @@ class GearOptimizerApp:
         except Exception:
             pass
 
-    def _handle_loop_restart(self, wait_time=3):
-        logger.info(f"Restarting song scan in {wait_time} seconds...")
+    def _loop_restart_wait_seconds(self, cfg=None, *, default_seconds: float = 0.0) -> float:
+        wait_s = float(default_seconds)
+        try:
+            if cfg is not None and cfg.has_option("IterationEngine", "LoopRestartWaitSec"):
+                wait_s = float(cfg.get("IterationEngine", "LoopRestartWaitSec", fallback=str(wait_s)))
+        except Exception:
+            pass
+
+        for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC", "LOOP_RESTART_WAIT_SEC"):
+            raw = os.environ.get(env_key)
+            if raw is None or str(raw).strip() == "":
+                continue
+            try:
+                wait_s = float(raw)
+            except Exception:
+                pass
+
+        return max(0.0, min(float(wait_s), 60.0))
+
+    def _handle_loop_restart(self, wait_time=0):
+        wait_s = max(0.0, float(wait_time or 0.0))
+        if wait_s > 0.0:
+            logger.info(f"Restarting song scan in {wait_s:.2f} seconds...")
+        else:
+            logger.info("Restarting song scan immediately...")
         try:
             if os.path.exists(MEMORY_GUARD_RESUME_FILE):
                 os.remove(MEMORY_GUARD_RESUME_FILE)
                 logger.info("[LoopForever] Cleared resume file")
         except Exception as e:
             logging.warning(f"Failed to delete resume file: {e}")
-        time.sleep(wait_time)
+        if wait_s > 0.0:
+            time.sleep(wait_s)

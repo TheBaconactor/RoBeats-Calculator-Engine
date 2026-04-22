@@ -174,6 +174,37 @@ def test_gather_batch_caps_gpu_native_ga_owner_batch(monkeypatch) -> None:
     assert len(ex._request_queue.items) == 0
 
 
+def test_gather_batch_defaults_gpu_native_ga_owner_batch_to_max_batch(monkeypatch) -> None:
+    class _SeqQueue:
+        def __init__(self, items: list[GpuRequest]):
+            self.items = list(items)
+
+        def get(self, timeout=None):
+            if self.items:
+                return self.items.pop(0)
+            raise queue.Empty()
+
+    requests = [
+        GpuRequest(
+            request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+            request_id=req_id,
+            worker_id=1,
+            payload={},
+        )
+        for req_id in (411, 412, 413)
+    ]
+
+    ex = GpuExecutor()
+    ex._in_process_queues = True
+    ex._request_queue = _SeqQueue(requests)
+
+    monkeypatch.delenv("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", raising=False)
+
+    batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch] == [411, 412, 413]
+    assert len(ex._request_queue.items) == 0
+
+
 def test_gpu_executor_timer_period_lifecycle(monkeypatch):
     if os.name != "nt":
         return

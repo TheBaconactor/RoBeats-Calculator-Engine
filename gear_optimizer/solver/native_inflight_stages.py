@@ -20,6 +20,7 @@ from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_caches import
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
@@ -136,6 +137,10 @@ def _maybe_prewarm_fg_chart_scorer(song: Any) -> None:
     - Uses the shared LRU cache, so the later dispatch sees a cheap cache hit.
     """
     try:
+        # Prewarming can be expensive on some songs; keep it opt-in so FG prep
+        # doesn't stall GA->FG readiness by default.
+        if not _truthy(os.environ.get("INFLIGHT_FG_CHART_PREWARM", "0")):
+            return
         if not bool(getattr(song, "force_greats_finder", False)):
             return
         calc_song = getattr(song, "calc_song", None)
@@ -521,22 +526,34 @@ def _prepare_fg_static_sync(song: Any) -> None:
 
 def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = _thread_cpu_time_s()
+    wall_t0 = time.perf_counter()
+    prep_submit_t0 = getattr(song, "_fg_prep_submit_t0", None)
+    queue_wait_ms = 0.0
+    if isinstance(prep_submit_t0, (int, float)):
+        queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
     static_future = getattr(song, "fg_static_prep_future", None)
     if static_future is not None:
+        static_done = False
         try:
-            static_future.result()
-        finally:
+            static_done = bool(static_future.done())
+        except Exception:
+            static_done = True
+        if static_done:
+            try:
+                static_future.result()
+            except Exception:
+                pass
             try:
                 song.fg_static_prep_future = None
             except Exception:
                 pass
-    if not bool(getattr(song, "_fg_static_prep_done", False)):
-        _prepare_fg_static_sync(song)
+    # Static prep is a best-effort accelerator only. If it is not ready yet, FG
+    # prep proceeds directly so the runtime can keep feeding the GPU owner.
 
     cfg = song.cfg
 
     perf = _truthy(os.environ.get("PERF_TIMING", "0"))
-    t0 = time.perf_counter() if perf else 0.0
+    t0 = time.perf_counter()
 
     fg_candidate_limit = read_fg_candidate_limit(
         cfg,
@@ -582,7 +599,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             secondary_color=str(song.meta_secondary_color or ""),
         )
     song.ga_candidates = ga_candidates
-    t_select = time.perf_counter() if perf else 0.0
+    t_select = time.perf_counter()
 
     def _prime_fg_group_meta_for_candidates(candidates: list[dict] | None, *, calc_song: dict | None) -> None:
         if not isinstance(candidates, list) or not candidates:
@@ -618,7 +635,22 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             except Exception:
                 continue
 
-    _prime_fg_group_meta_for_candidates(ga_candidates, calc_song=song.calc_song)
+    prime_group_meta_limit = 0
+    try:
+        raw = os.environ.get("INFLIGHT_FG_GROUP_META_PRIME_LIMIT", "0")
+        if raw is not None and str(raw).strip() != "":
+            prime_group_meta_limit = int(raw)
+    except Exception:
+        prime_group_meta_limit = 0
+    prime_group_meta_limit = max(0, min(int(prime_group_meta_limit), 512))
+    if int(prime_group_meta_limit) > 0 and ga_candidates:
+        # Keep this bounded; full-candidate priming can dominate FG prep wall time
+        # and starve GA->FG readiness.
+        _prime_fg_group_meta_for_candidates(
+            list(ga_candidates[: int(prime_group_meta_limit)]),
+            calc_song=song.calc_song,
+        )
+    t_group_meta = time.perf_counter()
 
     # Non-blocking DB prefetch: check if future is ready without blocking.
     # If the DB read is still in progress, proceed with GA candidates only.
@@ -652,7 +684,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                 db_loadouts_full = None
         except Exception:
             db_loadouts_full = None
-    t_db = time.perf_counter() if perf else 0.0
+    t_db = time.perf_counter()
 
     build_details = getattr(song, "fg_build_details", None)
     if not callable(build_details):
@@ -680,14 +712,16 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             materialize_ga_details=False,
             ga_registry=song.registry,
         )
-    t_build = time.perf_counter() if perf else 0.0
+    t_build = time.perf_counter()
 
     # Native in-flight optimization: submit the combo-booster GPU eval early (during FG prep)
     try:
         combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))
+        combo_prep_submit = _truthy(os.environ.get("FG_COMBO_BOOSTER_PREP_SUBMIT", "0"))
         existing_job = getattr(song, "fg_combo_job", None)
         if (
             combo_enabled
+            and combo_prep_submit
             and gpu_client is not None
             and song.force_greats_finder
             and song.ga_candidates
@@ -710,29 +744,52 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     except Exception:
         pass
 
-    if perf:
-        select_ms = (t_select - t0) * 1000.0
-        db_wait_ms = (t_db - t_select) * 1000.0
-        build_ms = (t_build - t_db) * 1000.0
-        total_ms = (t_build - t0) * 1000.0
-        try:
-            loadouts_n = len(song.loadout_entries or {})
-        except Exception:
-            loadouts_n = 0
+    select_ms = (t_select - t0) * 1000.0
+    group_meta_ms = (t_group_meta - t_select) * 1000.0
+    db_wait_ms = (t_db - t_group_meta) * 1000.0
+    build_ms = (t_build - t_db) * 1000.0
+    total_ms = (t_build - t0) * 1000.0
+    try:
+        loadouts_n = len(song.loadout_entries or {})
+    except Exception:
+        loadouts_n = 0
+    db_n = -1
+    try:
+        if isinstance(db_loadouts_full, list):
+            db_n = len(db_loadouts_full)
+    except Exception:
         db_n = -1
-        try:
-            if isinstance(db_loadouts_full, list):
-                db_n = len(db_loadouts_full)
-        except Exception:
-            db_n = -1
+    if perf:
         logger.debug(
             "[PERF][FGPrep] "
             f"limit={fg_candidate_limit} ga={len(ga_candidates)} loadouts={loadouts_n} "
-            f"select={select_ms:.1f}ms db_wait={db_wait_ms:.1f}ms build={build_ms:.1f}ms total={total_ms:.1f}ms "
+            f"select={select_ms:.1f}ms group_meta={group_meta_ms:.1f}ms db_wait={db_wait_ms:.1f}ms "
+            f"build={build_ms:.1f}ms total={total_ms:.1f}ms "
             f"db_prefetch={int(db_n >= 0)} db_n={db_n}"
         )
 
     try:
         setattr(song, "_cpu_fg_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+    except Exception:
+        pass
+    try:
+        emit_profile_event(
+            component="inflight_fg_prep",
+            event="prep_done",
+            song_key=str(getattr(song, "task_key", "") or getattr(song, "song_name", "") or ""),
+            metrics={
+                "queue_wait_ms": float(queue_wait_ms),
+                "select_ms": float(select_ms),
+                "group_meta_ms": float(group_meta_ms),
+                "db_wait_ms": float(db_wait_ms),
+                "build_ms": float(build_ms),
+                "total_ms": float(total_ms),
+                "ga_candidates": int(len(ga_candidates or [])),
+                "loadouts": int(len(getattr(song, "loadout_entries", {}) or {})),
+                "direct_ga_candidates": int(bool(getattr(song, "fg_direct_ga_candidates", False))),
+                "db_prefetch_pending": int(bool(prefetch_pending)),
+                "db_rows": int(len(db_loadouts_full or [])) if isinstance(db_loadouts_full, list) else -1,
+            },
+        )
     except Exception:
         pass

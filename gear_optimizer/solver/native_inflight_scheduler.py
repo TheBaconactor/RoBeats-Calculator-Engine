@@ -348,6 +348,14 @@ def _continuous_fg_submit_budget(
 
     # FG has its own host-side inflight lane. Once jobs are GPU-ready, fill the
     # available FG worker slots instead of metering them through GA credits.
+    #
+    # Adaptive smoothing: when prep backlog exists (`pending > ready`), avoid draining
+    # the ready FG queue in one burst. Keeping a modest burst cap helps maintain a
+    # steadier GPU feed while additional FG jobs finish prep.
+    if bool(adaptive_submit) and int(pending_fg_count) > int(ready_fg_count):
+        burst_cap = max(1, min(int(adaptive_max_burst), int(fg_batch_max), int(fg_workers)))
+        capacity = min(int(capacity), int(burst_cap))
+
     return int(capacity)
 
 

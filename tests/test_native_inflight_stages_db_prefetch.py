@@ -199,6 +199,72 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
     assert song.ga_candidates
 
 
+def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch):
+    calls = {"static": 0, "build": 0}
+
+    class _PendingFuture:
+        def done(self):
+            return False
+
+        def result(self, *_args, **_kwargs):
+            raise AssertionError("pending static future should not be awaited")
+
+    def _fake_prepare_fg_static_sync(_song):
+        calls["static"] += 1
+
+    def _fake_build_loadout_entries(*_args, **_kwargs):
+        calls["build"] += 1
+        return {"rebuilt": True}
+
+    monkeypatch.setattr(stages, "_prepare_fg_static_sync", _fake_prepare_fg_static_sync)
+    monkeypatch.setattr(stages, "_maybe_prewarm_fg_chart_scorer", lambda _song: None)
+    monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
+    monkeypatch.setattr(stages, "select_fg_candidates", lambda candidates, **_kwargs: list(candidates or []))
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+
+    pending_static = _PendingFuture()
+    song = SimpleNamespace(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {}},
+        cfg_dict={},
+        ga_candidates=[
+            {
+                "Score": 100,
+                "BaseScore": 100,
+                "Gear": ["G1"],
+                "Minis": ["M1"],
+                "Data": {"Stats": {"Perfect Points": 1}},
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_loadouts_full=None,
+        db_loadouts_future=None,
+        db_key="song-db-key",
+        use_evo_db=True,
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        force_greats_finder=False,
+        registry=None,
+        fixed_stats={},
+        cfg_data={},
+        ref_arrays={},
+        song_slot=1,
+        loadout_entries=None,
+        fg_static_prep_future=pending_static,
+        _fg_static_prep_done=False,
+    )
+
+    stages._prepare_fg_job_sync(song, gpu_client=None)
+
+    assert calls["static"] == 0
+    assert calls["build"] == 1
+    assert song.fg_static_prep_future is pending_static
+
+
 def test_decode_ga_payload_sync_attaches_base_hitsim_delta(monkeypatch):
     seen: dict[str, object] = {}
 

@@ -446,6 +446,48 @@ def test_continuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
     assert budget == 8
 
 
+def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
+    control_budget = _continuous_fg_submit_budget(
+        pending_fg_count=16,
+        ready_fg_count=6,
+        fg_inflight_count=0,
+        fg_workers=8,
+        fg_batch_max=8,
+        no_ga_remaining=False,
+        fg_drain_at_end=True,
+        blocked_on_slot=False,
+        oldest_wait_s=0.0,
+        aging_trigger_s=0.75,
+        aging_hard_s=2.5,
+        ga_inflight_count=0,
+        ga_queue_limit=16,
+        adaptive_submit=False,
+        adaptive_max_burst=3,
+        fg_slot_reserve=0,
+    )
+    assert control_budget == 6
+
+    adaptive_budget = _continuous_fg_submit_budget(
+        pending_fg_count=16,
+        ready_fg_count=6,
+        fg_inflight_count=0,
+        fg_workers=8,
+        fg_batch_max=8,
+        no_ga_remaining=False,
+        fg_drain_at_end=True,
+        blocked_on_slot=False,
+        oldest_wait_s=0.0,
+        aging_trigger_s=0.75,
+        aging_hard_s=2.5,
+        ga_inflight_count=0,
+        ga_queue_limit=16,
+        adaptive_submit=True,
+        adaptive_max_burst=3,
+        fg_slot_reserve=0,
+    )
+    assert adaptive_budget == 3
+
+
 def test_continuous_fg_submit_budget_honors_end_of_run_drain():
     budget = _continuous_fg_submit_budget(
         pending_fg_count=5,
