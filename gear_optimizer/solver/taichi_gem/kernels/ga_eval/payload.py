@@ -85,7 +85,7 @@ def ga_copy_run_payload_to_download_staging_kernel(
 
     Vulkan `to_numpy()` transfers the full field shape, so downloading the padded
     `(MAX_GENOMES+1, 17)` buffer can dominate throughput when the active population
-    is small (e.g., GA_POPULATION_SIZE=250). This kernel enables a bounded staging
+    is small (e.g., a compact GA run). This kernel enables a bounded staging
     download.
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)

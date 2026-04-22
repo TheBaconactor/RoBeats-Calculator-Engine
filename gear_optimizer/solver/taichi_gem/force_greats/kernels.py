@@ -3059,7 +3059,7 @@ def fg_copy_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_
 
     On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
     MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., GA_POPULATION_SIZE=250).
+    number of genomes are active (e.g., a compact GA run).
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     total_cols = 11 + FG_MAX_SECTIONS
@@ -3074,7 +3074,7 @@ def fg_copy_global_best_packed_to_download_staging_kernel(out_packed: ti.templat
 
     On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
     MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., GA_POPULATION_SIZE=250).
+    number of genomes are active (e.g., a compact GA run).
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     total_cols = 11 + FG_MAX_SECTIONS

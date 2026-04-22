@@ -184,12 +184,12 @@ ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot
 ga_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
 # Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
 DEFAULT_MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
-DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
+DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE.
 MAX_GA_RUNS = DEFAULT_MAX_GA_RUNS
 MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
 # Download staging buffers (smaller than `ga_runs_payload_packed` to reduce padded Vulkan `to_numpy()` transfers).
-GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Covers GA_POPULATION_SIZE (250) with slack.
+GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Small staging buffer for compact run payload downloads.
 ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
 ga_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
 ga_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
@@ -242,7 +242,7 @@ slot_count: ti.Field = None  # (MAX_SLOTS,) int32 - number of items in slot pool
 # Per-genome outputs (for FT/FF iteration kernels)
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
 # Download staging for FTFF `genome_result_stats` (bounded Vulkan `to_numpy()` transfers).
-# Typical workloads use GA_POPULATION_SIZE ~= 250, so a small staging field avoids transferring MAX_GENOMES (4096).
+# Larger workloads can use the 1024 staging buffer; the 256 buffer keeps smaller downloads light.
 genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
 genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
@@ -460,7 +460,7 @@ def _clamp_ga_runs(n: int) -> int:
 
 
 def _clamp_ga_genomes(n: int) -> int:
-    # Must be >= GA_POPULATION_SIZE (currently 250) for GPU-native GA.
+    # Must be >= GA_POPULATION_SIZE for GPU-native GA.
     if n < 250:
         return 250
     if n > MAX_GENOMES:
@@ -646,7 +646,7 @@ def allocate_fields():
     ga_run_payload_download_staging_256 = ti.field(dtype=ti.i32, shape=(_run_staging_genomes + 1, _payload_cols))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, _payload_cols))
     # NOTE: these staging buffers are intentionally smaller than ga_runs_payload_packed so we can
-    # download only the populated slice for typical GA_POPULATION_SIZE workloads.
+    # download only the populated slice for typical GA workloads.
     _staging_genomes = min(int(MAX_GA_RUN_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
     ga_runs_payload_download_staging_16 = ti.field(
         dtype=ti.i32,
