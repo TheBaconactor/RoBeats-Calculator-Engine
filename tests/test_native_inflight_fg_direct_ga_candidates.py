@@ -63,7 +63,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
                 "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
             }
         ],
-        fg_combo_job=None,
         registry=registry,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
@@ -133,7 +132,6 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
         effective_difficulty="Hard",
         force_greats_finder=True,
         ga_candidates=[{"BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
-        fg_combo_job=None,
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush", "fg_solver_mode": "exact_dp"},

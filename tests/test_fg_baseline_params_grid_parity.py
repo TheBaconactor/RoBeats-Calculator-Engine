@@ -2,14 +2,21 @@ import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.solver.fever_timeline import calculate_non_fever_sections
-from gear_optimizer.solver.scoring.stats_scoring import _FG_BASELINE_CACHE, _FG_BASELINE_GRID_CACHE, fg_baseline_params
+from gear_optimizer.solver.scoring.stats_scoring import (
+    _FG_BASELINE_CACHE,
+    _FG_BASELINE_GRID_CACHE,
+    _FG_BASELINE_POINT_MISS_COUNT,
+    fg_baseline_params,
+)
 from gear_optimizer.solver.scoring_core import lookup_reference_py
 
 
 def test_fg_baseline_params_grid_matches_non_fever_sections(monkeypatch):
     monkeypatch.setenv("FG_BASELINE_GRID", "1")
+    monkeypatch.setenv("FG_BASELINE_GRID_AUTO_THRESHOLD", "0")
     _FG_BASELINE_GRID_CACHE.clear()
     _FG_BASELINE_CACHE.clear()
+    _FG_BASELINE_POINT_MISS_COUNT.clear()
 
     timestamps = np.linspace(0.0, 120.0, 1000, dtype=np.float32)
     calc_song = {
@@ -56,3 +63,45 @@ def test_fg_baseline_params_grid_matches_non_fever_sections(monkeypatch):
         assert int(got_base) == int(exp_base)
 
     assert _FG_BASELINE_GRID_CACHE, "Expected fg_baseline_params to populate the per-song baseline grid cache"
+
+
+def test_fg_baseline_params_auto_defers_grid_for_small_lookup_count(monkeypatch):
+    monkeypatch.setenv("FG_BASELINE_GRID", "1")
+    monkeypatch.setenv("FG_BASELINE_GRID_AUTO_THRESHOLD", "16")
+    _FG_BASELINE_GRID_CACHE.clear()
+    _FG_BASELINE_CACHE.clear()
+    _FG_BASELINE_POINT_MISS_COUNT.clear()
+
+    timestamps = np.linspace(0.0, 60.0, 256, dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Song Name": "pytest_fg_baseline_point_first",
+            "Difficulty": "Hard",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+            "HumanHitSimSeed": 0,
+        },
+        "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps},
+    }
+    ref_arrays = {
+        "Fever Time": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+    }
+    stats = {"Fever Time": 5, "Fever Fill Rate": 7}
+
+    got_sections, got_base = fg_baseline_params(stats, calc_song, ref_arrays)
+
+    fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+    fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
+    exp_sections, exp_base = calculate_non_fever_sections(
+        timestamps,
+        int(timestamps.shape[0]),
+        fever_fill_rate,
+        fever_time_stat,
+        0,
+        float(timestamps[-1]),
+    )
+
+    assert int(got_sections) == int(exp_sections)
+    assert int(got_base) == int(exp_base)
+    assert not _FG_BASELINE_GRID_CACHE

@@ -102,6 +102,7 @@ def build_fg_group_meta(
     secondary_color: str = "",
     run_idx: int | None = None,
     row_idx: int | None = None,
+    prefer_grid: bool | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(base_stats, dict) or not base_stats:
         return None
@@ -120,7 +121,12 @@ def build_fg_group_meta(
         meta["ga_row_idx"] = int(row_idx)
 
     try:
-        n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays or {})
+        n_sections, non_fever_base = fg_baseline_params(
+            base_stats,
+            calc_song,
+            ref_arrays or {},
+            prefer_grid=prefer_grid,
+        )
         if int(n_sections) <= 0:
             meta["skip"] = True
             return meta

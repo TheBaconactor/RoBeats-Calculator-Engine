@@ -88,11 +88,6 @@ from ..helpers.ga_helpers.redundancy_audit import (
     summarize_ga_redundancy_record,
     write_ga_redundancy_audit_record,
 )
-from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
-from ..helpers.song_helpers.fg_combo_booster import (
-    build_fg_combo_booster_candidates,
-    hydrate_fg_candidate_stats,
-)
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .item_registry import ItemRegistry
 from .solver_common import GEAR_SLOTS, SolverContext
@@ -593,6 +588,7 @@ def decode_gpu_native_ga_runs_payload(
     fg_candidate_limit: int,
     calc_song: dict | None = None,
     ref_arrays: dict | None = None,
+    fg_group_meta_limit: int | None = None,
 ) -> tuple[dict, list, list, list[dict]]:
     """
     CPU-side decoding for the GPU-native GA multi-run payload.
@@ -606,6 +602,19 @@ def decode_gpu_native_ga_runs_payload(
     """
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
+
+    fg_group_meta_limit_i: int | None
+    try:
+        fg_group_meta_limit_i = None if fg_group_meta_limit is None else max(0, int(fg_group_meta_limit))
+    except Exception:
+        fg_group_meta_limit_i = None
+
+    def _should_build_fg_group_meta(index: int, *, enabled: bool) -> bool:
+        if not bool(enabled):
+            return False
+        if fg_group_meta_limit_i is None:
+            return True
+        return int(index) < int(fg_group_meta_limit_i)
 
     runs_payload = np.asarray(runs_payload, dtype=np.int32)
     if runs_payload.ndim == 2:
@@ -723,12 +732,13 @@ def decode_gpu_native_ga_runs_payload(
         # - ForceGreatsFinder grouping only needs `BaseStats`, so keep full `Stats`
         #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
         include_full_stats = _decode_requires_full_stats(cfg_data)
-        include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
-        fg_group_meta_enabled = bool(include_base_stats and isinstance(calc_song, dict) and calc_song)
+        include_base_stats = True
+        fg_group_meta_enabled = bool(isinstance(calc_song, dict) and calc_song and fg_group_meta_limit_i != 0)
+        need_base_stats = bool(include_base_stats or fg_group_meta_enabled)
 
         base_stats_arr = None
         sel_color_built = None
-        if include_base_stats:
+        if need_base_stats:
             base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
@@ -742,7 +752,7 @@ def decode_gpu_native_ga_runs_payload(
         item_stats_sum = None
         stat_names = None
 
-        if include_base_stats:
+        if need_base_stats:
             item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
             t_stats = time.perf_counter() if perf else 0.0
             item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
@@ -810,14 +820,15 @@ def decode_gpu_native_ga_runs_payload(
             )
             data_obj["GenomeIDs"] = list(genome_ids)
 
-            if include_base_stats and base_stats_arr is not None and item_stats_sum is not None:
+            if need_base_stats and base_stats_arr is not None and item_stats_sum is not None:
                 # Always try to provide BaseStats when requested; ForceGreats batching can
                 # operate on BaseStats even if full post-gem Stats reconstruction fails.
                 try:
                     base_row_stats = base_stats_arr + item_stats_sum[i]
                     base_stats = build_stats_dict(base_row_stats)
-                    data_obj["BaseStats"] = base_stats
-                    if fg_group_meta_enabled:
+                    if include_base_stats:
+                        data_obj["BaseStats"] = base_stats
+                    if _should_build_fg_group_meta(i, enabled=fg_group_meta_enabled):
                         fg_group_meta = build_fg_group_meta(
                             base_stats=base_stats,
                             calc_song=calc_song,
@@ -1159,8 +1170,8 @@ def decode_gpu_native_ga_runs_payload(
     proxy_ms = 0.0
 
     include_full_stats = _decode_requires_full_stats(cfg_data)
-    include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
-    fg_group_meta_enabled = bool(include_base_stats and isinstance(calc_song, dict) and calc_song)
+    include_base_stats = True
+    fg_group_meta_enabled = bool(isinstance(calc_song, dict) and calc_song)
 
     # Vectorized stat reconstruction for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
@@ -1251,7 +1262,7 @@ def decode_gpu_native_ga_runs_payload(
             row_idx=int(sel_rows[i]),
         )
         data_obj["GenomeIDs"] = list(genome_ids)
-        if base_stats is not None and fg_group_meta_enabled:
+        if base_stats is not None and _should_build_fg_group_meta(i, enabled=fg_group_meta_enabled):
             fg_group_meta = build_fg_group_meta(
                 base_stats=base_stats,
                 calc_song=calc_song,
@@ -3213,47 +3224,5 @@ def solve_coevolution_genetic(
                 pass
 
         logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
-
-        # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
-        # without inflating the downstream candidate limit (we re-select to the same funnel size).
-        try:
-            try:
-                from ..core.config import read_iteration_engine_settings
-
-                force_greats_enabled = bool(read_iteration_engine_settings(cfg).force_greats_finder)
-            except Exception:
-                force_greats_enabled = False
-            # PRODUCTION: combo booster flag (FG_COMBO_BOOSTER_ENABLED).
-            combo_enabled = env_flag("FG_COMBO_BOOSTER_ENABLED", "1")
-
-            boosted = None
-            if force_greats_enabled and combo_enabled:
-                boosted = build_fg_combo_booster_candidates(
-                    existing_candidates=list(unique_evaluated or []),
-                    registry=registry,
-                    base_stats_fixed=base_stats_fixed,
-                    cfg_data=cfg_data,
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    song_slot=int(song_slot),
-                )
-
-            if boosted:
-                unique_evaluated = select_fg_candidates(
-                    list(unique_evaluated or []) + list(boosted),
-                    limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                )
-                hydrate_fg_candidate_stats(
-                    unique_evaluated,
-                    base_stats_fixed=base_stats_fixed,
-                    selected_color=str(cfg_data.get("selected_color", "") or ""),
-                    cfg_data=cfg_data,
-                )
-        except Exception:
-            pass
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated

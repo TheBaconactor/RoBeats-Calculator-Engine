@@ -147,6 +147,91 @@ def thaw_breakpoint_groups(frozen_groups: Any) -> list[dict]:
     return groups
 
 
+def _breakpoint_groups_cache_key(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+) -> tuple[object, ...]:
+    return (
+        chart_signature_key(calc_song),
+        human_hitsim_timing_context(calc_song),
+        str(mode or ""),
+        int(n_sections),
+        normalize_pair_signature(ftff_pairs),
+        normalize_pair_signature(base_stats_pairs),
+        int(merge_threshold_cfgs),
+        int(merge_threshold_threads),
+        int(n_genomes),
+        int(gem_scale_fever),
+    )
+
+
+def peek_cached_breakpoint_groups(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+):
+    key = _breakpoint_groups_cache_key(
+        calc_song=calc_song,
+        n_sections=n_sections,
+        ftff_pairs=ftff_pairs,
+        base_stats_pairs=base_stats_pairs,
+        merge_threshold_cfgs=merge_threshold_cfgs,
+        merge_threshold_threads=merge_threshold_threads,
+        n_genomes=n_genomes,
+        gem_scale_fever=gem_scale_fever,
+        mode=mode,
+    )
+    with _FG_BREAKPOINT_GROUPS_LOCK:
+        cached = _FG_BREAKPOINT_GROUPS_CACHE.get(key)
+        if cached is None:
+            return None
+    return thaw_breakpoint_groups(cached)
+
+
+def store_cached_breakpoint_groups(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+    groups: list[dict],
+) -> None:
+    key = _breakpoint_groups_cache_key(
+        calc_song=calc_song,
+        n_sections=n_sections,
+        ftff_pairs=ftff_pairs,
+        base_stats_pairs=base_stats_pairs,
+        merge_threshold_cfgs=merge_threshold_cfgs,
+        merge_threshold_threads=merge_threshold_threads,
+        n_genomes=n_genomes,
+        gem_scale_fever=gem_scale_fever,
+        mode=mode,
+    )
+    frozen = freeze_breakpoint_groups(groups)
+    with _FG_BREAKPOINT_GROUPS_LOCK:
+        _FG_BREAKPOINT_GROUPS_CACHE[key] = frozen
+
+
 def get_cached_breakpoint_groups(
     *,
     calc_song: dict,
@@ -160,17 +245,16 @@ def get_cached_breakpoint_groups(
     mode: str,
     compute_fn,
 ):
-    key = (
-        chart_signature_key(calc_song),
-        human_hitsim_timing_context(calc_song),
-        str(mode or ""),
-        int(n_sections),
-        normalize_pair_signature(ftff_pairs),
-        normalize_pair_signature(base_stats_pairs),
-        int(merge_threshold_cfgs),
-        int(merge_threshold_threads),
-        int(n_genomes),
-        int(gem_scale_fever),
+    key = _breakpoint_groups_cache_key(
+        calc_song=calc_song,
+        n_sections=n_sections,
+        ftff_pairs=ftff_pairs,
+        base_stats_pairs=base_stats_pairs,
+        merge_threshold_cfgs=merge_threshold_cfgs,
+        merge_threshold_threads=merge_threshold_threads,
+        n_genomes=n_genomes,
+        gem_scale_fever=gem_scale_fever,
+        mode=mode,
     )
     with _FG_BREAKPOINT_GROUPS_LOCK:
         cached = _FG_BREAKPOINT_GROUPS_CACHE.get(key)
@@ -232,5 +316,7 @@ __all__ = [
     "get_cached_chart_scorer",
     "get_cached_max_fp_matrix",
     "normalize_pair_signature",
+    "peek_cached_breakpoint_groups",
+    "store_cached_breakpoint_groups",
     "thaw_breakpoint_groups",
 ]

@@ -578,7 +578,7 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
         ]
         for slot in slots
     }
-    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(3)]
+    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(4)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     cfg_data = {
@@ -609,7 +609,8 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
     n_slots = 9
     width = 1 + n_slots + 7 + 7
     selected_payload = np.zeros((2, 26), dtype=np.int32)
-    genome_ids = np.asarray([registry.slot_start[i] for i in range(9)], dtype=np.int32)
+    genome_ids = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M2"]), dtype=np.int32)
+    genome_ids_b = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M3"]), dtype=np.int32)
     result_row = np.asarray([1234, 5, 7, 1, 2, 3, 0], dtype=np.int32)
 
     selected_payload[0, 0] = 1
@@ -649,3 +650,106 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
     assert meta["signature"] == stats_signature(base_stats, calc_song, "Rush")
     n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
     assert meta["group_key"] == ("Rush", int(n_sections), min(int(non_fever_base), 15))
+
+
+def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeypatch):
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {
+        slot: [
+            _item(
+                f"{slot}0",
+                **{
+                    "Perfect Points": 10,
+                    "Combo Multiplier": 4,
+                    "Fever Multiplier": 6,
+                    "Fever Time": 8,
+                    "Fever Fill Rate": 7,
+                    "Rush": 12,
+                    "Flow": 9,
+                },
+            )
+        ]
+        for slot in slots
+    }
+    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(3)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
+        "fg_require_stats": True,
+    }
+    calc_song = {
+        "metadata": {
+            "Song Name": "decode_fg_group_meta_limit",
+            "Difficulty": "Hard",
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": 60.0,
+        },
+        "song_data": {"timestamps": np.linspace(0.0, 60.0, 64, dtype=np.float32)},
+    }
+    ref_arrays = {
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+    }
+
+    calls = {"count": 0}
+
+    def _fake_build_fg_group_meta(**kwargs):
+        calls["count"] += 1
+        return {
+            "signature": f"sig-{calls['count']}",
+            "selected_element": kwargs["selected_element"],
+            "center_ft": int(kwargs["center_ft"]),
+            "center_ff": int(kwargs["center_ff"]),
+        }
+
+    monkeypatch.setattr(genetic, "build_fg_group_meta", _fake_build_fg_group_meta)
+
+    n_slots = 9
+    width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((3, 26), dtype=np.int32)
+    genome_ids = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M2"]), dtype=np.int32)
+    genome_ids_b = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M3"]), dtype=np.int32)
+
+    packed_a = np.zeros((width,), dtype=np.int32)
+    packed_a[0] = 1234
+    packed_a[1 : 1 + n_slots] = genome_ids
+    packed_a[1 + n_slots : 1 + n_slots + 7] = np.asarray([1234, 5, 7, 1, 2, 3, 0], dtype=np.int32)
+
+    packed_b = np.zeros((width,), dtype=np.int32)
+    packed_b[0] = 1200
+    packed_b[1 : 1 + n_slots] = genome_ids_b
+    packed_b[1 + n_slots : 1 + n_slots + 7] = np.asarray([1200, 6, 8, 2, 3, 4, 0], dtype=np.int32)
+
+    selected_payload[0, 0] = 2
+    selected_payload[0, 1] = 1234
+    selected_payload[0, 2 : 2 + n_slots] = genome_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = packed_a[1 + n_slots : 1 + n_slots + 7]
+    selected_payload[0, 2 + n_slots + 7] = 0
+    selected_payload[1, 0] = 0
+    selected_payload[1, 1] = 1
+    selected_payload[1, 2 : 2 + width] = packed_a
+    selected_payload[2, 0] = 0
+    selected_payload[2, 1] = 2
+    selected_payload[2, 2 : 2 + width] = packed_b
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        fg_group_meta_limit=1,
+    )
+
+    assert len(decoded) == 2
+    assert decoded[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert "_fg_group_meta" not in decoded[1]["Data"]
+    assert calls["count"] == 1

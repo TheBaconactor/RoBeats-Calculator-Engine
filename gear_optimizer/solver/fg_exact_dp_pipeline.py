@@ -38,6 +38,28 @@ _FG_EXACT_GPU_CLIENT = None
 _FG_EXACT_GPU_CLIENT_DISABLED = False
 
 
+def _emit_fg_exact_dp_phase(calc_song: dict[str, Any] | None, event: str, **metrics: Any) -> None:
+    try:
+        from gear_optimizer.core.profile_events import emit_profile_event
+
+        song_key = ""
+        if isinstance(calc_song, dict):
+            song_key = str(
+                calc_song.get("_fg_resident_owner_task")
+                or calc_song.get("_queue_key")
+                or calc_song.get("_queue_label")
+                or ""
+            ).strip()
+        emit_profile_event(
+            component="fg_exact_dp",
+            event=str(event),
+            song_key=song_key or None,
+            metrics=metrics,
+        )
+    except Exception:
+        pass
+
+
 def _resolve_exact_dp_chunk_size(explicit_chunk_size: int | None = None) -> int:
     try:
         chunk_size = int(explicit_chunk_size) if explicit_chunk_size is not None else 0
@@ -544,6 +566,13 @@ def process_fg_exact_dp(
     if use_full_finder_surface:
         from ..helpers.song_helpers.force_greats import process_force_greats
 
+        _emit_fg_exact_dp_phase(
+            calc_song,
+            "finder_enter",
+            loadout_entries=int(len(loadout_entries or {})) if isinstance(loadout_entries, dict) else 0,
+            ga_candidates=int(len(finder_ga_candidates or [])),
+            song_slot=int(song_slot or 0),
+        )
         finder_variants = process_force_greats(
             loadout_entries or {},
             bool(manual_force_greats),
@@ -559,6 +588,12 @@ def process_fg_exact_dp(
             gpu_client=gpu_client,
             ga_candidates=finder_ga_candidates,
             ga_registry=ga_registry,
+        )
+        _emit_fg_exact_dp_phase(
+            calc_song,
+            "finder_return",
+            finder_variants=int(len(finder_variants or [])),
+            song_slot=int(song_slot or 0),
         )
         return _refine_finder_variants_with_exact_dp(
             finder_variants=list(finder_variants or []),

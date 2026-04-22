@@ -1,5 +1,5 @@
 from gear_optimizer.core.constants import GEM_SCALE_NORMAL
-from gear_optimizer.helpers.song_helpers.fg_combo_booster import hydrate_fg_candidate_stats
+from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 
 
 def test_hydrate_fg_candidate_stats_uses_base_fixed_to_avoid_double_counting_user_gems():

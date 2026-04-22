@@ -111,6 +111,46 @@ def test_breakpoint_group_cache_is_partitioned_by_human_hitsim_timing_context():
     assert calls["n"] == 2
 
 
+def test_breakpoint_group_cache_peek_miss_does_not_eagerly_materialize_groups():
+    with gpu_dispatch._FG_BREAKPOINT_GROUPS_LOCK:
+        gpu_dispatch._FG_BREAKPOINT_GROUPS_CACHE.clear()
+
+    calls = {"n": 0}
+
+    def _compute():
+        calls["n"] += 1
+        return [
+            {
+                "ftff_pairs": [(0, 0), (1, 0)],
+                "counts_list": [(0,), (1,)],
+                "counts_max_fp": [],
+                "section_breakpoints": ((0, 1),),
+            }
+        ]
+
+    common = dict(
+        calc_song=_base_calc_song(),
+        n_sections=1,
+        ftff_pairs=[(0, 0), (1, 0)],
+        base_stats_pairs=[(100, 100)],
+        merge_threshold_cfgs=5000,
+        merge_threshold_threads=20000000,
+        n_genomes=8,
+        gem_scale_fever=3,
+        mode="max_fp",
+    )
+
+    assert gpu_dispatch._peek_cached_breakpoint_groups(**common) is None
+    assert calls["n"] == 0
+
+    groups = _compute()
+    gpu_dispatch._store_cached_breakpoint_groups(groups=groups, **common)
+
+    cached = gpu_dispatch._peek_cached_breakpoint_groups(**common)
+    assert calls["n"] == 1
+    assert cached == groups
+
+
 def test_max_fp_matrix_cache_reuses_identical_matrix():
     with gpu_dispatch._FG_MAX_FP_MATRIX_LOCK:
         gpu_dispatch._FG_MAX_FP_MATRIX_CACHE.clear()

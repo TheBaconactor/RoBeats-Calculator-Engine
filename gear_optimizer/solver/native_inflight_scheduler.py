@@ -249,17 +249,56 @@ def _continuous_ga_warm_queue_limit(
     pending_fg_count: int,
     fg_prep_inflight_count: int,
     fg_inflight_count: int,
+    target_song_lanes: int,
+    active_song_lanes: int,
+    dispatch_burst: int,
 ) -> int:
     """
-    Return the GA queue limit for continuous mode.
+    Keep startup GA warmup bounded without starving the steady-state conveyor.
 
-    Earlier versions temporarily capped the warm-start GA queue to a small fixed
-    number so FG could catch up. That made the scheduler easier to reason about,
-    but it violated the stronger throughput contract: if GA work exists and a
-    song slot is available, GA should keep feeding the GPU owner.
+    The original continuous architecture worked best when GA could keep a healthy
+    runway of future songs behind the currently visible FG lanes. The important
+    protection is only at startup: before any decode/FG work exists, avoid
+    front-loading an arbitrarily deep GA tail that hides the first ready FG.
+
+    Once decode/FG work exists, return the full GA queue limit and rely on owner
+    turn discipline to surface ready FG promptly. Clamping GA to the visible lane
+    count in steady state underfeeds fast GPUs because downstream decode/FG prep
+    latency can exceed a two-lane runway.
     """
     limit = max(1, int(ga_queue_limit))
-    return limit
+    inflight_limit = max(1, int(inflight_limit))
+    if (not fg_enabled) or inflight_limit <= 1:
+        return limit
+
+    target_lanes = max(1, min(int(target_song_lanes), int(inflight_limit)))
+    burst = max(1, int(dispatch_burst))
+    warm_limit = max(1, min(int(limit), max(int(target_lanes), min(int(inflight_limit), int(burst)))))
+    handoff_limit = max(
+        int(warm_limit),
+        min(int(limit), max(int(target_lanes) * 2, int(target_lanes) + int(burst))),
+    )
+
+    if max(0, int(fg_inflight_count)) > 0:
+        return int(limit)
+
+    handoff_fg_work = (
+        max(0, int(decode_inflight_count))
+        + max(0, int(pending_fg_count))
+        + max(0, int(fg_prep_inflight_count))
+    )
+    if handoff_fg_work > 0:
+        # Decode/pending FG means the first FG handoff is approaching, but if we
+        # immediately reopen GA to the full queue depth we can bury that first FG
+        # owner turn behind a long GA tail. Keep a modest GA runway until FG has
+        # actually surfaced onto the owner, then restore the full steady-state
+        # limit.
+        return int(handoff_limit)
+
+    staging_depth = max(0, int(prepared_count)) + max(0, int(prep_inflight_count))
+    if staging_depth >= int(warm_limit):
+        return int(warm_limit)
+    return int(limit)
 
 
 def _continuous_fg_should_fill_song_lanes(
@@ -313,7 +352,11 @@ def _continuous_fg_should_start(
         return bool(fg_drain_at_end)
     if bool(blocked_on_slot):
         return True
-    return int(ready_fg_count) > 0
+    # Treat `ready_fg_count` as a hint, not a hard gate. The conveyor's real
+    # readiness check lives in `_pop_next_fg(...)`; gating here on an exact
+    # count can defer runnable FG work behind a full GA drain if bookkeeping
+    # lags the actual collect/prep state.
+    return True
 
 
 def _continuous_fg_submit_budget(
@@ -337,7 +380,15 @@ def _continuous_fg_submit_budget(
 ) -> int:
     available_pending = int(pending_fg_count)
     if (not bool(no_ga_remaining)) and (not bool(blocked_on_slot)):
-        available_pending = min(int(available_pending), max(0, int(ready_fg_count)))
+        ready_hint = max(0, int(ready_fg_count))
+        if ready_hint > 0:
+            available_pending = min(int(available_pending), int(ready_hint))
+        else:
+            # Probe one pending FG lane even when the ready hint is stale. The
+            # submit loop still routes through `_pop_next_fg(...)`, so at worst
+            # this is a cheap no-op; at best it lets a genuinely ready FG lane
+            # surface immediately instead of waiting for GA to fully drain.
+            available_pending = min(int(available_pending), 1)
 
     capacity = max(0, min(int(fg_workers) - int(fg_inflight_count), int(fg_batch_max), int(available_pending)))
     if capacity <= 0:
@@ -346,12 +397,6 @@ def _continuous_fg_submit_budget(
     if bool(no_ga_remaining):
         return int(capacity) if bool(fg_drain_at_end) else 0
 
-    # FG has its own host-side inflight lane. Once jobs are GPU-ready, fill the
-    # available FG worker slots instead of metering them through GA credits.
-    #
-    # Adaptive smoothing: when prep backlog exists (`pending > ready`), avoid draining
-    # the ready FG queue in one burst. Keeping a modest burst cap helps maintain a
-    # steadier GPU feed while additional FG jobs finish prep.
     if bool(adaptive_submit) and int(pending_fg_count) > int(ready_fg_count):
         burst_cap = max(1, min(int(adaptive_max_burst), int(fg_batch_max), int(fg_workers)))
         capacity = min(int(capacity), int(burst_cap))

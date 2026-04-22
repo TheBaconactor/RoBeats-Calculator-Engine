@@ -554,12 +554,20 @@ class GpuExecutor:
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_RESET_GLOBAL_BEST,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
+            GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH,
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
+        }
+    )
+    # Downstream FG service work must not stay buried behind unrelated full-song GA turns.
+    # These requests either unlock GA->FG continuity directly or complete FG work for a ready song.
+    _GA_RECOVERY_REQUEST_TYPES = frozenset(
+        set(_FG_REQUEST_TYPES)
+        | {
+            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS,
         }
     )
     _COALESCABLE_REQUEST_TYPES = frozenset(
         {
-            GpuRequestType.GPU_NATIVE_GA_RUN,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
@@ -568,11 +576,14 @@ class GpuExecutor:
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
     )
-    # Request batching is now controlled by per-family coalescers/chunk caps instead of a
-    # hard gather barrier. Keeping this empty lets the owner drain ready GPU work in one
-    # pass while `_execute_*_batch` methods keep long families bounded.
-    _NO_BATCH_REQUEST_TYPES = frozenset()
+    # Full-song GA requests unlock downstream decode/FG work for the same song. Letting the
+    # owner gather multiple GA requests together hides those completions behind unrelated songs
+    # and recreates the "GA then FG" stall pattern. Keep GA as a one-request owner turn; the
+    # per-request GA kernels still batch internally, so this does not force rebuilds or skinny
+    # GPU launches inside one song.
+    _NO_BATCH_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
     _NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _NO_BATCH_REQUEST_TYPES})
+    _GA_RECOVERY_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _GA_RECOVERY_REQUEST_TYPES})
 
     @classmethod
     def _is_no_batch_request_type(cls, request_type: Any) -> bool:
@@ -583,6 +594,16 @@ class GpuExecutor:
         except Exception:
             value = ""
         return value in cls._NO_BATCH_REQUEST_TYPE_VALUES
+
+    @classmethod
+    def _is_ga_recovery_request_type(cls, request_type: Any) -> bool:
+        if request_type in cls._GA_RECOVERY_REQUEST_TYPES:
+            return True
+        try:
+            value = str(getattr(request_type, "value", request_type))
+        except Exception:
+            value = ""
+        return value in cls._GA_RECOVERY_REQUEST_TYPE_VALUES
 
     def __new__(cls):
         """Singleton pattern."""
@@ -620,9 +641,11 @@ class GpuExecutor:
         self._abort_requested = threading.Event()
         self._abort_reason = ""
         self._in_process_queues = False
-        # Single-item defer buffer used by `_gather_batch()` to prevent batching "no-batch"
-        # request types behind unrelated work (stability/TDR guard on Windows).
-        self._deferred_request: Optional[GpuRequest] = None
+        # Local staging lets the owner peek ahead a bounded number of queued requests so
+        # downstream FG recovery work can surface without losing queue ordering guarantees
+        # for requests that have already been dequeued from the shared queue.
+        self._staged_requests: deque[GpuRequest] = deque()
+        self._ga_owner_turn_streak = 0
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
         self._last_ref_arrays_sig: bytes | None = None
@@ -1310,7 +1333,8 @@ class GpuExecutor:
         self._next_worker_id = 0
         self._taichi_ready = False
         self._last_init_error = None
-        self._deferred_request = None
+        self._staged_requests.clear()
+        self._ga_owner_turn_streak = 0
         self._ready_event.clear()
         self.clear_abort()
         self._last_ref_arrays_sig = None
@@ -2195,291 +2219,89 @@ class GpuExecutor:
                 batch_exec_t0 = perf_counter()
                 self._write_heartbeat(phase="running", batch=batch)
 
-                # Single-pass partitioning keeps request order without rescanning `batch`.
-                ga_native_requests: list[GpuRequest] = []
-                fg_requests: list[GpuRequest] = []
-                fg_bundle_requests: list[GpuRequest] = []
-                exact_dp_requests: list[GpuRequest] = []
-                fg_ga_fused_requests: list[GpuRequest] = []
-                reg_requests: list[GpuRequest] = []
-                remaining: list[GpuRequest] = []
+                grouped_handlers = {
+                    GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
+                    GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._coalesce_fg_task_requests,
+                    GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: (
+                        self._coalesce_fg_solve_with_breakpoints_batch_requests
+                    ),
+                    GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP: self._coalesce_solve_force_greats_exact_dp_requests,
+                    GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_ga_fg_fused_requests,
+                    GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._coalesce_solve_genomes_from_registry,
+                }
+
+                def _execute_grouped_requests(request_type: GpuRequestType, requests: list[GpuRequest], handler) -> None:
+                    if not requests:
+                        return
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
+                    exec_start_ns = time.perf_counter_ns()
+                    responses = list(handler(requests) or [])
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        request_type,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(requests))
+                    for _ in requests:
+                        self._req_type_counts[request_type] += 1
+                        self._req_type_exec_sec[request_type] += per_req
+                        self._last_work_req_type = request_type
+
+                    response_count = int(len(responses))
+                    for idx, req in enumerate(requests):
+                        resp = responses[idx] if idx < response_count else None
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error=f"GpuExecutor {request_type.value} batch returned no response (internal error)",
+                            )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(requests),
+                            types=f"{request_type.value}:{len(requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[request_type] += len(requests)
+                        self._maybe_live_report()
+                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+                        self._ga_owner_turn_streak = min(1024, int(self._ga_owner_turn_streak) + 1)
+                    else:
+                        self._ga_owner_turn_streak = 0
+
+                # Preserve batch order while still coalescing adjacent grouped-family requests.
+                execution_units: list[list[Any]] = []
                 for req in batch:
                     rt = req.request_type
-                    if rt == GpuRequestType.GPU_NATIVE_GA_RUN:
-                        ga_native_requests.append(req)
-                    elif rt == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
-                        fg_requests.append(req)
-                    elif rt == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
-                        fg_bundle_requests.append(req)
-                    elif rt == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
-                        exact_dp_requests.append(req)
-                    elif rt == GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS:
-                        fg_ga_fused_requests.append(req)
-                    elif rt == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
-                        reg_requests.append(req)
+                    if rt in grouped_handlers:
+                        if execution_units and execution_units[-1][0] == "group" and execution_units[-1][1] == rt:
+                            execution_units[-1][2].append(req)
+                        else:
+                            execution_units.append(["group", rt, [req]])
                     else:
-                        remaining.append(req)
+                        execution_units.append(["single", rt, req])
 
-                if ga_native_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._execute_gpu_native_ga_run_batch(ga_native_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.GPU_NATIVE_GA_RUN,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(ga_native_requests))
-                    for _ in ga_native_requests:
-                        self._req_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += 1
-                        self._req_type_exec_sec[GpuRequestType.GPU_NATIVE_GA_RUN] += per_req
-                        self._last_work_req_type = GpuRequestType.GPU_NATIVE_GA_RUN
-
-                    for req, resp in zip(ga_native_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor GA-native batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(ga_native_requests),
-                            types=f"{GpuRequestType.GPU_NATIVE_GA_RUN.value}:{len(ga_native_requests)}",
-                            **trace_shared_kwargs,
+                for unit_kind, request_type, payload in execution_units:
+                    if unit_kind == "group":
+                        _execute_grouped_requests(
+                            request_type,
+                            payload,
+                            handler=grouped_handlers[request_type],
                         )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += len(ga_native_requests)
-                        self._maybe_live_report()
+                        continue
 
-                if fg_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._coalesce_fg_task_requests(fg_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(fg_requests))
-                    for _ in fg_requests:
-                        self._req_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += 1
-                        self._req_type_exec_sec[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += per_req
-                        self._last_work_req_type = GpuRequestType.SOLVE_FORCE_GREATS_FINDER
-
-                    for req, resp in zip(fg_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor FG batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(fg_requests),
-                            types=f"{GpuRequestType.SOLVE_FORCE_GREATS_FINDER.value}:{len(fg_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
-                        self._maybe_live_report()
-
-                if fg_bundle_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(fg_bundle_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(fg_bundle_requests))
-                    for _ in fg_bundle_requests:
-                        self._req_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += 1
-                        self._req_type_exec_sec[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += per_req
-                        self._last_work_req_type = GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
-
-                    for req, resp in zip(fg_bundle_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor FG bundle batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(fg_bundle_requests),
-                            types=f"{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}:{len(fg_bundle_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(
-                            fg_bundle_requests
-                        )
-                        self._maybe_live_report()
-
-                if exact_dp_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._coalesce_solve_force_greats_exact_dp_requests(exact_dp_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(exact_dp_requests))
-                    for _ in exact_dp_requests:
-                        self._req_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += 1
-                        self._req_type_exec_sec[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += per_req
-                        self._last_work_req_type = GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP
-
-                    for req, resp in zip(exact_dp_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor exact-DP batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(exact_dp_requests),
-                            types=f"{GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP.value}:{len(exact_dp_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP] += len(exact_dp_requests)
-                        self._maybe_live_report()
-
-                if fg_ga_fused_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._coalesce_ga_fg_fused_requests(fg_ga_fused_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(fg_ga_fused_requests))
-                    for _ in fg_ga_fused_requests:
-                        self._req_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += 1
-                        self._req_type_exec_sec[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += per_req
-                        self._last_work_req_type = GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS
-
-                    for req, resp in zip(fg_ga_fused_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor fused GA->FG batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(fg_ga_fused_requests),
-                            types=(
-                                f"{GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value}:{len(fg_ga_fused_requests)}"
-                            ),
-                            **trace_shared_kwargs,
-                        )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += len(
-                            fg_ga_fused_requests
-                        )
-                        self._maybe_live_report()
-
-                if reg_requests:
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
-                    responses = self._coalesce_solve_genomes_from_registry(reg_requests)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(reg_requests))
-                    for _ in reg_requests:
-                        self._req_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += 1
-                        self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += per_req
-                        self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
-
-                    for req, resp in zip(reg_requests, responses):
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error="GpuExecutor registry batch returned no response (internal error)",
-                            )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(reg_requests),
-                            types=f"{GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value}:{len(reg_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                    if live_enabled:
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += len(reg_requests)
-                        self._maybe_live_report()
-
-                # Process remaining request types individually
-                for req in remaining:
+                    req = payload
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     response = self._execute_request(req)
@@ -2517,6 +2339,7 @@ class GpuExecutor:
                         self._live_exec_sec += float(dt_exec)
                         self._live_type_counts[req.request_type] += 1
                         self._maybe_live_report()
+                    self._ga_owner_turn_streak = 0
 
                 work_end_ts = perf_counter()
                 self._last_work_end_ts = float(work_end_ts)
@@ -2608,6 +2431,120 @@ class GpuExecutor:
                 except queue.Empty:
                     continue
 
+    @staticmethod
+    def _stamp_request_dequeue(request: "GpuRequest") -> "GpuRequest":
+        try:
+            if int(getattr(request, "dequeue_perf_ns", 0) or 0) <= 0:
+                request.dequeue_perf_ns = time.perf_counter_ns()
+        except Exception:
+            pass
+        return request
+
+    def _stage_request(self, request: "GpuRequest", *, front: bool = False) -> None:
+        request = self._stamp_request_dequeue(request)
+        if front:
+            self._staged_requests.appendleft(request)
+        else:
+            self._staged_requests.append(request)
+
+    def _pop_staged_request(self, index: int = 0) -> "GpuRequest":
+        if index <= 0:
+            return self._staged_requests.popleft()
+        rotate_by = int(index)
+        self._staged_requests.rotate(-rotate_by)
+        try:
+            return self._staged_requests.popleft()
+        finally:
+            self._staged_requests.rotate(rotate_by)
+
+    def _ga_recovery_streak_cap(self) -> int:
+        try:
+            raw = int(str(_ENV_GET("GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX", "1") or "1").strip())
+        except Exception:
+            raw = 1
+        return max(1, min(int(raw), 128))
+
+    def _ga_recovery_lookahead_limit(self, *, batch_max_size: int) -> int:
+        default_limit = max(8, min(max(1, int(batch_max_size)) * 4, 64))
+        try:
+            raw = int(
+                str(
+                    _ENV_GET(
+                        "GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS",
+                        str(default_limit),
+                    )
+                    or str(default_limit)
+                ).strip()
+            )
+        except Exception:
+            raw = default_limit
+        return max(1, min(int(raw), 256))
+
+    def _pop_queue_request(self, timeout: float) -> "GpuRequest":
+        request = self._queue_get(timeout)
+        return self._stamp_request_dequeue(request)
+
+    def _prefetch_ga_recovery_requests(self, *, deadline: float, batch_max_size: int) -> None:
+        if not self._in_process_queues:
+            return
+        if int(self._ga_owner_turn_streak) < int(self._ga_recovery_streak_cap()):
+            return
+        if not self._staged_requests:
+            return
+        try:
+            first_request = self._staged_requests[0]
+        except Exception:
+            return
+        if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
+            return
+        if any(
+            self._is_ga_recovery_request_type(getattr(req, "request_type", None))
+            for req in list(self._staged_requests)[1:]
+        ):
+            return
+
+        lookahead_limit = self._ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))
+        while len(self._staged_requests) < int(lookahead_limit):
+            remaining = float(deadline - perf_counter())
+            if remaining <= 0.0:
+                break
+            try:
+                request = self._pop_queue_request(remaining)
+            except queue.Empty:
+                break
+            self._staged_requests.append(request)
+            if request.request_type == GpuRequestType.SHUTDOWN:
+                break
+            if self._is_ga_recovery_request_type(request.request_type):
+                break
+
+    def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
+        if not self._staged_requests:
+            self._stage_request(self._pop_queue_request(timeout))
+
+        self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
+
+        if (
+            self._in_process_queues
+            and int(self._ga_owner_turn_streak) >= int(self._ga_recovery_streak_cap())
+            and self._staged_requests
+            and self._staged_requests[0].request_type == GpuRequestType.GPU_NATIVE_GA_RUN
+        ):
+            for idx, staged in enumerate(self._staged_requests):
+                if idx == 0:
+                    continue
+                if staged.request_type == GpuRequestType.SHUTDOWN:
+                    return self._pop_staged_request(idx)
+                if self._is_ga_recovery_request_type(staged.request_type):
+                    return self._pop_staged_request(idx)
+
+        return self._pop_staged_request(0)
+
+    def _pop_followup_request(self, timeout: float) -> "GpuRequest":
+        if self._staged_requests:
+            return self._pop_staged_request(0)
+        return self._pop_queue_request(timeout)
+
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
         """
         Gather pending requests into a batch for coalesced execution.
@@ -2665,31 +2602,6 @@ class GpuExecutor:
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
         if int(max_wait_ms) <= 0:
             inproc_after_first_ms = 0
-        try:
-            ga_owner_batch_limit = int(_ENV_GET("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "0") or "0")
-        except Exception:
-            ga_owner_batch_limit = 0
-        ga_owner_batch_cap = max(1, min(int(max_batch_size), 256))
-        if int(ga_owner_batch_limit) <= 0:
-            ga_owner_batch_limit = int(ga_owner_batch_cap)
-        else:
-            ga_owner_batch_limit = max(1, min(int(ga_owner_batch_limit), int(ga_owner_batch_cap)))
-        ga_owner_batch_count = 0
-
-        deferred = self._deferred_request
-        if deferred is not None:
-            self._deferred_request = None
-            try:
-                deferred.dequeue_perf_ns = time.perf_counter_ns()
-            except Exception:
-                pass
-            batch.append(deferred)
-            if deferred.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                ga_owner_batch_count += 1
-            if deferred.request_type == GpuRequestType.SHUTDOWN:
-                return batch
-            if self._is_no_batch_request_type(deferred.request_type):
-                return batch
 
         while len(batch) < max_batch_size:
             remaining = deadline - perf_counter()
@@ -2734,11 +2646,23 @@ class GpuExecutor:
                                 timeout = max(0.0, float(remaining)) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
-                if self._in_process_queues and inproc_coalesce_enabled and len(batch) > 0 and float(timeout) > 0.0:
+                if len(batch) == 0:
+                    request = self._pop_seed_request(
+                        timeout=float(timeout),
+                        deadline=float(deadline),
+                        batch_max_size=int(max_batch_size),
+                    )
+                elif (
+                    self._in_process_queues
+                    and inproc_coalesce_enabled
+                    and len(batch) > 0
+                    and float(timeout) > 0.0
+                    and not self._staged_requests
+                ):
                     get_nowait = getattr(self._request_queue, "get_nowait", None)
                     if callable(get_nowait):
                         try:
-                            request = get_nowait()
+                            request = self._stamp_request_dequeue(get_nowait())
                         except queue.Empty:
                             if perf_counter() >= deadline or int(inproc_yields_left) <= 0:
                                 break
@@ -2746,13 +2670,9 @@ class GpuExecutor:
                             time.sleep(0)
                             continue
                     else:
-                        request = self._queue_get(timeout)
+                        request = self._pop_followup_request(timeout)
                 else:
-                    request = self._queue_get(timeout)
-                try:
-                    request.dequeue_perf_ns = time.perf_counter_ns()
-                except Exception:
-                    pass
+                    request = self._pop_followup_request(timeout)
                 if request.request_type == GpuRequestType.SHUTDOWN:
                     batch.append(request)
                     return batch
@@ -2760,18 +2680,10 @@ class GpuExecutor:
                 # If a heavy/no-batch request arrives after we already have work, defer it to
                 # become the first item of the next batch.
                 if batch and self._is_no_batch_request_type(request.request_type):
-                    if self._deferred_request is None:
-                        self._deferred_request = request
-                    else:
-                        # Should be unreachable; avoid dropping work.
-                        batch.append(request)
+                    self._stage_request(request, front=True)
                     break
 
                 batch.append(request)
-                if request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                    ga_owner_batch_count += 1
-                    if int(ga_owner_batch_count) >= int(ga_owner_batch_limit):
-                        break
                 if self._is_no_batch_request_type(request.request_type):
                     break
 
@@ -4189,9 +4101,9 @@ class GpuExecutor:
             return [self._execute_gpu_native_ga_run(requests[0])]
 
         try:
-            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "8") or "8")
+            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
         except Exception:
-            max_reqs = 8
+            max_reqs = 1
         max_reqs = max(1, min(int(max_reqs), 128))
 
         try:

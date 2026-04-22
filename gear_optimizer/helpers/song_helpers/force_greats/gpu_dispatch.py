@@ -13,6 +13,7 @@ from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 
 from . import cache_validation, result_application
 from .entry_utils import (
+    _cached_fg_group_meta_is_reusable as _fg_group_meta_is_reusable,
     _normalize_fg_group_key as _coerce_fg_group_key,
     eval_data_from_entry,
     expected_selected_element,
@@ -54,6 +55,8 @@ _normalize_pair_signature_impl = _dispatch_caches.normalize_pair_signature
 _freeze_breakpoint_groups_impl = _dispatch_caches.freeze_breakpoint_groups
 _thaw_breakpoint_groups_impl = _dispatch_caches.thaw_breakpoint_groups
 _get_cached_breakpoint_groups_impl = _dispatch_caches.get_cached_breakpoint_groups
+_peek_cached_breakpoint_groups_impl = _dispatch_caches.peek_cached_breakpoint_groups
+_store_cached_breakpoint_groups_impl = _dispatch_caches.store_cached_breakpoint_groups
 _get_cached_max_fp_matrix_impl = _dispatch_caches.get_cached_max_fp_matrix
 
 if TYPE_CHECKING:
@@ -207,6 +210,58 @@ def _get_cached_breakpoint_groups(
         gem_scale_fever=gem_scale_fever,
         mode=mode,
         compute_fn=compute_fn,
+    )
+
+
+def _peek_cached_breakpoint_groups(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+):
+    return _peek_cached_breakpoint_groups_impl(
+        calc_song=calc_song,
+        n_sections=n_sections,
+        ftff_pairs=ftff_pairs,
+        base_stats_pairs=base_stats_pairs,
+        merge_threshold_cfgs=merge_threshold_cfgs,
+        merge_threshold_threads=merge_threshold_threads,
+        n_genomes=n_genomes,
+        gem_scale_fever=gem_scale_fever,
+        mode=mode,
+    )
+
+
+def _store_cached_breakpoint_groups(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+    groups: list[dict],
+) -> None:
+    _store_cached_breakpoint_groups_impl(
+        calc_song=calc_song,
+        n_sections=n_sections,
+        ftff_pairs=ftff_pairs,
+        base_stats_pairs=base_stats_pairs,
+        merge_threshold_cfgs=merge_threshold_cfgs,
+        merge_threshold_threads=merge_threshold_threads,
+        n_genomes=n_genomes,
+        gem_scale_fever=gem_scale_fever,
+        mode=mode,
+        groups=groups,
     )
 
 
@@ -801,6 +856,42 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     ga_candidates=None,
     ga_registry=None,
 ):
+    pre_song_slot = 0
+    pre_song_key = ""
+    try:
+        if isinstance(calc_song, dict):
+            pre_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
+            pre_song_key = str(
+                calc_song.get("_fg_resident_owner_task")
+                or calc_song.get("_queue_key")
+                or calc_song.get("_queue_label")
+                or ""
+            ).strip()
+    except Exception:
+        pre_song_slot = 0
+        pre_song_key = ""
+
+    def _emit_pre_finder_phase(event: str, **metrics: Any) -> None:
+        try:
+            from gear_optimizer.core.profile_events import emit_profile_event
+
+            payload = {"song_slot": int(pre_song_slot)}
+            payload.update(metrics)
+            emit_profile_event(
+                component="force_greats_finder",
+                event=str(event),
+                song_key=pre_song_key or None,
+                metrics=payload,
+            )
+        except Exception:
+            pass
+
+    _emit_pre_finder_phase(
+        "enter",
+        loadout_entries=int(len(loadout_entries or {})) if isinstance(loadout_entries, dict) else 0,
+        ga_candidates=int(len(ga_candidates or [])),
+    )
+
     fg_variants = []
     perf = bool(perf_timing)
     computed = 0
@@ -850,6 +941,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         fg_download_global_best,
     )
     from ....solver.gpu_executor import GpuRequestType
+
+    _emit_pre_finder_phase("imports_ready")
     # Lean-only FG pipeline:
     # - Always store a compact raw FG payload on each entry as `entry['force']`.
     # - Build `fg_variants` only for the retained set to keep output small.
@@ -882,6 +975,47 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         song_slot = 0
     if song_slot < 0:
         song_slot = 0
+
+    finder_song_key = ""
+    try:
+        if isinstance(calc_song, dict):
+            finder_song_key = str(
+                calc_song.get("_fg_resident_owner_task")
+                or calc_song.get("_queue_key")
+                or calc_song.get("_queue_label")
+                or ""
+            ).strip()
+    except Exception:
+        finder_song_key = ""
+
+    def _emit_finder_phase(event: str, **metrics: Any) -> None:
+        try:
+            from gear_optimizer.core.profile_events import emit_profile_event
+
+            payload = {"song_slot": int(song_slot)}
+            payload.update(metrics)
+            emit_profile_event(
+                component="force_greats_finder",
+                event=str(event),
+                song_key=finder_song_key or None,
+                metrics=payload,
+            )
+        except Exception:
+            pass
+
+    def _safe_metric_count(items: Any) -> int:
+        if items is None:
+            return 0
+        try:
+            shape = getattr(items, "shape", None)
+            if shape is not None and len(shape) > 0:
+                return max(0, int(shape[0]))
+        except Exception:
+            pass
+        try:
+            return max(0, int(len(items)))
+        except Exception:
+            return 0
 
     sig_frontier_enabled = _truthy_env("FG_SIGNATURE_FRONTIER_ENABLED", "1")
     sig_frontier_limit = _resolve_signature_frontier_limit() if sig_frontier_enabled else 0
@@ -1006,12 +1140,90 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     enforce_single_request = bool(async_settings.enforce_single_request)
     fg_async_max_inflight = int(async_settings.max_inflight)
     fg_async_tasks_per_request = int(async_settings.tasks_per_request)
+    _emit_finder_phase(
+        "async_settings_ready",
+        in_process=int(bool(in_process)),
+        enforce_single_request=int(bool(enforce_single_request)),
+        max_inflight=int(fg_async_max_inflight),
+        tasks_per_request=int(fg_async_tasks_per_request),
+    )
 
     fg_async_futures = []
     fg_tasks_batch = []
     genome_stats_uploaded = False
     sig_results: dict[str, dict] = {}
     ga_candidate_owner_mismatch_warned = False
+    first_group_iter_ready_emitted = False
+    first_gpu_task_queued_emitted = False
+    first_gpu_submit_emitted = False
+
+    def _maybe_emit_first_group_iter_ready(
+        *,
+        group_mode: str,
+        cache_hit: bool,
+        ftff_pairs_count: int,
+        sig_count: int,
+        n_sections_value: int,
+        n_pending_value: int,
+    ) -> None:
+        nonlocal first_group_iter_ready_emitted
+        if first_group_iter_ready_emitted:
+            return
+        first_group_iter_ready_emitted = True
+        _emit_finder_phase(
+            "first_group_iter_ready",
+            group_mode=str(group_mode),
+            cache_hit=int(bool(cache_hit)),
+            ftff_pairs=int(ftff_pairs_count),
+            sig_count=int(sig_count),
+            n_sections=int(n_sections_value),
+            n_pending=int(n_pending_value),
+            tasks_per_request=int(fg_async_tasks_per_request),
+        )
+
+    def _maybe_emit_first_gpu_task_queued(
+        *,
+        queue_mode: str,
+        queue_len: int,
+        pair_count: int,
+        cfg_count: int,
+        n_sections_value: int,
+        n_pending_value: int,
+    ) -> None:
+        nonlocal first_gpu_task_queued_emitted
+        if first_gpu_task_queued_emitted:
+            return
+        first_gpu_task_queued_emitted = True
+        _emit_finder_phase(
+            "first_gpu_task_queued",
+            queue_mode=str(queue_mode),
+            queue_len=int(queue_len),
+            pair_count=int(pair_count),
+            cfg_count=int(cfg_count),
+            n_sections=int(n_sections_value),
+            n_pending=int(n_pending_value),
+            tasks_per_request=int(fg_async_tasks_per_request),
+        )
+
+    def _maybe_emit_first_gpu_submit(
+        *,
+        submit_mode: str,
+        batch_size: int,
+        tile_count: int,
+        download_after: bool,
+    ) -> None:
+        nonlocal first_gpu_submit_emitted
+        if first_gpu_submit_emitted:
+            return
+        first_gpu_submit_emitted = True
+        _emit_finder_phase(
+            "first_gpu_submit",
+            submit_mode=str(submit_mode),
+            batch_size=int(batch_size),
+            tile_count=int(tile_count),
+            download_after=int(bool(download_after)),
+            tasks_per_request=int(fg_async_tasks_per_request),
+        )
 
     def _record_gpu_results(
         *,
@@ -1219,6 +1431,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     submit_kwargs["fg_download_base_scores"] = download_base_scores
                     submit_kwargs["fg_download_keep_mask"] = download_keep_mask
 
+            _maybe_emit_first_gpu_submit(
+                submit_mode="tasks",
+                batch_size=int(len(task_tile)),
+                tile_count=int(len(task_tiles)),
+                download_after=bool(download_after),
+            )
             last_future = _submit_solve_force_greats_finder(
                 genome_stats_arr,
                 timestamps,
@@ -1260,6 +1478,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     n_gpu_calls = 0
     db_cached_reuse = 0
     no_eval_skips = 0
+    fg_group_meta_cached = 0
+    fg_group_meta_built = 0
     gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
     per_pair_breakpoints = os.environ.get("FG_PER_FTFF_BREAKPOINTS", "1") == "1"
     breakpoint_group_cache_enabled = _truthy_env("FG_BREAKPOINT_GROUP_CACHE", "1")
@@ -1321,6 +1541,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     if direct_ga_items:
         base_items = [(k, v) for k, v in base_items if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))]
     entry_items = list(base_items) + list(direct_ga_items)
+    _emit_finder_phase(
+        "entry_items_ready",
+        loadout_entries=int(len(base_items)),
+        direct_ga_items=int(len(direct_ga_items)),
+        entry_items=int(len(entry_items)),
+    )
 
     # Collect all candidates (no budget limit)
     _t_collect0 = time.perf_counter() if perf else 0.0
@@ -1377,6 +1603,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             stats = eval_data.get("Stats", {}) or {}
             sel_color = expected_selected_element(entry, meta_primary_color)
             base_stats = _extract_base_stats(stats, gem_counts_existing, sel_color, center_ft, center_ff)
+        had_reusable_fg_group_meta = False
+        try:
+            had_reusable_fg_group_meta = bool(_fg_group_meta_is_reusable(eval_data.get("_fg_group_meta")))
+        except Exception:
+            had_reusable_fg_group_meta = False
         fg_group_meta = fg_group_meta_from_eval_data(
             eval_data,
             calc_song=calc_song,
@@ -1386,6 +1617,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             secondary_color=str(s_color or ""),
             base_stats=base_stats,
         )
+        if had_reusable_fg_group_meta:
+            fg_group_meta_cached += 1
+        elif isinstance(fg_group_meta, dict):
+            fg_group_meta_built += 1
         if isinstance(fg_group_meta, dict) and bool(fg_group_meta.get("skip")):
             continue
 
@@ -1461,6 +1696,17 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
     if perf:
         t_collect_sec = time.perf_counter() - _t_collect0
+
+    _emit_finder_phase(
+        "collect_ready",
+        entry_items=int(len(entry_items)),
+        computed=int(computed),
+        groups=int(len(groups)),
+        db_cached_reuse=int(db_cached_reuse),
+        no_eval_skips=int(no_eval_skips),
+        fg_group_meta_cached=int(fg_group_meta_cached),
+        fg_group_meta_built=int(fg_group_meta_built),
+    )
 
     # Keep-mask for top-K downloads:
     # - always include top-base signatures (retention stability), and
@@ -1632,6 +1878,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
                         frontier_groups_reduced += 1
 
+    _emit_finder_phase(
+        "frontier_ready",
+        groups=int(len(groups)),
+        frontier_before=int(frontier_total_before),
+        frontier_after=int(frontier_total_after),
+        frontier_groups_reduced=int(frontier_groups_reduced),
+    )
+
     hitsim_apply_to = _hitsim_apply_to(calc_song)
     chart_key = _chart_signature_key(calc_song)
     if hitsim_apply_to == "FG":
@@ -1751,6 +2005,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
             pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
 
+    _emit_finder_phase(
+        "pair_caps_ready",
+        hitsim_apply_to=str(hitsim_apply_to),
+        fg_scorer_cache_hit=int(bool(fg_scorer_cache_hit)),
+        pair_caps_from_timeline=int(bool(pair_caps_from_timeline)),
+        ga_candidate_table_slot_held=int(bool(ga_candidate_table_slot_held)),
+    )
+
     # Generate SMART configs using Analytic Breakpoint Pruning
     # This scans the grid to find only the counts that fundamentally change fever coverage.
     # (Now moved inside group loop to be context-aware)
@@ -1867,6 +2129,18 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 )
             fused_payloads_per_request = 8
 
+    _emit_finder_phase(
+        "surface_ready",
+        groups=int(len(groups)),
+        frontier_before=int(frontier_total_before),
+        frontier_after=int(frontier_total_after),
+        per_pair_breakpoints=int(bool(per_pair_breakpoints)),
+        fused_breakpoints_solve=int(bool(fused_breakpoints_solve)),
+        hitsim_apply_to=str(hitsim_apply_to),
+        tasks_per_request=int(fg_async_tasks_per_request),
+        max_inflight=int(fg_async_max_inflight),
+    )
+
     def _flush_fused_payload_batch() -> None:
         nonlocal timeline_precompute_queued, n_gpu_calls
         nonlocal fg_fused_tile_batches, fg_fused_tile_splits
@@ -1950,6 +2224,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         for chunk in request_chunks:
             payloads = [payload for payload, _ctx in chunk]
             ctxs = [ctx for _payload, ctx in chunk]
+            _maybe_emit_first_gpu_submit(
+                submit_mode="fused",
+                batch_size=int(len(payloads)),
+                tile_count=int(len(request_chunks)),
+                download_after=False,
+            )
             _submit_chunk(payloads, ctxs)
 
         fused_payload_batch.clear()
@@ -2620,6 +2900,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 deferred_gpu_applies.append(ctx)
                                 fused_payload_batch.append(fused_payload)
                                 fused_ctx_batch.append(ctx)
+                                _maybe_emit_first_gpu_task_queued(
+                                    queue_mode="fused",
+                                    queue_len=int(len(fused_payload_batch)),
+                                    pair_count=int(_safe_metric_count(ftff_pairs_submit)),
+                                    cfg_count=int(_safe_metric_count(base_pairs_submit)),
+                                    n_sections_value=int(n_sections),
+                                    n_pending_value=int(n_pending),
+                                )
 
                                 if len(fused_payload_batch) >= int(fused_payloads_per_request):
                                     _flush_fused_payload_batch()
@@ -2769,8 +3057,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     and int(len(ftff_pairs or [])) > 0
                     and int(len(ftff_pairs or [])) <= int(breakpoint_group_cache_max_pairs)
                 )
+                cacheable_groups_accum: list[dict] | None = None
                 if can_cache_groups:
-                    group_list, cache_hit = _get_cached_breakpoint_groups(
+                    group_list = _peek_cached_breakpoint_groups(
                         calc_song=calc_song,
                         n_sections=int(n_sections),
                         ftff_pairs=ftff_pairs,
@@ -2780,19 +3069,28 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         n_genomes=int(n_pending),
                         gem_scale_fever=int(GEM_SCALE_FEVER),
                         mode=str(group_mode),
-                        compute_fn=group_compute_fn,
                     )
-                    if cache_hit:
+                    if group_list is not None:
                         breakpoint_group_cache_hits += 1
+                        group_iter = iter(group_list)
                     else:
                         breakpoint_group_cache_misses += 1
-                    group_iter = iter(group_list)
+                        cacheable_groups_accum = []
+                        group_iter = group_compute_fn()
                 else:
                     group_iter = group_compute_fn()
 
                 # Logging (count groups as we go)
                 logged_first = False
                 group_count = 0
+                _maybe_emit_first_group_iter_ready(
+                    group_mode=str(group_mode),
+                    cache_hit=bool(group_list is not None) if can_cache_groups else False,
+                    ftff_pairs_count=int(_safe_metric_count(ftff_pairs)),
+                    sig_count=int(len(sig_list or [])),
+                    n_sections_value=int(n_sections),
+                    n_pending_value=int(n_pending),
+                )
 
                 if perf:
                     t_cfg_build_sec += time.perf_counter() - _t_cfg1
@@ -2818,6 +3116,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 # Process groups and accumulate best on GPU (no per-group downloads)
                 max_fp_counts_cache: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
                 for group in group_iter:
+                    if cacheable_groups_accum is not None:
+                        cacheable_groups_accum.append(group)
                     group_count += 1
                     counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
                     if (not counts_list and not counts_max_fp) or _is_empty_pairs(group_pairs):
@@ -2912,6 +3212,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     "base_cfg_offset": int(group_cfg_offset),
                                 }
                             )
+                            _maybe_emit_first_gpu_task_queued(
+                                queue_mode="breakpoints_per_pair",
+                                queue_len=int(len(fg_tasks_batch)),
+                                pair_count=int(_safe_metric_count(ftff_chunk)),
+                                cfg_count=int(cfg_len0),
+                                n_sections_value=int(n_sections),
+                                n_pending_value=int(n_pending),
+                            )
                             if len(fg_tasks_batch) >= fg_async_tasks_per_request:
                                 flush_plan = plan_fg_async_threshold_flush(
                                     pending_tasks=len(fg_tasks_batch),
@@ -2990,6 +3298,20 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if len(gpu_call_shapes) < 12:
                             gpu_call_shapes.append((n_pending, len(counts_list), len(group_pairs), int(n_sections)))
                     n_gpu_calls += 1
+
+                if cacheable_groups_accum is not None:
+                    _store_cached_breakpoint_groups(
+                        calc_song=calc_song,
+                        n_sections=int(n_sections),
+                        ftff_pairs=ftff_pairs,
+                        base_stats_pairs=base_pairs_list,
+                        merge_threshold_cfgs=int(max_union_cfg),
+                        merge_threshold_threads=int(max_union_threads),
+                        n_genomes=int(n_pending),
+                        gem_scale_fever=int(GEM_SCALE_FEVER),
+                        mode=str(group_mode),
+                        groups=cacheable_groups_accum,
+                    )
 
                 # Log merged status if we got a single batch (debug only)
                 if group_count == 1:
@@ -3128,6 +3450,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     "counts_list": counts_list_packed,
                                     "ftff_pairs": ftff_chunk,
                                 }
+                            )
+                            _maybe_emit_first_gpu_task_queued(
+                                queue_mode="breakpoints_batched",
+                                queue_len=int(len(fg_tasks_batch)),
+                                pair_count=int(_safe_metric_count(ftff_chunk)),
+                                cfg_count=int(_safe_metric_count(counts_list)),
+                                n_sections_value=int(n_sections),
+                                n_pending_value=int(n_pending),
                             )
                             if len(fg_tasks_batch) >= fg_async_tasks_per_request:
                                 flush_plan = plan_fg_async_threshold_flush(

@@ -9,6 +9,7 @@ This module provides functions for evaluating fixed stats without gem optimizati
 """
 
 import os
+import threading
 import numpy as np
 from math import floor
 
@@ -28,6 +29,33 @@ _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
 _FG_BASELINE_CACHE_MAX = 8192
 _FG_BASELINE_GRID_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 _FG_BASELINE_GRID_CACHE_MAX = 64
+_FG_BASELINE_GRID_INFLIGHT: dict[tuple, threading.Event] = {}
+_FG_BASELINE_POINT_MISS_COUNT: dict[tuple, int] = {}
+_FG_BASELINE_CACHE_LOCK = threading.Lock()
+
+
+def _fg_baseline_grid_auto_threshold() -> int:
+    try:
+        threshold = int(os.environ.get("FG_BASELINE_GRID_AUTO_THRESHOLD", "16") or "16")
+    except Exception:
+        threshold = 16
+    return max(0, min(int(threshold), 512))
+
+
+def _fg_baseline_cache_get(cache_key: tuple | None) -> tuple[int, int] | None:
+    if cache_key is None:
+        return None
+    with _FG_BASELINE_CACHE_LOCK:
+        return _FG_BASELINE_CACHE.get(cache_key)
+
+
+def _fg_baseline_cache_put(cache_key: tuple | None, result: tuple[int, int]) -> None:
+    if cache_key is None:
+        return
+    with _FG_BASELINE_CACHE_LOCK:
+        if len(_FG_BASELINE_CACHE) >= _FG_BASELINE_CACHE_MAX:
+            _FG_BASELINE_CACHE.clear()
+        _FG_BASELINE_CACHE[cache_key] = result
 
 
 def _get_fg_baseline_grids(
@@ -45,9 +73,23 @@ def _get_fg_baseline_grids(
     Returns:
         (fever_activations_grid, gap_grid, non_fever_base_by_ff)
     """
-    cached = _FG_BASELINE_GRID_CACHE.get(song_key)
-    if cached is not None:
-        return cached
+    build_event: threading.Event | None = None
+    is_builder = False
+    with _FG_BASELINE_CACHE_LOCK:
+        cached = _FG_BASELINE_GRID_CACHE.get(song_key)
+        if cached is not None:
+            return cached
+        build_event = _FG_BASELINE_GRID_INFLIGHT.get(song_key)
+        if build_event is None:
+            build_event = threading.Event()
+            _FG_BASELINE_GRID_INFLIGHT[song_key] = build_event
+            is_builder = True
+    if not is_builder and build_event is not None:
+        build_event.wait()
+        with _FG_BASELINE_CACHE_LOCK:
+            cached = _FG_BASELINE_GRID_CACHE.get(song_key)
+            if cached is not None:
+                return cached
 
     # Normalize timestamps for Numba kernels (float32-first for CPU/GPU parity).
     ts = np.asarray(timestamps)
@@ -87,10 +129,19 @@ def _get_fg_baseline_grids(
 
     non_fever_base_by_ff = np.ceil(float(non_fever_cas) * ff_factors).astype(np.int32)
 
-    if len(_FG_BASELINE_GRID_CACHE) >= _FG_BASELINE_GRID_CACHE_MAX:
-        _FG_BASELINE_GRID_CACHE.clear()
-    _FG_BASELINE_GRID_CACHE[song_key] = (acts, gap, non_fever_base_by_ff)
-    return _FG_BASELINE_GRID_CACHE[song_key]
+    try:
+        with _FG_BASELINE_CACHE_LOCK:
+            if len(_FG_BASELINE_GRID_CACHE) >= _FG_BASELINE_GRID_CACHE_MAX:
+                _FG_BASELINE_GRID_CACHE.clear()
+            _FG_BASELINE_GRID_CACHE[song_key] = (acts, gap, non_fever_base_by_ff)
+            _FG_BASELINE_POINT_MISS_COUNT.pop(song_key, None)
+            cached = _FG_BASELINE_GRID_CACHE[song_key]
+    finally:
+        with _FG_BASELINE_CACHE_LOCK:
+            event = _FG_BASELINE_GRID_INFLIGHT.pop(song_key, None)
+        if event is not None:
+            event.set()
+    return cached
 
 
 def evaluate_stats_score(
@@ -188,7 +239,32 @@ def build_great_penalty_table(base_value, combo_mul, great_penalty_base, head_li
     return penalties
 
 
-def fg_baseline_params(stats, calc_song, ref_arrays):
+def _fg_baseline_params_point(
+    *,
+    stats,
+    timestamps,
+    total_notes: int,
+    long_notes: int,
+    last_note_time: float,
+    ref_arrays: dict,
+) -> tuple[int, int]:
+    ref_ff = ref_arrays["Fever Fill Rate"]
+    ref_ft = ref_arrays["Fever Time"]
+
+    fever_fill_rate = lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS)
+    fever_time_stat = lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS)
+    non_fever_section, non_fever_base = calculate_non_fever_sections(
+        timestamps,
+        total_notes,
+        fever_fill_rate,
+        fever_time_stat,
+        long_notes,
+        last_note_time,
+    )
+    return int(non_fever_section), int(non_fever_base)
+
+
+def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None = None):
     """
     Lightweight baseline computation for ForceGreatsFinder batching.
 
@@ -208,7 +284,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
         ft_stat_raw = int(safe_int(stats.get("Fever Time", 0), 0))
         ff_stat_raw = int(safe_int(stats.get("Fever Fill Rate", 0), 0))
         cache_key = (song_key, ft_stat_raw, ff_stat_raw)
-        cached = _FG_BASELINE_CACHE.get(cache_key)
+        cached = _fg_baseline_cache_get(cache_key)
         if cached is not None:
             return cached
     except Exception:
@@ -236,7 +312,21 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
 
     # Fast path: use per-song fever_activations/gap grids to avoid per-(FT,FF) timeline stepping.
     use_grid = str(os.environ.get("FG_BASELINE_GRID", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
-    if use_grid:
+    if prefer_grid is None:
+        prefer_grid = False
+        if use_grid:
+            threshold = _fg_baseline_grid_auto_threshold()
+            with _FG_BASELINE_CACHE_LOCK:
+                prefer_grid = song_key in _FG_BASELINE_GRID_CACHE
+                if not prefer_grid and threshold <= 0:
+                    prefer_grid = True
+                if not prefer_grid:
+                    point_miss_count = int(_FG_BASELINE_POINT_MISS_COUNT.get(song_key, 0))
+                    prefer_grid = point_miss_count >= int(threshold)
+    else:
+        prefer_grid = bool(prefer_grid)
+
+    if use_grid and prefer_grid:
         try:
             if song_key is None:
                 song_key = _song_cache_key(calc_song)
@@ -259,34 +349,25 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
             non_fever_base = int(non_fever_base_by_ff[ff_idx]) if non_fever_base_by_ff is not None else 0
             non_fever_section = int(fever_acts) + (1 if gap0 > 0 else 0)
             result = (int(non_fever_section), int(non_fever_base))
-            if cache_key is not None:
-                if len(_FG_BASELINE_CACHE) >= _FG_BASELINE_CACHE_MAX:
-                    _FG_BASELINE_CACHE.clear()
-                _FG_BASELINE_CACHE[cache_key] = result
+            _fg_baseline_cache_put(cache_key, result)
             return result
         except Exception:
             # Fall back to the per-point baseline computation.
             pass
 
-    ref_ff = ref_arrays["Fever Fill Rate"]
-    ref_ft = ref_arrays["Fever Time"]
-
-    fever_fill_rate = lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS)
-    fever_time_stat = lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS)
-    non_fever_section, non_fever_base = calculate_non_fever_sections(
-        timestamps,
-        total_notes,
-        fever_fill_rate,
-        fever_time_stat,
-        long_notes,
-        last_note_time,
+    result = _fg_baseline_params_point(
+        stats=stats,
+        timestamps=timestamps,
+        total_notes=int(total_notes),
+        long_notes=int(long_notes),
+        last_note_time=float(last_note_time),
+        ref_arrays=ref_arrays,
     )
-
-    result = (int(non_fever_section), int(non_fever_base))
-    if cache_key is not None:
-        if len(_FG_BASELINE_CACHE) >= _FG_BASELINE_CACHE_MAX:
-            _FG_BASELINE_CACHE.clear()
-        _FG_BASELINE_CACHE[cache_key] = result
+    _fg_baseline_cache_put(cache_key, result)
+    if use_grid and song_key is not None:
+        with _FG_BASELINE_CACHE_LOCK:
+            if song_key not in _FG_BASELINE_GRID_CACHE:
+                _FG_BASELINE_POINT_MISS_COUNT[song_key] = int(_FG_BASELINE_POINT_MISS_COUNT.get(song_key, 0)) + 1
     return result
 
 

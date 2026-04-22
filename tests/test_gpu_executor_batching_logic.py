@@ -139,7 +139,7 @@ def test_gather_batch_collects_coalescable_gpu_work() -> None:
     assert len(ex._request_queue.items) == 0
 
 
-def test_gather_batch_caps_gpu_native_ga_owner_batch(monkeypatch) -> None:
+def test_gather_batch_treats_gpu_native_ga_as_no_batch() -> None:
     class _SeqQueue:
         def __init__(self, items: list[GpuRequest]):
             self.items = list(items)
@@ -163,18 +163,64 @@ def test_gather_batch_caps_gpu_native_ga_owner_batch(monkeypatch) -> None:
     ex._in_process_queues = True
     ex._request_queue = _SeqQueue(requests)
 
-    monkeypatch.setenv("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", "2")
-
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
-    assert [r.request_id for r in batch] == [401, 402]
-    assert len(ex._request_queue.items) == 1
+    assert [r.request_id for r in batch] == [401]
+    assert len(ex._request_queue.items) == 2
 
     batch2 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
-    assert [r.request_id for r in batch2] == [403]
+    assert [r.request_id for r in batch2] == [402]
+    assert len(ex._request_queue.items) == 1
+
+
+def test_gather_batch_defers_gpu_native_ga_behind_existing_work() -> None:
+    class _SeqQueue:
+        def __init__(self, items: list[GpuRequest]):
+            self.items = list(items)
+
+        def get(self, timeout=None):
+            if self.items:
+                return self.items.pop(0)
+            raise queue.Empty()
+
+    requests = [
+        GpuRequest(
+            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            request_id=411,
+            worker_id=1,
+            payload={},
+        ),
+        GpuRequest(
+            request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+            request_id=412,
+            worker_id=1,
+            payload={},
+        ),
+        GpuRequest(
+            request_type=GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            request_id=413,
+            worker_id=1,
+            payload={},
+        ),
+    ]
+
+    ex = GpuExecutor()
+    ex._in_process_queues = True
+    ex._request_queue = _SeqQueue(requests)
+
+    batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch] == [411]
+    assert [r.request_id for r in ex._request_queue.items] == [413]
+
+    batch2 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch2] == [412]
+    assert [r.request_id for r in ex._request_queue.items] == [413]
+
+    batch3 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch3] == [413]
     assert len(ex._request_queue.items) == 0
 
 
-def test_gather_batch_defaults_gpu_native_ga_owner_batch_to_max_batch(monkeypatch) -> None:
+def test_gather_batch_prioritizes_fg_recovery_after_ga_turn_streak(monkeypatch) -> None:
     class _SeqQueue:
         def __init__(self, items: list[GpuRequest]):
             self.items = list(items)
@@ -187,22 +233,40 @@ def test_gather_batch_defaults_gpu_native_ga_owner_batch_to_max_batch(monkeypatc
     requests = [
         GpuRequest(
             request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
-            request_id=req_id,
+            request_id=421,
+            worker_id=1,
+            payload={"song_slot": 1},
+        ),
+        GpuRequest(
+            request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+            request_id=422,
+            worker_id=1,
+            payload={"song_slot": 2},
+        ),
+        GpuRequest(
+            request_type=GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            request_id=423,
             worker_id=1,
             payload={},
-        )
-        for req_id in (411, 412, 413)
+        ),
     ]
 
     ex = GpuExecutor()
     ex._in_process_queues = True
     ex._request_queue = _SeqQueue(requests)
+    ex._ga_owner_turn_streak = 1
 
-    monkeypatch.delenv("GPU_NATIVE_GA_OWNER_BATCH_MAX_REQS", raising=False)
+    monkeypatch.setenv("GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX", "1")
+    monkeypatch.setenv("GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS", "8")
 
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
-    assert [r.request_id for r in batch] == [411, 412, 413]
-    assert len(ex._request_queue.items) == 0
+    assert [r.request_id for r in batch] == [423]
+    assert [r.request_id for r in ex._staged_requests] == [421, 422]
+
+    batch2 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch2] == [421]
+    batch3 = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    assert [r.request_id for r in batch3] == [422]
 
 
 def test_gpu_executor_timer_period_lifecycle(monkeypatch):
