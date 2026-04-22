@@ -100,6 +100,7 @@ Stages are aggregated in:
 ## Safe FG Stage-1 tuning (no quality reduction)
 These knobs **do not change the search space or scoring math**; they only affect kernel launch sizing and banding:
 
+- Canonical policy implementation: `gear_optimizer/solver/gpu_tuning_policy.py`. Keep `genetic.py` and `force_greats/api.py` as thin callers so GA/FG tuning changes stay in one place.
 - `FG_SMALL_WORK_SINGLE_BAND=1` (default): when workloads are small, force a single Stage‑1 band to reduce launch overhead.
 - `FG_SMALL_WORK_MAX_WORK_ITEMS` (default `20000`): max `n_genomes * n_ftff` eligible for single‑band.
 - `FG_SMALL_WORK_MAX_CFG_LEN` (default `4096`): max cfg window length eligible for single‑band.

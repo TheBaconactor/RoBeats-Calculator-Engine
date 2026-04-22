@@ -86,7 +86,6 @@ At each stage, add a CPU vs GPU equivalence harness:
   - `scripts/regression/gpu_stats_regression.py`
 
 ## Notes specific to RX 7900 XTX (Vulkan)
-- Use `TAICHI_BLOCK_DIM` tuning (default currently set to 128 for this workload).
+- Use `TAICHI_BLOCK_DIM` / `GA_FTFF_REDUCE_BLOCK_DIM` tuning from measured throughput and profiler data; current repo defaults are `256`, not `128`.
 - Prefer **large enough workloads** (e.g., `n_genomes * n_combos`) to keep CU occupancy high.
 - Avoid frequent `to_numpy()/from_numpy()` in the inner GA loop; treat them as sync points.
-

@@ -21,6 +21,7 @@ import taichi as ti
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.solver.fg_exact_dp import prepare_force_greats_exact_dp_inputs
+from gear_optimizer.solver.gpu_tuning_policy import plan_fg_stage1_cfg_chunk
 
 from .. import api as gem_api
 from ..api.sync_policy import maybe_sync
@@ -54,52 +55,6 @@ _FORCE_SYNC = _ENV_GET("GPU_FORCE_SYNC", "0") == "1"
 # Per-chunk sync fallback for TDR-prone Windows systems (default OFF for performance)
 _SYNC_PER_CHUNK = _ENV_GET("FG_SYNC_PER_CHUNK", "0") == "1"
 
-# ============================================================================
-# ADAPTIVE CHUNKING POLICY
-# ============================================================================
-
-
-def _get_target_threads_per_kernel(n_work_items: int) -> int:
-    """
-    Pick an adaptive thread budget for the flattened Stage 1 FG kernel.
-
-    Goal: keep kernels large enough to amortize launch overhead (better GPU occupancy),
-    while remaining conservative enough to avoid watchdog/TDR issues on Windows.
-    """
-    try:
-        env = str(_ENV_GET("FG_TARGET_THREADS_PER_KERNEL", "") or "").strip()
-    except Exception:
-        env = ""
-    if env:
-        try:
-            v = int(env)
-        except Exception:
-            v = 0
-        if v > 0:
-            return int(v)
-
-    try:
-        n_work_items = int(n_work_items)
-    except Exception:
-        n_work_items = 0
-    if n_work_items <= 0:
-        return 2_000_000
-
-    # Metal path uses a different kernel strategy; keep the conservative default.
-    if gem_fields.IS_METAL:
-        return 2_000_000
-
-    # Heuristic: increase chunking target when the flat work size is small (common case
-    # for narrow FT/FF windows), which reduces cfg chunk count and improves throughput.
-    if n_work_items <= 40_000:
-        return 6_000_000
-    if n_work_items <= 100_000:
-        return 4_000_000
-    if n_work_items <= 250_000:
-        return 3_000_000
-    return 2_000_000
-
-
 # Enable detailed FG GPU timing output
 _PERF_TIMING = _ENV_GET("PERF_TIMING", "0") == "1"
 _FG_TRANSFER_TRACE = str(_ENV_GET("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -115,6 +70,7 @@ _GPU_PROFILER_CACHE = None
 _GPU_PROFILER_READY = False
 _FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 _FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TARGET_THREADS_PER_KERNEL = _env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
 _FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
 
 
@@ -254,32 +210,43 @@ def _ensure_cfg_mode_defaults() -> None:
         return
 
 
-def _maybe_force_single_band(
-    cfg_chunk: int,
-    *,
-    n_work_items: int,
-    max_cfg_len: int,
-    label: str = "",
-) -> int:
-    if not _FG_SMALL_WORK_SINGLE_BAND:
-        return int(cfg_chunk)
+def _get_stage1_block_dim() -> int:
     try:
-        if int(n_work_items) <= int(_FG_SMALL_WORK_MAX_WORK_ITEMS) and int(max_cfg_len) <= int(
-            _FG_SMALL_WORK_MAX_CFG_LEN
-        ):
-            if _PERF_TIMING and int(cfg_chunk) < int(max_cfg_len):
-                try:
-                    suffix = f" ({label})" if label else ""
-                    print(
-                        f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
-                        f"cfg_chunk={int(max_cfg_len)}"
-                    )
-                except Exception:
-                    pass
-            return int(max_cfg_len)
+        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
     except Exception:
-        return int(cfg_chunk)
-    return int(cfg_chunk)
+        stage1_block_dim = 64
+    if stage1_block_dim <= 0:
+        stage1_block_dim = 64
+    return int(stage1_block_dim)
+
+
+def _build_stage1_chunk_plan(*, n_work_items: int, cfg_chunk: int | None, max_cfg_len: int):
+    return plan_fg_stage1_cfg_chunk(
+        n_work_items=int(n_work_items),
+        stage1_block_dim=_get_stage1_block_dim(),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(max_cfg_len),
+        is_metal=bool(gem_fields.IS_METAL),
+        target_threads_override=int(_FG_TARGET_THREADS_PER_KERNEL),
+        small_work_single_band=bool(_FG_SMALL_WORK_SINGLE_BAND),
+        small_work_max_work_items=int(_FG_SMALL_WORK_MAX_WORK_ITEMS),
+        small_work_max_cfg_len=int(_FG_SMALL_WORK_MAX_CFG_LEN),
+    )
+
+
+def _maybe_log_single_band(plan, *, n_work_items: int, max_cfg_len: int, label: str = "") -> None:
+    if not _PERF_TIMING or not bool(getattr(plan, "single_band_forced", False)):
+        return
+    if int(getattr(plan, "requested_cfg_chunk", 0)) >= int(max_cfg_len):
+        return
+    try:
+        suffix = f" ({label})" if label else ""
+        print(
+            f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
+            f"cfg_chunk={int(getattr(plan, 'cfg_chunk', max_cfg_len))}"
+        )
+    except Exception:
+        return
 
 
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
@@ -760,8 +727,7 @@ def fg_select_signature_frontier_indices(
 
     n = int(base_np.shape[0])
     if any(
-        int(arr.shape[0]) != int(n)
-        for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
+        int(arr.shape[0]) != int(n) for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
     ):
         raise ValueError("FG signature frontier metadata arrays must have matching length")
 
@@ -1382,7 +1348,9 @@ def solve_force_greats_exact_dp_gpu_batch(
     first_prepared = None
     for stats in stats_list:
         if isinstance(stats, dict):
-            first_prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+            first_prepared = prepare_force_greats_exact_dp_inputs(
+                stats=stats, calc_song=calc_song, ref_arrays=ref_arrays
+            )
             if first_prepared is not None:
                 break
 
@@ -1413,8 +1381,12 @@ def solve_force_greats_exact_dp_gpu_batch(
             continue
 
         n = int(prepared.total_notes)
-        fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64))
-        fg_kernels.fg_upload_exact_dp_full_c_prefix_kernel(int(n), np.ascontiguousarray(prepared.c_prefix, dtype=np.int64))
+        fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(
+            int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64)
+        )
+        fg_kernels.fg_upload_exact_dp_full_c_prefix_kernel(
+            int(n), np.ascontiguousarray(prepared.c_prefix, dtype=np.int64)
+        )
         fg_kernels.fg_exact_dp_sparse_full_kernel(
             int(n),
             float(prepared.raw_fill),
@@ -1864,36 +1836,18 @@ def _solve_force_greats_finder_gpu_impl(
     #
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
     # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
-    TARGET_CFG_EVALS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
-    try:
-        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
-    except Exception:
-        stage1_block_dim = 64
-    if stage1_block_dim <= 0:
-        stage1_block_dim = 64
-
-    if cfg_chunk is None or int(cfg_chunk) <= 0:
-        # Auto-calculate based on work items
-        if gem_fields.IS_METAL:
-            # Metal kernel (fg_stage1_kernel) loops SEQUENTIALLY over cfg_chunk.
-            # We must keep this small to avoid TDR (watchdog timeout).
-            # A safe bet is ~16-32 configs per kernel launch.
-            cfg_chunk = 16
-        else:
-            # Vulkan Stage 1: one workgroup per (genome, ftff). Each thread loops cfg indices
-            # with stride=block_dim. Choose cfg_chunk so per-thread work stays bounded.
-            target_cfg_per_thread = max(1, TARGET_CFG_EVALS_PER_KERNEL // max(1, n_work_items * stage1_block_dim))
-            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
-    else:
-        cfg_chunk = int(cfg_chunk)
-
-    cfg_chunk = _maybe_force_single_band(
-        int(cfg_chunk),
+    cfg_chunk_plan = _build_stage1_chunk_plan(
+        n_work_items=int(n_work_items),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(n_cfg_total),
+    )
+    _maybe_log_single_band(
+        cfg_chunk_plan,
         n_work_items=int(n_work_items),
         max_cfg_len=int(n_cfg_total),
         label="single",
     )
-    cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
+    cfg_chunk = min(int(cfg_chunk_plan.cfg_chunk), int(n_cfg_total), int(fg_fields.FG_MAX_CONFIGS))
     # Keep `forced_counts` external array shape stable by clamping chunk size to a fixed staging buffer.
     cfg_chunk = min(cfg_chunk, _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
@@ -2990,35 +2944,19 @@ def solve_force_greats_finder_gpu_tasks(
     n_work_items_est = int(n_genomes) * int(min(max_ftff, int(total_pairs)))
     if n_work_items_est <= 0:
         return
-    target_threads = _get_target_threads_per_kernel(int(n_work_items_est))
-    try:
-        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
-    except Exception:
-        stage1_block_dim = 64
-    if stage1_block_dim <= 0:
-        stage1_block_dim = 64
-    if cfg_chunk is None or int(cfg_chunk) <= 0:
-        if gem_fields.IS_METAL:
-            cfg_chunk = 16
-        else:
-            target_cfg_per_thread = max(1, int(target_threads) // max(1, n_work_items_est * stage1_block_dim))
-            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
-    cfg_chunk = int(cfg_chunk)
-    # `max_cfg_len` is computed from CPU-visible config windows/matrices.
-    #
-    # In the GPU max-FP compute path (per-ftff mixed-radix caps computed on-device),
-    # we don't know max cfg length up-front; clamping by 0 would collapse cfg_chunk
-    # to 1 and explode band count (severe perf regression).
+    cfg_chunk_plan = _build_stage1_chunk_plan(
+        n_work_items=int(n_work_items_est),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(max_cfg_len),
+    )
     if int(max_cfg_len) > 0:
-        cfg_chunk = _maybe_force_single_band(
-            int(cfg_chunk),
+        _maybe_log_single_band(
+            cfg_chunk_plan,
             n_work_items=int(n_work_items_est),
             max_cfg_len=int(max_cfg_len),
             label="packed",
         )
-        cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
-    else:
-        cfg_chunk = max(1, int(cfg_chunk))
+    cfg_chunk = int(cfg_chunk_plan.cfg_chunk)
 
     # Process FT/FF entries in FG_MAX_FTFF-sized chunks (field shape stability).
     max_ftff = int(max_ftff)
@@ -3145,16 +3083,18 @@ def solve_force_greats_finder_gpu_tasks(
                 max_cfg_len_chunk = 0
         cfg_chunk_run = int(cfg_chunk)
         if use_gpu_max_fp and int(max_cfg_len_chunk) > 0:
-            try:
-                cfg_chunk_run = _maybe_force_single_band(
-                    int(cfg_chunk_run),
-                    n_work_items=int(n_work_items),
-                    max_cfg_len=int(max_cfg_len_chunk),
-                    label="packed_gpu_max_fp",
-                )
-                cfg_chunk_run = max(1, min(int(cfg_chunk_run), int(max_cfg_len_chunk)))
-            except Exception:
-                cfg_chunk_run = int(cfg_chunk)
+            cfg_chunk_run_plan = _build_stage1_chunk_plan(
+                n_work_items=int(n_work_items),
+                cfg_chunk=int(cfg_chunk),
+                max_cfg_len=int(max_cfg_len_chunk),
+            )
+            _maybe_log_single_band(
+                cfg_chunk_run_plan,
+                n_work_items=int(n_work_items),
+                max_cfg_len=int(max_cfg_len_chunk),
+                label="packed_gpu_max_fp",
+            )
+            cfg_chunk_run = int(cfg_chunk_run_plan.cfg_chunk)
         n_bands = (int(max_cfg_len_chunk) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
         t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
         for band_idx in range(n_bands):

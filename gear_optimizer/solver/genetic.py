@@ -92,6 +92,7 @@ from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .item_registry import ItemRegistry
 from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
+from .gpu_tuning_policy import choose_ga_batch_runs
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
@@ -2269,29 +2270,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
     except Exception:
         n_combos = 0
-    denom = int(n_genomes) * max(1, n_combos)
-    # Keep a small safety margin below MAX_EVALS_PER_DISPATCH to avoid accidental oversubscription.
-    soft_evals = int(gpu_fields.MAX_EVALS_PER_DISPATCH) - 8192  # 8k headroom
-    if soft_evals < 1:
-        soft_evals = int(gpu_fields.MAX_EVALS_PER_DISPATCH)
-    max_runs_by_work = int(soft_evals // denom) if denom > 0 else 1
-    if max_runs_by_work < 1:
-        max_runs_by_work = 1
-    max_runs_by_genomes = int(gpu_fields.MAX_GENOMES // int(n_genomes)) if int(n_genomes) > 0 else 1
-    if max_runs_by_genomes < 1:
-        max_runs_by_genomes = 1
-
-    batch_runs_env = str(_GPU_NATIVE_GA_BATCH_RUNS).strip()
-    try:
-        batch_runs_override = int(batch_runs_env)
-    except Exception:
-        batch_runs_override = 0
-
-    batch_runs_default = min(max_runs_by_work, max_runs_by_genomes)
-    if batch_runs_default < 1:
-        batch_runs_default = 1
-    if batch_runs_override > 0:
-        batch_runs_default = batch_runs_override
+    batch_runs_default = choose_ga_batch_runs(
+        n_genomes=int(n_genomes),
+        n_combos=int(n_combos),
+        max_evals_per_dispatch=int(gpu_fields.MAX_EVALS_PER_DISPATCH),
+        max_genomes=int(gpu_fields.MAX_GENOMES),
+        batch_runs_override=int(_GPU_NATIVE_GA_BATCH_RUNS),
+    ).batch_runs
 
     payload_segments: list[np.ndarray] = []
     audit_payload_segments: list[np.ndarray] = []
@@ -2863,7 +2848,9 @@ def solve_coevolution_genetic(
         else:
             gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
         if gear_pool is None:
-            logger.error(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
+            logger.error(
+                f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}"
+            )
             return None, [], [], None, [], [], []
 
         if whitelisted_minis:
@@ -3034,7 +3021,9 @@ def solve_coevolution_genetic(
         if solver_ctx is None:
             registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
             registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
-            registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis)
+            registry = ItemRegistry(
+                gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis
+            )
             gpu_data = registry.to_gpu_arrays()
             base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
         else:
