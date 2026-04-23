@@ -176,11 +176,15 @@ def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
     global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
+    global _GA_KERNELS_WARMED, _GA_KERNELS_LIGHT_WARMED, _GA_LIVE_REQUEST_WARMED
     _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
     _BASE_FIXED_STATS_CACHE = None
     _ISLAND_BOUNDARIES_CACHE = None
     _ISLAND_ELITES_CACHE = None
     _ISLAND_ELITES_UPLOAD_BUFFER = None
+    _GA_KERNELS_WARMED = False
+    _GA_KERNELS_LIGHT_WARMED = False
+    _GA_LIVE_REQUEST_WARMED = False
 
 
 def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
@@ -2117,6 +2121,136 @@ def ga_island_migration_runs(
 
 _GA_KERNELS_WARMED = False
 _GA_KERNELS_LIGHT_WARMED = False
+_GA_LIVE_REQUEST_WARMED = False
+
+
+def _warmup_ref_arrays() -> dict[str, np.ndarray]:
+    x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
+    return {
+        "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
+        "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
+        "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
+        "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
+        "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
+    }
+
+
+def _warmup_calc_song() -> dict:
+    timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
+    note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
+    return {
+        "metadata": {
+            "Song Name": "__ga_live_request_warmup__",
+            "Difficulty": "Warmup",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
+        },
+        "song_data": {
+            "timestamps": timestamps,
+            "chart_timestamps": timestamps,
+            "note_types": note_types,
+        },
+    }
+
+
+def warmup_ga_live_request_kernels() -> None:
+    """
+    Warm the kernels and upload paths used by the first real GPU-native GA request.
+
+    The full offline warmup historically covered GA evaluation, but not the live
+    `ensure_ready(refs) -> precompute_timeline_gpu() -> materialize_mode="none"
+    -> refresh row 0` path. Missing that path lets stale sentinels push timeline
+    and steady-state JIT/load costs into the first real song, creating a visible
+    0%-utilization valley before the sustained workload begins.
+    """
+    global _GA_LIVE_REQUEST_WARMED
+    if _GA_LIVE_REQUEST_WARMED:
+        return
+
+    ensure_ready()
+
+    import taichi as ti
+
+    from .timeline import precompute_timeline_gpu
+
+    n_slots = 9
+    n_runs = 1
+    n_genomes = min(64, int(getattr(fields, "MAX_GA_RUN_GENOMES", 250) or 250), int(fields.MAX_GENOMES))
+    n_genomes = max(1, int(n_genomes))
+    total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
+    gem_scale_fever = 3
+    song_slot = 0
+
+    ref_arrays = _warmup_ref_arrays()
+    ensure_ready(ref_arrays)
+    precompute_timeline_gpu(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
+
+    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
+    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
+    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
+    ga_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
+    ga_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    ga_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
+
+    ga_generate_initial_populations(
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes=int(n_genomes),
+        n_slots=n_slots,
+        seed=12345,
+    )
+    ga_load_initial_population(run_idx=0, n_genomes=int(n_genomes), n_slots=n_slots)
+    ga_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=int(n_genomes), seed=12345)
+    ga_init_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
+    ga_init_global_best()
+
+    ga_evaluate_population(
+        int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        materialize_mode="none",
+    )
+    ga_refresh_scores_and_update_runs_best(
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    ga_next_generation_fused_runs(
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=1,
+        n_islands=1,
+        elites_per_island=1,
+    )
+    ga_pack_fg_candidates_table_segmented(
+        table_slot=song_slot,
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    _ = ga_download_fg_selected_payload(
+        table_slot=song_slot,
+        n_runs=n_runs,
+        limit=1,
+        top_base_keep=1,
+        base_budget=1,
+        fg_budget_end=1,
+    )
+    ti.sync()
+    _GA_LIVE_REQUEST_WARMED = True
 
 
 def warmup_ga_kernels() -> None:
@@ -2240,6 +2374,7 @@ def warmup_ga_kernels() -> None:
         fg_budget_end=1,
     )
 
+    warmup_ga_live_request_kernels()
     _GA_KERNELS_WARMED = True
 
 
@@ -2311,6 +2446,11 @@ def warmup_ga_kernels_light() -> None:
         pass
 
     # Warm fused next-gen path (single-run).
+    try:
+        warmup_ga_live_request_kernels()
+    except Exception:
+        pass
+
     try:
         ga_next_generation_fused(
             n_genomes=int(n_genomes),

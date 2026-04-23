@@ -54,8 +54,8 @@ from gear_optimizer.solver.windows_timer import (
 
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
-_WARMUP_SENTINEL_SCHEMA = 2
-_GA_WARMUP_PROFILE = "v3_compile_update_global"
+_WARMUP_SENTINEL_SCHEMA = 3
+_GA_WARMUP_PROFILE = "v4_live_request_setup_refresh"
 
 
 def _effective_owner_batch_max(
@@ -1890,6 +1890,22 @@ class GpuExecutor:
                     )
                     if warmup_cached:
                         self._write_heartbeat(phase="warmup_cached", force=True)
+                        try:
+                            if warmup_fg:
+                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
+                                from .taichi_gem.force_greats import fields as fg_fields
+
+                                fg_fields.ensure_ready_with_warmup()
+                            if warmup_ga:
+                                self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
+                                from .taichi_gem.api import ga_operations as ga_ops
+
+                                ga_ops.warmup_ga_live_request_kernels()
+                        except Exception as e:
+                            try:
+                                logger.debug("[GpuExecutor] Cached warmup refresh failed: %s: %s", type(e).__name__, e)
+                            except Exception:
+                                pass
                     else:
                         sentinel_error = ""
                         try:

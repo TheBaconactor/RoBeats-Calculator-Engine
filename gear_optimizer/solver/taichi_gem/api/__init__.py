@@ -93,6 +93,7 @@ try:
         # GPU-side island migration
         ga_island_migration,
         ga_island_migration_runs,
+        warmup_ga_live_request_kernels,
         # FUSED kernel APIs
         ga_write_best_and_update_global,
     )
@@ -160,6 +161,7 @@ __all__ = [
     # GPU-side island migration
     "ga_island_migration",
     "ga_island_migration_runs",
+    "warmup_ga_live_request_kernels",
     # FUSED kernel APIs
     "ga_write_best_and_update_global",
 ]

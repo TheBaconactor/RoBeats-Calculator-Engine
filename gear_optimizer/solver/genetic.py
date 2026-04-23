@@ -1748,7 +1748,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
     color_flags = dict(color_flags or {})
 
     try:
-        from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
+        from .taichi_gem.api import ensure_ready, precompute_timeline_gpu
         from .taichi_gem import fields as gpu_fields
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
@@ -1776,33 +1776,97 @@ def _run_gpu_native_ga_runs_payload_steady_state(
     except Exception:
         max_retries = 1
 
+    perf = _PERF_TIMING
+    phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
+    profile_events_enabled = bool(
+        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
+        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+    )
+    phase_events_enabled = bool(phase_timing and profile_events_enabled)
+    song_profile_key = None
+    try:
+        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+        song_diff = str(meta.get("Difficulty") or "").strip()
+        if song_name:
+            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
+    except Exception:
+        song_profile_key = None
+
+    def _emit_ga_setup_phase(*, phase: str, start: float, **extra_metrics) -> None:
+        if not profile_events_enabled:
+            return
+        metrics = {
+            "phase": str(phase),
+            "ms": float((time.perf_counter() - float(start)) * 1000.0),
+            "runs": int(num_runs),
+            "pop": int(n_genomes),
+            "song_slot": int(song_slot),
+        }
+        metrics.update(extra_metrics)
+        emit_profile_event(
+            component="gpu_executor",
+            event="ga_gpu_setup_phase",
+            song_key=song_profile_key,
+            metrics=metrics,
+        )
+
+    if profile_events_enabled:
+        emit_profile_event(
+            component="gpu_executor",
+            event="ga_gpu_phase_flags",
+            song_key=song_profile_key,
+            metrics={
+                "perf_timing": int(bool(perf)),
+                "phase_timing": int(bool(phase_timing)),
+                "phase_events_enabled": int(bool(phase_events_enabled)),
+            },
+        )
+
     def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
         msg = str(exc)
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
     def _restore_song_gpu_state() -> None:
-        load_ref_arrays(ref_arrays)
+        t_phase = time.perf_counter()
+        ensure_ready(ref_arrays)
+        _emit_ga_setup_phase(phase="ensure_ready_ref_arrays", start=t_phase)
+        t_phase = time.perf_counter()
         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        _emit_ga_setup_phase(phase="precompute_timeline_gpu", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
+        _emit_ga_setup_phase(phase="ga_upload_item_stats", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        _emit_ga_setup_phase(phase="ga_upload_base_fixed_stats", start=t_phase)
         if init_heuristic_topk is not None and int(init_heuristic_k) > 0:
+            t_phase = time.perf_counter()
             gpu_api.ga_upload_init_heuristic_topk(
                 topk_ids=np.asarray(init_heuristic_topk, dtype=np.int32),
                 heuristic_k=int(init_heuristic_k),
                 n_slots=int(n_slots),
             )
+            _emit_ga_setup_phase(phase="ga_upload_init_heuristic_topk", start=t_phase)
 
+    t_phase = time.perf_counter()
     _restore_song_gpu_state()
+    _emit_ga_setup_phase(phase="restore_song_gpu_state", start=t_phase)
 
     if initial_populations is not None:
+        t_phase = time.perf_counter()
         current_population_ids = build_steady_state_initial_population_ids(
             initial_populations,
             n_genomes=int(n_genomes),
             n_slots=int(n_slots),
         )
+        _emit_ga_setup_phase(phase="build_steady_state_initial_population_ids", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_population_indices(current_population_ids, n_slots=int(n_slots))
+        _emit_ga_setup_phase(phase="ga_upload_population_indices_initial", start=t_phase)
     else:
         seed_base = 42 if ga_seed is None else int(ga_seed)
+        t_phase = time.perf_counter()
         gpu_api.ga_generate_initial_populations(
             run_idx_start=0,
             n_runs=1,
@@ -1817,11 +1881,16 @@ def _run_gpu_native_ga_runs_payload_steady_state(
             heuristic_copies=int(init_heuristic_copies),
             seed_ids=db_seed_ids,
         )
+        _emit_ga_setup_phase(phase="ga_generate_initial_populations", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_load_initial_population(run_idx=0, n_genomes=int(n_genomes), n_slots=int(n_slots))
+        _emit_ga_setup_phase(phase="ga_load_initial_population", start=t_phase)
+        t_phase = time.perf_counter()
         current_population_ids = np.asarray(
             gpu_api.ga_download_population_indices(n_genomes=int(n_genomes), n_slots=int(n_slots)),
             dtype=np.int32,
         )
+        _emit_ga_setup_phase(phase="ga_download_population_indices_initial", start=t_phase)
 
     fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
     if fg_candidate_limit <= 0:
@@ -1845,6 +1914,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
     else:
         max_ft_gems_global = int(total_budget)
         max_ff_gems_global = int(total_budget)
+    t_phase = time.perf_counter()
     try:
         n_combos = int(
             gpu_api._ensure_ftff_combo_tables(
@@ -1855,35 +1925,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
         )
     except Exception:
         n_combos = 0
-
-    perf = _PERF_TIMING
-    phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
-    profile_events_enabled = bool(
-        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
-        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
-    )
-    phase_events_enabled = bool(phase_timing and profile_events_enabled)
-    song_profile_key = None
-    try:
-        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
-        song_diff = str(meta.get("Difficulty") or "").strip()
-        if song_name:
-            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
-    except Exception:
-        song_profile_key = None
-
-    if phase_events_enabled:
-        emit_profile_event(
-            component="gpu_executor",
-            event="ga_gpu_phase_flags",
-            song_key=song_profile_key,
-            metrics={
-                "perf_timing": int(bool(perf)),
-                "phase_timing": int(bool(phase_timing)),
-                "phase_events_enabled": int(bool(phase_events_enabled)),
-            },
-        )
+    _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
 
     logger.info(
         "  Steady-state epochs: %d (generations per epoch: %d, refresh_count: %d, refresh_pct: %.0f%%)",
@@ -2096,7 +2138,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             seed_base = 42
 
     try:
-        from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
+        from .taichi_gem.api import ensure_ready, precompute_timeline_gpu
         from .taichi_gem import fields as gpu_fields
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
@@ -2179,7 +2221,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     # Reduce padded CPU↔GPU transfers by sizing multi-run GA buffers to the
     # current session's needs. This MUST happen before the first Taichi field
-    # allocation (i.e., before load_ref_arrays/precompute_timeline triggers ensure_ready()).
+    # allocation (i.e., before ensure_ready/precompute_timeline triggers field allocation).
     gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
     # Optional stability toggles (mirrors solve_coevolution_genetic GPU-native path)
@@ -2195,29 +2237,89 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     except Exception:
         max_retries = 1
 
+    # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
+    perf = _PERF_TIMING
+    phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
+    profile_events_enabled = bool(
+        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
+        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+    )
+    phase_events_enabled = bool(phase_timing and profile_events_enabled)
+    song_profile_key = None
+    try:
+        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+        song_diff = str(meta.get("Difficulty") or "").strip()
+        if song_name:
+            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
+    except Exception:
+        song_profile_key = None
+
+    def _emit_ga_setup_phase(*, phase: str, start: float, **extra_metrics) -> None:
+        if not profile_events_enabled:
+            return
+        metrics = {
+            "phase": str(phase),
+            "ms": float((time.perf_counter() - float(start)) * 1000.0),
+            "runs": int(num_runs),
+            "pop": int(n_genomes),
+            "song_slot": int(song_slot),
+        }
+        metrics.update(extra_metrics)
+        emit_profile_event(
+            component="gpu_executor",
+            event="ga_gpu_setup_phase",
+            song_key=song_profile_key,
+            metrics=metrics,
+        )
+
+    if profile_events_enabled:
+        emit_profile_event(
+            component="gpu_executor",
+            event="ga_gpu_phase_flags",
+            song_key=song_profile_key,
+            metrics={
+                "perf_timing": int(bool(perf)),
+                "phase_timing": int(bool(phase_timing)),
+                "phase_events_enabled": int(bool(phase_events_enabled)),
+            },
+        )
+
     def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
         msg = str(exc)
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
     def _restore_song_gpu_state() -> None:
         # Rebuild Taichi/GA static state for this song slot after hard resets.
-        load_ref_arrays(ref_arrays)
+        t_phase = time.perf_counter()
+        ensure_ready(ref_arrays)
+        _emit_ga_setup_phase(phase="ensure_ready_ref_arrays", start=t_phase)
+        t_phase = time.perf_counter()
         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+        _emit_ga_setup_phase(phase="precompute_timeline_gpu", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
+        _emit_ga_setup_phase(phase="ga_upload_item_stats", start=t_phase)
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        _emit_ga_setup_phase(phase="ga_upload_base_fixed_stats", start=t_phase)
 
     # Load refs/timeline + upload static per-song GA data once.
     _raise_if_abort_requested(abort_requested, "before GPU-native GA setup")
+    t_setup_total = time.perf_counter()
     _restore_song_gpu_state()
+    _emit_ga_setup_phase(phase="restore_song_gpu_state", start=t_setup_total)
 
     # Optional heuristic top-K table for GPU initial population generation.
     init_heuristic_k = int(init_heuristic_k)
     if init_heuristic_topk is not None and init_heuristic_k > 0:
+        t_phase = time.perf_counter()
         gpu_api.ga_upload_init_heuristic_topk(
             topk_ids=np.asarray(init_heuristic_topk, dtype=np.int32),
             heuristic_k=int(init_heuristic_k),
             n_slots=int(n_slots),
         )
+        _emit_ga_setup_phase(phase="ga_upload_init_heuristic_topk", start=t_phase)
 
     is_p_ft = color_flags.get("is_p_ft", 0)
     is_s_ft = color_flags.get("is_s_ft", 0)
@@ -2263,6 +2365,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     # Determine an auto batch size that avoids combo-chunking in ga_evaluate_population.
     # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_EVALS_PER_DISPATCH.
+    t_phase = time.perf_counter()
     try:
         n_combos = int(
             gpu_api._ensure_ftff_combo_tables(
@@ -2273,6 +2376,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
     except Exception:
         n_combos = 0
+    _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
     batch_runs_default = choose_ga_batch_runs(
         n_genomes=int(n_genomes),
         n_combos=int(n_combos),
@@ -2284,36 +2388,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     payload_segments: list[np.ndarray] = []
     audit_payload_segments: list[np.ndarray] = []
     audit_redundancy = _ga_redundancy_audit_enabled()
-
-    # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
-    perf = _PERF_TIMING
-    phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
-    profile_events_enabled = bool(
-        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
-        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
-    )
-    phase_events_enabled = bool(phase_timing and profile_events_enabled)
-    song_profile_key = None
-    try:
-        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
-        song_diff = str(meta.get("Difficulty") or "").strip()
-        if song_name:
-            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
-    except Exception:
-        song_profile_key = None
-
-    if profile_events_enabled:
-        emit_profile_event(
-            component="gpu_executor",
-            event="ga_gpu_phase_flags",
-            song_key=song_profile_key,
-            metrics={
-                "perf_timing": int(bool(perf)),
-                "phase_timing": int(bool(phase_timing)),
-                "phase_events_enabled": int(bool(phase_events_enabled)),
-            },
-        )
 
     phase_samples_current: dict[str, list[float]] | None = None
 

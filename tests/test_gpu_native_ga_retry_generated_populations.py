@@ -172,6 +172,7 @@ class _FakeGpuApi:
 def _install_fake_taichi_modules(monkeypatch) -> None:
     fake_api_module = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
     fake_api_module.load_ref_arrays = lambda _ref_arrays: None
+    fake_api_module.ensure_ready = lambda _ref_arrays=None, **_kwargs: b""
     fake_api_module.precompute_timeline_gpu = lambda _calc_song, _ref_arrays, song_slot=0: int(song_slot)
 
     fake_fields_module = types.ModuleType("gear_optimizer.solver.taichi_gem.fields")
