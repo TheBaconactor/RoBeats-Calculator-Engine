@@ -8,12 +8,12 @@ Includes:
 import sys
 
 import taichi as ti
-from taichi.lang import simt
 
 from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
     optimize_core_device_refined as optimize_core_device,
+    score_solution_from_gems_preloaded,
 )
 
 # Platform detection for atomic operations
@@ -199,8 +199,47 @@ def _solve_combo_warmstart_preloaded(
                     ff_idx,
                 )
 
-            score = res_vec[0]
-            if score >= 0:
+            raw_score = res_vec[0]
+            if raw_score >= 0:
+                # Build the packed max-key from a selection-safe re-score of the
+                # returned gem payload. On Vulkan, the warmstart exact path can
+                # surface the winning payload correctly while the in-flight
+                # score field drifts, so we re-score the payload once here and
+                # keep the packed key aligned with the materialization path.
+                score = score_solution_from_gems_preloaded(
+                    ft,
+                    ff,
+                    res_vec[1],
+                    res_vec[2],
+                    res_vec[3],
+                    res_vec[4],
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    base_p_val,
+                    base_s_val,
+                    base_ft_stat,
+                    base_ff_stat,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                )
                 out_res = ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
 
     return out_res
@@ -399,25 +438,21 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: deterministic block-local reduction with logical lanes.
+        # Vulkan: use deterministic logical lanes from the loop index and
+        # combine per-lane maxima via atomic_max on the packed key only.
         #
-        # We still map combo coverage using loop-index lanes so the exact same
-        # population sees stable combo ownership across hard resets, but we now
-        # carry the winning [pp, cm, fm, ov] payload alongside the packed key.
-        # That lets the materialization kernel re-score the cached winner instead
-        # of rediscovering the gem allocation from scratch.
+        # This keeps combo coverage complete even when Taichi remaps loop
+        # iterations to physical invocations, and it avoids carrying cached
+        # payloads through the warmstart reduction while we validate key
+        # correctness. Materialization will recompute the winning allocation
+        # from the selected combo when needed.
         block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
         total_threads = n_genomes * block_dim
-        shared_keys = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.u64)
-        shared_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
-        shared_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
-        shared_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
-        shared_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
 
         ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
         for tid in range(total_threads):
             genome_idx = tid // block_dim
-            lane = tid - genome_idx * block_dim  # stable 0..block_dim-1 per genome
+            lane = tid - genome_idx * block_dim
 
             if ti.static(reuse_exact_eval_results):
                 if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
@@ -443,11 +478,6 @@ def ga_find_best_combo_warmstart_kernel(
                 max_ff_gems = total_budget
 
             local_best_key = ti.u64(0)
-            local_best_pp = ti.i32(0)
-            local_best_cm = ti.i32(0)
-            local_best_fm = ti.i32(0)
-            local_best_ov = ti.i32(0)
-
             local_c: ti.i32 = lane
             while local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
@@ -484,35 +514,11 @@ def ga_find_best_combo_warmstart_kernel(
                     use_exact_inner_solver,
                 )
                 score = res_vec[0]
-                key = ti.u64(0)
                 if score >= 0:
                     key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-                if key > local_best_key:
-                    local_best_key = key
-                    local_best_pp = res_vec[1]
-                    local_best_cm = res_vec[2]
-                    local_best_fm = res_vec[3]
-                    local_best_ov = res_vec[4]
+                    if key > local_best_key:
+                        local_best_key = key
                 local_c += block_dim
 
-            shared_keys[lane] = local_best_key
-            shared_pp[lane] = local_best_pp
-            shared_cm[lane] = local_best_cm
-            shared_fm[lane] = local_best_fm
-            shared_ov[lane] = local_best_ov
-            simt.block.sync()
-
-            if lane == 0:
-                block_best_key = shared_keys[0]
-                block_best_lane = ti.i32(0)
-                for i in range(1, kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM):
-                    if shared_keys[i] > block_best_key:
-                        block_best_key = shared_keys[i]
-                        block_best_lane = i
-
-                if block_best_key > kernels_helpers.chunk_best_key[genome_idx]:
-                    kernels_helpers.chunk_best_key[genome_idx] = block_best_key
-                    kernels_helpers.chunk_best_results[genome_idx, 0] = shared_pp[block_best_lane]
-                    kernels_helpers.chunk_best_results[genome_idx, 1] = shared_cm[block_best_lane]
-                    kernels_helpers.chunk_best_results[genome_idx, 2] = shared_fm[block_best_lane]
-                    kernels_helpers.chunk_best_results[genome_idx, 3] = shared_ov[block_best_lane]
+            if local_best_key != ti.u64(0):
+                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)

@@ -233,12 +233,13 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_gpu_ga_eval_raw_key_scores_are_not_selection_safe() -> None:
+def test_gpu_ga_eval_raw_key_scores_match_materialized_scores() -> None:
     """
-    The warmstart reduction key is not a drop-in replacement for exact GA selection scores.
+    The Vulkan warmstart key must carry the same exact score that materialization finalizes.
 
-    This guards the optimization boundary we uncovered during occupancy work: using the
-    score packed into `chunk_best_key` directly for selection changes the GA surface.
+    This guards the corrected optimization boundary uncovered during occupancy work:
+    once the warmstart reduction is race-free, the packed `chunk_best_key` score becomes
+    selection-safe and can be trusted to match the later materialized GA score.
     """
     n_genomes = 96
     total_budget = 90
@@ -360,4 +361,4 @@ def test_gpu_ga_eval_raw_key_scores_are_not_selection_safe() -> None:
 
     assert np.array_equal(scores, results[:, 0])
     mismatch = np.count_nonzero(raw_key_scores.astype(np.int32) != results[:, 0])
-    assert mismatch > 0
+    assert mismatch == 0

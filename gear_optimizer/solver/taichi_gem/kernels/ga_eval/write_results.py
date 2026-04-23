@@ -14,6 +14,7 @@ from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
     optimize_core_device_refined as optimize_core_device,
+    score_solution_from_gems_preloaded,
 )
 
 # Platform detection for atomic operations
@@ -46,11 +47,6 @@ def _score_cached_combo_from_gems(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
 ) -> ti.i32:
-    # Keep these constants in sync with `kernels_scoring._optimize_core_device_impl`.
-    GEM_SCALE_NORMAL: ti.i32 = 2
-    GEM_SCALE_FEVER: ti.i32 = 3
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
     MAX_STAT: ti.i32 = 160
 
     stats = kernels_helpers.genome_base_stats[genome_idx]
@@ -71,49 +67,36 @@ def _score_cached_combo_from_gems(
     count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
     head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
-    pp_stat: ti.i32 = ti.min(MAX_STAT, base_pp + (pp_gems * GEM_SCALE_NORMAL))
-    cm_stat: ti.i32 = ti.min(MAX_STAT, base_cm + (cm_gems * GEM_SCALE_NORMAL))
-    fm_stat: ti.i32 = ti.min(MAX_STAT, base_fm + (fm_gems * GEM_SCALE_FEVER))
-
-    p_val: ti.i32 = (
-        base_p_val
-        + (ft * GEM_STAT_TO_ELEMENT * is_p_ft)
-        + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-        + (pp_gems * GEM_STAT_TO_ELEMENT * is_p_pp)
-        + (cm_gems * GEM_STAT_TO_ELEMENT * is_p_cm)
-        + (fm_gems * GEM_STAT_TO_ELEMENT * is_p_fm)
-        + (ov_gems * ELEMENTAL_GEM_SCALE * is_p_ov)
-    )
-    s_val: ti.i32 = (
-        base_s_val
-        + (ft * GEM_STAT_TO_ELEMENT * is_s_ft)
-        + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-        + (pp_gems * GEM_STAT_TO_ELEMENT * is_s_pp)
-        + (cm_gems * GEM_STAT_TO_ELEMENT * is_s_cm)
-        + (fm_gems * GEM_STAT_TO_ELEMENT * is_s_fm)
-        + (ov_gems * ELEMENTAL_GEM_SCALE * is_s_ov)
-    )
-
-    pp_factor = kernels_helpers.lookup_ref_pp(pp_stat)
-    combo_mul = kernels_helpers.lookup_ref_cm(cm_stat)
-    fever_mul = kernels_helpers.lookup_ref_fm(fm_stat)
-    base_value = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
-
-    # Use bitpacked masks (always written) rather than unpacked grid_fever_masks
-    # which may be skipped when GPU_TIMELINE_WRITE_UNPACKED_MASKS=0.
-    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-
-    return kernels_helpers.calc_score_with_grid_bits(
-        base_value,
-        combo_mul,
-        fever_mul,
-        m0,
-        m1,
-        m2,
-        m3,
+    return score_solution_from_gems_preloaded(
+        ft,
+        ff,
+        pp_gems,
+        cm_gems,
+        fm_gems,
+        ov_gems,
+        base_pp,
+        base_cm,
+        base_fm,
+        base_p_val,
+        base_s_val,
+        base_ft_stat,
+        base_ff_stat,
+        gem_scale_fever,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        song_slot,
+        ft_idx,
+        ff_idx,
         head_len,
         count_fever,
         count_normal,
