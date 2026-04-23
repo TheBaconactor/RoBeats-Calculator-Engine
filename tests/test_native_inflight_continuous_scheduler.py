@@ -3,6 +3,7 @@ import configparser
 import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _closed_loop_bubble_kpi,
+    _continuous_fg_allow_not_ready,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
@@ -167,6 +168,41 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
             ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
+        )
+        is False
+    )
+
+
+def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=True,
+            fg_drain_at_end=True,
+        )
+        is True
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=True,
+            no_ga_remaining=False,
+            fg_drain_at_end=True,
+        )
+        is True
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=True,
+            fg_drain_at_end=False,
+        )
+        is False
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            fg_drain_at_end=True,
         )
         is False
     )

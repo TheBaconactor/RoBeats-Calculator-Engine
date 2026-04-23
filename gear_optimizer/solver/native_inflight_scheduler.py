@@ -359,6 +359,24 @@ def _continuous_fg_should_start(
     return True
 
 
+def _continuous_fg_allow_not_ready(
+    *,
+    blocked_on_slot: bool,
+    no_ga_remaining: bool,
+    fg_drain_at_end: bool,
+) -> bool:
+    """
+    Decide whether a pending FG song may be handed to a worker before prep is done.
+
+    During the final FG drain there is no GA work left to protect. Keeping those
+    pending songs in the scheduler until their prep futures finish serializes the
+    last CPU prep/first-submit window and can leave the GPU owner empty.
+    """
+    if bool(blocked_on_slot):
+        return True
+    return bool(no_ga_remaining) and bool(fg_drain_at_end)
+
+
 def _continuous_fg_submit_budget(
     *,
     pending_fg_count: int,

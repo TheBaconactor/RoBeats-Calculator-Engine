@@ -45,6 +45,7 @@ from gear_optimizer.solver.inflight_wait import (
 from gear_optimizer.solver.native_inflight_prepare import _prepare_song, bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
     _closed_loop_bubble_kpi,
+    _continuous_fg_allow_not_ready,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_should_start,
     _continuous_fg_submit_budget,
@@ -2491,7 +2492,11 @@ def run_native_inflight_song_pipeline(
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
                     # Process pending FG jobs (up to worker + batch budget).
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
-                        allow_not_ready = bool(blocked_on_slot_acquire)
+                        allow_not_ready = _continuous_fg_allow_not_ready(
+                            blocked_on_slot=bool(blocked_on_slot_acquire),
+                            no_ga_remaining=bool(no_ga_remaining),
+                            fg_drain_at_end=bool(fg_drain_at_end),
+                        )
                         fg_song = _pop_next_fg(allow_not_ready=allow_not_ready)
                         if fg_song is None:
                             break
