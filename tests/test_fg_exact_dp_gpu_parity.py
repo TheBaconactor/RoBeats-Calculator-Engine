@@ -401,10 +401,73 @@ def test_fg_exact_dp_sparse_gpu_matches_cpu_timing_aware():
     assert counts_gpu[: len(cpu_sol.section_counts)] == [int(x) for x in cpu_sol.section_counts]
 
 
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_fg_exact_dp_public_gpu_api_reuses_first_prepared_row(monkeypatch):
+    from gear_optimizer.solver.fg_exact_dp import FGExactDPPreparedInputs
+    from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
+
+    prepared = FGExactDPPreparedInputs(
+        timestamps=np.asarray([0.0, 1.0], dtype=np.float32),
+        great_candidates=None,
+        total_notes=2,
+        last_note_time=1.0,
+        raw_fill=1.0,
+        non_fever_base=1,
+        fever_duration=1.0,
+        ft_idx=0,
+        w_prefix=np.asarray([0, 10, 20], dtype=np.int64),
+        c_prefix=np.asarray([0, 0, 0], dtype=np.int64),
+    )
+    prepare_calls: list[int] = []
+
+    def _prepare(*, stats, calc_song, ref_arrays):
+        del calc_song, ref_arrays
+        prepare_calls.append(int(stats["row"]))
+        return prepared
+
+    class _Field:
+        def __init__(self, value):
+            self.value = value
+
+        def to_numpy(self):
+            return np.asarray(self.value)
+
+    monkeypatch.setattr(fg_api, "prepare_force_greats_exact_dp_inputs", _prepare)
+    monkeypatch.setattr(fg_api, "score_force_greats_exact_dp_bonus_from_prepared", lambda **_kwargs: 7)
+    monkeypatch.setattr(fg_api.gem_api, "ensure_ready", lambda _ref_arrays: None)
+    monkeypatch.setattr(fg_api.fg_fields, "ensure_ready_with_warmup", lambda: None)
+    monkeypatch.setattr(fg_api, "_fg_upload_song_timestamps", lambda _timestamps: None)
+    monkeypatch.setattr(fg_api, "_fg_use_great_candidate_alias", lambda: None)
+    monkeypatch.setattr(fg_api, "_ensure_fever_end_tables", lambda *_args: None)
+    monkeypatch.setattr(fg_api.fg_kernels, "fg_upload_exact_dp_full_w_prefix_kernel", lambda *_args: None)
+    monkeypatch.setattr(fg_api.fg_kernels, "fg_upload_exact_dp_full_c_prefix_kernel", lambda *_args: None)
+    monkeypatch.setattr(fg_api.fg_kernels, "fg_exact_dp_sparse_full_kernel", lambda *_args: None)
+    monkeypatch.setattr(fg_api.ti, "sync", lambda: None)
+    monkeypatch.setattr(fg_api.fg_fields, "fg_exact_dp_sparse_overflow", _Field(0))
+    monkeypatch.setattr(fg_api.fg_fields, "fg_exact_dp_sparse_best_delta", _Field(19))
+    monkeypatch.setattr(fg_api.fg_fields, "fg_exact_dp_sparse_counts", _Field([1, -1]))
+    monkeypatch.setattr(fg_api.fg_fields, "fg_exact_dp_sparse_states", _Field(3))
+    monkeypatch.setattr(fg_api.fg_fields, "fg_exact_dp_sparse_transitions", _Field(5))
+
+    out = fg_api.solve_force_greats_exact_dp_gpu_batch(
+        stats_list=[{"row": 0}, {"row": 1}],
+        calc_song={"song_data": {"timestamps": [0.0, 1.0]}, "metadata": {}},
+        ref_arrays={"refs": True},
+    )
+
+    assert prepare_calls == [0, 1]
+    assert [int(row["baseline_delta"]) for row in out] == [7, 7]
+    assert [int(row["best_delta"]) for row in out] == [19, 19]
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_fg_exact_dp_public_gpu_api_matches_cpu_timing_aware():
-    from gear_optimizer.solver.fg_exact_dp import solve_force_greats_exact_dp
+    from gear_optimizer.solver.fg_exact_dp import (
+        prepare_force_greats_exact_dp_inputs,
+        score_force_greats_exact_dp_bonus_from_prepared,
+        solve_force_greats_exact_dp,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_exact_dp_gpu_batch
 
     ref_arrays = _make_constant_ref_arrays(pp=0.0, cm=1.20, fm=2.0, ff=0.30, ft=0.55)
@@ -421,6 +484,9 @@ def test_fg_exact_dp_public_gpu_api_matches_cpu_timing_aware():
     }
 
     cpu_sol = solve_force_greats_exact_dp(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="timing_aware")
+    prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+    assert prepared is not None
+    baseline_delta = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
     gpu_out = solve_force_greats_exact_dp_gpu_batch(
         stats_list=[stats],
         calc_song=calc_song,
@@ -431,5 +497,6 @@ def test_fg_exact_dp_public_gpu_api_matches_cpu_timing_aware():
 
     assert len(gpu_out) == 1
     assert int(gpu_out[0]["best_delta"]) == int(cpu_sol.best_delta)
+    assert int(gpu_out[0]["baseline_delta"]) == int(baseline_delta)
     assert [int(x) for x in gpu_out[0]["section_counts"]] == [int(x) for x in cpu_sol.section_counts]
     assert int((gpu_out[0]["profile"] or {}).get("states", 0) or 0) > 0

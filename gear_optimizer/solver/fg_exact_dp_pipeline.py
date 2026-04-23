@@ -273,6 +273,16 @@ def _compute_exact_dp_improvement(
     sol: dict[str, Any],
 ) -> tuple[int, list[int], dict[str, Any]]:
     section_counts = [int(x) for x in list((sol or {}).get("section_counts") or [])]
+    profile = dict((sol or {}).get("profile") or {})
+    if isinstance(sol, dict) and sol.get("best_delta") is not None:
+        baseline_raw = sol.get("baseline_delta", sol.get("baseline_bonus"))
+        if baseline_raw is not None:
+            try:
+                improvement = int(sol.get("best_delta", 0) or 0) - int(baseline_raw or 0)
+                return int(improvement), section_counts, profile
+            except Exception:
+                pass
+
     prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
     if prepared is None:
         return 0, section_counts, {}
@@ -280,7 +290,7 @@ def _compute_exact_dp_improvement(
     baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
     actual_bonus = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=section_counts)
     improvement = int(actual_bonus) - int(baseline_bonus)
-    return int(improvement), section_counts, dict((sol or {}).get("profile") or {})
+    return int(improvement), section_counts, profile
 
 
 def _build_exact_dp_variant(

@@ -20,7 +20,10 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
-from gear_optimizer.solver.fg_exact_dp import prepare_force_greats_exact_dp_inputs
+from gear_optimizer.solver.fg_exact_dp import (
+    prepare_force_greats_exact_dp_inputs,
+    score_force_greats_exact_dp_bonus_from_prepared,
+)
 from gear_optimizer.solver.gpu_tuning_policy import plan_fg_stage1_cfg_chunk
 
 from .. import api as gem_api
@@ -1345,17 +1348,20 @@ def solve_force_greats_exact_dp_gpu_batch(
     if not stats_list:
         return []
 
+    prepared_cache: list[Any] = []
     first_prepared = None
     for stats in stats_list:
-        if isinstance(stats, dict):
-            first_prepared = prepare_force_greats_exact_dp_inputs(
-                stats=stats, calc_song=calc_song, ref_arrays=ref_arrays
-            )
-            if first_prepared is not None:
-                break
+        prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+        prepared_cache.append(prepared)
+        if prepared is not None:
+            first_prepared = prepared
+            break
 
     if first_prepared is None:
-        return [{"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}} for _ in stats_list]
+        return [
+            {"best_delta": 0, "baseline_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}}
+            for _ in stats_list
+        ]
 
     gem_api.ensure_ready(ref_arrays)
     fg_fields.ensure_ready_with_warmup()
@@ -1374,13 +1380,17 @@ def solve_force_greats_exact_dp_gpu_batch(
     timing_flag = 1 if timing_aware else 0
     prune_flag = 1 if prune else 0
 
-    for stats in stats_list:
-        prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+    for idx, stats in enumerate(stats_list):
+        if idx < len(prepared_cache):
+            prepared = prepared_cache[idx]
+        else:
+            prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
         if prepared is None:
-            out.append({"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
+            out.append({"best_delta": 0, "baseline_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
             continue
 
         n = int(prepared.total_notes)
+        baseline_delta = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
         fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(
             int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64)
         )
@@ -1407,6 +1417,7 @@ def solve_force_greats_exact_dp_gpu_batch(
         out.append(
             {
                 "best_delta": int(fg_fields.fg_exact_dp_sparse_best_delta.to_numpy()),
+                "baseline_delta": int(baseline_delta),
                 "section_counts": _strip_fg_exact_dp_counts(fg_fields.fg_exact_dp_sparse_counts.to_numpy()),
                 "profile": {
                     "states": int(fg_fields.fg_exact_dp_sparse_states.to_numpy()),

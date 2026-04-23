@@ -202,6 +202,31 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
     assert out[0]["data"]["ForceGreats"]["dp_transitions"] == 43
 
 
+def test_compute_exact_dp_improvement_uses_gpu_baseline_without_repreparing(monkeypatch):
+    from gear_optimizer.solver import fg_exact_dp_pipeline
+
+    def _raise_prepare(**_kwargs):
+        raise AssertionError("GPU best/baseline deltas should avoid CPU exact-DP recompute")
+
+    monkeypatch.setattr(fg_exact_dp_pipeline, "prepare_force_greats_exact_dp_inputs", _raise_prepare)
+
+    improvement, section_counts, profile = fg_exact_dp_pipeline._compute_exact_dp_improvement(
+        stats={"Perfect Points": 1},
+        calc_song={"metadata": {}, "song_data": {}},
+        ref_arrays={"dummy": True},
+        sol={
+            "best_delta": 250,
+            "baseline_delta": 100,
+            "section_counts": [2, 1],
+            "profile": {"states": 17, "transitions": 43},
+        },
+    )
+
+    assert improvement == 150
+    assert section_counts == [2, 1]
+    assert profile == {"states": 17, "transitions": 43}
+
+
 def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
     from gear_optimizer.solver import fg_exact_dp_pipeline
 
