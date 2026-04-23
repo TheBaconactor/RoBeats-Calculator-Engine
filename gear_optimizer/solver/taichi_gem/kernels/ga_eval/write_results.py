@@ -118,6 +118,20 @@ def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
 
 
 @ti.func
+def _best_score_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
+    out_score = ti.i32(-1)
+    if ti.static(not IS_METAL):
+        best_key = kernels_helpers.chunk_best_key[genome_idx]
+        if best_key != ti.u64(0):
+            out_score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
+    else:
+        best_idx = kernels_helpers.chunk_best_idx[genome_idx]
+        if best_idx >= 0:
+            out_score = kernels_helpers.chunk_best_score[genome_idx]
+    return out_score
+
+
+@ti.func
 def _solve_best_combo_uncached(
     genome_idx: ti.i32,
     ft: ti.i32,
@@ -343,6 +357,26 @@ def _write_materialized_result(genome_idx: ti.i32, combo_idx: ti.i32, result_sta
         kernels_helpers.chunk_best_key[genome_idx] = corrected_key
 
 
+@ti.func
+def _write_invalid_materialized_result(genome_idx: ti.i32):
+    kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
+    kernels_helpers.ga_scores[genome_idx] = -1
+
+
+@ti.func
+def _write_run_best_payload_row(
+    run_idx: ti.i32,
+    n_slots: ti.i32,
+    best_g: ti.i32,
+    result_stats: ti.types.vector(7, ti.i32),
+):
+    kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = result_stats[0]
+    for s in range(n_slots):
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[best_g, s]
+    for j in ti.static(range(7)):
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = result_stats[j]
+
+
 @ti.kernel
 def ga_write_best_results_from_key_kernel(
     n_genomes: ti.i32,
@@ -371,8 +405,7 @@ def ga_write_best_results_from_key_kernel(
     for genome_idx in range(n_genomes):
         combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
         if combo_idx < 0:
-            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
-            kernels_helpers.ga_scores[genome_idx] = -1
+            _write_invalid_materialized_result(genome_idx)
             continue
 
         result_stats = _materialize_best_combo_stats(
@@ -430,8 +463,7 @@ def ga_write_best_results_and_update_runs_best_kernel(
     for genome_idx in range(n_total):
         combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
         if combo_idx < 0:
-            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
-            kernels_helpers.ga_scores[genome_idx] = -1
+            _write_invalid_materialized_result(genome_idx)
             continue
 
         result_stats = _materialize_best_combo_stats(
@@ -470,14 +502,82 @@ def ga_write_best_results_and_update_runs_best_kernel(
         run_idx = run_idx_start + r
         prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
         if best_score > prev_best:
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = best_score
-            for s in range(n_slots):
-                kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[
-                    best_g, s
-                ]
             res_best = kernels_helpers.genome_result_stats[best_g]
-            for j in ti.static(range(7)):
-                kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = res_best[j]
+            _write_run_best_payload_row(run_idx, n_slots, best_g, res_best)
+
+
+@ti.kernel
+def ga_refresh_scores_and_update_runs_best_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
+):
+    """
+    Lightweight steady-state refresh:
+    - keep `ga_scores` exact from the reduction state
+    - refresh per-run row 0 with exact materialization only when improved
+    - avoid full-pop `genome_result_stats` writes
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    n_total = n_runs * n_genomes_per_run
+
+    for genome_idx in range(n_total):
+        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+
+    for r in range(n_runs):
+        start_offset: ti.i32 = r * n_genomes_per_run
+        best_score: ti.i32 = -1
+        best_g: ti.i32 = start_offset
+        for local_g in range(n_genomes_per_run):
+            g = start_offset + local_g
+            score = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+
+        run_idx = run_idx_start + r
+        prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
+        if best_score > prev_best:
+            combo_idx = _best_combo_idx_from_chunk_state(best_g)
+            if combo_idx >= 0:
+                result_stats = _materialize_best_combo_stats(
+                    best_g,
+                    combo_idx,
+                    total_budget,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                    use_exact_inner_solver,
+                )
+                _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
 
 
 @ti.kernel
@@ -509,8 +609,7 @@ def ga_write_best_and_update_global_kernel(
     for genome_idx in range(n_genomes):
         combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
         if combo_idx < 0:
-            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
-            kernels_helpers.ga_scores[genome_idx] = -1
+            _write_invalid_materialized_result(genome_idx)
             continue
 
         result_stats = _materialize_best_combo_stats(

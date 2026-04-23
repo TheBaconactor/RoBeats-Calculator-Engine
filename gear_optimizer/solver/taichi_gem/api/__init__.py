@@ -62,6 +62,8 @@ try:
         ga_upload_base_fixed_stats,
         ga_aggregate_stats,
         ga_evaluate_population,
+        ga_write_best_results_from_key,
+        ga_refresh_scores_and_update_runs_best,
         ga_set_scores,
         ga_next_generation,
         ga_next_generation_gpu_elites,  # GPU-resident elitism (avoids CPU download)
@@ -127,6 +129,8 @@ __all__ = [
     "ga_upload_base_fixed_stats",
     "ga_aggregate_stats",
     "ga_evaluate_population",
+    "ga_write_best_results_from_key",
+    "ga_refresh_scores_and_update_runs_best",
     "ga_set_scores",
     "ga_next_generation",
     "ga_next_generation_gpu_elites",

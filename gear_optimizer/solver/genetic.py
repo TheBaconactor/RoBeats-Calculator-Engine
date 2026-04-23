@@ -1657,6 +1657,8 @@ def _run_gpu_native_ga(
             n_runs=1,
             n_genomes_per_run=int(n_genomes),
             n_slots=int(n_slots),
+            total_budget=total_budget,
+            gem_scale_fever=gem_scale_fever,
             is_p_ft=is_p_ft,
             is_s_ft=is_s_ft,
             is_p_ff=is_p_ff,
@@ -1669,6 +1671,7 @@ def _run_gpu_native_ga(
             is_s_fm=is_s_fm,
             is_p_ov=is_p_ov,
             is_s_ov=is_s_ov,
+            song_slot=int(song_slot),
         )
         if store_payload_only:
             return None, None, None, None
@@ -2472,6 +2475,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         gpu_api.ga_init_global_best()
 
                     n_total = int(batch_len) * int(n_genomes)
+                    use_lightweight_runs_refresh = trace_writer is None
                     phase_samples_current = {} if phase_events_enabled else None
 
                     for gen in range(int(n_generations)):
@@ -2514,29 +2518,53 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 combos=int(n_combos),
                             )
 
-                        # Materialize current-generation winners and refresh per-run best rows in one GPU pass.
+                        # Keep selection scores exact every generation, but only write full per-genome
+                        # result rows when tracing needs them. Row 0 stays exact in both paths.
                         t0 = time.perf_counter() if phase_timing else 0.0
-                        gpu_api.ga_write_best_results_and_update_runs_best(
-                            run_idx_start=int(local_run_idx),
-                            n_runs=int(batch_len),
-                            n_genomes_per_run=int(n_genomes),
-                            n_slots=int(n_slots),
-                            total_budget=total_budget,
-                            gem_scale_fever=gem_scale_fever,
-                            song_slot=int(song_slot),
-                            is_p_ft=is_p_ft,
-                            is_s_ft=is_s_ft,
-                            is_p_ff=is_p_ff,
-                            is_s_ff=is_s_ff,
-                            is_p_pp=is_p_pp,
-                            is_s_pp=is_s_pp,
-                            is_p_cm=is_p_cm,
-                            is_s_cm=is_s_cm,
-                            is_p_fm=is_p_fm,
-                            is_s_fm=is_s_fm,
-                            is_p_ov=is_p_ov,
-                            is_s_ov=is_s_ov,
-                        )
+                        if use_lightweight_runs_refresh:
+                            gpu_api.ga_refresh_scores_and_update_runs_best(
+                                run_idx_start=int(local_run_idx),
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_slots=int(n_slots),
+                                total_budget=total_budget,
+                                gem_scale_fever=gem_scale_fever,
+                                song_slot=int(song_slot),
+                                is_p_ft=is_p_ft,
+                                is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff,
+                                is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp,
+                                is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm,
+                                is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm,
+                                is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov,
+                                is_s_ov=is_s_ov,
+                            )
+                        else:
+                            gpu_api.ga_write_best_results_and_update_runs_best(
+                                run_idx_start=int(local_run_idx),
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_slots=int(n_slots),
+                                total_budget=total_budget,
+                                gem_scale_fever=gem_scale_fever,
+                                song_slot=int(song_slot),
+                                is_p_ft=is_p_ft,
+                                is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff,
+                                is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp,
+                                is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm,
+                                is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm,
+                                is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov,
+                                is_s_ov=is_s_ov,
+                            )
                         _sync()
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
@@ -2657,6 +2685,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         n_runs=int(batch_len),
                         n_genomes_per_run=int(n_genomes),
                         n_slots=int(n_slots),
+                        total_budget=total_budget,
+                        gem_scale_fever=gem_scale_fever,
                         is_p_ft=is_p_ft,
                         is_s_ft=is_s_ft,
                         is_p_ff=is_p_ff,
@@ -2669,6 +2699,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         is_s_fm=is_s_fm,
                         is_p_ov=is_p_ov,
                         is_s_ov=is_s_ov,
+                        song_slot=int(song_slot),
                     )
                     _sync()
                     _raise_if_abort_requested(abort_requested, "after packing FG candidates from GPU-native GA")
@@ -2689,6 +2720,27 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         )
 
                     if audit_redundancy:
+                        if use_lightweight_runs_refresh:
+                            gpu_api.ga_write_best_results_from_key(
+                                n_genomes=int(n_total),
+                                n_slots=int(n_slots),
+                                total_budget=total_budget,
+                                gem_scale_fever=gem_scale_fever,
+                                song_slot=int(song_slot),
+                                is_p_ft=is_p_ft,
+                                is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff,
+                                is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp,
+                                is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm,
+                                is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm,
+                                is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov,
+                                is_s_ov=is_s_ov,
+                            )
+                            _sync()
                         _raise_if_abort_requested(abort_requested, "before GA payload snapshot download")
                         gpu_api.ga_store_runs_payload_snapshot_segmented(
                             run_idx_start=int(local_run_idx),

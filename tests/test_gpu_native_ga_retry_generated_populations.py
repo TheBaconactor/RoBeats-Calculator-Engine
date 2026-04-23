@@ -20,6 +20,9 @@ class _FakeGpuApi:
         self.global_best_download_calls = 0
         self.evaluate_calls = 0
         self.next_generation_calls = 0
+        self.write_best_results_and_update_runs_best_calls = 0
+        self.refresh_scores_and_update_runs_best_calls = 0
+        self.write_best_results_from_key_calls = 0
         self.population_upload_history: list[np.ndarray] = []
         self._fail_once = bool(fail_once)
         self._current_population = np.zeros((8, 9), dtype=np.int32)
@@ -94,6 +97,15 @@ class _FakeGpuApi:
         return None
 
     def ga_write_best_results_and_update_runs_best(self, *_args, **_kwargs):
+        self.write_best_results_and_update_runs_best_calls += 1
+        return None
+
+    def ga_refresh_scores_and_update_runs_best(self, *_args, **_kwargs):
+        self.refresh_scores_and_update_runs_best_calls += 1
+        return None
+
+    def ga_write_best_results_from_key(self, *_args, **_kwargs):
+        self.write_best_results_from_key_calls += 1
         return None
 
     def ga_init_global_best(self, *_args, **_kwargs):
@@ -260,6 +272,8 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
     assert fake_gpu.global_best_init_calls >= 1
     assert fake_gpu.global_best_update_calls >= 1
     assert fake_gpu.global_best_download_calls >= 1
+    assert fake_gpu.write_best_results_and_update_runs_best_calls >= 1
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 0
 
 
 def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):

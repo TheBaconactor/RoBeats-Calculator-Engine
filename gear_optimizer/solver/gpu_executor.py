@@ -58,6 +58,21 @@ _WARMUP_SENTINEL_SCHEMA = 2
 _GA_WARMUP_PROFILE = "v3_compile_update_global"
 
 
+def _effective_owner_batch_max(
+    base_batch_max: int,
+    *,
+    in_process_queues: bool,
+    batch_max_overridden: bool,
+) -> int:
+    batch_max_i = max(1, int(base_batch_max))
+    if in_process_queues and not batch_max_overridden:
+        # Keep owner turns broad enough to drain local producer bursts without
+        # widening the turn so far that same-song downstream readiness gets
+        # buried behind unrelated in-process work.
+        batch_max_i = max(batch_max_i, 24)
+    return int(batch_max_i)
+
+
 def _system_timer_override_allowed() -> bool:
     # Wrapper kept for monkeypatch-based tests.
     return bool(_system_timer_override_allowed_shared())
@@ -2097,9 +2112,11 @@ class GpuExecutor:
                 # In-process mode benefits from larger batches but shorter waits because
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
-                    if not cached_batch_max_overridden:
-                        # Keep owner turns broad enough to drain local producer bursts.
-                        batch_max = max(int(batch_max), 32)
+                    batch_max = _effective_owner_batch_max(
+                        int(batch_max),
+                        in_process_queues=True,
+                        batch_max_overridden=bool(cached_batch_max_overridden),
+                    )
                     if not cached_batch_wait_overridden:
                         # Keep a modest default coalescing window so we can batch/coalesce without
                         # forcing the owner loop into sub-ms yield-spin behavior.

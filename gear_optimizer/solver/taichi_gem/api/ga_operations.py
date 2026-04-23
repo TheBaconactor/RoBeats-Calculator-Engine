@@ -929,6 +929,82 @@ def ga_write_best_and_update_global(
     )
 
 
+def ga_write_best_results_from_key(
+    n_genomes: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    *,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    Materialize per-genome GA result rows from the already-evaluated chunk state.
+
+    This is the explicit "finalize full population now" companion to
+    `ga_evaluate_population(..., materialize_mode="none")`.
+    """
+    ensure_ready()
+    _ga_materialize_population_results(
+        n_genomes=int(n_genomes),
+        n_slots=int(n_slots),
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        song_slot=int(song_slot),
+        use_exact_inner_solver=bool(use_exact_inner_solver),
+        materialize_mode="results_only",
+    )
+
+
+def _validate_ga_runs_batch(
+    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
+) -> tuple[int, int, int, int]:
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return run_idx_start, n_runs, n_genomes_per_run, n_slots
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    return run_idx_start, n_runs, n_genomes_per_run, n_slots
+
+
 def ga_write_best_results_and_update_runs_best(
     *,
     run_idx_start: int,
@@ -960,27 +1036,81 @@ def ga_write_best_results_and_update_runs_best(
     population packs multiple independent runs contiguously.
     """
     ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
     if n_runs <= 0 or n_genomes_per_run <= 0:
         return
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
-        )
-    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
-        )
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
 
     kernels.ga_write_best_results_and_update_runs_best_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+    )
+
+
+def ga_refresh_scores_and_update_runs_best(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    Lightweight steady-state refresh for packed multi-run GA execution.
+
+    This keeps `ga_scores` exact from the reduction state and updates each run's row 0 best
+    with exact materialization only when that run improves. It avoids the full-pop
+    `genome_result_stats` write pass that the final FG packing path no longer needs every
+    generation.
+    """
+    ensure_ready()
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+
+    kernels.ga_refresh_scores_and_update_runs_best_kernel(
         int(run_idx_start),
         int(n_runs),
         int(n_genomes_per_run),
@@ -1633,6 +1763,8 @@ def ga_pack_fg_candidates_table_segmented(
     n_runs: int,
     n_genomes_per_run: int,
     n_slots: int = 9,
+    total_budget: int,
+    gem_scale_fever: int,
     is_p_ft: int = 0,
     is_s_ft: int = 0,
     is_p_ff: int = 0,
@@ -1645,6 +1777,8 @@ def ga_pack_fg_candidates_table_segmented(
     is_s_fm: int = 0,
     is_p_ov: int = 0,
     is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
 ) -> None:
     """
     Pack a compact GA->FG candidate table for packed multi-run execution.
@@ -1676,6 +1810,8 @@ def ga_pack_fg_candidates_table_segmented(
         int(n_runs),
         int(n_genomes_per_run),
         int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
         int(is_p_ft),
         int(is_s_ft),
         int(is_p_ff),
@@ -1688,6 +1824,8 @@ def ga_pack_fg_candidates_table_segmented(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
     )
 
 
@@ -2088,6 +2226,9 @@ def warmup_ga_kernels() -> None:
         n_runs=n_runs,
         n_genomes_per_run=n_genomes_per_run,
         n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
     )
     # limit=1 keeps the staging download small while still exercising the kernels.
     _ = ga_download_fg_selected_payload(

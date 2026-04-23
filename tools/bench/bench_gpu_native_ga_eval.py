@@ -43,6 +43,7 @@ GA_KERNEL_PROFILER_NAMES = (
     "ga_propagate_exact_eval_reuse_chunk_best_kernel",
     "ga_write_best_results_from_key_kernel",
     "ga_write_best_results_and_update_runs_best_kernel",
+    "ga_refresh_scores_and_update_runs_best_kernel",
     "ga_update_global_best_kernel",
     "ga_write_best_and_update_global_kernel",
 )
@@ -196,7 +197,7 @@ def main() -> int:
     ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
     ap.add_argument(
         "--materialize-mode",
-        choices=("none", "results", "update_global", "results_update_runs"),
+        choices=("none", "results", "update_global", "results_update_runs", "refresh_runs"),
         default=str(os.environ.get("BENCH_GA_MATERIALIZE_MODE", "none") or "none").strip().lower(),
         help="Mirror the live GA subpath more closely by choosing how results are materialized.",
     )
@@ -242,6 +243,7 @@ def main() -> int:
     from gear_optimizer.solver.taichi_gem.api import ga_operations as _ga_ops
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
         ga_evaluate_population,
+        ga_refresh_scores_and_update_runs_best,
         ga_init_runs_best,
         ga_upload_base_fixed_stats,
         ga_upload_item_stats,
@@ -253,6 +255,7 @@ def main() -> int:
     prune_effective = int(getattr(_ga_ops, "_GA_PLATEAU_PRUNE_ENABLED", 0))
     materialize_mode = str(args.materialize_mode or "none").strip().lower()
     kernel_profiler_requested = bool(args.kernel_profiler) or env_flag("TAICHI_KERNEL_PROFILER", "0")
+    runs_best_mode = materialize_mode in {"results_update_runs", "refresh_runs"}
 
     rng = np.random.default_rng(int(args.seed))
     registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(
@@ -265,6 +268,34 @@ def main() -> int:
 
     calc_song = _make_calc_song(name="BenchGAEval_BeatVibe", p_color="Beat", s_color="Vibe")
     flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
+    eval_materialize_mode = "none" if runs_best_mode else materialize_mode
+    runs_best_kwargs = {
+        "run_idx_start": 0,
+        "n_runs": 1,
+        "n_genomes_per_run": int(args.genomes),
+        "n_slots": 9,
+        "total_budget": int(args.budget),
+        "gem_scale_fever": GEM_SCALE_FEVER,
+        "song_slot": 0,
+        "is_p_ft": flags["is_p_ft"],
+        "is_s_ft": flags["is_s_ft"],
+        "is_p_ff": flags["is_p_ff"],
+        "is_s_ff": flags["is_s_ff"],
+        "is_p_pp": flags["is_p_pp"],
+        "is_s_pp": flags["is_s_pp"],
+        "is_p_cm": flags["is_p_cm"],
+        "is_s_cm": flags["is_s_cm"],
+        "is_p_fm": flags["is_p_fm"],
+        "is_s_fm": flags["is_s_fm"],
+        "is_p_ov": flags["is_p_ov"],
+        "is_s_ov": flags["is_s_ov"],
+    }
+
+    def _run_post_eval_materialize() -> None:
+        if materialize_mode == "results_update_runs":
+            ga_write_best_results_and_update_runs_best(**runs_best_kwargs)
+        elif materialize_mode == "refresh_runs":
+            ga_refresh_scores_and_update_runs_best(**runs_best_kwargs)
 
     with _GPU_LOCK:
         ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
@@ -280,7 +311,7 @@ def main() -> int:
             registry=registry,
         )
         ga_upload_population_indices(pop_indices, n_slots=9)
-        if materialize_mode == "results_update_runs":
+        if runs_best_mode:
             ga_init_runs_best(run_idx_start=0, n_runs=1, n_slots=9)
 
         # Warmup (compilation + cache)
@@ -303,30 +334,9 @@ def main() -> int:
                 is_s_fm=flags["is_s_fm"],
                 is_p_ov=flags["is_p_ov"],
                 is_s_ov=flags["is_s_ov"],
-                materialize_mode="none" if materialize_mode == "results_update_runs" else materialize_mode,
+                materialize_mode=eval_materialize_mode,
             )
-            if materialize_mode == "results_update_runs":
-                ga_write_best_results_and_update_runs_best(
-                    run_idx_start=0,
-                    n_runs=1,
-                    n_genomes_per_run=int(args.genomes),
-                    n_slots=9,
-                    total_budget=int(args.budget),
-                    gem_scale_fever=GEM_SCALE_FEVER,
-                    song_slot=0,
-                    is_p_ft=flags["is_p_ft"],
-                    is_s_ft=flags["is_s_ft"],
-                    is_p_ff=flags["is_p_ff"],
-                    is_s_ff=flags["is_s_ff"],
-                    is_p_pp=flags["is_p_pp"],
-                    is_s_pp=flags["is_s_pp"],
-                    is_p_cm=flags["is_p_cm"],
-                    is_s_cm=flags["is_s_cm"],
-                    is_p_fm=flags["is_p_fm"],
-                    is_s_fm=flags["is_s_fm"],
-                    is_p_ov=flags["is_p_ov"],
-                    is_s_ov=flags["is_s_ov"],
-                )
+            _run_post_eval_materialize()
             try:
                 import taichi as ti
 
@@ -355,30 +365,9 @@ def main() -> int:
                 is_s_fm=flags["is_s_fm"],
                 is_p_ov=flags["is_p_ov"],
                 is_s_ov=flags["is_s_ov"],
-                materialize_mode="none" if materialize_mode == "results_update_runs" else materialize_mode,
+                materialize_mode=eval_materialize_mode,
             )
-            if materialize_mode == "results_update_runs":
-                ga_write_best_results_and_update_runs_best(
-                    run_idx_start=0,
-                    n_runs=1,
-                    n_genomes_per_run=int(args.genomes),
-                    n_slots=9,
-                    total_budget=int(args.budget),
-                    gem_scale_fever=GEM_SCALE_FEVER,
-                    song_slot=0,
-                    is_p_ft=flags["is_p_ft"],
-                    is_s_ft=flags["is_s_ft"],
-                    is_p_ff=flags["is_p_ff"],
-                    is_s_ff=flags["is_s_ff"],
-                    is_p_pp=flags["is_p_pp"],
-                    is_s_pp=flags["is_s_pp"],
-                    is_p_cm=flags["is_p_cm"],
-                    is_s_cm=flags["is_s_cm"],
-                    is_p_fm=flags["is_p_fm"],
-                    is_s_fm=flags["is_s_fm"],
-                    is_p_ov=flags["is_p_ov"],
-                    is_s_ov=flags["is_s_ov"],
-                )
+            _run_post_eval_materialize()
         try:
             import taichi as ti
 
