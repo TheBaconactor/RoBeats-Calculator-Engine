@@ -161,6 +161,15 @@ def _compute_array_sig(*arrays: np.ndarray) -> bytes:
     return h.digest()
 
 
+def _probability_to_u32_fp(value: float) -> np.uint32:
+    rate = float(value)
+    if rate <= 0.0:
+        return np.uint32(0)
+    if rate >= 1.0:
+        return np.uint32(0xFFFFFFFF)
+    return np.uint32(int(rate * 4294967295.0))
+
+
 # Cache state for item_stats + slot boundaries
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 
@@ -397,8 +406,8 @@ def ga_generate_initial_populations(
     seed_prob = float(seed_prob)
     seed_prob = max(0.0, min(1.0, seed_prob))
 
-    heuristic_prob_fp = np.uint32(int(heuristic_prob * 4294967295.0))
-    seed_prob_fp = np.uint32(int(seed_prob * 4294967295.0))
+    heuristic_prob_fp = _probability_to_u32_fp(heuristic_prob)
+    seed_prob_fp = _probability_to_u32_fp(seed_prob)
 
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
@@ -1194,13 +1203,7 @@ def ga_next_generation(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
 
     n_elites = 0
     if elite_count > 0:
@@ -1264,13 +1267,7 @@ def ga_next_generation_gpu_elites(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
 
     # Use fused kernel path (selection+crossover+mutation+elitism), then swap.
     kernels.ga_next_generation_full_kernel(
@@ -1328,21 +1325,8 @@ def ga_next_generation_fused(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
-
-    ir = float(immigrant_rate)
-    if ir <= 0.0:
-        ir_fp = np.uint32(0)
-    elif ir >= 1.0:
-        ir_fp = np.uint32(0xFFFFFFFF)
-    else:
-        ir_fp = np.uint32(int(ir * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
 
     # Precompute island elites once, then run fused next-gen using GPU-resident elite indices.
     elites_per_island_eff = max(1, int(elites_per_island))
@@ -1405,21 +1389,8 @@ def ga_next_generation_fused_runs(
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
 
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
-
-    ir = float(immigrant_rate)
-    if ir <= 0.0:
-        ir_fp = np.uint32(0)
-    elif ir >= 1.0:
-        ir_fp = np.uint32(0xFFFFFFFF)
-    else:
-        ir_fp = np.uint32(int(ir * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
 
     kernels.ga_next_generation_full_runs_kernel(
         n_runs,
@@ -1489,21 +1460,8 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     if tournament_k < 1:
         tournament_k = 1
 
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
-
-    ir = float(immigrant_rate)
-    if ir <= 0.0:
-        ir_fp = np.uint32(0)
-    elif ir >= 1.0:
-        ir_fp = np.uint32(0xFFFFFFFF)
-    else:
-        ir_fp = np.uint32(int(ir * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
 
     kernels.ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         int(run_idx_start),
