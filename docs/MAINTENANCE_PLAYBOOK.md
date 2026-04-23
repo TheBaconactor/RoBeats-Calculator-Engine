@@ -108,6 +108,19 @@ These knobs **do not change the search space or scoring math**; they only affect
 You can also sweep the existing knobs for throughput:
 - `FG_TARGET_THREADS_PER_KERNEL`: increases/decreases Stage‑1 `cfg_chunk` target (larger = fewer bands).
 
+## Repeatable occupancy sweeps
+Use the maintained sweep harness when you want archived apples-to-apples GA / FG knob comparisons:
+
+- GA example:
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-genomes 705 --ga-iters 6`
+- FG example:
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode fg --fg-stage1-block-dims 64,128 --fg-target-threads 2000000,4000000,6000000 --fg-genomes 1024 --fg-ftff 128 --fg-tasks 16`
+
+Underlying benches also support machine-readable output directly:
+
+- `python tools/bench/bench_gpu_native_ga_eval.py --json`
+- `python tools/bench/bench_fg_batch_throughput.py --json`
+
 ## FG job coalescing (safe, queue overhead only)
 These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:
 

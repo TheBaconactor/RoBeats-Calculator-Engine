@@ -26,6 +26,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from tools.bench._bench_reporting import emit_bench_result, snapshot_env
+
 
 def _make_ref_arrays() -> dict[str, np.ndarray]:
     from gear_optimizer.core.constants import TOTAL_ROWS
@@ -130,6 +132,18 @@ def _print_measurement_breakdown(song_timing) -> None:
         print(f"  - {name}: {sec * 1000:.2f}ms")
 
 
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def _steady(values: list[float]) -> list[float]:
+    if len(values) <= 1:
+        return list(values)
+    return list(values[1:])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=("executor", "direct"), default="executor")
@@ -149,6 +163,8 @@ def main() -> int:
     ap.add_argument("--no-profiler", action="store_true")
     ap.add_argument("--sync-for-timing", action="store_true")
     ap.add_argument("--transfer-trace", action="store_true")
+    ap.add_argument("--json", action="store_true", help="Emit final metrics as machine-readable JSON on stdout.")
+    ap.add_argument("--json-out", type=str, default="", help="Write final metrics JSON to this path.")
     args = ap.parse_args()
 
     if not args.no_profiler:
@@ -222,7 +238,7 @@ def main() -> int:
         gpu_client = GpuServiceClient(gpu_executor)
         gpu_client.start(start_executor=False)
 
-    def _run_once(*, upload_genome_stats: bool) -> dict | None:
+    def _run_once(*, upload_genome_stats: bool) -> dict:
         name = f"FG_Batch_{args.mode}_gen{args.genomes}_tasks{args.tasks}"
         prof.start_song(name)
         t0 = time.perf_counter()
@@ -290,7 +306,15 @@ def main() -> int:
             song = prof.end_song()
             if song is None:
                 print(f"[bench] wall={wall * 1000:.2f}ms (no profiler song context)")
-                return
+                return {
+                    "wall_sec": float(wall),
+                    "kernel_sec": 0.0,
+                    "upload_sec": 0.0,
+                    "download_sec": 0.0,
+                    "util_pct": 0.0,
+                    "upload_bytes": 0,
+                    "download_bytes": 0,
+                }
             util = 0.0
             try:
                 util = (float(song.kernel_sec) + float(song.upload_sec) + float(song.download_sec)) / max(1e-9, wall)
@@ -302,6 +326,15 @@ def main() -> int:
                 f"util~={util * 100:.1f}% up={song.upload_bytes / (1024**2):.2f}MiB dl={song.download_bytes / (1024**2):.2f}MiB"
             )
             _print_measurement_breakdown(song)
+            return {
+                "wall_sec": float(wall),
+                "kernel_sec": float(song.kernel_sec),
+                "upload_sec": float(song.upload_sec),
+                "download_sec": float(song.download_sec),
+                "util_pct": float(util * 100.0),
+                "upload_bytes": int(song.upload_bytes),
+                "download_bytes": int(song.download_bytes),
+            }
 
     print(
         "[bench] FG packed-tasks config: "
@@ -320,11 +353,61 @@ def main() -> int:
             _run_once(upload_genome_stats=True)
 
         prof.reset()
+        iteration_records: list[dict] = []
         for i in range(max(1, int(args.iters))):
             print(f"[bench] iter {i + 1}/{int(args.iters)}")
-            _run_once(upload_genome_stats=bool(not args.reuse_genome_stats))
+            iteration_records.append(_run_once(upload_genome_stats=bool(not args.reuse_genome_stats)))
 
         print(prof.report(verbose=False))
+        wall_values = [float(record.get("wall_sec", 0.0)) for record in iteration_records]
+        kernel_values = [float(record.get("kernel_sec", 0.0)) for record in iteration_records]
+        upload_values = [float(record.get("upload_sec", 0.0)) for record in iteration_records]
+        download_values = [float(record.get("download_sec", 0.0)) for record in iteration_records]
+        util_values = [float(record.get("util_pct", 0.0)) for record in iteration_records]
+        steady_wall_values = _steady(wall_values)
+        mean_wall = _mean(wall_values)
+        steady_mean_wall = _mean(steady_wall_values)
+        emit_bench_result(
+            {
+                "bench": "fg_batch_throughput",
+                "mode": str(args.mode),
+                "genomes": int(args.genomes),
+                "sections": int(n_sections),
+                "tasks": int(args.tasks),
+                "ftff_per_task": int(ftff_per_task),
+                "cfg_len_per_task": int(cfg_len),
+                "max_fp": [int(v) for v in max_fp],
+                "notes": int(args.notes),
+                "seconds": float(args.seconds),
+                "long_notes": int(args.long_notes),
+                "budget": int(args.budget),
+                "warmup": int(args.warmup),
+                "iters": int(args.iters),
+                "reuse_genome_stats": bool(args.reuse_genome_stats),
+                "profiler_enabled": bool(not args.no_profiler),
+                "iteration_wall_sec": wall_values,
+                "iteration_kernel_sec": kernel_values,
+                "iteration_upload_sec": upload_values,
+                "iteration_download_sec": download_values,
+                "iteration_util_pct": util_values,
+                "mean_wall_sec": float(mean_wall),
+                "steady_mean_wall_sec": float(steady_mean_wall),
+                "iters_per_sec": float((1.0 / mean_wall) if mean_wall > 0.0 else 0.0),
+                "steady_iters_per_sec": float((1.0 / steady_mean_wall) if steady_mean_wall > 0.0 else 0.0),
+                "env": snapshot_env(
+                    [
+                        "FG_STAGE1_BLOCK_DIM",
+                        "FG_TARGET_THREADS_PER_KERNEL",
+                        "FG_SMALL_WORK_SINGLE_BAND",
+                        "FG_SMALL_WORK_MAX_WORK_ITEMS",
+                        "FG_SMALL_WORK_MAX_CFG_LEN",
+                        "FG_STAGE1_SMALL_SECTIONS_FASTPATH",
+                    ]
+                ),
+            },
+            json_stdout=bool(args.json),
+            json_out=str(args.json_out or ""),
+        )
     finally:
         if gpu_client is not None:
             try:

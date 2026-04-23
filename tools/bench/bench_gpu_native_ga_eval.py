@@ -21,6 +21,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from tools.bench._bench_reporting import emit_bench_result, snapshot_env
+
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
@@ -196,6 +198,8 @@ def main() -> int:
         default=int(os.environ.get("BENCH_GA_ITEM_FF_MAX", "40")),
         help="Max Fever Fill Rate stat on generated items (default: 40).",
     )
+    ap.add_argument("--json", action="store_true", help="Emit final metrics as machine-readable JSON on stdout.")
+    ap.add_argument("--json-out", type=str, default="", help="Write final metrics JSON to this path.")
     args = ap.parse_args()
 
     # `ga_operations` caches GPU_NATIVE_GA_PLATEAU_PRUNE at module import time to avoid per-call overhead.
@@ -307,6 +311,35 @@ def main() -> int:
         f"item_ft_max={int(args.item_ft_max)} item_ff_max={int(args.item_ff_max)}"
     )
     print(f"total_sec={elapsed:.6f} per_iter_sec={per_iter:.6f} iters_per_sec={iters / elapsed:.3f}")
+    emit_bench_result(
+        {
+            "bench": "ga_eval",
+            "genomes": int(args.genomes),
+            "budget": int(args.budget),
+            "iters": int(iters),
+            "warmup": int(args.warmup),
+            "seed": int(args.seed),
+            "prune_arg": int(args.prune_plateaus),
+            "prune_effective": int(prune_effective),
+            "base_ft": int(args.base_ft),
+            "base_ff": int(args.base_ff),
+            "item_ft_max": int(args.item_ft_max),
+            "item_ff_max": int(args.item_ff_max),
+            "total_sec": float(elapsed),
+            "per_iter_sec": float(per_iter),
+            "iters_per_sec": float(iters / elapsed),
+            "env": snapshot_env(
+                [
+                    "TAICHI_BLOCK_DIM",
+                    "GA_FTFF_REDUCE_BLOCK_DIM",
+                    "GPU_NATIVE_GA_BATCH_RUNS",
+                    "GPU_NATIVE_GA_PLATEAU_PRUNE",
+                ]
+            ),
+        },
+        json_stdout=bool(args.json),
+        json_out=str(args.json_out or ""),
+    )
     return 0
 
 
