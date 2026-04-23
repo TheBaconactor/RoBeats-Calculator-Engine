@@ -230,3 +230,134 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
             os.environ.pop("GPU_NATIVE_GA_PLATEAU_PRUNE", None)
         else:
             os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = old_prune
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_eval_raw_key_scores_are_not_selection_safe() -> None:
+    """
+    The warmstart reduction key is not a drop-in replacement for exact GA selection scores.
+
+    This guards the optimization boundary we uncovered during occupancy work: using the
+    score packed into `chunk_best_key` directly for selection changes the GA surface.
+    """
+    n_genomes = 96
+    total_budget = 90
+
+    rng = np.random.default_rng(20260423)
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+
+    def make_item_pool(prefix: str, n: int) -> list[dict]:
+        items: list[dict] = []
+        for i in range(n):
+            items.append(
+                _mk_item(
+                    f"{prefix}{i}",
+                    **{
+                        "Perfect Points": int(rng.integers(0, 120)),
+                        "Combo Multiplier": int(rng.integers(0, 120)),
+                        "Fever Multiplier": int(rng.integers(0, 120)),
+                        "Fever Time": int(rng.integers(0, 40)),
+                        "Fever Fill Rate": int(rng.integers(0, 40)),
+                        "Beat": int(rng.integers(0, 200)),
+                        "Vibe": int(rng.integers(0, 200)),
+                        "Rush": int(rng.integers(0, 200)),
+                        "Flow": int(rng.integers(0, 200)),
+                        "Chill": int(rng.integers(0, 200)),
+                    },
+                )
+            )
+        return items
+
+    gear_pool = {slot: make_item_pool(f"{slot}_", 14) for slot in slots}
+    mini_pool = make_item_pool("Mini_", 24)
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+    gpu_arrays = registry.to_gpu_arrays()
+
+    base_fixed_stats_arr = np.array(
+        [
+            int(rng.integers(100, 300)),
+            int(rng.integers(100, 300)),
+            int(rng.integers(100, 300)),
+            int(rng.integers(0, 40)),
+            int(rng.integers(0, 40)),
+            int(rng.integers(200, 400)),
+            int(rng.integers(200, 400)),
+            int(rng.integers(200, 400)),
+            int(rng.integers(200, 400)),
+            int(rng.integers(200, 400)),
+        ],
+        dtype=np.int32,
+    )
+
+    ref_arrays = {
+        "Perfect Points": np.linspace(0.0, 1.0, 161, dtype=np.float64),
+        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Multiplier": np.linspace(1.0, 3.0, 161, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+    }
+
+    calc_song = _make_calc_song(name="SteadyStateScoreRefresh_BeatVibe", p_color="Beat", s_color="Vibe")
+    flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
+
+    genomes: list[list[dict]] = []
+    for _g in range(n_genomes):
+        gear = [gear_pool[slot][int(rng.integers(0, len(gear_pool[slot])))] for slot in slots]
+        minis = [mini_pool[int(i)] for i in rng.choice(len(mini_pool), size=3, replace=False)]
+        genomes.append(gear + minis)
+    pop_indices = registry.encode_population(genomes)
+
+    with _GPU_LOCK:
+        ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
+        ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+        ga_upload_population_indices(pop_indices, n_slots=9)
+
+        ga_evaluate_population(
+            n_genomes=n_genomes,
+            n_slots=9,
+            total_budget=total_budget,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=0,
+            is_p_ft=flags["is_p_ft"],
+            is_s_ft=flags["is_s_ft"],
+            is_p_ff=flags["is_p_ff"],
+            is_s_ff=flags["is_s_ff"],
+            is_p_pp=flags["is_p_pp"],
+            is_s_pp=flags["is_s_pp"],
+            is_p_cm=flags["is_p_cm"],
+            is_s_cm=flags["is_s_cm"],
+            is_p_fm=flags["is_p_fm"],
+            is_s_fm=flags["is_s_fm"],
+            is_p_ov=flags["is_p_ov"],
+            is_s_ov=flags["is_s_ov"],
+            materialize_mode="none",
+        )
+        best_keys = np.asarray(gpu_fields.chunk_best_key.to_numpy()[:n_genomes], dtype=np.uint64)
+        raw_key_scores = (best_keys >> np.uint64(32)).astype(np.int64) - 1
+
+        ga_write_best_and_update_global(
+            n_genomes=n_genomes,
+            n_slots=9,
+            total_budget=total_budget,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=0,
+            is_p_ft=flags["is_p_ft"],
+            is_s_ft=flags["is_s_ft"],
+            is_p_ff=flags["is_p_ff"],
+            is_s_ff=flags["is_s_ff"],
+            is_p_pp=flags["is_p_pp"],
+            is_s_pp=flags["is_s_pp"],
+            is_p_cm=flags["is_p_cm"],
+            is_s_cm=flags["is_s_cm"],
+            is_p_fm=flags["is_p_fm"],
+            is_s_fm=flags["is_s_fm"],
+            is_p_ov=flags["is_p_ov"],
+            is_s_ov=flags["is_s_ov"],
+        )
+        results = ga_download_results(n_genomes)
+        scores = ga_download_scores(n_genomes)
+
+    assert np.array_equal(scores, results[:, 0])
+    mismatch = np.count_nonzero(raw_key_scores.astype(np.int32) != results[:, 0])
+    assert mismatch > 0
