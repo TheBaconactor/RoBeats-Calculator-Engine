@@ -112,14 +112,21 @@ You can also sweep the existing knobs for throughput:
 Use the maintained sweep harness when you want archived apples-to-apples GA / FG knob comparisons:
 
 - GA example:
-  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-genomes 705 --ga-iters 6`
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-materialize-modes none,update_global,results --ga-genomes 705 --ga-iters 6 --ga-kernel-profiler`
 - FG example:
-  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode fg --fg-stage1-block-dims 64,128 --fg-target-threads 2000000,4000000,6000000 --fg-genomes 1024 --fg-ftff 128 --fg-tasks 16`
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode fg --fg-stage1-block-dims 64,128 --fg-target-threads 2000000,4000000,6000000 --fg-genomes 1024 --fg-ftff 128 --fg-tasks 16 --fg-kernel-profiler`
 
 Underlying benches also support machine-readable output directly:
 
-- `python tools/bench/bench_gpu_native_ga_eval.py --json`
-- `python tools/bench/bench_fg_batch_throughput.py --json`
+- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode update_global --kernel-profiler --json`
+- `python tools/bench/bench_fg_batch_throughput.py --mode direct --kernel-profiler --json`
+
+When `--kernel-profiler` is enabled, the bench JSON now includes per-kernel
+entries in `kernel_profiler_kernels` plus accounting fields
+`kernel_profiler_accounted_total_sec`, `kernel_profiler_unaccounted_total_sec`,
+and `kernel_profiler_accounted_pct`. Use those fields to distinguish
+"GPU time is genuinely concentrated in these kernels" from "we are still
+missing profiler attribution."
 
 ## FG job coalescing (safe, queue overhead only)
 These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:

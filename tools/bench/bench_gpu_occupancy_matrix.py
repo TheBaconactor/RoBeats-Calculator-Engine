@@ -39,23 +39,38 @@ def parse_csv_ints(value: str) -> list[int]:
     return out
 
 
+def parse_csv_strings(value: str) -> list[str]:
+    out: list[str] = []
+    for part in str(value or "").split(","):
+        normalized = str(part or "").strip().lower()
+        if normalized:
+            out.append(normalized)
+    if not out:
+        raise ValueError("Expected at least one string value.")
+    return out
+
+
 def build_ga_sweep_cases(
     *,
     taichi_block_dims: list[int],
     reduce_block_dims: list[int],
     batch_runs: list[int],
+    materialize_modes: list[str],
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    for taichi_block_dim, reduce_block_dim, batch_run in itertools.product(
-        taichi_block_dims, reduce_block_dims, batch_runs
+    for taichi_block_dim, reduce_block_dim, batch_run, materialize_mode in itertools.product(
+        taichi_block_dims, reduce_block_dims, batch_runs, materialize_modes
     ):
         env = {
             "TAICHI_BLOCK_DIM": int(taichi_block_dim),
             "GA_FTFF_REDUCE_BLOCK_DIM": int(reduce_block_dim),
             "GPU_NATIVE_GA_BATCH_RUNS": int(batch_run),
         }
-        label = f"taichi{int(taichi_block_dim)}_reduce{int(reduce_block_dim)}_batch{int(batch_run)}"
-        cases.append({"label": label, "env": env})
+        mode_label = str(materialize_mode).replace("-", "_")
+        label = (
+            f"taichi{int(taichi_block_dim)}_reduce{int(reduce_block_dim)}_batch{int(batch_run)}_mode_{mode_label}"
+        )
+        cases.append({"label": label, "env": env, "materialize_mode": str(materialize_mode)})
     return cases
 
 
@@ -154,12 +169,14 @@ def main() -> int:
     ap.add_argument("--ga-taichi-block-dims", default="128,256")
     ap.add_argument("--ga-reduce-block-dims", default="128,256")
     ap.add_argument("--ga-batch-runs", default="0,1")
+    ap.add_argument("--ga-materialize-modes", default="none")
     ap.add_argument("--ga-genomes", type=int, default=705)
     ap.add_argument("--ga-budget", type=int, default=90)
     ap.add_argument("--ga-iters", type=int, default=6)
     ap.add_argument("--ga-warmup", type=int, default=2)
     ap.add_argument("--ga-seed", type=int, default=1337)
     ap.add_argument("--ga-prune-plateaus", type=int, default=1)
+    ap.add_argument("--ga-kernel-profiler", action="store_true")
 
     ap.add_argument("--fg-stage1-block-dims", default="64,128")
     ap.add_argument("--fg-target-threads", default="2000000,4000000,6000000")
@@ -174,6 +191,7 @@ def main() -> int:
     ap.add_argument("--fg-seed", type=int, default=1337)
     ap.add_argument("--fg-reuse-genome-stats", action="store_true")
     ap.add_argument("--fg-no-profiler", action="store_true")
+    ap.add_argument("--fg-kernel-profiler", action="store_true")
     args = ap.parse_args()
 
     payload: dict[str, Any] = {
@@ -189,6 +207,7 @@ def main() -> int:
             taichi_block_dims=parse_csv_ints(str(args.ga_taichi_block_dims)),
             reduce_block_dims=parse_csv_ints(str(args.ga_reduce_block_dims)),
             batch_runs=parse_csv_ints(str(args.ga_batch_runs)),
+            materialize_modes=parse_csv_strings(str(args.ga_materialize_modes)),
         )
         print(f"[ga] planned cases: {len(ga_cases)}")
         if args.dry_run:
@@ -198,30 +217,39 @@ def main() -> int:
             ga_results: list[dict[str, Any]] = []
             for idx, case in enumerate(ga_cases, start=1):
                 print(f"[ga] case {idx}/{len(ga_cases)} {case['label']}")
+                script_args = [
+                    "--genomes",
+                    str(int(args.ga_genomes)),
+                    "--budget",
+                    str(int(args.ga_budget)),
+                    "--iters",
+                    str(int(args.ga_iters)),
+                    "--warmup",
+                    str(int(args.ga_warmup)),
+                    "--seed",
+                    str(int(args.ga_seed)),
+                    "--prune-plateaus",
+                    str(int(args.ga_prune_plateaus)),
+                    "--materialize-mode",
+                    str(case["materialize_mode"]),
+                ]
+                if args.ga_kernel_profiler:
+                    script_args.append("--kernel-profiler")
                 result = _run_case(
                     script_relative_path="tools/bench/bench_gpu_native_ga_eval.py",
-                    script_args=[
-                        "--genomes",
-                        str(int(args.ga_genomes)),
-                        "--budget",
-                        str(int(args.ga_budget)),
-                        "--iters",
-                        str(int(args.ga_iters)),
-                        "--warmup",
-                        str(int(args.ga_warmup)),
-                        "--seed",
-                        str(int(args.ga_seed)),
-                        "--prune-plateaus",
-                        str(int(args.ga_prune_plateaus)),
-                    ],
+                    script_args=script_args,
                     env_overrides=case["env"],
                     verbose=bool(args.verbose),
                 )
                 result["label"] = case["label"]
                 ga_results.append(result)
+                kernel_pct = result.get("kernel_profiler_wall_pct")
+                kernel_suffix = (
+                    f" kernel%={float(kernel_pct):.2f}" if isinstance(kernel_pct, (float, int)) else ""
+                )
                 print(
                     f"  -> per_iter={float(result.get('per_iter_sec', 0.0)):.6f}s "
-                    f"iters/sec={float(result.get('iters_per_sec', 0.0)):.3f}"
+                    f"iters/sec={float(result.get('iters_per_sec', 0.0)):.3f}{kernel_suffix}"
                 )
             ranked = rank_ga_results(ga_results)
             payload["ga"] = {
@@ -267,6 +295,8 @@ def main() -> int:
                     script_args.append("--reuse-genome-stats")
                 if args.fg_no_profiler:
                     script_args.append("--no-profiler")
+                if args.fg_kernel_profiler:
+                    script_args.append("--kernel-profiler")
                 result = _run_case(
                     script_relative_path="tools/bench/bench_fg_batch_throughput.py",
                     script_args=script_args,
@@ -275,9 +305,13 @@ def main() -> int:
                 )
                 result["label"] = case["label"]
                 fg_results.append(result)
+                kernel_pct = result.get("kernel_profiler_wall_pct")
+                kernel_suffix = (
+                    f" kernel%={float(kernel_pct):.2f}" if isinstance(kernel_pct, (float, int)) else ""
+                )
                 print(
                     f"  -> steady_mean={float(result.get('steady_mean_wall_sec', 0.0)):.6f}s "
-                    f"steady_iters/sec={float(result.get('steady_iters_per_sec', 0.0)):.3f}"
+                    f"steady_iters/sec={float(result.get('steady_iters_per_sec', 0.0)):.3f}{kernel_suffix}"
                 )
             ranked = rank_fg_results(fg_results)
             payload["fg"] = {

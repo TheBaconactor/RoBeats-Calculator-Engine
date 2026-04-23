@@ -21,11 +21,30 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from tools.bench._bench_reporting import emit_bench_result, snapshot_env
+from tools.bench._bench_reporting import (
+    add_kernel_profiler_metrics,
+    add_kernel_profiler_kernel_entries,
+    clear_taichi_kernel_profiler,
+    emit_bench_result,
+    env_flag,
+    snapshot_env,
+)
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+
+GA_KERNEL_PROFILER_NAMES = (
+    "ga_build_exact_eval_reuse_map_kernel",
+    "ga_aggregate_and_init_best_kernel",
+    "ga_propagate_exact_eval_reuse_base_stats_kernel",
+    "ga_build_exact_eval_reuse_map_from_base_stats_kernel",
+    "ga_find_best_combo_warmstart_kernel",
+    "ga_propagate_exact_eval_reuse_chunk_best_kernel",
+    "ga_write_best_results_from_key_kernel",
+    "ga_update_global_best_kernel",
+    "ga_write_best_and_update_global_kernel",
+)
 
 
 def _mk_item(name: str, **stats: int) -> dict:
@@ -175,6 +194,17 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=int(os.environ.get("BENCH_GA_SEED", "1337")))
     ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
     ap.add_argument(
+        "--materialize-mode",
+        choices=("none", "results", "update_global"),
+        default=str(os.environ.get("BENCH_GA_MATERIALIZE_MODE", "none") or "none").strip().lower(),
+        help="Mirror the live GA subpath more closely by choosing how results are materialized.",
+    )
+    ap.add_argument(
+        "--kernel-profiler",
+        action="store_true",
+        help="Enable Taichi kernel-profiler totals for the measured steady-state window.",
+    )
+    ap.add_argument(
         "--base-ft",
         type=int,
         default=int(os.environ.get("BENCH_GA_BASE_FT", "-1")),
@@ -205,6 +235,8 @@ def main() -> int:
     # `ga_operations` caches GPU_NATIVE_GA_PLATEAU_PRUNE at module import time to avoid per-call overhead.
     # Set it BEFORE importing ga_operations so the benchmark matches the printed configuration.
     os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "1" if int(args.prune_plateaus) else "0"
+    if bool(args.kernel_profiler):
+        os.environ["TAICHI_KERNEL_PROFILER"] = "1"
 
     from gear_optimizer.solver.taichi_gem.api import ga_operations as _ga_ops
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
@@ -216,6 +248,8 @@ def main() -> int:
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
     prune_effective = int(getattr(_ga_ops, "_GA_PLATEAU_PRUNE_ENABLED", 0))
+    materialize_mode = str(args.materialize_mode or "none").strip().lower()
+    kernel_profiler_requested = bool(args.kernel_profiler) or env_flag("TAICHI_KERNEL_PROFILER", "0")
 
     rng = np.random.default_rng(int(args.seed))
     registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(
@@ -264,6 +298,7 @@ def main() -> int:
                 is_s_fm=flags["is_s_fm"],
                 is_p_ov=flags["is_p_ov"],
                 is_s_ov=flags["is_s_ov"],
+                materialize_mode=materialize_mode,
             )
             try:
                 import taichi as ti
@@ -272,6 +307,7 @@ def main() -> int:
             except Exception:
                 pass
 
+        clear_taichi_kernel_profiler(enabled=kernel_profiler_requested)
         start = time.perf_counter()
         for _ in range(int(args.iters)):
             ga_evaluate_population(
@@ -292,6 +328,7 @@ def main() -> int:
                 is_s_fm=flags["is_s_fm"],
                 is_p_ov=flags["is_p_ov"],
                 is_s_ov=flags["is_s_ov"],
+                materialize_mode=materialize_mode,
             )
         try:
             import taichi as ti
@@ -306,40 +343,64 @@ def main() -> int:
     print(
         f"ga_evaluate_population: genomes={int(args.genomes)} budget={int(args.budget)} "
         f"iters={iters} warmup={int(args.warmup)} mode=exact_no_hints "
+        f"materialize_mode={materialize_mode} "
         f"prune_arg={int(args.prune_plateaus)} prune_effective={prune_effective} "
         f"base_ft={int(args.base_ft)} base_ff={int(args.base_ff)} "
         f"item_ft_max={int(args.item_ft_max)} item_ff_max={int(args.item_ff_max)}"
     )
     print(f"total_sec={elapsed:.6f} per_iter_sec={per_iter:.6f} iters_per_sec={iters / elapsed:.3f}")
-    emit_bench_result(
-        {
-            "bench": "ga_eval",
-            "genomes": int(args.genomes),
-            "budget": int(args.budget),
-            "iters": int(iters),
-            "warmup": int(args.warmup),
-            "seed": int(args.seed),
-            "prune_arg": int(args.prune_plateaus),
-            "prune_effective": int(prune_effective),
-            "base_ft": int(args.base_ft),
-            "base_ff": int(args.base_ff),
-            "item_ft_max": int(args.item_ft_max),
-            "item_ff_max": int(args.item_ff_max),
-            "total_sec": float(elapsed),
-            "per_iter_sec": float(per_iter),
-            "iters_per_sec": float(iters / elapsed),
-            "env": snapshot_env(
-                [
-                    "TAICHI_BLOCK_DIM",
-                    "GA_FTFF_REDUCE_BLOCK_DIM",
-                    "GPU_NATIVE_GA_BATCH_RUNS",
-                    "GPU_NATIVE_GA_PLATEAU_PRUNE",
-                ]
-            ),
-        },
-        json_stdout=bool(args.json),
-        json_out=str(args.json_out or ""),
+    result = {
+        "bench": "ga_eval",
+        "genomes": int(args.genomes),
+        "budget": int(args.budget),
+        "iters": int(iters),
+        "warmup": int(args.warmup),
+        "seed": int(args.seed),
+        "prune_arg": int(args.prune_plateaus),
+        "prune_effective": int(prune_effective),
+        "materialize_mode": materialize_mode,
+        "kernel_profiler_requested": bool(kernel_profiler_requested),
+        "base_ft": int(args.base_ft),
+        "base_ff": int(args.base_ff),
+        "item_ft_max": int(args.item_ft_max),
+        "item_ff_max": int(args.item_ff_max),
+        "total_sec": float(elapsed),
+        "per_iter_sec": float(per_iter),
+        "iters_per_sec": float(iters / elapsed),
+        "env": snapshot_env(
+            [
+                "TAICHI_BLOCK_DIM",
+                "GA_FTFF_REDUCE_BLOCK_DIM",
+                "GPU_NATIVE_GA_BATCH_RUNS",
+                "GPU_NATIVE_GA_PLATEAU_PRUNE",
+                "TAICHI_KERNEL_PROFILER",
+            ]
+        ),
+    }
+    add_kernel_profiler_metrics(result, enabled=kernel_profiler_requested, wall_sec=float(elapsed))
+    add_kernel_profiler_kernel_entries(
+        result,
+        enabled=kernel_profiler_requested,
+        kernel_names=GA_KERNEL_PROFILER_NAMES,
     )
+    if result.get("kernel_profiler_total_sec") is not None:
+        print(
+            "kernel_profiler_total_sec="
+            f"{float(result['kernel_profiler_total_sec']):.6f} "
+            "kernel_profiler_wall_pct="
+            f"{float(result['kernel_profiler_wall_pct']):.2f}"
+        )
+        top_kernel = ((result.get("kernel_profiler_kernels", None) or [])[:1] or [None])[0]
+        if isinstance(top_kernel, dict):
+            print(
+                "kernel_top="
+                f"{str(top_kernel.get('name', ''))} "
+                "kernel_top_total_sec="
+                f"{float(top_kernel.get('total_sec', 0.0)):.6f} "
+                "kernel_top_avg_ms="
+                f"{float(top_kernel.get('avg_ms', 0.0)):.6f}"
+            )
+    emit_bench_result(result, json_stdout=bool(args.json), json_out=str(args.json_out or ""))
     return 0
 
 

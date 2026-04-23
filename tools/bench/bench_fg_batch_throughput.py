@@ -26,7 +26,40 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from tools.bench._bench_reporting import emit_bench_result, snapshot_env
+from tools.bench._bench_reporting import (
+    add_kernel_profiler_metrics,
+    add_kernel_profiler_kernel_entries,
+    clear_taichi_kernel_profiler,
+    emit_bench_result,
+    env_flag,
+    snapshot_env,
+)
+
+FG_KERNEL_PROFILER_NAMES = (
+    "fg_reset_global_best_kernel",
+    "fg_reset_best_kernel",
+    "fg_stage1_init_kernel",
+    "fg_stage1_init_packed_kernel",
+    "fg_build_flat_work_kernel",
+    "fg_upload_forced_counts_kernel",
+    "fg_upload_cfg_ranges_kernel",
+    "fg_upload_ftff_prefix_kernel",
+    "fg_upload_cfg_meta_prefix_kernel",
+    "fg_upload_cfg_max_fp_prefix_kernel",
+    "fg_upload_cfg_total_len_prefix_kernel",
+    "fg_compute_max_fp_for_ftff_kernel",
+    "fg_compute_cfg_total_len_kernel",
+    "fg_reduce_cfg_total_len_max_kernel",
+    "fg_stage1_kernel",
+    "fg_stage1_clear_wave_best_kernel",
+    "fg_stage1_waves_kernel",
+    "fg_stage1_reduce_waves_kernel",
+    "fg_stage2_recompute_and_update_global_best_kernel",
+    "fg_stage2_recompute_kernel",
+    "fg_pack_results_kernel",
+    "fg_pack_global_best_kernel",
+    "fg_copy_global_best_packed_to_download_staging_kernel",
+)
 
 
 def _make_ref_arrays() -> dict[str, np.ndarray]:
@@ -161,6 +194,11 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=5)
     ap.add_argument("--reuse-genome-stats", action="store_true")
     ap.add_argument("--no-profiler", action="store_true")
+    ap.add_argument(
+        "--kernel-profiler",
+        action="store_true",
+        help="Enable Taichi kernel-profiler totals for the measured steady-state window (direct mode only).",
+    )
     ap.add_argument("--sync-for-timing", action="store_true")
     ap.add_argument("--transfer-trace", action="store_true")
     ap.add_argument("--json", action="store_true", help="Emit final metrics as machine-readable JSON on stdout.")
@@ -174,6 +212,10 @@ def main() -> int:
         os.environ["GPU_SYNC_FOR_TIMING"] = "1"
     if args.transfer_trace:
         os.environ["FG_TRANSFER_TRACE"] = "1"
+    if bool(args.kernel_profiler):
+        os.environ["TAICHI_KERNEL_PROFILER"] = "1"
+    kernel_profiler_requested = bool(args.kernel_profiler) or env_flag("TAICHI_KERNEL_PROFILER", "0")
+    kernel_profiler_supported = bool(kernel_profiler_requested and str(args.mode) == "direct")
 
     from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
@@ -353,6 +395,7 @@ def main() -> int:
             _run_once(upload_genome_stats=True)
 
         prof.reset()
+        clear_taichi_kernel_profiler(enabled=kernel_profiler_supported)
         iteration_records: list[dict] = []
         for i in range(max(1, int(args.iters))):
             print(f"[bench] iter {i + 1}/{int(args.iters)}")
@@ -367,47 +410,73 @@ def main() -> int:
         steady_wall_values = _steady(wall_values)
         mean_wall = _mean(wall_values)
         steady_mean_wall = _mean(steady_wall_values)
-        emit_bench_result(
-            {
-                "bench": "fg_batch_throughput",
-                "mode": str(args.mode),
-                "genomes": int(args.genomes),
-                "sections": int(n_sections),
-                "tasks": int(args.tasks),
-                "ftff_per_task": int(ftff_per_task),
-                "cfg_len_per_task": int(cfg_len),
-                "max_fp": [int(v) for v in max_fp],
-                "notes": int(args.notes),
-                "seconds": float(args.seconds),
-                "long_notes": int(args.long_notes),
-                "budget": int(args.budget),
-                "warmup": int(args.warmup),
-                "iters": int(args.iters),
-                "reuse_genome_stats": bool(args.reuse_genome_stats),
-                "profiler_enabled": bool(not args.no_profiler),
-                "iteration_wall_sec": wall_values,
-                "iteration_kernel_sec": kernel_values,
-                "iteration_upload_sec": upload_values,
-                "iteration_download_sec": download_values,
-                "iteration_util_pct": util_values,
-                "mean_wall_sec": float(mean_wall),
-                "steady_mean_wall_sec": float(steady_mean_wall),
-                "iters_per_sec": float((1.0 / mean_wall) if mean_wall > 0.0 else 0.0),
-                "steady_iters_per_sec": float((1.0 / steady_mean_wall) if steady_mean_wall > 0.0 else 0.0),
-                "env": snapshot_env(
-                    [
-                        "FG_STAGE1_BLOCK_DIM",
-                        "FG_TARGET_THREADS_PER_KERNEL",
-                        "FG_SMALL_WORK_SINGLE_BAND",
-                        "FG_SMALL_WORK_MAX_WORK_ITEMS",
-                        "FG_SMALL_WORK_MAX_CFG_LEN",
-                        "FG_STAGE1_SMALL_SECTIONS_FASTPATH",
-                    ]
-                ),
-            },
-            json_stdout=bool(args.json),
-            json_out=str(args.json_out or ""),
+        result = {
+            "bench": "fg_batch_throughput",
+            "mode": str(args.mode),
+            "genomes": int(args.genomes),
+            "sections": int(n_sections),
+            "tasks": int(args.tasks),
+            "ftff_per_task": int(ftff_per_task),
+            "cfg_len_per_task": int(cfg_len),
+            "max_fp": [int(v) for v in max_fp],
+            "notes": int(args.notes),
+            "seconds": float(args.seconds),
+            "long_notes": int(args.long_notes),
+            "budget": int(args.budget),
+            "warmup": int(args.warmup),
+            "iters": int(args.iters),
+            "reuse_genome_stats": bool(args.reuse_genome_stats),
+            "profiler_enabled": bool(not args.no_profiler),
+            "kernel_profiler_requested": bool(kernel_profiler_requested),
+            "iteration_wall_sec": wall_values,
+            "iteration_kernel_sec": kernel_values,
+            "iteration_upload_sec": upload_values,
+            "iteration_download_sec": download_values,
+            "iteration_util_pct": util_values,
+            "mean_wall_sec": float(mean_wall),
+            "steady_mean_wall_sec": float(steady_mean_wall),
+            "iters_per_sec": float((1.0 / mean_wall) if mean_wall > 0.0 else 0.0),
+            "steady_iters_per_sec": float((1.0 / steady_mean_wall) if steady_mean_wall > 0.0 else 0.0),
+            "env": snapshot_env(
+                [
+                    "FG_STAGE1_BLOCK_DIM",
+                    "FG_TARGET_THREADS_PER_KERNEL",
+                    "FG_SMALL_WORK_SINGLE_BAND",
+                    "FG_SMALL_WORK_MAX_WORK_ITEMS",
+                    "FG_SMALL_WORK_MAX_CFG_LEN",
+                    "FG_STAGE1_SMALL_SECTIONS_FASTPATH",
+                    "TAICHI_KERNEL_PROFILER",
+                ]
+            ),
+        }
+        add_kernel_profiler_metrics(
+            result,
+            enabled=kernel_profiler_supported,
+            wall_sec=float(sum(wall_values)),
         )
+        add_kernel_profiler_kernel_entries(
+            result,
+            enabled=kernel_profiler_supported,
+            kernel_names=FG_KERNEL_PROFILER_NAMES,
+        )
+        if result.get("kernel_profiler_total_sec") is not None:
+            print(
+                "kernel_profiler_total_sec="
+                f"{float(result['kernel_profiler_total_sec']):.6f} "
+                "kernel_profiler_wall_pct="
+                f"{float(result['kernel_profiler_wall_pct']):.2f}"
+            )
+            top_kernel = ((result.get("kernel_profiler_kernels", None) or [])[:1] or [None])[0]
+            if isinstance(top_kernel, dict):
+                print(
+                    "kernel_top="
+                    f"{str(top_kernel.get('name', ''))} "
+                    "kernel_top_total_sec="
+                    f"{float(top_kernel.get('total_sec', 0.0)):.6f} "
+                    "kernel_top_avg_ms="
+                    f"{float(top_kernel.get('avg_ms', 0.0)):.6f}"
+                )
+        emit_bench_result(result, json_stdout=bool(args.json), json_out=str(args.json_out or ""))
     finally:
         if gpu_client is not None:
             try:
