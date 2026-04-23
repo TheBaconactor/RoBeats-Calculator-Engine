@@ -117,6 +117,7 @@ from .kernels_solvers_batch import (
 from .ga_eval import (
     ga_find_best_combo_key_kernel,
     ga_write_best_results_from_key_kernel,
+    ga_write_best_results_and_update_runs_best_kernel,
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_pack_global_best_kernel,
@@ -245,6 +246,7 @@ __all__ = [
     # GA evaluation kernels
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
+    "ga_write_best_results_and_update_runs_best_kernel",
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_pack_global_best_kernel",

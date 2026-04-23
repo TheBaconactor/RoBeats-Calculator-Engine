@@ -2497,7 +2497,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_s_ov=is_s_ov,
                             max_ft_gems_global=int(max_ft_gems_global),
                             max_ff_gems_global=int(max_ff_gems_global),
-                            materialize_mode="results",
+                            materialize_mode="none",
                         )
                         _sync()
                         _raise_if_abort_requested(
@@ -2506,6 +2506,44 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         if t0:
                             _log_phase(
                                 phase="evaluate",
+                                ms=(time.perf_counter() - t0) * 1000.0,
+                                runs=int(batch_len),
+                                pop=int(n_genomes),
+                                gen=int(gen),
+                                use_hints=0,
+                                combos=int(n_combos),
+                            )
+
+                        # Materialize current-generation winners and refresh per-run best rows in one GPU pass.
+                        t0 = time.perf_counter() if phase_timing else 0.0
+                        gpu_api.ga_write_best_results_and_update_runs_best(
+                            run_idx_start=int(local_run_idx),
+                            n_runs=int(batch_len),
+                            n_genomes_per_run=int(n_genomes),
+                            n_slots=int(n_slots),
+                            total_budget=total_budget,
+                            gem_scale_fever=gem_scale_fever,
+                            song_slot=int(song_slot),
+                            is_p_ft=is_p_ft,
+                            is_s_ft=is_s_ft,
+                            is_p_ff=is_p_ff,
+                            is_s_ff=is_s_ff,
+                            is_p_pp=is_p_pp,
+                            is_s_pp=is_s_pp,
+                            is_p_cm=is_p_cm,
+                            is_s_cm=is_s_cm,
+                            is_p_fm=is_p_fm,
+                            is_s_fm=is_s_fm,
+                            is_p_ov=is_p_ov,
+                            is_s_ov=is_s_ov,
+                        )
+                        _sync()
+                        _raise_if_abort_requested(
+                            abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
+                        )
+                        if t0:
+                            _log_phase(
+                                phase="update_runs_best",
                                 ms=(time.perf_counter() - t0) * 1000.0,
                                 runs=int(batch_len),
                                 pop=int(n_genomes),
@@ -2550,29 +2588,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 )
                             except Exception:
                                 pass
-
-                        # Track best per run across generations.
-                        t0 = time.perf_counter() if phase_timing else 0.0
-                        gpu_api.ga_update_runs_best(
-                            run_idx_start=int(local_run_idx),
-                            n_runs=int(batch_len),
-                            n_genomes_per_run=int(n_genomes),
-                            n_slots=int(n_slots),
-                        )
-                        _sync()
-                        _raise_if_abort_requested(
-                            abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
-                        )
-                        if t0:
-                            _log_phase(
-                                phase="update_runs_best",
-                                ms=(time.perf_counter() - t0) * 1000.0,
-                                runs=int(batch_len),
-                                pop=int(n_genomes),
-                                gen=int(gen),
-                                use_hints=0,
-                                combos=int(n_combos),
-                            )
 
                         # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
                         is_migration_gen = (

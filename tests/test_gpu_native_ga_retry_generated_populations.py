@@ -93,6 +93,9 @@ class _FakeGpuApi:
     def ga_update_runs_best(self, *_args, **_kwargs):
         return None
 
+    def ga_write_best_results_and_update_runs_best(self, *_args, **_kwargs):
+        return None
+
     def ga_init_global_best(self, *_args, **_kwargs):
         self.global_best_init_calls += 1
         return None

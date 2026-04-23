@@ -119,6 +119,7 @@ Use the maintained sweep harness when you want archived apples-to-apples GA / FG
 Underlying benches also support machine-readable output directly:
 
 - `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode update_global --kernel-profiler --json`
+- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode results_update_runs --kernel-profiler --json`
 - `python tools/bench/bench_fg_batch_throughput.py --mode direct --kernel-profiler --json`
 
 When `--kernel-profiler` is enabled, the bench JSON now includes per-kernel
@@ -127,6 +128,12 @@ entries in `kernel_profiler_kernels` plus accounting fields
 and `kernel_profiler_accounted_pct`. Use those fields to distinguish
 "GPU time is genuinely concentrated in these kernels" from "we are still
 missing profiler attribution."
+
+For the live steady-state GA path, prefer `--materialize-mode results_update_runs`.
+That mode mirrors the shipped orchestration more closely by timing:
+
+- `ga_evaluate_population(..., materialize_mode="none")`
+- `ga_write_best_results_and_update_runs_best(...)`
 
 ## FG job coalescing (safe, queue overhead only)
 These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:

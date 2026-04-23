@@ -929,6 +929,81 @@ def ga_write_best_and_update_global(
     )
 
 
+def ga_write_best_results_and_update_runs_best(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    FUSED: materialize per-genome GA results and refresh per-run best rows.
+
+    This is the steady-state multi-run companion to `ga_write_best_and_update_global()`.
+    Call it after `ga_evaluate_population(..., materialize_mode="none")` when the active
+    population packs multiple independent runs contiguously.
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+
+    kernels.ga_write_best_results_and_update_runs_best_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+    )
+
+
 def ga_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
     """Upload fitness scores to GPU (fields.ga_scores). Returns n_genomes used."""
     ensure_ready()
