@@ -69,6 +69,7 @@ try:
         ga_next_generation_gpu_elites,  # GPU-resident elitism (avoids CPU download)
         ga_next_generation_fused,  # FULLY FUSED (2 kernels instead of 4)
         ga_next_generation_fused_runs,  # FULLY FUSED multi-run batching
+        ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
         ga_download_population_indices,
         ga_download_scores,
         ga_download_results,
@@ -137,6 +138,7 @@ __all__ = [
     "ga_next_generation_gpu_elites",
     "ga_next_generation_fused",
     "ga_next_generation_fused_runs",
+    "ga_refresh_scores_update_runs_best_and_next_generation_fused_runs",
     "ga_download_population_indices",
     "ga_download_scores",
     "ga_download_results",

@@ -20,6 +20,7 @@ class _FakeGpuApi:
         self.global_best_download_calls = 0
         self.evaluate_calls = 0
         self.next_generation_calls = 0
+        self.fused_refresh_next_generation_calls = 0
         self.write_best_results_and_update_runs_best_calls = 0
         self.refresh_scores_and_update_runs_best_calls = 0
         self.write_best_results_from_key_calls = 0
@@ -134,6 +135,10 @@ class _FakeGpuApi:
 
     def ga_next_generation_fused_runs(self, *_args, **_kwargs):
         self.next_generation_calls += 1
+        return None
+
+    def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(self, *_args, **_kwargs):
+        self.fused_refresh_next_generation_calls += 1
         return None
 
     def ga_store_run_payload(self, *_args, **_kwargs):
@@ -275,6 +280,45 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
     assert fake_gpu.global_best_download_calls >= 1
     assert fake_gpu.write_best_results_and_update_runs_best_calls >= 1
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 0
+    assert fake_gpu.fused_refresh_next_generation_calls == 0
+
+
+def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
+    from gear_optimizer.solver import genetic
+
+    fake_gpu = _FakeGpuApi(fail_once=False)
+    _install_fake_taichi_modules(monkeypatch)
+
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
+    monkeypatch.setattr(genetic, "GPU_GA_GENS_PER_MIGRATION", 9999, raising=False)
+    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
+
+    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
+        calc_song={
+            "metadata": {"Song Name": "fused-refresh-next", "Difficulty": "Hard"},
+            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
+        },
+        ref_arrays={},
+        song_slot=0,
+        item_stats=np.zeros((1, 10), dtype=np.int32),
+        slot_start=np.zeros((9,), dtype=np.int32),
+        slot_count=np.zeros((9,), dtype=np.int32),
+        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        n_generations=3,
+        initial_populations=None,
+        num_runs=1,
+        n_genomes=8,
+        color_flags={},
+        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
+        ga_seed=123,
+    )
+
+    assert isinstance(out, np.ndarray)
+    assert fake_gpu.fused_refresh_next_generation_calls == 2
+    assert fake_gpu.next_generation_calls == 0
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 
 
 def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):

@@ -96,6 +96,7 @@ from .kernels_ga import (
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
     ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
     ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
+    ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
     ga_swap_population_kernel,  # FUSED: swap
 )
 
@@ -229,6 +230,7 @@ __all__ = [
     "ga_next_generation_full_kernel",
     "ga_next_generation_full_islands_kernel",
     "ga_next_generation_full_runs_kernel",
+    "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     "ga_swap_population_kernel",
     "ga_write_best_and_update_global_kernel",
     # Scoring functions

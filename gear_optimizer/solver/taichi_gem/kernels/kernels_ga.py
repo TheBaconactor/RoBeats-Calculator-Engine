@@ -22,6 +22,12 @@ import taichi as ti
 IS_METAL = sys.platform == "darwin"
 
 from . import kernels_helpers
+from .ga_eval.write_results import (
+    _best_combo_idx_from_chunk_state,
+    _best_score_from_chunk_state,
+    _materialize_best_combo_stats,
+    _write_run_best_payload_row,
+)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1589,8 +1595,8 @@ def ga_next_generation_full_islands_kernel(
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
 
-@ti.kernel
-def ga_next_generation_full_runs_kernel(
+@ti.func
+def _ga_next_generation_full_runs_impl(
     n_runs: ti.i32,
     n_genomes_per_run: ti.i32,
     n_slots: ti.i32,
@@ -1600,16 +1606,7 @@ def ga_next_generation_full_runs_kernel(
     mutation_rate_fp: ti.u32,
     immigrant_rate_fp: ti.u32,
 ):
-    """
-    FUSED next generation for multiple independent runs packed contiguously.
-
-    This kernel preserves the per-run "multi-start" semantics by ensuring:
-    - Tournament selection samples only within the run segment
-    - Island elitism is computed per-run and elites are written within each run segment
-    - No cross-run migration / mixing occurs
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-
+    """Shared multi-run next-generation body used by standalone and fused transition kernels."""
     MAX_ELITES_PER_ISLAND: ti.i32 = 16
 
     n_runs_i: ti.i32 = n_runs
@@ -1823,6 +1820,156 @@ def ga_next_generation_full_runs_kernel(
 
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
+
+
+@ti.kernel
+def ga_next_generation_full_runs_kernel(
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    n_islands: ti.i32,
+    elites_per_island: ti.i32,
+    tournament_k: ti.i32,
+    mutation_rate_fp: ti.u32,
+    immigrant_rate_fp: ti.u32,
+):
+    """
+    FUSED next generation for multiple independent runs packed contiguously.
+
+    This kernel preserves the per-run "multi-start" semantics by ensuring:
+    - Tournament selection samples only within the run segment
+    - Island elitism is computed per-run and elites are written within each run segment
+    - No cross-run migration / mixing occurs
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    _ga_next_generation_full_runs_impl(
+        n_runs,
+        n_genomes_per_run,
+        n_slots,
+        n_islands,
+        elites_per_island,
+        tournament_k,
+        mutation_rate_fp,
+        immigrant_rate_fp,
+    )
+
+
+@ti.kernel
+def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
+    n_islands: ti.i32,
+    elites_per_island: ti.i32,
+    tournament_k: ti.i32,
+    mutation_rate_fp: ti.u32,
+    immigrant_rate_fp: ti.u32,
+):
+    """
+    FUSED steady-state multi-run transition:
+    - refresh `ga_scores` from the exact reduction key
+    - preserve per-run row 0 before mutation when a run improves
+    - build the next generation in the same dispatch
+
+    This removes the tiny refresh launch from non-final, non-migration GA generations while
+    preserving the existing "snapshot before population mutation" contract.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    MAX_ELITES_PER_ISLAND: ti.i32 = 16
+
+    n_runs_i: ti.i32 = n_runs
+    n_genomes_per_run_i: ti.i32 = n_genomes_per_run
+    n_islands_i: ti.i32 = n_islands
+    elites_per_island_i: ti.i32 = elites_per_island
+    tournament_k_i: ti.i32 = tournament_k
+
+    if n_runs_i < 1:
+        n_runs_i = 1
+    if n_genomes_per_run_i < 1:
+        n_genomes_per_run_i = 1
+    if n_islands_i < 1:
+        n_islands_i = 1
+    if n_islands_i > n_genomes_per_run_i:
+        n_islands_i = n_genomes_per_run_i
+    if elites_per_island_i < 1:
+        elites_per_island_i = 1
+    if elites_per_island_i > MAX_ELITES_PER_ISLAND:
+        elites_per_island_i = MAX_ELITES_PER_ISLAND
+    if tournament_k_i < 1:
+        tournament_k_i = 1
+
+    n_total: ti.i32 = n_runs_i * n_genomes_per_run_i
+
+    for genome_idx in range(n_total):
+        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+
+    for r in range(n_runs_i):
+        start_offset: ti.i32 = r * n_genomes_per_run_i
+        best_score: ti.i32 = -1
+        best_g: ti.i32 = start_offset
+        for local_g in range(n_genomes_per_run_i):
+            g = start_offset + local_g
+            score = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+
+        run_idx = run_idx_start + r
+        prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
+        if best_score > prev_best:
+            combo_idx = _best_combo_idx_from_chunk_state(best_g)
+            if combo_idx >= 0:
+                result_stats = _materialize_best_combo_stats(
+                    best_g,
+                    combo_idx,
+                    total_budget,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                    use_exact_inner_solver,
+                )
+                _write_run_best_payload_row(run_idx, n_slots, best_g, result_stats)
+
+    _ga_next_generation_full_runs_impl(
+        n_runs_i,
+        n_genomes_per_run_i,
+        n_slots,
+        n_islands_i,
+        elites_per_island_i,
+        tournament_k_i,
+        mutation_rate_fp,
+        immigrant_rate_fp,
+    )
+
 
 @ti.kernel
 def ga_swap_population_kernel(n_genomes: ti.i32, n_slots: ti.i32):

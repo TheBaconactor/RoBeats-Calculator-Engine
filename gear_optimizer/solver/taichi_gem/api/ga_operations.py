@@ -1434,6 +1434,107 @@ def ga_next_generation_fused_runs(
     kernels.ga_swap_population_kernel(int(n_total), n_slots)
 
 
+def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int = 9,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+    mutation_rate: float = 0.02,
+    immigrant_rate: float = 0.0,
+    tournament_k: int = 3,
+    n_islands: int = 1,
+    elites_per_island: int = 1,
+) -> None:
+    """
+    Fused steady-state multi-run transition.
+
+    This is the non-final, non-migration companion to:
+    `ga_refresh_scores_and_update_runs_best()` followed by `ga_next_generation_fused_runs()`.
+    It preserves row-0 run best before mutating the population, then swaps the next generation in.
+    """
+    ensure_ready()
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+
+    n_islands = int(n_islands)
+    elites_per_island = int(elites_per_island)
+    tournament_k = int(tournament_k)
+    if n_islands < 1:
+        n_islands = 1
+    if elites_per_island < 0:
+        elites_per_island = 0
+    if tournament_k < 1:
+        tournament_k = 1
+
+    mr = float(mutation_rate)
+    if mr <= 0.0:
+        mr_fp = np.uint32(0)
+    elif mr >= 1.0:
+        mr_fp = np.uint32(0xFFFFFFFF)
+    else:
+        mr_fp = np.uint32(int(mr * 4294967295.0))
+
+    ir = float(immigrant_rate)
+    if ir <= 0.0:
+        ir_fp = np.uint32(0)
+    elif ir >= 1.0:
+        ir_fp = np.uint32(0xFFFFFFFF)
+    else:
+        ir_fp = np.uint32(int(ir * 4294967295.0))
+
+    kernels.ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+        int(n_islands),
+        int(elites_per_island),
+        int(tournament_k),
+        mr_fp,
+        ir_fp,
+    )
+    kernels.ga_swap_population_kernel(int(n_runs) * int(n_genomes_per_run), int(n_slots))
+
+
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
     """Download the current resident population indices (for testing / debugging)."""
     ensure_ready()

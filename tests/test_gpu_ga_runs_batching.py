@@ -151,6 +151,86 @@ def test_gpu_ga_next_generation_fused_runs_matches_sequential():
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
+    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.solver.taichi_gem.api import (
+        ga_download_population_indices,
+        ga_next_generation_fused_runs,
+        ga_refresh_scores_and_update_runs_best,
+        ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
+        ga_seed_rng_runs,
+        ga_upload_population_indices,
+    )
+    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+
+    ensure_ready()
+    if fields.chunk_best_key is None:
+        pytest.skip("packed key path requires Vulkan-style chunk_best_key")
+
+    n_runs = 2
+    n_genomes = 32
+    n_slots = 9
+    n_total = n_runs * n_genomes
+    n_islands = 4
+    elites_per_island = 2
+
+    rng = np.random.default_rng(321)
+    pop0 = rng.integers(0, 10_000, size=(n_genomes, n_slots), dtype=np.int32)
+    pop1 = rng.integers(100_000, 110_000, size=(n_genomes, n_slots), dtype=np.int32)
+    for g in range(n_genomes):
+        pop0[g, 6:9] = np.asarray([50_000 + g * 3, 50_001 + g * 3, 50_002 + g * 3], dtype=np.int32)
+        pop1[g, 6:9] = np.asarray([150_000 + g * 3, 150_001 + g * 3, 150_002 + g * 3], dtype=np.int32)
+
+    pop = np.concatenate([pop0, pop1], axis=0)
+    scores = rng.integers(1, 1_000_000, size=(n_total,), dtype=np.int32)
+    keys = (scores.astype(np.uint64) + np.uint64(1)) << np.uint64(32)
+
+    def _stage_identical_inputs() -> None:
+        ga_upload_population_indices(pop, n_slots=n_slots)
+        ga_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=n_genomes, seed=99)
+
+        key_buf = np.zeros((int(fields.MAX_GENOMES),), dtype=np.uint64)
+        key_buf[:n_total] = keys
+        fields.chunk_best_key.from_numpy(key_buf)
+
+        payload = fields.ga_runs_payload_packed.to_numpy()
+        payload[:n_runs, 0, 0] = np.iinfo(np.int32).max
+        fields.ga_runs_payload_packed.from_numpy(payload)
+
+    refresh_kwargs = {
+        "run_idx_start": 0,
+        "n_runs": n_runs,
+        "n_genomes_per_run": n_genomes,
+        "n_slots": n_slots,
+        "total_budget": 90,
+        "gem_scale_fever": 3,
+    }
+    next_kwargs = {
+        "mutation_rate": 0.0,
+        "immigrant_rate": 0.0,
+        "tournament_k": 3,
+        "n_islands": n_islands,
+        "elites_per_island": elites_per_island,
+    }
+
+    _stage_identical_inputs()
+    ga_refresh_scores_and_update_runs_best(**refresh_kwargs)
+    ga_next_generation_fused_runs(
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes,
+        n_slots=n_slots,
+        **next_kwargs,
+    )
+    separate = ga_download_population_indices(n_genomes=n_total, n_slots=n_slots)
+
+    _stage_identical_inputs()
+    ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(**refresh_kwargs, **next_kwargs)
+    fused = ga_download_population_indices(n_genomes=n_total, n_slots=n_slots)
+
+    assert np.array_equal(fused, separate)
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_island_migration_runs_matches_sequential():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_upload_island_boundaries,

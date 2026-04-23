@@ -2594,8 +2594,48 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
                         # Keep selection scores exact every generation, but only write full per-genome
                         # result rows when tracing needs them. Row 0 stays exact in both paths.
+                        is_migration_gen = (
+                            num_islands > 1
+                            and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
+                            and gen < (int(n_generations) - 1)
+                        )
+                        fuse_refresh_with_next = (
+                            use_lightweight_runs_refresh
+                            and not bool(phase_timing)
+                            and not bool(is_migration_gen)
+                            and gen < int(n_generations) - 1
+                        )
+                        fused_refresh_next_done = False
                         t0 = time.perf_counter() if phase_timing else 0.0
-                        if use_lightweight_runs_refresh:
+                        if fuse_refresh_with_next:
+                            gpu_api.ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+                                run_idx_start=int(local_run_idx),
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_slots=int(n_slots),
+                                total_budget=total_budget,
+                                gem_scale_fever=gem_scale_fever,
+                                song_slot=int(song_slot),
+                                is_p_ft=is_p_ft,
+                                is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff,
+                                is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp,
+                                is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm,
+                                is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm,
+                                is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov,
+                                is_s_ov=is_s_ov,
+                                mutation_rate=float(mutation_rate),
+                                immigrant_rate=float(immigrant_rate),
+                                tournament_k=int(tournament_k),
+                                n_islands=int(num_islands),
+                                elites_per_island=int(elite_count),
+                            )
+                            fused_refresh_next_done = True
+                        elif use_lightweight_runs_refresh:
                             gpu_api.ga_refresh_scores_and_update_runs_best(
                                 run_idx_start=int(local_run_idx),
                                 n_runs=int(batch_len),
@@ -2692,11 +2732,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 pass
 
                         # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
-                        is_migration_gen = (
-                            num_islands > 1
-                            and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
-                            and gen < (int(n_generations) - 1)
-                        )
                         if is_migration_gen:
                             t0 = time.perf_counter() if phase_timing else 0.0
                             gpu_api.ga_island_migration_runs(
@@ -2721,7 +2756,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     combos=int(n_combos),
                                 )
 
-                        if gen < int(n_generations) - 1:
+                        if gen < int(n_generations) - 1 and not fused_refresh_next_done:
                             t0 = time.perf_counter() if phase_timing else 0.0
                             gpu_api.ga_next_generation_fused_runs(
                                 n_runs=int(batch_len),
