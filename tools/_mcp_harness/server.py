@@ -132,6 +132,7 @@ DB_AUDIT_TOOL_MAP = {
     "fg-summary": "tools:db/check_db_fg",
     "force": "tools:db/check_force",
     "scores-vs-gpu": "tools:db/verify_db_scores_vs_gpu",
+    "recover-song-base-deficit": "tools:db/recover_song_base_deficit",
     "smoke-run-and-audit": "tools:db/smoke_run_and_audit",
 }
 
