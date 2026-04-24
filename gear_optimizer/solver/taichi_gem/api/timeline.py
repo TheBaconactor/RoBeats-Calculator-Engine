@@ -100,6 +100,7 @@ def _upload_exact_timeline_overrides_kernel(
         fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1_arr[row]
         fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2_arr[row]
         fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3_arr[row]
+        fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
         fields.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap_arr[row], ti.i16)
         fields.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations_arr[row], ti.i8)
 

@@ -165,6 +165,33 @@ def _head_mask_coefficients(
     return ti.Vector([n_hn, n_hf, sigma_hn, sigma_hf])
 
 
+@ti.func
+def _write_timeline_frontier_variant(
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    variant_idx: ti.i32,
+    head_len: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    body_fever: ti.i32,
+    body_normal: ti.i32,
+) -> None:
+    coeffs = _head_mask_coefficients(m0, m1, m2, m3, head_len)
+    kernels_helpers.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(body_fever, ti.i16)
+    kernels_helpers.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(body_normal, ti.i16)
+    kernels_helpers.grid_frontier_N_hn[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(coeffs[0], ti.i16)
+    kernels_helpers.grid_frontier_N_hf[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(coeffs[1], ti.i16)
+    kernels_helpers.grid_frontier_Sigma_hn[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(coeffs[2], ti.i16)
+    kernels_helpers.grid_frontier_Sigma_hf[song_slot, ft_idx, ff_idx, variant_idx] = ti.cast(coeffs[3], ti.i16)
+    kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 0] = m0
+    kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 1] = m1
+    kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 2] = m2
+    kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 3] = m3
+
+
 @ti.kernel
 def compute_timeline_grid_kernel(
     total_notes: ti.i32,
@@ -291,6 +318,20 @@ def compute_timeline_grid_kernel(
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
+        kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(1, ti.i8)
+        _write_timeline_frontier_variant(
+            song_slot,
+            ft_idx,
+            ff_idx,
+            ti.i32(0),
+            head_len,
+            m0,
+            m1,
+            m2,
+            m3,
+            body_fever,
+            body_normal,
+        )
         gap = ti.cast(total_notes - last_fever_end_idx, ti.i32)
         kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap, ti.i16)
         kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
@@ -755,6 +796,59 @@ def compute_timeline_grid_ceiling_envelope_kernel(
         hi_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(1))
         lo_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(0))
         lo_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(1))
+        kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(4, ti.i8)
+        _write_timeline_frontier_variant(
+            song_slot,
+            ft_idx,
+            ff_idx,
+            ti.i32(0),
+            head_len,
+            hi_max.m0,
+            hi_max.m1,
+            hi_max.m2,
+            hi_max.m3,
+            hi_max.body_fever,
+            hi_max.body_normal,
+        )
+        _write_timeline_frontier_variant(
+            song_slot,
+            ft_idx,
+            ff_idx,
+            ti.i32(1),
+            head_len,
+            hi_min.m0,
+            hi_min.m1,
+            hi_min.m2,
+            hi_min.m3,
+            hi_min.body_fever,
+            hi_min.body_normal,
+        )
+        _write_timeline_frontier_variant(
+            song_slot,
+            ft_idx,
+            ff_idx,
+            ti.i32(2),
+            head_len,
+            lo_max.m0,
+            lo_max.m1,
+            lo_max.m2,
+            lo_max.m3,
+            lo_max.body_fever,
+            lo_max.body_normal,
+        )
+        _write_timeline_frontier_variant(
+            song_slot,
+            ft_idx,
+            ff_idx,
+            ti.i32(3),
+            head_len,
+            lo_min.m0,
+            lo_min.m1,
+            lo_min.m2,
+            lo_min.m3,
+            lo_min.body_fever,
+            lo_min.body_normal,
+        )
 
         best = hi_max
         best_score = _ceiling_compare_score(
@@ -1109,6 +1203,32 @@ def scatter_timeline_grid_ceiling_envelope_from_reps_kernel(
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = kernels_helpers.grid_fever_masks_bits[
             song_slot, rft, rff, 3
         ]
+        kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_frontier_count[
+            song_slot, rft, rff
+        ]
+        for variant_idx, word_idx in ti.ndrange(4, 4):
+            kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, word_idx] = (
+                kernels_helpers.grid_frontier_masks_bits[song_slot, rft, rff, variant_idx, word_idx]
+            )
+        for variant_idx in range(4):
+            kernels_helpers.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_body_fever[song_slot, rft, rff, variant_idx]
+            )
+            kernels_helpers.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_body_normal[song_slot, rft, rff, variant_idx]
+            )
+            kernels_helpers.grid_frontier_N_hn[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_N_hn[song_slot, rft, rff, variant_idx]
+            )
+            kernels_helpers.grid_frontier_N_hf[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_N_hf[song_slot, rft, rff, variant_idx]
+            )
+            kernels_helpers.grid_frontier_Sigma_hn[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_Sigma_hn[song_slot, rft, rff, variant_idx]
+            )
+            kernels_helpers.grid_frontier_Sigma_hf[song_slot, ft_idx, ff_idx, variant_idx] = (
+                kernels_helpers.grid_frontier_Sigma_hf[song_slot, rft, rff, variant_idx]
+            )
 
         kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_gap[song_slot, rft, rff]
         kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = kernels_helpers.grid_fever_activations[

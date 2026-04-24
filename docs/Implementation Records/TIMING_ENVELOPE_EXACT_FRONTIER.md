@@ -73,6 +73,18 @@ The first implemented step on that path is FG-side: the full FG finder now evalu
 bounded exact inner gem solver, and maintained configs use full FT/FF search (`FG_SearchRadius = -1`). The remaining
 timeline gap is base's one-signature cache, not FG's inner gem allocation.
 
+Update on 2026-04-24: base no longer commits exact-inner BnB or fixed-stat GPU scoring to that one proxy-picked
+signature when the timing-envelope ceiling kernel has multiple retained variants. The ceiling kernel stores the generated
+`normal-hi`, `normal-lo`, `fever-max`, and `fever-min` signatures as a four-entry per-cell frontier. The exact-inner BnB
+then evaluates every retained variant for the concrete loadout stats and returns the best score/gem allocation. The
+fixed-stat GPU scoring helper uses the same frontier selection, so postprocess/integrity scoring no longer inherits the
+old primary-mask-only behavior.
+
+This is still exact over the retained timing-envelope frontier, not a proof that the generated four-signature frontier is
+the full mathematical universe of all possible human timing paths. The stale same-signature warmstart pruning is disabled
+for multi-variant frontier cells because two cells can share the primary signature while differing in a secondary variant
+that is optimal for a specific loadout.
+
 ## Performance
 
 The migration keeps the hot path cheap:
@@ -121,6 +133,10 @@ Throughput-stall follow-up verification (2026-04-24):
   - `11 passed`
 - `python -m pytest -q tests\test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py::test_gpu_ceiling_exact_frontier_beats_heuristic_on_bounded_cell --tb=short`
   - `1 passed`
+- `python -m pytest -m gpu tests/test_gpu_timeline_frontier_exact_bnb.py -q`
+  - `1 passed`
+  - proves exact-inner BnB and fixed-stat GPU scoring both evaluate the retained timeline frontier instead of sticking to
+    the primary proxy timeline
 
 Initial migration verification:
 

@@ -23,11 +23,18 @@ MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 @ti.func
 def _same_grid_sig(song_slot: ti.i32, sig0: ti.u64, sig1: ti.u64, ft_i: ti.i32, ff_i: ti.i32) -> ti.i32:
-    return ti.cast(
-        (kernels_helpers.grid_sig0[song_slot, ft_i, ff_i] == sig0)
-        & (kernels_helpers.grid_sig1[song_slot, ft_i, ff_i] == sig1),
-        ti.i32,
-    )
+    same = ti.i32(0)
+    frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_i, ff_i], ti.i32)
+    # The old primary-signature pruning is only valid for single-timeline cells.
+    # Multi-variant frontier cells may share the primary signature while differing
+    # in a loadout-optimal secondary variant.
+    if frontier_count <= 1:
+        same = ti.cast(
+            (kernels_helpers.grid_sig0[song_slot, ft_i, ff_i] == sig0)
+            & (kernels_helpers.grid_sig1[song_slot, ft_i, ff_i] == sig1),
+            ti.i32,
+        )
+    return same
 
 
 @ti.func

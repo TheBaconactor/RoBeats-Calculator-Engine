@@ -41,26 +41,54 @@ if ti is not None:  # pragma: no cover
             ff = ti.max(0, ti.min(160, ff_idx_arr[i]))
 
             head_len = ti.cast(fields.grid_head_len[song_slot_i, ft, ff], ti.i32)
-            count_fever = ti.cast(fields.grid_count_body_fever[song_slot_i, ft, ff], ti.i32)
-            count_normal = ti.cast(fields.grid_count_body_normal[song_slot_i, ft, ff], ti.i32)
+            best_score = ti.i32(-1)
+            frontier_count = ti.cast(fields.grid_frontier_count[song_slot_i, ft, ff], ti.i32)
+            if frontier_count > 1:
+                variant_idx = ti.i32(0)
+                while variant_idx < frontier_count and variant_idx < 4:
+                    m0 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 0]
+                    m1 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 1]
+                    m2 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 2]
+                    m3 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 3]
+                    count_fever = ti.cast(fields.grid_frontier_body_fever[song_slot_i, ft, ff, variant_idx], ti.i32)
+                    count_normal = ti.cast(fields.grid_frontier_body_normal[song_slot_i, ft, ff, variant_idx], ti.i32)
+                    score = kernels_helpers.calc_score_with_grid_bits(
+                        base_value_arr[i],
+                        combo_mul_arr[i],
+                        fever_mul_arr[i],
+                        m0,
+                        m1,
+                        m2,
+                        m3,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                    )
+                    if score > best_score:
+                        best_score = score
+                    variant_idx += 1
+            else:
+                count_fever = ti.cast(fields.grid_count_body_fever[song_slot_i, ft, ff], ti.i32)
+                count_normal = ti.cast(fields.grid_count_body_normal[song_slot_i, ft, ff], ti.i32)
 
-            m0 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 0]
-            m1 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 1]
-            m2 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 2]
-            m3 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 3]
+                m0 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 0]
+                m1 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 1]
+                m2 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 2]
+                m3 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 3]
 
-            out_arr[i] = kernels_helpers.calc_score_with_grid_bits(
-                base_value_arr[i],
-                combo_mul_arr[i],
-                fever_mul_arr[i],
-                m0,
-                m1,
-                m2,
-                m3,
-                head_len,
-                count_fever,
-                count_normal,
-            )
+                best_score = kernels_helpers.calc_score_with_grid_bits(
+                    base_value_arr[i],
+                    combo_mul_arr[i],
+                    fever_mul_arr[i],
+                    m0,
+                    m1,
+                    m2,
+                    m3,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                )
+            out_arr[i] = best_score
 
 
 def score_fixed_stats_gpu(

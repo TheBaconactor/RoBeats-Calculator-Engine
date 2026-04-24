@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+pytestmark = pytest.mark.gpu
+
+
+def _has_taichi() -> bool:
+    try:
+        import taichi as _  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
+    import taichi as ti
+
+    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import _score_fixed_batch
+    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import optimize_core_device_exact_bound
+
+    ref_arrays = {
+        "Perfect Points": np.full((161,), 10_000.0, dtype=np.float32),
+        "Combo Multiplier": np.full((161,), 2.0, dtype=np.float32),
+        "Fever Multiplier": np.full((161,), 5.0, dtype=np.float32),
+        "Fever Fill Rate": np.ones((161,), dtype=np.float32),
+        "Fever Time": np.ones((161,), dtype=np.float32),
+    }
+
+    with _GPU_LOCK:
+        ensure_ready(ref_arrays)
+        out = ti.field(dtype=ti.i32, shape=(2,))
+
+        @ti.kernel
+        def _run():
+            song_slot = ti.i32(0)
+            ft_idx = ti.i32(0)
+            ff_idx = ti.i32(0)
+
+            fields.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
+            fields.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
+            fields.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
+            fields.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
+            fields.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
+            for word in ti.static(range(4)):
+                fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, word] = ti.u32(0)
+                fields.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, 0, word] = ti.u32(0)
+                fields.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, 1, word] = ti.u32(0)
+
+            # Primary/proxy timeline: all body notes are normal.
+            fields.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
+            fields.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(10, ti.i16)
+            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
+            fallback = optimize_core_device_exact_bound(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                10,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
+
+            # Frontier exposes the same primary/proxy variant plus a fever-body
+            # alternative. BnB must score both against this concrete loadout.
+            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(2, ti.i8)
+            fields.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, 0] = ti.cast(0, ti.i16)
+            fields.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, 0] = ti.cast(10, ti.i16)
+            fields.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, 1] = ti.cast(10, ti.i16)
+            fields.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, 1] = ti.cast(0, ti.i16)
+            frontier = optimize_core_device_exact_bound(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                10,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
+
+            out[0] = fallback[0]
+            out[1] = frontier[0]
+
+        _run()
+        got = out.to_numpy()
+
+        @ti.kernel
+        def _disable_frontier():
+            fields.grid_frontier_count[0, 0, 0] = ti.cast(0, ti.i8)
+
+        @ti.kernel
+        def _enable_frontier():
+            fields.grid_frontier_count[0, 0, 0] = ti.cast(2, ti.i8)
+
+        base_value = np.array([10_000.0], dtype=np.float32)
+        combo_mul = np.array([2.0], dtype=np.float32)
+        fever_mul = np.array([5.0], dtype=np.float32)
+        ft_idx = np.array([0], dtype=np.int32)
+        ff_idx = np.array([0], dtype=np.int32)
+        fixed_scores = np.zeros((1,), dtype=np.int32)
+
+        _disable_frontier()
+        _score_fixed_batch(base_value, combo_mul, fever_mul, ft_idx, ff_idx, fixed_scores, 1, 0)
+        fixed_primary = int(fixed_scores[0])
+
+        _enable_frontier()
+        _score_fixed_batch(base_value, combo_mul, fever_mul, ft_idx, ff_idx, fixed_scores, 1, 0)
+        fixed_frontier = int(fixed_scores[0])
+
+    assert int(got[1]) > int(got[0])
+    assert fixed_frontier > fixed_primary
