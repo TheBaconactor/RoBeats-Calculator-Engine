@@ -1,4 +1,5 @@
 import csv
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -278,6 +279,15 @@ def test_typeperf_parsers_aggregate_across_multiple_target_worker_pids(tmp_path)
     assert summary["adapter_dedicated_usage_bytes_max"]["max"] == 2048.0
     assert series == [45.0, 55.0]
     assert [sample[1] for sample in util_ts] == [45.0, 55.0]
+
+
+def test_getcounter_sampler_avoids_reserved_powershell_pid_variable():
+    source = inspect.getsource(psr._start_getcounter)
+
+    assert "foreach ($pid" not in source
+    assert "[int]$pid" not in source
+    assert "foreach ($targetPid" in source
+    assert "[int]$targetPid" in source
 
 
 def test_deep_mode_sets_debug_profile_bundle(tmp_path):

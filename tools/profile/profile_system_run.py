@@ -252,10 +252,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 $out = '{str(csv_path).replace("'", "''")}'
 $dir = Split-Path -Parent $out
 if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
-$pids = @({pids_literal})
+$targetPids = @({pids_literal})
 $tokens = @()
-foreach ($pid in $pids) {{
-  if ([int]$pid -gt 0) {{ $tokens += ('pid_' + [int]$pid + '_') }}
+foreach ($targetPid in $targetPids) {{
+  if ([int]$targetPid -gt 0) {{ $tokens += ('pid_' + [int]$targetPid + '_') }}
 }}
 $sw = New-Object System.IO.StreamWriter($out, $false, [System.Text.Encoding]::UTF8)
 $sw.WriteLine('wall_ts,instance,util_pct')
