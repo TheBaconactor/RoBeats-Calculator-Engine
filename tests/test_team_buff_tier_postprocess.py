@@ -969,7 +969,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     assert row["source_fg_score"] == 95
 
 
-def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_and_target_team_color(monkeypatch):
+def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
@@ -1002,7 +1002,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_a
             "details": {
                 "Stats": dict(stats),
                 "SelectedElement": "Rush",
-                "hitsim_offset_deltas_ms": [3, -1],
             },
             "force": {
                 "Score": fg_score,
@@ -1010,7 +1009,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_a
                 "ForceGreats": {
                     "config": {"NonFever1": 1},
                     "final_score": fg_score,
-                    "hitsim_offset_deltas_ms": [4, -2],
                 },
             },
         }
@@ -1090,7 +1088,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_a
 
     assert int(base_row["score"]) == 330
     assert int(base_row["source_score"]) == 101
-    assert base_row["details"]["hitsim_offset_deltas_ms"] == [3, -1]
     assert int(base_row["details"]["Stats"]["Perfect Points"]) == int(stats["Perfect Points"]) + expected_delta_pp
     assert int(base_row["details"]["Stats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
     assert int(base_row["details"]["Stats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
@@ -1101,7 +1098,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_a
     assert int(fg_row["source_score"]) == 100
     assert int(fg_row["source_fg_base_score"]) == 90
     assert int(fg_row["source_fg_score"]) == 120
-    assert fg_row["details"]["hitsim_offset_deltas_ms"] == [3, -1]
     assert int(fg_row["details"]["Stats"]["Perfect Points"]) == int(stats["Perfect Points"]) + expected_delta_pp
     assert int(fg_row["details"]["Stats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
     assert int(fg_row["details"]["Stats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
@@ -1110,7 +1106,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_a
     assert int(fg_row["force"]["BaseStats"]["Rush"]) == int(stats["Rush"]) + expected_delta_rush
     assert int(fg_row["force"]["BaseStats"]["Flow"]) == int(stats["Flow"]) + expected_delta_flow
     assert int(fg_row["force"]["ForceGreats"]["final_score"]) == 350
-    assert fg_row["force"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [4, -2]
 
 
 def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows(monkeypatch):
@@ -1206,80 +1201,10 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     assert int(rows[2].get("fg_base_score") or 0) == 190
 
 
-def test_team_buff_tier_leaderboards_respects_persisted_hitsim_seed(monkeypatch):
-    import gear_optimizer.solver.hit_simulation as hs
-    from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-
-    calls: list[int] = []
-
-    def _fake_apply(calc_song, *, cfg_dict):
-        cfg = cfg_dict.get("HumanHitSim") if isinstance(cfg_dict, dict) else None
-        seed = int((cfg or {}).get("Seed", 0) or 0)
-        calls.append(int(seed))
-        # Minimal "applied" markers; score correctness is tested elsewhere.
-        meta = calc_song.get("metadata", {}) or {}
-        meta["HumanHitSimApplied"] = True
-        meta["HumanHitSimSeed"] = int(seed)
-        meta["HumanHitSimApplyTo"] = str((cfg or {}).get("ApplyTo", "FG") or "FG").strip().upper()
-        calc_song["metadata"] = meta
-        song_data = calc_song.get("song_data", {}) or {}
-        if song_data.get("fg_timestamps") is None:
-            song_data["fg_timestamps"] = song_data.get("timestamps")
-        calc_song["song_data"] = song_data
-        return {"seed": int(seed)}
-
-    monkeypatch.setattr(hs, "apply_human_hit_sim", _fake_apply)
-
-    calc_song = _mock_song(name="pytest_hitsim_ctx", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
-
-    stats = {
-        "Perfect Points": 120,
-        "Combo Multiplier": 0,
-        "Fever Multiplier": 0,
-        "Fever Fill Rate": 0,
-        "Fever Time": 0,
-        "Rush": 200,
-        "Flow": 0,
-        "Beat": 0,
-        "Vibe": 0,
-        "Chill": 0,
-    }
-
-    entry_a = {
-        "score": 0,
-        "fg_score": 0,
-        "gear": ["A1", "A2", "A3", "A4", "A5", "A6"],
-        "minis": ["A7", "A8", "A9"],
-        "details": {"Stats": stats, "hs": [111, 0, 0, 0]},
-        "force": None,
-    }
-    entry_b = {
-        "score": 0,
-        "fg_score": 0,
-        "gear": ["B1", "B2", "B3", "B4", "B5", "B6"],
-        "minis": ["B7", "B8", "B9"],
-        "details": {"Stats": stats, "hs": [222, 0, 0, 0]},
-        "force": None,
-    }
-
-    compute_team_buff_tier_leaderboards(
-        entries=[entry_a, entry_b],
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
-        tiers=("T5",),
-    )
-
-    assert sorted(calls) == [111, 222]
-
-
 def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monkeypatch):
     """
     Regression test: CPU fixed scoring can diverge from production GPU scoring due to
-    the analytical ceiling HitSim timeline path. Tier postprocess must match GPU.
+    the analytical timing-envelope ceiling path. Tier postprocess must match GPU.
     """
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.core.constants import TOTAL_ROWS
@@ -1289,7 +1214,7 @@ def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monke
     from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 
     # Enable the ceiling kernel (tests default it off for most of the suite).
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
 
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(ref_arrays, dict) and ref_arrays

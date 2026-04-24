@@ -379,9 +379,9 @@ def create_chart_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> Ana
     """
     Create an AnalyticalFGScorer based on the *chart* timestamps.
 
-    This is useful when HumanHitSim.ApplyTo=FG: breakpoint prep is largely
-    chart-structure dependent and can be cached across repeats, while per-run
-    hit-sim arrays are applied later during evaluation.
+    This is useful for timing-envelope FG: breakpoint prep is largely
+    chart-structure dependent and can be cached, while FG carry arrays are
+    applied later during evaluation.
     """
     song_data = calc_song["song_data"]
     metadata = calc_song.get("metadata", {})

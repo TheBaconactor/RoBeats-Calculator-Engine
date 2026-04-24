@@ -460,6 +460,58 @@ def test_fg_exact_dp_public_gpu_api_reuses_first_prepared_row(monkeypatch):
     assert [int(row["best_delta"]) for row in out] == [19, 19]
 
 
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_fg_exact_dp_public_gpu_api_skips_bad_window_pairs(monkeypatch):
+    from gear_optimizer.solver.fg_exact_dp import FGExactDPPreparedInputs
+    from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
+
+    n = 24
+    prepared = FGExactDPPreparedInputs(
+        timestamps=np.asarray([float(i) for i in range(n)], dtype=np.float32),
+        great_candidates=None,
+        total_notes=n,
+        last_note_time=float(n - 1),
+        raw_fill=2.0,
+        non_fever_base=2,
+        fever_duration=0.0,
+        ft_idx=0,
+        w_prefix=np.arange(n + 1, dtype=np.int64) * 10,
+        c_prefix=np.zeros((n + 1,), dtype=np.int64),
+    )
+
+    monkeypatch.setattr(fg_api, "prepare_force_greats_exact_dp_inputs", lambda **_kwargs: prepared)
+    monkeypatch.setattr(fg_api, "score_force_greats_exact_dp_bonus_from_prepared", lambda **_kwargs: 123)
+    monkeypatch.setattr(
+        fg_api.gem_api,
+        "ensure_ready",
+        lambda _ref_arrays: (_ for _ in ()).throw(AssertionError("window gate should avoid GPU setup")),
+    )
+
+    out = fg_api.solve_force_greats_exact_dp_gpu_batch(
+        stats_list=[{"row": 0}],
+        calc_song={"song_data": {"timestamps": prepared.timestamps}, "metadata": {}},
+        ref_arrays={"refs": True},
+        max_baseline_windows=3,
+    )
+
+    assert out == [
+        {
+            "best_delta": 123,
+            "baseline_delta": 123,
+            "section_counts": [],
+            "profile": {
+                "states": 0,
+                "transitions": 0,
+                "timeline_windows": 8,
+                "max_timeline_windows": 3,
+                "baseline_windows": 8,
+                "max_baseline_windows": 3,
+                "skipped_by_window_gate": 1,
+            },
+        }
+    ]
+
+
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_fg_exact_dp_public_gpu_api_matches_cpu_timing_aware():
@@ -493,6 +545,7 @@ def test_fg_exact_dp_public_gpu_api_matches_cpu_timing_aware():
         ref_arrays=ref_arrays,
         timing_aware=True,
         prune=True,
+        max_baseline_windows=0,
     )
 
     assert len(gpu_out) == 1

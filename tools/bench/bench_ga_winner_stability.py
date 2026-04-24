@@ -245,13 +245,10 @@ def _prepare_cfg_dict(
     use_evo_db: bool,
     fg_candidate_limit: int,
     fg_search_radius: int,
-    hitsim_enabled: bool,
-    hitsim_seed: int,
 ) -> dict[str, Any]:
     cfg_dict = copy.deepcopy(base_cfg_dict)
     cfg_dict.setdefault("CalculateSong", {})
     cfg_dict.setdefault("IterationEngine", {})
-    cfg_dict.setdefault("HumanHitSim", {})
     cfg_dict.setdefault("UserInputStatsGems", {})
     cfg_dict.setdefault("ElementalGems", {})
 
@@ -270,11 +267,6 @@ def _prepare_cfg_dict(
     ie["GA_MultiStart"] = str(int(ga_multi_start))
     ie["FG_CandidateLimit"] = str(int(fg_candidate_limit))
     ie["FG_SearchRadius"] = str(int(fg_search_radius))
-
-    hh = cfg_dict["HumanHitSim"]
-    hh["Enabled"] = "true" if hitsim_enabled else "false"
-    hh["ApplyTo"] = "FG"
-    hh["Seed"] = str(int(hitsim_seed))
 
     for k in ("perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"):
         cfg_dict["UserInputStatsGems"][k] = "0"
@@ -699,8 +691,6 @@ def run_benchmark(
     use_db: bool,
     fg_candidate_limit: int,
     fg_search_radius: int,
-    hitsim_enabled: bool,
-    hitsim_seed: int,
     pipeline: str = "inflight",
     db_path: str | None = None,
 ) -> dict[str, Any]:
@@ -732,8 +722,6 @@ def run_benchmark(
                     use_evo_db=bool(use_evo_db_for_run),
                     fg_candidate_limit=int(fg_candidate_limit),
                     fg_search_radius=int(fg_search_radius),
-                    hitsim_enabled=bool(hitsim_enabled),
-                    hitsim_seed=int(hitsim_seed),
                 )
                 run_db_path = _prepare_seed_db(
                     db_source_path=db_source_path,
@@ -794,8 +782,6 @@ def run_benchmark(
         "use_db": bool(use_db),
         "fg_candidate_limit": int(fg_candidate_limit),
         "fg_search_radius": int(fg_search_radius),
-        "hitsim_enabled": bool(hitsim_enabled),
-        "hitsim_seed": int(hitsim_seed),
         "db_source_path": "" if db_source_path is None else str(db_source_path),
         "seed_db_isolated": True,
         "runs_by_depth": all_depth_runs,
@@ -820,8 +806,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--use-db", action="store_true", help="Enable EvolutionDB reads during the run.")
     ap.add_argument("--fg-candidate-limit", type=int, default=51)
     ap.add_argument("--fg-search-radius", type=int, default=5)
-    ap.add_argument("--hitsim-enabled", action="store_true")
-    ap.add_argument("--hitsim-seed", type=int, default=1)
     ap.add_argument(
         "--db-path",
         default="",
@@ -862,8 +846,6 @@ def main(argv: list[str] | None = None) -> int:
         use_db=bool(args.use_db),
         fg_candidate_limit=int(args.fg_candidate_limit),
         fg_search_radius=int(args.fg_search_radius),
-        hitsim_enabled=bool(args.hitsim_enabled),
-        hitsim_seed=int(args.hitsim_seed),
         pipeline=str(args.pipeline),
         db_path=str(args.db_path or ""),
     )

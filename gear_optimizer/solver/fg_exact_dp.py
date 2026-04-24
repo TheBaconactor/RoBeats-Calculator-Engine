@@ -22,15 +22,14 @@ from typing import Literal
 
 import numpy as np
 
-from ..core.constants import (
-    FEVER_FILL_BASE_RATE,
-    FEVER_TIME_OFFSET,
-    FEVER_TIME_SCALE,
-    TOTAL_ROWS,
+from ..core.constants import TOTAL_ROWS
+from ..core.utils import safe_int
+from .timing_envelope import (
+    TimelineAnalysisInputs,
+    count_timeline_analysis_windows,
+    prepare_timeline_analysis_inputs,
 )
-from ..core.utils import safe_float, safe_int
 from .scoring.stats_scoring import build_great_penalty_table
-from .scoring_core import lookup_reference_py
 
 
 @dataclass
@@ -59,22 +58,7 @@ class FGExactDPPreparedInputs:
     ft_idx: int
     w_prefix: np.ndarray
     c_prefix: np.ndarray
-
-
-def _extract_timestamps_for_fg(calc_song: dict) -> tuple[np.ndarray, np.ndarray | None]:
-    song_data = calc_song.get("song_data", {}) or {}
-    ts = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    if ts is None:
-        return np.empty((0,), dtype=np.float32), None
-    ts_f32 = np.asarray(ts, dtype=np.float32)
-
-    gc = song_data.get("fg_great_candidate_timestamps")
-    if gc is None:
-        return ts_f32, None
-    gc_f32 = np.asarray(gc, dtype=np.float32)
-    if int(gc_f32.shape[0]) != int(ts_f32.shape[0]):
-        return ts_f32, None
-    return ts_f32, gc_f32
+    timeline_analysis: TimelineAnalysisInputs | None = None
 
 
 def _build_fever_bonus_prefix(
@@ -204,78 +188,36 @@ def prepare_force_greats_exact_dp_inputs(
     if not isinstance(stats, dict) or not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
         return None
 
-    timestamps, great_candidates = _extract_timestamps_for_fg(calc_song)
-    total_notes = int(timestamps.shape[0])
-    if total_notes <= 0:
+    timeline = prepare_timeline_analysis_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+    if timeline is None:
         return None
-
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes", 0), 0)
-
-    song_data = calc_song.get("song_data", {}) or {}
-    base_ts = song_data.get("timestamps", timestamps)
-    try:
-        default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
-    except Exception:
-        default_last_note = 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
-
-    try:
-        ref_pp = ref_arrays["Perfect Points"]
-        ref_cm = ref_arrays["Combo Multiplier"]
-        ref_fm = ref_arrays["Fever Multiplier"]
-        ref_ff = ref_arrays["Fever Fill Rate"]
-        ref_ft = ref_arrays["Fever Time"]
-    except Exception:
-        return None
-
-    pp_factor = float(lookup_reference_py(stats.get("Perfect Points", 0), ref_pp, TOTAL_ROWS))
-    combo_mul = float(lookup_reference_py(stats.get("Combo Multiplier", 0), ref_cm, TOTAL_ROWS))
-    fever_mul = float(lookup_reference_py(stats.get("Fever Multiplier", 0), ref_fm, TOTAL_ROWS))
-    fever_fill_rate = float(lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS))
-    fever_time_stat = float(lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS))
-
-    p_color = str(metadata.get("Primary Color", "") or "")
-    s_color = str(metadata.get("Secondary Color", "") or "")
-    primary_val = safe_int(stats.get(p_color, 0), 0)
-    secondary_val = safe_int(stats.get(s_color, 0), 0)
-
-    base_value = float((primary_val * 2) + secondary_val) + float(pp_factor)
-
-    non_fever_cas = (total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)
-    if non_fever_cas < 0.0:
-        non_fever_cas = 0.0
-    raw_fill = float(non_fever_cas) * float(fever_fill_rate)
-    non_fever_base = int(ceil(raw_fill))
-
-    fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
-    fever_duration = float(fever_time_cas) * float(fever_time_stat)
 
     w_prefix = _build_fever_bonus_prefix(
-        total_notes=total_notes,
-        base_value=base_value,
-        combo_mul=combo_mul,
-        fever_mul=fever_mul,
+        total_notes=timeline.total_notes,
+        base_value=timeline.base_value,
+        combo_mul=timeline.combo_mul,
+        fever_mul=timeline.fever_mul,
     )
     c_prefix = _build_forced_great_penalty_prefix(
-        total_notes=total_notes,
-        base_value=base_value,
-        combo_mul=combo_mul,
-        primary_val=int(primary_val),
-        secondary_val=int(secondary_val),
+        total_notes=timeline.total_notes,
+        base_value=timeline.base_value,
+        combo_mul=timeline.combo_mul,
+        primary_val=int(timeline.primary_val),
+        secondary_val=int(timeline.secondary_val),
     )
 
     return FGExactDPPreparedInputs(
-        timestamps=timestamps,
-        great_candidates=great_candidates,
-        total_notes=int(total_notes),
-        last_note_time=float(last_note_time),
-        raw_fill=float(raw_fill),
-        non_fever_base=int(non_fever_base),
-        fever_duration=float(fever_duration),
-        ft_idx=max(0, min(TOTAL_ROWS, safe_int(stats.get("Fever Time", 0), 0))),
+        timestamps=timeline.timestamps,
+        great_candidates=timeline.great_candidates,
+        total_notes=int(timeline.total_notes),
+        last_note_time=float(timeline.last_note_time),
+        raw_fill=float(timeline.raw_fill),
+        non_fever_base=int(timeline.non_fever_base),
+        fever_duration=float(timeline.fever_duration),
+        ft_idx=max(0, min(TOTAL_ROWS, safe_int(stats.get("Fever Time", timeline.ft_idx), timeline.ft_idx))),
         w_prefix=w_prefix,
         c_prefix=c_prefix,
+        timeline_analysis=timeline,
     )
 
 
@@ -396,6 +338,39 @@ def score_force_greats_exact_dp_bonus_from_prepared(
         section_idx += 1
 
     return int(total_bonus)
+
+
+def count_force_greats_baseline_windows_from_prepared(prepared: FGExactDPPreparedInputs) -> int:
+    """
+    Count fever activations for the zero-force FG baseline at a fixed stat point.
+
+    This is an exact upper bound on the number of activations any forced-Great
+    path can realize at the same stat point: forced Greats only increase the
+    fill requirement, and timing-aware carry only affects the fever end when
+    the carried Great timestamp survives past the activation timestamp.
+    """
+    if not isinstance(prepared, FGExactDPPreparedInputs):
+        return 0
+    timeline = prepared.timeline_analysis
+    if timeline is None:
+        timeline = TimelineAnalysisInputs(
+            mode="fg",
+            timestamps=prepared.timestamps,
+            great_candidates=prepared.great_candidates,
+            total_notes=int(prepared.total_notes),
+            long_notes=0,
+            last_note_time=float(prepared.last_note_time),
+            raw_fill=float(prepared.raw_fill),
+            non_fever_base=int(prepared.non_fever_base),
+            fever_duration=float(prepared.fever_duration),
+            ft_idx=int(prepared.ft_idx),
+            base_value=0.0,
+            combo_mul=0.0,
+            fever_mul=0.0,
+            primary_val=0,
+            secondary_val=0,
+        )
+    return count_timeline_analysis_windows(timeline)
 
 
 def solve_force_greats_exact_dp(

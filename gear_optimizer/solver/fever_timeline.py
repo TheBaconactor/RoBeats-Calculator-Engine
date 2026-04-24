@@ -19,6 +19,7 @@ from ..core.constants import (
     FEVER_TIME_SCALE,
     FEVER_TIME_OFFSET,
 )
+from ..core.utils import timing_envelope_timing_context
 
 
 # Global cache for SongTimelineGrid instances (one per song).
@@ -60,12 +61,12 @@ def _timeline_grid_cache_key(calc_song: dict) -> tuple:
     """
     Build a stable cache key for per-song timeline grids.
 
-    IMPORTANT: This must include HumanHitSim parameters when ApplyTo=ALL because
-    they change the underlying timestamps and therefore fever boundaries.
+    IMPORTANT: This must include deterministic timing-envelope context when it
+    changes the underlying timestamp semantics.
     """
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps", ())
+    timestamps = song_data.get("chart_timestamps", song_data.get("timestamps", ()))
 
     try:
         n = int(len(timestamps))
@@ -74,11 +75,6 @@ def _timeline_grid_cache_key(calc_song: dict) -> tuple:
 
     first_ms, last_ms = _song_first_last_ms(timestamps)
 
-    human_seed = _safe_int(meta.get("HumanHitSimSeed") or 0, 0)
-    human_apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    human_dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
-    human_great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
-
     return (
         str(meta.get("Song Name", "") or ""),
         n,
@@ -86,11 +82,7 @@ def _timeline_grid_cache_key(calc_song: dict) -> tuple:
         _safe_int(meta.get("Long Notes", 0) or 0, 0),
         _safe_int(first_ms, 0),
         _safe_int(last_ms, 0),
-        _safe_int(human_seed, 0),
-        human_apply_to,
-        human_dist,
-        human_great_mode,
-    )
+    ) + timing_envelope_timing_context(calc_song)
 
 
 @jit(nopython=True, cache=True)
@@ -446,17 +438,15 @@ class SongTimelineGrid:
 
         # Stable identifier for cross-process caching (IPC pickling creates new object IDs).
         #
-        # This must include HumanHitSim parameters when ApplyTo=ALL because they
-        # change the underlying timestamp stream and therefore the grid contents.
+        # This must include timing-envelope parameters when they change the
+        # underlying timestamp stream and therefore the grid contents.
         self.cache_key = _timeline_grid_cache_key(calc_song)
 
         # Extract song data
         song_data = calc_song["song_data"]
         self.song_timestamps = song_data["timestamps"]
 
-        # Extract FG-specific timestamps when HumanHitSim is enabled
-        # These provide simulated Perfect hit times and late-only Great times
-        # Fallback to regular timestamps when HumanHitSim is disabled
+        # Extract FG-specific timing-envelope streams when present.
         self.fg_timestamps = song_data.get("fg_timestamps", self.song_timestamps)
         self.fg_great_candidate_timestamps = song_data.get("fg_great_candidate_timestamps", self.song_timestamps)
 

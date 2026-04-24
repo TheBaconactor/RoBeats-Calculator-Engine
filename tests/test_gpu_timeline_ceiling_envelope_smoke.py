@@ -26,9 +26,9 @@ def _count_head_fever(bits_u32: np.ndarray, head_len: int) -> int:
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_gpu_timeline_ceiling_hitsim_never_reduces_fever_notes(monkeypatch) -> None:
+def test_gpu_timeline_ceiling_envelope_never_reduces_fever_notes(monkeypatch) -> None:
     """
-    Ceiling HitSim is intended as a deterministic upper envelope over exact chart timestamps.
+    Ceiling envelope is intended as a deterministic upper envelope over exact chart timestamps.
 
     This test ensures the Taichi kernel runs and that, for a representative synthetic chart,
     ceiling mode does not reduce the total number of fever notes (head + body) vs the
@@ -53,7 +53,7 @@ def test_gpu_timeline_ceiling_hitsim_never_reduces_fever_notes(monkeypatch) -> N
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim Timeline Smoke",
+            "Song Name": "CeilingEnvelope Timeline Smoke",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -95,12 +95,12 @@ def test_gpu_timeline_ceiling_hitsim_never_reduces_fever_notes(monkeypatch) -> N
         return out
 
     # Deterministic baseline.
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "0")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "0")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
     det = _read_total_fever()
 
     # Ceiling mode.
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
     ceil = _read_total_fever()
 

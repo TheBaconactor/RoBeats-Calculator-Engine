@@ -4,7 +4,6 @@ import queue
 import threading
 import time
 import os
-from collections import OrderedDict
 from typing import Optional
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
@@ -16,14 +15,6 @@ from gear_optimizer.data.database import (
     save_loadouts_batch,
     update_song_counters,
 )
-
-
-_TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
-_TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
-
-_TEAM_BUFF_BASE_CALC_SONG_LOCK = threading.Lock()
-_TEAM_BUFF_BASE_CALC_SONG_CACHE: "OrderedDict[str, dict]" = OrderedDict()
-_TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT = 16
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -57,22 +48,6 @@ def _overlay_backend_mode_enabled() -> bool:
         return _truthy_env("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
 
 
-def _team_buff_base_calc_song_cache_max() -> int:
-    """
-    Cache size for TeamBuff base calc_song derivation.
-
-    This can materially affect throughput on LoopForever/in-flight runs because the post processor may
-    repeatedly need `get_base_calc_song(fp, cfg_dict)` for the same song files.
-    """
-    raw = os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            return max(0, int(raw))
-        except Exception:
-            return _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT
-    return 256 if _truthy_env("INFLIGHT_RAM_MODE", "0") else _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT
-
-
 def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
     """
     Resolve the baseline TeamBuff tier used by the optimizer for this run.
@@ -85,110 +60,6 @@ def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
         return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
     except Exception:
         return "T5"
-
-
-def _get_team_buff_ref_arrays_cached() -> dict | None:
-    """
-    Lazily load `ref_arrays` for TeamBuff tier postprocess in contexts where we don't
-    ship ref arrays across process boundaries (e.g. native in-flight deferred post).
-    """
-    global _TEAM_BUFF_REF_ARRAYS_CACHE
-    if _TEAM_BUFF_REF_ARRAYS_CACHE is not None:
-        return _TEAM_BUFF_REF_ARRAYS_CACHE
-
-    with _TEAM_BUFF_REF_ARRAYS_LOCK:
-        if _TEAM_BUFF_REF_ARRAYS_CACHE is not None:
-            return _TEAM_BUFF_REF_ARRAYS_CACHE
-
-        try:
-            from gear_optimizer.core.config import load_paths_cache
-            from gear_optimizer.core.constants import TOTAL_ROWS, PATHS
-            from gear_optimizer.data.csv_parser import read_table
-
-            paths = {}
-            try:
-                paths = load_paths_cache() or {}
-            except Exception:
-                paths = {}
-
-            stats_path = str((paths.get("Stats", "") or "").strip() or PATHS.stats_csv)
-            stats_table = read_table(stats_path)
-
-            stat_names = [
-                "Perfect Points",
-                "Combo Multiplier",
-                "Fever Multiplier",
-                "Fever Fill Rate",
-                "Fever Time",
-            ]
-
-            ref_arrays: dict = {}
-            for i, name in enumerate(stat_names):
-                temp_list = []
-                for v in range(int(TOTAL_ROWS) + 1):
-                    lookup_index = int(TOTAL_ROWS) - int(v)
-                    try:
-                        val = stats_table[lookup_index][i] if stats_table else 0
-                    except Exception:
-                        val = 0
-                    temp_list.append(val)
-                # Keep float32 tables for CPU/GPU parity and lower memory bandwidth.
-                import numpy as np
-
-                ref_arrays[name] = np.array(temp_list, dtype=np.float32)
-
-            _TEAM_BUFF_REF_ARRAYS_CACHE = ref_arrays
-            return _TEAM_BUFF_REF_ARRAYS_CACHE
-        except Exception:
-            _TEAM_BUFF_REF_ARRAYS_CACHE = None
-            return None
-
-
-def _get_team_buff_base_calc_song_cached(file_path: str, cfg_dict: dict) -> dict | None:
-    """
-    Cache base chart parsing for TeamBuff tier postprocess.
-
-    We still clone+apply per-run HitSim (if any) on each call; only the base parse is cached.
-    """
-    fp = str(file_path or "").strip()
-    if not fp:
-        return None
-
-    # Allow opting out if memory-sensitive.
-    if _truthy_env("TEAM_BUFF_TIER_DISABLE_SONG_CACHE", "0"):
-        try:
-            from gear_optimizer.pipeline.song_processor import get_base_calc_song
-
-            return get_base_calc_song(fp, cfg_dict)
-        except Exception:
-            return None
-
-    with _TEAM_BUFF_BASE_CALC_SONG_LOCK:
-        cached = _TEAM_BUFF_BASE_CALC_SONG_CACHE.get(fp)
-        if cached is not None:
-            _TEAM_BUFF_BASE_CALC_SONG_CACHE.move_to_end(fp)
-            return cached
-
-    try:
-        from gear_optimizer.pipeline.song_processor import get_base_calc_song
-
-        base = get_base_calc_song(fp, cfg_dict)
-    except Exception:
-        return None
-
-    with _TEAM_BUFF_BASE_CALC_SONG_LOCK:
-        _TEAM_BUFF_BASE_CALC_SONG_CACHE[fp] = base
-        _TEAM_BUFF_BASE_CALC_SONG_CACHE.move_to_end(fp)
-        max_n = int(_team_buff_base_calc_song_cache_max())
-        if max_n <= 0:
-            _TEAM_BUFF_BASE_CALC_SONG_CACHE.clear()
-        else:
-            while len(_TEAM_BUFF_BASE_CALC_SONG_CACHE) > int(max_n):
-                try:
-                    _TEAM_BUFF_BASE_CALC_SONG_CACHE.popitem(last=False)
-                except Exception:
-                    break
-    return base
 
 
 class AsyncDbSaver:
@@ -396,16 +267,7 @@ class AsyncDbSaver:
                 try:
                     db_key = meta.get("db_key") or song_name
                     processed_run = bool(meta.get("_processed_run", True))
-                    file_path = meta.get("file_path")
                     cfg_dict = meta.get("cfg_dict") or {}
-                    ref_arrays = meta.get("ref_arrays")
-                    hitsim_seed = meta.get("hitsim_seed")
-                    try:
-                        hitsim_seed = int(hitsim_seed) if hitsim_seed is not None else None
-                    except Exception:
-                        hitsim_seed = None
-                    if hitsim_seed is not None and int(hitsim_seed) <= 0:
-                        hitsim_seed = None
                     canonical_db_path = str(get_evolution_db_path() or "").strip()
                     overlay_db_path = ""
                     overlay_enabled = False
@@ -488,247 +350,8 @@ class AsyncDbSaver:
                             details["attempts_first"] = attempts_first
                             e["details"] = details
 
-                    # Backfill base HitSim per-window deltas for all persisted base rows (top51).
-                    #
-                    # Why:
-                    # - The frontend expects `details_json.hitsim_offset_deltas_ms` for every retained base row.
-                    # - TeamBuff tier postprocess intentionally excludes T5 recomputation, so missing values
-                    #   in the base entries would otherwise remain null (common in native in-flight mode).
-                    #
-                    # NOTE: This computes the deltas from `details["Stats"]` (FFR, FT) + a per-run calc_song
-                    # (HumanHitSim applied). It does not modify scores.
-                    try:
-                        needs_base_hitsim = False
-                        needs_fg_hitsim = False
-                        for e in entries or []:
-                            if not isinstance(e, dict):
-                                continue
-                            det0 = e.get("details")
-                            if isinstance(det0, dict) and det0.get("hitsim_offset_deltas_ms") is None:
-                                needs_base_hitsim = True
-                            force0 = e.get("force")
-                            if isinstance(force0, dict):
-                                fg0 = force0.get("ForceGreats") or {}
-                                if isinstance(fg0, dict):
-                                    if fg0.get("hitsim_offset_deltas_ms") is None:
-                                        cfg0 = fg0.get("config")
-                                        if isinstance(cfg0, dict) and cfg0:
-                                            needs_fg_hitsim = True
-                            if needs_base_hitsim and needs_fg_hitsim:
-                                break
-
-                        human_cfg = cfg_dict.get("HumanHitSim") if isinstance(cfg_dict, dict) else None
-                        enabled_raw = None
-                        apply_to = ""
-                        try:
-                            if isinstance(human_cfg, dict):
-                                enabled_raw = human_cfg.get("Enabled", human_cfg.get("enabled"))
-                                apply_to = str(human_cfg.get("ApplyTo", human_cfg.get("applyto", "")) or "")
-                        except Exception:
-                            enabled_raw = None
-                            apply_to = ""
-                        enabled_all = str(enabled_raw or "").strip().lower() in TRUTHY_ENV_VALUES
-                        apply_to_all = str(apply_to or "").strip().upper() == "ALL"
-
-                        # Derived per-window HitSim deltas are large. Default behavior is to compute them
-                        # strictly on demand (DB manager) and never backfill/persist them here.
-                        persist_hitsim_deltas = (
-                            str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower()
-                            in TRUTHY_ENV_VALUES
-                        )
-                        needs_hitsim_any = bool(persist_hitsim_deltas and (needs_base_hitsim or needs_fg_hitsim))
-
-                        if needs_hitsim_any and enabled_all and apply_to_all and file_path:
-                            from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
-                            from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
-                            from gear_optimizer.solver.scoring.force_greats import (
-                                summarize_hitsim_offset_deltas_ms_for_base,
-                            )
-
-                            if ref_arrays is None:
-                                ref_arrays = _get_team_buff_ref_arrays_cached()
-
-                            base_calc_song = _get_team_buff_base_calc_song_cached(str(file_path), cfg_dict)
-                            if base_calc_song is None:
-                                base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
-                            calc_song = clone_calc_song(base_calc_song)
-                            # Preserve per-run HitSim seed semantics when config uses Seed=0.
-                            if hitsim_seed is not None:
-                                try:
-                                    meta0 = calc_song.get("metadata") if isinstance(calc_song, dict) else None
-                                    if not isinstance(meta0, dict):
-                                        meta0 = {}
-                                    meta1 = dict(meta0)
-                                    meta1["HumanHitSimPlanned"] = True
-                                    meta1["HumanHitSimSeed"] = int(hitsim_seed)
-                                    calc_song["metadata"] = meta1
-                                except Exception:
-                                    pass
-                            try:
-                                apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
-                            except Exception:
-                                calc_song = calc_song
-                            meta0 = calc_song.get("metadata", {}) or {}
-                            apply_to0 = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
-                            if meta0.get("HumanHitSimApplied") and apply_to0 == "ALL":
-                                deltas_cache_by_ff_ft: dict[tuple[int, int], tuple[int, ...]] = {}
-                                if needs_base_hitsim:
-                                    for e in entries or []:
-                                        if not isinstance(e, dict):
-                                            continue
-                                        det0 = e.get("details")
-                                        if not isinstance(det0, dict):
-                                            continue
-                                        if det0.get("hitsim_offset_deltas_ms") is not None:
-                                            continue
-                                        stats0 = det0.get("Stats")
-                                        if not isinstance(stats0, dict) or not stats0:
-                                            continue
-                                        try:
-                                            ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
-                                        except Exception:
-                                            ff0 = 0
-                                        try:
-                                            ft0 = int(stats0.get("Fever Time", 0) or 0)
-                                        except Exception:
-                                            ft0 = 0
-
-                                        cache_key = (int(ff0), int(ft0))
-                                        deltas_t = deltas_cache_by_ff_ft.get(cache_key)
-                                        if deltas_t is None:
-                                            try:
-                                                computed = summarize_hitsim_offset_deltas_ms_for_base(
-                                                    calc_song,
-                                                    {"Stats": stats0},
-                                                    ref_arrays or {},
-                                                )
-                                            except Exception:
-                                                computed = None
-                                            if computed:
-                                                try:
-                                                    deltas_t = tuple(int(x) for x in computed)
-                                                except Exception:
-                                                    deltas_t = None
-                                                if deltas_t:
-                                                    deltas_cache_by_ff_ft[cache_key] = deltas_t
-
-                                        if deltas_t:
-                                            det_out = dict(det0)
-                                            det_out.pop("hitsim_offset_delta_ms", None)
-                                            det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                                            e["details"] = det_out
-
-                                if needs_fg_hitsim:
-                                    try:
-                                        from gear_optimizer.solver.scoring.force_greats import (
-                                            summarize_hitsim_offset_deltas_ms_for_fg_variant,
-                                        )
-                                    except Exception:
-                                        summarize_hitsim_offset_deltas_ms_for_fg_variant = None
-
-                                    def _counts_from_config(cfg: object) -> tuple[int, ...]:
-                                        if not isinstance(cfg, dict) or not cfg:
-                                            return ()
-                                        pairs: list[tuple[int, int]] = []
-                                        for key, val in cfg.items():
-                                            if not isinstance(key, str) or not key.startswith("NonFever"):
-                                                continue
-                                            try:
-                                                idx = int(key.replace("NonFever", "").strip()) - 1
-                                            except Exception:
-                                                continue
-                                            try:
-                                                cnt = int(val or 0)
-                                            except Exception:
-                                                cnt = 0
-                                            pairs.append((idx, max(0, cnt)))
-                                        if not pairs:
-                                            return ()
-                                        pairs.sort(key=lambda x: x[0])
-                                        max_idx = pairs[-1][0]
-                                        if max_idx < 0:
-                                            return ()
-                                        out = [0] * (max_idx + 1)
-                                        for idx, cnt in pairs:
-                                            if 0 <= idx < len(out):
-                                                out[idx] = int(cnt)
-                                        if sum(out) <= 0:
-                                            return ()
-                                        return tuple(int(v) for v in out)
-
-                                    fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
-                                    if summarize_hitsim_offset_deltas_ms_for_fg_variant is not None:
-                                        for e in entries or []:
-                                            if not isinstance(e, dict):
-                                                continue
-                                            force0 = e.get("force")
-                                            if not isinstance(force0, dict):
-                                                continue
-                                            fg0 = force0.get("ForceGreats") or {}
-                                            if not isinstance(fg0, dict):
-                                                continue
-
-                                            existing_deltas = fg0.get("hitsim_offset_deltas_ms")
-                                            if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
-                                                if "hitsim_offset_delta_ms" in fg0:
-                                                    fg_out = dict(fg0)
-                                                    fg_out.pop("hitsim_offset_delta_ms", None)
-                                                    force_out = dict(force0)
-                                                    force_out["ForceGreats"] = fg_out
-                                                    e["force"] = force_out
-                                                continue
-                                            if fg0.get("hitsim_offset_deltas_ms") is not None:
-                                                continue
-
-                                            counts = _counts_from_config(fg0.get("config") or {})
-                                            if not counts:
-                                                continue
-
-                                            det0 = e.get("details")
-                                            if not isinstance(det0, dict):
-                                                continue
-                                            stats0 = det0.get("Stats")
-                                            if not isinstance(stats0, dict) or not stats0:
-                                                continue
-
-                                            try:
-                                                ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
-                                            except Exception:
-                                                ff0 = 0
-                                            try:
-                                                ft0 = int(stats0.get("Fever Time", 0) or 0)
-                                            except Exception:
-                                                ft0 = 0
-
-                                            cache_key = (int(ff0), int(ft0), tuple(int(x) for x in counts))
-                                            deltas_t = fg_deltas_cache.get(cache_key)
-                                            if deltas_t is None:
-                                                try:
-                                                    computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
-                                                        calc_song,
-                                                        {"ForceGreats": fg0, "Stats": stats0},
-                                                        ref_arrays or {},
-                                                    )
-                                                except Exception:
-                                                    computed = None
-                                                if computed:
-                                                    try:
-                                                        deltas_t = tuple(int(x) for x in computed)
-                                                    except Exception:
-                                                        deltas_t = None
-                                                    if deltas_t:
-                                                        fg_deltas_cache[cache_key] = deltas_t
-
-                                            if deltas_t:
-                                                fg_out = dict(fg0)
-                                                fg_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                                                fg_out.pop("hitsim_offset_delta_ms", None)
-
-                                                force_out = dict(force0)
-                                                force_out["ForceGreats"] = fg_out
-                                                e["force"] = force_out
-                    except Exception:
-                        pass
+                    # Timing-envelope runs are deterministic and no longer persist
+                    # sampled hit contexts or sampled offset-delta backfills.
 
                     target_db_path = overlay_db_path if overlay_enabled else canonical_db_path
                     if entries and target_db_path:

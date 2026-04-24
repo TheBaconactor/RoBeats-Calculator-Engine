@@ -48,12 +48,14 @@ def test_submit_exact_fg_dp_routes_new_request_type():
             timing_aware=True,
             prune=True,
             song_slot=5,
+            max_baseline_windows=3,
         )
         req = executor._request_q.get(timeout=1.0)
         assert req.request_type == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP
         assert req.payload["song_slot"] == 5
         assert req.payload["timing_aware"] is True
         assert req.payload["prune"] is True
+        assert req.payload["max_baseline_windows"] == 3
         assert req.payload["stats_list"] == [{"Perfect Points": 1}]
 
         executor._response_q.put(GpuResponse(request_id=req.request_id, success=True, result=[{"best_delta": 9}]))

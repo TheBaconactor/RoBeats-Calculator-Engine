@@ -38,15 +38,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
             }
         ]
 
-    def _fake_attach(fg_variants, calc_song, ref_arrays):
-        calls["attach"] = {
-            "fg_variants": list(fg_variants or []),
-            "calc_song": calc_song,
-            "ref_arrays": ref_arrays,
-        }
-
     monkeypatch.setattr(orchestrator, "process_force_greats", _fake_process_force_greats)
-    monkeypatch.setattr(orchestrator, "_attach_hitsim_delta_for_fg_variant", _fake_attach)
 
     song = SimpleNamespace(
         fg_prep_future=None,
@@ -87,7 +79,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     assert calls["ga_candidates"] is song.ga_candidates
     assert calls["ga_registry"] is registry
-    assert song.fg_variants == calls["attach"]["fg_variants"]
     assert int(song.fg_variants[0]["fg_score"]) == 130
 
 
@@ -112,15 +103,7 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
             }
         ]
 
-    def _fake_attach(fg_variants, calc_song, ref_arrays):
-        calls["attach"] = {
-            "fg_variants": list(fg_variants or []),
-            "calc_song": calc_song,
-            "ref_arrays": ref_arrays,
-        }
-
     monkeypatch.setattr("gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp", _fake_process_fg_exact_dp)
-    monkeypatch.setattr(orchestrator, "_attach_hitsim_delta_for_fg_variant", _fake_attach)
 
     song = SimpleNamespace(
         fg_prep_future=None,
@@ -167,5 +150,4 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
     assert calls["kwargs"]["fg_search_radius"] == 5
     assert calls["kwargs"]["finder_ga_candidates"] is None
     assert calls["kwargs"]["ga_registry"] is None
-    assert song.fg_variants == calls["attach"]["fg_variants"]
     assert int(song.fg_variants[0]["fg_score"]) == 140

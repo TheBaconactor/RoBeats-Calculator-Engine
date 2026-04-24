@@ -501,7 +501,7 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
         conn.close()
 
 
-def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_delta(db_path):
+def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_is_better(db_path):
     song = "FG Tie Force Payload Refresh Song"
     gear = ["G1"]
     minis = ["M1"]
@@ -559,8 +559,6 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         assert row is not None
         force = json.loads(row["force_details_json"])
         assert force.get("tag") == "second_force"
-        assert (force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
-        assert (force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
 
         base_row = conn.execute(
             "SELECT force_details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from math import ceil
 from typing import Any
@@ -15,7 +14,6 @@ from ...core.team_buff import (
     normalize_team_buff_sequence,
     team_buff_effect,
 )
-from ...core.time_quantize import quantize_to_int_ms
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
 
@@ -31,73 +29,6 @@ def _truthy_cfg(v: object) -> bool:
 
 
 _MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
-
-_HITSIM_APPLY_CODE_TO_STR: dict[int, str] = {0: "FG", 1: "ALL"}
-_HITSIM_DIST_CODE_TO_STR: dict[int, str] = {0: "uniform"}
-_HITSIM_GREAT_MODE_CODE_TO_STR: dict[int, str] = {0: "late", 1: "early", 2: "full"}
-
-
-def _hitsim_params_from_details(details: object) -> tuple[int, str, str, str] | None:
-    """
-    Extract persisted HumanHitSim context for deterministic recompute.
-
-    Preferred compact format:
-        details["hs"] = [seed, apply_to_code, dist_code, great_mode_code]
-    """
-    if not isinstance(details, dict):
-        return None
-
-    hs = details.get("hs")
-    if isinstance(hs, (list, tuple)) and len(hs) >= 4:
-        try:
-            seed = int(hs[0] or 0)
-        except Exception:
-            seed = 0
-        if seed <= 0:
-            return None
-        try:
-            apply_code = int(hs[1] or 0)
-        except Exception:
-            apply_code = 0
-        try:
-            dist_code = int(hs[2] or 0)
-        except Exception:
-            dist_code = 0
-        try:
-            mode_code = int(hs[3] or 0)
-        except Exception:
-            mode_code = 0
-        apply_to = _HITSIM_APPLY_CODE_TO_STR.get(int(apply_code), "FG")
-        dist = _HITSIM_DIST_CODE_TO_STR.get(int(dist_code), "uniform")
-        mode = _HITSIM_GREAT_MODE_CODE_TO_STR.get(int(mode_code), "late")
-        return (int(seed), str(apply_to), str(dist), str(mode))
-
-    # Back-compat: verbose key style.
-    if details.get("HumanHitSimSeed") is not None:
-        try:
-            seed = int(details.get("HumanHitSimSeed") or 0)
-        except Exception:
-            seed = 0
-        if seed <= 0:
-            return None
-        apply_to = str(details.get("HumanHitSimApplyTo", "FG") or "FG").strip().upper()
-        if apply_to not in {"FG", "ALL"}:
-            apply_to = "FG"
-        dist = str(details.get("HumanHitSimDistribution", "uniform") or "uniform").strip().lower() or "uniform"
-        mode = str(details.get("HumanHitSimGreatMode", "late") or "late").strip().lower() or "late"
-        return (int(seed), apply_to, dist, mode)
-
-    return None
-
-
-def _shallow_clone_calc_song(calc_song: dict) -> dict:
-    meta0 = calc_song.get("metadata", {}) or {}
-    song_data0 = calc_song.get("song_data", {}) or {}
-    out = dict(calc_song)
-    out["metadata"] = dict(meta0) if isinstance(meta0, dict) else {}
-    out["song_data"] = dict(song_data0) if isinstance(song_data0, dict) else {}
-    return out
-
 
 def _mini_names_from_text(text: str) -> list[str]:
     s = text.strip()
@@ -403,81 +334,6 @@ def _safe_int(v: Any, default: int = 0) -> int:
             return int(default)
 
 
-def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
-    return quantize_to_int_ms(timestamps_sec)
-
-
-def _build_base_hitsim_ctx(calc_song: dict) -> dict | None:
-    if not isinstance(calc_song, dict):
-        return None
-    meta = calc_song.get("metadata", {}) or {}
-    if not meta.get("HumanHitSimApplied"):
-        return None
-    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    if apply_to != "ALL":
-        return None
-    song_data = calc_song.get("song_data", {}) or {}
-    chart_ts = song_data.get("chart_timestamps")
-    timestamps = song_data.get("timestamps")
-    if chart_ts is None or timestamps is None:
-        return None
-    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
-    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
-    total_notes = int(np.asarray(timestamps).shape[0])
-    if total_notes <= 0:
-        return None
-    n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), int(total_notes))
-    if n <= 0:
-        return None
-    long_notes = _safe_int(meta.get("Long Notes"), 0)
-    return {
-        "chart_ms": chart_ms,
-        "sim_ms": sim_ms,
-        "n": int(n),
-        "total_notes": int(total_notes),
-        "long_notes": int(long_notes),
-    }
-
-
-def _base_hitsim_delta_for_stats(*, stats: dict, ref_arrays: dict, ctx: dict, ff_cache: dict[int, float]) -> int | None:
-    if not isinstance(stats, dict) or not stats:
-        return None
-    try:
-        ff_stat = _stats_get_int(stats, "Fever Fill Rate", 0)
-    except Exception:
-        ff_stat = 0
-    try:
-        ff_factor = ff_cache.get(int(ff_stat))
-    except Exception:
-        ff_factor = None
-    if ff_factor is None:
-        try:
-            ff_factor = lookup_reference_py(ff_stat, ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
-        except Exception:
-            return None
-        try:
-            ff_cache[int(ff_stat)] = float(ff_factor)
-        except Exception:
-            pass
-
-    total_notes = int(ctx.get("total_notes", 0) or 0)
-    long_notes = int(ctx.get("long_notes", 0) or 0)
-    non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
-    non_fever_base = ceil(non_fever_cas * float(ff_factor))
-    notes_to_fill = int(non_fever_base) - 1
-    end_normal_idx = min(int(notes_to_fill), int(total_notes))
-    if end_normal_idx <= 0:
-        return None
-    n = int(ctx.get("n", 0) or 0)
-    if end_normal_idx >= n:
-        return None
-    chart_ms = ctx.get("chart_ms")
-    sim_ms = ctx.get("sim_ms")
-    if chart_ms is None or sim_ms is None:
-        return None
-    return int(sim_ms[end_normal_idx]) - int(chart_ms[end_normal_idx])
-
-
 def _team_buff_delta_map(
     *,
     base_team_buff: str,
@@ -653,73 +509,18 @@ def compute_team_buff_tier_leaderboards(
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
-    # Group entries by persisted HumanHitSim context (if any). This matters when
-    # HumanHitSim.Seed=0 chooses a different random seed per run; persisted rows
-    # can come from multiple seeds and must be rescored against their own timing.
-    meta_calc = calc_song.get("metadata", {}) or {}
-    calc_song_already_hitsim = bool(meta_calc.get("HumanHitSimApplied"))
-    entry_groups: dict[tuple[int, str, str, str] | None, list[dict]] = {}
-    if calc_song_already_hitsim:
-        entry_groups[None] = list(entries)
-    else:
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            details0 = entry.get("details")
-            hs_params = _hitsim_params_from_details(details0)
-            entry_groups.setdefault(hs_params, []).append(entry)
+    try:
+        from ...solver.timing_envelope import apply_timing_envelope
 
-    calc_song_by_hitsim: dict[tuple[int, str, str, str], dict] = {}
+        apply_timing_envelope(calc_song)
+    except Exception:
+        pass
+
+    entry_groups: dict[object, list[dict]] = {None: [entry for entry in entries if isinstance(entry, dict)]}
     per_entry: list[dict] = []
 
-    for hs_key, group_entries in entry_groups.items():
+    for _hs_key, group_entries in entry_groups.items():
         group_song = calc_song
-        if hs_key is not None:
-            cached = calc_song_by_hitsim.get(hs_key)
-            if cached is None:
-                seed, apply_to, dist, mode = hs_key
-                song1 = _shallow_clone_calc_song(calc_song)
-                # Defensive: ensure we can re-apply even if callers accidentally pass a dirty meta.
-                try:
-                    meta1 = song1.get("metadata", {}) or {}
-                    if isinstance(meta1, dict):
-                        for k in (
-                            "HumanHitSimApplied",
-                            "HumanHitSimSeed",
-                            "HumanHitSimApplyTo",
-                            "HumanHitSimDistribution",
-                            "HumanHitSimGreatMode",
-                            "HumanHitSimSeedIsRandom",
-                            "HumanHitSimDebug",
-                            "HumanHitSimPlanned",
-                        ):
-                            meta1.pop(k, None)
-                        song1["metadata"] = meta1
-                except Exception:
-                    pass
-
-                try:
-                    from ...solver.hit_simulation import apply_human_hit_sim
-
-                    apply_human_hit_sim(
-                        song1,
-                        cfg_dict={
-                            "HumanHitSim": {
-                                "Enabled": "1",
-                                "ApplyTo": str(apply_to),
-                                "Seed": int(seed),
-                                "Distribution": str(dist),
-                                "GreatMode": str(mode),
-                            }
-                        },
-                    )
-                except Exception:
-                    # Fallback: score using chart timestamps (better than crashing).
-                    pass
-
-                cached = song1
-                calc_song_by_hitsim[hs_key] = cached
-            group_song = cached
 
         for entry in group_entries:
             if not isinstance(entry, dict):
@@ -829,7 +630,7 @@ def compute_team_buff_tier_leaderboards(
     from ...solver.scoring.gpu_solver import _GPU_LOCK
     from ...solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 
-    # Group by (possibly HitSim-mutated) calc_song object so we can batch GPU fixed scoring per song context.
+    # Group by calc_song object so we can batch GPU fixed scoring per song context.
     per_entry_by_song_id: dict[int, list[dict]] = {}
     song_by_id: dict[int, dict] = {}
     for e in per_entry:
@@ -1123,24 +924,6 @@ def build_team_buff_tier_db_batches(
     )
     base_team_buff = _resolve_base_team_buff(cfg_dict)
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
-    try:
-        meta0 = calc_song.get("metadata", {}) or {}
-        base_hitsim_enabled = (
-            bool(meta0.get("HumanHitSimApplied"))
-            and str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper() == "ALL"
-        )
-    except Exception:
-        base_hitsim_enabled = False
-    # Default: do not compute/persist derived per-window HitSim deltas here; they are large.
-    persist_hitsim_deltas = str(os.environ.get("DB_PERSIST_HITSIM_DELTAS", "0") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    base_hitsim_enabled = bool(base_hitsim_enabled and persist_hitsim_deltas)
-    base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
-    fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
 
     # Match replay rows back to persisted entries using order-invariant gear/mini names.
     def _stable_key_from_payload(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -1232,43 +1015,6 @@ def build_team_buff_tier_db_batches(
                     details_base = dict(details_base)
                     details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
             details_out = _apply_details_delta(details_base, delta_map)
-            if isinstance(details_out, dict) and base_hitsim_enabled:
-                existing_deltas = details_out.get("hitsim_offset_deltas_ms")
-                if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
-                    details_out.pop("hitsim_offset_delta_ms", None)
-                elif details_out.get("hitsim_offset_deltas_ms") is None:
-                    stats0 = details_out.get("Stats")
-                    if isinstance(stats0, dict):
-                        try:
-                            ff0 = _stats_get_int(stats0, "Fever Fill Rate", 0)
-                            ft0 = _stats_get_int(stats0, "Fever Time", 0)
-                        except Exception:
-                            ff0 = 0
-                            ft0 = 0
-
-                        cache_key = (int(ff0), int(ft0))
-                        deltas_t = base_deltas_cache.get(cache_key)
-                        if deltas_t is None:
-                            try:
-                                from ...solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
-
-                                computed = summarize_hitsim_offset_deltas_ms_for_base(
-                                    calc_song, {"Stats": stats0}, ref_arrays
-                                )
-                            except Exception:
-                                computed = None
-                            if computed:
-                                try:
-                                    deltas_t = tuple(int(x) for x in computed)
-                                except Exception:
-                                    deltas_t = None
-                                if deltas_t:
-                                    base_deltas_cache[cache_key] = deltas_t
-
-                        if deltas_t:
-                            if details_out.get("hitsim_offset_deltas_ms") is None:
-                                details_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                            details_out.pop("hitsim_offset_delta_ms", None)
 
             force_base = orig.get("force")
             # If the persisted BaseStats payload is missing the base TeamBuff effect, add it first so
@@ -1291,80 +1037,6 @@ def build_team_buff_tier_db_batches(
                 delta=delta_map,
                 fg_score=fg_score_out,
             )
-            if isinstance(force_out, dict) and base_hitsim_enabled and fg_score_out > score_out:
-                fg_meta = force_out.get("ForceGreats")
-                if isinstance(fg_meta, dict):
-                    existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")
-                    if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
-                        if "hitsim_offset_delta_ms" in fg_meta:
-                            fg_meta_out = dict(fg_meta)
-                            fg_meta_out.pop("hitsim_offset_delta_ms", None)
-                            force_out["ForceGreats"] = fg_meta_out
-                    else:
-                        forced_counts = _extract_force_config_counts(force_out)
-                        if forced_counts:
-                            fg_stats = force_out.get("Stats")
-                            if not isinstance(fg_stats, dict) or not fg_stats:
-                                fg_stats = _force_payload_stats(force_out, details_out.get("Stats", {}))
-                            if isinstance(fg_stats, dict) and fg_stats:
-                                try:
-                                    ff_stat = _stats_get_int(fg_stats, "Fever Fill Rate", 0)
-                                    ft_stat = _stats_get_int(fg_stats, "Fever Time", 0)
-                                except Exception:
-                                    ff_stat = 0
-                                    ft_stat = 0
-                                cfg_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in forced_counts))
-                                deltas_t = fg_deltas_cache.get(cfg_key)
-                                if deltas_t is None:
-                                    try:
-                                        from ...solver.scoring.force_greats import (
-                                            summarize_hitsim_offset_deltas_ms_for_fg_variant,
-                                        )
-
-                                        fg_data = {"ForceGreats": fg_meta, "Stats": fg_stats}
-                                        computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
-                                            calc_song, fg_data, ref_arrays
-                                        )
-                                    except Exception:
-                                        computed = None
-                                    if computed:
-                                        try:
-                                            deltas_t = tuple(int(x) for x in computed)
-                                        except Exception:
-                                            deltas_t = None
-                                        if deltas_t:
-                                            fg_deltas_cache[cfg_key] = deltas_t
-                                if deltas_t:
-                                    fg_meta_out = dict(fg_meta)
-                                    if fg_meta_out.get("hitsim_offset_deltas_ms") is None:
-                                        fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                                    fg_meta_out.pop("hitsim_offset_delta_ms", None)
-                                    force_out["ForceGreats"] = fg_meta_out
-                                    if isinstance(details_out, dict):
-                                        fg_det = details_out.get("ForceGreats")
-                                        if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_deltas_ms") is None:
-                                            fg_det_out = dict(fg_det)
-                                            if fg_det_out.get("hitsim_offset_deltas_ms") is None:
-                                                fg_det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                                            fg_det_out.pop("hitsim_offset_delta_ms", None)
-                                            details_out["ForceGreats"] = fg_det_out
-
-            if isinstance(details_out, dict):
-                details_out = dict(details_out)
-                details_out.pop("hitsim_offset_delta_ms", None)
-                fg0 = details_out.get("ForceGreats")
-                if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
-                    fg1 = dict(fg0)
-                    fg1.pop("hitsim_offset_delta_ms", None)
-                    details_out["ForceGreats"] = fg1
-
-            if isinstance(force_out, dict):
-                fg0 = force_out.get("ForceGreats")
-                if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
-                    fg1 = dict(fg0)
-                    fg1.pop("hitsim_offset_delta_ms", None)
-                    force_out = dict(force_out)
-                    force_out["ForceGreats"] = fg1
 
             out_row = {
                 "loadout_hash": str(orig.get("loadout_hash") or ""),

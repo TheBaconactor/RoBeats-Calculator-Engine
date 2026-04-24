@@ -477,6 +477,7 @@ class GpuServiceClient:
         timing_aware: bool = True,
         prune: bool = True,
         song_slot: int = 0,
+        max_baseline_windows: int | None = None,
     ) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
@@ -487,6 +488,7 @@ class GpuServiceClient:
                 "timing_aware": bool(timing_aware),
                 "prune": bool(prune),
                 "song_slot": int(song_slot or 0),
+                "max_baseline_windows": max_baseline_windows,
             },
         )
 

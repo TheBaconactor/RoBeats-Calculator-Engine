@@ -14,7 +14,7 @@ import numpy as np
 from math import floor
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
-from ...core.utils import human_hitsim_full_context, human_hitsim_timing_context, safe_int, safe_float
+from ...core.utils import timing_envelope_full_context, timing_envelope_timing_context, safe_int, safe_float
 
 from ..fever_timeline import (
     calculate_fever_activations_grid,
@@ -291,14 +291,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
         cache_key = None
 
     song_data = calc_song.get("song_data", {}) or {}
-    meta0 = calc_song.get("metadata", {}) or {}
-    apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper() if meta0.get("HumanHitSimApplied") else ""
-    if apply_to == "ALL":
-        timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    else:
-        # For ApplyTo=FG, baseline section counting is chart-structure driven and can
-        # be shared across repeats even when the per-run hit-sim seed is random.
-        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps"))
+    timestamps = song_data.get("chart_timestamps", song_data.get("timestamps", song_data.get("fg_timestamps")))
     total_notes = len(timestamps)
     if total_notes <= 0:
         return 0, 0
@@ -306,7 +299,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
     metadata = calc_song.get("metadata", {}) or {}
     long_notes = safe_int(metadata.get("Long Notes"), 0)
     # last_note_time is derived from chart length, not simulated hits.
-    base_ts = song_data.get("timestamps", timestamps)
+    base_ts = song_data.get("chart_timestamps", song_data.get("timestamps", timestamps))
     default_last_note = base_ts[-1] if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
 
@@ -375,15 +368,10 @@ def _song_cache_key(calc_song):
     """Generate cache key for song."""
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper() if meta.get("HumanHitSimApplied") else ""
-    if apply_to == "ALL":
-        timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
-    else:
-        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps", ()))
+    timestamps = song_data.get("chart_timestamps", song_data.get("timestamps", song_data.get("fg_timestamps", ())))
     n = int(len(timestamps))
     first_ts = float(timestamps[0]) if n else 0.0
     last_ts = float(timestamps[-1]) if n else 0.0
-    sim_seed = int(meta.get("HumanHitSimSeed", 0) or 0) if apply_to == "ALL" else 0
     return (
         str(meta.get("Song Name", "")),
         n,
@@ -391,16 +379,16 @@ def _song_cache_key(calc_song):
         last_ts,
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
-        apply_to,
-        sim_seed,
-    ) + human_hitsim_timing_context(calc_song)
+        "TIMING_ENVELOPE",
+        0,
+    ) + timing_envelope_timing_context(calc_song)
 
 
 def _song_cache_key_for_fg_timeline(calc_song):
     """
     Generate cache key for ForceGreats timeline evaluation.
 
-    This key MUST vary when fg_timestamps / fg_great_candidate_timestamps vary (e.g. HumanHitSim ApplyTo=FG),
+    This key MUST vary when fg_timestamps / fg_great_candidate_timestamps vary,
     otherwise FG timeline caches can cross-contaminate between different simulated runs.
     """
     meta = calc_song.get("metadata", {}) or {}
@@ -438,4 +426,4 @@ def _song_cache_key_for_fg_timeline(calc_song):
         safe_float(meta.get("Last Note Time", 0) or 0, 0.0),
         safe_int(meta.get("Long Notes", 0) or 0, 0),
         int(has_great_candidates),
-    ) + human_hitsim_full_context(calc_song)
+    ) + timing_envelope_full_context(calc_song)

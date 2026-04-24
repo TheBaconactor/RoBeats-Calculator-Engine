@@ -43,7 +43,6 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
         "PrimaryColor": "Rush",
         "SecondaryColor": "Flow",
         "Difficulty": "Hard",
-        "hitsim_offset_deltas_ms": [17, 18],
     }
 
     save_loadouts_batch(
@@ -121,10 +120,6 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
 
     stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
     assert stored_details.get("Stats") == base_stats
-    # Derived per-window HitSim deltas are computed on demand and not persisted.
-    assert stored_details.get("hitsim_offset_deltas_ms") is None
-    assert stored_details.get("hitsim_offset_delta_ms") is None
-
     assert fg_row is not None
     assert int(fg_row["score"]) == 1000
     assert int(fg_row["fg_score"]) == 1200
@@ -159,7 +154,6 @@ def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tm
         "PrimaryColor": "Rush",
         "SecondaryColor": "Flow",
         "Difficulty": "Hard",
-        "hitsim_offset_deltas_ms": [17, 18],
     }
     save_loadouts_batch(
         song_name,
@@ -255,7 +249,6 @@ def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tm
     assert stored_details.get("FF") == 15
     assert (stored_details.get("GemCounts") or {}) == {"Perfect Points": 0, "Element": 62}
     assert stored_details.get("Stats") == base_stats
-    assert stored_details.get("hitsim_offset_deltas_ms") is None
 
     assert fg_row is not None
     assert int(fg_row["score"]) == 1000

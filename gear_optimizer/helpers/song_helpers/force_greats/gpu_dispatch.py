@@ -102,14 +102,21 @@ def _chart_signature_key(calc_song: dict) -> tuple:
     return _chart_signature_key_impl(calc_song)
 
 
-def _hitsim_apply_to(calc_song: dict) -> str:
+def _uses_timing_envelope_fg(calc_song: dict) -> bool:
     try:
+        if not isinstance(calc_song, dict):
+            return False
         meta = calc_song.get("metadata", {}) or {}
-        if not meta.get("HumanHitSimApplied"):
-            return ""
-        return str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+        song_data = calc_song.get("song_data", {}) or {}
+        return bool(
+            meta.get("TimingEnvelopeApplied")
+            or (
+                song_data.get("fg_timestamps") is not None
+                and song_data.get("fg_great_candidate_timestamps") is not None
+            )
+        )
     except Exception:
-        return ""
+        return False
 
 
 def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot: int) -> tuple[bool, int, bool]:
@@ -1886,16 +1893,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         frontier_groups_reduced=int(frontier_groups_reduced),
     )
 
-    hitsim_apply_to = _hitsim_apply_to(calc_song)
+    use_timing_envelope_fg = _uses_timing_envelope_fg(calc_song)
     chart_key = _chart_signature_key(calc_song)
-    if hitsim_apply_to == "FG":
+    if use_timing_envelope_fg:
         fg_scorer, fg_scorer_cache_hit = _get_cached_chart_scorer(
             calc_song, ref_arrays, create_chart_scorer_from_calc_song
         )
     else:
         fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
         fg_scorer_cache_hit = False
-    if (not fg_scorer_cache_hit) and hitsim_apply_to == "FG":
+    if (not fg_scorer_cache_hit) and use_timing_envelope_fg:
         try:
             logger.debug(
                 "[FG] Cached chart AnalyticalFGScorer: %s notes, head_len=%s",
@@ -2007,7 +2014,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
     _emit_finder_phase(
         "pair_caps_ready",
-        hitsim_apply_to=str(hitsim_apply_to),
+        timing_envelope_fg=int(bool(use_timing_envelope_fg)),
         fg_scorer_cache_hit=int(bool(fg_scorer_cache_hit)),
         pair_caps_from_timeline=int(bool(pair_caps_from_timeline)),
         ga_candidate_table_slot_held=int(bool(ga_candidate_table_slot_held)),
@@ -2136,7 +2143,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         frontier_after=int(frontier_total_after),
         per_pair_breakpoints=int(bool(per_pair_breakpoints)),
         fused_breakpoints_solve=int(bool(fused_breakpoints_solve)),
-        hitsim_apply_to=str(hitsim_apply_to),
+        timing_envelope_fg=int(bool(use_timing_envelope_fg)),
         tasks_per_request=int(fg_async_tasks_per_request),
         max_inflight=int(fg_async_max_inflight),
     )

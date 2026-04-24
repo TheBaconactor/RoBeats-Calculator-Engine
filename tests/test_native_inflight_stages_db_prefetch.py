@@ -4,7 +4,6 @@ import time
 from types import SimpleNamespace
 
 import gear_optimizer.solver.native_inflight_stages as stages
-import gear_optimizer.solver.hit_simulation as hit_simulation
 
 
 def _clear_fg_db_prefetch_cache() -> None:
@@ -149,26 +148,15 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
     assert song._fg_static_prep_done is True
 
 
-def test_prepare_fg_static_sync_builds_fg_hitsim_clone_without_mutating_base_calc_song(monkeypatch):
+def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating_base_calc_song(monkeypatch):
     monkeypatch.setattr(stages, "build_loadout_entries", lambda *_args, **_kwargs: {"db": {"score": 100}})
-
-    def _fake_apply_human_hit_sim(calc_song, *, cfg_dict):
-        meta = dict(calc_song.get("metadata", {}) or {})
-        meta["HumanHitSimApplied"] = True
-        calc_song["metadata"] = meta
-        song_data = dict(calc_song.get("song_data", {}) or {})
-        song_data["fg_timestamps"] = [1.0]
-        calc_song["song_data"] = song_data
-        return {"apply_to": "FG"}
-
-    monkeypatch.setattr(hit_simulation, "apply_human_hit_sim", _fake_apply_human_hit_sim)
 
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
     base_calc_song = {
-        "metadata": {"HumanHitSimApplyTo": "FG", "HumanHitSimPlanned": True},
-        "song_data": {"timestamps": [0.0]},
+        "metadata": {},
+        "song_data": {"timestamps": [0.0], "chart_timestamps": [0.0]},
         "_gpu_song_slot": 7,
     }
     song = SimpleNamespace(
@@ -195,9 +183,9 @@ def test_prepare_fg_static_sync_builds_fg_hitsim_clone_without_mutating_base_cal
 
     assert song.fg_calc_song is not None
     assert song.fg_calc_song is not base_calc_song
-    assert song.fg_calc_song["metadata"]["HumanHitSimApplied"] is True
+    assert song.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
     assert song.fg_calc_song["_gpu_song_slot"] == 7
-    assert "HumanHitSimApplied" not in base_calc_song["metadata"]
+    assert "TimingEnvelopeApplied" not in base_calc_song["metadata"]
     assert "fg_timestamps" not in base_calc_song["song_data"]
 
 
@@ -275,15 +263,7 @@ def test_prepare_fg_job_sync_warms_fg_jit_for_finder(monkeypatch):
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    def _fake_apply_human_hit_sim(calc_song, *, cfg_dict):
-        meta = dict(calc_song.get("metadata", {}) or {})
-        meta["HumanHitSimApplied"] = True
-        calc_song["metadata"] = meta
-        return {"apply_to": "FG"}
-
-    monkeypatch.setattr(hit_simulation, "apply_human_hit_sim", _fake_apply_human_hit_sim)
-
-    calc_song = {"metadata": {"HumanHitSimApplyTo": "FG", "HumanHitSimPlanned": True}, "song_data": {"timestamps": [0.0]}}
+    calc_song = {"metadata": {}, "song_data": {"timestamps": [0.0], "chart_timestamps": [0.0]}}
     ref_arrays = {"Fever Time": [0.0], "Fever Fill Rate": [0.0]}
     song = SimpleNamespace(
         cfg=cfg,
@@ -322,6 +302,7 @@ def test_prepare_fg_job_sync_warms_fg_jit_for_finder(monkeypatch):
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert song.fg_calc_song is not None
+    assert song.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
     assert seen["calc_song"] is song.fg_calc_song
     assert seen["ref_arrays"] is ref_arrays
     assert seen["runtime_calc_song"] is song.fg_calc_song
@@ -648,39 +629,6 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
     assert song.fg_static_prep_future is pending_static
 
 
-def test_decode_ga_payload_sync_attaches_base_hitsim_delta(monkeypatch):
-    seen: dict[str, object] = {}
-
-    def _fake_decode_gpu_native_ga_runs_payload(**_kwargs):
-        return {"score": 123}, ["G1"], ["M1"], []
-
-    def _fake_attach(best_data, calc_song, ref_arrays):
-        seen["best_data"] = best_data
-        seen["calc_song"] = calc_song
-        seen["ref_arrays"] = ref_arrays
-        best_data["hitsim_offset_deltas_ms"] = [1, 2, 3]
-
-    monkeypatch.setattr(stages, "decode_gpu_native_ga_runs_payload", _fake_decode_gpu_native_ga_runs_payload)
-    monkeypatch.setattr(stages, "_attach_hitsim_delta_for_base", _fake_attach)
-
-    song = SimpleNamespace(
-        registry=None,
-        cfg_data={},
-        fixed_stats={},
-        calc_song={"metadata": {}},
-        ref_arrays={"timeline": []},
-    )
-
-    best_data, best_gear, best_minis, ga_candidates = stages._decode_ga_payload_sync(song, runs_payload=None)
-
-    assert best_data["hitsim_offset_deltas_ms"] == [1, 2, 3]
-    assert best_gear == ["G1"]
-    assert best_minis == ["M1"]
-    assert ga_candidates == []
-    assert seen["calc_song"] == song.calc_song
-    assert seen["ref_arrays"] == song.ref_arrays
-
-
 def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
     seen: dict[str, object] = {}
 
@@ -694,7 +642,7 @@ def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
         registry=None,
         cfg_data={},
         fixed_stats={},
-        calc_song={"metadata": {"Song Name": "base", "HumanHitSimApplyTo": "FG"}, "song_data": {"timestamps": [0.0]}},
+        calc_song={"metadata": {"Song Name": "base"}, "song_data": {"timestamps": [0.0]}},
         fg_calc_song={"metadata": {"Song Name": "finder"}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"timeline": []},
         force_greats_finder=True,

@@ -38,10 +38,10 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
     from math import ceil
 
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.hit_simulation import (
+    from gear_optimizer.solver.timing_envelope import (
         compute_fever_timeline_signature,
-        generate_perfect_hit_times_ms,
-        prepare_perfect_hit_simulation,
+        generate_perfect_timing_events_ms,
+        prepare_perfect_timing_envelope,
     )
     from gear_optimizer.solver.scoring_core import fast_calculate_score
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
@@ -62,7 +62,7 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim MC Upper Bound",
+            "Song Name": "CeilingEnvelope MC Upper Bound",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -92,7 +92,7 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
     ff_idx = 30
 
     # GPU ceiling result (one-shot).
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -111,7 +111,7 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
     ceiling_score = int(fast_calculate_score(base, combo, fever, head_mask, body_fever, body_normal))
 
     # Monte Carlo: best-of-N Perfect event time samples (same monotone carry model).
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         timestamps,
         note_types,
         perfect_lower_ms=-20,
@@ -132,7 +132,7 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
     best_mc_score = None
     seeds = 200
     for s in range(1, int(seeds) + 1):
-        event_ms = generate_perfect_hit_times_ms(prepared, seed=int(s))
+        event_ms = generate_perfect_timing_events_ms(prepared, seed=int(s))
         _, fever_mask_head, count_body_fever, count_body_normal = compute_fever_timeline_signature(
             event_ms,
             non_fever_base=non_fever_base,
@@ -169,10 +169,10 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
     from math import ceil
 
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.hit_simulation import (
+    from gear_optimizer.solver.timing_envelope import (
         compute_fever_timeline_signature,
-        generate_perfect_hit_times_ms,
-        prepare_perfect_hit_simulation,
+        generate_perfect_timing_events_ms,
+        prepare_perfect_timing_envelope,
     )
     from gear_optimizer.solver.scoring_core import fast_calculate_score
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
@@ -443,7 +443,7 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim Regression NormalHi Under MC",
+            "Song Name": "CeilingEnvelope Regression NormalHi Under MC",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -473,7 +473,7 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
     ff_idx = 0
 
     # GPU ceiling result (one-shot).
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -492,7 +492,7 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
     ceiling_score = int(fast_calculate_score(base, combo, fever, head_mask, body_fever, body_normal))
 
     # Monte Carlo: best-of-N Perfect event time samples (same monotone carry model).
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         timestamps,
         note_types,
         perfect_lower_ms=-20,
@@ -513,7 +513,7 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
     best_mc_score = None
     seeds = 200
     for s in range(1, int(seeds) + 1):
-        event_ms = generate_perfect_hit_times_ms(prepared, seed=int(s))
+        event_ms = generate_perfect_timing_events_ms(prepared, seed=int(s))
         _, fever_mask_head, count_body_fever, count_body_normal = compute_fever_timeline_signature(
             event_ms,
             non_fever_base=non_fever_base,

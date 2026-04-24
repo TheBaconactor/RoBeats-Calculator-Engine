@@ -56,10 +56,6 @@ def _difficulty(calc_song: dict) -> str:
     return str(_metadata(calc_song).get("Difficulty", "") or "").strip()
 
 
-def _human_seed(calc_song: dict) -> int:
-    return _safe_int(_metadata(calc_song).get("HumanHitSimSeed", 0), 0)
-
-
 def _trace_song_matches_filter(song_name: str, raw_filter: str) -> bool:
     token = str(raw_filter or "").strip()
     if not token:
@@ -97,12 +93,10 @@ class ConvergenceTraceWriter:
         song_name: str,
         difficulty: str,
         ga_seed: int,
-        human_hit_sim_seed: int,
     ) -> None:
         self.song_name = str(song_name or "")
         self.difficulty = str(difficulty or "")
         self.ga_seed = int(ga_seed)
-        self.human_hit_sim_seed = int(human_hit_sim_seed)
         self._lock = threading.Lock()
         self._file_path = self._build_path(out_dir=out_dir)
 
@@ -140,7 +134,6 @@ class ConvergenceTraceWriter:
             "song_name": self.song_name,
             "difficulty": self.difficulty,
             "ga_seed": int(self.ga_seed),
-            "human_hit_sim_seed": int(self.human_hit_sim_seed),
             "generation_idx": int(generation_idx),
             "elapsed_s": float(elapsed_s),
             "wall_time_unix_s": float(time.time()),
@@ -197,7 +190,6 @@ def build_convergence_trace_writer(
         song_name=song_name,
         difficulty=_difficulty(calc_song),
         ga_seed=_safe_int(ga_seed, 0),
-        human_hit_sim_seed=_human_seed(calc_song),
     )
     if not writer.file_path:
         return None, int(cfg.every)

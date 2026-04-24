@@ -72,6 +72,13 @@ else:
 _fg_exact_dp_sparse_hash_env = max(1024, min(int(_fg_exact_dp_sparse_hash_env), 262144))
 FG_EXACT_DP_SPARSE_HASH_SIZE = int(_fg_exact_dp_sparse_hash_env)
 
+try:
+    _fg_exact_dp_batch_rows_env = int(os.environ.get("FG_EXACT_DP_BATCH_MAX_ROWS", "128") or "128")
+except Exception:
+    _fg_exact_dp_batch_rows_env = 128
+FG_EXACT_DP_BATCH_MAX_ROWS = max(1, min(int(_fg_exact_dp_batch_rows_env), 256))
+FG_EXACT_DP_PREFIX_HEAD_LEN = 101
+
 FG_EXACT_DP_FULL_PREFIX_LEN = FG_MAX_SONG_NOTES + 1
 try:
     _fg_signature_frontier_batch_env = int(os.environ.get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
@@ -254,6 +261,32 @@ fg_exact_dp_sparse_states: ti.Field | None = None  # () i32
 fg_exact_dp_sparse_transitions: ti.Field | None = None  # () i32
 fg_exact_dp_sparse_overflow: ti.Field | None = None  # () i32
 
+# Batched sparse exact-DP buffers. These keep independent fixed-stat rows in one
+# owner turn so exact-DP refinement uses GPU lane parallelism instead of one
+# serialized tiny kernel per retained FG variant.
+fg_exact_dp_batch_raw_fill: ti.Field | None = None  # (FG_EXACT_DP_BATCH_MAX_ROWS,) f32
+fg_exact_dp_batch_non_fever_base: ti.Field | None = None  # (FG_EXACT_DP_BATCH_MAX_ROWS,) i32
+fg_exact_dp_batch_ft_idx: ti.Field | None = None  # (FG_EXACT_DP_BATCH_MAX_ROWS,) i32
+fg_exact_dp_batch_w_head_prefix: ti.Field | None = None  # (rows, 101) i64
+fg_exact_dp_batch_c_head_prefix: ti.Field | None = None  # (rows, 101) i64
+fg_exact_dp_batch_w_body: ti.Field | None = None  # (rows,) i64
+fg_exact_dp_batch_c_body: ti.Field | None = None  # (rows,) i64
+fg_exact_dp_batch_hash_keys: ti.Field | None = None  # (rows, hash) i64
+fg_exact_dp_batch_hash_vals: ti.Field | None = None  # (rows, hash) i32
+fg_exact_dp_batch_state_i: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_state_first: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_state_carry: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_dp: ti.Field | None = None  # (rows, states) i64
+fg_exact_dp_batch_policy_p: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_policy_k: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_order: ti.Field | None = None  # (rows, states) i32
+fg_exact_dp_batch_state_count: ti.Field | None = None  # (rows,) i32
+fg_exact_dp_batch_best_delta: ti.Field | None = None  # (rows,) i64
+fg_exact_dp_batch_counts: ti.Field | None = None  # (rows, FG_MAX_SECTIONS) i32
+fg_exact_dp_batch_states: ti.Field | None = None  # (rows,) i32
+fg_exact_dp_batch_transitions: ti.Field | None = None  # (rows,) i32
+fg_exact_dp_batch_overflow: ti.Field | None = None  # (rows,) i32
+
 
 # ============================================================================
 # ALLOCATION STATE
@@ -300,6 +333,24 @@ def reset_fields_state() -> None:
     global fg_exact_dp_sparse_order, fg_exact_dp_sparse_state_count
     global fg_exact_dp_sparse_best_delta, fg_exact_dp_sparse_counts
     global fg_exact_dp_sparse_states, fg_exact_dp_sparse_transitions, fg_exact_dp_sparse_overflow
+    global fg_exact_dp_batch_raw_fill, fg_exact_dp_batch_non_fever_base, fg_exact_dp_batch_ft_idx
+    global fg_exact_dp_batch_w_head_prefix, fg_exact_dp_batch_c_head_prefix
+    global fg_exact_dp_batch_w_body, fg_exact_dp_batch_c_body
+    global fg_exact_dp_batch_hash_keys, fg_exact_dp_batch_hash_vals
+    global fg_exact_dp_batch_state_i, fg_exact_dp_batch_state_first, fg_exact_dp_batch_state_carry
+    global fg_exact_dp_batch_dp, fg_exact_dp_batch_policy_p, fg_exact_dp_batch_policy_k
+    global fg_exact_dp_batch_order, fg_exact_dp_batch_state_count
+    global fg_exact_dp_batch_best_delta, fg_exact_dp_batch_counts
+    global fg_exact_dp_batch_states, fg_exact_dp_batch_transitions, fg_exact_dp_batch_overflow
+    global fg_exact_dp_batch_raw_fill, fg_exact_dp_batch_non_fever_base, fg_exact_dp_batch_ft_idx
+    global fg_exact_dp_batch_w_head_prefix, fg_exact_dp_batch_c_head_prefix
+    global fg_exact_dp_batch_w_body, fg_exact_dp_batch_c_body
+    global fg_exact_dp_batch_hash_keys, fg_exact_dp_batch_hash_vals
+    global fg_exact_dp_batch_state_i, fg_exact_dp_batch_state_first, fg_exact_dp_batch_state_carry
+    global fg_exact_dp_batch_dp, fg_exact_dp_batch_policy_p, fg_exact_dp_batch_policy_k
+    global fg_exact_dp_batch_order, fg_exact_dp_batch_state_count
+    global fg_exact_dp_batch_best_delta, fg_exact_dp_batch_counts
+    global fg_exact_dp_batch_states, fg_exact_dp_batch_transitions, fg_exact_dp_batch_overflow
 
     song_timestamps = None
     song_timestamps_great_candidate = None
@@ -443,6 +494,28 @@ def reset_fields_state() -> None:
     fg_exact_dp_sparse_states = None
     fg_exact_dp_sparse_transitions = None
     fg_exact_dp_sparse_overflow = None
+    fg_exact_dp_batch_raw_fill = None
+    fg_exact_dp_batch_non_fever_base = None
+    fg_exact_dp_batch_ft_idx = None
+    fg_exact_dp_batch_w_head_prefix = None
+    fg_exact_dp_batch_c_head_prefix = None
+    fg_exact_dp_batch_w_body = None
+    fg_exact_dp_batch_c_body = None
+    fg_exact_dp_batch_hash_keys = None
+    fg_exact_dp_batch_hash_vals = None
+    fg_exact_dp_batch_state_i = None
+    fg_exact_dp_batch_state_first = None
+    fg_exact_dp_batch_state_carry = None
+    fg_exact_dp_batch_dp = None
+    fg_exact_dp_batch_policy_p = None
+    fg_exact_dp_batch_policy_k = None
+    fg_exact_dp_batch_order = None
+    fg_exact_dp_batch_state_count = None
+    fg_exact_dp_batch_best_delta = None
+    fg_exact_dp_batch_counts = None
+    fg_exact_dp_batch_states = None
+    fg_exact_dp_batch_transitions = None
+    fg_exact_dp_batch_overflow = None
 
     _fields_allocated = False
 
@@ -563,6 +636,28 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_exact_dp_sparse_states = fg_exact_dp_sparse_states
     kernels_module.fg_exact_dp_sparse_transitions = fg_exact_dp_sparse_transitions
     kernels_module.fg_exact_dp_sparse_overflow = fg_exact_dp_sparse_overflow
+    kernels_module.fg_exact_dp_batch_raw_fill = fg_exact_dp_batch_raw_fill
+    kernels_module.fg_exact_dp_batch_non_fever_base = fg_exact_dp_batch_non_fever_base
+    kernels_module.fg_exact_dp_batch_ft_idx = fg_exact_dp_batch_ft_idx
+    kernels_module.fg_exact_dp_batch_w_head_prefix = fg_exact_dp_batch_w_head_prefix
+    kernels_module.fg_exact_dp_batch_c_head_prefix = fg_exact_dp_batch_c_head_prefix
+    kernels_module.fg_exact_dp_batch_w_body = fg_exact_dp_batch_w_body
+    kernels_module.fg_exact_dp_batch_c_body = fg_exact_dp_batch_c_body
+    kernels_module.fg_exact_dp_batch_hash_keys = fg_exact_dp_batch_hash_keys
+    kernels_module.fg_exact_dp_batch_hash_vals = fg_exact_dp_batch_hash_vals
+    kernels_module.fg_exact_dp_batch_state_i = fg_exact_dp_batch_state_i
+    kernels_module.fg_exact_dp_batch_state_first = fg_exact_dp_batch_state_first
+    kernels_module.fg_exact_dp_batch_state_carry = fg_exact_dp_batch_state_carry
+    kernels_module.fg_exact_dp_batch_dp = fg_exact_dp_batch_dp
+    kernels_module.fg_exact_dp_batch_policy_p = fg_exact_dp_batch_policy_p
+    kernels_module.fg_exact_dp_batch_policy_k = fg_exact_dp_batch_policy_k
+    kernels_module.fg_exact_dp_batch_order = fg_exact_dp_batch_order
+    kernels_module.fg_exact_dp_batch_state_count = fg_exact_dp_batch_state_count
+    kernels_module.fg_exact_dp_batch_best_delta = fg_exact_dp_batch_best_delta
+    kernels_module.fg_exact_dp_batch_counts = fg_exact_dp_batch_counts
+    kernels_module.fg_exact_dp_batch_states = fg_exact_dp_batch_states
+    kernels_module.fg_exact_dp_batch_transitions = fg_exact_dp_batch_transitions
+    kernels_module.fg_exact_dp_batch_overflow = fg_exact_dp_batch_overflow
 
 
 def allocate_fields() -> None:
@@ -598,6 +693,15 @@ def allocate_fields() -> None:
     global fg_exact_dp_sparse_order, fg_exact_dp_sparse_state_count
     global fg_exact_dp_sparse_best_delta, fg_exact_dp_sparse_counts
     global fg_exact_dp_sparse_states, fg_exact_dp_sparse_transitions, fg_exact_dp_sparse_overflow
+    global fg_exact_dp_batch_raw_fill, fg_exact_dp_batch_non_fever_base, fg_exact_dp_batch_ft_idx
+    global fg_exact_dp_batch_w_head_prefix, fg_exact_dp_batch_c_head_prefix
+    global fg_exact_dp_batch_w_body, fg_exact_dp_batch_c_body
+    global fg_exact_dp_batch_hash_keys, fg_exact_dp_batch_hash_vals
+    global fg_exact_dp_batch_state_i, fg_exact_dp_batch_state_first, fg_exact_dp_batch_state_carry
+    global fg_exact_dp_batch_dp, fg_exact_dp_batch_policy_p, fg_exact_dp_batch_policy_k
+    global fg_exact_dp_batch_order, fg_exact_dp_batch_state_count
+    global fg_exact_dp_batch_best_delta, fg_exact_dp_batch_counts
+    global fg_exact_dp_batch_states, fg_exact_dp_batch_transitions, fg_exact_dp_batch_overflow
     global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
     global \
         fg_frontier_base_score, \
@@ -806,6 +910,38 @@ def allocate_fields() -> None:
     fg_exact_dp_sparse_states = ti.field(dtype=ti.i32, shape=())
     fg_exact_dp_sparse_transitions = ti.field(dtype=ti.i32, shape=())
     fg_exact_dp_sparse_overflow = ti.field(dtype=ti.i32, shape=())
+
+    batch_shape = (FG_EXACT_DP_BATCH_MAX_ROWS,)
+    batch_state_shape = (FG_EXACT_DP_BATCH_MAX_ROWS, FG_EXACT_DP_SPARSE_MAX_STATES)
+    batch_hash_shape = (FG_EXACT_DP_BATCH_MAX_ROWS, FG_EXACT_DP_SPARSE_HASH_SIZE)
+    fg_exact_dp_batch_raw_fill = ti.field(dtype=ti.f32, shape=batch_shape)
+    fg_exact_dp_batch_non_fever_base = ti.field(dtype=ti.i32, shape=batch_shape)
+    fg_exact_dp_batch_ft_idx = ti.field(dtype=ti.i32, shape=batch_shape)
+    fg_exact_dp_batch_w_head_prefix = ti.field(
+        dtype=ti.i64,
+        shape=(FG_EXACT_DP_BATCH_MAX_ROWS, FG_EXACT_DP_PREFIX_HEAD_LEN),
+    )
+    fg_exact_dp_batch_c_head_prefix = ti.field(
+        dtype=ti.i64,
+        shape=(FG_EXACT_DP_BATCH_MAX_ROWS, FG_EXACT_DP_PREFIX_HEAD_LEN),
+    )
+    fg_exact_dp_batch_w_body = ti.field(dtype=ti.i64, shape=batch_shape)
+    fg_exact_dp_batch_c_body = ti.field(dtype=ti.i64, shape=batch_shape)
+    fg_exact_dp_batch_hash_keys = ti.field(dtype=ti.i64, shape=batch_hash_shape)
+    fg_exact_dp_batch_hash_vals = ti.field(dtype=ti.i32, shape=batch_hash_shape)
+    fg_exact_dp_batch_state_i = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_state_first = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_state_carry = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_dp = ti.field(dtype=ti.i64, shape=batch_state_shape)
+    fg_exact_dp_batch_policy_p = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_policy_k = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_order = ti.field(dtype=ti.i32, shape=batch_state_shape)
+    fg_exact_dp_batch_state_count = ti.field(dtype=ti.i32, shape=batch_shape)
+    fg_exact_dp_batch_best_delta = ti.field(dtype=ti.i64, shape=batch_shape)
+    fg_exact_dp_batch_counts = ti.field(dtype=ti.i32, shape=(FG_EXACT_DP_BATCH_MAX_ROWS, FG_MAX_SECTIONS))
+    fg_exact_dp_batch_states = ti.field(dtype=ti.i32, shape=batch_shape)
+    fg_exact_dp_batch_transitions = ti.field(dtype=ti.i32, shape=batch_shape)
+    fg_exact_dp_batch_overflow = ti.field(dtype=ti.i32, shape=batch_shape)
 
     _fields_allocated = True
 

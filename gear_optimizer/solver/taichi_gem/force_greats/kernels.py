@@ -18,7 +18,9 @@ from ..kernels.kernels_scoring import optimize_core_device_preloaded_bits
 from .fields import (
     FG_DOWNLOAD_BATCH_MAX,
     FG_DOWNLOAD_TOPK_MAX,
+    FG_EXACT_DP_BATCH_MAX_ROWS,
     FG_EXACT_DP_MAX_NOTES,
+    FG_EXACT_DP_PREFIX_HEAD_LEN,
     FG_EXACT_DP_SPARSE_HASH_SIZE,
     FG_EXACT_DP_SPARSE_MAX_STATES,
     FG_MAX_SECTIONS,
@@ -150,6 +152,28 @@ fg_exact_dp_sparse_counts = None
 fg_exact_dp_sparse_states = None
 fg_exact_dp_sparse_transitions = None
 fg_exact_dp_sparse_overflow = None
+fg_exact_dp_batch_raw_fill = None
+fg_exact_dp_batch_non_fever_base = None
+fg_exact_dp_batch_ft_idx = None
+fg_exact_dp_batch_w_head_prefix = None
+fg_exact_dp_batch_c_head_prefix = None
+fg_exact_dp_batch_w_body = None
+fg_exact_dp_batch_c_body = None
+fg_exact_dp_batch_hash_keys = None
+fg_exact_dp_batch_hash_vals = None
+fg_exact_dp_batch_state_i = None
+fg_exact_dp_batch_state_first = None
+fg_exact_dp_batch_state_carry = None
+fg_exact_dp_batch_dp = None
+fg_exact_dp_batch_policy_p = None
+fg_exact_dp_batch_policy_k = None
+fg_exact_dp_batch_order = None
+fg_exact_dp_batch_state_count = None
+fg_exact_dp_batch_best_delta = None
+fg_exact_dp_batch_counts = None
+fg_exact_dp_batch_states = None
+fg_exact_dp_batch_transitions = None
+fg_exact_dp_batch_overflow = None
 
 
 # ============================================================================
@@ -1203,6 +1227,543 @@ def fg_exact_dp_sparse_full_kernel(
                     else:
                         sid = _fg_exact_dp_sparse_hash_lookup(_fg_exact_dp_sparse_pack_key(i, 0, carry_idx))
         step += 1
+
+
+@ti.func
+def _fg_exact_dp_batch_pack_key(i: ti.i32, is_first: ti.i32, carry_idx: ti.i32) -> ti.i64:
+    return (ti.cast(i, ti.i64) << 32) | (ti.cast(is_first & 1, ti.i64) << 31) | ti.cast(carry_idx + 1, ti.i64)
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_index(key: ti.i64) -> ti.i32:
+    x = key ^ (key >> 33) ^ (key >> 17)
+    return ti.cast(x, ti.i32) & ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_lookup(row: ti.i32, key: ti.i64) -> ti.i32:
+    mask: ti.i32 = ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+    h: ti.i32 = _fg_exact_dp_batch_hash_index(key)
+    found: ti.i32 = -1
+    step: ti.i32 = 0
+    done: ti.i32 = 0
+    while step < ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE, ti.i32) and done == 0:
+        idx: ti.i32 = (h + step) & mask
+        k = fg_exact_dp_batch_hash_keys[row, idx]
+        if k == key:
+            found = ti.cast(fg_exact_dp_batch_hash_vals[row, idx], ti.i32) - 1
+            done = 1
+        elif k == 0:
+            done = 1
+        else:
+            step += 1
+    return found
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_insert(row: ti.i32, key: ti.i64, i: ti.i32, is_first: ti.i32, carry_idx: ti.i32) -> ti.i32:
+    mask: ti.i32 = ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+    h: ti.i32 = _fg_exact_dp_batch_hash_index(key)
+    out_id: ti.i32 = -1
+    step: ti.i32 = 0
+    done: ti.i32 = 0
+    while step < ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE, ti.i32) and done == 0:
+        idx: ti.i32 = (h + step) & mask
+        k = fg_exact_dp_batch_hash_keys[row, idx]
+        if k == key:
+            out_id = ti.cast(fg_exact_dp_batch_hash_vals[row, idx], ti.i32) - 1
+            done = 1
+        elif k == 0:
+            new_id: ti.i32 = fg_exact_dp_batch_state_count[row]
+            fg_exact_dp_batch_state_count[row] = new_id + 1
+            if new_id >= ti.cast(FG_EXACT_DP_SPARSE_MAX_STATES, ti.i32):
+                fg_exact_dp_batch_overflow[row] = 1
+                out_id = -1
+            else:
+                fg_exact_dp_batch_hash_keys[row, idx] = key
+                fg_exact_dp_batch_hash_vals[row, idx] = new_id + 1
+                fg_exact_dp_batch_state_i[row, new_id] = i
+                fg_exact_dp_batch_state_first[row, new_id] = is_first
+                fg_exact_dp_batch_state_carry[row, new_id] = carry_idx
+                out_id = new_id
+            done = 1
+        else:
+            step += 1
+
+    if out_id < 0 and fg_exact_dp_batch_overflow[row] == 0:
+        fg_exact_dp_batch_overflow[row] = 1
+    return out_id
+
+
+@ti.func
+def _fg_exact_dp_batch_canon_carry(i: ti.i32, carry_idx: ti.i32, n: ti.i32, timing_aware: ti.i32) -> ti.i32:
+    out: ti.i32 = -1
+    if timing_aware != 0 and carry_idx >= 0 and i < n:
+        if song_timestamps_great_candidate[carry_idx] > song_timestamps[i]:
+            out = carry_idx
+    return out
+
+
+@ti.func
+def _fg_exact_dp_batch_w_prefix(row: ti.i32, idx: ti.i32) -> ti.i64:
+    ii: ti.i32 = idx
+    if ii < 0:
+        ii = 0
+    out: ti.i64 = ti.cast(0, ti.i64)
+    head_last: ti.i32 = ti.cast(FG_EXACT_DP_PREFIX_HEAD_LEN - 1, ti.i32)
+    if ii <= head_last:
+        out = fg_exact_dp_batch_w_head_prefix[row, ii]
+    else:
+        out = fg_exact_dp_batch_w_head_prefix[row, head_last]
+        out += fg_exact_dp_batch_w_body[row] * ti.cast(ii - head_last, ti.i64)
+    return out
+
+
+@ti.func
+def _fg_exact_dp_batch_c_prefix(row: ti.i32, idx: ti.i32) -> ti.i64:
+    ii: ti.i32 = idx
+    if ii < 0:
+        ii = 0
+    out: ti.i64 = ti.cast(0, ti.i64)
+    head_last: ti.i32 = ti.cast(FG_EXACT_DP_PREFIX_HEAD_LEN - 1, ti.i32)
+    if ii <= head_last:
+        out = fg_exact_dp_batch_c_head_prefix[row, ii]
+    else:
+        out = fg_exact_dp_batch_c_head_prefix[row, head_last]
+        out += fg_exact_dp_batch_c_body[row] * ti.cast(ii - head_last, ti.i64)
+    return out
+
+
+@ti.kernel
+def fg_exact_dp_sparse_full_batch_kernel(
+    batch_n: ti.i32,
+    total_notes: ti.i32,
+    timing_aware: ti.i32,
+    prune: ti.i32,
+):
+    """Solve multiple independent sparse exact-DP fixed-stat rows in one kernel."""
+    n: ti.i32 = ti.max(0, total_notes)
+    rows: ti.i32 = batch_n
+    if rows < 0:
+        rows = 0
+    if rows > FG_EXACT_DP_BATCH_MAX_ROWS:
+        rows = FG_EXACT_DP_BATCH_MAX_ROWS
+
+    for row in range(rows):
+        fg_exact_dp_batch_best_delta[row] = ti.cast(0, ti.i64)
+        fg_exact_dp_batch_states[row] = 0
+        fg_exact_dp_batch_transitions[row] = 0
+        fg_exact_dp_batch_overflow[row] = 0
+        fg_exact_dp_batch_state_count[row] = 0
+
+    for row, s in ti.ndrange(rows, FG_MAX_SECTIONS):
+        fg_exact_dp_batch_counts[row, s] = ti.cast(-1, ti.i32)
+
+    for row, h in ti.ndrange(rows, FG_EXACT_DP_SPARSE_HASH_SIZE):
+        fg_exact_dp_batch_hash_keys[row, h] = ti.cast(0, ti.i64)
+        fg_exact_dp_batch_hash_vals[row, h] = ti.cast(0, ti.i32)
+
+    for row in range(rows):
+        raw_fill: ti.f32 = fg_exact_dp_batch_raw_fill[row]
+        ft: ti.i32 = fg_exact_dp_batch_ft_idx[row]
+        if ft < 0:
+            ft = 0
+        if ft > FG_MAX_STAT:
+            ft = FG_MAX_STAT
+
+        m: ti.i32 = fg_exact_dp_batch_non_fever_base[row]
+        if m < 0:
+            m = 0
+
+        p_max: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(m, ti.f32) * 0.5), ti.i32) - m
+        if p_max < 0:
+            p_max = 0
+
+        _ = _fg_exact_dp_batch_hash_insert(row, _fg_exact_dp_batch_pack_key(0, 1, -1), 0, 1, -1)
+
+        cur: ti.i32 = 0
+        while cur < ti.cast(fg_exact_dp_batch_state_count[row], ti.i32) and fg_exact_dp_batch_overflow[row] == 0:
+            i: ti.i32 = fg_exact_dp_batch_state_i[row, cur]
+            is_first: ti.i32 = fg_exact_dp_batch_state_first[row, cur]
+            carry_idx: ti.i32 = fg_exact_dp_batch_state_carry[row, cur]
+
+            carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+            fg_exact_dp_batch_state_carry[row, cur] = carry_idx
+
+            min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+            if min_notes < 0:
+                min_notes = 0
+            if i + min_notes >= n:
+                cur += 1
+                continue
+
+            forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+            if forced_start_base < 0:
+                forced_start_base = 0
+
+            p: ti.i32 = 0
+            done_p: ti.i32 = 0
+            while p <= p_max and done_p == 0:
+                if fg_exact_dp_batch_overflow[row] != 0:
+                    done_p = 1
+                else:
+                    notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                    if notes_to_fill < 0:
+                        notes_to_fill = 0
+                    end_normal: ti.i32 = i + notes_to_fill
+                    if end_normal >= n:
+                        done_p = 1
+                    else:
+                        k0: ti.i32 = _forced_from_fp_target(raw_fill, m, p, m)
+                        k1: ti.i32 = k0 + 1
+                        has_k1: ti.i32 = 0
+                        if k1 <= m:
+                            fp1: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(k1, ti.f32) * 0.5), ti.i32) - m
+                            if fp1 == p:
+                                has_k1 = 1
+
+                        forced_val: ti.i32 = k0
+                        if forced_val < 0:
+                            forced_val = 0
+                        if forced_val > m:
+                            forced_val = m
+
+                        actual_notes: ti.i32 = end_normal - i
+                        if actual_notes < 0:
+                            actual_notes = 0
+                        forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                        next_cidx: ti.i32 = carry_idx
+                        if timing_aware != 0 and forced_applied > 0:
+                            forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                            if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                                if next_cidx < 0:
+                                    next_cidx = forced_end
+                                else:
+                                    if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                        next_cidx = forced_end
+
+                        fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                        if timing_aware != 0 and next_cidx >= 0:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                        if fever_end_idx <= end_normal:
+                            fever_end_idx = ti.min(n, end_normal + 1)
+                        if fever_end_idx > n:
+                            fever_end_idx = n
+
+                        if fever_end_idx < n:
+                            carry_next: ti.i32 = -1
+                            if timing_aware != 0 and next_cidx >= 0:
+                                if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                    carry_next = next_cidx
+
+                            key_next = _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next)
+                            _ = _fg_exact_dp_batch_hash_insert(row, key_next, fever_end_idx, 0, carry_next)
+
+                        if has_k1 != 0 and fg_exact_dp_batch_overflow[row] == 0:
+                            forced_val = k1
+                            if forced_val < 0:
+                                forced_val = 0
+                            if forced_val > m:
+                                forced_val = m
+
+                            forced_applied = ti.min(forced_val, actual_notes)
+
+                            next_cidx = carry_idx
+                            if timing_aware != 0 and forced_applied > 0:
+                                forced_end = forced_start_base + forced_applied - 1
+                                if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                    cand_t = song_timestamps_great_candidate[forced_end]
+                                    if next_cidx < 0:
+                                        next_cidx = forced_end
+                                    else:
+                                        if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                            next_cidx = forced_end
+
+                            fever_end_idx = fg_fever_end_idx_song[end_normal, ft]
+                            if timing_aware != 0 and next_cidx >= 0:
+                                if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                    fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                            if fever_end_idx <= end_normal:
+                                fever_end_idx = ti.min(n, end_normal + 1)
+                            if fever_end_idx > n:
+                                fever_end_idx = n
+
+                            if fever_end_idx < n:
+                                carry_next = -1
+                                if timing_aware != 0 and next_cidx >= 0:
+                                    if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                        carry_next = next_cidx
+
+                                key_next = _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next)
+                                _ = _fg_exact_dp_batch_hash_insert(row, key_next, fever_end_idx, 0, carry_next)
+
+                p += 1
+
+            cur += 1
+
+        states_total: ti.i32 = ti.cast(fg_exact_dp_batch_state_count[row], ti.i32)
+        fg_exact_dp_batch_states[row] = states_total
+
+        states_solve: ti.i32 = states_total
+        if fg_exact_dp_batch_overflow[row] != 0:
+            states_solve = 0
+
+        ti.loop_config(serialize=True)
+        for s in range(states_solve):
+            fg_exact_dp_batch_order[row, s] = s
+
+        ti.loop_config(serialize=True)
+        for a in range(states_solve):
+            best_pos: ti.i32 = a
+            best_i: ti.i32 = fg_exact_dp_batch_state_i[row, fg_exact_dp_batch_order[row, a]]
+            for b in range(a + 1, states_solve):
+                bid: ti.i32 = fg_exact_dp_batch_order[row, b]
+                bi: ti.i32 = fg_exact_dp_batch_state_i[row, bid]
+                if bi > best_i:
+                    best_i = bi
+                    best_pos = b
+            if best_pos != a:
+                tmp: ti.i32 = fg_exact_dp_batch_order[row, a]
+                fg_exact_dp_batch_order[row, a] = fg_exact_dp_batch_order[row, best_pos]
+                fg_exact_dp_batch_order[row, best_pos] = tmp
+
+        fg_exact_dp_batch_transitions[row] = 0
+        ti.loop_config(serialize=True)
+        for idx in range(states_solve):
+            sid: ti.i32 = fg_exact_dp_batch_order[row, idx]
+            i: ti.i32 = fg_exact_dp_batch_state_i[row, sid]
+            is_first: ti.i32 = fg_exact_dp_batch_state_first[row, sid]
+            carry_idx: ti.i32 = fg_exact_dp_batch_state_carry[row, sid]
+
+            carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+            fg_exact_dp_batch_state_carry[row, sid] = carry_idx
+
+            if i >= n:
+                fg_exact_dp_batch_dp[row, sid] = ti.cast(0, ti.i64)
+                fg_exact_dp_batch_policy_p[row, sid] = 0
+                fg_exact_dp_batch_policy_k[row, sid] = 0
+                continue
+
+            min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+            if min_notes < 0:
+                min_notes = 0
+            if i + min_notes >= n:
+                fg_exact_dp_batch_dp[row, sid] = ti.cast(0, ti.i64)
+                fg_exact_dp_batch_policy_p[row, sid] = 0
+                fg_exact_dp_batch_policy_k[row, sid] = 0
+                continue
+
+            forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+            if forced_start_base < 0:
+                forced_start_base = 0
+
+            best_val = ti.cast(0, ti.i64)
+            best_p: ti.i32 = 0
+            best_k: ti.i32 = 0
+
+            for p in range(p_max + 1):
+                notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                if notes_to_fill < 0:
+                    notes_to_fill = 0
+                end_normal: ti.i32 = i + notes_to_fill
+                if end_normal >= n:
+                    break
+
+                k0: ti.i32 = _forced_from_fp_target(raw_fill, m, p, m)
+                k1: ti.i32 = k0 + 1
+                has_k1: ti.i32 = 0
+                if k1 <= m:
+                    fp1: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(k1, ti.f32) * 0.5), ti.i32) - m
+                    if fp1 == p:
+                        has_k1 = 1
+
+                if prune != 0 and best_val > 0:
+                    k_min: ti.i32 = k0
+                    if k_min < 0:
+                        k_min = 0
+                    if k_min > m:
+                        k_min = m
+                    actual_notes: ti.i32 = end_normal - i
+                    if actual_notes < 0:
+                        actual_notes = 0
+                    forced_applied_min: ti.i32 = ti.min(k_min, actual_notes)
+                    penalty_min = ti.cast(0, ti.i64)
+                    if forced_applied_min > 0 and forced_start_base < n:
+                        end_excl_min: ti.i32 = forced_start_base + forced_applied_min
+                        if end_excl_min > n:
+                            end_excl_min = n
+                        penalty_min = _fg_exact_dp_batch_c_prefix(row, end_excl_min) - _fg_exact_dp_batch_c_prefix(
+                            row, forced_start_base
+                        )
+
+                    suffix_bonus: ti.i64 = _fg_exact_dp_batch_w_prefix(row, n) - _fg_exact_dp_batch_w_prefix(
+                        row, end_normal
+                    )
+                    ub: ti.i64 = suffix_bonus - penalty_min
+                    if ub <= best_val:
+                        break
+
+                for cand in range(2):
+                    if cand == 1 and has_k1 == 0:
+                        continue
+                    fg_exact_dp_batch_transitions[row] += 1
+
+                    forced_val: ti.i32 = ti.select(cand == 0, k0, k1)
+                    if forced_val < 0:
+                        forced_val = 0
+                    if forced_val > m:
+                        forced_val = m
+
+                    actual_notes: ti.i32 = end_normal - i
+                    if actual_notes < 0:
+                        actual_notes = 0
+                    forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                    penalty = ti.cast(0, ti.i64)
+                    if forced_applied > 0 and forced_start_base < n:
+                        end_excl: ti.i32 = forced_start_base + forced_applied
+                        if end_excl > n:
+                            end_excl = n
+                        penalty = _fg_exact_dp_batch_c_prefix(row, end_excl) - _fg_exact_dp_batch_c_prefix(
+                            row, forced_start_base
+                        )
+
+                    next_cidx: ti.i32 = carry_idx
+                    if timing_aware != 0 and forced_applied > 0:
+                        forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                        if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                            cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                            if next_cidx < 0:
+                                next_cidx = forced_end
+                            else:
+                                if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                    next_cidx = forced_end
+
+                    fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                    if timing_aware != 0 and next_cidx >= 0:
+                        if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                            fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                    if fever_end_idx <= end_normal:
+                        fever_end_idx = ti.min(n, end_normal + 1)
+                    if fever_end_idx > n:
+                        fever_end_idx = n
+
+                    carry_next: ti.i32 = -1
+                    if timing_aware != 0 and next_cidx >= 0 and fever_end_idx < n:
+                        if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                            carry_next = next_cidx
+
+                    fever_bonus: ti.i64 = _fg_exact_dp_batch_w_prefix(row, fever_end_idx) - _fg_exact_dp_batch_w_prefix(
+                        row, end_normal
+                    )
+
+                    future = ti.cast(0, ti.i64)
+                    if fever_end_idx < n:
+                        next_id: ti.i32 = _fg_exact_dp_batch_hash_lookup(
+                            row,
+                            _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next),
+                        )
+                        if next_id >= 0:
+                            future = fg_exact_dp_batch_dp[row, next_id]
+
+                    total: ti.i64 = fever_bonus - penalty + future
+                    if total > best_val:
+                        best_val = total
+                        best_p = p
+                        best_k = forced_val
+
+            fg_exact_dp_batch_dp[row, sid] = best_val
+            fg_exact_dp_batch_policy_p[row, sid] = best_p
+            fg_exact_dp_batch_policy_k[row, sid] = best_k
+
+        start_id: ti.i32 = -1
+        if states_solve > 0:
+            start_id = _fg_exact_dp_batch_hash_lookup(row, _fg_exact_dp_batch_pack_key(0, 1, -1))
+            if start_id >= 0:
+                fg_exact_dp_batch_best_delta[row] = fg_exact_dp_batch_dp[row, start_id]
+
+        i: ti.i32 = 0
+        is_first: ti.i32 = 1
+        carry_idx: ti.i32 = -1
+        sid: ti.i32 = start_id
+
+        step: ti.i32 = 0
+        done: ti.i32 = 0
+        while step < ti.cast(FG_MAX_SECTIONS, ti.i32) and done == 0:
+            if sid < 0 or i >= n:
+                done = 1
+            else:
+                carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+
+                min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+                if min_notes < 0:
+                    min_notes = 0
+                if i + min_notes >= n:
+                    fg_exact_dp_batch_counts[row, step] = ti.cast(0, ti.i32)
+                    done = 1
+                else:
+                    p: ti.i32 = fg_exact_dp_batch_policy_p[row, sid]
+                    k: ti.i32 = fg_exact_dp_batch_policy_k[row, sid]
+                    fg_exact_dp_batch_counts[row, step] = k
+
+                    notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                    if notes_to_fill < 0:
+                        notes_to_fill = 0
+                    end_normal: ti.i32 = i + notes_to_fill
+                    if end_normal >= n:
+                        done = 1
+                    else:
+                        forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+                        if forced_start_base < 0:
+                            forced_start_base = 0
+
+                        forced_val: ti.i32 = k
+                        if forced_val < 0:
+                            forced_val = 0
+                        if forced_val > m:
+                            forced_val = m
+
+                        actual_notes: ti.i32 = end_normal - i
+                        if actual_notes < 0:
+                            actual_notes = 0
+                        forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                        next_cidx: ti.i32 = carry_idx
+                        if timing_aware != 0 and forced_applied > 0:
+                            forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                            if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                                if next_cidx < 0:
+                                    next_cidx = forced_end
+                                else:
+                                    if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                        next_cidx = forced_end
+
+                        fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                        if timing_aware != 0 and next_cidx >= 0:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                        if fever_end_idx <= end_normal:
+                            fever_end_idx = ti.min(n, end_normal + 1)
+                        if fever_end_idx > n:
+                            fever_end_idx = n
+
+                        carry_next: ti.i32 = -1
+                        if timing_aware != 0 and next_cidx >= 0 and fever_end_idx < n:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                carry_next = next_cidx
+
+                        i = fever_end_idx
+                        carry_idx = carry_next
+                        is_first = 0
+                        if i >= n:
+                            done = 1
+                        else:
+                            sid = _fg_exact_dp_batch_hash_lookup(row, _fg_exact_dp_batch_pack_key(i, 0, carry_idx))
+            step += 1
 
 
 # Warm-start hint allocation (bound from fields.py)

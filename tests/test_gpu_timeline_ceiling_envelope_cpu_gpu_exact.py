@@ -23,14 +23,14 @@ def _cpu_ceiling_sig_for_cell(
     ft_factor: float,
 ) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
     """
-    CPU reference implementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
+    CPU reference implementation of `compute_timeline_grid_ceiling_envelope_kernel` for one (FT, FF) cell.
 
     Returns a signature tuple:
       (head_len, head_bits_u32x4, body_fever, body_normal, fever_activations, gap)
     """
     from math import ceil
 
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
     ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
@@ -46,7 +46,7 @@ def _cpu_ceiling_sig_for_cell(
     d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
     d_ms = max(0, int(d_ms))
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         ts,
         nt,
         perfect_lower_ms=-20,
@@ -62,7 +62,7 @@ def _cpu_ceiling_sig_for_cell(
     group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
     gcount = int(group_starts.shape[0])
     if n > 0 and gcount <= 0:
-        raise AssertionError("prepare_perfect_hit_simulation produced no chord groups")
+        raise AssertionError("prepare_perfect_timing_envelope produced no chord groups")
 
     note_group_idx = np.full(n, -1, dtype=np.int32)
     for g in range(gcount):
@@ -71,7 +71,7 @@ def _cpu_ceiling_sig_for_cell(
         if e > s:
             note_group_idx[s:e] = int(g)
     if n > 0 and int(np.any(note_group_idx < 0)):
-        raise AssertionError("prepare_perfect_hit_simulation produced uncovered note indices")
+        raise AssertionError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     MAX_HEAD = 100
     head_len = int(min(n, MAX_HEAD))
@@ -377,7 +377,7 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim CPU/GPU Exact",
+            "Song Name": "CeilingEnvelope CPU/GPU Exact",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -403,7 +403,7 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -467,7 +467,7 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim Dedup Parity",
+            "Song Name": "CeilingEnvelope Dedup Parity",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -492,7 +492,7 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
         "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
     }
 
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "0")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)

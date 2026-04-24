@@ -25,7 +25,6 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_hitsim_delta import _attach_hitsim_delta_for_base
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
@@ -125,16 +124,6 @@ def _thread_cpu_time_s() -> float:
         return 0.0
 
 
-def _hitsim_apply_to(calc_song: Any) -> str:
-    try:
-        if not isinstance(calc_song, dict):
-            return ""
-        meta = calc_song.get("metadata", {}) or {}
-        return str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    except Exception:
-        return ""
-
-
 def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any) -> None:
     if not isinstance(source_calc_song, dict) or not isinstance(target_calc_song, dict):
         return
@@ -149,8 +138,6 @@ def _resolve_active_fg_calc_song(song: Any) -> dict | None:
     calc_song = getattr(song, "calc_song", None)
     if not isinstance(calc_song, dict):
         return None
-    if _hitsim_apply_to(calc_song) != "FG":
-        return calc_song
 
     fg_calc_song = getattr(song, "fg_calc_song", None)
     if not isinstance(fg_calc_song, dict):
@@ -162,11 +149,9 @@ def _resolve_active_fg_calc_song(song: Any) -> dict | None:
                 "song_data": dict(calc_song.get("song_data", {}) or {}),
             }
     try:
-        meta = fg_calc_song.get("metadata", {}) if isinstance(fg_calc_song, dict) else {}
-        if not bool((meta or {}).get("HumanHitSimApplied")):
-            from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-            apply_human_hit_sim(fg_calc_song, cfg_dict=getattr(song, "cfg_dict", None) or {})
+        apply_timing_envelope(fg_calc_song)
     except Exception:
         return calc_song
 
@@ -186,7 +171,7 @@ def _maybe_prewarm_fg_chart_scorer(song: Any) -> None:
     the GPU stays fed when FG work exists.
 
     Safe-by-default:
-    - Only runs for GPU finder + HitSim ApplyTo=FG (the same condition the dispatch path uses for caching).
+    - Only runs for GPU finder when chart prewarm is explicitly enabled.
     - Uses the shared LRU cache, so the later dispatch sees a cheap cache hit.
     """
     try:
@@ -663,8 +648,6 @@ def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, 
         ref_arrays=None,
         fg_group_meta_limit=0,
     )
-    _attach_hitsim_delta_for_base(best_data, getattr(song, "calc_song", None), getattr(song, "ref_arrays", None))
-
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:
         cpu_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))

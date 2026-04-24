@@ -83,8 +83,6 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
             False,
         ),
     )
-    monkeypatch.setattr("gear_optimizer.solver.hit_simulation.apply_human_hit_sim", lambda *args, **kwargs: None)
-
     def _fake_prepare_solver_context(*args, **kwargs):
         prepared["pre_prune_mode"] = kwargs.get("pre_prune_mode")
         return SimpleNamespace(registry=None)

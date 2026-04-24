@@ -152,34 +152,6 @@ def print_results(
     print(f"Best Base Score Found: {base_score_to_print}")
     print(f"Best FG Score Found: {fg_score_to_print}")
 
-    # Optional: HumanHitSim timing summary for base + FG (if available).
-    try:
-        base_data0 = base_entry_to_print.get("data") if isinstance(base_entry_to_print, dict) else None
-        base_deltas = base_data0.get("hitsim_offset_deltas_ms") if isinstance(base_data0, dict) else None
-        if isinstance(base_deltas, (list, tuple)) and base_deltas:
-            try:
-                base_deltas_i = [int(x) for x in base_deltas]
-            except Exception:
-                base_deltas_i = []
-            if base_deltas_i:
-                formatted = ", ".join(f"{x:+d}ms" for x in base_deltas_i)
-                print(f"HitSim Offset Deltas (Base): [{formatted}]")
-
-        if best_fg_entry is not None:
-            fg_data = best_fg_entry.get("data", {}) or {}
-            fg_meta = fg_data.get("ForceGreats") or {}
-            if isinstance(fg_meta, dict):
-                fg_deltas = fg_meta.get("hitsim_offset_deltas_ms")
-                if isinstance(fg_deltas, (list, tuple)) and fg_deltas:
-                    try:
-                        fg_deltas_i = [int(x) for x in fg_deltas]
-                    except Exception:
-                        fg_deltas_i = []
-                    if fg_deltas_i:
-                        formatted = ", ".join(f"{x:+d}ms" for x in fg_deltas_i)
-                        print(f"HitSim Offset Deltas: [{formatted}]")
-    except Exception:
-        pass
     status_emit_fn(f"Base={base_score_to_print} | FG={fg_score_to_print}")
 
     if fg_variants:

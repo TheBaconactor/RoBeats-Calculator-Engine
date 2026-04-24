@@ -53,7 +53,7 @@ def test_breakpoint_group_cache_reuses_identical_group_plan():
     assert groups_2[0]["ftff_pairs"] == [(0, 0), (1, 0)]
 
 
-def test_breakpoint_group_cache_is_partitioned_by_human_hitsim_timing_context():
+def test_breakpoint_group_cache_is_partitioned_by_timing_envelope_context():
     with gpu_dispatch._FG_BREAKPOINT_GROUPS_LOCK:
         gpu_dispatch._FG_BREAKPOINT_GROUPS_CACHE.clear()
 
@@ -73,21 +73,17 @@ def test_breakpoint_group_cache_is_partitioned_by_human_hitsim_timing_context():
     calc_song_a = _base_calc_song()
     calc_song_a["metadata"].update(
         {
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 11111,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
         }
     )
     calc_song_b = _base_calc_song()
     calc_song_b["metadata"].update(
         {
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 11111,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "late",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "late",
         }
     )
 
@@ -185,7 +181,7 @@ def test_max_fp_matrix_cache_reuses_identical_matrix():
     assert int(matrix_3[0, 0]) == 1
 
 
-def test_max_fp_matrix_cache_is_partitioned_by_human_hitsim_timing_context():
+def test_max_fp_matrix_cache_is_partitioned_by_timing_envelope_context():
     with gpu_dispatch._FG_MAX_FP_MATRIX_LOCK:
         gpu_dispatch._FG_MAX_FP_MATRIX_CACHE.clear()
 
@@ -198,21 +194,17 @@ def test_max_fp_matrix_cache_is_partitioned_by_human_hitsim_timing_context():
     calc_song_a = _base_calc_song()
     calc_song_a["metadata"].update(
         {
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 22222,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
         }
     )
     calc_song_b = _base_calc_song()
     calc_song_b["metadata"].update(
         {
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 22222,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "late",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "late",
         }
     )
 

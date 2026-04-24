@@ -36,7 +36,6 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     ensure("CalculateSong")
     ensure("IterationEngine")
     ensure("TeamContributionBuffConstant")
-    ensure("HumanHitSim")
 
     cfg.set("CalculateSong", "Song_Name", song)
     cfg.set("CalculateSong", "Difficulty", difficulty)
@@ -58,11 +57,6 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     cfg.set("IterationEngine", "GA_DBSeedProbability", "0.0")
     cfg.set("IterationEngine", "FG_CandidateLimit", "10")
     cfg.set("IterationEngine", "FG_SearchRadius", "3")
-
-    # Determinism / reduce noise.
-    cfg.set("HumanHitSim", "Enabled", "false")
-    cfg.set("HumanHitSim", "Seed", "12345")
-    cfg.set("HumanHitSim", "ApplyTo", "FG")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:

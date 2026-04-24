@@ -693,7 +693,7 @@ def _simulate_ceiling_cell(
 
 
 @ti.kernel
-def compute_timeline_grid_ceiling_hitsim_kernel(
+def compute_timeline_grid_ceiling_envelope_kernel(
     total_notes: ti.i32,
     long_notes: ti.i32,
     last_note_time: ti.f32,
@@ -702,7 +702,7 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
     write_unpacked_masks: ti.i32,
 ):
     """
-    Compute all 161×161 fever timeline entries using Analytical HitSim (ceiling mode).
+    Compute all 161×161 fever timeline entries using analytical timing-envelope ceiling mode.
 
     This models per-chord Perfect-window offsets (with held-tail multiplier) and enforces
     non-decreasing event times.
@@ -877,7 +877,7 @@ def compute_timeline_grid_ceiling_hitsim_kernel(
 
 
 @ti.kernel
-def compute_timeline_grid_ceiling_hitsim_reps_kernel(
+def compute_timeline_grid_ceiling_envelope_reps_kernel(
     total_notes: ti.i32,
     long_notes: ti.i32,
     last_note_time: ti.f32,
@@ -1070,7 +1070,7 @@ def compute_timeline_grid_ceiling_hitsim_reps_kernel(
 
 
 @ti.kernel
-def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
+def scatter_timeline_grid_ceiling_envelope_from_reps_kernel(
     song_slot: ti.i32,
     rep_ft_by_ft: ti.types.ndarray(dtype=ti.i16, ndim=1),
     rep_ff_by_ff: ti.types.ndarray(dtype=ti.i16, ndim=1),
@@ -1078,7 +1078,7 @@ def scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
     """
     Fill the full 161×161 grid by copying representative-cell outputs.
 
-    Must be called after compute_timeline_grid_ceiling_hitsim_reps_kernel().
+    Must be called after compute_timeline_grid_ceiling_envelope_reps_kernel().
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for ft_idx, ff_idx in ti.ndrange(161, 161):

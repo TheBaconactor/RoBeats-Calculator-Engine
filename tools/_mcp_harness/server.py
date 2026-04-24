@@ -488,13 +488,6 @@ def _effective_settings(workflow: str = "optimizer") -> dict[str, Any]:
     cfg = load_config()
     workflow_key = str(workflow or "optimizer").strip().lower()
     team_buff = _resolve_default_team_buff(cfg)
-    hitsim = {
-        "enabled": _cfg_get_bool(cfg, "HumanHitSim", "Enabled", False),
-        "apply_to": _cfg_get(cfg, "HumanHitSim", "ApplyTo", ""),
-        "seed": _safe_int(_cfg_get(cfg, "HumanHitSim", "Seed", 0), 0),
-        "distribution": _cfg_get(cfg, "HumanHitSim", "Distribution", ""),
-        "great_mode": _cfg_get(cfg, "HumanHitSim", "GreatMode", ""),
-    }
     optimizer = {
         "meta_finder": _cfg_get_bool(cfg, "IterationEngine", "MetaFinder", False),
         "gpu_mode": _cfg_get_bool(cfg, "IterationEngine", "GPU_Mode", True),
@@ -517,8 +510,6 @@ def _effective_settings(workflow: str = "optimizer") -> dict[str, Any]:
         "db_path": str(get_evolution_db_path()),
         "env_overrides": _interesting_env_overrides(),
         "optimizer": optimizer,
-        "human_hit_sim": hitsim,
-        "nondeterministic_hitsim": bool(hitsim["enabled"] and int(hitsim["seed"]) == 0),
     }
     if workflow_key == "general-meta":
         common["workflow_settings"] = {
@@ -532,7 +523,6 @@ def _effective_settings(workflow: str = "optimizer") -> dict[str, Any]:
             "ga_seed": os.environ.get("GA_SEED", ""),
             "song_repeats": optimizer["song_repeats"],
             "fg_search_radius": optimizer["fg_search_radius"],
-            "nondeterministic_hitsim": common["nondeterministic_hitsim"],
         }
     else:
         common["workflow_settings"] = optimizer
@@ -955,16 +945,12 @@ def _resolve_target_tool(tool_id: str) -> dict[str, Any] | None:
 
 def _protocol_summary() -> dict[str, Any]:
     settings = _effective_settings("benchmark")
-    hitsim = settings["human_hit_sim"]
     rules = [
         "Freeze workload knobs for comparisons: SongRepeats, queue limits, search radius, and seed strategy.",
         "Report both throughput and FG debt/coverage; throughput-only wins are rejected when FG debt regresses.",
-        "HumanHitSim must be disabled or use a fixed non-zero seed for reproducible comparisons.",
         "Prefer explicit GA_SEED / SONG_REPEATS / FG_SEARCH_RADIUS overrides in the protocol run provenance.",
     ]
     blocking_warnings = []
-    if hitsim["enabled"] and int(hitsim["seed"]) == 0:
-        blocking_warnings.append("HumanHitSim is enabled with Seed=0; benchmark runs are nondeterministic unless you override it.")
     return {
         "rules": rules,
         "effective_settings": settings["workflow_settings"],
@@ -1160,8 +1146,6 @@ def repo_get_guardrails() -> dict[str, Any]:
 def repo_get_effective_settings(workflow: str = "optimizer") -> dict[str, Any]:
     settings = _effective_settings(workflow)
     warnings = []
-    if settings["nondeterministic_hitsim"]:
-        warnings.append("HumanHitSim.Enabled=true with Seed=0 makes benchmark comparisons nondeterministic.")
     return _result(
         summary=f"Effective settings resolved for workflow `{workflow}` with config/env precedence already merged.",
         facts=settings,
@@ -1708,7 +1692,6 @@ def bench_run_protocol(
     song_repeats: int = 0,
     fg_search_radius: int = 0,
     db_path: str = "",
-    allow_nondeterministic_hitsim: bool = False,
     timeout_sec: int = 3600,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -1721,7 +1704,7 @@ def bench_run_protocol(
         )
     protocol = _protocol_summary()
     blocking = list(protocol["blocking_warnings"])
-    if blocking and not allow_nondeterministic_hitsim:
+    if blocking:
         return _result(
             summary="Benchmark protocol blocked due to reproducibility warnings.",
             facts={"protocol": protocol, "tool": target},

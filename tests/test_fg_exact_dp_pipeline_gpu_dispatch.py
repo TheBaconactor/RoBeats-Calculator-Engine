@@ -22,6 +22,7 @@ def test_solve_force_greats_exact_dp_gpu_batch_chunks_without_dropping_rows():
             timing_aware,
             prune,
             song_slot,
+            max_baseline_windows,
         ):
             rows = list(stats_list or [])
             self.calls.append(
@@ -32,6 +33,7 @@ def test_solve_force_greats_exact_dp_gpu_batch_chunks_without_dropping_rows():
                     "timing_aware": timing_aware,
                     "prune": prune,
                     "song_slot": song_slot,
+                    "max_baseline_windows": max_baseline_windows,
                 }
             )
             return _Handle(rows)
@@ -53,6 +55,7 @@ def test_solve_force_greats_exact_dp_gpu_batch_chunks_without_dropping_rows():
     assert all(call["song_slot"] == 7 for call in client.calls)
     assert all(call["timing_aware"] is True for call in client.calls)
     assert all(call["prune"] is True for call in client.calls)
+    assert all(call["max_baseline_windows"] is None for call in client.calls)
 
 
 def test_solve_force_greats_exact_dp_gpu_batch_rejects_dropped_chunk_results():
@@ -103,6 +106,7 @@ def test_solve_force_greats_exact_dp_gpu_batch_submits_client_chunks_before_wait
             timing_aware,
             prune,
             song_slot,
+            max_baseline_windows,
         ):
             handle = _Handle()
             rows = list(stats_list or [])
@@ -132,13 +136,23 @@ def test_process_fg_exact_dp_batches_gpu_results_and_uses_force_schema(monkeypat
 
     seen = {}
 
-    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0, exact_dp_chunk_size=None):
+    def _fake_gpu_batch(
+        *,
+        stats_list,
+        calc_song,
+        ref_arrays,
+        gpu_client=None,
+        song_slot=0,
+        exact_dp_chunk_size=None,
+        max_baseline_windows=None,
+    ):
         seen["stats_n"] = len(list(stats_list or []))
         seen["calc_song"] = calc_song
         seen["ref_arrays"] = ref_arrays
         seen["gpu_client"] = gpu_client
         seen["song_slot"] = song_slot
         seen["exact_dp_chunk_size"] = exact_dp_chunk_size
+        seen["max_baseline_windows"] = max_baseline_windows
         return [
             {
                 "best_delta": 250,
@@ -275,11 +289,21 @@ def test_process_fg_exact_dp_preserves_full_finder_surface(monkeypatch):
             },
         ]
 
-    def _fake_gpu_batch(*, stats_list, calc_song, ref_arrays, gpu_client=None, song_slot=0, exact_dp_chunk_size=None):
+    def _fake_gpu_batch(
+        *,
+        stats_list,
+        calc_song,
+        ref_arrays,
+        gpu_client=None,
+        song_slot=0,
+        exact_dp_chunk_size=None,
+        max_baseline_windows=None,
+    ):
         seen["stats_n"] = len(list(stats_list or []))
         seen["gpu_client"] = gpu_client
         seen["song_slot"] = song_slot
         seen["exact_dp_chunk_size"] = exact_dp_chunk_size
+        seen["max_baseline_windows"] = max_baseline_windows
         return [
             {"best_delta": 999, "section_counts": [3], "profile": {"states": 11, "transitions": 29}},
             {"best_delta": 999, "section_counts": [4], "profile": {"states": 7, "transitions": 13}},

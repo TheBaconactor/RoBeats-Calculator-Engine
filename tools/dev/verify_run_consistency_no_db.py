@@ -116,11 +116,6 @@ def main() -> int:
         help="Allow +/- tolerance when comparing recomputed score to stored score (default: 2).",
     )
     parser.add_argument(
-        "--disable-human-hitsim",
-        action="store_true",
-        help="Disable HumanHitSim (recommended for deterministic verification).",
-    )
-    parser.add_argument(
         "--respect-user-gems",
         action="store_true",
         help="Do NOT apply Auto-Mode gem-taint prevention (main.py normally zeros [UserInputStatsGems]/[ElementalGems]).",
@@ -154,11 +149,6 @@ def main() -> int:
     cfg.set("IterationEngine", "UseEvolutionDB", "false")
     cfg.set("IterationEngine", "GA_SearchDepth", str(max(1, int(args.ga_depth))))
     cfg.set("IterationEngine", "GA_MultiStart", str(max(1, int(args.ga_multistart))))
-
-    if args.disable_human_hitsim:
-        if not cfg.has_section("HumanHitSim"):
-            cfg.add_section("HumanHitSim")
-        cfg.set("HumanHitSim", "Enabled", "false")
 
     paths = load_paths_cache()
     stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)

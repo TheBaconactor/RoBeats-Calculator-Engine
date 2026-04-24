@@ -21,6 +21,7 @@ import taichi as ti
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.solver.fg_exact_dp import (
+    count_force_greats_baseline_windows_from_prepared,
     prepare_force_greats_exact_dp_inputs,
     score_force_greats_exact_dp_bonus_from_prepared,
 )
@@ -1322,6 +1323,21 @@ def _strip_fg_exact_dp_counts(raw_counts: np.ndarray) -> list[int]:
     return counts
 
 
+def _resolve_exact_dp_max_baseline_windows(explicit: int | None = None) -> int:
+    if explicit is not None:
+        try:
+            return max(0, int(explicit))
+        except Exception:
+            return 3
+    raw = _ENV_GET("TIMELINE_ANALYSIS_MAX_WINDOWS")
+    if raw is None or str(raw).strip() == "":
+        raw = _ENV_GET("FG_EXACT_DP_MAX_BASELINE_WINDOWS", "3")
+    try:
+        return max(0, int(raw or 3))
+    except Exception:
+        return 3
+
+
 def solve_force_greats_exact_dp_gpu_batch(
     *,
     stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
@@ -1330,6 +1346,7 @@ def solve_force_greats_exact_dp_gpu_batch(
     timing_aware: bool = True,
     prune: bool = True,
     song_slot: int = 0,
+    max_baseline_windows: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     Run the production exact FG DP kernel for a batch of fixed stat points.
@@ -1362,13 +1379,50 @@ def solve_force_greats_exact_dp_gpu_batch(
             for _ in stats_list
         ]
 
-    row_info: list[tuple[Any, int]] = []
-    for prepared in prepared_cache:
+    max_windows = _resolve_exact_dp_max_baseline_windows(max_baseline_windows)
+    row_info: list[tuple[Any, int, int, bool]] = []
+    rows_to_solve: list[int] = []
+    for idx, prepared in enumerate(prepared_cache):
         if prepared is None:
-            row_info.append((None, 0))
+            row_info.append((None, 0, 0, False))
             continue
         baseline_delta = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
-        row_info.append((prepared, int(baseline_delta)))
+        baseline_windows = count_force_greats_baseline_windows_from_prepared(prepared)
+        should_solve = not (max_windows > 0 and int(baseline_windows) > int(max_windows))
+        row_info.append((prepared, int(baseline_delta), int(baseline_windows), bool(should_solve)))
+        if should_solve:
+            rows_to_solve.append(int(idx))
+
+    if not rows_to_solve:
+        out: list[dict[str, Any]] = []
+        for prepared, baseline_delta, baseline_windows, _should_solve in row_info:
+            if prepared is None:
+                out.append(
+                    {
+                        "best_delta": 0,
+                        "baseline_delta": 0,
+                        "section_counts": [],
+                        "profile": {"states": 0, "transitions": 0},
+                    }
+                )
+                continue
+            out.append(
+                {
+                    "best_delta": int(baseline_delta),
+                    "baseline_delta": int(baseline_delta),
+                    "section_counts": [],
+                    "profile": {
+                        "states": 0,
+                        "transitions": 0,
+                        "timeline_windows": int(baseline_windows),
+                        "max_timeline_windows": int(max_windows),
+                        "baseline_windows": int(baseline_windows),
+                        "max_baseline_windows": int(max_windows),
+                        "skipped_by_window_gate": 1,
+                    },
+                }
+            )
+        return out
 
     gem_api.ensure_ready(ref_arrays)
     fg_fields.ensure_ready_with_warmup()
@@ -1388,9 +1442,27 @@ def solve_force_greats_exact_dp_gpu_batch(
     prune_flag = 1 if prune else 0
 
     for idx, stats in enumerate(stats_list):
-        prepared, baseline_delta = row_info[idx]
+        prepared, baseline_delta, baseline_windows, should_solve = row_info[idx]
         if prepared is None:
             out.append({"best_delta": 0, "baseline_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
+            continue
+        if not should_solve:
+            out.append(
+                {
+                    "best_delta": int(baseline_delta),
+                    "baseline_delta": int(baseline_delta),
+                    "section_counts": [],
+                    "profile": {
+                        "states": 0,
+                        "transitions": 0,
+                        "timeline_windows": int(baseline_windows),
+                        "max_timeline_windows": int(max_windows),
+                        "baseline_windows": int(baseline_windows),
+                        "max_baseline_windows": int(max_windows),
+                        "skipped_by_window_gate": 1,
+                    },
+                }
+            )
             continue
 
         n = int(prepared.total_notes)
@@ -1425,6 +1497,10 @@ def solve_force_greats_exact_dp_gpu_batch(
                 "profile": {
                     "states": int(fg_fields.fg_exact_dp_sparse_states.to_numpy()),
                     "transitions": int(fg_fields.fg_exact_dp_sparse_transitions.to_numpy()),
+                    "timeline_windows": int(baseline_windows),
+                    "max_timeline_windows": int(max_windows),
+                    "baseline_windows": int(baseline_windows),
+                    "max_baseline_windows": int(max_windows),
                 },
             }
         )

@@ -295,7 +295,6 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
         captured["cfg_dict"] = dict(cfg_dict)
         captured["tiers"] = tuple(tiers)
         captured["target_team_color_override"] = target_team_color_override
-        captured["hitsim_applied"] = bool((calc_song.get("metadata") or {}).get("HumanHitSimApplied"))
         return {"tiers": {"T10": {"base_top51": [{"score": 1234, "fg_score": 1234}]}}}
 
     monkeypatch.setattr(
@@ -308,7 +307,6 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
-    assert captured["hitsim_applied"] is False
     assert out["tiers"]["T10"]["base_top51"][0]["score"] == 1234
 
 
@@ -397,7 +395,6 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     def fake_build(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
         captured["entries"] = list(entries)
         captured["tiers"] = tuple(tiers)
-        captured["hitsim_applied"] = bool((calc_song.get("metadata") or {}).get("HumanHitSimApplied"))
         return {"T10": [{"score": 2222, "fg_score": 2222}]}
 
     monkeypatch.setattr(
@@ -412,7 +409,6 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
 
     assert captured["entries"]
     assert captured["tiers"] == ("T10",)
-    assert captured["hitsim_applied"] is False
     assert out is not None
     assert out["song_name"] == "Leaderboard Song"
     assert out["tier"] == "T10"
@@ -500,11 +496,6 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
-    monkeypatch.setattr(
-        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
-        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
-    )
-
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
         EvolutionDbManager,
@@ -541,7 +532,7 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
     assert int(out["source_fg_base_score"] or 0) == 140
 
 
-def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_and_source_scores(
+def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_source_scores(
     tmp_path: Path, monkeypatch
 ):
     from gear_optimizer.data.db_manager import EvolutionDbManager
@@ -589,16 +580,12 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_
                     "source_fg_score": 120,
                     "gear": ["G1"],
                     "minis": ["M1"],
-                    "details": {
-                        "Stats": {"Flow": 75},
-                        "hitsim_offset_deltas_ms": [3, -1],
-                    },
+                    "details": {"Stats": {"Flow": 75}},
                     "force": {
                         "Score": 350,
                         "ForceGreats": {
                             "config": {"NonFever1": 1},
                             "final_score": 350,
-                            "hitsim_offset_deltas_ms": [4, -2],
                         },
                     },
                 },
@@ -610,10 +597,7 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_
                     "source_score": 101,
                     "gear": ["G2"],
                     "minis": ["M2"],
-                    "details": {
-                        "Stats": {"Flow": 88},
-                        "hitsim_offset_deltas_ms": [1],
-                    },
+                    "details": {"Stats": {"Flow": 88}},
                     "force": None,
                 },
             ]
@@ -637,7 +621,6 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_
     assert base_out["loadout_hash"] == "hash-b"
     assert int(base_out["score"] or 0) == 330
     assert int(base_out["source_score"] or 0) == 101
-    assert base_out["details"]["hitsim_offset_deltas_ms"] == [1]
     assert int(base_out["details"]["Stats"]["Flow"] or 0) == 88
 
     assert fg_out is not None
@@ -650,10 +633,8 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_
     assert int(fg_out["source_score"] or 0) == 100
     assert int(fg_out["source_fg_base_score"] or 0) == 90
     assert int(fg_out["source_fg_score"] or 0) == 120
-    assert fg_out["details"]["hitsim_offset_deltas_ms"] == [3, -1]
     assert int(fg_out["details"]["Stats"]["Flow"] or 0) == 75
     assert int(fg_out["force"]["Score"] or 0) == 350
-    assert fg_out["force"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [4, -2]
     assert int(fg_out["force"]["ForceGreats"]["final_score"] or 0) == 350
 
 
@@ -676,11 +657,6 @@ def test_db_manager_get_leaderboard_entry_breaks_ties_by_loadout_hash(tmp_path: 
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
     monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
-    monkeypatch.setattr(
-        "gear_optimizer.solver.hit_simulation.apply_human_hit_sim",
-        lambda calc_song, cfg_dict=None: (calc_song.setdefault("metadata", {}).__setitem__("HumanHitSimApplied", True)),
-    )
-
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
         EvolutionDbManager,

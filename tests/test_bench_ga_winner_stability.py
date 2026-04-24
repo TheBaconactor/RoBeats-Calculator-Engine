@@ -17,8 +17,6 @@ def test_run_benchmark_rejects_unknown_pipeline():
             use_db=False,
             fg_candidate_limit=51,
             fg_search_radius=5,
-            hitsim_enabled=False,
-            hitsim_seed=1,
             pipeline="nope",
         )
 

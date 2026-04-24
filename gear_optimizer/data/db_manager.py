@@ -359,9 +359,6 @@ class EvolutionDbManager:
 
         base_calc_song = get_base_calc_song(str(song_file), cfg_dict_local)
         calc_song = clone_calc_song(base_calc_song)
-        # Leave HumanHitSim application to `team_buff_tiers.py`, which replays rows
-        # against their persisted `details["hs"]` context. Pre-applying here can hide
-        # per-row timing differences and creates a second replay authority.
         try:
             from ..helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
 
@@ -572,9 +569,6 @@ class EvolutionDbManager:
 
         Notes:
         - This does NOT require tier materialization in SQLite.
-        - HumanHitSim runs are reproduced deterministically when persisted rows include
-          the compact timing context (`details["hs"]`).
-
         Args:
             song_name: DB song key (songs.name / loadouts.song_name)
             song_file: Path to the song .txt used to parse chart timestamps

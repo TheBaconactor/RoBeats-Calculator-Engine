@@ -250,7 +250,7 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
-            "metadata": {"Song Name": "trace-smoke", "Difficulty": "Hard", "HumanHitSimSeed": 11},
+            "metadata": {"Song Name": "trace-smoke", "Difficulty": "Hard"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
         ref_arrays={},

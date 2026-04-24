@@ -466,32 +466,8 @@ def _unpack_stats_after_load(details: Any) -> Any:
 
 
 def _strip_computed_details_fields(details: Any) -> Any:
-    """
-    Remove large derived fields that can be recomputed on demand.
-
-    Currently:
-    - `hitsim_offset_deltas_ms` (per-window deltas) is computed on demand via DB manager,
-      and must not be persisted to keep the DB small.
-    """
-    if not isinstance(details, dict) or not details:
-        return details
-    if (
-        details.get("hitsim_offset_deltas_ms") is None
-        and "hitsim_offset_delta_ms" not in details
-        and not isinstance(details.get("ForceGreats"), dict)
-    ):
-        return details
-
-    out = dict(details)
-    out.pop("hitsim_offset_delta_ms", None)
-    out.pop("hitsim_offset_deltas_ms", None)
-    fg0 = out.get("ForceGreats")
-    if isinstance(fg0, dict):
-        fg1 = dict(fg0)
-        fg1.pop("hitsim_offset_delta_ms", None)
-        fg1.pop("hitsim_offset_deltas_ms", None)
-        out["ForceGreats"] = fg1
-    return out
+    """Return details without large recomputable payloads."""
+    return details
 
 
 def get_evolution_db_path() -> str:
@@ -782,7 +758,6 @@ def init_db():
       - encoding tables: `gear_name_encoding`, `mini_name_encoding`
       - BLOB columns: `gear_ids_blob`, `minis_ids_blob`
     - `details_json` stores packed Stats as `st` (fixed-order int list) instead of verbose `Stats` keys.
-    - Large derived fields (e.g. `hitsim_offset_deltas_ms`) are not persisted.
     """
 
     db_path = get_evolution_db_path()
@@ -1199,8 +1174,7 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
     if not isinstance(details, dict):
         return {}
 
-    # Keep persisted payload compact: do not persist derived HitSim delta fields.
-    out = _strip_computed_details_fields(details)
+    out = dict(details)
 
     if force_data is None or int(fg_score or 0) <= 0:
         return out
@@ -1555,32 +1529,6 @@ def save_team_buff_loadouts_batch(
             return force_data
 
         out = dict(force_data)
-        fg0 = out.get("ForceGreats")
-        if isinstance(fg0, dict) and ("hitsim_offset_delta_ms" in fg0 or "hitsim_offset_deltas_ms" in fg0):
-            fg1 = dict(fg0)
-            fg1.pop("hitsim_offset_delta_ms", None)
-            fg1.pop("hitsim_offset_deltas_ms", None)
-            out["ForceGreats"] = fg1
-
-        det0 = out.get("details")
-        if isinstance(det0, dict):
-            det_out = det0
-            if "hitsim_offset_delta_ms" in det_out or "hitsim_offset_deltas_ms" in det_out:
-                det_out = dict(det_out)
-                det_out.pop("hitsim_offset_delta_ms", None)
-                det_out.pop("hitsim_offset_deltas_ms", None)
-            nested_fg0 = det_out.get("ForceGreats")
-            if isinstance(nested_fg0, dict) and (
-                "hitsim_offset_delta_ms" in nested_fg0 or "hitsim_offset_deltas_ms" in nested_fg0
-            ):
-                nested_fg1 = dict(nested_fg0)
-                nested_fg1.pop("hitsim_offset_delta_ms", None)
-                nested_fg1.pop("hitsim_offset_deltas_ms", None)
-                if det_out is det0:
-                    det_out = dict(det_out)
-                det_out["ForceGreats"] = nested_fg1
-            if det_out is not det0:
-                out["details"] = det_out
 
         score_v = _coerce_int(out.get("score", 0))
         if score_v <= 0:

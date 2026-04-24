@@ -145,8 +145,6 @@ def _write_recovery_config(
 
     ensure("CalculateSong")
     ensure("IterationEngine")
-    ensure("HumanHitSim")
-
     cfg.set("CalculateSong", "Song_Name", str(target_song_name))
     cfg.set("CalculateSong", "Difficulty", str(difficulty))
     cfg.set("CalculateSong", "TargetPrimary", "All")

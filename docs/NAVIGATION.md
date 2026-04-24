@@ -59,7 +59,7 @@
 - Database schema: `docs/DATABASE_SCHEMA.md`
 - Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`
 - Fever timeline math: `docs/FEVER_TIMELINE_MATH.md`
-- Human HitSim details: `docs/HUMAN_HIT_SIM.md`
+- Timing envelope details: `docs/Implementation Records/TIMING_ENVELOPE_EXACT_FRONTIER.md`
 - Stats verifier: `docs/STATS_VERIFIER.md`
 
 ## Refactoring and Maintenance Notes

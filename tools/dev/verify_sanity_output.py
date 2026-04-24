@@ -5,7 +5,6 @@ What this verifies
 ------------------
 Strict contract checks:
 - base and FG leaderboard outputs both preserve the sanity contract
-- HitSim offset display survives on both base and FG surfaces
 - replay/original source scores remain attached to the derived-tier outputs
 - leaderboard rows re-sort when tier/team-buff replay changes ranking
 - loadout rows keep the correct score semantics for tier + team color
@@ -42,10 +41,9 @@ STRICT_SANITY_NODEIDS = [
     "tests/test_team_buff_tier_postprocess.py::test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion",
     "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_top_rows",
     "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows",
-    "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_strict_sanity_preserves_hitsim_scores_and_target_team_color",
+    "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color",
     "tests/test_db_manager.py::test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible",
-    "tests/test_db_manager.py::test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_hitsim_and_source_scores",
-    "tests/test_results_printer_regression.py::test_results_printer_strict_sanity_output_displays_base_and_fg_hitsim_offsets",
+    "tests/test_db_manager.py::test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_source_scores",
 ]
 
 
@@ -96,8 +94,6 @@ def _live_consistency_cmd(args: argparse.Namespace) -> list[str]:
     ]
     if str(args.live_song_filter or "").strip():
         cmd.extend(["--song-filter", str(args.live_song_filter).strip()])
-    if bool(args.live_disable_human_hitsim):
-        cmd.append("--disable-human-hitsim")
     if bool(args.live_respect_user_gems):
         cmd.append("--respect-user-gems")
     if bool(args.live_debug):
@@ -164,11 +160,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=2,
         help="Score tolerance forwarded to the live verifier.",
-    )
-    parser.add_argument(
-        "--live-disable-human-hitsim",
-        action="store_true",
-        help="Disable HumanHitSim for the optional live verifier.",
     )
     parser.add_argument(
         "--live-respect-user-gems",

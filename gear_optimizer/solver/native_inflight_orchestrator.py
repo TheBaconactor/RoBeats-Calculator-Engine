@@ -21,7 +21,7 @@ from collections import deque
 from typing import Any, Optional
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.config import read_fg_exact_dp_chunk_size
+from gear_optimizer.core.config import read_fg_exact_dp_chunk_size, read_timeline_analysis_max_windows
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.result_payloads import build_error_payload
@@ -78,9 +78,6 @@ from gear_optimizer.solver.inflight_utils import (
     _compact_items,
     _compact_prev_record,
     _truthy,
-)
-from gear_optimizer.solver.native_inflight_hitsim_delta import (
-    _attach_hitsim_delta_for_fg_variant,
 )
 from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
@@ -1339,85 +1336,6 @@ def run_native_inflight_song_pipeline(
                 }
             )
 
-        hitsim_meta = song.calc_song.get("metadata") if isinstance(song.calc_song, dict) else None
-        hitsim_enabled = False
-        hitsim_seed = None
-        try:
-            hitsim_enabled = (
-                bool(hitsim_meta and hitsim_meta.get("HumanHitSimApplied"))
-                and str((hitsim_meta or {}).get("HumanHitSimApplyTo", "") or "").strip().upper() == "ALL"
-            )
-        except Exception:
-            hitsim_enabled = False
-        try:
-            if isinstance(hitsim_meta, dict):
-                hitsim_seed = int((hitsim_meta or {}).get("HumanHitSimSeed", 0) or 0)
-            else:
-                hitsim_seed = None
-        except Exception:
-            hitsim_seed = None
-        if hitsim_seed is not None and int(hitsim_seed) <= 0:
-            hitsim_seed = None
-
-        deltas_cache_by_ff_ft: dict[tuple[int, int], tuple[int, ...]] = {}
-        if hitsim_enabled and isinstance(song.calc_song, dict) and isinstance(song.ref_arrays, dict):
-            try:
-                from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
-            except Exception:
-                summarize_hitsim_offset_deltas_ms_for_base = None
-
-            if summarize_hitsim_offset_deltas_ms_for_base is not None:
-
-                def _maybe_attach(entry_data: dict) -> None:
-                    if not isinstance(entry_data, dict):
-                        return
-
-                    existing_deltas = entry_data.get("hitsim_offset_deltas_ms")
-                    if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
-                        if "hitsim_offset_delta_ms" in entry_data:
-                            entry_data.pop("hitsim_offset_delta_ms", None)
-                        return
-                    if entry_data.get("hitsim_offset_deltas_ms") is not None:
-                        return
-                    stats0 = entry_data.get("Stats")
-                    if not isinstance(stats0, dict) or not stats0:
-                        return
-                    try:
-                        ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
-                    except Exception:
-                        ff0 = 0
-                    try:
-                        ft0 = int(stats0.get("Fever Time", 0) or 0)
-                    except Exception:
-                        ft0 = 0
-
-                    cache_key = (int(ff0), int(ft0))
-                    deltas_t = deltas_cache_by_ff_ft.get(cache_key)
-                    if deltas_t is None:
-                        try:
-                            computed = summarize_hitsim_offset_deltas_ms_for_base(
-                                song.calc_song,
-                                {"Stats": stats0},
-                                song.ref_arrays,
-                            )
-                        except Exception:
-                            computed = None
-                        if computed:
-                            try:
-                                deltas_t = tuple(int(x) for x in computed)
-                            except Exception:
-                                deltas_t = None
-                            if deltas_t:
-                                deltas_cache_by_ff_ft[cache_key] = deltas_t
-
-                    if deltas_t:
-                        entry_data["hitsim_offset_deltas_ms"] = list(deltas_t)
-                        entry_data.pop("hitsim_offset_delta_ms", None)
-
-                _maybe_attach(best_data_post)
-                for cand in ga_candidates_post:
-                    _maybe_attach(cand.get("Data") or {})
-
         _post(
             {
                 "_deferred_post": True,
@@ -1431,7 +1349,6 @@ def run_native_inflight_song_pipeline(
                 "difficulty": song.effective_difficulty,
                 "use_evo_db": bool(song.use_evo_db),
                 "cfg_dict": song.cfg_dict,
-                "hitsim_seed": hitsim_seed,
                 "ref_arrays": song.ref_arrays if song.fg_debug else None,
                 "calc_song": song.calc_song if song.fg_debug else None,
                 "best_data": best_data_post,
@@ -2305,6 +2222,22 @@ def run_native_inflight_song_pipeline(
                                 fg_failed = False
                             else:
                                 fg_failed = True
+                                try:
+                                    emit_profile_event(
+                                        component="inflight_fg_worker",
+                                        event="dispatch_error",
+                                        song_key=str(getattr(fg_song, "task_key", "") or getattr(fg_song, "song_name", "") or ""),
+                                        metrics={
+                                            "exc_type": type(exc).__name__,
+                                            "exc": str(exc),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    logger.exception("[NativeInflight][FG] worker failed for %s", fg_song.task_key)
+                                except Exception:
+                                    pass
                         if not bool(getattr(fg_song, "_deferred_post_emitted", False)):
                             try:
                                 _emit_deferred_post_payload(fg_song)
@@ -2985,6 +2918,7 @@ def _run_fg_job_sync(
             finder_ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
             ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
             exact_dp_chunk_size=read_fg_exact_dp_chunk_size(getattr(song, "cfg", None)),
+            max_baseline_windows=read_timeline_analysis_max_windows(getattr(song, "cfg", None)),
         )
     elif fg_solver_mode == "off":
         fg_variants = []
@@ -3007,7 +2941,6 @@ def _run_fg_job_sync(
         )
 
     song.fg_variants = list(fg_variants or [])
-    _attach_hitsim_delta_for_fg_variant(song.fg_variants, active_fg_calc_song, song.ref_arrays)
     try:
         setattr(song, "_cpu_fg_run_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
     except Exception:

@@ -104,10 +104,6 @@ def _force_gpu(cfg: Any) -> None:
         cfg.add_section("IterationEngine")
     cfg.set("IterationEngine", "GPU_Mode", "true")
     cfg.set("IterationEngine", "GPU_Native_GA", "true")
-    if not cfg.has_section("HumanHitSim"):
-        cfg.add_section("HumanHitSim")
-    cfg.set("HumanHitSim", "Enabled", "false")
-    cfg.set("HumanHitSim", "Seed", "1")
 
 
 def _resolve_default_song_paths(paths: dict[str, Any]) -> list[str]:

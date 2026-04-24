@@ -14,7 +14,7 @@ import taichi as ti
 
 from gear_optimizer.core.env_config import env_flag
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.utils import human_hitsim_timing_context
+from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
     GRID_SIZE,
@@ -61,7 +61,7 @@ def _upload_song_groups_kernel(
     group_low_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
     group_high_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
 ):
-    """Upload chord-group arrays used by the analytical ceiling HitSim timeline kernel."""
+    """Upload chord-group arrays used by the analytical timing-envelope ceiling kernel."""
     for g in range(n_groups):
         fields.song_group_starts[g] = group_starts[g]
         fields.song_group_base_t_ms[g] = group_base_t_ms[g]
@@ -81,7 +81,7 @@ _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_ENVELOPE", "1"))
     if use_ceiling:
         cached = calc_song.get("_gpu_timing_cache_key_ceiling", None)
         if isinstance(cached, tuple) and len(cached) == 8:
@@ -106,7 +106,7 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         int(1 if use_ceiling else 0),
         bytes(ts_sig),
         bytes(nt_sig),
-    ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
+    ) + (() if use_ceiling else timing_envelope_timing_context(calc_song))
     if use_ceiling and isinstance(key, tuple) and len(key) == 8:
         # Cache on the calc_song dict to avoid repeated full-array hashing when the
         # same song is revisited and precompute_timeline_gpu() hits the slot cache.
@@ -121,7 +121,7 @@ def _get_or_build_ceiling_group_payload(
     note_types: object,
 ) -> dict:
     """
-    Prepare and cache chord-group payloads used by the analytical ceiling HitSim kernel.
+    Prepare and cache chord-group payloads used by the analytical timing-envelope ceiling kernel.
 
     This CPU preprocessing is a pure function of chart timestamps + note types (and the
     fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
@@ -139,9 +139,9 @@ def _get_or_build_ceiling_group_payload(
         except Exception:
             pass
 
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         timestamps,
         note_types,
         perfect_lower_ms=-20,
@@ -157,9 +157,9 @@ def _get_or_build_ceiling_group_payload(
     group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
     group_count = int(group_starts.shape[0])
     if int(prepared.get("n", n) or 0) != int(n):
-        raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+        raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
     if n > 0 and group_count <= 0:
-        raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+        raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
 
     if n <= 0:
         note_group_idx = np.zeros((0,), dtype=np.int32)
@@ -185,7 +185,7 @@ def _get_or_build_ceiling_group_payload(
                 if e > s:
                     note_group_idx[s:e] = int(g)
             if int(np.any(note_group_idx < 0)):
-                raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+                raise ValueError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     payload = {
         "n": int(n),
@@ -305,7 +305,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         return  # Already computed
 
     song_data = calc_song.get("song_data", {}) or {}
-    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_ENVELOPE", "1"))
 
     # Upload song timestamps (float seconds). Analytical ceiling uses chart timestamps.
     if use_ceiling:
@@ -341,7 +341,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         )
         payload_n = int(payload.get("n", 0) or 0)
         if int(payload_n) != int(total_notes):
-            raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+            raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
 
         note_group_idx = np.asarray(payload.get("note_group_idx", ()), dtype=np.int32)
         group_starts = np.asarray(payload.get("group_starts", ()), dtype=np.int32)
@@ -350,7 +350,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         group_high_ms = np.asarray(payload.get("group_high_ms", ()), dtype=np.int32)
         group_count = int(payload.get("group_count", 0) or 0)
         if total_notes > 0 and group_count <= 0:
-            raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+            raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
 
         if _profiler.enabled:
             _t_groups = time.perf_counter()
@@ -436,7 +436,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
             and rep_ff_values is not None
             and unique_pairs < (GRID_SIZE * GRID_SIZE)
         ):
-            kernels.compute_timeline_grid_ceiling_hitsim_reps_kernel(
+            kernels.compute_timeline_grid_ceiling_envelope_reps_kernel(
                 total_notes,
                 long_notes,
                 last_note_time,
@@ -448,13 +448,13 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
                 int(rep_ft_values.shape[0]),
                 int(rep_ff_values.shape[0]),
             )
-            kernels.scatter_timeline_grid_ceiling_hitsim_from_reps_kernel(
+            kernels.scatter_timeline_grid_ceiling_envelope_from_reps_kernel(
                 int(song_slot),
                 rep_ft_by_ft,
                 rep_ff_by_ff,
             )
         else:
-            kernels.compute_timeline_grid_ceiling_hitsim_kernel(
+            kernels.compute_timeline_grid_ceiling_envelope_kernel(
                 total_notes,
                 long_notes,
                 last_note_time,

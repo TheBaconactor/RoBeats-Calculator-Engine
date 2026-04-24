@@ -425,10 +425,11 @@ def _registry_static_handle_entry(
         Reduce IPC payload size for `timeline_grid` when it is actually a `calc_song` dict.
 
         `taichi_gem.api.timeline.precompute_timeline_gpu` only needs:
-          - calc_song["song_data"]["timestamps"]
+          - calc_song["song_data"]["timestamps"] / chart_timestamps
+          - calc_song["song_data"]["note_types"]
           - calc_song["metadata"]["Long Notes"]
           - calc_song["metadata"]["Last Note Time"]
-          - HumanHitSim cache-affecting metadata keys (for stable per-slot caching)
+          - timing-envelope metadata used by cache keys
         """
         if not isinstance(calc_song, dict):
             return calc_song
@@ -442,27 +443,46 @@ def _registry_static_handle_entry(
         if timestamps is None:
             return calc_song
 
-        ts_out = timestamps
-        try:
-            import numpy as np
+        def _contiguous_array(value: Any, dtype: Any) -> Any:
+            if value is None:
+                return None
+            out = value
+            try:
+                import numpy as np
 
-            ts_out = np.asarray(timestamps, dtype=np.float32)
-            if not ts_out.flags["C_CONTIGUOUS"]:
-                ts_out = np.ascontiguousarray(ts_out)
-        except Exception:
-            ts_out = timestamps
+                out = np.asarray(value, dtype=dtype)
+                if not out.flags["C_CONTIGUOUS"]:
+                    out = np.ascontiguousarray(out)
+            except Exception:
+                out = value
+            return out
+
+        ts_out = _contiguous_array(timestamps, "float32")
+        chart_ts = song_data.get("chart_timestamps")
+        chart_ts_out = _contiguous_array(chart_ts, "float32") if chart_ts is not None else None
+        note_types = song_data.get("note_types")
+        note_types_out = _contiguous_array(note_types, "int16") if note_types is not None else None
+
+        song_data_out: dict[str, Any] = {"timestamps": ts_out}
+        if chart_ts_out is not None:
+            song_data_out["chart_timestamps"] = chart_ts_out
+        if note_types_out is not None:
+            song_data_out["note_types"] = note_types_out
+        for sig_key in ("_timestamps_sig", "_chart_timestamps_sig", "_note_types_sig"):
+            sig_val = song_data.get(sig_key)
+            if isinstance(sig_val, (bytes, bytearray, memoryview)) and len(sig_val) == 16:
+                song_data_out[sig_key] = bytes(sig_val)
 
         meta_out = {
             "Song Name": meta.get("Song Name", ""),
+            "Difficulty": meta.get("Difficulty", ""),
             "Long Notes": int(meta.get("Long Notes", 0) or 0),
             "Last Note Time": float(meta.get("Last Note Time", 0) or 0.0),
-            "HumanHitSimApplied": bool(meta.get("HumanHitSimApplied")),
-            "HumanHitSimApplyTo": meta.get("HumanHitSimApplyTo", ""),
-            "HumanHitSimDistribution": meta.get("HumanHitSimDistribution", ""),
-            "HumanHitSimGreatMode": meta.get("HumanHitSimGreatMode", ""),
-            "HumanHitSimSeed": meta.get("HumanHitSimSeed", 0),
+            "TimingEnvelopeApplied": bool(meta.get("TimingEnvelopeApplied")),
+            "TimingEnvelopeMode": meta.get("TimingEnvelopeMode", ""),
+            "TimingEnvelopeFGCarry": meta.get("TimingEnvelopeFGCarry", ""),
         }
-        return {"metadata": meta_out, "song_data": {"timestamps": ts_out}}
+        return {"metadata": meta_out, "song_data": song_data_out}
 
     key = (
         int(id(item_stats)),
@@ -3456,6 +3476,7 @@ class GpuExecutor:
                 bool(payload.get("timing_aware", True)),
                 bool(payload.get("prune", True)),
                 int(payload.get("song_slot", 0) or 0),
+                payload.get("max_baseline_windows"),
             )
             groups.setdefault(key, []).append((req, list(stats_list), payload))
 
@@ -3470,6 +3491,7 @@ class GpuExecutor:
             timing_aware = bool(payload0.get("timing_aware", True))
             prune = bool(payload0.get("prune", True))
             song_slot = int(payload0.get("song_slot", 0) or 0)
+            max_baseline_windows = payload0.get("max_baseline_windows")
 
             merged_stats: list[dict[str, Any]] = []
             slices: list[tuple[GpuRequest, int, int]] = []
@@ -3489,6 +3511,7 @@ class GpuExecutor:
                         timing_aware=bool(timing_aware),
                         prune=bool(prune),
                         song_slot=int(song_slot),
+                        max_baseline_windows=max_baseline_windows,
                     )
                     if len(chunk_result or []) != len(chunk):
                         raise RuntimeError(
@@ -4172,6 +4195,7 @@ class GpuExecutor:
                 timing_aware=bool(payload.get("timing_aware", True)),
                 prune=bool(payload.get("prune", True)),
                 song_slot=int(payload.get("song_slot", 0) or 0),
+                max_baseline_windows=payload.get("max_baseline_windows"),
             )
         except Exception as e:
             return GpuResponse(
@@ -5855,6 +5879,7 @@ def submit_gpu_solve_force_greats_exact_dp(
     timing_aware: bool = True,
     prune: bool = True,
     song_slot: int = 0,
+    max_baseline_windows: int | None = None,
     timeout: float = 180.0,
 ) -> list[dict[str, Any]]:
     """Submit the exact FG DP batch request via IPC from a GPU worker process."""
@@ -5876,6 +5901,7 @@ def submit_gpu_solve_force_greats_exact_dp(
             "timing_aware": bool(timing_aware),
             "prune": bool(prune),
             "song_slot": int(song_slot or 0),
+            "max_baseline_windows": max_baseline_windows,
         },
         submit_perf_ns=time.perf_counter_ns(),
     )

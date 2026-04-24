@@ -127,6 +127,7 @@ def _solve_force_greats_exact_dp_gpu_batch(
     gpu_client=None,
     song_slot: int = 0,
     exact_dp_chunk_size: int | None = None,
+    max_baseline_windows: int | None = None,
 ) -> list[dict[str, Any]]:
     chunk_size = _resolve_exact_dp_chunk_size(exact_dp_chunk_size)
     stats_rows = list(stats_list or [])
@@ -143,6 +144,7 @@ def _solve_force_greats_exact_dp_gpu_batch(
                     timing_aware=True,
                     prune=True,
                     song_slot=int(song_slot or 0),
+                    max_baseline_windows=max_baseline_windows,
                 ).future.result()
                 or []
             )
@@ -161,6 +163,7 @@ def _solve_force_greats_exact_dp_gpu_batch(
                     timing_aware=True,
                     prune=True,
                     song_slot=int(song_slot or 0),
+                    max_baseline_windows=max_baseline_windows,
                 )
                 or []
             )
@@ -176,6 +179,7 @@ def _solve_force_greats_exact_dp_gpu_batch(
                 timing_aware=True,
                 prune=True,
                 song_slot=int(song_slot or 0),
+                max_baseline_windows=max_baseline_windows,
             ).future.result()
             or []
         )
@@ -218,6 +222,7 @@ def _solve_force_greats_exact_dp_gpu_batch(
                         timing_aware=True,
                         prune=True,
                         song_slot=int(song_slot or 0),
+                        max_baseline_windows=max_baseline_windows,
                     ).future,
                 )
             )
@@ -344,6 +349,7 @@ def _run_exact_dp_on_candidates(
     gpu_client=None,
     song_slot: int = 0,
     exact_dp_chunk_size: int | None = None,
+    max_baseline_windows: int | None = None,
 ) -> list[dict[str, Any]]:
     fg_variants: list[dict[str, Any]] = []
     solve_candidates: list[tuple[dict[str, Any], dict[str, Any], int, list[str], list[str], bool]] = []
@@ -373,6 +379,7 @@ def _run_exact_dp_on_candidates(
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
         exact_dp_chunk_size=exact_dp_chunk_size,
+        max_baseline_windows=max_baseline_windows,
     )
     computed = len(solve_candidates)
     if len(gpu_results) != computed:
@@ -433,6 +440,7 @@ def _refine_finder_variants_with_exact_dp(
     gpu_client=None,
     song_slot: int = 0,
     exact_dp_chunk_size: int | None = None,
+    max_baseline_windows: int | None = None,
 ) -> list[dict[str, Any]]:
     if not finder_variants:
         return []
@@ -478,6 +486,7 @@ def _refine_finder_variants_with_exact_dp(
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
         exact_dp_chunk_size=exact_dp_chunk_size,
+        max_baseline_windows=max_baseline_windows,
     )
     computed = len(pending_rows)
     if len(gpu_results) != computed:
@@ -547,6 +556,7 @@ def process_fg_exact_dp(
     finder_ga_candidates: list[dict[str, Any]] | None = None,
     ga_registry=None,
     exact_dp_chunk_size: int | None = None,
+    max_baseline_windows: int | None = None,
 ) -> list[dict[str, Any]]:
     """
     Process FG candidates using the production exact-DP path.
@@ -612,6 +622,7 @@ def process_fg_exact_dp(
             gpu_client=gpu_client,
             song_slot=int(song_slot or 0),
             exact_dp_chunk_size=exact_dp_chunk_size,
+            max_baseline_windows=max_baseline_windows,
         )
 
     return _run_exact_dp_on_candidates(
@@ -621,4 +632,5 @@ def process_fg_exact_dp(
         gpu_client=gpu_client,
         song_slot=int(song_slot or 0),
         exact_dp_chunk_size=exact_dp_chunk_size,
+        max_baseline_windows=max_baseline_windows,
     )

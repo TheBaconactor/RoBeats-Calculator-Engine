@@ -132,9 +132,9 @@ song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
 # Precomputed fever end indices per note/FT (binary-search-free timeline simulation)
 fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
 
-# Chord-grouped chart data for Analytical HitSim (ceiling) timeline computation.
+# Chord-grouped chart data for analytical timing-envelope ceiling computation.
 # These are derived from chart timestamps + note types using the same chord grouping and
-# per-note window semantics as HumanHitSim (`prepare_perfect_hit_simulation`).
+# per-note window semantics as the shared timing envelope.
 song_note_group_idx: ti.Field = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
 song_group_starts: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
 song_group_base_t_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms
