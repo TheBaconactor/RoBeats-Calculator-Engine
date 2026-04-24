@@ -6,11 +6,10 @@ timeline semantics:
   - fill-delay via notes_to_fill(k) = ceil(raw_fill + 0.5*k) with the section-1 offset
   - optional timing-aware carry via great-candidate timestamps (prefix-max carry_time)
 
-Production usage:
-  - Wired into the orthogonal FG exact-DP path
-    (`OuterSearchEngine=ga` + `FG_SolverMode=exact_dp`) via
-    gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp.
-  - Also available via tools/bench scripts for cost estimation and validation.
+Usage:
+  - Kept as a fixed-stat proof/reference solver for timing semantics.
+  - Production FG exploration uses the finder surface with exact-inner BnB per generated
+    FG timeline instead of this fixed-stat refinement pass.
 """
 
 from __future__ import annotations

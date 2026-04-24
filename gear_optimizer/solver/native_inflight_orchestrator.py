@@ -21,7 +21,6 @@ from collections import deque
 from typing import Any, Optional
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.config import read_fg_exact_dp_chunk_size, read_timeline_analysis_max_windows
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.result_payloads import build_error_payload
@@ -2898,29 +2897,7 @@ def _run_fg_job_sync(
         )
     except Exception:
         pass
-    if fg_solver_mode == "exact_dp":
-        from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
-
-        fg_variants = process_fg_exact_dp(
-            list(song.ga_candidates or []),
-            active_fg_calc_song,
-            song.ref_arrays,
-            use_gpu=True,
-            gpu_client=gpu_client,
-            song_slot=int(getattr(song, "song_slot", 0) or 0),
-            loadout_entries=song.loadout_entries if isinstance(song.loadout_entries, dict) else None,
-            manual_force_greats=bool(song.manual_force_greats),
-            force_greats_finder=bool(song.force_greats_finder),
-            force_greats_config=song.force_greats_config,
-            meta_primary_color=song.meta_primary_color,
-            build_details_fn=build_details,
-            fg_search_radius=song.fg_search_radius,
-            finder_ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
-            ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
-            exact_dp_chunk_size=read_fg_exact_dp_chunk_size(getattr(song, "cfg", None)),
-            max_baseline_windows=read_timeline_analysis_max_windows(getattr(song, "cfg", None)),
-        )
-    elif fg_solver_mode == "off":
+    if fg_solver_mode == "off":
         fg_variants = []
     else:
         fg_variants = process_force_greats(

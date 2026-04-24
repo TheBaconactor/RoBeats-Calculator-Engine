@@ -82,15 +82,13 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert int(song.fg_variants[0]["fg_score"]) == 130
 
 
-def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
+def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
 
     calls: dict[str, object] = {}
 
-    def _fake_process_fg_exact_dp(ga_candidates, calc_song, ref_arrays, **kwargs):
-        calls["ga_candidates"] = list(ga_candidates or [])
-        calls["calc_song"] = calc_song
-        calls["ref_arrays"] = ref_arrays
+    def _fake_process_force_greats(*args, **kwargs):
+        calls["args"] = args
         calls["kwargs"] = dict(kwargs)
         return [
             {
@@ -103,7 +101,7 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr("gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp", _fake_process_fg_exact_dp)
+    monkeypatch.setattr(orchestrator, "process_force_greats", _fake_process_force_greats)
 
     song = SimpleNamespace(
         fg_prep_future=None,
@@ -139,15 +137,13 @@ def test_run_fg_job_sync_routes_exact_dp_with_gpu_client(monkeypatch):
     gpu_client = SimpleNamespace(name="gpu")
     orchestrator._run_fg_job_sync(song, gpu_client=gpu_client)
 
-    assert calls["kwargs"]["use_gpu"] is True
     assert calls["kwargs"]["gpu_client"] is gpu_client
-    assert calls["kwargs"]["song_slot"] == 9
-    assert calls["kwargs"]["loadout_entries"] == {}
-    assert calls["kwargs"]["manual_force_greats"] is False
-    assert calls["kwargs"]["force_greats_finder"] is True
-    assert calls["kwargs"]["meta_primary_color"] == "Rush"
-    assert callable(calls["kwargs"]["build_details_fn"])
     assert calls["kwargs"]["fg_search_radius"] == 5
-    assert calls["kwargs"]["finder_ga_candidates"] is None
+    assert calls["kwargs"]["ga_candidates"] is None
     assert calls["kwargs"]["ga_registry"] is None
+    assert calls["args"][0] == {}
+    assert calls["args"][1] is False
+    assert calls["args"][2] is True
+    assert calls["args"][5] == {"Perfect Points": []}
+    assert calls["args"][6] == "Rush"
     assert int(song.fg_variants[0]["fg_score"]) == 140

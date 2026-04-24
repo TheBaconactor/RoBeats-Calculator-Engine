@@ -35,36 +35,6 @@ def test_submit_ga_fg_fused_solve_with_breakpoints_routes_new_request_type():
         client.close(timeout=0.5)
 
 
-def test_submit_exact_fg_dp_routes_new_request_type():
-    executor = _DummyExecutor()
-    client = GpuServiceClient(executor=executor)
-    client.start(start_executor=False, in_process_queues=True)
-
-    try:
-        job = client.submit_solve_force_greats_exact_dp(
-            stats_list=[{"Perfect Points": 1}],
-            calc_song={"metadata": {}, "song_data": {}},
-            ref_arrays={"dummy": True},
-            timing_aware=True,
-            prune=True,
-            song_slot=5,
-            max_baseline_windows=3,
-        )
-        req = executor._request_q.get(timeout=1.0)
-        assert req.request_type == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP
-        assert req.payload["song_slot"] == 5
-        assert req.payload["timing_aware"] is True
-        assert req.payload["prune"] is True
-        assert req.payload["max_baseline_windows"] == 3
-        assert req.payload["stats_list"] == [{"Perfect Points": 1}]
-
-        executor._response_q.put(GpuResponse(request_id=req.request_id, success=True, result=[{"best_delta": 9}]))
-        result = job.future.result(timeout=1.0)
-        assert result == [{"best_delta": 9}]
-    finally:
-        client.close(timeout=0.5)
-
-
 def test_fg_coalesce_payload_cap_is_clamped_to_executor_limit(monkeypatch):
     executor = _DummyExecutor()
     monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192")
