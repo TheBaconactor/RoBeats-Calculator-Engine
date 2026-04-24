@@ -70,6 +70,7 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
     for rec in db_loadouts or []:
         if not isinstance(rec, dict):
             continue
+        stored_hash = str(rec.get("loadout_hash") or "").strip()
         h = _upsert_entry(
             loadout_entries,
             gear_items=rec.get("gear", []),
@@ -79,7 +80,14 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
             fg_score_val=rec.get("fg_score", 0),
             force_obj=rec.get("force"),
             eval_data=None,
+            entry_key=stored_hash or None,
         )
+        entry = loadout_entries.get(str(h))
+        if isinstance(entry, dict) and stored_hash:
+            # Persisted DB hashes are effective song-context hashes. Recomputing a
+            # raw representative-name hash can split equivalent mini groups.
+            entry["loadout_hash"] = stored_hash
+            entry["_resolved_loadout_hash"] = stored_hash
         # Preserve the paired base-score context for the best-FG payload (if present).
         try:
             fg_base = rec.get("fg_base_score")
@@ -120,10 +128,11 @@ def refresh_ga_candidate_entries(
         genome_ids = candidate_genome_ids(eval_result)
         registry_obj = ga_registry if ga_registry is not None else eval_result.get("_ga_registry")
         eval_details = build_details_fn(eval_data) if (materialize_details and eval_data and build_details_fn) else {}
-        h = None
-        if gear_items or mini_items:
+        explicit_hash = str(eval_result.get("loadout_hash") or "").strip()
+        h = explicit_hash or None
+        if not h and (gear_items or mini_items):
             h = str(get_loadout_hash(gear_items, mini_items))
-        elif genome_ids is not None:
+        elif not h and genome_ids is not None:
             h = ga_candidate_key(genome_ids)
         if not h:
             continue
@@ -143,6 +152,9 @@ def refresh_ga_candidate_entries(
             "_source": "ga",
             "selected_element": selected_element,
         }
+        if explicit_hash:
+            new_entry["loadout_hash"] = explicit_hash
+            new_entry["_resolved_loadout_hash"] = explicit_hash
         if genome_ids is not None:
             new_entry["ga_genome_ids"] = list(genome_ids)
         if registry_obj is not None:
@@ -164,7 +176,7 @@ def refresh_ga_candidate_entries(
         loadout_entries.pop(h, None)
 
     for h, entry in desired_ga_entries.items():
-        _upsert_entry(
+        upserted_hash = _upsert_entry(
             loadout_entries,
             gear_items=entry.get("gear", []),
             mini_items=entry.get("minis", []),
@@ -178,6 +190,12 @@ def refresh_ga_candidate_entries(
             ga_genome_ids=candidate_genome_ids({"GenomeIDs": entry.get("ga_genome_ids")}),
             ga_registry=entry.get("_ga_registry"),
         )
+        explicit_hash = str(entry.get("loadout_hash") or "").strip()
+        if explicit_hash:
+            stored_entry = loadout_entries.get(str(upserted_hash))
+            if isinstance(stored_entry, dict):
+                stored_entry["loadout_hash"] = explicit_hash
+                stored_entry["_resolved_loadout_hash"] = explicit_hash
     return loadout_entries
 
 

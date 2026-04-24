@@ -77,6 +77,7 @@ class _NativeSong:
     ga_future: Optional[concurrent.futures.Future] = None
     decode_future: Optional[concurrent.futures.Future] = None
     ga_candidates: Optional[list[dict]] = None
+    ga_persistence_candidates: Optional[list[dict]] = None
     best_data: Optional[dict] = None
     best_gear: Optional[list] = None
     best_minis: Optional[list] = None
@@ -98,5 +99,7 @@ class _NativeSong:
     def __post_init__(self) -> None:
         if self.ga_candidates is None:
             self.ga_candidates = []
+        if self.ga_persistence_candidates is None:
+            self.ga_persistence_candidates = []
         if self.fg_variants is None:
             self.fg_variants = []

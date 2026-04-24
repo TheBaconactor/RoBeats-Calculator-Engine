@@ -810,8 +810,9 @@ def build_persistence_entries(
         force_obj=None,
         *,
         fg_base_score_val=None,
+        loadout_hash_val=None,
     ):
-        h = _loadout_hash(gear_items, mini_items)
+        h = str(loadout_hash_val or "").strip() or _loadout_hash(gear_items, mini_items)
 
         # Extract attempt metadata from details for tagging
         attempt_lifetime = details_obj.get("attempt_lifetime", 0) if details_obj else 0
@@ -836,6 +837,7 @@ def build_persistence_entries(
         force_out = _normalize_force_payload(force_obj) if isinstance(force_obj, dict) else force_obj
 
         new_entry = {
+            "loadout_hash": h,
             "score": score_val or 0,
             "fg_score": fg_score_val or 0,
             "gear": names_list(gear_items),
@@ -1088,6 +1090,7 @@ def build_persistence_entries(
                 eval_details,
                 0,  # No FG score available in this fallback path
                 None,
+                loadout_hash_val=eval_result.get("loadout_hash"),
             )
 
     # Include DB+GA union entries (with updated FG) if available
@@ -1239,6 +1242,7 @@ def build_persistence_entries(
                 entry.get("fg_score", 0),
                 entry.get("force"),
                 fg_base_score_val=entry.get("fg_base_score"),
+                loadout_hash_val=entry.get("loadout_hash"),
             )
 
     return _canonicalize_retained_baseline_persist_entries(

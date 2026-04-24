@@ -110,6 +110,25 @@ def _require_gpu_api():
     return gpu_api
 
 
+def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
+    """
+    Internal GA->persistence overselect bound.
+
+    FG still consumes `fg_candidate_limit`; this wider payload gives downstream DB
+    effective-hash dedupe enough candidates to retain a full frontier.
+    """
+    try:
+        fg_limit = int(fg_candidate_limit)
+    except Exception:
+        fg_limit = int(FG_CANDIDATE_LIMIT)
+    fg_limit = max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(fg_limit or FG_CANDIDATE_LIMIT)))
+
+    factor = max(1, _env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", 4))
+    cap = max(fg_limit, _env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", 256))
+    target = max(fg_limit, fg_limit * int(factor))
+    return max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(cap), int(target)))
+
+
 def _selected_color_stat_index(color: str) -> int:
     return int(COLOR_TO_STAT_INDEX.get(str(color or ""), -1))
 
@@ -629,7 +648,10 @@ def decode_gpu_native_ga_runs_payload(
         if int(runs_payload.shape[1]) < header_cols_min:
             raise ValueError(f"runs_payload has too few columns: {runs_payload.shape[1]} < {header_cols_min}")
 
-        eff_limit = int(fg_candidate_limit)
+        payload_limit_raw = cfg_data.get("ga_payload_candidate_limit")
+        if payload_limit_raw is None:
+            payload_limit_raw = max(int(fg_candidate_limit), int(runs_payload.shape[0]) - 1)
+        eff_limit = int(payload_limit_raw or fg_candidate_limit)
         if eff_limit <= 0:
             eff_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
         eff_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(eff_limit)))
@@ -1896,9 +1918,17 @@ def _run_gpu_native_ga_runs_payload_steady_state(
     if fg_candidate_limit <= 0:
         fg_candidate_limit = FG_CANDIDATE_LIMIT
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
-    top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-    base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
-    fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
+    payload_candidate_limit = _resolve_ga_payload_candidate_limit(int(fg_candidate_limit))
+    cfg_data["ga_payload_candidate_limit"] = int(payload_candidate_limit)
+    top_base_keep = min(int(payload_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(
+        int(payload_candidate_limit),
+        max(int(top_base_keep), int(int(payload_candidate_limit) * 0.55)),
+    )
+    fg_budget_end = min(
+        int(payload_candidate_limit),
+        int(base_budget) + int(int(payload_candidate_limit) * 0.30),
+    )
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
     if _GPU_NATIVE_GA_GLOBAL_FTFF_CAPS:
@@ -2069,7 +2099,7 @@ def _run_gpu_native_ga_runs_payload_steady_state(
     return gpu_api.ga_download_fg_selected_payload(
         table_slot=int(song_slot),
         n_runs=int(num_runs),
-        limit=int(fg_candidate_limit),
+        limit=int(payload_candidate_limit),
         top_base_keep=int(top_base_keep),
         base_budget=int(base_budget),
         fg_budget_end=int(fg_budget_end),
@@ -2354,9 +2384,17 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     if fg_candidate_limit <= 0:
         fg_candidate_limit = FG_CANDIDATE_LIMIT
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
-    top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-    base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
-    fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
+    payload_candidate_limit = _resolve_ga_payload_candidate_limit(int(fg_candidate_limit))
+    cfg_data["ga_payload_candidate_limit"] = int(payload_candidate_limit)
+    top_base_keep = min(int(payload_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(
+        int(payload_candidate_limit),
+        max(int(top_base_keep), int(int(payload_candidate_limit) * 0.55)),
+    )
+    fg_budget_end = min(
+        int(payload_candidate_limit),
+        int(base_budget) + int(int(payload_candidate_limit) * 0.30),
+    )
 
     # Island model (mirrors _run_gpu_native_ga)
     num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
@@ -2895,7 +2933,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             gpu_api.ga_download_fg_selected_payload(
                 table_slot=int(song_slot),
                 n_runs=int(seg_len),
-                limit=int(fg_candidate_limit),
+                limit=int(payload_candidate_limit),
                 top_base_keep=int(top_base_keep),
                 base_budget=int(base_budget),
                 fg_budget_end=int(fg_budget_end),
@@ -3124,6 +3162,7 @@ def solve_coevolution_genetic(
         )
         or FG_CANDIDATE_LIMIT
     )
+    cfg_data["ga_payload_candidate_limit"] = _resolve_ga_payload_candidate_limit(int(cfg_data["fg_candidate_limit"]))
     # DEV / DEBUG: convergence trace flags
     # (GAConvergenceTrace, GAConvergenceTraceEvery, GAConvergenceTraceOutDir,
     #  GAConvergenceTraceSongFilter).

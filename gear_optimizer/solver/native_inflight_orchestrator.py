@@ -20,7 +20,7 @@ import traceback
 from collections import deque
 from typing import Any, Optional
 
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.config import read_fg_exact_dp_chunk_size
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
@@ -32,6 +32,7 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
     materialize_candidate_names,
     materialize_entry_names,
 )
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
@@ -1299,8 +1300,23 @@ def run_native_inflight_song_pipeline(
 
         best_data_for_post = song.best_data or {}
         best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
+        candidates_for_post = (
+            song.ga_persistence_candidates
+            if isinstance(getattr(song, "ga_persistence_candidates", None), list)
+            and getattr(song, "ga_persistence_candidates", None)
+            else song.ga_candidates
+        )
+        candidates_for_post = select_effective_unique_ga_candidates(
+            list(candidates_for_post or []),
+            limit=int(LOADOUTS_PER_SONG_LIMIT),
+            registry=song.registry,
+            minis_by_name=song.minis_by_name,
+            primary_color=str(song.meta_primary_color or ""),
+            secondary_color=str(song.meta_secondary_color or ""),
+            selected_color=str((song.cfg_data or {}).get("selected_color", "") or ""),
+        )
         ga_candidates_post: list[dict] = []
-        for cand in song.ga_candidates or []:
+        for cand in candidates_for_post or []:
             if not isinstance(cand, dict):
                 continue
             data0 = cand.get("Data") or {}
@@ -1319,6 +1335,7 @@ def run_native_inflight_song_pipeline(
                     "Minis": list(mini_names),
                     "Data": candidate_for_post.get("Data") or {},
                     "_fg_priority": candidate_for_post.get("_fg_priority", 0),
+                    "loadout_hash": candidate_for_post.get("loadout_hash"),
                 }
             )
 
@@ -2206,6 +2223,7 @@ def run_native_inflight_song_pipeline(
                 song.best_gear = best_gear
                 song.best_minis = best_minis
                 song.ga_candidates = list(ga_candidates or [])
+                song.ga_persistence_candidates = list(ga_candidates or [])
                 try:
                     emit_profile_event(
                         component="inflight_decode",

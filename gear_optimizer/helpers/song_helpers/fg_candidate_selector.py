@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+from .ga_entry_utils import candidate_loadout_hash
 from .item_utils import _item_name
 
 
@@ -79,6 +80,72 @@ def _fg_proxy_from_items(items: list[dict], *, primary_color: str, secondary_col
         if secondary_color and secondary_color != primary_color:
             score += _i(it, secondary_color)
     return int(score)
+
+
+def select_effective_unique_ga_candidates(
+    candidates: list[dict],
+    *,
+    limit: int,
+    registry: object = None,
+    minis_by_name: dict[str, dict] | None = None,
+    primary_color: str = "",
+    secondary_color: str = "",
+    selected_color: str = "",
+) -> list[dict]:
+    """
+    Keep one best-base candidate per persisted loadout hash.
+
+    GPU GA dedupes selected rows by exact gear/mini IDs, but DB persistence dedupes
+    by song-context effective mini signatures. This selector bridges that contract
+    before persistence so 51 raw candidates do not collapse to a tiny DB frontier.
+    """
+    if not candidates:
+        return []
+    try:
+        limit_i = int(limit)
+    except Exception:
+        limit_i = 0
+    if limit_i <= 0:
+        return []
+
+    best_by_hash: dict[str, dict] = {}
+    best_rank_by_hash: dict[str, tuple[int, int, int]] = {}
+    for order, cand in enumerate(candidates):
+        if not isinstance(cand, dict):
+            continue
+        loadout_hash = candidate_loadout_hash(
+            cand,
+            registry=registry,
+            minis_by_name=minis_by_name,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            selected_color=selected_color,
+            mutate=True,
+        )
+        if not loadout_hash:
+            continue
+        try:
+            fg_priority = int(cand.get("_fg_priority", 0) or 0)
+        except Exception:
+            fg_priority = 0
+        # Higher base/priority wins; earlier rows win exact ties to preserve GPU ordering.
+        rank = (_base_score(cand), fg_priority, -int(order))
+        prev_rank = best_rank_by_hash.get(loadout_hash)
+        if prev_rank is None or rank > prev_rank:
+            best_by_hash[loadout_hash] = cand
+            best_rank_by_hash[loadout_hash] = rank
+
+    unique = list(best_by_hash.values())
+    if len(unique) <= limit_i:
+        unique.sort(key=_base_score, reverse=True)
+        return unique
+
+    return select_fg_candidates(
+        unique,
+        limit=limit_i,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+    )
 
 
 @dataclass(frozen=True)
