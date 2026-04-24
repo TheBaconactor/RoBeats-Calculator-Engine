@@ -1480,6 +1480,13 @@ def _run_gpu_native_ga(
     )
     trace_t0 = time.perf_counter() if trace_writer is not None else 0.0
     phase_samples_current: dict[str, list[float]] | None = {} if phase_events_enabled else None
+    audit_redundancy_active = bool(_ga_redundancy_audit_enabled())
+    use_lightweight_store_payload = bool(
+        store_payload_only
+        and store_payload_idx is not None
+        and trace_writer is None
+        and not audit_redundancy_active
+    )
 
     def _p95_ms(values: list[float]) -> float:
         if not values:
@@ -1542,6 +1549,8 @@ def _run_gpu_native_ga(
 
     # Initialize GPU-side global best tracking
     gpu_api.ga_init_global_best()
+    if use_lightweight_store_payload:
+        gpu_api.ga_init_runs_best(run_idx_start=int(store_payload_idx), n_runs=1, n_slots=int(n_slots))
 
     # Main GPU-native GA loop with island migration (GPU-resident elitism)
     for gen in range(n_generations):
@@ -1568,7 +1577,7 @@ def _run_gpu_native_ga(
             is_s_ov=is_s_ov,
             max_ft_gems_global=int(max_ft_gems_global),
             max_ff_gems_global=int(max_ff_gems_global),
-            materialize_mode="update_global",
+            materialize_mode="none" if use_lightweight_store_payload else "update_global",
         )
         _sync()
         _raise_if_abort_requested(abort_requested, f"after GPU-native GA evaluate generation {int(gen)}")
@@ -1593,13 +1602,79 @@ def _run_gpu_native_ga(
             except Exception:
                 pass
 
+        # Production steady-state only needs exact selection scores and per-run row 0
+        # here. Full per-genome result rows are materialized later only for the final
+        # FG top-K, avoiding the old every-generation full-pop writeback.
+        fused_refresh_next_done = False
+        is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0 and gen < n_generations - 1
+        if use_lightweight_store_payload:
+            t0 = time.perf_counter() if phase_timing else 0.0
+            if gen < n_generations - 1 and not is_migration_gen:
+                gpu_api.ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+                    run_idx_start=int(store_payload_idx),
+                    n_runs=1,
+                    n_genomes_per_run=int(n_genomes),
+                    n_slots=int(n_slots),
+                    total_budget=total_budget,
+                    gem_scale_fever=gem_scale_fever,
+                    song_slot=int(song_slot),
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                    mutation_rate=float(mutation_rate),
+                    immigrant_rate=float(immigrant_rate),
+                    tournament_k=int(tournament_k),
+                    n_islands=int(num_islands),
+                    elites_per_island=int(elite_count),
+                )
+                fused_refresh_next_done = True
+            else:
+                gpu_api.ga_refresh_scores_and_update_runs_best(
+                    run_idx_start=int(store_payload_idx),
+                    n_runs=1,
+                    n_genomes_per_run=int(n_genomes),
+                    n_slots=int(n_slots),
+                    total_budget=total_budget,
+                    gem_scale_fever=gem_scale_fever,
+                    song_slot=int(song_slot),
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                )
+            _sync()
+            _raise_if_abort_requested(abort_requested, f"after GPU-native GA lightweight refresh generation {int(gen)}")
+            if t0:
+                _log_phase(
+                    phase="update_runs_best",
+                    ms=(time.perf_counter() - t0) * 1000.0,
+                    gen=int(gen),
+                    use_hints=0,
+                )
+
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Now fully GPU-side: no CPU downloads/uploads needed!
         #
         # IMPORTANT: Skip migration on the final generation. Migration updates
         # population+scores but not genome_result_stats; performing it after the
         # last evaluation would corrupt the final snapshot payload.
-        is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0 and gen < n_generations - 1
         if is_migration_gen:
             # GPU-side ring topology migration (replaces expensive CPU round-trip)
             t0 = time.perf_counter() if phase_timing else 0.0
@@ -1616,7 +1691,7 @@ def _run_gpu_native_ga(
 
         # Skip ga_next_generation on final iteration - we don't use that population
         # This saves one generation step per run (30 total per song)
-        if gen < n_generations - 1:
+        if gen < n_generations - 1 and not fused_refresh_next_done:
             # Run next generation using FUSED kernel (2 launches instead of 4!)
             # Includes: select + crossover + mutate + island elitism + swap
             t0 = time.perf_counter() if phase_timing else 0.0
@@ -1670,7 +1745,8 @@ def _run_gpu_native_ga(
     # Optionally store run payload to the multi-run GPU buffer (no CPU readback).
     if store_payload_idx is not None:
         _raise_if_abort_requested(abort_requested, "before GA payload store")
-        gpu_api.ga_store_run_payload(run_idx=store_payload_idx, n_genomes=n_genomes, n_slots=n_slots)
+        if not use_lightweight_store_payload:
+            gpu_api.ga_store_run_payload(run_idx=store_payload_idx, n_genomes=n_genomes, n_slots=n_slots)
         # Also pack the compact GA->FG candidate table for this run (stored in the per-song slot).
         # This enables callers to download only a small candidate buffer instead of the full run payload.
         gpu_api.ga_pack_fg_candidates_table_segmented(

@@ -620,6 +620,52 @@ class GpuExecutor:
             value = ""
         return value in cls._GA_RECOVERY_REQUEST_TYPE_VALUES
 
+    def _exact_dp_recovery_min_rows(self) -> int:
+        try:
+            raw = int(str(_ENV_GET("GPU_EXECUTOR_EXACT_DP_RECOVERY_MIN_ROWS", "128") or "128").strip())
+        except Exception:
+            raw = 128
+        return max(1, min(int(raw), 4096))
+
+    def _exact_dp_recovery_max_age_ms(self) -> float:
+        try:
+            raw = float(str(_ENV_GET("GPU_EXECUTOR_EXACT_DP_RECOVERY_MAX_AGE_MS", "4000") or "4000").strip())
+        except Exception:
+            raw = 4000.0
+        return max(0.0, min(float(raw), 60000.0))
+
+    def _request_staged_age_ms(self, request: "GpuRequest") -> float:
+        try:
+            start_ns = int(getattr(request, "dequeue_perf_ns", 0) or 0)
+        except Exception:
+            start_ns = 0
+        if start_ns <= 0:
+            try:
+                start_ns = int(getattr(request, "submit_perf_ns", 0) or 0)
+            except Exception:
+                start_ns = 0
+        if start_ns <= 0:
+            return 0.0
+        return max(0.0, float(time.perf_counter_ns() - start_ns) / 1e6)
+
+    def _is_ga_recovery_request(self, request: "GpuRequest") -> bool:
+        request_type = getattr(request, "request_type", None)
+        if request_type != GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
+            return self._is_ga_recovery_request_type(request_type)
+        if not self._in_process_queues:
+            return True
+        rows = int(max(1.0, float(self._estimate_request_work_units(request))))
+        if rows >= int(self._exact_dp_recovery_min_rows()):
+            return True
+        return self._request_staged_age_ms(request) >= float(self._exact_dp_recovery_max_age_ms())
+
+    def _should_defer_exact_dp_for_ga(self, request: "GpuRequest") -> bool:
+        if not self._in_process_queues:
+            return False
+        if getattr(request, "request_type", None) != GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
+            return False
+        return not self._is_ga_recovery_request(request)
+
     def __new__(cls):
         """Singleton pattern."""
         if cls._instance is None:
@@ -2530,10 +2576,7 @@ class GpuExecutor:
             return
         if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
             return
-        if any(
-            self._is_ga_recovery_request_type(getattr(req, "request_type", None))
-            for req in list(self._staged_requests)[1:]
-        ):
+        if any(self._is_ga_recovery_request(req) for req in list(self._staged_requests)[1:]):
             return
 
         lookahead_limit = self._ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))
@@ -2548,7 +2591,38 @@ class GpuExecutor:
             self._staged_requests.append(request)
             if request.request_type == GpuRequestType.SHUTDOWN:
                 break
-            if self._is_ga_recovery_request_type(request.request_type):
+            if self._is_ga_recovery_request(request):
+                break
+
+    def _prefetch_ga_behind_deferred_exact_dp(self, *, deadline: float, batch_max_size: int) -> None:
+        if not self._in_process_queues:
+            return
+        if not self._staged_requests:
+            return
+        try:
+            first_request = self._staged_requests[0]
+        except Exception:
+            return
+        if not self._should_defer_exact_dp_for_ga(first_request):
+            return
+        has_ready_ga_or_shutdown = any(
+            req.request_type in {GpuRequestType.GPU_NATIVE_GA_RUN, GpuRequestType.SHUTDOWN}
+            for req in self._staged_requests
+        )
+        if has_ready_ga_or_shutdown:
+            return
+
+        lookahead_limit = self._ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))
+        while len(self._staged_requests) < int(lookahead_limit):
+            remaining = float(deadline - perf_counter())
+            if remaining <= 0.0:
+                break
+            try:
+                request = self._pop_queue_request(remaining)
+            except queue.Empty:
+                break
+            self._staged_requests.append(request)
+            if request.request_type in {GpuRequestType.GPU_NATIVE_GA_RUN, GpuRequestType.SHUTDOWN}:
                 break
 
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
@@ -2556,6 +2630,7 @@ class GpuExecutor:
             self._stage_request(self._pop_queue_request(timeout))
 
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
+        self._prefetch_ga_behind_deferred_exact_dp(deadline=deadline, batch_max_size=int(batch_max_size))
 
         if (
             self._in_process_queues
@@ -2568,7 +2643,18 @@ class GpuExecutor:
                     continue
                 if staged.request_type == GpuRequestType.SHUTDOWN:
                     return self._pop_staged_request(idx)
-                if self._is_ga_recovery_request_type(staged.request_type):
+                if self._is_ga_recovery_request(staged):
+                    return self._pop_staged_request(idx)
+
+        if (
+            self._in_process_queues
+            and self._staged_requests
+            and self._should_defer_exact_dp_for_ga(self._staged_requests[0])
+        ):
+            for idx, staged in enumerate(self._staged_requests):
+                if idx == 0:
+                    continue
+                if staged.request_type in {GpuRequestType.SHUTDOWN, GpuRequestType.GPU_NATIVE_GA_RUN}:
                     return self._pop_staged_request(idx)
 
         return self._pop_staged_request(0)

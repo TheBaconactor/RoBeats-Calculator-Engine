@@ -89,6 +89,7 @@ class _FakeGpuApi:
 
     def ga_evaluate_population(self, *_args, **_kwargs):
         self.evaluate_calls += 1
+        self.last_evaluate_kwargs = dict(_kwargs)
         if self._fail_once:
             self._fail_once = False
             raise RuntimeError("failed to create semaphore")
@@ -230,7 +231,8 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     assert fake_gpu.reset_calls >= 1
     assert fake_gpu.generate_calls == 1
     assert fake_gpu.download_run_payload_calls == 1
-    assert fake_gpu.store_payload_calls == 2
+    assert fake_gpu.store_payload_calls == 0
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 2
     assert fake_gpu.upload_calls == 0
     assert fake_gpu.population_upload_calls >= 3
 
@@ -455,6 +457,9 @@ def test_run_gpu_native_ga_steady_state_forwards_global_ftff_caps(monkeypatch):
     assert evaluate_kwargs
     assert all("max_ft_gems_global" in kwargs for kwargs in evaluate_kwargs)
     assert all("max_ff_gems_global" in kwargs for kwargs in evaluate_kwargs)
+    assert all(kwargs.get("materialize_mode") == "none" for kwargs in evaluate_kwargs)
+    assert fake_gpu.store_payload_calls == 0
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 3
 
 
 def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
@@ -506,8 +511,8 @@ def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
 
     assert isinstance(out, np.ndarray)
     assert len(flag_events) == 1
-    assert len(phase_events) == 3
-    assert all(event.get("metrics", {}).get("phase") == "evaluate" for event in phase_events)
+    assert len(phase_events) == 6
+    assert {event.get("metrics", {}).get("phase") for event in phase_events} == {"evaluate", "update_runs_best"}
     assert all(int(event.get("metrics", {}).get("batch_runs", 0)) == 1 for event in phase_events)
 
 
