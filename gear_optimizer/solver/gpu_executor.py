@@ -478,6 +478,7 @@ def _registry_static_handle_entry(
             "Difficulty": meta.get("Difficulty", ""),
             "Long Notes": int(meta.get("Long Notes", 0) or 0),
             "Last Note Time": float(meta.get("Last Note Time", 0) or 0.0),
+            "TimelineAnalysisMaxWindows": int(meta.get("TimelineAnalysisMaxWindows", 0) or 0),
             "TimingEnvelopeApplied": bool(meta.get("TimingEnvelopeApplied")),
             "TimingEnvelopeMode": meta.get("TimingEnvelopeMode", ""),
             "TimingEnvelopeFGCarry": meta.get("TimingEnvelopeFGCarry", ""),

@@ -29,6 +29,7 @@ from .timing_envelope import (
     count_timeline_analysis_windows,
     prepare_timeline_analysis_inputs,
 )
+from .timeline_exact_dp import build_score_bonus_prefix
 from .scoring.stats_scoring import build_great_penalty_table
 
 
@@ -68,42 +69,12 @@ def _build_fever_bonus_prefix(
     combo_mul: float,
     fever_mul: float,
 ) -> np.ndarray:
-    """
-    Build prefix sums of per-note fever bonus w_i = V_fever(i) - V_normal(i).
-
-    This mirrors `fast_calculate_score(...)` semantics:
-      - head (first 100): ramped scaling via combo_mul
-      - body (>=100): constant values per note
-    """
-    n = int(total_notes)
-    if n <= 0:
-        return np.zeros((1,), dtype=np.int64)
-
-    head_len = min(100, n)
-    w = np.empty((n,), dtype=np.int32)
-
-    base_f = np.float32(base_value)
-    combo_mul_f = np.float32(combo_mul)
-    fever_mul_f = np.float32(fever_mul)
-
-    # Match scoring_core.fast_calculate_score: factor uses float32 and int truncation.
-    factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
-    combo_val_per_note = int(base_f * combo_mul_f)
-    fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
-    body_w = int(fever_val_per_note - combo_val_per_note)
-
-    for i in range(head_len):
-        current_ramp_val = base_f + (np.float32(i + 1) * factor)
-        w[i] = int(current_ramp_val * fever_mul_f) - int(current_ramp_val)
-
-    if n > head_len:
-        w[head_len:n] = body_w
-
-    # prefix[0]=0; prefix[i+1]=sum(w[:i+1])
-    out = np.empty((n + 1,), dtype=np.int64)
-    out[0] = 0
-    out[1:] = np.cumsum(w, dtype=np.int64)
-    return out
+    return build_score_bonus_prefix(
+        total_notes=int(total_notes),
+        base_value=float(base_value),
+        combo_mul=float(combo_mul),
+        fever_mul=float(fever_mul),
+    )
 
 
 def _build_forced_great_penalty_prefix(

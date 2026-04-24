@@ -631,6 +631,11 @@ def _setup_song_context(
     except Exception:
         pass
 
+    try:
+        calc_song.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = int(read_timeline_analysis_max_windows(cfg))
+    except Exception:
+        pass
+
     meta_primary_color = calc_song["metadata"].get("Primary Color", "")
     meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 

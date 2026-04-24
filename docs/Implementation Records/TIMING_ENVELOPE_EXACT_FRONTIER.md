@@ -17,6 +17,7 @@ FF/FT timing path.
 Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine for base and FG:
 
 - base timeline ceiling uses `prepare_perfect_timing_envelope(...)` for chord-group Perfect-window payloads
+- base production now exact-refines bounded cells with the shared score-proxy timeline DP
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
 - FG's only specialization is deterministic late-Great carry via `fg_great_candidate_timestamps`
 - the exact frontier cap is now `TimelineAnalysisMaxWindows = 3`
@@ -34,6 +35,24 @@ That count is an exact upper bound on any FG forced-Great path for the same stat
 fill and Great carry can only keep fever ending at the same note or later.
 
 This is the same reduction for base analysis and FG. FG adds only the carry stream needed by the exact-DP objective.
+
+## Base Exactness
+
+Base and FG now share the same bounded exact-frontier policy, but they are not exact in the same sense:
+
+- FG exact DP is exact for one fixed resolved stat point
+- base exact DP is exact for the cached score-proxy objective on the retained frontier
+
+Why base is not fully exact across all stat triples:
+
+- the production base path caches one timeline signature per `(FT, FF)` cell and reuses it across many PP/CM/FM/base
+  combinations during GA
+- different stat triples can prefer different feasible fever signatures for the same timing cell
+- therefore one cached base signature cannot be simultaneously globally exact for every genome unless production stores a
+  frontier of signatures or solves per genome, which is a much larger architecture change
+
+The shipped migration still supersedes the old greedy ceiling behavior on the retained frontier by replacing it with an
+exact score-proxy DP, then falling back to the fast heuristic outside the frontier.
 
 ## Performance
 
@@ -57,6 +76,10 @@ Current full-removal verification (2026-04-24):
   - `1 passed`
   - bounded proof case: `n=20`, `spacing=0.08`, `FF=0.35`, `FT=0.65`, baseline windows `=3`
   - exact DP matches brute force and beats a one-step greedy section policy by `8297`
+- `python -m pytest -q tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py::test_gpu_ceiling_exact_frontier_beats_heuristic_on_bounded_cell --tb=short`
+  - `1 passed`
+  - bounded base proof case: `n=120`, `gap=24ms`, `FF=1.0`, `FT=0.8`, activation upper bound `=2`
+  - production base exact frontier beats the old heuristic by `159120` under the cached proxy objective
 - `python -m pytest -q tests/test_fg_exact_dp_correctness.py tests/test_fg_exact_dp_pipeline_gpu_dispatch.py tests/test_gpu_service_fused_submit.py tests/test_native_inflight_stages_db_prefetch.py::test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating_base_calc_song tests/test_native_inflight_stages_db_prefetch.py::test_prepare_fg_job_sync_warms_fg_jit_for_finder tests/test_bench_ga_winner_stability.py tests/test_verify_sanity_output_script.py --tb=short`
   - `25 passed`
 - `python -m pytest -m gpu -q tests/test_gpu_timeline_ceiling_envelope_smoke.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py tests/test_gpu_timeline_ceiling_envelope_mc_upper_bound.py tests/test_fg_exact_dp_gpu_parity.py --tb=short`
