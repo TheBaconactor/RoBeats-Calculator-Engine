@@ -13,7 +13,7 @@ small activation-window cap to avoid the old full-state explosion.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil
 from typing import Literal
 import threading
@@ -50,6 +50,75 @@ class TimelineAnalysisInputs:
     fever_mul: float
     primary_val: int
     secondary_val: int
+
+
+@dataclass
+class TimelineWindowCounter:
+    """Reusable all-normal window counter for resolved timeline stat cells."""
+
+    timestamps: np.ndarray
+    long_notes: int
+    last_note_time: float
+    ref_ft: np.ndarray
+    ref_ff: np.ndarray
+    _fever_end_cache: dict[int, np.ndarray] = field(default_factory=dict)
+
+    def count(self, ft_idx: int, ff_idx: int) -> int:
+        ft_i = max(0, min(TOTAL_ROWS, safe_int(ft_idx, 0)))
+        ff_i = max(0, min(TOTAL_ROWS, safe_int(ff_idx, 0)))
+        total_notes = int(self.timestamps.shape[0])
+        if total_notes <= 0:
+            return 0
+
+        non_fever_cas = (total_notes - int(self.long_notes)) * float(FEVER_FILL_BASE_RATE)
+        if non_fever_cas < 0.0:
+            non_fever_cas = 0.0
+        raw_fill = float(non_fever_cas) * float(self.ref_ff[ff_i])
+        non_fever_base = int(ceil(raw_fill))
+
+        fever_end_song = self._fever_end_cache.get(ft_i)
+        if fever_end_song is None:
+            fever_time_cas = float(self.last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+            fever_duration = float(fever_time_cas) * float(self.ref_ft[ft_i])
+            end_times_song = self.timestamps.astype(np.float64, copy=False) + float(fever_duration)
+            fever_end_song = np.searchsorted(self.timestamps, end_times_song, side="left").astype(
+                np.int32, copy=False
+            )
+            self._fever_end_cache[ft_i] = fever_end_song
+
+        return _count_timeline_windows_from_end_table(
+            total_notes=total_notes,
+            non_fever_base=int(non_fever_base),
+            fever_end_song=fever_end_song,
+        )
+
+
+def _count_timeline_windows_from_end_table(
+    *,
+    total_notes: int,
+    non_fever_base: int,
+    fever_end_song: np.ndarray,
+) -> int:
+    windows = 0
+    i = 0
+    is_first = True
+    while i < int(total_notes):
+        notes_to_fill = int(non_fever_base - 1 if is_first else non_fever_base)
+        if notes_to_fill < 0:
+            notes_to_fill = 0
+        end_normal = int(i + notes_to_fill)
+        if end_normal >= int(total_notes):
+            break
+
+        fever_end_idx = int(fever_end_song[end_normal])
+        if fever_end_idx <= end_normal:
+            fever_end_idx = min(int(total_notes), end_normal + 1)
+
+        windows += 1
+        i = int(fever_end_idx)
+        is_first = False
+
+    return int(windows)
 
 
 def floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
@@ -564,6 +633,51 @@ def prepare_timeline_analysis_inputs(
     )
 
 
+def prepare_timeline_window_counter(
+    *,
+    calc_song: dict,
+    ref_arrays: dict,
+    mode: Literal["base", "fg"] = "base",
+) -> TimelineWindowCounter | None:
+    """Prepare a cheap reusable counter for resolved all-normal window counts."""
+
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return None
+
+    mode = "fg" if mode == "fg" else "base"
+    timestamps, _great_candidates = _extract_timestamps_for_mode(calc_song, mode)
+    total_notes = int(timestamps.shape[0])
+    if total_notes <= 0:
+        return None
+
+    metadata = calc_song.get("metadata", {}) or {}
+    long_notes = safe_int(metadata.get("Long Notes", 0), 0)
+
+    song_data = calc_song.get("song_data", {}) or {}
+    base_ts = song_data.get("chart_timestamps", song_data.get("timestamps", timestamps))
+    try:
+        default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
+    except Exception:
+        default_last_note = 0.0
+    last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
+
+    try:
+        ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32)
+        ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32)
+    except Exception:
+        return None
+    if int(ref_ff.shape[0]) <= TOTAL_ROWS or int(ref_ft.shape[0]) <= TOTAL_ROWS:
+        return None
+
+    return TimelineWindowCounter(
+        timestamps=np.asarray(timestamps, dtype=np.float64),
+        long_notes=int(long_notes),
+        last_note_time=float(last_note_time),
+        ref_ft=ref_ft,
+        ref_ff=ref_ff,
+    )
+
+
 def count_timeline_analysis_windows(prepared: TimelineAnalysisInputs | None) -> int:
     """
     Count all-normal fever activations for a fixed stat point.
@@ -585,23 +699,8 @@ def count_timeline_analysis_windows(prepared: TimelineAnalysisInputs | None) -> 
     end_times_song = timestamps.astype(np.float64) + float(fever_duration)
     fever_end_song = np.searchsorted(timestamps, end_times_song, side="left").astype(np.int32, copy=False)
 
-    windows = 0
-    i = 0
-    is_first = True
-    while i < total_notes:
-        notes_to_fill = int(non_fever_base - 1 if is_first else non_fever_base)
-        if notes_to_fill < 0:
-            notes_to_fill = 0
-        end_normal = int(i + notes_to_fill)
-        if end_normal >= total_notes:
-            break
-
-        fever_end_idx = int(fever_end_song[end_normal])
-        if fever_end_idx <= end_normal:
-            fever_end_idx = min(total_notes, end_normal + 1)
-
-        windows += 1
-        i = int(fever_end_idx)
-        is_first = False
-
-    return int(windows)
+    return _count_timeline_windows_from_end_table(
+        total_notes=int(total_notes),
+        non_fever_base=int(non_fever_base),
+        fever_end_song=fever_end_song,
+    )

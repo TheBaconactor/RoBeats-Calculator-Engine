@@ -119,6 +119,80 @@ def _uses_timing_envelope_fg(calc_song: dict) -> bool:
         return False
 
 
+def _resolve_timeline_analysis_max_windows_for_song(calc_song: dict, *, default: int = 3) -> int:
+    try:
+        value = int(default)
+    except Exception:
+        value = 3
+    try:
+        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+        if isinstance(meta, dict) and meta.get("TimelineAnalysisMaxWindows", None) not in (None, ""):
+            value = int(meta.get("TimelineAnalysisMaxWindows"))
+    except Exception:
+        pass
+    raw_env = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
+    if raw_env is not None and str(raw_env).strip() != "":
+        try:
+            value = int(str(raw_env).strip())
+        except Exception:
+            pass
+    return max(0, min(int(value), 64))
+
+
+def _filter_ftff_pairs_by_resolved_window_cap(
+    *,
+    ftff_pairs,
+    base_stats_pairs,
+    calc_song: dict,
+    ref_arrays: dict,
+    max_windows: int,
+    gem_scale_fever: int,
+) -> tuple[list[tuple[int, int]], int]:
+    """
+    Drop FT/FF gem pairs whose resolved base rows all exceed the shared window cap.
+
+    This is the production fail-safe gate: it is applied after resolving the actual
+    base FT/FF rows, so a pair survives if any pending base row can still land on
+    the retained small-window frontier.
+    """
+
+    pairs = [] if ftff_pairs is None else [(int(ft), int(ff)) for ft, ff in list(ftff_pairs)]
+    if int(max_windows) <= 0 or not pairs:
+        return pairs, 0
+
+    base_pairs_iter = [] if base_stats_pairs is None else base_stats_pairs
+    base_pairs = sorted({(int(ft), int(ff)) for ft, ff in base_pairs_iter})
+    if not base_pairs:
+        return pairs, 0
+
+    try:
+        from ....solver.timing_envelope import prepare_timeline_window_counter
+
+        counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+    except Exception:
+        counter = None
+    if counter is None:
+        return pairs, 0
+
+    kept: list[tuple[int, int]] = []
+    dropped = 0
+    scale = int(gem_scale_fever)
+    for ft_gems, ff_gems in pairs:
+        keep = False
+        for base_ft, base_ff in base_pairs:
+            ft_idx = max(0, min(160, int(base_ft) + int(ft_gems) * scale))
+            ff_idx = max(0, min(160, int(base_ff) + int(ff_gems) * scale))
+            if int(counter.count(ft_idx, ff_idx)) <= int(max_windows):
+                keep = True
+                break
+        if keep:
+            kept.append((int(ft_gems), int(ff_gems)))
+        else:
+            dropped += 1
+
+    return kept, int(dropped)
+
+
 def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot: int) -> tuple[bool, int, bool]:
     held = True
     table_slot = int(current_song_slot)
@@ -916,6 +990,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_genome_stats_staged_batches = 0
     fg_genome_stats_uploaded_batches = 0
     fg_genome_stats_uploaded_bytes_est = 0
+    fg_window_pair_drops = 0
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -2724,6 +2799,22 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0)) for bs in pending
                 }
                 base_pairs_list = sorted(base_stats_pairs)
+                max_timeline_windows = _resolve_timeline_analysis_max_windows_for_song(calc_song)
+                if max_timeline_windows > 0:
+                    ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_cap(
+                        ftff_pairs=ftff_pairs,
+                        base_stats_pairs=base_pairs_list,
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        max_windows=int(max_timeline_windows),
+                        gem_scale_fever=int(GEM_SCALE_FEVER),
+                    )
+                    fg_window_pair_drops += int(dropped_pairs)
+                    ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
+                    if not ftff_pairs:
+                        if perf:
+                            t_cfg_build_sec += time.perf_counter() - _t_cfg1
+                        continue
                 base_pairs_packed = _pack_pairs_int32(base_pairs_list)
                 ftff_pairs_submit = ftff_pairs_packed if ftff_pairs_packed is not None else ftff_pairs
                 base_pairs_submit = base_pairs_packed if base_pairs_packed is not None else base_pairs_list
@@ -4048,6 +4139,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 fg_task_tile_batches,
                 fg_fused_tile_batches,
             )
+            logger.debug("[PERF] FG resolved-window pair drops: %s", fg_window_pair_drops)
             logger.debug(
                 "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
                 t_cache_check_sec * 1000.0,
@@ -4069,6 +4161,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
         meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
+        meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
     except Exception:
         pass
 
@@ -4086,6 +4179,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
             meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
+            meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
         except Exception:
             pass
 

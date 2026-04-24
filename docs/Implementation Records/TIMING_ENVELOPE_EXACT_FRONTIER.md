@@ -19,6 +19,8 @@ Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine
 - base timeline ceiling uses `prepare_perfect_timing_envelope(...)` for chord-group Perfect-window payloads
 - base production now exact-refines bounded cells with the shared score-proxy timeline DP
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
+- FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with the same shared window counter before
+  breakpoint generation and exact inner gem solving
 - FG's only specialization is deterministic late-Great carry via `fg_great_candidate_timestamps`
 - the exact frontier cap is now `TimelineAnalysisMaxWindows = 3`
 
@@ -34,6 +36,12 @@ That count is an exact upper bound on any FG forced-Great path for the same stat
 fill and Great carry can only keep fever ending at the same note or later.
 
 This is the same reduction for base analysis and FG. FG adds only the carry stream needed by the exact-DP objective.
+
+Update on 2026-04-24: `prepare_timeline_window_counter(...)` exposes the shared all-normal window count without building a
+full fixed-stat scoring input. It caches the fever-end table per resolved FT index, so a full FT/FF candidate grid can be
+filtered cheaply after base FT/FF rows are known. The FG finder keeps a candidate pair if any pending base row resolves to
+`<= TimelineAnalysisMaxWindows`; it drops the pair only when every resolved row is outside the accepted small-window
+frontier.
 
 ## Base Exactness
 

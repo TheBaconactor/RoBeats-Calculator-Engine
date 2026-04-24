@@ -8,6 +8,7 @@ from gear_optimizer.solver.timing_envelope import (
     apply_timing_envelope,
     count_timeline_analysis_windows,
     prepare_timeline_analysis_inputs,
+    prepare_timeline_window_counter,
 )
 
 
@@ -91,6 +92,37 @@ def test_fg_exact_dp_reuses_shared_timeline_window_analysis() -> None:
     assert prepared.timeline_analysis.ft_idx == timeline.ft_idx
     assert np.array_equal(prepared.timeline_analysis.timestamps, timeline.timestamps)
     assert count_force_greats_baseline_windows_from_prepared(prepared) == count_timeline_analysis_windows(timeline)
+
+
+def test_timeline_window_counter_matches_prepared_analysis_for_resolved_stats() -> None:
+    calc_song = _calc_song()
+    apply_timing_envelope(calc_song)
+    ref_arrays = _ref_arrays()
+    stats = {
+        "Perfect Points": 5,
+        "Combo Multiplier": 5,
+        "Fever Multiplier": 5,
+        "Fever Fill Rate": 37,
+        "Fever Time": 41,
+        "Rush": 1000,
+        "Flow": 500,
+    }
+
+    timeline = prepare_timeline_analysis_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+    counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+
+    assert timeline is not None
+    assert counter is not None
+    assert counter.count(41, 37) == count_timeline_analysis_windows(timeline)
+
+    base_timeline = prepare_timeline_analysis_inputs(
+        stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="base"
+    )
+    base_counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="base")
+
+    assert base_timeline is not None
+    assert base_counter is not None
+    assert base_counter.count(41, 37) == count_timeline_analysis_windows(base_timeline)
 
 
 def test_gpu_registry_payload_preserves_timing_envelope_inputs() -> None:
