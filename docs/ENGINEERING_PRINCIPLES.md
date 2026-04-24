@@ -61,6 +61,7 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - Remove stale names, duplicate wrappers, and obsolete compatibility layers when the real owner is known.
 - Centralize contracts, not just helper functions. Shared logic should live with the layer that owns the contract.
 - Treat optimization by deletion/trimming as high risk when a payload crosses stage boundaries. Before shrinking GA/FG/persistence candidate state, name every downstream consumer and prove both the execution funnel and the retained DB frontier still satisfy their separate contracts.
+- When selecting bounded GA/FG/persistence frontiers, dedupe by the relevant canonical identity before applying top-K cutoffs. A wider host download cannot recover unique candidates discarded by an earlier raw-row cutoff.
 - Keep docs, tests, and implementation records aligned with meaningful behavior or policy changes.
 
 ## Definition of done for behavior work

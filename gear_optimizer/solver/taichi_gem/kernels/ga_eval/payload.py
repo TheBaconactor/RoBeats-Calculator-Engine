@@ -89,6 +89,57 @@ def _write_fg_candidate_row_from_genome(
     kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 6] = ti.cast(stats7[6], ti.i32)
 
 
+@ti.func
+def _population_key_matches(
+    genome_idx: ti.i32,
+    g0: ti.i32,
+    g1: ti.i32,
+    g2: ti.i32,
+    g3: ti.i32,
+    g4: ti.i32,
+    g5: ti.i32,
+    m0: ti.i32,
+    m1: ti.i32,
+    m2: ti.i32,
+) -> ti.i32:
+    mm = _sort3_i32(
+        kernels_helpers.population_indices[genome_idx, 6],
+        kernels_helpers.population_indices[genome_idx, 7],
+        kernels_helpers.population_indices[genome_idx, 8],
+    )
+    return ti.cast(
+        kernels_helpers.population_indices[genome_idx, 0] == g0
+        and kernels_helpers.population_indices[genome_idx, 1] == g1
+        and kernels_helpers.population_indices[genome_idx, 2] == g2
+        and kernels_helpers.population_indices[genome_idx, 3] == g3
+        and kernels_helpers.population_indices[genome_idx, 4] == g4
+        and kernels_helpers.population_indices[genome_idx, 5] == g5
+        and mm[0] == m0
+        and mm[1] == m1
+        and mm[2] == m2,
+        ti.i32,
+    )
+
+
+@ti.func
+def _bubble_fg_candidate_up(
+    top_scores: ti.template(),
+    top_idx: ti.template(),
+    slot: ti.i32,
+) -> ti.i32:
+    cur = slot
+    for _ in range(_GA_FG_CANDIDATES_PER_RUN):
+        if cur > 0 and top_scores[cur] > top_scores[cur - 1]:
+            score_tmp = top_scores[cur - 1]
+            idx_tmp = top_idx[cur - 1]
+            top_scores[cur - 1] = top_scores[cur]
+            top_idx[cur - 1] = top_idx[cur]
+            top_scores[cur] = score_tmp
+            top_idx[cur] = idx_tmp
+            cur -= 1
+    return cur
+
+
 @ti.kernel
 def ga_pack_run_payload_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
@@ -433,7 +484,12 @@ def ga_pack_fg_candidates_table_segmented_kernel(
         kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 6] = ff_stat
 
         # ------------------------------------------------------------------
-        # Rows 1..K: top candidates from final population (per run).
+        # Rows 1..K: top unique candidates from final population (per run).
+        #
+        # This must dedupe before the top-K cutoff. A converged GA population can
+        # have dozens of copies of the same high-scoring genome at the front; if
+        # we pack raw rows first, downstream FG/persistence selection only sees a
+        # thin frontier even when lower-ranked unique genomes still exist.
         # ------------------------------------------------------------------
         top_scores = ti.Vector.zero(ti.i32, K)
         top_idx = ti.Vector.zero(ti.i32, K)
@@ -448,18 +504,52 @@ def ga_pack_fg_candidates_table_segmented_kernel(
             if score <= 0:
                 continue
 
-            inserted = ti.i32(0)
+            mm_g = _sort3_i32(
+                kernels_helpers.population_indices[g, 6],
+                kernels_helpers.population_indices[g, 7],
+                kernels_helpers.population_indices[g, 8],
+            )
+
+            duplicate_slot = ti.i32(-1)
             for j in range(K):
-                if inserted == 0 and score > top_scores[j]:
-                    # Shift down 1 slot for indices > j.
-                    for t in range(K - 1):
-                        tt = (K - 1) - t
-                        if tt > j:
-                            top_scores[tt] = top_scores[tt - 1]
-                            top_idx[tt] = top_idx[tt - 1]
-                    top_scores[j] = score
-                    top_idx[j] = g
-                    inserted = 1
+                prev_g = top_idx[j]
+                if (
+                    duplicate_slot < 0
+                    and prev_g >= 0
+                    and _population_key_matches(
+                        prev_g,
+                        kernels_helpers.population_indices[g, 0],
+                        kernels_helpers.population_indices[g, 1],
+                        kernels_helpers.population_indices[g, 2],
+                        kernels_helpers.population_indices[g, 3],
+                        kernels_helpers.population_indices[g, 4],
+                        kernels_helpers.population_indices[g, 5],
+                        mm_g[0],
+                        mm_g[1],
+                        mm_g[2],
+                    )
+                    != 0
+                ):
+                    duplicate_slot = j
+
+            if duplicate_slot >= 0:
+                if score > top_scores[duplicate_slot]:
+                    top_scores[duplicate_slot] = score
+                    top_idx[duplicate_slot] = g
+                    _bubble_fg_candidate_up(top_scores, top_idx, duplicate_slot)
+            else:
+                inserted = ti.i32(0)
+                for j in range(K):
+                    if inserted == 0 and score > top_scores[j]:
+                        # Shift down 1 slot for indices > j.
+                        for t in range(K - 1):
+                            tt = (K - 1) - t
+                            if tt > j:
+                                top_scores[tt] = top_scores[tt - 1]
+                                top_idx[tt] = top_idx[tt - 1]
+                        top_scores[j] = score
+                        top_idx[j] = g
+                        inserted = 1
 
         for j in range(K):
             out_row = 1 + j

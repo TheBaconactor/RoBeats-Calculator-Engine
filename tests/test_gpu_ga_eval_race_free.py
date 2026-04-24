@@ -5,13 +5,14 @@ import os
 import numpy as np
 import pytest
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER
+from gear_optimizer.core.constants import GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 from gear_optimizer.solver.taichi_gem.api.ga_operations import (
     ga_download_results,
     ga_download_scores,
+    ga_download_fg_selected_payload,
     ga_evaluate_population,
     ga_init_runs_best,
     ga_pack_fg_candidates_table_segmented,
@@ -409,6 +410,11 @@ def test_gpu_ga_light_refresh_and_fg_pack_match_full_materialization() -> None:
         population: np.ndarray,
         k: int,
     ) -> np.ndarray:
+        def row_key(row: np.ndarray) -> tuple[int, ...]:
+            ids = np.asarray(row, dtype=np.int32).reshape(-1)
+            minis = sorted(int(x) for x in ids[6:9])
+            return tuple(int(x) for x in ids[:6]) + tuple(minis)
+
         expected = np.zeros((n_runs, k, 24), dtype=np.int32)
         for run_idx in range(n_runs):
             start = run_idx * n_genomes_per_run
@@ -418,6 +424,30 @@ def test_gpu_ga_light_refresh_and_fg_pack_match_full_materialization() -> None:
                 g = start + local_g
                 score = int(scores[g])
                 if score <= 0:
+                    continue
+                key = row_key(population[g])
+                duplicate_slot = -1
+                for j in range(k):
+                    existing_g = int(top_idx[j])
+                    if existing_g >= 0 and row_key(population[existing_g]) == key:
+                        duplicate_slot = j
+                        break
+                if duplicate_slot >= 0:
+                    if score > int(top_scores[duplicate_slot]):
+                        top_scores[duplicate_slot] = score
+                        top_idx[duplicate_slot] = g
+                        while duplicate_slot > 0 and int(top_scores[duplicate_slot]) > int(
+                            top_scores[duplicate_slot - 1]
+                        ):
+                            top_scores[duplicate_slot], top_scores[duplicate_slot - 1] = (
+                                top_scores[duplicate_slot - 1],
+                                top_scores[duplicate_slot],
+                            )
+                            top_idx[duplicate_slot], top_idx[duplicate_slot - 1] = (
+                                top_idx[duplicate_slot - 1],
+                                top_idx[duplicate_slot],
+                            )
+                            duplicate_slot -= 1
                     continue
                 for j in range(k):
                     if score > int(top_scores[j]):
@@ -597,3 +627,157 @@ def test_gpu_ga_light_refresh_and_fg_pack_match_full_materialization() -> None:
         k=k,
     )
     assert np.array_equal(light_fg_rows, expected_fg_rows)
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_fg_pack_dedupes_before_topk_cutoff() -> None:
+    """
+    Regression for the live thin-frontier failure.
+
+    A converged final population can put many copies of one best genome ahead of
+    lower-scoring unique genomes. The GA->FG packer must keep top unique rows, not
+    top raw rows, or persistence/FG only receive a 1-row frontier.
+    """
+    k = int(gpu_fields.GA_FG_CANDIDATES_PER_RUN)
+    duplicate_count = int(k) + 5
+    unique_count = 32
+    n_genomes = int(duplicate_count + unique_count)
+    song_slot = 0
+    total_budget = 90
+
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+
+    def item(name: str, value: int) -> dict:
+        return _mk_item(
+            name,
+            **{
+                "Perfect Points": value,
+                "Combo Multiplier": value,
+                "Fever Multiplier": value,
+                "Fever Time": value,
+                "Fever Fill Rate": value,
+                "Beat": value,
+                "Vibe": value,
+                "Rush": value,
+                "Flow": value,
+                "Chill": value,
+            },
+        )
+
+    gear_pool = {
+        "Hat": [item("HatStrong", 500)] + [item(f"HatWeak{i}", 1 + (i % 5)) for i in range(unique_count)],
+        "Neck": [item("NeckStrong", 500)],
+        "Face": [item("FaceStrong", 500)],
+        "Shirt": [item("ShirtStrong", 500)],
+        "Back": [item("BackStrong", 500)],
+        "Pants": [item("PantsStrong", 500)],
+    }
+    mini_pool = [item(f"MiniStrong{i}", 500) for i in range(3)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+    gpu_arrays = registry.to_gpu_arrays()
+
+    strong_genome = [gear_pool[slot][0] for slot in slots] + mini_pool
+    genomes: list[list[dict]] = [list(strong_genome) for _ in range(duplicate_count)]
+    for i in range(unique_count):
+        genome = [gear_pool["Hat"][i + 1]]
+        genome.extend(gear_pool[slot][0] for slot in slots[1:])
+        genome.extend(mini_pool)
+        genomes.append(genome)
+    pop_indices = registry.encode_population(genomes)
+
+    base_fixed_stats_arr = np.zeros((10,), dtype=np.int32)
+    ref_arrays = {
+        "Perfect Points": np.linspace(0.0, 1.0, 161, dtype=np.float64),
+        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Multiplier": np.linspace(1.0, 3.0, 161, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+    }
+    calc_song = _make_calc_song(name="UniqueBeforeTopK_BeatVibe", p_color="Beat", s_color="Vibe")
+    flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
+
+    with _GPU_LOCK:
+        ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
+        ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+        ga_upload_population_indices(pop_indices, n_slots=9)
+        ga_init_runs_best(run_idx_start=0, n_runs=1, n_slots=9)
+        ga_evaluate_population(
+            n_genomes=n_genomes,
+            n_slots=9,
+            total_budget=total_budget,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=song_slot,
+            is_p_ft=flags["is_p_ft"],
+            is_s_ft=flags["is_s_ft"],
+            is_p_ff=flags["is_p_ff"],
+            is_s_ff=flags["is_s_ff"],
+            is_p_pp=flags["is_p_pp"],
+            is_s_pp=flags["is_s_pp"],
+            is_p_cm=flags["is_p_cm"],
+            is_s_cm=flags["is_s_cm"],
+            is_p_fm=flags["is_p_fm"],
+            is_s_fm=flags["is_s_fm"],
+            is_p_ov=flags["is_p_ov"],
+            is_s_ov=flags["is_s_ov"],
+            materialize_mode="none",
+        )
+        ga_refresh_scores_and_update_runs_best(
+            run_idx_start=0,
+            n_runs=1,
+            n_genomes_per_run=n_genomes,
+            n_slots=9,
+            total_budget=total_budget,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=song_slot,
+            is_p_ft=flags["is_p_ft"],
+            is_s_ft=flags["is_s_ft"],
+            is_p_ff=flags["is_p_ff"],
+            is_s_ff=flags["is_s_ff"],
+            is_p_pp=flags["is_p_pp"],
+            is_s_pp=flags["is_s_pp"],
+            is_p_cm=flags["is_p_cm"],
+            is_s_cm=flags["is_s_cm"],
+            is_p_fm=flags["is_p_fm"],
+            is_s_fm=flags["is_s_fm"],
+            is_p_ov=flags["is_p_ov"],
+            is_s_ov=flags["is_s_ov"],
+        )
+        ga_pack_fg_candidates_table_segmented(
+            table_slot=song_slot,
+            run_idx_start=0,
+            n_runs=1,
+            n_genomes_per_run=n_genomes,
+            n_slots=9,
+            total_budget=total_budget,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=song_slot,
+            is_p_ft=flags["is_p_ft"],
+            is_s_ft=flags["is_s_ft"],
+            is_p_ff=flags["is_p_ff"],
+            is_s_ff=flags["is_s_ff"],
+            is_p_pp=flags["is_p_pp"],
+            is_s_pp=flags["is_s_pp"],
+            is_p_cm=flags["is_p_cm"],
+            is_s_cm=flags["is_s_cm"],
+            is_p_fm=flags["is_p_fm"],
+            is_s_fm=flags["is_s_fm"],
+            is_p_ov=flags["is_p_ov"],
+            is_s_ov=flags["is_s_ov"],
+        )
+
+        limit = int(LOADOUTS_PER_SONG_LIMIT)
+        top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
+        base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
+        fg_budget_end = min(limit, base_budget + int(limit * 0.30))
+        selected_payload = ga_download_fg_selected_payload(
+            table_slot=song_slot,
+            n_runs=1,
+            limit=limit,
+            top_base_keep=top_base_keep,
+            base_budget=base_budget,
+            fg_budget_end=fg_budget_end,
+        )
+
+    expected_unique = min(limit, unique_count + 1)
+    assert int(selected_payload[0, 0]) == expected_unique
