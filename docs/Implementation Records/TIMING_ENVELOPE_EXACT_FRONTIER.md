@@ -53,10 +53,14 @@ Why base is not fully exact across all stat triples:
 The shipped migration still supersedes the old greedy ceiling behavior on the retained frontier by replacing it with an
 exact score-proxy DP, then falling back to the fast heuristic outside the frontier.
 
-The reviewed breakthrough path is to move the same bounded timing DP to a resolved-stat surface for final/base+FG
-materialization: solve timing after `(FT, FF, PP, CM, FM, base)` is known, or store a small per-cell Pareto frontier of
-exact signatures and let the scoring kernel choose the best signature per genome. A single cached signature per `(FT, FF)`
-cell cannot prove full base exactness for every genome.
+The reviewed breakthrough path is to move the same bounded timing DP to the scoring surface instead of caching one
+signature too early: either solve timing after `(FT, FF, PP, CM, FM, base)` is known, or store a small per-cell Pareto
+frontier of exact signatures and let the scoring kernel choose the best signature per genome. A single cached signature
+per `(FT, FF)` cell cannot prove full base exactness for every genome.
+
+The first implemented step on that path is FG-side: the full FG finder now evaluates generated FG timelines with the
+bounded exact inner gem solver, and maintained configs use full FT/FF search (`FG_SearchRadius = -1`). The remaining
+timeline gap is base's one-signature cache, not FG's inner gem allocation.
 
 ## Performance
 

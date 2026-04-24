@@ -14,7 +14,7 @@ import taichi as ti
 from taichi.lang import simt
 
 from ..kernels import kernels_helpers
-from ..kernels.kernels_scoring import optimize_core_device_preloaded_bits
+from ..kernels.kernels_scoring import optimize_core_device_exact_bound_preloaded_bits
 from .fields import (
     FG_DOWNLOAD_BATCH_MAX,
     FG_DOWNLOAD_TOPK_MAX,
@@ -1969,7 +1969,7 @@ def _optimize_core_bits(
     GEM_SCALE_FEVER: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
-    res = optimize_core_device_preloaded_bits(
+    res = optimize_core_device_exact_bound_preloaded_bits(
         budget,
         cur_pp,
         cur_cm,

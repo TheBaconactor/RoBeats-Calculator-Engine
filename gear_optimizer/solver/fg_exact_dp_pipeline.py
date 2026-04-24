@@ -7,8 +7,9 @@ This module provides `process_fg_exact_dp`, the production FG path for
 Current routing is orthogonal:
   Stage 1: GA outer search produces base candidates on main
   Stage 2: `FG_SolverMode=exact_dp` preserves the full FG finder surface
-           (FT/FF + gem re-optimization) and then uses exact DP to refine the
-           forced-Great configuration on the resolved FG stat points
+           (full FT/FF + bounded-exact BnB gem re-optimization) and then uses
+           exact DP to refine the forced-Great configuration on the resolved
+           FG stat points
   Stage 3: persistence keeps the best `fg_score`
 
 Legacy note:
