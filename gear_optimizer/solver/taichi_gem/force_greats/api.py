@@ -1330,8 +1330,6 @@ def _resolve_exact_dp_max_baseline_windows(explicit: int | None = None) -> int:
         except Exception:
             return 3
     raw = _ENV_GET("TIMELINE_ANALYSIS_MAX_WINDOWS")
-    if raw is None or str(raw).strip() == "":
-        raw = _ENV_GET("FG_EXACT_DP_MAX_BASELINE_WINDOWS", "3")
     try:
         return max(0, int(raw or 3))
     except Exception:

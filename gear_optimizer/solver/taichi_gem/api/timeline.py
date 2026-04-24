@@ -119,8 +119,6 @@ def _resolve_ceiling_exact_max_windows(calc_song: dict) -> int:
     if raw is None or str(raw).strip() == "":
         raw = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS", "")
     if raw is None or str(raw).strip() == "":
-        raw = os.environ.get("FG_EXACT_DP_MAX_BASELINE_WINDOWS", "")
-    if raw is None or str(raw).strip() == "":
         return 0
     try:
         return max(0, min(int(raw), 64))
@@ -537,11 +535,23 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
             group_base_arr = np.asarray(group_base_t_ms, dtype=np.int32)
             group_low_arr = np.asarray(group_low_ms, dtype=np.int32)
             group_high_arr = np.asarray(group_high_ms, dtype=np.int32)
+            pp_vals = np.asarray(ref_arrays.get("Perfect Points", ()), dtype=np.float32).reshape(-1)
+            cm_vals = np.asarray(ref_arrays.get("Combo Multiplier", ()), dtype=np.float32).reshape(-1)
+            fm_vals = np.asarray(ref_arrays.get("Fever Multiplier", ()), dtype=np.float32).reshape(-1)
+            proxy_pp = max(10000.0, float(np.nanmax(pp_vals)) if int(pp_vals.shape[0]) else 10000.0)
+            proxy_cm = float(np.nanmax(cm_vals)) if int(cm_vals.shape[0]) else 2.6
+            proxy_fm = float(np.nanmax(fm_vals)) if int(fm_vals.shape[0]) else 5.25
+            if not np.isfinite(proxy_pp) or proxy_pp <= 0.0:
+                proxy_pp = 10000.0
+            if not np.isfinite(proxy_cm) or proxy_cm <= 0.0:
+                proxy_cm = 2.6
+            if not np.isfinite(proxy_fm) or proxy_fm <= 0.0:
+                proxy_fm = 5.25
             bonus_prefix = build_score_bonus_prefix(
                 total_notes=int(total_notes),
-                base_value=10000.0,
-                combo_mul=2.6,
-                fever_mul=5.25,
+                base_value=float(proxy_pp),
+                combo_mul=float(proxy_cm),
+                fever_mul=float(proxy_fm),
             )
             ff_vals = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
             ft_vals = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)

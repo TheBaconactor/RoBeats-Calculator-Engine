@@ -415,10 +415,6 @@ def read_timeline_analysis_max_windows(cfg: Any, *, default: int = 3) -> int:
     """Read `[IterationEngine].TimelineAnalysisMaxWindows`.
 
     A value <= 0 disables the reduced exact timeline-window gate.
-
-    Backward compatibility:
-    - `FG_ExactDPMaxBaselineWindows` and `FG_EXACT_DP_MAX_BASELINE_WINDOWS`
-      are accepted as legacy aliases while configs migrate.
     """
     try:
         default_i = int(default)
@@ -428,8 +424,6 @@ def read_timeline_analysis_max_windows(cfg: Any, *, default: int = 3) -> int:
 
     try:
         raw = str(cfg.get("IterationEngine", "TimelineAnalysisMaxWindows", fallback="") or "").strip()
-        if not raw:
-            raw = str(cfg.get("IterationEngine", "FG_ExactDPMaxBaselineWindows", fallback="") or "").strip()
     except Exception as exc:
         warn_fallback(
             "config.timeline_analysis_max_windows.read",
@@ -440,8 +434,6 @@ def read_timeline_analysis_max_windows(cfg: Any, *, default: int = 3) -> int:
         raw = ""
 
     raw_env = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
-    if raw_env is None or str(raw_env).strip() == "":
-        raw_env = os.environ.get("FG_EXACT_DP_MAX_BASELINE_WINDOWS")
     if raw_env is not None and str(raw_env).strip() != "":
         raw = str(raw_env).strip()
     if not raw:

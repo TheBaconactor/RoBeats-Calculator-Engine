@@ -21,7 +21,6 @@ Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
 - FG's only specialization is deterministic late-Great carry via `fg_great_candidate_timestamps`
 - the exact frontier cap is now `TimelineAnalysisMaxWindows = 3`
-- legacy `FG_ExactDPMaxBaselineWindows` / `FG_EXACT_DP_MAX_BASELINE_WINDOWS` remain accepted aliases during migration
 
 Production song prep now calls `apply_timing_envelope(...)`. Root configs no longer ship a sampled-timing section.
 
@@ -41,7 +40,7 @@ This is the same reduction for base analysis and FG. FG adds only the carry stre
 Base and FG now share the same bounded exact-frontier policy, but they are not exact in the same sense:
 
 - FG exact DP is exact for one fixed resolved stat point
-- base exact DP is exact for the cached score-proxy objective on the retained frontier
+- base exact DP is exact for the cached reference-max score-proxy objective on the retained frontier
 
 Why base is not fully exact across all stat triples:
 
@@ -53,6 +52,11 @@ Why base is not fully exact across all stat triples:
 
 The shipped migration still supersedes the old greedy ceiling behavior on the retained frontier by replacing it with an
 exact score-proxy DP, then falling back to the fast heuristic outside the frontier.
+
+The reviewed breakthrough path is to move the same bounded timing DP to a resolved-stat surface for final/base+FG
+materialization: solve timing after `(FT, FF, PP, CM, FM, base)` is known, or store a small per-cell Pareto frontier of
+exact signatures and let the scoring kernel choose the best signature per genome. A single cached signature per `(FT, FF)`
+cell cannot prove full base exactness for every genome.
 
 ## Performance
 
@@ -68,7 +72,8 @@ The migration keeps the hot path cheap:
 
 Current full-removal verification (2026-04-24):
 
-- active code/tests/tools/config/current-doc grep for old sampled-timing names: no matches
+- active production/config/script/current-doc grep for old sampled-timing entrypoints and knobs: no live usage
+- active config/script cleanup also removed stale sampled-timing sections and the removed FG-only window-gate alias
 - `python -m ruff check gear_optimizer tests tools`
 - `python -m pytest -q tests/test_fg_exact_dp_correctness.py::test_fg_exact_dp_timing_aware_beats_count_only_baseline_on_carry_set tests/test_timing_envelope.py tests/test_timing_envelope_cache_keys.py tests/test_ceiling_envelope_feasible_signature.py --tb=short`
   - `7 passed`

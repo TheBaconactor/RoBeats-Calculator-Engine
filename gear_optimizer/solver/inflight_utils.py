@@ -134,8 +134,6 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
 
     try:
         raw = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
-        if raw is None or str(raw).strip() == "":
-            raw = os.environ.get("FG_EXACT_DP_MAX_BASELINE_WINDOWS", "3")
         calc_song.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = max(0, int(raw or 3))
     except Exception:
         pass

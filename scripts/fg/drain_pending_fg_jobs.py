@@ -35,7 +35,7 @@ from gear_optimizer.helpers.song_helpers.database_context import load_database_c
 from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song, scan_song_header
-from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
 def _preload_ref_arrays(stats_table: List[List[float]]) -> Dict[str, "numpy.ndarray"]:
@@ -234,8 +234,7 @@ def main() -> int:
 
         base_calc_song = get_base_calc_song(fp, cfg_dict)
         calc_song = clone_calc_song(base_calc_song)
-        # Ensure FG timestamps exist if HumanHitSim is enabled.
-        apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+        apply_timing_envelope(calc_song)
 
         meta_primary = (calc_song.get("metadata", {}) or {}).get("Primary Color", "")
         meta_secondary = (calc_song.get("metadata", {}) or {}).get("Secondary Color", "")
