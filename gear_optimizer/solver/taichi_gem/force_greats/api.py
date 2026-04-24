@@ -1353,15 +1353,22 @@ def solve_force_greats_exact_dp_gpu_batch(
     for stats in stats_list:
         prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
         prepared_cache.append(prepared)
-        if prepared is not None:
+        if first_prepared is None and prepared is not None:
             first_prepared = prepared
-            break
 
     if first_prepared is None:
         return [
             {"best_delta": 0, "baseline_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}}
             for _ in stats_list
         ]
+
+    row_info: list[tuple[Any, int]] = []
+    for prepared in prepared_cache:
+        if prepared is None:
+            row_info.append((None, 0))
+            continue
+        baseline_delta = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
+        row_info.append((prepared, int(baseline_delta)))
 
     gem_api.ensure_ready(ref_arrays)
     fg_fields.ensure_ready_with_warmup()
@@ -1381,16 +1388,12 @@ def solve_force_greats_exact_dp_gpu_batch(
     prune_flag = 1 if prune else 0
 
     for idx, stats in enumerate(stats_list):
-        if idx < len(prepared_cache):
-            prepared = prepared_cache[idx]
-        else:
-            prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
+        prepared, baseline_delta = row_info[idx]
         if prepared is None:
             out.append({"best_delta": 0, "baseline_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
             continue
 
         n = int(prepared.total_notes)
-        baseline_delta = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
         fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(
             int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64)
         )

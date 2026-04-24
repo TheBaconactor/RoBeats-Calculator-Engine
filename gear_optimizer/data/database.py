@@ -354,6 +354,13 @@ _STATS_PACK_KEYS: tuple[str, ...] = (
     "Vibe",
 )
 
+_GEM_PACK_KEYS: tuple[str, ...] = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Element",
+)
+
 
 def _pack_stats_for_storage(details: Any) -> Any:
     """
@@ -364,21 +371,54 @@ def _pack_stats_for_storage(details: Any) -> Any:
     """
     if not isinstance(details, dict) or not details:
         return details
-    if details.get("st") is not None:
-        # Already packed.
-        return details
-    stats = details.get("Stats")
-    if not isinstance(stats, dict) or not stats:
-        return details
-    arr: list[int] = []
-    for k in _STATS_PACK_KEYS:
-        try:
-            arr.append(int(stats.get(k, 0) or 0))
-        except Exception:
-            arr.append(0)
     out = dict(details)
-    out.pop("Stats", None)
-    out["st"] = arr
+    stats = details.get("Stats")
+    if isinstance(stats, dict) and stats and out.get("st") is None:
+        arr: list[int] = []
+        for k in _STATS_PACK_KEYS:
+            try:
+                arr.append(int(stats.get(k, 0) or 0))
+            except Exception:
+                arr.append(0)
+        out.pop("Stats", None)
+        out["st"] = arr
+
+    gems = details.get("GemCounts")
+    if isinstance(gems, dict) and gems and out.get("gc") is None:
+        packed_gems: list[int] = []
+        gem_key_mask = 0
+        for i, k in enumerate(_GEM_PACK_KEYS):
+            if k in gems:
+                gem_key_mask |= 1 << i
+            try:
+                packed_gems.append(int(gems.get(k, 0) or 0))
+            except Exception:
+                packed_gems.append(0)
+        out.pop("GemCounts", None)
+        out["gc"] = packed_gems
+        if gem_key_mask != (1 << len(_GEM_PACK_KEYS)) - 1:
+            out["gk"] = int(gem_key_mask)
+
+    selected = out.pop("Selected Element", None)
+    selected = out.pop("SelectedElement", selected)
+    if selected:
+        out["se"] = str(selected)
+
+    primary = out.pop("Primary Color", None)
+    primary = out.pop("PrimaryColor", primary)
+    if primary:
+        out["pc"] = str(primary)
+
+    secondary = out.pop("Secondary Color", None)
+    secondary = out.pop("SecondaryColor", secondary)
+    if secondary:
+        out["sc"] = str(secondary)
+
+    if not out.get("ForceGreats"):
+        out.pop("ForceGreats", None)
+    out.pop("attempt_lifetime", None)
+    out.pop("attempts_first", None)
+    out.pop("Difficulty", None)
     return out
 
 
@@ -386,22 +426,42 @@ def _unpack_stats_after_load(details: Any) -> Any:
     """Inverse of `_pack_stats_for_storage` (best-effort)."""
     if not isinstance(details, dict) or not details:
         return details
-    stats = details.get("Stats")
-    if isinstance(stats, dict) and stats:
-        return details
-    st = details.get("st")
-    if not isinstance(st, (list, tuple)) or not st:
-        return details
-    if len(st) < len(_STATS_PACK_KEYS):
-        return details
-    out_stats: dict[str, int] = {}
-    for i, k in enumerate(_STATS_PACK_KEYS):
-        try:
-            out_stats[k] = int(st[i] or 0)
-        except Exception:
-            out_stats[k] = 0
     out = dict(details)
-    out["Stats"] = out_stats
+    stats = details.get("Stats")
+    st = details.get("st")
+    if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(_STATS_PACK_KEYS):
+        out_stats: dict[str, int] = {}
+        for i, k in enumerate(_STATS_PACK_KEYS):
+            try:
+                out_stats[k] = int(st[i] or 0)
+            except Exception:
+                out_stats[k] = 0
+        out["Stats"] = out_stats
+
+    gems = details.get("GemCounts")
+    gc = details.get("gc")
+    if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(_GEM_PACK_KEYS):
+        try:
+            gem_key_mask = int(details.get("gk", (1 << len(_GEM_PACK_KEYS)) - 1) or 0)
+        except Exception:
+            gem_key_mask = (1 << len(_GEM_PACK_KEYS)) - 1
+        out_gems: dict[str, int] = {}
+        for i, k in enumerate(_GEM_PACK_KEYS):
+            if (gem_key_mask & (1 << i)) == 0:
+                continue
+            try:
+                out_gems[k] = int(gc[i] or 0)
+            except Exception:
+                out_gems[k] = 0
+        out["GemCounts"] = out_gems
+
+    if "SelectedElement" not in out and "Selected Element" not in out and out.get("se"):
+        out["SelectedElement"] = str(out.get("se") or "")
+    if "PrimaryColor" not in out and "Primary Color" not in out and out.get("pc"):
+        out["PrimaryColor"] = str(out.get("pc") or "")
+    if "SecondaryColor" not in out and "Secondary Color" not in out and out.get("sc"):
+        out["SecondaryColor"] = str(out.get("sc") or "")
+
     return out
 
 
@@ -1602,6 +1662,7 @@ def save_team_buff_loadouts_batch(
             for row in rows:
                 try:
                     details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
+                    details_row = _unpack_stats_after_load(details_row)
                 except Exception:
                     continue
                 p_color, s_color, sel_color = extract_song_colors(details_row)
@@ -2002,7 +2063,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob,
                     minis_ids_blob,
                     details_json,
-                    force_json,
+                    None,
                 )
             )
             if bool(entry.get("_deferred_fg_update")):
@@ -2081,12 +2142,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob = CASE WHEN excluded.score >= score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
                     minis_ids_blob = CASE WHEN excluded.score >= score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        ELSE force_details_json
-                    END,
+                    force_details_json = NULL,
                     timestamp = strftime('%s', 'now')
             """,
                 loadouts_params,
@@ -2108,12 +2164,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob = CASE WHEN gear_ids_blob IS NULL THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
                     minis_ids_blob = CASE WHEN minis_ids_blob IS NULL THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN details_json IS NULL THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        ELSE force_details_json
-                    END,
+                    force_details_json = NULL,
                     timestamp = strftime('%s', 'now')
             """,
                 deferred_fg_loadouts_params,
@@ -2177,6 +2228,23 @@ def save_team_buff_loadouts_batch(
             (song_name, team_buff),
         )
         _log_timing("delete_team_buff_fg_invariant", time.perf_counter() - _t_inv0)
+
+        # Base coverage rows own score/loadout identity only. The replayable FG
+        # payload belongs in team_buff_fg_loadouts; duplicating it across every
+        # retained base row makes the repaired 51-row frontier scale like a
+        # queue dump instead of a compact seed frontier.
+        _t_clear0 = time.perf_counter()
+        conn.execute(
+            """
+            UPDATE team_buff_loadouts
+            SET force_details_json = NULL
+            WHERE song_name = ?
+            AND team_buff = ?
+            AND force_details_json IS NOT NULL
+            """,
+            (song_name, team_buff),
+        )
+        _log_timing("clear_base_force_details", time.perf_counter() - _t_clear0)
 
         # Prune BOTH tables to `LOADOUTS_PER_SONG_LIMIT` for this (song, team_buff).
         for table in ["team_buff_loadouts", "team_buff_fg_loadouts"]:

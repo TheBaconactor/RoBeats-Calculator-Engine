@@ -135,12 +135,13 @@ That mode mirrors the shipped orchestration more closely by timing:
 - `ga_evaluate_population(..., materialize_mode="none")`
 - `ga_write_best_results_and_update_runs_best(...)`
 
-## FG job coalescing (safe, queue overhead only)
-These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:
+## FG job coalescing (safe, owner-quantum bounded)
+These knobs **do not change the search space or scoring math**; they only coalesce small FG batch requests in-process while preserving bounded owner turns:
 
 - `FG_COALESCE_BREAKPOINTS_BATCH=1` (default): enable coalescing of FG breakpoint+solve batches across jobs (in-process only).
-- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `128`): max payloads per coalesced request.
-- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `4`): max wait time before flushing a coalesced batch.
+- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `8`): max payloads per coalesced request.
+- `FG_COALESCE_BREAKPOINTS_MAX_PAIRS` (default follows `FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST`, capped at `4096`): max FT/FF pair work per coalesced request.
+- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `8`): max wait time before flushing a coalesced batch.
 
 ## In-flight GA+FG throughput architecture (integrated)
 

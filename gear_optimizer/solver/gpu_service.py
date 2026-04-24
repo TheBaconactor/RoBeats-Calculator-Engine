@@ -115,18 +115,26 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG job coalescing (in-process only). This keeps async FG lanes from
-        # degenerating into many tiny one-request GPU submissions; executor-side
-        # pair/payload caps still bound the actual GPU work per owner pass.
+        # degenerating into many tiny one-request GPU submissions without
+        # undoing the upstream FG tiling that keeps the single owner responsive.
         self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
-            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "256") or "256")
+            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "8") or "8")
         except Exception:
-            self._fg_coalesce_max_payloads = 128
+            self._fg_coalesce_max_payloads = 8
         try:
             executor_max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
         except Exception:
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
+        try:
+            raw_pair_cap = os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAIRS")
+            if raw_pair_cap is None or str(raw_pair_cap).strip() == "":
+                raw_pair_cap = os.environ.get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", "256")
+            self._fg_coalesce_max_pairs = int(str(raw_pair_cap or "256").strip() or "256")
+        except Exception:
+            self._fg_coalesce_max_pairs = 256
+        self._fg_coalesce_max_pairs = max(0, min(int(self._fg_coalesce_max_pairs), 4096))
         try:
             self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "8") or "8")
         except Exception:
@@ -135,6 +143,7 @@ class GpuServiceClient:
         self._fg_coalesce_max_payloads = min(int(self._fg_coalesce_max_payloads), int(executor_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []
+        self._fg_coalesce_pairs = 0
         # (future, start, count, submit_ts)
         self._fg_coalesce_slices: list[tuple[Future, int, int, float]] = []
         self._fg_coalesce_first_ts: float | None = None
@@ -239,6 +248,7 @@ class GpuServiceClient:
                 pending = list(self._fg_coalesce_slices)
                 self._fg_coalesce_payloads.clear()
                 self._fg_coalesce_slices.clear()
+                self._fg_coalesce_pairs = 0
                 self._fg_coalesce_first_ts = None
             for fut, _start, _count, _submit_ts in pending:
                 if not fut.done():
@@ -515,6 +525,9 @@ class GpuServiceClient:
 
     def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         payload_list = list(payloads or [])
+        chunks = self._split_fg_payloads_for_owner_quantum(payload_list)
+        if len(chunks) > 1:
+            return self._submit_fg_batch_tiled(chunks, total_payloads=len(payload_list))
         if (
             self._fg_coalesce_enabled
             and self._in_process_queues
@@ -524,6 +537,116 @@ class GpuServiceClient:
             return self._submit_fg_batch_coalesced(payload_list)
         return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payload_list})
 
+    def _fg_payload_pair_count(self, payload: dict[str, Any]) -> int:
+        if self._fg_coalesce_max_pairs <= 0:
+            return 0
+        pairs = payload.get("ftff_pairs") if isinstance(payload, dict) else None
+        if pairs is None:
+            # Unknown work should not be merged with unrelated FG tiles.
+            return int(self._fg_coalesce_max_pairs)
+        try:
+            shape = getattr(pairs, "shape", None)
+            if shape is not None and len(shape) > 0:
+                return max(0, int(shape[0]))
+        except Exception:
+            pass
+        try:
+            return max(0, int(len(pairs)))
+        except Exception:
+            return int(self._fg_coalesce_max_pairs)
+
+    def _fg_payloads_pair_count(self, payloads: list[dict[str, Any]]) -> int:
+        if self._fg_coalesce_max_pairs <= 0:
+            return 0
+        total = 0
+        for payload in payloads:
+            total += int(self._fg_payload_pair_count(payload))
+        return int(total)
+
+    def _split_fg_payloads_for_owner_quantum(
+        self, payloads: list[dict[str, Any]]
+    ) -> list[tuple[int, list[dict[str, Any]]]]:
+        if not payloads:
+            return [(0, [])]
+        max_payloads = max(1, int(self._fg_coalesce_max_payloads))
+        max_pairs = int(self._fg_coalesce_max_pairs)
+        chunks: list[tuple[int, list[dict[str, Any]]]] = []
+        cur: list[dict[str, Any]] = []
+        cur_start = 0
+        cur_pairs = 0
+        for idx, payload in enumerate(payloads):
+            item_pairs = int(self._fg_payload_pair_count(payload)) if max_pairs > 0 else 0
+            exceeds_payloads = cur and (len(cur) + 1) > int(max_payloads)
+            exceeds_pairs = cur and max_pairs > 0 and (cur_pairs + item_pairs) > int(max_pairs)
+            if exceeds_payloads or exceeds_pairs:
+                chunks.append((int(cur_start), list(cur)))
+                cur = []
+                cur_start = int(idx)
+                cur_pairs = 0
+            cur.append(payload)
+            cur_pairs += int(item_pairs)
+        if cur:
+            chunks.append((int(cur_start), list(cur)))
+        return chunks
+
+    def _submit_fg_batch_tiled(
+        self,
+        chunks: list[tuple[int, list[dict[str, Any]]]],
+        *,
+        total_payloads: int,
+    ) -> GpuJobHandle:
+        if not self._running or self._worker_id is None:
+            raise RuntimeError("GpuServiceClient not started")
+        aggregate_request_id = int(next(self._counter))
+        aggregate_future: Future = Future()
+        if not chunks:
+            aggregate_future.set_result([])
+            return GpuJobHandle(request_id=aggregate_request_id, future=aggregate_future)
+
+        results: list[Any] = [None] * int(total_payloads)
+        remaining = len(chunks)
+        done_lock = threading.Lock()
+
+        def _chunk_done(done_fut: Future, *, start: int, count: int) -> None:
+            nonlocal remaining
+            try:
+                chunk_result = done_fut.result()
+                if not isinstance(chunk_result, list):
+                    raise RuntimeError("FG tiled batch returned non-list result")
+                if int(len(chunk_result)) != int(count):
+                    raise RuntimeError("FG tiled batch result length mismatch")
+            except Exception as exc:
+                with done_lock:
+                    if not aggregate_future.done():
+                        aggregate_future.set_exception(exc)
+                return
+
+            with done_lock:
+                if aggregate_future.done():
+                    return
+                results[int(start) : int(start) + int(count)] = list(chunk_result)
+                remaining -= 1
+                if remaining <= 0:
+                    aggregate_future.set_result(list(results))
+
+        for start, chunk in chunks:
+            try:
+                job = self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": list(chunk)})
+            except Exception as exc:
+                with done_lock:
+                    if not aggregate_future.done():
+                        aggregate_future.set_exception(exc)
+                break
+            job.future.add_done_callback(
+                lambda done_fut, start=int(start), count=int(len(chunk)): _chunk_done(
+                    done_fut,
+                    start=start,
+                    count=count,
+                )
+            )
+
+        return GpuJobHandle(request_id=aggregate_request_id, future=aggregate_future)
+
     def _submit_fg_batch_coalesced(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         if not self._running or self._worker_id is None:
             raise RuntimeError("GpuServiceClient not started")
@@ -531,26 +654,45 @@ class GpuServiceClient:
         request_id = int(next(self._counter))
         t_submit = time.perf_counter() if self._profile_enabled else 0.0
 
-        batch = None
+        batches_to_submit: list[tuple[list[dict[str, Any]], list[tuple[Future, int, int, float]]]] = []
+        payload_pairs = self._fg_payloads_pair_count(payloads)
         with self._fg_coalesce_lock:
             if not payloads:
                 fut.set_result([])
                 return GpuJobHandle(request_id=request_id, future=fut)
+            if self._fg_coalesce_payloads:
+                would_exceed_payloads = (
+                    len(self._fg_coalesce_payloads) + len(payloads)
+                ) > int(self._fg_coalesce_max_payloads)
+                would_exceed_pairs = (
+                    int(self._fg_coalesce_max_pairs) > 0
+                    and int(self._fg_coalesce_pairs) + int(payload_pairs) > int(self._fg_coalesce_max_pairs)
+                )
+                if would_exceed_payloads or would_exceed_pairs:
+                    batch = self._pop_fg_coalesce_locked()
+                    if batch is not None:
+                        batches_to_submit.append(batch)
             if self._fg_coalesce_first_ts is None:
                 self._fg_coalesce_first_ts = time.perf_counter()
             start = len(self._fg_coalesce_payloads)
             self._fg_coalesce_payloads.extend(payloads)
+            self._fg_coalesce_pairs += int(payload_pairs)
             self._fg_coalesce_slices.append((fut, int(start), int(len(payloads)), float(t_submit)))
             if (
                 int(len(self._fg_coalesce_payloads)) >= int(self._fg_coalesce_max_payloads)
                 or int(self._fg_coalesce_max_wait_ms) <= 0
+                or (
+                    int(self._fg_coalesce_max_pairs) > 0
+                    and int(self._fg_coalesce_pairs) >= int(self._fg_coalesce_max_pairs)
+                )
             ):
                 batch = self._pop_fg_coalesce_locked()
+                if batch is not None:
+                    batches_to_submit.append(batch)
             else:
                 self._fg_coalesce_event.set()
 
-        if batch is not None:
-            payloads_batch, slices_batch = batch
+        for payloads_batch, slices_batch in batches_to_submit:
             self._submit_fg_coalesced_batch(payloads_batch, slices_batch)
 
         return GpuJobHandle(request_id=request_id, future=fut)
@@ -562,6 +704,7 @@ class GpuServiceClient:
         slices = list(self._fg_coalesce_slices)
         self._fg_coalesce_payloads.clear()
         self._fg_coalesce_slices.clear()
+        self._fg_coalesce_pairs = 0
         self._fg_coalesce_first_ts = None
         return payloads, slices
 

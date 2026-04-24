@@ -201,6 +201,72 @@ def test_songs_best_scores_and_fg_scores_update(db_path):
         conn.close()
 
 
+def test_details_payload_packs_gems_and_colors_but_loads_compatibly(db_path):
+    song = "Compact Details Gems Colors Song"
+    details = {
+        "Stats": {
+            "Perfect Points": 1,
+            "Combo Multiplier": 2,
+            "Fever Multiplier": 3,
+            "Fever Fill Rate": 4,
+            "Fever Time": 5,
+            "Chill": 6,
+            "Flow": 7,
+            "Rush": 8,
+            "Beat": 9,
+            "Vibe": 10,
+        },
+        "GemCounts": {"Perfect Points": 11, "Combo Multiplier": 12, "Fever Multiplier": 13, "Element": 14},
+        "SelectedElement": "Rush",
+        "PrimaryColor": "Rush",
+        "SecondaryColor": "Flow",
+        "ForceGreats": {},
+        "Difficulty": "Hard",
+        "attempt_lifetime": 99,
+        "attempts_first": 88,
+    }
+
+    save_loadouts_batch(
+        song,
+        [{"score": 1234, "fg_score": 0, "gear": ["G1"], "minis": ["M1"], "details": details, "force": None}],
+    )
+
+    from gear_optimizer.data.database import _unpack_stats_after_load
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert row is not None
+        raw = json.loads(row["details_json"])
+        assert "GemCounts" not in raw
+        assert "SelectedElement" not in raw
+        assert "PrimaryColor" not in raw
+        assert "SecondaryColor" not in raw
+        assert "ForceGreats" not in raw
+        assert "Difficulty" not in raw
+        assert "attempt_lifetime" not in raw
+        assert raw["gc"] == [11, 12, 13, 14]
+        assert raw["se"] == "Rush"
+        assert raw["pc"] == "Rush"
+        assert raw["sc"] == "Flow"
+
+        unpacked = _unpack_stats_after_load(raw)
+        assert unpacked["GemCounts"] == {
+            "Perfect Points": 11,
+            "Combo Multiplier": 12,
+            "Fever Multiplier": 13,
+            "Element": 14,
+        }
+        assert unpacked["SelectedElement"] == "Rush"
+        assert unpacked["PrimaryColor"] == "Rush"
+        assert unpacked["SecondaryColor"] == "Flow"
+    finally:
+        conn.close()
+
+
 def test_fg_loadouts_requires_force_details(db_path):
     song = "FG Validity Song"
 
@@ -501,10 +567,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
             (song,),
         ).fetchone()
         assert base_row is not None
-        base_force = json.loads(base_row["force_details_json"])
-        assert base_force.get("tag") == "second_force"
-        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
-        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
+        assert base_row["force_details_json"] is None
     finally:
         conn.close()
 
@@ -628,13 +691,23 @@ def test_base_row_conflict_updates_use_base_score_not_fg_score(db_path, monkeypa
         gear_names = [n for n in gear_names if n]
         assert gear_names == ["G_high"]
         assert json.loads(row["details_json"]).get("tag") == "high_base"
-        assert json.loads(row["force_details_json"]).get("score") == 300
+        assert row["force_details_json"] is None
+
+        fg_row = conn.execute(
+            "SELECT score, fg_score, force_details_json "
+            "FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash='CONST_HASH'",
+            (song,),
+        ).fetchone()
+        assert fg_row is not None
+        assert int(fg_row["score"]) == 100
+        assert int(fg_row["fg_score"]) == 300
+        assert json.loads(fg_row["force_details_json"]).get("score") == 300
     finally:
         conn.close()
 
 
-def test_base_row_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatch):
-    song = "Base Row Force Tracks Best FG"
+def test_fg_table_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatch):
+    song = "FG Table Force Tracks Best FG"
 
     monkeypatch.setattr("gear_optimizer.data.database._loadout_hash_from_names", lambda _g, _m: "CONST_HASH")
 
@@ -670,7 +743,17 @@ def test_base_row_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatc
         assert row is not None
         assert int(row["score"]) == 200
         assert int(row["fg_score"]) == 300
-        force = json.loads(row["force_details_json"])
+        assert row["force_details_json"] is None
+
+        fg_row = conn.execute(
+            "SELECT score, fg_score, force_details_json "
+            "FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash='CONST_HASH'",
+            (song,),
+        ).fetchone()
+        assert fg_row is not None
+        assert int(fg_row["score"]) == 100
+        assert int(fg_row["fg_score"]) == 300
+        force = json.loads(fg_row["force_details_json"])
         assert int(force.get("score", 0)) == 300
         assert (force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
     finally:

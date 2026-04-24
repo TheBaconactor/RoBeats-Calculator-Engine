@@ -13,8 +13,11 @@ Default persistence behavior (`evolution.db`):
 - Guide: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`
 - Storage is compact by default:
   - Gear/minis are persisted as compact integer IDs via encoding tables + BLOB columns (not repeated JSON strings).
-  - `details_json` stores packed Stats as a short fixed-order array (`st`), not verbose `Stats` keys.
+  - `details_json` stores packed Stats (`st`), gem counts (`gc`), and color context (`se`/`pc`/`sc`) instead of verbose
+    repeated keys.
   - Large derived fields (notably `hitsim_offset_deltas_ms`) are computed on demand and not persisted.
+  - Full FG replay payloads are stored in `team_buff_fg_loadouts`; base rows keep scalar `fg_score` context but do not
+    duplicate `force_details_json`.
 
 `EVOLUTION_DB_PATH` always overrides the resolved DB path for the current process.
 
@@ -80,7 +83,7 @@ CREATE TABLE team_buff_loadouts (
     gear_ids_blob BLOB,            -- Compact gear IDs (varint list) into `gear_name_encoding`
     minis_ids_blob BLOB,           -- Compact mini variant-group IDs into `mini_name_encoding`
     details_json TEXT,
-    force_details_json TEXT,
+    force_details_json TEXT,       -- legacy/nullable; new writes keep full FG payloads in team_buff_fg_loadouts
     timestamp REAL,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
@@ -175,6 +178,17 @@ context:
 
 This is used by on-demand tier recomputation to re-apply HumanHitSim per persisted row before scoring.
 
+### Packed Gem Counts and Colors
+
+Current writes also compact common per-row context:
+
+- `details_json.gc`: fixed-order gem count list: Perfect Points, Combo Multiplier, Fever Multiplier, Element
+- `details_json.se`: selected element
+- `details_json.pc`: primary song color
+- `details_json.sc`: secondary song color
+
+The Python load helpers unpack these back into `GemCounts`, `SelectedElement`, `PrimaryColor`, and `SecondaryColor`.
+
 ### Not Persisted
 
 Some large derived fields are intentionally not persisted (computed on demand), including:
@@ -223,6 +237,7 @@ If you only need scalar counts/scores, direct SQL is fine. Decoding `*_ids_blob`
 | **Primary Metric** | `score` (Base Score) | `fg_score` (Force Greats Score) |
 | **Content** | All Loadouts (per tier) | Only Valid FG Loadouts (per tier) |
 | **Garbage Collection** | Keeps Top N by Score | Keeps Top N by FG Score |
+| **FG Payload** | Scalar `fg_score`; full payload is not duplicated | Replayable `force_details_json` payload |
 | **Use Case** | General Gameplay, Leaderboards | FG Research, Simulation Analysis |
 
 ### Maintenance
