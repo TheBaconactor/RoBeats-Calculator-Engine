@@ -71,3 +71,31 @@ def test_resolved_window_pair_filter_keeps_pair_if_any_base_row_survives() -> No
 
     assert kept == [(0, 0)]
     assert dropped == 0
+
+
+def test_resolved_window_filter_is_group_level_before_genome_chunks() -> None:
+    # Keep the root-cause guard readable by inspecting the module source; constants alone
+    # cannot preserve the surrounding control-flow markers we care about.
+    import inspect
+
+    body = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
+    filter_pos = body.index("_filter_ftff_pairs_by_resolved_window_cap(")
+    pack_pos = body.index("ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)")
+    chunk_pos = body.index("while idx0 < n_sig:")
+
+    assert filter_pos < pack_pos < chunk_pos
+    assert body.rfind("_filter_ftff_pairs_by_resolved_window_cap(") == filter_pos
+
+
+def test_base_stat_pairs_from_signature_rows_is_stable_and_unique() -> None:
+    sig_rows = {
+        "a": {"base_stats": {"Fever Time": 3, "Fever Fill Rate": 9}},
+        "b": {"base_stats": {"Fever Time": 3, "Fever Fill Rate": 9}},
+        "c": {"base_stats": {"Fever Time": 6, "Fever Fill Rate": 0}},
+        "ignored": {},
+    }
+
+    assert gpu_dispatch._base_stat_pairs_from_signature_rows(["c", "a", "b", "missing"], sig_rows) == [
+        (3, 9),
+        (6, 0),
+    ]

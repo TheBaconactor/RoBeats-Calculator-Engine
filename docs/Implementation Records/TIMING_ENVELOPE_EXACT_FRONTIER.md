@@ -38,10 +38,11 @@ fill and Great carry can only keep fever ending at the same note or later.
 This is the same reduction for base analysis and FG. FG adds only the carry stream needed by the exact-DP objective.
 
 Update on 2026-04-24: `prepare_timeline_window_counter(...)` exposes the shared all-normal window count without building a
-full fixed-stat scoring input. It caches the fever-end table per resolved FT index, so a full FT/FF candidate grid can be
-filtered cheaply after base FT/FF rows are known. The FG finder keeps a candidate pair if any pending base row resolves to
-`<= TimelineAnalysisMaxWindows`; it drops the pair only when every resolved row is outside the accepted small-window
-frontier.
+full fixed-stat scoring input. It caches the fever-end table per resolved FT index and the final count per resolved
+`(FT, FF)` cell, so a full FT/FF candidate grid can be filtered cheaply after base FT/FF rows are known. The FG finder
+keeps a candidate pair if any reduced signature in the whole group resolves to `<= TimelineAnalysisMaxWindows`; it drops
+the pair only when every resolved row is outside the accepted small-window frontier. The filter runs once per group before
+genome chunking, not once per chunk, so it cannot starve the GPU owner between submissions.
 
 ## Base Exactness
 

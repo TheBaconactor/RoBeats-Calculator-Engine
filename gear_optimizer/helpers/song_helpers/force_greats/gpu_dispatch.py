@@ -193,6 +193,28 @@ def _filter_ftff_pairs_by_resolved_window_cap(
     return kept, int(dropped)
 
 
+def _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map) -> list[tuple[int, int]]:
+    if not isinstance(sig_rows_map, dict):
+        return []
+
+    base_pairs: set[tuple[int, int]] = set()
+    for sig in list(sig_list or []):
+        row = sig_rows_map.get(sig)
+        if not isinstance(row, dict):
+            continue
+        base_stats = row.get("base_stats")
+        if not isinstance(base_stats, dict):
+            continue
+        base_pairs.add(
+            (
+                int(base_stats.get("Fever Time", 0) or 0),
+                int(base_stats.get("Fever Fill Rate", 0) or 0),
+            )
+        )
+
+    return sorted(base_pairs)
+
+
 def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot: int) -> tuple[bool, int, bool]:
     held = True
     table_slot = int(current_song_slot)
@@ -2370,6 +2392,22 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             total_budget=int(TOTAL_GEM_BUDGET),
             use_fast=bool(fast_pairs),
         )
+        max_timeline_windows = _resolve_timeline_analysis_max_windows_for_song(calc_song)
+        if per_pair_breakpoints and max_timeline_windows > 0:
+            group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
+            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_cap(
+                ftff_pairs=ftff_pairs,
+                base_stats_pairs=group_base_pairs,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                max_windows=int(max_timeline_windows),
+                gem_scale_fever=int(GEM_SCALE_FEVER),
+            )
+            fg_window_pair_drops += int(dropped_pairs)
+            if not ftff_pairs:
+                if perf:
+                    t_cfg_build_sec += time.perf_counter() - _t_cfg0
+                continue
         ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
 
         counts_list = None
@@ -2799,22 +2837,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0)) for bs in pending
                 }
                 base_pairs_list = sorted(base_stats_pairs)
-                max_timeline_windows = _resolve_timeline_analysis_max_windows_for_song(calc_song)
-                if max_timeline_windows > 0:
-                    ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_cap(
-                        ftff_pairs=ftff_pairs,
-                        base_stats_pairs=base_pairs_list,
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        max_windows=int(max_timeline_windows),
-                        gem_scale_fever=int(GEM_SCALE_FEVER),
-                    )
-                    fg_window_pair_drops += int(dropped_pairs)
-                    ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
-                    if not ftff_pairs:
-                        if perf:
-                            t_cfg_build_sec += time.perf_counter() - _t_cfg1
-                        continue
                 base_pairs_packed = _pack_pairs_int32(base_pairs_list)
                 ftff_pairs_submit = ftff_pairs_packed if ftff_pairs_packed is not None else ftff_pairs
                 base_pairs_submit = base_pairs_packed if base_pairs_packed is not None else base_pairs_list

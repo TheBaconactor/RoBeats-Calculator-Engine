@@ -62,12 +62,19 @@ class TimelineWindowCounter:
     ref_ft: np.ndarray
     ref_ff: np.ndarray
     _fever_end_cache: dict[int, np.ndarray] = field(default_factory=dict)
+    _window_count_cache: dict[tuple[int, int], int] = field(default_factory=dict)
 
     def count(self, ft_idx: int, ff_idx: int) -> int:
         ft_i = max(0, min(TOTAL_ROWS, safe_int(ft_idx, 0)))
         ff_i = max(0, min(TOTAL_ROWS, safe_int(ff_idx, 0)))
+        cache_key = (int(ft_i), int(ff_i))
+        cached = self._window_count_cache.get(cache_key)
+        if cached is not None:
+            return int(cached)
+
         total_notes = int(self.timestamps.shape[0])
         if total_notes <= 0:
+            self._window_count_cache[cache_key] = 0
             return 0
 
         non_fever_cas = (total_notes - int(self.long_notes)) * float(FEVER_FILL_BASE_RATE)
@@ -86,11 +93,13 @@ class TimelineWindowCounter:
             )
             self._fever_end_cache[ft_i] = fever_end_song
 
-        return _count_timeline_windows_from_end_table(
+        count = _count_timeline_windows_from_end_table(
             total_notes=total_notes,
             non_fever_base=int(non_fever_base),
             fever_end_song=fever_end_song,
         )
+        self._window_count_cache[cache_key] = int(count)
+        return int(count)
 
 
 def _count_timeline_windows_from_end_table(
