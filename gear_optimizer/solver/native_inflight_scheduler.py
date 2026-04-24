@@ -306,17 +306,21 @@ def _continuous_fg_should_fill_song_lanes(
     target_song_lanes: int,
     active_song_lanes: int,
     ready_ga_count: int,
+    pending_fg_count: int = 0,
+    ready_fg_count: int = 0,
     blocked_on_slot: bool,
     no_ga_remaining: bool,
     oldest_wait_s: float,
+    aging_trigger_s: float = 0.0,
     aging_hard_s: float,
 ) -> bool:
     """
     Prefer filling the next GA song lane before starting FG when we have immediate GA work.
 
     This turns the in-flight queue into a real two-lane conveyor on one GPU owner:
-    keep song B entering GA while song A is already headed toward FG, unless FG has
-    aged hard enough that fairness must override the lane-fill preference.
+    keep song B entering GA while song A is already headed toward FG, unless FG is
+    already runnable or has aged enough that fairness must override the lane-fill
+    preference.
     """
     if int(target_song_lanes) <= 1:
         return False
@@ -325,6 +329,14 @@ def _continuous_fg_should_fill_song_lanes(
     if int(ready_ga_count) <= 0:
         return False
     if bool(blocked_on_slot) or bool(no_ga_remaining):
+        return False
+    if int(pending_fg_count) > 0 and int(ready_fg_count) > 0:
+        return False
+    if (
+        int(pending_fg_count) > 0
+        and float(aging_trigger_s) > 0.0
+        and float(oldest_wait_s) >= float(aging_trigger_s)
+    ):
         return False
     if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
         return False

@@ -369,6 +369,42 @@ def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
         assert _continuous_fg_should_fill_song_lanes(**args) is False
 
 
+def test_continuous_fg_lane_fill_yields_to_ready_fg_backlog():
+    assert (
+        _continuous_fg_should_fill_song_lanes(
+            target_song_lanes=2,
+            active_song_lanes=1,
+            ready_ga_count=1,
+            pending_fg_count=4,
+            ready_fg_count=1,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            oldest_wait_s=0.1,
+            aging_trigger_s=0.75,
+            aging_hard_s=2.5,
+        )
+        is False
+    )
+
+
+def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_lags():
+    assert (
+        _continuous_fg_should_fill_song_lanes(
+            target_song_lanes=2,
+            active_song_lanes=1,
+            ready_ga_count=1,
+            pending_fg_count=4,
+            ready_fg_count=0,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            oldest_wait_s=0.8,
+            aging_trigger_s=0.75,
+            aging_hard_s=2.5,
+        )
+        is False
+    )
+
+
 def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():
     limit = _continuous_ga_warm_queue_limit(
         ga_queue_limit=12,

@@ -44,6 +44,7 @@ def audit_persistence_db(
     *,
     expected_min_songs: int = 1,
     expected_pending_fg_jobs: int = 0,
+    pending_fg_jobs_warn_threshold: int = 100,
 ) -> dict[str, Any]:
     """Audit a persistence DB for core FG/base invariants.
 
@@ -112,6 +113,16 @@ def audit_persistence_db(
                 "pending_fg_jobs_nonzero",
                 "pending FG jobs were not drained",
                 {"pending_fg_jobs": int(pending_fg_jobs), "expected_max": int(expected_pending_fg_jobs)},
+            )
+        if isinstance(pending_fg_jobs, int) and int(pending_fg_jobs) > int(pending_fg_jobs_warn_threshold):
+            _append_issue(
+                issues,
+                "pending_fg_jobs_high",
+                "pending FG job count exceeded the diagnostic warning threshold",
+                {
+                    "pending_fg_jobs": int(pending_fg_jobs),
+                    "warning_threshold": int(pending_fg_jobs_warn_threshold),
+                },
             )
 
         fg_tables = [t for t in ("team_buff_fg_loadouts", "fg_loadouts") if t in tables]
@@ -323,4 +334,3 @@ def inject_synthetic_persistence_bug(db_path: str | Path) -> dict[str, Any]:
 
     result["error"] = "no_mutation_target"
     return result
-

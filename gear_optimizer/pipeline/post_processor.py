@@ -25,6 +25,21 @@ from gear_optimizer.helpers.song_helpers.results_printer import print_results
 logger = logging.getLogger(__name__)
 
 
+def _should_persist_pending_fg_job(item: dict[str, Any]) -> bool:
+    """
+    Persist pending FG work only for explicit durable deferral.
+
+    Normal GPU-native in-flight runs already drain FG in-process. Writing every
+    in-memory FG queue item into SQLite creates large transient JSON pages that
+    SQLite keeps after delete, without improving the completed product result.
+    """
+    return (
+        bool(item.get("_pending_fg_job"))
+        and bool(item.get("_persist_pending_fg_job"))
+        and bool(item.get("use_evo_db", True))
+    )
+
+
 class _PostCpuProfiler:
     def __init__(self, *, enabled: bool, out_path: str | None) -> None:
         self.enabled = bool(enabled)
@@ -522,8 +537,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
 
-                # Crash-safe deferred FG: store GA candidates so FG can run later without rerunning GA.
-                if item.get("_pending_fg_job") and item.get("use_evo_db", True):
+                # Durable deferred FG is opt-in. The normal in-flight queue is already
+                # drained by FG workers; persisting it here bloats the main DB with
+                # transient JSON pages and is not part of retained frontier coverage.
+                if _should_persist_pending_fg_job(item):
                     try:
                         _t_upsert0 = time.perf_counter()
                         cpu_t0 = time.process_time()

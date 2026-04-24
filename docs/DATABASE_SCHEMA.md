@@ -36,12 +36,22 @@ CREATE TABLE songs (
 );
 ```
 
-### 2. `pending_fg_jobs` Table (Deferred Force Greats Work)
-Stores a compact snapshot of GA candidates for songs whose Force Greats evaluation is **deferred** (e.g. GPU-native in-flight mode that batches FG work and may drain later).
+### 2. `pending_fg_jobs` Table (Explicit Deferred Force Greats Work)
+Stores a compact snapshot of GA candidates only for songs whose Force Greats
+evaluation is explicitly made durable for later work.
 
-This exists to:
-- Keep FG candidates safe even if the base leaderboards are pruned (`LOADOUTS_PER_SONG_LIMIT`).
-- Allow FG work to be resumed later without rerunning GA (best-effort; depends on config consistency).
+This table is **not** the retained coverage frontier and should not be populated
+by the normal in-process FG queue. Normal GPU-native in-flight runs drain FG in
+memory; writing every in-memory FG job into SQLite creates large transient JSON
+pages that SQLite may keep after delete.
+
+Rules:
+- `team_buff_loadouts` remains the retained base coverage frontier.
+- Nonzero pending rows after a normal drained run should be treated as FG debt or
+  an interrupted/deferred run, not as healthy coverage.
+- A large pending row count is intentionally diagnostic: audit tooling warns when
+  `pending_fg_jobs` exceeds `100` rows so the run can be inspected instead of
+  silently hiding the backlog.
 
 ```sql
 CREATE TABLE pending_fg_jobs (

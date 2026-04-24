@@ -1444,6 +1444,7 @@ def run_native_inflight_song_pipeline(
                 "fg_variants": [],
                 "ga_candidates": ga_candidates_post,
                 "loadout_entries": None,
+                "_persist_pending_fg_job": bool(not fg_drain_at_end),
                 "prev_record": _compact_prev_record(song.prev_record),
                 "attempt_lifetime": int(song.attempt_lifetime or 0),
                 "prev_attempts_first": int(song.prev_attempts_first or 0),
@@ -2426,9 +2427,12 @@ def run_native_inflight_song_pipeline(
                 target_song_lanes=int(target_song_lanes),
                 active_song_lanes=int(_active_song_lane_count()),
                 ready_ga_count=int(ready_ga_for_lane_fill),
+                pending_fg_count=len(pending_fg),
+                ready_fg_count=int(ready_fg_count),
                 blocked_on_slot=bool(blocked_on_slot_acquire),
                 no_ga_remaining=bool(no_ga_remaining),
                 oldest_wait_s=float(fg_oldest_wait_s),
+                aging_trigger_s=float(fg_aging_trigger_s),
                 aging_hard_s=float(fg_aging_hard_s),
             ):
                 lane_fill_hold_count += 1
