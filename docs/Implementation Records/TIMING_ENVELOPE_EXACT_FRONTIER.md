@@ -17,7 +17,8 @@ FF/FT timing path.
 Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine for base and FG:
 
 - base timeline ceiling uses `prepare_perfect_timing_envelope(...)` for chord-group Perfect-window payloads
-- base production now exact-refines bounded cells with the shared score-proxy timeline DP
+- base production uses the GPU-resident timing-envelope ceiling by default; CPU-built exact score-proxy timeline overrides
+  are opt-in via `GPU_TIMELINE_EXACT_OVERRIDES=1`
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
 - FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with the same shared window counter before
   breakpoint generation and exact inner gem solving
@@ -59,8 +60,9 @@ Why base is not fully exact across all stat triples:
 - therefore one cached base signature cannot be simultaneously globally exact for every genome unless production stores a
   frontier of signatures or solves per genome, which is a much larger architecture change
 
-The shipped migration still supersedes the old greedy ceiling behavior on the retained frontier by replacing it with an
-exact score-proxy DP, then falling back to the fast heuristic outside the frontier.
+The shipped migration still supersedes the old single greedy ceiling behavior with the broader GPU timing-envelope ceiling.
+The CPU-built exact score-proxy DP remains available for proof/regression runs, but is no longer part of the default
+GPU-owner hot path because building overrides synchronously can starve later GPU submissions.
 
 The reviewed breakthrough path is to move the same bounded timing DP to the scoring surface instead of caching one
 signature too early: either solve timing after `(FT, FF, PP, CM, FM, base)` is known, or store a small per-cell Pareto
@@ -77,9 +79,12 @@ The migration keeps the hot path cheap:
 
 - timing-envelope FG streams are deterministic and per-song
 - the timeline ceiling group payload remains cached by song timing signature
+- `TimelineAnalysisMaxWindows` only affects the base timeline cache key when `GPU_TIMELINE_EXACT_OVERRIDES=1`; with
+  overrides disabled, the cache key follows the GPU-resident ceiling payload and avoids useless cache splits
 - minimized GPU registry payloads preserve chart timestamps, note types, and timing-envelope metadata
 - all-skipped FG exact-DP batches still return before GEM/Taichi readiness, uploads, and exact-DP kernel launch
 - dedup timeline execution remains opt-in via `GPU_TIMELINE_CEILING_DEDUP=1`
+- CPU-built base exact timeline overrides remain opt-in via `GPU_TIMELINE_EXACT_OVERRIDES=1`
 
 ## Verification
 
@@ -104,6 +109,18 @@ Current full-removal verification (2026-04-24):
   - `10 passed, 2 deselected`
 - `python -m py_compile gear_optimizer/solver/timing_envelope.py gear_optimizer/solver/fg_exact_dp.py gear_optimizer/solver/taichi_gem/api/timeline.py gear_optimizer/solver/taichi_gem/force_greats/api.py gear_optimizer/solver/taichi_gem/force_greats/fields.py gear_optimizer/pipeline/song_processor.py gear_optimizer/solver/native_inflight_stages.py gear_optimizer/solver/inflight_utils.py gear_optimizer/core/config.py gear_optimizer/data/database.py`
 - `git diff --check`
+
+Throughput-stall follow-up verification (2026-04-24):
+
+- root cause: CPU-built exact timeline override generation ran synchronously inside `precompute_timeline_gpu`, which is
+  executed by the single GPU owner before later GPU kernels can be submitted
+- fix: default `GPU_TIMELINE_EXACT_OVERRIDES=0`; proof tests opt in with `GPU_TIMELINE_EXACT_OVERRIDES=1`
+- `python -m py_compile gear_optimizer\solver\taichi_gem\api\timeline.py tests\test_timing_envelope_cache_keys.py tests\test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py`
+  - clean
+- `python -m pytest -q tests\test_timing_envelope_cache_keys.py tests\test_fg_finder_exact_inner_routing.py tests\test_fg_resolved_window_pair_filter.py --tb=short`
+  - `11 passed`
+- `python -m pytest -q tests\test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py::test_gpu_ceiling_exact_frontier_beats_heuristic_on_bounded_cell --tb=short`
+  - `1 passed`
 
 Initial migration verification:
 

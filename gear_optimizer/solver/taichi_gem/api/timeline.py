@@ -126,11 +126,25 @@ def _resolve_ceiling_exact_max_windows(calc_song: dict) -> int:
         return 0
 
 
+def _timeline_exact_overrides_enabled() -> bool:
+    """
+    Gate CPU-built exact timeline overrides.
+
+    The broad timing-envelope ceiling kernel is GPU-resident and remains the
+    production default. Exact overrides are useful for proofs/regressions, but
+    building them synchronously in the GPU owner can starve the queue.
+    """
+
+    return bool(env_flag("GPU_TIMELINE_EXACT_OVERRIDES", "0"))
+
+
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
     use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_ENVELOPE", "1"))
-    max_windows = _resolve_ceiling_exact_max_windows(calc_song) if use_ceiling else 0
+    max_windows = (
+        _resolve_ceiling_exact_max_windows(calc_song) if (use_ceiling and _timeline_exact_overrides_enabled()) else 0
+    )
     if use_ceiling:
         cached = calc_song.get("_gpu_timing_cache_key_ceiling", None)
         if isinstance(cached, tuple) and len(cached) == 9:
@@ -463,7 +477,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
     if use_ceiling:
-        exact_enabled = bool(int(max_exact_windows) > 0)
+        exact_enabled = bool(int(max_exact_windows) > 0 and _timeline_exact_overrides_enabled())
         # Default OFF: On GPU/Vulkan, "dedup then scatter" often reduces parallelism enough
         # to lose against the fully-parallel baseline kernel, even when many cells share
         # identical (fill_count, d_ms) pairs. Keep the option for experiments/regressions.

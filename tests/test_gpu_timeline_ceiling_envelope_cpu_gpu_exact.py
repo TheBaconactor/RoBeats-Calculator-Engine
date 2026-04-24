@@ -598,6 +598,7 @@ def test_gpu_ceiling_exact_frontier_beats_heuristic_on_bounded_cell(monkeypatch)
     assert exact_score - heuristic_score >= 159120
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
+    monkeypatch.setenv("GPU_TIMELINE_EXACT_OVERRIDES", "1")
 
     precompute_timeline_gpu(_calc_song(0), ref_arrays, song_slot=0)
     precompute_timeline_gpu(_calc_song(3), ref_arrays, song_slot=1)
