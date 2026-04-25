@@ -608,7 +608,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         init_heuristic_copies=int(init_heuristic_copies),
         db_seed_ids=db_seed_ids,
         db_seed_prob=float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0) if db_seed_ids is not None else 0.0,
-        db_seed_copies=1 if db_seed_ids is not None else 0,
+        db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if db_seed_ids is not None else 0,
         db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         item_stats=gpu_data["item_stats"],
         slot_start=gpu_data["slot_start"],

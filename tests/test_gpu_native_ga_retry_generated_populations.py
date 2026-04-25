@@ -223,7 +223,12 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
         num_runs=2,
         n_genomes=8,
         color_flags={},
-        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
+        cfg_data={
+            "TotalBudget": 90,
+            "GemScaleFever": 3,
+            "fg_candidate_limit": 51,
+            "ga_steady_state_allow_multistart_epochs": True,
+        },
         ga_seed=123,
     )
 
@@ -396,6 +401,7 @@ def test_run_gpu_native_ga_steady_state_raises_when_abort_requested(monkeypatch)
                 "ga_steady_state_enabled": True,
                 "ga_steady_state_refresh_pct": 0.25,
                 "ga_steady_state_min_refresh": 2,
+                "ga_steady_state_allow_multistart_epochs": True,
             },
             ga_seed=123,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
@@ -449,6 +455,7 @@ def test_run_gpu_native_ga_steady_state_forwards_global_ftff_caps(monkeypatch):
             "ga_steady_state_enabled": True,
             "ga_steady_state_refresh_pct": 0.25,
             "ga_steady_state_min_refresh": 2,
+            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )
@@ -502,6 +509,7 @@ def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
             "ga_steady_state_enabled": True,
             "ga_steady_state_refresh_pct": 0.25,
             "ga_steady_state_min_refresh": 2,
+            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )
@@ -570,9 +578,9 @@ def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
     )
 
     assert isinstance(out, np.ndarray)
-    assert fake_gpu.snapshot_calls == 0
+    assert fake_gpu.snapshot_calls == 1
     assert fake_gpu.download_runs_calls == 1
-    assert fake_gpu.store_payload_calls == 3
+    assert fake_gpu.store_payload_calls == 0
     assert len(audit_calls) == 1
     assert len(written_paths) == 1
 
@@ -613,6 +621,7 @@ def test_run_gpu_native_ga_steady_state_rejects_archive_rows(monkeypatch):
             "ga_steady_state_enabled": True,
             "ga_steady_state_refresh_pct": 0.25,
             "ga_steady_state_min_refresh": 2,
+            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )

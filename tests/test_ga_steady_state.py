@@ -16,8 +16,20 @@ def _canon_key(row: np.ndarray) -> tuple[int, ...]:
     return gear + minis
 
 
-def test_resolve_steady_state_settings_defaults_to_enabled_for_multi_start():
+def test_resolve_steady_state_settings_preserves_multistart_by_default():
     settings = resolve_steady_state_settings(cfg_data={}, epoch_count=3, n_genomes=64)
+
+    assert settings.enabled is False
+    assert settings.epoch_count == 3
+    assert settings.refresh_count == 0
+
+
+def test_resolve_steady_state_settings_can_explicitly_use_multistart_as_epochs():
+    settings = resolve_steady_state_settings(
+        cfg_data={"ga_steady_state_allow_multistart_epochs": True},
+        epoch_count=3,
+        n_genomes=64,
+    )
 
     assert settings.enabled is True
     assert settings.epoch_count == 3

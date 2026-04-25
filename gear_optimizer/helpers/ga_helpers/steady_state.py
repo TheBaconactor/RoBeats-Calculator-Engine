@@ -39,6 +39,13 @@ def resolve_steady_state_settings(*, cfg_data: dict | None, epoch_count: int, n_
     else:
         enabled = bool(enabled_raw)
 
+    # `epoch_count` is the GPU-native GA multi-start count at the call sites.
+    # Keep multi-start as independent basins by default; treating it as
+    # sequential steady-state epochs silently narrows the search surface.
+    allow_multistart_epochs = bool(cfg.get("ga_steady_state_allow_multistart_epochs", False))
+    if epoch_count_i > 1 and not allow_multistart_epochs:
+        enabled = False
+
     try:
         refresh_pct = float(cfg.get("ga_steady_state_refresh_pct", 0.25) or 0.25)
     except Exception:

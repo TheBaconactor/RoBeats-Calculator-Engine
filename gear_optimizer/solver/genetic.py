@@ -3275,6 +3275,12 @@ def solve_coevolution_genetic(
     except Exception:
         cfg_data["ga_steady_state_enabled"] = True
     try:
+        cfg_data["ga_steady_state_allow_multistart_epochs"] = bool(
+            cfg.getboolean("IterationEngine", "GPU_GA_SteadyStateAllowMultiStartEpochs", fallback=False)
+        )
+    except Exception:
+        cfg_data["ga_steady_state_allow_multistart_epochs"] = False
+    try:
         cfg_data["ga_steady_state_refresh_pct"] = max(
             0.0,
             min(0.75, safe_float(cfg.get("IterationEngine", "GPU_GA_SteadyStateRefreshPct", fallback="0.25"), 0.25)),
@@ -3376,7 +3382,7 @@ def solve_coevolution_genetic(
             init_heuristic_copies=25,
             db_seed_ids=seed_ids if have_seed else None,
             db_seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
-            db_seed_copies=1 if have_seed else 0,
+            db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if have_seed else 0,
             db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
             elite_count=int(GA_ELITISM),
             mutation_rate=float(gpu_mutation_rate),
