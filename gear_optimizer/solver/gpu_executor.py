@@ -3055,9 +3055,9 @@ class GpuExecutor:
             max_payloads = 64
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
-            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "65536") or "65536")
+            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
         except Exception:
-            max_pairs = 65536
+            max_pairs = 256
         max_pairs = max(0, int(max_pairs))
         if max_pairs > 0:
             import numpy as np

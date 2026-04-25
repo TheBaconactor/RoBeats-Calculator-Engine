@@ -1,5 +1,7 @@
 import queue
 
+import numpy as np
+
 from gear_optimizer.solver.gpu_executor import GpuRequestType, GpuResponse
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 
@@ -106,5 +108,142 @@ def test_fg_submit_splits_oversized_payload_list_before_service_coalesce(monkeyp
         executor._response_q.put(GpuResponse(request_id=req2.request_id, success=True, result=["b", "c"]))
         executor._response_q.put(GpuResponse(request_id=req1.request_id, success=True, result=["a"]))
         assert job.future.result(timeout=1.0) == ["a", "b", "c"]
+    finally:
+        client.close(timeout=0.5)
+
+
+def test_fg_submit_splits_single_oversized_payload_and_merges_full_results(monkeypatch):
+    executor = _DummyExecutor()
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAIRS", "2")
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "64")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+    client = GpuServiceClient(executor=executor)
+    client.start(start_executor=False, in_process_queues=True)
+
+    try:
+        payload = {"ftff_pairs": [(i, i) for i in range(5)]}
+        job = client.submit_fg_solve_with_breakpoints_batch([payload])
+
+        reqs = [executor._request_q.get(timeout=1.0) for _ in range(3)]
+        assert [len(req.payload["payloads"][0]["ftff_pairs"]) for req in reqs] == [2, 2, 1]
+
+        tile_results = [
+            {
+                "final_score": np.array([10, 20, 30], dtype=np.int32),
+                "base_score": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_idx": np.array([0, 0, 0], dtype=np.int32),
+                "FT": np.array([1, 1, 1], dtype=np.int32),
+                "FF": np.array([1, 1, 1], dtype=np.int32),
+                "g_pp": np.array([0, 0, 0], dtype=np.int32),
+                "g_cm": np.array([0, 0, 0], dtype=np.int32),
+                "g_fm": np.array([0, 0, 0], dtype=np.int32),
+                "g_ov": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_counts": np.zeros((3, 2), dtype=np.int32),
+            },
+            {
+                "final_score": np.array([15, 19, 31], dtype=np.int32),
+                "base_score": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_idx": np.array([1, 1, 1], dtype=np.int32),
+                "FT": np.array([2, 2, 2], dtype=np.int32),
+                "FF": np.array([2, 2, 2], dtype=np.int32),
+                "g_pp": np.array([0, 0, 0], dtype=np.int32),
+                "g_cm": np.array([0, 0, 0], dtype=np.int32),
+                "g_fm": np.array([0, 0, 0], dtype=np.int32),
+                "g_ov": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_counts": np.ones((3, 2), dtype=np.int32),
+            },
+            {
+                "final_score": np.array([14, 25, 29], dtype=np.int32),
+                "base_score": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_idx": np.array([2, 2, 2], dtype=np.int32),
+                "FT": np.array([3, 3, 3], dtype=np.int32),
+                "FF": np.array([3, 3, 3], dtype=np.int32),
+                "g_pp": np.array([0, 0, 0], dtype=np.int32),
+                "g_cm": np.array([0, 0, 0], dtype=np.int32),
+                "g_fm": np.array([0, 0, 0], dtype=np.int32),
+                "g_ov": np.array([0, 0, 0], dtype=np.int32),
+                "cfg_counts": np.full((3, 2), 2, dtype=np.int32),
+            },
+        ]
+        for req, result in zip(reqs, tile_results):
+            executor._response_q.put(GpuResponse(request_id=req.request_id, success=True, result=[result]))
+
+        merged = job.future.result(timeout=1.0)
+        assert len(merged) == 1
+        assert merged[0]["final_score"].tolist() == [15, 25, 31]
+        assert merged[0]["FT"].tolist() == [2, 3, 2]
+        assert merged[0]["cfg_idx"].tolist() == [1, 2, 1]
+    finally:
+        client.close(timeout=0.5)
+
+
+def test_fg_submit_splits_single_oversized_payload_and_merges_topk_results(monkeypatch):
+    executor = _DummyExecutor()
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAIRS", "2")
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "64")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+    client = GpuServiceClient(executor=executor)
+    client.start(start_executor=False, in_process_queues=True)
+
+    try:
+        payload = {
+            "ftff_pairs": [(i, i) for i in range(5)],
+            "fg_download_topk": 2,
+            "fg_download_base_scores": np.array([100, 100, 100, 100], dtype=np.int32),
+            "fg_download_keep_mask": np.array([0, 1, 0, 0], dtype=np.int32),
+        }
+        job = client.submit_fg_solve_with_breakpoints_batch([payload])
+
+        reqs = [executor._request_q.get(timeout=1.0) for _ in range(3)]
+        tile_results = [
+            {
+                "selected_indices": np.array([0, 1], dtype=np.int32),
+                "final_score": np.array([150, 110], dtype=np.int32),
+                "base_score": np.array([0, 0], dtype=np.int32),
+                "cfg_idx": np.array([10, 11], dtype=np.int32),
+                "FT": np.array([1, 1], dtype=np.int32),
+                "FF": np.array([1, 1], dtype=np.int32),
+                "g_pp": np.array([0, 0], dtype=np.int32),
+                "g_cm": np.array([0, 0], dtype=np.int32),
+                "g_fm": np.array([0, 0], dtype=np.int32),
+                "g_ov": np.array([0, 0], dtype=np.int32),
+                "cfg_counts": np.zeros((2, 2), dtype=np.int32),
+            },
+            {
+                "selected_indices": np.array([2, 1], dtype=np.int32),
+                "final_score": np.array([170, 130], dtype=np.int32),
+                "base_score": np.array([0, 0], dtype=np.int32),
+                "cfg_idx": np.array([20, 21], dtype=np.int32),
+                "FT": np.array([2, 2], dtype=np.int32),
+                "FF": np.array([2, 2], dtype=np.int32),
+                "g_pp": np.array([0, 0], dtype=np.int32),
+                "g_cm": np.array([0, 0], dtype=np.int32),
+                "g_fm": np.array([0, 0], dtype=np.int32),
+                "g_ov": np.array([0, 0], dtype=np.int32),
+                "cfg_counts": np.ones((2, 2), dtype=np.int32),
+            },
+            {
+                "selected_indices": np.array([3], dtype=np.int32),
+                "final_score": np.array([160], dtype=np.int32),
+                "base_score": np.array([0], dtype=np.int32),
+                "cfg_idx": np.array([30], dtype=np.int32),
+                "FT": np.array([3], dtype=np.int32),
+                "FF": np.array([3], dtype=np.int32),
+                "g_pp": np.array([0], dtype=np.int32),
+                "g_cm": np.array([0], dtype=np.int32),
+                "g_fm": np.array([0], dtype=np.int32),
+                "g_ov": np.array([0], dtype=np.int32),
+                "cfg_counts": np.full((1, 2), 2, dtype=np.int32),
+            },
+        ]
+        for req, result in zip(reqs, tile_results):
+            executor._response_q.put(GpuResponse(request_id=req.request_id, success=True, result=[result]))
+
+        merged = job.future.result(timeout=1.0)
+        assert len(merged) == 1
+        assert merged[0]["selected_indices"].tolist() == [2, 3, 1]
+        assert merged[0]["final_score"].tolist() == [170, 160, 130]
+        assert merged[0]["FT"].tolist() == [2, 3, 2]
+        assert merged[0]["cfg_idx"].tolist() == [20, 30, 21]
     finally:
         client.close(timeout=0.5)

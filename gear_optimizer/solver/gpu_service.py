@@ -503,17 +503,33 @@ class GpuServiceClient:
 
     def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         payload_list = list(payloads or [])
-        chunks = self._split_fg_payloads_for_owner_quantum(payload_list)
+        expanded_payloads, tile_spans = self._expand_fg_payload_pair_tiles(payload_list)
+        chunks = self._split_fg_payloads_for_owner_quantum(expanded_payloads)
         if len(chunks) > 1:
-            return self._submit_fg_batch_tiled(chunks, total_payloads=len(payload_list))
+            return self._submit_fg_batch_tiled(
+                chunks,
+                total_payloads=len(expanded_payloads),
+                tile_spans=tile_spans,
+                original_payloads=payload_list,
+            )
         if (
             self._fg_coalesce_enabled
             and self._in_process_queues
-            and payload_list
-            and all(isinstance(p, dict) for p in payload_list)
+            and expanded_payloads
+            and all(isinstance(p, dict) for p in expanded_payloads)
+            and not self._fg_payload_tiles_expanded(tile_spans)
         ):
-            return self._submit_fg_batch_coalesced(payload_list)
-        return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payload_list})
+            return self._submit_fg_batch_coalesced(expanded_payloads)
+        job = self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": expanded_payloads})
+        if self._fg_payload_tiles_expanded(tile_spans):
+            return self._wrap_fg_tile_merge_job(job, tile_spans=tile_spans, original_payloads=payload_list)
+        return job
+
+    def _fg_payload_tiles_expanded(self, tile_spans: list[tuple[int, int]]) -> bool:
+        for start, end in tile_spans:
+            if int(end) - int(start) != 1:
+                return True
+        return False
 
     def _fg_payload_pair_count(self, payload: dict[str, Any]) -> int:
         if self._fg_coalesce_max_pairs <= 0:
@@ -567,11 +583,223 @@ class GpuServiceClient:
             chunks.append((int(cur_start), list(cur)))
         return chunks
 
+    def _expand_fg_payload_pair_tiles(
+        self, payloads: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
+        """Split oversized FT/FF payloads before they reach the GPU owner.
+
+        The FG kernels already process large FT/FF arrays in internal chunks, but
+        doing that inside one owner request blocks GA/FG interleaving. These tiles
+        are independent search partitions; the aggregate future merges their
+        downloaded winners exactly.
+        """
+        if not payloads:
+            return [], []
+        max_pairs = int(self._fg_coalesce_max_pairs)
+        if max_pairs <= 0:
+            return list(payloads), [(i, i + 1) for i in range(len(payloads))]
+        expanded: list[dict[str, Any]] = []
+        spans: list[tuple[int, int]] = []
+        for payload in payloads:
+            start = int(len(expanded))
+            if not isinstance(payload, dict):
+                expanded.append(payload)
+                spans.append((start, int(len(expanded))))
+                continue
+            pairs = payload.get("ftff_pairs")
+            pair_count = int(self._fg_payload_pair_count(payload))
+            if pairs is None or pair_count <= int(max_pairs):
+                expanded.append(payload)
+                spans.append((start, int(len(expanded))))
+                continue
+            for offset in range(0, int(pair_count), int(max_pairs)):
+                tile = dict(payload)
+                tile["ftff_pairs"] = pairs[offset : offset + int(max_pairs)]
+                expanded.append(tile)
+            spans.append((start, int(len(expanded))))
+        return expanded, spans
+
+    def _merge_fg_tile_results(self, tile_results: list[Any], original_payload: dict[str, Any]) -> Any:
+        if len(tile_results) == 1:
+            return tile_results[0]
+        if not tile_results:
+            return None
+        if not all(isinstance(r, dict) for r in tile_results):
+            return tile_results[0]
+
+        import numpy as np
+
+        first = tile_results[0]
+        score_key = "final_score"
+        if score_key not in first:
+            return first
+        has_selected = any("selected_indices" in r for r in tile_results if isinstance(r, dict))
+        if not has_selected:
+            final0 = np.asarray(first.get(score_key))
+            n = int(final0.shape[0]) if final0.ndim >= 1 else 0
+            if n <= 0:
+                return first
+            best_tile = np.zeros((n,), dtype=np.int32)
+            best_score = np.asarray(first.get(score_key), dtype=np.int64).reshape(-1)
+            for tile_idx, result in enumerate(tile_results[1:], start=1):
+                scores = np.asarray(result.get(score_key), dtype=np.int64).reshape(-1)
+                if int(scores.shape[0]) != n:
+                    return first
+                mask = scores > best_score
+                best_score[mask] = scores[mask]
+                best_tile[mask] = int(tile_idx)
+            merged: dict[str, Any] = {}
+            for key in first.keys():
+                arr0 = first.get(key)
+                try:
+                    arr0_np = np.asarray(arr0)
+                except Exception:
+                    merged[key] = arr0
+                    continue
+                if arr0_np.ndim < 1 or int(arr0_np.shape[0]) != n:
+                    merged[key] = arr0
+                    continue
+                out = np.array(arr0_np, copy=True)
+                for tile_idx, result in enumerate(tile_results[1:], start=1):
+                    mask = best_tile == int(tile_idx)
+                    if not bool(np.any(mask)):
+                        continue
+                    arr = np.asarray(result.get(key))
+                    if arr.ndim < 1 or int(arr.shape[0]) != n:
+                        continue
+                    out[mask] = arr[mask]
+                merged[key] = out
+            return merged
+
+        rows: list[dict[str, Any]] = []
+        for result in tile_results:
+            selected = result.get("selected_indices")
+            if selected is None:
+                return first
+            selected_np = np.asarray(selected, dtype=np.int32).reshape(-1)
+            for row_idx, genome_idx in enumerate(selected_np.tolist()):
+                row: dict[str, Any] = {"selected_indices": int(genome_idx)}
+                for key, value in result.items():
+                    try:
+                        arr = np.asarray(value)
+                    except Exception:
+                        continue
+                    if arr.ndim < 1 or int(arr.shape[0]) <= int(row_idx):
+                        continue
+                    row[key] = arr[int(row_idx)].copy() if hasattr(arr[int(row_idx)], "copy") else arr[int(row_idx)]
+                rows.append(row)
+        if not rows:
+            return first
+
+        best_by_index: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            idx = int(row.get("selected_indices", -1))
+            if idx < 0:
+                continue
+            prev = best_by_index.get(idx)
+            if prev is None or int(row.get(score_key, -2**63)) > int(prev.get(score_key, -2**63)):
+                best_by_index[idx] = row
+
+        try:
+            topk = int(original_payload.get("fg_download_topk"))
+        except Exception:
+            topk = 0
+        keep_mask_raw = original_payload.get("fg_download_keep_mask")
+        base_scores_raw = original_payload.get("fg_download_base_scores")
+        keep_indices: set[int] = set()
+        if keep_mask_raw is not None:
+            try:
+                keep_np = np.asarray(keep_mask_raw, dtype=np.int32).reshape(-1)
+                keep_indices = {int(i) for i in np.nonzero(keep_np != 0)[0].tolist()}
+            except Exception:
+                keep_indices = set()
+        base_scores = None
+        if base_scores_raw is not None:
+            try:
+                base_scores = np.asarray(base_scores_raw, dtype=np.int64).reshape(-1)
+            except Exception:
+                base_scores = None
+
+        kept_rows = [row for idx, row in best_by_index.items() if idx in keep_indices]
+        candidate_rows = []
+        for idx, row in best_by_index.items():
+            if idx in keep_indices:
+                continue
+            if base_scores is not None and 0 <= idx < int(base_scores.shape[0]):
+                if int(row.get(score_key, -2**63)) <= int(base_scores[idx]):
+                    continue
+            candidate_rows.append(row)
+        candidate_rows.sort(key=lambda r: int(r.get(score_key, -2**63)), reverse=True)
+        selected_rows = kept_rows + candidate_rows[: max(0, int(topk))]
+        selected_rows.sort(key=lambda r: int(r.get(score_key, -2**63)), reverse=True)
+        if not selected_rows:
+            return first
+
+        merged: dict[str, Any] = {}
+        keys: list[str] = []
+        for result in tile_results:
+            for key in result.keys():
+                if key not in keys:
+                    keys.append(key)
+        for key in keys:
+            vals = [row[key] for row in selected_rows if key in row]
+            if len(vals) != len(selected_rows):
+                continue
+            merged[key] = np.asarray(vals)
+        return merged
+
+    def _merge_fg_expanded_results(
+        self,
+        expanded_results: list[Any],
+        *,
+        tile_spans: list[tuple[int, int]],
+        original_payloads: list[dict[str, Any]],
+    ) -> list[Any]:
+        if not self._fg_payload_tiles_expanded(tile_spans):
+            return list(expanded_results)
+        merged: list[Any] = []
+        for payload, (start, end) in zip(original_payloads, tile_spans):
+            tile_results = list(expanded_results[int(start) : int(end)])
+            if int(end) - int(start) <= 1:
+                merged.append(tile_results[0] if tile_results else None)
+            else:
+                merged.append(self._merge_fg_tile_results(tile_results, payload))
+        return merged
+
+    def _wrap_fg_tile_merge_job(
+        self,
+        job: GpuJobHandle,
+        *,
+        tile_spans: list[tuple[int, int]],
+        original_payloads: list[dict[str, Any]],
+    ) -> GpuJobHandle:
+        aggregate_future: Future = Future()
+
+        def _done(done_fut: Future) -> None:
+            try:
+                expanded_results = done_fut.result()
+                if not isinstance(expanded_results, list):
+                    raise RuntimeError("FG tiled payload returned non-list result")
+                aggregate_future.set_result(
+                    self._merge_fg_expanded_results(
+                        expanded_results,
+                        tile_spans=tile_spans,
+                        original_payloads=original_payloads,
+                    )
+                )
+            except Exception as exc:
+                aggregate_future.set_exception(exc)
+
+        job.future.add_done_callback(_done)
+        return GpuJobHandle(request_id=job.request_id, future=aggregate_future)
+
     def _submit_fg_batch_tiled(
         self,
         chunks: list[tuple[int, list[dict[str, Any]]]],
         *,
         total_payloads: int,
+        tile_spans: list[tuple[int, int]] | None = None,
+        original_payloads: list[dict[str, Any]] | None = None,
     ) -> GpuJobHandle:
         if not self._running or self._worker_id is None:
             raise RuntimeError("GpuServiceClient not started")
@@ -605,7 +833,14 @@ class GpuServiceClient:
                 results[int(start) : int(start) + int(count)] = list(chunk_result)
                 remaining -= 1
                 if remaining <= 0:
-                    aggregate_future.set_result(list(results))
+                    final_results = list(results)
+                    if tile_spans is not None and original_payloads is not None:
+                        final_results = self._merge_fg_expanded_results(
+                            final_results,
+                            tile_spans=tile_spans,
+                            original_payloads=original_payloads,
+                        )
+                    aggregate_future.set_result(final_results)
 
         for start, chunk in chunks:
             try:
