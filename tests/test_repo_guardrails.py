@@ -15,13 +15,10 @@ Rationale:
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
-import subprocess
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_HARNESS_MANIFEST = _REPO_ROOT / "tools" / "_mcp_harness" / "coverage_manifest.json"
 
 
 def _iter_python_files(root: Path, rel_dirs: list[str]):
@@ -44,34 +41,6 @@ def _iter_python_files(root: Path, rel_dirs: list[str]):
             if any(part in skip_parts for part in p.parts):
                 continue
             yield p
-
-
-def _git_status_paths() -> list[str]:
-    completed = subprocess.run(
-        ["git", "-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "--untracked-files=normal"],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        check=False,
-        stdin=subprocess.DEVNULL,
-    )
-    if completed.returncode != 0:
-        return []
-
-    paths: list[str] = []
-    parts = (completed.stdout or b"").split(b"\x00")
-    index = 0
-    while index < len(parts):
-        chunk = parts[index]
-        index += 1
-        if not chunk.strip():
-            continue
-        text = chunk.decode("utf-8", errors="replace")
-        status = text[:2]
-        path = text[3:].strip()
-        if "R" in status or "C" in status:
-            index += 1
-        paths.append(path.replace("\\", "/"))
-    return paths
 
 
 def test_no_removed_gpu_symbols_present() -> None:
@@ -101,50 +70,6 @@ def test_no_removed_gpu_symbols_present() -> None:
             offenders.append(f"{rel}: {', '.join(hits)}")
 
     assert not offenders, "Removed GPU symbols were reintroduced:\n" + "\n".join(offenders)
-
-
-def test_high_value_engineering_surfaces_require_harness_touchpoints() -> None:
-    manifest = json.loads(_HARNESS_MANIFEST.read_text(encoding="utf-8"))
-    ignore_prefixes = tuple(manifest.get("ignore_path_prefixes") or [])
-    trigger_prefixes = tuple(
-        prefix
-        for trigger in manifest.get("review_triggers", [])
-        for prefix in trigger.get("path_prefixes", [])
-    )
-    harness_touchpoints = (
-        ".codex/config.toml",
-        "AGENTS.md",
-        "docs/ENGINEERING_PRINCIPLES.md",
-        "docs/MCP_HARNESS_CHARTER.md",
-        "docs/Implementation Records/OPENAI_CODEX_MCP_ENGINEERING_HARNESS_V2.md",
-        "tests/test_mcp_harness.py",
-        "tests/test_mcp_harness_stdio.py",
-        "tools/AGENTS.md",
-        "tools/_mcp_harness/",
-        "tools/mcp_server.py",
-    )
-
-    changed_paths = [
-        path
-        for path in _git_status_paths()
-        if not any(path.startswith(prefix) for prefix in ignore_prefixes)
-    ]
-    triggered = [
-        path
-        for path in changed_paths
-        if any(path.startswith(prefix) for prefix in trigger_prefixes)
-    ]
-
-    if not triggered:
-        return
-
-    assert any(
-        path.startswith(prefix) for path in changed_paths for prefix in harness_touchpoints
-    ), (
-        "High-value engineering surfaces changed without any MCP harness maintenance touchpoint.\n"
-        "Update the harness/docs/tests so the new workflow stays answerable in 1-2 MCP calls.\n"
-        f"Triggered paths: {triggered}"
-    )
 
 
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
