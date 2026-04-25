@@ -4,6 +4,8 @@ from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
     _split_items_by_work_budget,
 )
 
+import numpy as np
+
 
 def test_estimate_fg_task_threads_counts_cfgs_pairs_and_genomes():
     task = {
@@ -29,6 +31,23 @@ def test_estimate_fused_payload_threads_uses_n_genomes_override():
         "solve_kwargs": {"n_genomes_override": 7},
     }
     assert _estimate_fused_payload_threads(payload) == 42
+
+
+def test_estimate_fused_payload_threads_counts_forced_config_volume():
+    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
+    fp_cap_table[:, :] = np.arange(51, dtype=np.int16)
+    payload = {
+        "n_sections": 2,
+        "ftff_pairs": np.asarray([(0, 0), (1, 0)], dtype=np.int32),
+        "base_stats_pairs": np.asarray([(10, 0)], dtype=np.int32),
+        "non_fever_base_by_ff": np.full((161,), 10, dtype=np.int16),
+        "fp_cap_table": fp_cap_table,
+        "gem_scale_fever": 3,
+        "solve_kwargs": {"n_genomes_override": 3},
+    }
+    # sec0 cap=10 -> 11 configs; sec1 cap=(10*3)//5=6 -> 7 configs.
+    # Work is genomes * pairs * (11*7).
+    assert _estimate_fused_payload_threads(payload) == 3 * 2 * 77
 
 
 def test_split_items_by_work_budget_preserves_order_and_splits():

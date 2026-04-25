@@ -42,6 +42,11 @@ from .signature_frontier import (
     signature_timing_bucket as _signature_timing_bucket_impl,
 )
 from . import gpu_dispatch_caches as _dispatch_caches
+from .work_budget import (
+    estimate_fg_task_threads as _estimate_fg_task_threads,
+    estimate_fused_payload_threads as _estimate_fused_payload_threads,
+    split_items_by_work_budget as _split_items_by_work_budget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -348,99 +353,6 @@ def _extract_group_payload(group: dict):
         counts_max_fp = []
     group_pairs = group.get("ftff_pairs")
     return counts_list, counts_max_fp, group_pairs
-
-
-def _sequence_len(value: Any) -> int:
-    if value is None:
-        return 0
-    try:
-        shape = getattr(value, "shape", None)
-        if shape is not None and len(shape) > 0:
-            return max(0, int(shape[0] or 0))
-    except Exception:
-        pass
-    try:
-        return max(0, int(len(value)))
-    except Exception:
-        return 0
-
-
-def _fg_task_cfg_count(task: dict, *, n_sections: int) -> int:
-    counts_list = task.get("counts_list") if isinstance(task, dict) else None
-    if counts_list is not None:
-        return max(1, int(_sequence_len(counts_list)))
-
-    counts_max_fp = list((task or {}).get("counts_max_fp") or [])
-    if not counts_max_fp:
-        return 1
-
-    total = 1
-    for v in counts_max_fp[: max(0, int(n_sections))]:
-        try:
-            total *= max(1, int(v or 0) + 1)
-        except Exception:
-            total *= 1
-        if total >= 1_000_000_000:
-            return 1_000_000_000
-    return max(1, int(total))
-
-
-def _estimate_fg_task_threads(task: dict, *, n_sections: int, n_genomes: int) -> int:
-    pair_count = max(1, int(_sequence_len((task or {}).get("ftff_pairs"))))
-    cfg_count = max(1, int(_fg_task_cfg_count(task or {}, n_sections=int(n_sections))))
-    return max(1, int(n_genomes)) * int(pair_count) * int(cfg_count)
-
-
-def _estimate_fused_payload_threads(payload: dict) -> int:
-    if not isinstance(payload, dict):
-        return 1
-    pair_count = max(1, int(_sequence_len(payload.get("ftff_pairs"))))
-    base_pair_count = max(1, int(_sequence_len(payload.get("base_stats_pairs"))))
-    solve_kwargs_obj = payload.get("solve_kwargs")
-    solve_kwargs = solve_kwargs_obj if isinstance(solve_kwargs_obj, dict) else {}
-    n_genomes = 0
-    try:
-        n_genomes = int(solve_kwargs.get("n_genomes_override", 0) or 0)
-    except Exception:
-        n_genomes = 0
-    if n_genomes <= 0:
-        n_genomes = max(1, int(_sequence_len(payload.get("genome_stats_list"))))
-    return max(1, int(n_genomes)) * int(pair_count) * int(base_pair_count)
-
-
-def _split_items_by_work_budget(
-    items: list,
-    *,
-    max_work: int,
-    estimate_fn,
-) -> list[list]:
-    if not items:
-        return []
-    try:
-        max_work_i = int(max_work)
-    except Exception:
-        max_work_i = 0
-    if max_work_i <= 0:
-        return [list(items)]
-
-    out: list[list] = []
-    cur: list = []
-    cur_work = 0
-    for item in items:
-        try:
-            work_i = max(1, int(estimate_fn(item)))
-        except Exception:
-            work_i = 1
-        if cur and (int(cur_work) + int(work_i)) > int(max_work_i):
-            out.append(cur)
-            cur = [item]
-            cur_work = int(work_i)
-            continue
-        cur.append(item)
-        cur_work += int(work_i)
-    if cur:
-        out.append(cur)
-    return out
 
 
 def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):

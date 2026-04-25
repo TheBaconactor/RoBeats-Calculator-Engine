@@ -19,6 +19,20 @@ class _DummyExecutor:
         return None
 
 
+def _work_budget_payload(pair_count: int) -> dict:
+    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
+    fp_cap_table[:, :] = np.arange(51, dtype=np.int16)
+    return {
+        "n_sections": 2,
+        "ftff_pairs": np.asarray([(i, 0) for i in range(pair_count)], dtype=np.int32),
+        "base_stats_pairs": np.asarray([(10, 0)], dtype=np.int32),
+        "non_fever_base_by_ff": np.full((161,), 10, dtype=np.int16),
+        "fp_cap_table": fp_cap_table,
+        "gem_scale_fever": 3,
+        "solve_kwargs": {"n_genomes_override": 1},
+    }
+
+
 def test_submit_ga_fg_fused_solve_with_breakpoints_routes_new_request_type():
     executor = _DummyExecutor()
     client = GpuServiceClient(executor=executor)
@@ -78,6 +92,36 @@ def test_fg_coalesce_preserves_pair_work_quantum(monkeypatch):
         assert job1.future.result(timeout=1.0) == ["a"]
         assert job2.future.result(timeout=1.0) == ["b"]
         assert job3.future.result(timeout=1.0) == ["c"]
+    finally:
+        client.close(timeout=0.5)
+
+
+def test_fg_coalesce_preserves_config_work_quantum(monkeypatch):
+    executor = _DummyExecutor()
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "64")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAIRS", "100")
+    monkeypatch.setenv("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "160")
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "100000")
+    client = GpuServiceClient(executor=executor)
+    client.start(start_executor=False, in_process_queues=True)
+
+    try:
+        p1 = _work_budget_payload(2)
+        p2 = _work_budget_payload(1)
+
+        job1 = client.submit_fg_solve_with_breakpoints_batch([p1])
+        assert executor._request_q.empty()
+
+        job2 = client.submit_fg_solve_with_breakpoints_batch([p2])
+        req1 = executor._request_q.get(timeout=1.0)
+        assert req1.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
+        assert len(req1.payload["payloads"]) == 1
+        assert len(req1.payload["payloads"][0]["ftff_pairs"]) == 2
+
+        executor._response_q.put(GpuResponse(request_id=req1.request_id, success=True, result=["a"]))
+        assert job1.future.result(timeout=1.0) == ["a"]
+        assert not job2.future.done()
     finally:
         client.close(timeout=0.5)
 
@@ -173,6 +217,44 @@ def test_fg_submit_splits_single_oversized_payload_and_merges_full_results(monke
         assert merged[0]["final_score"].tolist() == [15, 25, 31]
         assert merged[0]["FT"].tolist() == [2, 3, 2]
         assert merged[0]["cfg_idx"].tolist() == [1, 2, 1]
+    finally:
+        client.close(timeout=0.5)
+
+
+def test_fg_submit_splits_payload_by_config_work_before_owner_request(monkeypatch):
+    executor = _DummyExecutor()
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAIRS", "100")
+    monkeypatch.setenv("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "160")
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "64")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+    client = GpuServiceClient(executor=executor)
+    client.start(start_executor=False, in_process_queues=True)
+
+    try:
+        payload = _work_budget_payload(5)
+        job = client.submit_fg_solve_with_breakpoints_batch([payload])
+
+        reqs = [executor._request_q.get(timeout=1.0) for _ in range(3)]
+        assert [len(req.payload["payloads"][0]["ftff_pairs"]) for req in reqs] == [2, 2, 1]
+
+        for req in reqs:
+            executor._response_q.put(
+                GpuResponse(
+                    request_id=req.request_id,
+                    success=True,
+                    result=[
+                        {
+                            "final_score": np.array([1], dtype=np.int32),
+                            "base_score": np.array([0], dtype=np.int32),
+                            "cfg_idx": np.array([0], dtype=np.int32),
+                            "FT": np.array([0], dtype=np.int32),
+                            "FF": np.array([0], dtype=np.int32),
+                        }
+                    ],
+                )
+            )
+
+        assert len(job.future.result(timeout=1.0)) == 1
     finally:
         client.close(timeout=0.5)
 

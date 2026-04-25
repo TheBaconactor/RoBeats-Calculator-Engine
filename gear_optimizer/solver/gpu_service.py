@@ -26,6 +26,10 @@ from typing import Any, Optional
 
 from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
+    estimate_fused_payload_threads,
+    split_fused_payload_by_budget,
+)
 
 from .gpu_executor import (
     GpuExecutor,
@@ -136,6 +140,14 @@ class GpuServiceClient:
             self._fg_coalesce_max_pairs = 256
         self._fg_coalesce_max_pairs = max(0, min(int(self._fg_coalesce_max_pairs), 4096))
         try:
+            raw_work_cap = os.environ.get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST")
+            if raw_work_cap is None or str(raw_work_cap).strip() == "":
+                raw_work_cap = os.environ.get("FG_FUSED_MAX_WORK_PER_REQUEST", "25000000")
+            self._fg_coalesce_max_work = int(str(raw_work_cap or "25000000").strip() or "25000000")
+        except Exception:
+            self._fg_coalesce_max_work = 25_000_000
+        self._fg_coalesce_max_work = max(0, min(int(self._fg_coalesce_max_work), 2_000_000_000))
+        try:
             self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "8") or "8")
         except Exception:
             self._fg_coalesce_max_wait_ms = 8
@@ -144,6 +156,7 @@ class GpuServiceClient:
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []
         self._fg_coalesce_pairs = 0
+        self._fg_coalesce_work = 0
         # (future, start, count, submit_ts)
         self._fg_coalesce_slices: list[tuple[Future, int, int, float]] = []
         self._fg_coalesce_first_ts: float | None = None
@@ -557,6 +570,14 @@ class GpuServiceClient:
             total += int(self._fg_payload_pair_count(payload))
         return int(total)
 
+    def _fg_payload_work_count(self, payload: dict[str, Any]) -> int:
+        if int(getattr(self, "_fg_coalesce_max_work", 0) or 0) <= 0:
+            return 0
+        try:
+            return max(1, int(estimate_fused_payload_threads(payload)))
+        except Exception:
+            return 1
+
     def _split_fg_payloads_for_owner_quantum(
         self, payloads: list[dict[str, Any]]
     ) -> list[tuple[int, list[dict[str, Any]]]]:
@@ -564,21 +585,27 @@ class GpuServiceClient:
             return [(0, [])]
         max_payloads = max(1, int(self._fg_coalesce_max_payloads))
         max_pairs = int(self._fg_coalesce_max_pairs)
+        max_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0)
         chunks: list[tuple[int, list[dict[str, Any]]]] = []
         cur: list[dict[str, Any]] = []
         cur_start = 0
         cur_pairs = 0
+        cur_work = 0
         for idx, payload in enumerate(payloads):
             item_pairs = int(self._fg_payload_pair_count(payload)) if max_pairs > 0 else 0
+            item_work = int(self._fg_payload_work_count(payload)) if max_work > 0 else 0
             exceeds_payloads = cur and (len(cur) + 1) > int(max_payloads)
             exceeds_pairs = cur and max_pairs > 0 and (cur_pairs + item_pairs) > int(max_pairs)
-            if exceeds_payloads or exceeds_pairs:
+            exceeds_work = cur and max_work > 0 and (cur_work + item_work) > int(max_work)
+            if exceeds_payloads or exceeds_pairs or exceeds_work:
                 chunks.append((int(cur_start), list(cur)))
                 cur = []
                 cur_start = int(idx)
                 cur_pairs = 0
+                cur_work = 0
             cur.append(payload)
             cur_pairs += int(item_pairs)
+            cur_work += int(item_work)
         if cur:
             chunks.append((int(cur_start), list(cur)))
         return chunks
@@ -606,16 +633,19 @@ class GpuServiceClient:
                 expanded.append(payload)
                 spans.append((start, int(len(expanded))))
                 continue
-            pairs = payload.get("ftff_pairs")
             pair_count = int(self._fg_payload_pair_count(payload))
-            if pairs is None or pair_count <= int(max_pairs):
+            pairs = payload.get("ftff_pairs")
+            max_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0)
+            if pairs is None or (pair_count <= int(max_pairs) and max_work <= 0):
                 expanded.append(payload)
                 spans.append((start, int(len(expanded))))
                 continue
-            for offset in range(0, int(pair_count), int(max_pairs)):
-                tile = dict(payload)
-                tile["ftff_pairs"] = pairs[offset : offset + int(max_pairs)]
-                expanded.append(tile)
+            tiles = split_fused_payload_by_budget(
+                payload,
+                max_pairs=int(max_pairs),
+                max_work=int(max_work),
+            )
+            expanded.extend(tiles)
             spans.append((start, int(len(expanded))))
         return expanded, spans
 
@@ -697,7 +727,7 @@ class GpuServiceClient:
             if idx < 0:
                 continue
             prev = best_by_index.get(idx)
-            if prev is None or int(row.get(score_key, -2**63)) > int(prev.get(score_key, -2**63)):
+            if prev is None or int(row.get(score_key, -(2**63))) > int(prev.get(score_key, -(2**63))):
                 best_by_index[idx] = row
 
         try:
@@ -726,12 +756,12 @@ class GpuServiceClient:
             if idx in keep_indices:
                 continue
             if base_scores is not None and 0 <= idx < int(base_scores.shape[0]):
-                if int(row.get(score_key, -2**63)) <= int(base_scores[idx]):
+                if int(row.get(score_key, -(2**63))) <= int(base_scores[idx]):
                     continue
             candidate_rows.append(row)
-        candidate_rows.sort(key=lambda r: int(r.get(score_key, -2**63)), reverse=True)
+        candidate_rows.sort(key=lambda r: int(r.get(score_key, -(2**63))), reverse=True)
         selected_rows = kept_rows + candidate_rows[: max(0, int(topk))]
-        selected_rows.sort(key=lambda r: int(r.get(score_key, -2**63)), reverse=True)
+        selected_rows.sort(key=lambda r: int(r.get(score_key, -(2**63))), reverse=True)
         if not selected_rows:
             return first
 
@@ -869,19 +899,24 @@ class GpuServiceClient:
 
         batches_to_submit: list[tuple[list[dict[str, Any]], list[tuple[Future, int, int, float]]]] = []
         payload_pairs = self._fg_payloads_pair_count(payloads)
+        payload_work = 0
+        if int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0:
+            payload_work = sum(int(self._fg_payload_work_count(payload)) for payload in payloads)
         with self._fg_coalesce_lock:
             if not payloads:
                 fut.set_result([])
                 return GpuJobHandle(request_id=request_id, future=fut)
             if self._fg_coalesce_payloads:
-                would_exceed_payloads = (
-                    len(self._fg_coalesce_payloads) + len(payloads)
-                ) > int(self._fg_coalesce_max_payloads)
-                would_exceed_pairs = (
-                    int(self._fg_coalesce_max_pairs) > 0
-                    and int(self._fg_coalesce_pairs) + int(payload_pairs) > int(self._fg_coalesce_max_pairs)
+                would_exceed_payloads = (len(self._fg_coalesce_payloads) + len(payloads)) > int(
+                    self._fg_coalesce_max_payloads
                 )
-                if would_exceed_payloads or would_exceed_pairs:
+                would_exceed_pairs = int(self._fg_coalesce_max_pairs) > 0 and int(self._fg_coalesce_pairs) + int(
+                    payload_pairs
+                ) > int(self._fg_coalesce_max_pairs)
+                would_exceed_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0 and int(
+                    self._fg_coalesce_work
+                ) + int(payload_work) > int(self._fg_coalesce_max_work)
+                if would_exceed_payloads or would_exceed_pairs or would_exceed_work:
                     batch = self._pop_fg_coalesce_locked()
                     if batch is not None:
                         batches_to_submit.append(batch)
@@ -890,6 +925,7 @@ class GpuServiceClient:
             start = len(self._fg_coalesce_payloads)
             self._fg_coalesce_payloads.extend(payloads)
             self._fg_coalesce_pairs += int(payload_pairs)
+            self._fg_coalesce_work += int(payload_work)
             self._fg_coalesce_slices.append((fut, int(start), int(len(payloads)), float(t_submit)))
             if (
                 int(len(self._fg_coalesce_payloads)) >= int(self._fg_coalesce_max_payloads)
@@ -897,6 +933,10 @@ class GpuServiceClient:
                 or (
                     int(self._fg_coalesce_max_pairs) > 0
                     and int(self._fg_coalesce_pairs) >= int(self._fg_coalesce_max_pairs)
+                )
+                or (
+                    int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0
+                    and int(self._fg_coalesce_work) >= int(self._fg_coalesce_max_work)
                 )
             ):
                 batch = self._pop_fg_coalesce_locked()
@@ -918,6 +958,7 @@ class GpuServiceClient:
         self._fg_coalesce_payloads.clear()
         self._fg_coalesce_slices.clear()
         self._fg_coalesce_pairs = 0
+        self._fg_coalesce_work = 0
         self._fg_coalesce_first_ts = None
         return payloads, slices
 
