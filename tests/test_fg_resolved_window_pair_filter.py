@@ -128,6 +128,67 @@ def test_resolved_stat_pair_reducer_keeps_elemental_tradeoff_pairs() -> None:
     assert dropped == 1
 
 
+def test_resolved_stat_pair_reducer_parallel_matches_serial(monkeypatch) -> None:
+    pairs = [(ft, ff) for ft in range(40) for ff in range(40) if ft + ff <= 90]
+    base_stat_pairs = [(159, 159), (120, 130), (40, 80)]
+
+    monkeypatch.setenv("METAFINDER_CPU_WORKERS", "1")
+    serial = gpu_dispatch._reduce_ftff_pairs_by_resolved_stat_cost(
+        ftff_pairs=pairs,
+        base_stat_pairs=base_stat_pairs,
+        gem_scale_fever=3,
+        is_p_ft=1,
+        is_s_ff=1,
+    )
+
+    monkeypatch.setenv("METAFINDER_CPU_WORKERS", "4")
+    monkeypatch.setenv("METAFINDER_CPU_WORK_MODE", "thread")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "1")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "32")
+    parallel = gpu_dispatch._reduce_ftff_pairs_by_resolved_stat_cost(
+        ftff_pairs=pairs,
+        base_stat_pairs=base_stat_pairs,
+        gem_scale_fever=3,
+        is_p_ft=1,
+        is_s_ff=1,
+    )
+
+    assert parallel == serial
+
+
+def test_resolved_window_pair_filter_parallel_matches_serial(monkeypatch) -> None:
+    ts = np.asarray([i * 0.075 for i in range(80)], dtype=np.float32)
+    pairs = [(ft, ff) for ft in range(35) for ff in range(35) if ft + ff <= 90]
+    base_stat_pairs = [(0, 0), (60, 80), (120, 120)]
+    calc_song = _calc_song(ts)
+    refs = _ref_arrays()
+
+    monkeypatch.setenv("METAFINDER_CPU_WORKERS", "1")
+    serial = gpu_dispatch._filter_ftff_pairs_by_resolved_window_max(
+        ftff_pairs=pairs,
+        base_stat_pairs=base_stat_pairs,
+        calc_song=calc_song,
+        ref_arrays=refs,
+        max_windows=2,
+        gem_scale_fever=3,
+    )
+
+    monkeypatch.setenv("METAFINDER_CPU_WORKERS", "4")
+    monkeypatch.setenv("METAFINDER_CPU_WORK_MODE", "thread")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "1")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "32")
+    parallel = gpu_dispatch._filter_ftff_pairs_by_resolved_window_max(
+        ftff_pairs=pairs,
+        base_stat_pairs=base_stat_pairs,
+        calc_song=calc_song,
+        ref_arrays=refs,
+        max_windows=2,
+        gem_scale_fever=3,
+    )
+
+    assert parallel == serial
+
+
 def test_resolved_window_filter_streams_inside_genome_chunks_before_first_payload() -> None:
     import inspect
 

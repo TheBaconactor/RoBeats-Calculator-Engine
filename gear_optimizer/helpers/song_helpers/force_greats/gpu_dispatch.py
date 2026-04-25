@@ -13,6 +13,13 @@ from gear_optimizer.core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     TOTAL_ROWS,
 )
+from gear_optimizer.core.cpu_work import (
+    chunk_sequence,
+    parallel_map_ordered,
+    resolve_cpu_work_mode,
+    resolve_cpu_worker_count,
+    should_parallelize_work,
+)
 
 from . import cache_validation, result_application
 from .entry_utils import (
@@ -119,6 +126,115 @@ def _resolved_ftff_pair_signature(
     )
 
 
+def _ftff_pair_state(
+    pair: tuple[int, int],
+    *,
+    total_budget: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+) -> tuple[int, int, int, int, int]:
+    ft_gems, ff_gems = pair
+    budget = int(total_budget) - int(ft_gems) - int(ff_gems)
+    p_delta = (int(ft_gems) * int(is_p_ft) + int(ff_gems) * int(is_p_ff)) * 3
+    s_delta = (int(ft_gems) * int(is_s_ft) + int(ff_gems) * int(is_s_ff)) * 3
+    return int(budget), int(p_delta), int(s_delta), int(ft_gems), int(ff_gems)
+
+
+def _ftff_state_dominates(a: tuple[int, int, int, int, int], b: tuple[int, int, int, int, int]) -> bool:
+    a_budget, a_p, a_s, a_ft, a_ff = a
+    b_budget, b_p, b_s, b_ft, b_ff = b
+    if a_budget < b_budget or a_p < b_p or a_s < b_s:
+        return False
+    if a_budget > b_budget or a_p > b_p or a_s > b_s:
+        return True
+    return (a_ft, a_ff) <= (b_ft, b_ff)
+
+
+def _ftff_reduction_record_chunk(args):
+    (
+        ordered_pairs,
+        base_pairs,
+        gem_scale_fever,
+        total_budget,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+    ) = args
+    records = []
+    for order, pair in ordered_pairs:
+        ft_gems, ff_gems = pair
+        pair_i = (int(ft_gems), int(ff_gems))
+        signature = _resolved_ftff_pair_signature(
+            ft_gems=pair_i[0],
+            ff_gems=pair_i[1],
+            base_stat_pairs=base_pairs,
+            gem_scale_fever=int(gem_scale_fever),
+        )
+        state = _ftff_pair_state(
+            pair_i,
+            total_budget=int(total_budget),
+            is_p_ft=int(is_p_ft),
+            is_s_ft=int(is_s_ft),
+            is_p_ff=int(is_p_ff),
+            is_s_ff=int(is_s_ff),
+        )
+        records.append((int(order), pair_i, signature, state))
+    return records
+
+
+def _window_counter_payload(counter) -> tuple | None:
+    if counter is None:
+        return None
+    try:
+        return (
+            np.asarray(counter.timestamps, dtype=np.float64),
+            int(counter.long_notes),
+            float(counter.last_note_time),
+            np.asarray(counter.ref_ft, dtype=np.float32),
+            np.asarray(counter.ref_ff, dtype=np.float32),
+        )
+    except Exception:
+        return None
+
+
+def _window_filter_pair_chunk(args):
+    pairs_chunk, base_pairs, gem_scale_fever, max_windows, counter_payload = args
+    try:
+        from gear_optimizer.solver.timing_envelope import TimelineWindowCounter
+
+        timestamps, long_notes, last_note_time, ref_ft, ref_ff = counter_payload
+        counter = TimelineWindowCounter(
+            timestamps=np.asarray(timestamps, dtype=np.float64),
+            long_notes=int(long_notes),
+            last_note_time=float(last_note_time),
+            ref_ft=np.asarray(ref_ft, dtype=np.float32),
+            ref_ff=np.asarray(ref_ff, dtype=np.float32),
+        )
+    except Exception:
+        return list(pairs_chunk), 0
+
+    kept: list[tuple[int, int]] = []
+    dropped = 0
+    max_windows_i = max(0, int(max_windows))
+    scale = int(gem_scale_fever)
+    for ft_gems, ff_gems in pairs_chunk:
+        keep = False
+        for base_ft, base_ff in base_pairs:
+            ft_idx = max(0, min(int(TOTAL_ROWS), int(base_ft) + int(ft_gems) * scale))
+            ff_idx = max(0, min(int(TOTAL_ROWS), int(base_ff) + int(ff_gems) * scale))
+            if int(counter.count(ft_idx, ff_idx)) <= max_windows_i:
+                keep = True
+                break
+        if keep:
+            kept.append((int(ft_gems), int(ff_gems)))
+        else:
+            dropped += 1
+    return kept, int(dropped)
+
+
 def _reduce_ftff_pairs_by_resolved_stat_cost(
     *,
     ftff_pairs,
@@ -147,39 +263,65 @@ def _reduce_ftff_pairs_by_resolved_stat_cost(
     if not base_pairs:
         return pairs, 0
 
-    def _state(pair: tuple[int, int]) -> tuple[int, int, int, int, int]:
-        ft_gems, ff_gems = pair
-        budget = int(total_budget) - int(ft_gems) - int(ff_gems)
-        p_delta = (int(ft_gems) * int(is_p_ft) + int(ff_gems) * int(is_p_ff)) * 3
-        s_delta = (int(ft_gems) * int(is_s_ft) + int(ff_gems) * int(is_s_ff)) * 3
-        return int(budget), int(p_delta), int(s_delta), int(ft_gems), int(ff_gems)
-
-    def _dominates(a: tuple[int, int, int, int, int], b: tuple[int, int, int, int, int]) -> bool:
-        a_budget, a_p, a_s, a_ft, a_ff = a
-        b_budget, b_p, b_s, b_ft, b_ff = b
-        if a_budget < b_budget or a_p < b_p or a_s < b_s:
-            return False
-        if a_budget > b_budget or a_p > b_p or a_s > b_s:
-            return True
-        return (a_ft, a_ff) <= (b_ft, b_ff)
+    ordered_pairs = list(enumerate(pairs))
+    try:
+        min_pairs = int(os.environ.get("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "768") or "768")
+        items_per_worker = int(os.environ.get("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "256") or "256")
+    except Exception:
+        min_pairs = 768
+        items_per_worker = 256
+    enabled, workers, mode = should_parallelize_work(
+        len(ordered_pairs),
+        min_items=max(1, int(min_pairs)),
+        min_items_per_worker=max(1, int(items_per_worker)),
+    )
+    if enabled:
+        chunks = chunk_sequence(ordered_pairs, worker_count=int(workers), min_items_per_worker=int(items_per_worker))
+        chunk_args = [
+            (
+                chunk,
+                base_pairs,
+                int(gem_scale_fever),
+                int(total_budget),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+            )
+            for chunk in chunks
+        ]
+        record_groups = parallel_map_ordered(
+            _ftff_reduction_record_chunk,
+            chunk_args,
+            min_items=1,
+            min_items_per_worker=1,
+            requested_workers=int(workers),
+            mode=str(mode),
+        )
+        records = [record for group in record_groups for record in group]
+    else:
+        records = _ftff_reduction_record_chunk(
+            (
+                ordered_pairs,
+                base_pairs,
+                int(gem_scale_fever),
+                int(total_budget),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+            )
+        )
 
     kept_by_signature: dict[tuple[tuple[int, int], ...], list[tuple[int, tuple[int, int], tuple[int, int, int, int, int]]]] = {}
-    for order, (ft_gems, ff_gems) in enumerate(pairs):
-        signature = _resolved_ftff_pair_signature(
-            ft_gems=ft_gems,
-            ff_gems=ff_gems,
-            base_stat_pairs=base_pairs,
-            gem_scale_fever=int(gem_scale_fever),
-        )
-        pair = (int(ft_gems), int(ff_gems))
-        state = _state(pair)
+    for order, pair, signature, state in records:
         frontier = kept_by_signature.setdefault(signature, [])
-        if any(_dominates(prev_state, state) for _prev_order, _prev_pair, prev_state in frontier):
+        if any(_ftff_state_dominates(prev_state, state) for _prev_order, _prev_pair, prev_state in frontier):
             continue
         frontier[:] = [
             (prev_order, prev_pair, prev_state)
             for prev_order, prev_pair, prev_state in frontier
-            if not _dominates(state, prev_state)
+            if not _ftff_state_dominates(state, prev_state)
         ]
         frontier.append((int(order), pair, state))
 
@@ -246,6 +388,35 @@ def _filter_ftff_pairs_by_resolved_window_max(
             counter = None
     if counter is None:
         return pairs, 0
+
+    try:
+        min_pairs = int(os.environ.get("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "768") or "768")
+        items_per_worker = int(os.environ.get("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "256") or "256")
+    except Exception:
+        min_pairs = 768
+        items_per_worker = 256
+    counter_payload = _window_counter_payload(counter)
+    enabled, workers, mode = should_parallelize_work(
+        len(pairs),
+        min_items=max(1, int(min_pairs)),
+        min_items_per_worker=max(1, int(items_per_worker)),
+    )
+    if enabled and counter_payload is not None:
+        chunks = chunk_sequence(pairs, worker_count=int(workers), min_items_per_worker=int(items_per_worker))
+        chunk_args = [
+            (chunk, base_pairs, int(gem_scale_fever), int(max_windows), counter_payload)
+            for chunk in chunks
+        ]
+        groups = parallel_map_ordered(
+            _window_filter_pair_chunk,
+            chunk_args,
+            min_items=1,
+            min_items_per_worker=1,
+            requested_workers=int(workers),
+            mode=str(mode),
+        )
+        kept = [pair for group, _dropped in groups for pair in group]
+        return kept, int(sum(int(dropped) for _group, dropped in groups))
 
     kept: list[tuple[int, int]] = []
     dropped = 0
@@ -1095,6 +1266,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_window_pair_drops = 0
     fg_pre_submit_reduce_sec = 0.0
     fg_first_submit_delay_sec: float | None = None
+    fg_cpu_workers = int(resolve_cpu_worker_count())
+    fg_cpu_work_mode = str(resolve_cpu_work_mode())
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -4307,6 +4480,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 fg_pre_submit_reduce_sec * 1000.0,
                 "n/a" if fg_first_submit_delay_sec is None else f"{fg_first_submit_delay_sec * 1000.0:.1f}ms",
             )
+            logger.debug("[PERF] CPU work pool: mode=%s workers=%s", fg_cpu_work_mode, fg_cpu_workers)
             logger.debug(
                 "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
                 t_cache_check_sec * 1000.0,
@@ -4333,6 +4507,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
         meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
         meta["FGPreSubmitReduceMs"] = int(round(float(fg_pre_submit_reduce_sec) * 1000.0))
+        meta["FGCPUWorkers"] = int(fg_cpu_workers)
+        meta["FGCPUWorkMode"] = str(fg_cpu_work_mode)
         if fg_first_submit_delay_sec is not None:
             meta["FGFirstSubmitDelayMs"] = int(round(float(fg_first_submit_delay_sec) * 1000.0))
 
