@@ -1308,6 +1308,36 @@ def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: i
     return out
 
 
+def _compact_force_details_for_storage(force_data: Any) -> Any:
+    """
+    Return the raw FG payload without fields already persisted in FG details.
+
+    `force_details_json` must keep the replay surface: BaseStats, GemCounts,
+    FT/FF, selected element, ForceGreats config, and score. A materialized final
+    `Stats` copy is redundant when BaseStats + gems are present, because tier
+    replay and UI details can reconstruct or read the packed FG `details_json`.
+    """
+    if not isinstance(force_data, dict) or not force_data:
+        return force_data
+
+    out = dict(force_data)
+    if (
+        isinstance(out.get("Stats"), dict)
+        and isinstance(out.get("BaseStats"), dict)
+        and isinstance(out.get("GemCounts"), dict)
+    ):
+        out.pop("Stats", None)
+
+    if "Score" in out and "score" in out:
+        try:
+            if int(out.get("Score") or 0) == int(out.get("score") or 0):
+                out.pop("score", None)
+        except Exception:
+            pass
+
+    return out
+
+
 def save_loadouts_batch(
     song_name: str,
     entries: List[PersistenceEntry],
@@ -1999,7 +2029,8 @@ def save_team_buff_loadouts_batch(
             # Compact storage: names are persisted via encoding tables + BLOB IDs.
             details_storage = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else None
             details_json = _json_dumps_compact(details_storage) if details_storage else None
-            force_json = _json_dumps_compact(force_data) if force_data else None
+            force_storage = _compact_force_details_for_storage(force_data)
+            force_json = _json_dumps_compact(force_storage) if force_storage else None
 
             loadouts_params.append(
                 (

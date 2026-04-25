@@ -588,7 +588,9 @@ def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, 
     # Force payload reflects the *FG* gem allocation that produced the improved fg_score.
     force_details = {
         "score": 200,
+        "Score": 200,
         "BaseStats": {"Fever Fill Rate": 10, "Fever Time": 20, "Beat": 5, "Vibe": 7},
+        "Stats": {"Fever Fill Rate": 61, "Fever Time": 23, "Beat": 8, "Vibe": 430},
         "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 10, "Element": 62},
         "FT": 1,
         "FF": 17,
@@ -627,6 +629,9 @@ def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, 
         assert stored_force["FT"] == 1
         assert stored_force["FF"] == 17
         assert stored_force["GemCounts"]["Element"] == 62
+        assert "Stats" not in stored_force
+        assert "score" not in stored_force
+        assert stored_force["Score"] == 200
 
         # The FG leaderboard row should show the FG gem allocation (not the base one).
         assert stored_details["FT"] == 1

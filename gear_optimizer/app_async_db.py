@@ -6,6 +6,9 @@ import time
 import os
 from typing import Optional
 
+import numpy as np
+
+from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
@@ -15,6 +18,56 @@ from gear_optimizer.data.database import (
     save_loadouts_batch,
     update_song_counters,
 )
+
+_TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
+_TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
+
+
+def _build_ref_arrays_from_stats_table(stats_table) -> dict:
+    stat_names = [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Fill Rate",
+        "Fever Time",
+    ]
+    ref_arrays = {}
+    for i, name in enumerate(stat_names):
+        values = []
+        for v in range(TOTAL_ROWS + 1):
+            lookup_index = TOTAL_ROWS - v
+            try:
+                val = stats_table[lookup_index][i] if stats_table else 0
+            except Exception:
+                val = 0
+            values.append(val)
+        ref_arrays[name] = np.array(values, dtype=np.float32)
+    return ref_arrays
+
+
+def _get_team_buff_ref_arrays_cached() -> dict | None:
+    """
+    Load the Stats.txt lookup arrays used by on-demand TeamBuff replay.
+
+    The main app preloads these during a normal optimizer run; DB-manager callers
+    need the same tables without constructing `GearOptimizerApp`.
+    """
+    global _TEAM_BUFF_REF_ARRAYS_CACHE
+    with _TEAM_BUFF_REF_ARRAYS_LOCK:
+        if isinstance(_TEAM_BUFF_REF_ARRAYS_CACHE, dict) and _TEAM_BUFF_REF_ARRAYS_CACHE:
+            return _TEAM_BUFF_REF_ARRAYS_CACHE
+
+        try:
+            from gear_optimizer.core.config import load_paths_cache
+            from gear_optimizer.data.csv_parser import read_table
+
+            paths = load_paths_cache()
+            stats_path = str((paths or {}).get("Stats", "") or PATHS.stats_csv)
+            stats_table = read_table(stats_path)
+            _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
+        except Exception:
+            _TEAM_BUFF_REF_ARRAYS_CACHE = None
+        return _TEAM_BUFF_REF_ARRAYS_CACHE
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:

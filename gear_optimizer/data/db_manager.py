@@ -72,6 +72,81 @@ def _norm_leaderboard_key(v: object) -> str:
     return ""
 
 
+def _force_config_sections(config: object) -> list[dict[str, int | str]]:
+    if not isinstance(config, Mapping):
+        return []
+    out: list[dict[str, int | str]] = []
+    for key, value in config.items():
+        if not isinstance(key, str) or not key.startswith("NonFever"):
+            continue
+        try:
+            idx = int(key.replace("NonFever", "").strip())
+        except Exception:
+            continue
+        try:
+            forced = int(value or 0)
+        except Exception:
+            forced = 0
+        out.append({"section": int(idx), "key": str(key), "forced_greats": int(forced)})
+    out.sort(key=lambda row: int(row.get("section", 0) or 0))
+    return out
+
+
+def _hitsim_deltas_from_payload(payload: object) -> list[int]:
+    if not isinstance(payload, Mapping):
+        return []
+
+    raw = payload.get("hitsim_offset_deltas_ms")
+    if raw is None:
+        raw = payload.get("hitsim_offset_delta_ms")
+    if raw is None and isinstance(payload.get("details"), Mapping):
+        raw = payload["details"].get("hitsim_offset_deltas_ms")
+        if raw is None:
+            raw = payload["details"].get("hitsim_offset_delta_ms")
+    if raw is None and isinstance(payload.get("ForceGreats"), Mapping):
+        raw = payload["ForceGreats"].get("hitsim_offset_deltas_ms")
+        if raw is None:
+            raw = payload["ForceGreats"].get("hitsim_offset_delta_ms")
+
+    values = raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []
+    out: list[int] = []
+    for value in values:
+        try:
+            out.append(int(value))
+        except Exception:
+            continue
+    return out
+
+
+def _annotate_frontend_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    row_out = dict(row)
+    sections = _force_config_sections(row_out.get("force_config"))
+    if sections:
+        row_out["force_sections"] = sections
+
+    details = row_out.get("details")
+    force = row_out.get("force")
+    base_hitsim = _hitsim_deltas_from_payload(details)
+    fg_hitsim = _hitsim_deltas_from_payload(force)
+    selected_hitsim = fg_hitsim or base_hitsim
+    if selected_hitsim:
+        row_out.setdefault("hitsim_offset_deltas_ms", selected_hitsim)
+    if base_hitsim:
+        row_out.setdefault("base_hitsim_offset_deltas_ms", base_hitsim)
+    if fg_hitsim:
+        row_out.setdefault("fg_hitsim_offset_deltas_ms", fg_hitsim)
+    return row_out
+
+
+def _frontend_rows(rows: object, *, limit: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in list(rows or [])[: max(0, int(limit))]:
+        if not isinstance(row, dict):
+            continue
+        out.append(_annotate_frontend_row(row))
+    return out
+
+
 def _replay_seed_limit(limit: int) -> int:
     """
     Oversample baseline DB rows before replaying them.
@@ -299,6 +374,7 @@ class EvolutionDbManager:
             songs.append(
                 {
                     "song_name": name,
+                    "difficulty": _infer_difficulty_from_song_name(name),
                     "base_ranks": list(range(1, min(max_rank_i, bc) + 1)) if bc > 0 else [],
                     "fg_ranks": list(range(1, min(max_rank_i, fc) + 1)) if fc > 0 else [],
                     "leaderboards": [k for k, c in (("base", bc), ("fg", fc)) if c > 0],
@@ -473,7 +549,69 @@ class EvolutionDbManager:
             return None
         out = dict(rows[rank_i - 1])
         out.update({"song_name": song_name, "tier": tier, "leaderboard": lb, "rank": rank_i})
-        return out
+        if lb == "fg" and "force_sections" not in out:
+            force_obj = out.get("force")
+            fg_meta = (force_obj.get("ForceGreats") or {}) if isinstance(force_obj, dict) else {}
+            sections = _force_config_sections(fg_meta.get("config"))
+            if sections:
+                out["force_sections"] = sections
+        return _annotate_frontend_row(out)
+
+    def get_frontend_song_payload(
+        self,
+        song_name: str,
+        *,
+        tier: str = "T5",
+        limit: int = 50,
+        element: str = "selected",
+        team_color: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return one JSON-friendly song page payload for frontend consumers.
+
+        The payload is shaped for a song picker/detail UI: selected song metadata,
+        resolved tier/color context, and top base/FG leaderboard rows recomputed on
+        demand from compact baseline persistence.
+        """
+        song_name = str(song_name or "").strip()
+        if not song_name:
+            return None
+        tier_i = normalize_team_buff(tier, default="T5")
+        limit_i = max(1, int(limit))
+
+        song_file = self.resolve_song_file(song_name)
+        if not song_file:
+            return None
+
+        payload = self.compute_team_buff_tier_leaderboards_on_demand(
+            song_name,
+            song_file=str(song_file),
+            tiers=(tier_i,),
+            limit=limit_i,
+            element=str(element),
+            team_color=team_color,
+        )
+        meta = dict((payload.get("meta") or {}) if isinstance(payload, dict) else {})
+        tiers_payload = (payload.get("tiers") or {}) if isinstance(payload, dict) else {}
+        tier_payload = dict((tiers_payload.get(tier_i) or {}) if isinstance(tiers_payload, dict) else {})
+        base_rows = _frontend_rows(tier_payload.get("base_top51"), limit=limit_i)
+        fg_rows = _frontend_rows(tier_payload.get("fg_top51"), limit=limit_i)
+
+        return {
+            "song_name": song_name,
+            "song_file": str(song_file),
+            "difficulty": _infer_difficulty_from_song_name(song_name),
+            "tier": tier_i,
+            "limit": limit_i,
+            "element": str(element or "selected"),
+            "team_color": str(team_color or meta.get("target_team_color") or meta.get("team_color") or ""),
+            "primary_color": str(meta.get("primary_color") or ""),
+            "secondary_color": str(meta.get("secondary_color") or ""),
+            "meta": meta,
+            "base_top50": base_rows,
+            "fg_top50": fg_rows,
+            "tiers": {tier_i: {"base_top50": base_rows, "fg_top50": fg_rows}},
+        }
 
     def save_baseline_loadouts(
         self,

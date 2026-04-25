@@ -10,11 +10,7 @@ import numpy as np
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_NORMAL,
     LOADOUTS_PER_SONG_LIMIT,
-    MAX_STAT_INDEX,
-    TOTAL_GEM_BUDGET,
     TOTAL_ROWS,
 )
 
@@ -75,6 +71,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
+FG_RESOLVED_WINDOW_PAIR_MAX = 3
 
 
 def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: bool) -> bool:
@@ -126,138 +123,30 @@ def _uses_timing_envelope_fg(calc_song: dict) -> bool:
         return False
 
 
-def _reference_at_or_max(ref_arrays: dict, key: str, idx: int) -> float:
-    try:
-        arr = np.asarray(ref_arrays[key], dtype=np.float32)
-    except Exception:
-        return 0.0
-    if arr.size <= 0:
-        return 0.0
-    idx_i = max(0, min(int(TOTAL_ROWS), int(idx)))
-    hi = min(int(arr.size), idx_i + 1)
-    if hi <= 0:
-        return float(arr[0])
-    return float(np.nanmax(arr[:hi]))
-
-
-def _score_upper_bound_from_min_normal(
-    *,
-    total_notes: int,
-    min_normal_notes: int,
-    base_value: float,
-    combo_mul: float,
-    fever_mul: float,
-) -> int:
-    """
-    Optimistic score bound for a timeline with at least `min_normal_notes`.
-
-    Normal notes are placed on the lowest-value hit positions and every other
-    note is treated as fever. That can only overestimate a real timeline, so it
-    is safe for pruning.
-    """
-
-    n = max(0, int(total_notes))
-    normal_left = max(0, min(n, int(min_normal_notes)))
-    base_f = np.float32(base_value)
-    combo_f = np.float32(combo_mul)
-    fever_f = np.float32(fever_mul)
-    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
-    total = 0
-    head_len = min(n, 100)
-    for i in range(head_len):
-        ramp = base_f + (np.float32(i + 1) * factor)
-        if normal_left > 0:
-            total += int(ramp)
-            normal_left -= 1
-        else:
-            total += int(ramp * fever_f)
-
-    body_notes = n - head_len
-    if body_notes > 0:
-        body_normal = min(body_notes, normal_left)
-        body_fever = body_notes - body_normal
-        normal_val = int(base_f * combo_f)
-        fever_val = int(base_f * combo_f * fever_f)
-        total += int(body_normal * normal_val) + int(body_fever * fever_val)
-    return int(total)
-
-
-def _fg_pair_upper_bound(
-    *,
-    base_stats: dict,
-    ft_gems: int,
-    ff_gems: int,
-    calc_song: dict,
-    ref_arrays: dict,
-    counter,
-    gem_scale_fever: int,
-) -> int:
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-    primary_color = str((metadata or {}).get("Primary Color", "") or "")
-    secondary_color = str((metadata or {}).get("Secondary Color", "") or "")
-
-    base_ft = int((base_stats or {}).get("Fever Time", 0) or 0)
-    base_ff = int((base_stats or {}).get("Fever Fill Rate", 0) or 0)
-    ft_idx = max(0, min(int(MAX_STAT_INDEX), base_ft + int(ft_gems) * int(gem_scale_fever)))
-    ff_idx = max(0, min(int(MAX_STAT_INDEX), base_ff + int(ff_gems) * int(gem_scale_fever)))
-    windows = max(0, int(counter.count(ft_idx, ff_idx)))
-    fill_count = max(1, int(counter.fill_count(ff_idx)))
-    total_notes = int(counter.total_notes())
-    if windows <= 0:
-        min_normal_notes = total_notes
-    else:
-        min_normal_notes = max(0, min(total_notes, windows * fill_count - 1))
-
-    remaining_budget = max(0, int(TOTAL_GEM_BUDGET) - int(ft_gems) - int(ff_gems))
-    base_pp = int((base_stats or {}).get("Perfect Points", 0) or 0)
-    base_cm = int((base_stats or {}).get("Combo Multiplier", 0) or 0)
-    base_fm = int((base_stats or {}).get("Fever Multiplier", 0) or 0)
-    pp_idx = min(int(MAX_STAT_INDEX), base_pp + remaining_budget * int(GEM_SCALE_NORMAL))
-    cm_idx = min(int(MAX_STAT_INDEX), base_cm + remaining_budget * int(GEM_SCALE_NORMAL))
-    fm_idx = min(int(MAX_STAT_INDEX), base_fm + remaining_budget * int(gem_scale_fever))
-
-    primary_val = int((base_stats or {}).get(primary_color, 0) or 0) if primary_color else 0
-    secondary_val = int((base_stats or {}).get(secondary_color, 0) or 0) if secondary_color else 0
-    base_value = (
-        float(primary_val * 2 + secondary_val)
-        + _reference_at_or_max(ref_arrays, "Perfect Points", pp_idx)
-        + float(remaining_budget * int(ELEMENTAL_GEM_SCALE) * 2)
-    )
-    return _score_upper_bound_from_min_normal(
-        total_notes=total_notes,
-        min_normal_notes=min_normal_notes,
-        base_value=base_value,
-        combo_mul=_reference_at_or_max(ref_arrays, "Combo Multiplier", cm_idx),
-        fever_mul=_reference_at_or_max(ref_arrays, "Fever Multiplier", fm_idx),
-    )
-
-
-def _filter_ftff_pairs_by_admissible_score_bound(
+def _filter_ftff_pairs_by_resolved_window_max(
     *,
     ftff_pairs,
-    base_stat_rows,
+    base_stat_pairs,
     calc_song: dict,
     ref_arrays: dict,
     gem_scale_fever: int,
+    max_windows: int = FG_RESOLVED_WINDOW_PAIR_MAX,
 ) -> tuple[list[tuple[int, int]], int]:
     """
-    Drop only pairs whose optimistic upper bound cannot beat known group score.
+    Keep FT/FF gem pairs only when at least one base row stays in the small
+    resolved-window frontier.
 
-    Window counts are used as math, not policy: for a resolved `(FT, FF)` cell,
-    `windows * fill - 1` is a lower bound on non-fever fill notes. Forced Greats
-    can only delay fill, so the upper-bound score is admissible. No hard-coded
-    "max windows" survives this migration.
+    This is deliberately cheap and runs once per FG group before chunking. The
+    previous score-bound filter was mathematically nicer, but its Python-side
+    bound work starved the GPU producer and made utilization bursty.
     """
 
     pairs = [] if ftff_pairs is None else [(int(ft), int(ff)) for ft, ff in list(ftff_pairs)]
     if not pairs:
         return pairs, 0
 
-    rows = [row for row in list(base_stat_rows or []) if isinstance(row, dict) and isinstance(row.get("base_stats"), dict)]
-    if not rows:
-        return pairs, 0
-    incumbent_score = max(int(row.get("base", 0) or 0) for row in rows)
-    if incumbent_score <= 0:
+    base_pairs = [(int(ft), int(ff)) for ft, ff in list(base_stat_pairs or [])]
+    if not base_pairs:
         return pairs, 0
 
     try:
@@ -271,19 +160,13 @@ def _filter_ftff_pairs_by_admissible_score_bound(
 
     kept: list[tuple[int, int]] = []
     dropped = 0
+    max_windows_i = max(0, int(max_windows))
     for ft_gems, ff_gems in pairs:
         keep = False
-        for row in rows:
-            ub = _fg_pair_upper_bound(
-                base_stats=row["base_stats"],
-                ft_gems=int(ft_gems),
-                ff_gems=int(ff_gems),
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                counter=counter,
-                gem_scale_fever=int(gem_scale_fever),
-            )
-            if int(ub) > int(incumbent_score):
+        for base_ft, base_ff in base_pairs:
+            ft_idx = max(0, min(int(TOTAL_ROWS), int(base_ft) + int(ft_gems) * int(gem_scale_fever)))
+            ff_idx = max(0, min(int(TOTAL_ROWS), int(base_ff) + int(ff_gems) * int(gem_scale_fever)))
+            if int(counter.count(ft_idx, ff_idx)) <= max_windows_i:
                 keep = True
                 break
         if keep:
@@ -292,36 +175,6 @@ def _filter_ftff_pairs_by_admissible_score_bound(
             dropped += 1
 
     return kept, int(dropped)
-
-
-def _base_stat_rows_from_signature_rows(sig_list, sig_rows_map) -> list[dict]:
-    if not isinstance(sig_rows_map, dict):
-        return []
-
-    rows: dict[tuple[int, int, int], dict] = {}
-    for sig in list(sig_list or []):
-        row = sig_rows_map.get(sig)
-        if not isinstance(row, dict):
-            continue
-        base_stats = row.get("base_stats")
-        if not isinstance(base_stats, dict):
-            continue
-        try:
-            key = (
-                int(base_stats.get("Fever Time", 0) or 0),
-                int(base_stats.get("Fever Fill Rate", 0) or 0),
-                int(row.get("base", 0) or 0),
-            )
-        except Exception:
-            continue
-        rows.setdefault(
-            key,
-            {
-                "base_stats": base_stats,
-                "base": int(row.get("base", 0) or 0),
-            },
-        )
-    return [rows[key] for key in sorted(rows)]
 
 
 def _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map) -> list[tuple[int, int]]:
@@ -336,12 +189,15 @@ def _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map) -> list[tuple[i
         base_stats = row.get("base_stats")
         if not isinstance(base_stats, dict):
             continue
-        base_pairs.add(
-            (
-                int(base_stats.get("Fever Time", 0) or 0),
-                int(base_stats.get("Fever Fill Rate", 0) or 0),
+        try:
+            base_pairs.add(
+                (
+                    int(base_stats.get("Fever Time", 0) or 0),
+                    int(base_stats.get("Fever Fill Rate", 0) or 0),
+                )
             )
-        )
+        except Exception:
+            continue
 
     return sorted(base_pairs)
 
@@ -2524,10 +2380,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             use_fast=bool(fast_pairs),
         )
         if per_pair_breakpoints:
-            group_base_rows = _base_stat_rows_from_signature_rows(sig_list, sig_rows_map)
-            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_admissible_score_bound(
+            group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
+            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_max(
                 ftff_pairs=ftff_pairs,
-                base_stat_rows=group_base_rows,
+                base_stat_pairs=group_base_pairs,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 gem_scale_fever=int(GEM_SCALE_FEVER),

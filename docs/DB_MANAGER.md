@@ -121,9 +121,46 @@ Returns a JSON-friendly dict:
     `TeamContributionBuffConstant.TeamBuff`)
 - `songs`: list of:
   - `song_name`
+  - `difficulty`: inferred `Easy`, `Normal`, or `Hard`
   - `leaderboards`: `["base"]`, `["fg"]`, or `["base","fg"]`
   - `base_ranks`: available base ranks `[1..N]` (clamped to `max_rank`)
   - `fg_ranks`: available fg ranks `[1..N]` (clamped to `max_rank`)
+
+## API: Frontend Song Payload
+
+Use this for the common UI page where a customer selects one song and needs both leaderboard tabs at once.
+
+```python
+payload = db.get_frontend_song_payload(
+    "Rainshower (Easy) by Silentroom",
+    tier="T10",         # recomputed on demand
+    limit=50,           # top 50 for base and FG
+    element="selected", # selected|primary|secondary
+)
+```
+
+Returns:
+
+- `song_name`, `song_file`, `difficulty`
+- `tier`, `element`, `team_color`, `primary_color`, `secondary_color`
+- `base_top50`: base leaderboard rows ranked by recomputed base score
+- `fg_top50`: FG leaderboard rows ranked by recomputed FG score
+- `tiers`: the same top lists grouped under the selected tier key
+- `meta`: replay metadata from tier recomputation
+
+FG rows include `force_config` when present. The manager also adds `force_sections`, a list of `{section, key,
+forced_greats}` rows derived from `ForceGreats.config`, so a frontend can render the per-non-fever-section numbers
+without parsing `NonFeverN` keys itself.
+
+Rows also normalize any available timing-delta display data:
+
+- `hitsim_offset_deltas_ms`: the deltas to show for that row
+- `base_hitsim_offset_deltas_ms`: base-row deltas when present in `details`
+- `fg_hitsim_offset_deltas_ms`: FG deltas when present in `force`
+
+These fields are exposed at the API edge only. Rank-N detail remains on demand through `get_leaderboard_entry(...)`.
+For full row details, including decoded stats and the raw force payload, call `get_leaderboard_entry(...)` for the
+selected rank.
 
 ## API: Leaderboard Entry (On-Demand Tier Scoring)
 
@@ -149,3 +186,5 @@ Notes:
   - `secondary`: force TeamColor to the song Secondary Color (falls back to Primary)
 - The manager attempts to resolve the chart file path automatically from the repo `Data/` layout. If it cannot resolve
   the file for the given `song_name`, it returns `None`.
+- The row returned here uses the same normalized `force_sections` and hitsim-delta fields as
+  `get_frontend_song_payload(...)`.

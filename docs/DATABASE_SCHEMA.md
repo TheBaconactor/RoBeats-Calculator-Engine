@@ -15,6 +15,8 @@ Default persistence behavior (`evolution.db`):
   - Gear/minis are persisted as compact integer IDs via encoding tables + BLOB columns (not repeated JSON strings).
   - `details_json` stores packed Stats (`st`), gem counts (`gc`), and color context (`se`/`pc`/`sc`) instead of verbose
     repeated keys.
+  - `force_details_json` stores the replay surface for FG (`BaseStats`, `GemCounts`, `FT`, `FF`, selected element,
+    `ForceGreats`, score); redundant final `Stats` copies are omitted when they can be reconstructed.
   - Large derived fields (notably `hitsim_offset_deltas_ms`) are computed on demand and not persisted.
   - Full FG replay payloads are stored in `team_buff_fg_loadouts`; base rows keep scalar `fg_score` context but do not
     duplicate `force_details_json`.
@@ -202,6 +204,8 @@ Some large derived fields are intentionally not persisted (computed on demand), 
 Most consumers should not query SQLite directly anymore. Use the centralized manager API:
 
 - `EvolutionDbManager.get_song_catalog(...)`: list songs + available ranks for base/FG leaderboards
+- `EvolutionDbManager.get_frontend_song_payload(...)`: get one selected song page with top base/FG lists, difficulty,
+  tier/color metadata, per-section FG config rows, and normalized hitsim delta display fields when available
 - `EvolutionDbManager.get_leaderboard_entry(...)`: view a single (song, tier, leaderboard, rank) entry
 
 Example:
@@ -213,6 +217,13 @@ db = EvolutionDbManager.from_env()
 
 catalog = db.get_song_catalog(max_rank=51)
 
+page = db.get_frontend_song_payload(
+    "Rainshower (Easy) by Silentroom",
+    tier="T10",
+    limit=50,
+    element="selected",
+)
+
 row = db.get_leaderboard_entry(
     "Rainshower (Easy) by Silentroom",
     leaderboard="fg",   # "base" or "fg"
@@ -222,7 +233,10 @@ row = db.get_leaderboard_entry(
 )
 ```
 
-This returns decoded `gear`/`minis` names and scores computed on demand.
+The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors,
+`force_sections` derived from `ForceGreats.config` for FG rows, and row-level `hitsim_offset_deltas_ms` /
+`base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when those deltas are present in the replayed row
+payload. The single-entry API returns full decoded row details.
 
 See: `docs/DB_MANAGER.md`.
 

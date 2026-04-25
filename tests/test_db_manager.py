@@ -185,6 +185,7 @@ def test_get_song_catalog_defaults_to_resolved_baseline_team_buff(tmp_path: Path
     assert catalog["songs"] == [
         {
             "song_name": "Catalog Song",
+            "difficulty": "Normal",
             "base_ranks": [1],
             "fg_ranks": [],
             "leaderboards": ["base"],
@@ -413,6 +414,82 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     assert out["song_name"] == "Leaderboard Song"
     assert out["tier"] == "T10"
     assert out["score"] == 2222
+
+
+def test_db_manager_frontend_song_payload_returns_top_lists_and_context(tmp_path: Path, monkeypatch):
+    from gear_optimizer.data.db_manager import EvolutionDbManager
+
+    db_path = tmp_path / "frontend_payload.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "Data/Hard/Payload.txt")
+
+    captured: dict[str, object] = {}
+
+    def fake_compute(self, song_name, *, song_file, tiers, limit, element, team_color):
+        captured.update(
+            {
+                "song_name": song_name,
+                "song_file": song_file,
+                "tiers": tuple(tiers),
+                "limit": limit,
+                "element": element,
+                "team_color": team_color,
+            }
+        )
+        return {
+            "meta": {
+                "target_team_color": "Rush",
+                "primary_color": "Rush",
+                "secondary_color": "Flow",
+            },
+            "tiers": {
+                "T10": {
+                    "base_top51": [
+                        {
+                            "loadout_hash": "base-a",
+                            "score": 200,
+                            "details": {"hitsim_offset_deltas_ms": [3, -1]},
+                        }
+                    ],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": "fg-a",
+                            "score": 200,
+                            "fg_score": 250,
+                            "details": {"hitsim_offset_deltas_ms": [3, -1]},
+                            "force": {"ForceGreats": {"hitsim_offset_delta_ms": 5}},
+                            "force_config": {"NonFever1": 2},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(EvolutionDbManager, "compute_team_buff_tier_leaderboards_on_demand", fake_compute)
+
+    db = EvolutionDbManager.from_env()
+    out = db.get_frontend_song_payload(
+        "Payload Song (Hard) by Mapper",
+        tier="T10",
+        limit=50,
+        element="secondary",
+    )
+
+    assert captured["song_file"] == "Data/Hard/Payload.txt"
+    assert captured["tiers"] == ("T10",)
+    assert captured["element"] == "secondary"
+    assert out is not None
+    assert out["song_name"] == "Payload Song (Hard) by Mapper"
+    assert out["difficulty"] == "Hard"
+    assert out["tier"] == "T10"
+    assert out["team_color"] == "Rush"
+    assert out["base_top50"][0]["hitsim_offset_deltas_ms"] == [3, -1]
+    assert out["fg_top50"][0]["force_sections"] == [
+        {"section": 1, "key": "NonFever1", "forced_greats": 2}
+    ]
+    assert out["fg_top50"][0]["hitsim_offset_deltas_ms"] == [5]
+    assert out["fg_top50"][0]["base_hitsim_offset_deltas_ms"] == [3, -1]
+    assert out["fg_top50"][0]["fg_hitsim_offset_deltas_ms"] == [5]
 
 
 def test_db_manager_get_leaderboard_entry_uses_fg_base_score_context(tmp_path: Path, monkeypatch):

@@ -20,10 +20,12 @@ Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine
 - base production uses the GPU-resident timing-envelope ceiling frontier; the old CPU-built exact score-proxy timeline
   override hook has been removed from production
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
-- FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with an admissible score bound derived from the
-  same shared window counter before breakpoint generation and exact inner gem solving
+- FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with the same shared window counter before
+  breakpoint generation and exact inner gem solving; production keeps pairs at or below the three-window resolved
+  frontier and removes the heavier admissible score-bound attempt from the producer path
 - FG's only specialization is deterministic late-Great carry via `fg_great_candidate_timestamps`
-- no production FG pair is rejected solely because it crosses a hard activation-window count
+- production FG pair rejection at this stage is the explicit resolved-window frontier; surviving pairs still route
+  through exact-inner BnB
 
 Production song prep now calls `apply_timing_envelope(...)`. Root configs no longer ship a sampled-timing section.
 
