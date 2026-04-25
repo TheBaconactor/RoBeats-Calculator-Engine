@@ -1378,7 +1378,8 @@ def run_native_inflight_song_pipeline(
             pass
 
         bundle_parent = getattr(song, "_bundle_parent_task", None)
-        if bundle_parent is not None and bool(song.manual_force_greats or song.force_greats_finder):
+        needs_fg_stage = bool(song.manual_force_greats or song.force_greats_finder)
+        if bundle_parent is not None and needs_fg_stage:
             setattr(song, "_bundle_wait_for_fg", True)
         elif bundle_parent is not None:
             _advance_bundle(
@@ -1387,6 +1388,11 @@ def run_native_inflight_song_pipeline(
                 record_info=getattr(song, "record_info", None),
                 failed=False,
             )
+        elif needs_fg_stage and bool(fg_drain_at_end):
+            try:
+                song._await_fg_completion_progress = True
+            except Exception:
+                pass
         else:
             completed_songs.add(song.task_key)
             if memory_resume_tracker:
@@ -2280,6 +2286,26 @@ def run_native_inflight_song_pipeline(
                             )
                             try:
                                 delattr(fg_song, "_bundle_wait_for_fg")
+                            except Exception:
+                                pass
+                        elif bool(getattr(fg_song, "_await_fg_completion_progress", False)):
+                            completed_songs.add(fg_song.task_key)
+                            if memory_resume_tracker:
+                                memory_resume_tracker.mark_completed(fg_song.song_name)
+                            if bundle_completed_cb is not None:
+                                try:
+                                    bundle_completed_cb(fg_song.task_key, completed_songs)
+                                except Exception:
+                                    pass
+                            try:
+                                record_info = dict(getattr(fg_song, "record_info", None) or {})
+                                record_info.setdefault("song", fg_song.task_key or fg_song.song_name)
+                                record_info.setdefault("status", "DONE")
+                            except Exception:
+                                record_info = None
+                            _emit_progress(completed_delta=1, record_info=record_info)
+                            try:
+                                delattr(fg_song, "_await_fg_completion_progress")
                             except Exception:
                                 pass
                     else:

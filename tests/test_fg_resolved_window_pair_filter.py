@@ -156,6 +156,34 @@ def test_resolved_stat_pair_reducer_parallel_matches_serial(monkeypatch) -> None
     assert parallel == serial
 
 
+def test_fg_pair_cpu_parallel_plan_defaults_to_serial(monkeypatch) -> None:
+    monkeypatch.delenv("METAFINDER_FG_CPU_WORK_MODE", raising=False)
+    monkeypatch.delenv("METAFINDER_FG_CPU_WORKERS", raising=False)
+    monkeypatch.setenv("METAFINDER_CPU_WORK_MODE", "process")
+    monkeypatch.setenv("METAFINDER_CPU_WORKERS", "8")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "1")
+
+    enabled, workers, mode, _items = gpu_dispatch._fg_pair_cpu_parallel_plan(4096)
+
+    assert enabled is False
+    assert workers == 1
+    assert mode == "serial"
+
+
+def test_fg_pair_cpu_parallel_plan_requires_explicit_fg_opt_in(monkeypatch) -> None:
+    monkeypatch.setenv("METAFINDER_FG_CPU_WORK_MODE", "thread")
+    monkeypatch.setenv("METAFINDER_FG_CPU_WORKERS", "4")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "1")
+    monkeypatch.setenv("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "64")
+
+    enabled, workers, mode, items = gpu_dispatch._fg_pair_cpu_parallel_plan(4096)
+
+    assert enabled is True
+    assert workers == 4
+    assert mode == "thread"
+    assert items == 64
+
+
 def test_resolved_window_pair_filter_parallel_matches_serial(monkeypatch) -> None:
     ts = np.asarray([i * 0.075 for i in range(80)], dtype=np.float32)
     pairs = [(ft, ff) for ft in range(35) for ff in range(35) if ft + ff <= 90]

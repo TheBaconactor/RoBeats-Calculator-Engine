@@ -16,8 +16,6 @@ from gear_optimizer.core.constants import (
 from gear_optimizer.core.cpu_work import (
     chunk_sequence,
     parallel_map_ordered,
-    resolve_cpu_work_mode,
-    resolve_cpu_worker_count,
     should_parallelize_work,
 )
 
@@ -235,6 +233,49 @@ def _window_filter_pair_chunk(args):
     return kept, int(dropped)
 
 
+def _fg_pair_cpu_parallel_plan(item_count: int) -> tuple[bool, int, str, int]:
+    """Resolve CPU fanout for FG FT/FF pair prep.
+
+    FG producer jobs already run concurrently across songs. Letting this nested
+    pre-submit path inherit the generic process-pool default can make every FG
+    worker do host fanout before the first GPU request, which creates the
+    observed backlog/bursty GPU pattern. Keep this path serial by default and
+    allow explicit opt-in when profiling a machine where nested fanout wins.
+    """
+
+    try:
+        min_pairs = int(os.environ.get("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "768") or "768")
+        items_per_worker = int(os.environ.get("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "256") or "256")
+    except Exception:
+        min_pairs = 768
+        items_per_worker = 256
+
+    raw_mode = os.environ.get("METAFINDER_FG_CPU_WORK_MODE")
+    raw_workers = os.environ.get("METAFINDER_FG_CPU_WORKERS")
+    if raw_mode is None or str(raw_mode).strip() == "":
+        mode = "serial"
+    else:
+        mode = str(raw_mode).strip().lower()
+
+    requested_workers: int | None = 1
+    if raw_workers is not None and str(raw_workers).strip() != "":
+        try:
+            requested_workers = int(str(raw_workers).strip())
+        except Exception:
+            requested_workers = 1
+    elif mode != "serial":
+        requested_workers = None
+
+    enabled, workers, resolved_mode = should_parallelize_work(
+        int(item_count),
+        min_items=max(1, int(min_pairs)),
+        min_items_per_worker=max(1, int(items_per_worker)),
+        requested_workers=requested_workers,
+        mode=str(mode),
+    )
+    return bool(enabled), int(workers), str(resolved_mode), max(1, int(items_per_worker))
+
+
 def _reduce_ftff_pairs_by_resolved_stat_cost(
     *,
     ftff_pairs,
@@ -264,17 +305,7 @@ def _reduce_ftff_pairs_by_resolved_stat_cost(
         return pairs, 0
 
     ordered_pairs = list(enumerate(pairs))
-    try:
-        min_pairs = int(os.environ.get("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "768") or "768")
-        items_per_worker = int(os.environ.get("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "256") or "256")
-    except Exception:
-        min_pairs = 768
-        items_per_worker = 256
-    enabled, workers, mode = should_parallelize_work(
-        len(ordered_pairs),
-        min_items=max(1, int(min_pairs)),
-        min_items_per_worker=max(1, int(items_per_worker)),
-    )
+    enabled, workers, mode, items_per_worker = _fg_pair_cpu_parallel_plan(len(ordered_pairs))
     if enabled:
         chunks = chunk_sequence(ordered_pairs, worker_count=int(workers), min_items_per_worker=int(items_per_worker))
         chunk_args = [
@@ -389,18 +420,8 @@ def _filter_ftff_pairs_by_resolved_window_max(
     if counter is None:
         return pairs, 0
 
-    try:
-        min_pairs = int(os.environ.get("METAFINDER_CPU_PARALLEL_MIN_PAIRS", "768") or "768")
-        items_per_worker = int(os.environ.get("METAFINDER_CPU_PARALLEL_ITEMS_PER_WORKER", "256") or "256")
-    except Exception:
-        min_pairs = 768
-        items_per_worker = 256
     counter_payload = _window_counter_payload(counter)
-    enabled, workers, mode = should_parallelize_work(
-        len(pairs),
-        min_items=max(1, int(min_pairs)),
-        min_items_per_worker=max(1, int(items_per_worker)),
-    )
+    enabled, workers, mode, items_per_worker = _fg_pair_cpu_parallel_plan(len(pairs))
     if enabled and counter_payload is not None:
         chunks = chunk_sequence(pairs, worker_count=int(workers), min_items_per_worker=int(items_per_worker))
         chunk_args = [
@@ -1266,8 +1287,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_window_pair_drops = 0
     fg_pre_submit_reduce_sec = 0.0
     fg_first_submit_delay_sec: float | None = None
-    fg_cpu_workers = int(resolve_cpu_worker_count())
-    fg_cpu_work_mode = str(resolve_cpu_work_mode())
+    _fg_pair_parallel_enabled, fg_cpu_workers, fg_cpu_work_mode, _fg_pair_parallel_items = _fg_pair_cpu_parallel_plan(
+        10_000
+    )
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
