@@ -96,6 +96,18 @@ then evaluates every retained variant for the concrete loadout stats and returns
 fixed-stat GPU scoring helper uses the same frontier selection, so postprocess/integrity scoring no longer inherits the
 old primary-mask-only behavior.
 
+Update on 2026-04-25: the generated four-signature ceiling frontier is now compacted on GPU before exact-inner BnB sees
+it. The compactor drops only exact duplicates and surfaces dominated for every loadout on the generated surface:
+
+- the retained surface's head fever mask is a superset of the dropped surface's mask
+- the retained surface has at least as many body fever notes
+- the retained surface has no more body normal notes
+
+Those conditions are lossless for the scoring objective because any dropped normal note is replaced by a fever note, and
+every fever note present in the dropped surface remains fever in the retained surface. The direct ceiling kernel and the
+representative-cell dedup kernel both call the same `_write_exact_timeline_frontier4(...)` helper, and the scatter kernel
+copies the compacted frontier from representatives into the full grid.
+
 This is still exact over the retained timing-envelope frontier, not a proof that the generated four-signature frontier is
 the full mathematical universe of all possible human timing paths. The stale same-signature warmstart pruning is disabled
 for multi-variant frontier cells because two cells can share the primary signature while differing in a secondary variant
@@ -152,6 +164,13 @@ Throughput-stall follow-up verification (2026-04-24):
   - `1 passed`
   - proves exact-inner BnB and fixed-stat GPU scoring both evaluate the retained timeline frontier instead of sticking to
     the primary proxy timeline
+
+Generated-frontier compaction verification (2026-04-25):
+
+- `python -m pytest -q tests/test_timeline_frontier_reduction.py --tb=short`
+  - proves duplicate/dominated surface reduction preserves the best score over loadout-like score weights
+  - verifies both ceiling envelope kernels call the shared compactor instead of writing an unconditional four-variant
+    frontier
 
 Initial migration verification:
 

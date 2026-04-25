@@ -192,6 +192,108 @@ def _write_timeline_frontier_variant(
     kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 3] = m3
 
 
+@ti.func
+def _timeline_surface_equal(a: ti.template(), b: ti.template()) -> ti.i32:
+    same: ti.i32 = 0
+    if (
+        a.m0 == b.m0
+        and a.m1 == b.m1
+        and a.m2 == b.m2
+        and a.m3 == b.m3
+        and a.body_fever == b.body_fever
+        and a.body_normal == b.body_normal
+    ):
+        same = 1
+    return same
+
+
+@ti.func
+def _timeline_surface_dominates(a: ti.template(), b: ti.template()) -> ti.i32:
+    dominates: ti.i32 = 0
+    a_contains_b_head = (
+        ((a.m0 | b.m0) == a.m0)
+        and ((a.m1 | b.m1) == a.m1)
+        and ((a.m2 | b.m2) == a.m2)
+        and ((a.m3 | b.m3) == a.m3)
+    )
+    if a_contains_b_head and a.body_fever >= b.body_fever and a.body_normal <= b.body_normal:
+        dominates = 1
+    return dominates
+
+
+@ti.func
+def _timeline_surface_drop_candidate(
+    cand: ti.template(),
+    cand_idx: ti.i32,
+    other: ti.template(),
+    other_idx: ti.i32,
+) -> ti.i32:
+    drop: ti.i32 = 0
+    if _timeline_surface_equal(other, cand) != 0:
+        if other_idx < cand_idx:
+            drop = 1
+    elif _timeline_surface_dominates(other, cand) != 0:
+        drop = 1
+    return drop
+
+
+@ti.func
+def _write_exact_timeline_frontier4(
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+    v0: ti.template(),
+    v1: ti.template(),
+    v2: ti.template(),
+    v3: ti.template(),
+) -> None:
+    drop0 = (
+        _timeline_surface_drop_candidate(v0, ti.i32(0), v1, ti.i32(1))
+        | _timeline_surface_drop_candidate(v0, ti.i32(0), v2, ti.i32(2))
+        | _timeline_surface_drop_candidate(v0, ti.i32(0), v3, ti.i32(3))
+    )
+    drop1 = (
+        _timeline_surface_drop_candidate(v1, ti.i32(1), v0, ti.i32(0))
+        | _timeline_surface_drop_candidate(v1, ti.i32(1), v2, ti.i32(2))
+        | _timeline_surface_drop_candidate(v1, ti.i32(1), v3, ti.i32(3))
+    )
+    drop2 = (
+        _timeline_surface_drop_candidate(v2, ti.i32(2), v0, ti.i32(0))
+        | _timeline_surface_drop_candidate(v2, ti.i32(2), v1, ti.i32(1))
+        | _timeline_surface_drop_candidate(v2, ti.i32(2), v3, ti.i32(3))
+    )
+    drop3 = (
+        _timeline_surface_drop_candidate(v3, ti.i32(3), v0, ti.i32(0))
+        | _timeline_surface_drop_candidate(v3, ti.i32(3), v1, ti.i32(1))
+        | _timeline_surface_drop_candidate(v3, ti.i32(3), v2, ti.i32(2))
+    )
+
+    out_idx: ti.i32 = 0
+    if drop0 == 0:
+        _write_timeline_frontier_variant(
+            song_slot, ft_idx, ff_idx, out_idx, head_len, v0.m0, v0.m1, v0.m2, v0.m3, v0.body_fever, v0.body_normal
+        )
+        out_idx += 1
+    if drop1 == 0:
+        _write_timeline_frontier_variant(
+            song_slot, ft_idx, ff_idx, out_idx, head_len, v1.m0, v1.m1, v1.m2, v1.m3, v1.body_fever, v1.body_normal
+        )
+        out_idx += 1
+    if drop2 == 0:
+        _write_timeline_frontier_variant(
+            song_slot, ft_idx, ff_idx, out_idx, head_len, v2.m0, v2.m1, v2.m2, v2.m3, v2.body_fever, v2.body_normal
+        )
+        out_idx += 1
+    if drop3 == 0:
+        _write_timeline_frontier_variant(
+            song_slot, ft_idx, ff_idx, out_idx, head_len, v3.m0, v3.m1, v3.m2, v3.m3, v3.body_fever, v3.body_normal
+        )
+        out_idx += 1
+
+    kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(out_idx, ti.i8)
+
+
 @ti.kernel
 def compute_timeline_grid_kernel(
     total_notes: ti.i32,
@@ -823,59 +925,7 @@ def compute_timeline_grid_ceiling_envelope_kernel(
         hi_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(1))
         lo_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(0))
         lo_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(1))
-        kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(4, ti.i8)
-        _write_timeline_frontier_variant(
-            song_slot,
-            ft_idx,
-            ff_idx,
-            ti.i32(0),
-            head_len,
-            hi_max.m0,
-            hi_max.m1,
-            hi_max.m2,
-            hi_max.m3,
-            hi_max.body_fever,
-            hi_max.body_normal,
-        )
-        _write_timeline_frontier_variant(
-            song_slot,
-            ft_idx,
-            ff_idx,
-            ti.i32(1),
-            head_len,
-            hi_min.m0,
-            hi_min.m1,
-            hi_min.m2,
-            hi_min.m3,
-            hi_min.body_fever,
-            hi_min.body_normal,
-        )
-        _write_timeline_frontier_variant(
-            song_slot,
-            ft_idx,
-            ff_idx,
-            ti.i32(2),
-            head_len,
-            lo_max.m0,
-            lo_max.m1,
-            lo_max.m2,
-            lo_max.m3,
-            lo_max.body_fever,
-            lo_max.body_normal,
-        )
-        _write_timeline_frontier_variant(
-            song_slot,
-            ft_idx,
-            ff_idx,
-            ti.i32(3),
-            head_len,
-            lo_min.m0,
-            lo_min.m1,
-            lo_min.m2,
-            lo_min.m3,
-            lo_min.body_fever,
-            lo_min.body_normal,
-        )
+        _write_exact_timeline_frontier4(song_slot, ft_idx, ff_idx, head_len, hi_max, hi_min, lo_max, lo_min)
 
         best = hi_max
         best_score = _ceiling_compare_score(
@@ -1015,6 +1065,7 @@ def compute_timeline_grid_ceiling_envelope_reps_kernel(
         hi_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(1), ti.i32(1))
         lo_max = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(0))
         lo_min = _simulate_ceiling_cell(n, gcount, fill_count, d_ms, ti.i32(0), ti.i32(1))
+        _write_exact_timeline_frontier4(song_slot, ft_idx, ff_idx, head_len, hi_max, hi_min, lo_max, lo_min)
 
         best = hi_max
         best_score = _ceiling_compare_score(
