@@ -40,6 +40,13 @@ fill and Great carry can only keep fever ending at the same note or later.
 
 This is the same reduction for base analysis and FG. FG adds only the carry stream needed by the exact-DP objective.
 
+Update on 2026-04-24: the FG finder also applies a lossless FT/FF pair reduction before the resolved-window filter and
+before genome chunking. For each generated pair, it resolves the pair against every retained base row into concrete
+`(Fever Time, Fever Fill Rate)` table cells. If two pairs produce the same resolved-cell vector, the pair that spends
+more FT/FF gems is dominated: downstream timeline generation sees the same timing surface, and the exact inner BnB has
+the same remaining search space plus at least as much budget from the cheaper representative. Equal-cost duplicates are
+equivalent and are resolved deterministically. This cuts saturated plateau states without pruning on a score guess.
+
 Update on 2026-04-24: `prepare_timeline_window_counter(...)` exposes the shared all-normal window count without building a
 full fixed-stat scoring input. It caches the fever-end table per resolved FT index and the final count per resolved
 `(FT, FF)` cell. The FG finder now uses that count as a mathematical ingredient instead of a policy cap: for a resolved

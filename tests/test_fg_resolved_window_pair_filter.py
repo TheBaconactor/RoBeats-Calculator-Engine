@@ -64,15 +64,59 @@ def test_resolved_window_pair_filter_keeps_pair_if_any_base_row_survives() -> No
     assert dropped == 0
 
 
+def test_resolved_stat_pair_reducer_drops_cost_dominated_saturated_pairs() -> None:
+    pairs = [(0, 0), (0, 1), (1, 0), (0, 2), (1, 1), (2, 0)]
+    base_stat_pairs = [(159, 159)]
+
+    kept, dropped = gpu_dispatch._reduce_ftff_pairs_by_resolved_stat_cost(
+        ftff_pairs=pairs,
+        base_stat_pairs=base_stat_pairs,
+        gem_scale_fever=3,
+    )
+
+    assert kept == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    assert dropped == 2
+
+    kept_signatures = {
+        gpu_dispatch._resolved_ftff_pair_signature(
+            ft_gems=ft,
+            ff_gems=ff,
+            base_stat_pairs=base_stat_pairs,
+            gem_scale_fever=3,
+        ): ft + ff
+        for ft, ff in kept
+    }
+    for ft, ff in set(pairs) - set(kept):
+        signature = gpu_dispatch._resolved_ftff_pair_signature(
+            ft_gems=ft,
+            ff_gems=ff,
+            base_stat_pairs=base_stat_pairs,
+            gem_scale_fever=3,
+        )
+        assert kept_signatures[signature] <= ft + ff
+
+
+def test_resolved_stat_pair_reducer_keeps_pairs_when_any_base_row_differs() -> None:
+    kept, dropped = gpu_dispatch._reduce_ftff_pairs_by_resolved_stat_cost(
+        ftff_pairs=[(0, 1), (0, 2)],
+        base_stat_pairs=[(159, 159), (0, 0)],
+        gem_scale_fever=3,
+    )
+
+    assert kept == [(0, 1), (0, 2)]
+    assert dropped == 0
+
+
 def test_resolved_window_filter_is_group_level_before_genome_chunks() -> None:
     import inspect
 
     body = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
+    reducer_pos = body.index("_reduce_ftff_pairs_by_resolved_stat_cost(")
     filter_pos = body.index("_filter_ftff_pairs_by_resolved_window_max(")
     pack_pos = body.index("ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)")
     chunk_pos = body.index("while idx0 < n_sig:")
 
-    assert filter_pos < pack_pos < chunk_pos
+    assert reducer_pos < filter_pos < pack_pos < chunk_pos
     assert body.rfind("_filter_ftff_pairs_by_resolved_window_max(") == filter_pos
 
 

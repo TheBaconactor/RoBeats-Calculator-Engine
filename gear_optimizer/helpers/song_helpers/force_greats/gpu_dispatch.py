@@ -102,6 +102,66 @@ def _default_fused_payloads_per_request() -> int:
     return 8 if workers >= 2 else 4
 
 
+def _resolved_ftff_pair_signature(
+    *,
+    ft_gems: int,
+    ff_gems: int,
+    base_stat_pairs,
+    gem_scale_fever: int,
+) -> tuple[tuple[int, int], ...]:
+    scale = int(gem_scale_fever)
+    return tuple(
+        (
+            max(0, min(int(TOTAL_ROWS), int(base_ft) + int(ft_gems) * scale)),
+            max(0, min(int(TOTAL_ROWS), int(base_ff) + int(ff_gems) * scale)),
+        )
+        for base_ft, base_ff in base_stat_pairs
+    )
+
+
+def _reduce_ftff_pairs_by_resolved_stat_cost(
+    *,
+    ftff_pairs,
+    base_stat_pairs,
+    gem_scale_fever: int,
+) -> tuple[list[tuple[int, int]], int]:
+    """
+    Drop FT/FF gem pairs that resolve to the same stat cells for every retained
+    base row while spending more or equivalent FT/FF gems.
+
+    Equal resolved cells imply identical downstream fever-timeline generation
+    for this pair. Spending fewer FT/FF gems leaves the exact inner BnB the same
+    remaining search space plus extra budget, so the removed pair cannot be a
+    unique score winner.
+    """
+
+    pairs = [] if ftff_pairs is None else [(int(ft), int(ff)) for ft, ff in list(ftff_pairs)]
+    if not pairs:
+        return pairs, 0
+
+    base_pairs = [(int(ft), int(ff)) for ft, ff in list(base_stat_pairs or [])]
+    if not base_pairs:
+        return pairs, 0
+
+    best_by_signature: dict[tuple[tuple[int, int], ...], tuple[tuple[int, int, int], int, tuple[int, int]]] = {}
+    for order, (ft_gems, ff_gems) in enumerate(pairs):
+        signature = _resolved_ftff_pair_signature(
+            ft_gems=ft_gems,
+            ff_gems=ff_gems,
+            base_stat_pairs=base_pairs,
+            gem_scale_fever=int(gem_scale_fever),
+        )
+        # Lower FT/FF spend dominates; ties are equivalent and resolved
+        # deterministically to keep the retained list stable across platforms.
+        rank_key = (int(ft_gems) + int(ff_gems), int(ft_gems), int(ff_gems))
+        prev = best_by_signature.get(signature)
+        if prev is None or rank_key < prev[0]:
+            best_by_signature[signature] = (rank_key, order, (int(ft_gems), int(ff_gems)))
+
+    kept = [pair for _rank_key, _order, pair in sorted(best_by_signature.values(), key=lambda item: item[1])]
+    return kept, int(len(pairs) - len(kept))
+
+
 def _chart_signature_key(calc_song: dict) -> tuple:
     return _chart_signature_key_impl(calc_song)
 
@@ -999,6 +1059,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_genome_stats_staged_batches = 0
     fg_genome_stats_uploaded_batches = 0
     fg_genome_stats_uploaded_bytes_est = 0
+    fg_resolved_pair_drops = 0
     fg_window_pair_drops = 0
 
     from ....core.constants import (
@@ -2381,6 +2442,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         )
         if per_pair_breakpoints:
             group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
+            ftff_pairs, resolved_pair_drops = _reduce_ftff_pairs_by_resolved_stat_cost(
+                ftff_pairs=ftff_pairs,
+                base_stat_pairs=group_base_pairs,
+                gem_scale_fever=int(GEM_SCALE_FEVER),
+            )
+            fg_resolved_pair_drops += int(resolved_pair_drops)
             ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_max(
                 ftff_pairs=ftff_pairs,
                 base_stat_pairs=group_base_pairs,
@@ -4146,7 +4213,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 fg_task_tile_batches,
                 fg_fused_tile_batches,
             )
-            logger.debug("[PERF] FG resolved-window pair drops: %s", fg_window_pair_drops)
+            logger.debug(
+                "[PERF] FG resolved-stat pair drops: %s resolved-window pair drops: %s",
+                fg_resolved_pair_drops,
+                fg_window_pair_drops,
+            )
             logger.debug(
                 "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
                 t_cache_check_sec * 1000.0,
@@ -4168,6 +4239,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
         meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
+        meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
         meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
     except Exception:
         pass
@@ -4186,6 +4258,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
             meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
+            meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
             meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
         except Exception:
             pass
