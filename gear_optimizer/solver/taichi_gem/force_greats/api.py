@@ -70,6 +70,8 @@ _FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower
 _FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 _FG_TARGET_THREADS_PER_KERNEL = _env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
 _FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
+_FG_GPU_SURFACE_PAIR_REDUCTION = _env_truthy("FG_GPU_SURFACE_PAIR_REDUCTION", "1")
+_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS = max(0, min(_env_int("FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS", 1024), 4096))
 
 
 def _get_gpu_profiler():
@@ -2913,10 +2915,17 @@ def solve_force_greats_finder_gpu_tasks(
 
         if use_gpu_max_fp and max_fp_compute_ctx is not None:
             try:
+                max_fp_sections_i = max(
+                    0,
+                    min(
+                        int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                        int(fg_fields.FG_MAX_SECTIONS),
+                    ),
+                )
                 fg_kernels.fg_compute_max_fp_for_ftff_kernel(
                     int(n_ftff),
                     int(getattr(max_fp_compute_ctx.get("base_ft"), "shape", (0,))[0] or 0),
-                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                    int(max_fp_sections_i),
                     int(max_fp_compute_ctx.get("song_slot", 0) or 0),
                     int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
                     max_fp_compute_ctx.get("base_ft"),
@@ -2926,8 +2935,23 @@ def solve_force_greats_finder_gpu_tasks(
                 )
                 fg_kernels.fg_compute_cfg_total_len_kernel(
                     int(n_ftff),
-                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                    int(max_fp_sections_i),
                 )
+                if (
+                    _FG_GPU_SURFACE_PAIR_REDUCTION
+                    and int(n_ftff) <= int(_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS)
+                    and int(max_fp_sections_i) > 0
+                ):
+                    fg_kernels.fg_zero_dominated_surface_pairs_kernel(
+                        int(n_ftff),
+                        int(max_fp_sections_i),
+                        int(total_budget),
+                        int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                    )
                 if not use_gpu_cfg_ranges:
                     # CPU needs per-ftff lengths to build cfg_start/cfg_len per band.
                     try:

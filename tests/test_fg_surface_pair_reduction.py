@@ -4,6 +4,8 @@ import numpy as np
 
 from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch
 from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import _reduce_ftff_pairs_by_max_fp_surface
+from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
+from gear_optimizer.solver.taichi_gem.force_greats import kernels as fg_kernels
 
 
 def test_surface_pair_reducer_drops_only_same_surface_budget_dominated_pairs() -> None:
@@ -92,3 +94,23 @@ def test_base_stat_pairs_from_signature_rows_is_stable_and_unique() -> None:
         (3, 9),
         (6, 0),
     ]
+
+
+def test_gpu_surface_pair_reduction_runs_after_gpu_max_fp_before_stage1() -> None:
+    body = inspect.getsource(fg_api.solve_force_greats_finder_gpu_tasks)
+    cfg_len_pos = body.index("fg_compute_cfg_total_len_kernel(")
+    reduce_pos = body.index("fg_zero_dominated_surface_pairs_kernel(")
+    max_pos = body.index("fg_reduce_cfg_total_len_max_kernel(")
+    stage1_pos = body.index("fg_stage1_init")
+
+    assert cfg_len_pos < reduce_pos < max_pos < stage1_pos
+    assert "_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS" in body
+
+
+def test_gpu_surface_pair_reduction_kernel_uses_same_lossless_dominance_contract() -> None:
+    body = inspect.getsource(fg_kernels.fg_zero_dominated_surface_pairs_kernel)
+
+    assert "fg_cfg_max_fp[i, sec] != fg_cfg_max_fp[j, sec]" in body
+    assert "budget_j >= budget_i and p_j >= p_i and s_j >= s_i" in body
+    assert "fg_cfg_total_len_list[i] = 0" in body
+    assert ".to_numpy" not in body

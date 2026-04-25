@@ -2311,6 +2311,75 @@ def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
 
 
 @ti.kernel
+def fg_zero_dominated_surface_pairs_kernel(
+    n_pairs: ti.i32,
+    n_sections: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+):
+    """
+    Losslessly remove FT/FF pairs that expose an identical FG surface.
+
+    For equal per-section max-FP rows, the exact-inner solver sees the same
+    forced-Great config universe. A pair is dominated when another equal-surface
+    pair leaves at least as much remaining gem budget and at least as much
+    primary/secondary elemental value. We keep one deterministic representative
+    for exact ties.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+
+    for i in range(n_pairs):
+        ft_i: ti.i32 = fg_ft_list[i]
+        ff_i: ti.i32 = fg_ff_list[i]
+        budget_i: ti.i32 = total_budget - ft_i - ff_i
+
+        dominated: ti.i32 = 0
+        if budget_i < 0:
+            dominated = 1
+
+        p_i: ti.i32 = (ft_i * is_p_ft + ff_i * is_p_ff) * gem_scale_fever
+        s_i: ti.i32 = (ft_i * is_s_ft + ff_i * is_s_ff) * gem_scale_fever
+
+        for j in range(n_pairs):
+            if dominated == 0 and j != i:
+                same_surface: ti.i32 = 1
+                for sec in range(n_sections):
+                    if fg_cfg_max_fp[i, sec] != fg_cfg_max_fp[j, sec]:
+                        same_surface = 0
+
+                if same_surface == 1:
+                    ft_j: ti.i32 = fg_ft_list[j]
+                    ff_j: ti.i32 = fg_ff_list[j]
+                    budget_j: ti.i32 = total_budget - ft_j - ff_j
+                    p_j: ti.i32 = (ft_j * is_p_ft + ff_j * is_p_ff) * gem_scale_fever
+                    s_j: ti.i32 = (ft_j * is_s_ft + ff_j * is_s_ff) * gem_scale_fever
+
+                    if budget_j >= budget_i and p_j >= p_i and s_j >= s_i:
+                        strict_better: ti.i32 = 0
+                        if budget_j > budget_i or p_j > p_i or s_j > s_i:
+                            strict_better = 1
+
+                        deterministic_tie: ti.i32 = 0
+                        if strict_better == 0:
+                            if ft_j < ft_i:
+                                deterministic_tie = 1
+                            elif ft_j == ft_i and ff_j < ff_i:
+                                deterministic_tie = 1
+                            elif ft_j == ft_i and ff_j == ff_i and j < i:
+                                deterministic_tie = 1
+
+                        if strict_better == 1 or deterministic_tie == 1:
+                            dominated = 1
+
+        if dominated == 1:
+            fg_cfg_total_len_list[i] = 0
+
+
+@ti.kernel
 def fg_reduce_cfg_total_len_max_kernel(n_pairs: ti.i32):
     """Compute max(fg_cfg_total_len_list[:n_pairs]) into fg_cfg_total_len_max[None]."""
     fg_cfg_total_len_max[None] = 0
