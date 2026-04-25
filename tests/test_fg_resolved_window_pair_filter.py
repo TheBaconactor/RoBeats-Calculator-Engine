@@ -128,18 +128,21 @@ def test_resolved_stat_pair_reducer_keeps_elemental_tradeoff_pairs() -> None:
     assert dropped == 1
 
 
-def test_resolved_window_filter_is_group_level_before_genome_chunks() -> None:
+def test_resolved_window_filter_streams_inside_genome_chunks_before_first_payload() -> None:
     import inspect
 
     body = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
-    reducer_pos = body.index("_reduce_ftff_pairs_by_resolved_stat_cost(")
-    filter_pos = body.index("_filter_ftff_pairs_by_resolved_window_max(")
-    pack_pos = body.index("ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)")
     chunk_pos = body.index("while idx0 < n_sig:")
+    reducer_pos = body.index("_reduce_ftff_pairs_by_resolved_stat_cost(", chunk_pos)
+    filter_pos = body.index("_filter_ftff_pairs_by_resolved_window_max(", chunk_pos)
+    payload_pos = body.index("fused_payload_batch.append(fused_payload)", chunk_pos)
 
-    assert reducer_pos < filter_pos < pack_pos < chunk_pos
+    assert chunk_pos < reducer_pos < filter_pos < payload_pos
     assert "fg_resolved_pair_reduction_cache.get" in body
+    assert body.find("_reduce_ftff_pairs_by_resolved_stat_cost(") == reducer_pos
     assert body.rfind("_filter_ftff_pairs_by_resolved_window_max(") == filter_pos
+    assert "not first_gpu_submit_emitted" in body
+    assert "FGFirstSubmitDelayMs" in body
 
 
 def test_base_stat_pairs_from_signature_rows_is_stable_and_unique() -> None:

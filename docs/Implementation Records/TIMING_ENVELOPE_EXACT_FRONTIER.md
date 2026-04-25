@@ -58,8 +58,11 @@ full fixed-stat scoring input. It caches the fever-end table per resolved FT ind
 pair with `w` all-normal windows and fill count `f`, any FG path must pay at least `w*f - 1` non-fever fill notes because
 forced Greats can only delay fill. Production computes an optimistic score upper bound from that minimum normal-note
 count and the remaining gem budget, then drops a pair only when every pending base row's bound cannot beat the group's
-known base incumbent. The filter runs once per group before genome chunking, not once per chunk, so it cannot starve the
-GPU owner between submissions.
+known base incumbent.
+
+Update on 2026-04-25: the retained hard-window filter is scheduled inside each genome chunk, with one shared per-song
+window counter, so the first chunk can submit GPU work before the producer finishes reducing the entire FG group. This
+keeps the exact reduction but removes the group-wide pre-submit CPU gate that caused bursty FG dispatch.
 
 ## Base Exactness
 
@@ -125,6 +128,8 @@ The migration keeps the hot path cheap:
 - all-skipped FG exact-DP batches still return before GEM/Taichi readiness, uploads, and exact-DP kernel launch
 - dedup timeline execution remains opt-in via `GPU_TIMELINE_CEILING_DEDUP=1`
 - CPU-built base exact timeline overrides are no longer part of production routing
+- FG resolved-stat/window pair reduction runs chunk-local and reuses a shared per-song window counter
+- the first FG fused/task payload flushes immediately, then later payloads return to the configured batching threshold
 
 ## Verification
 

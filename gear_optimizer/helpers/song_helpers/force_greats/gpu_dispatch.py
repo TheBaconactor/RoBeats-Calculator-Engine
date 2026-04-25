@@ -217,6 +217,7 @@ def _filter_ftff_pairs_by_resolved_window_max(
     ref_arrays: dict,
     gem_scale_fever: int,
     max_windows: int = FG_RESOLVED_WINDOW_PAIR_MAX,
+    window_counter=None,
 ) -> tuple[list[tuple[int, int]], int]:
     """
     Keep FT/FF gem pairs only when at least one base row stays in the small
@@ -235,12 +236,14 @@ def _filter_ftff_pairs_by_resolved_window_max(
     if not base_pairs:
         return pairs, 0
 
-    try:
-        from ....solver.timing_envelope import prepare_timeline_window_counter
+    counter = window_counter
+    if counter is None:
+        try:
+            from ....solver.timing_envelope import prepare_timeline_window_counter
 
-        counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
-    except Exception:
-        counter = None
+            counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+        except Exception:
+            counter = None
     if counter is None:
         return pairs, 0
 
@@ -1090,6 +1093,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_resolved_pair_drops = 0
     fg_resolved_pair_reduction_cache: dict[tuple, tuple[tuple[tuple[int, int], ...], int]] = {}
     fg_window_pair_drops = 0
+    fg_pre_submit_reduce_sec = 0.0
+    fg_first_submit_delay_sec: float | None = None
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -1393,10 +1398,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         tile_count: int,
         download_after: bool,
     ) -> None:
-        nonlocal first_gpu_submit_emitted
+        nonlocal first_gpu_submit_emitted, fg_first_submit_delay_sec
         if first_gpu_submit_emitted:
             return
         first_gpu_submit_emitted = True
+        try:
+            fg_first_submit_delay_sec = time.perf_counter() - float(fg_submit_clock_start)
+        except Exception:
+            fg_first_submit_delay_sec = None
         _emit_finder_phase(
             "first_gpu_submit",
             submit_mode=str(submit_mode),
@@ -2069,6 +2078,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
     use_timing_envelope_fg = _uses_timing_envelope_fg(calc_song)
     chart_key = _chart_signature_key(calc_song)
+    fg_window_counter = None
+    if use_timing_envelope_fg:
+        try:
+            from ....solver.timing_envelope import prepare_timeline_window_counter
+
+            fg_window_counter = prepare_timeline_window_counter(calc_song=calc_song, ref_arrays=ref_arrays, mode="fg")
+        except Exception:
+            fg_window_counter = None
     if use_timing_envelope_fg:
         fg_scorer, fg_scorer_cache_hit = _get_cached_chart_scorer(
             calc_song, ref_arrays, create_chart_scorer_from_calc_song
@@ -2321,6 +2338,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         tasks_per_request=int(fg_async_tasks_per_request),
         max_inflight=int(fg_async_max_inflight),
     )
+    fg_submit_clock_start = time.perf_counter()
 
     def _flush_fused_payload_batch() -> None:
         nonlocal timeline_precompute_queued, n_gpu_calls
@@ -2469,63 +2487,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             total_budget=int(TOTAL_GEM_BUDGET),
             use_fast=bool(fast_pairs),
         )
-        if per_pair_breakpoints:
-            group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
-            flags = build_color_flags(p_color, s_color, sel_color)
-            is_p_pp = flags["is_p_pp"]
-            is_s_pp = flags["is_s_pp"]
-            is_p_cm = flags["is_p_cm"]
-            is_s_cm = flags["is_s_cm"]
-            is_p_fm = flags["is_p_fm"]
-            is_s_fm = flags["is_s_fm"]
-            is_p_ft = flags["is_p_ft"]
-            is_s_ft = flags["is_s_ft"]
-            is_p_ff = flags["is_p_ff"]
-            is_s_ff = flags["is_s_ff"]
-            is_p_ov = flags["is_p_ov"]
-            is_s_ov = flags["is_s_ov"]
-
-            reduction_key = (
-                tuple((int(ft), int(ff)) for ft, ff in list(ftff_pairs or [])),
-                tuple((int(ft), int(ff)) for ft, ff in list(group_base_pairs or [])),
-                int(GEM_SCALE_FEVER),
-                int(TOTAL_GEM_BUDGET),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-            )
-            cached_reduction = fg_resolved_pair_reduction_cache.get(reduction_key)
-            if cached_reduction is not None:
-                ftff_pairs = list(cached_reduction[0])
-                resolved_pair_drops = int(cached_reduction[1])
-                fg_resolved_pair_cache_hits += 1
-            else:
-                ftff_pairs, resolved_pair_drops = _reduce_ftff_pairs_by_resolved_stat_cost(
-                    ftff_pairs=ftff_pairs,
-                    base_stat_pairs=group_base_pairs,
-                    gem_scale_fever=int(GEM_SCALE_FEVER),
-                    total_budget=int(TOTAL_GEM_BUDGET),
-                    is_p_ft=int(is_p_ft),
-                    is_s_ft=int(is_s_ft),
-                    is_p_ff=int(is_p_ff),
-                    is_s_ff=int(is_s_ff),
-                )
-                fg_resolved_pair_reduction_cache[reduction_key] = (tuple(ftff_pairs), int(resolved_pair_drops))
-                fg_resolved_pair_cache_misses += 1
-            fg_resolved_pair_drops += int(resolved_pair_drops)
-            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_max(
-                ftff_pairs=ftff_pairs,
-                base_stat_pairs=group_base_pairs,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                gem_scale_fever=int(GEM_SCALE_FEVER),
-            )
-            fg_window_pair_drops += int(dropped_pairs)
-            if not ftff_pairs:
-                if perf:
-                    t_cfg_build_sec += time.perf_counter() - _t_cfg0
-                continue
+        ftff_pairs_key = tuple((int(ft), int(ff)) for ft, ff in list(ftff_pairs or []))
         ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
 
         counts_list = None
@@ -2572,20 +2534,19 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if perf:
                 t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
-        if not per_pair_breakpoints:
-            flags = build_color_flags(p_color, s_color, sel_color)
-            is_p_pp = flags["is_p_pp"]
-            is_s_pp = flags["is_s_pp"]
-            is_p_cm = flags["is_p_cm"]
-            is_s_cm = flags["is_s_cm"]
-            is_p_fm = flags["is_p_fm"]
-            is_s_fm = flags["is_s_fm"]
-            is_p_ft = flags["is_p_ft"]
-            is_s_ft = flags["is_s_ft"]
-            is_p_ff = flags["is_p_ff"]
-            is_s_ff = flags["is_s_ff"]
-            is_p_ov = flags["is_p_ov"]
-            is_s_ov = flags["is_s_ov"]
+        flags = build_color_flags(p_color, s_color, sel_color)
+        is_p_pp = flags["is_p_pp"]
+        is_s_pp = flags["is_s_pp"]
+        is_p_cm = flags["is_p_cm"]
+        is_s_cm = flags["is_s_cm"]
+        is_p_fm = flags["is_p_fm"]
+        is_s_fm = flags["is_s_fm"]
+        is_p_ft = flags["is_p_ft"]
+        is_s_ft = flags["is_s_ft"]
+        is_p_ff = flags["is_p_ff"]
+        is_s_ff = flags["is_s_ff"]
+        is_p_ov = flags["is_p_ov"]
+        is_s_ov = flags["is_s_ov"]
         fused_solve_kwargs_static = {
             "n_sections": int(n_sections),
             "is_p_ft": is_p_ft,
@@ -2956,8 +2917,60 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0)) for bs in pending
                 }
                 base_pairs_list = sorted(base_stats_pairs)
+                active_ftff_pairs = ftff_pairs
+                active_ftff_pairs_packed = ftff_pairs_packed
+                _t_reduce0 = time.perf_counter()
+                reduction_key = (
+                    ftff_pairs_key,
+                    tuple((int(ft), int(ff)) for ft, ff in list(base_pairs_list or [])),
+                    int(GEM_SCALE_FEVER),
+                    int(TOTAL_GEM_BUDGET),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                )
+                cached_reduction = fg_resolved_pair_reduction_cache.get(reduction_key)
+                if cached_reduction is not None:
+                    active_ftff_pairs = list(cached_reduction[0])
+                    resolved_pair_drops = int(cached_reduction[1])
+                    fg_resolved_pair_cache_hits += 1
+                else:
+                    active_ftff_pairs, resolved_pair_drops = _reduce_ftff_pairs_by_resolved_stat_cost(
+                        ftff_pairs=ftff_pairs,
+                        base_stat_pairs=base_pairs_list,
+                        gem_scale_fever=int(GEM_SCALE_FEVER),
+                        total_budget=int(TOTAL_GEM_BUDGET),
+                        is_p_ft=int(is_p_ft),
+                        is_s_ft=int(is_s_ft),
+                        is_p_ff=int(is_p_ff),
+                        is_s_ff=int(is_s_ff),
+                    )
+                    fg_resolved_pair_reduction_cache[reduction_key] = (
+                        tuple(active_ftff_pairs),
+                        int(resolved_pair_drops),
+                    )
+                    fg_resolved_pair_cache_misses += 1
+                fg_resolved_pair_drops += int(resolved_pair_drops)
+                active_ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_max(
+                    ftff_pairs=active_ftff_pairs,
+                    base_stat_pairs=base_pairs_list,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    gem_scale_fever=int(GEM_SCALE_FEVER),
+                    window_counter=fg_window_counter,
+                )
+                fg_window_pair_drops += int(dropped_pairs)
+                fg_pre_submit_reduce_sec += time.perf_counter() - _t_reduce0
+                if not active_ftff_pairs:
+                    if perf:
+                        t_cfg_build_sec += time.perf_counter() - _t_cfg1
+                    continue
+                active_ftff_pairs_packed = _pack_pairs_int32(active_ftff_pairs)
                 base_pairs_packed = _pack_pairs_int32(base_pairs_list)
-                ftff_pairs_submit = ftff_pairs_packed if ftff_pairs_packed is not None else ftff_pairs
+                ftff_pairs_submit = (
+                    active_ftff_pairs_packed if active_ftff_pairs_packed is not None else active_ftff_pairs
+                )
                 base_pairs_submit = base_pairs_packed if base_pairs_packed is not None else base_pairs_list
 
                 # Read merge thresholds from env (same as before)
@@ -2971,10 +2984,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
                 breakpoint_batch_size = 20
                 try:
-                    if ftff_pairs_packed is not None:
-                        n_ftff_pairs = int(ftff_pairs_packed.shape[0])
+                    if active_ftff_pairs_packed is not None:
+                        n_ftff_pairs = int(active_ftff_pairs_packed.shape[0])
                     else:
-                        n_ftff_pairs = int(len(ftff_pairs))
+                        n_ftff_pairs = int(len(active_ftff_pairs))
                 except Exception:
                     n_ftff_pairs = 0
                 if n_ftff_pairs >= 200:
@@ -3148,7 +3161,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     n_pending_value=int(n_pending),
                                 )
 
-                                if len(fused_payload_batch) >= int(fused_payloads_per_request):
+                                if (not first_gpu_submit_emitted) or len(fused_payload_batch) >= int(
+                                    fused_payloads_per_request
+                                ):
                                     _flush_fused_payload_batch()
 
                                 continue
@@ -3192,8 +3207,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     and int(n_sections) > 0
                     and int(len(base_pairs_list or [])) > 0
                     and int(len(base_pairs_list or [])) <= int(max_fp_matrix_cache_max_base_pairs)
-                    and int(len(ftff_pairs or [])) > 0
-                    and int(len(ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
+                    and int(len(active_ftff_pairs or [])) > 0
+                    and int(len(active_ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
                 )
 
                 if max_fp_matrix is None and use_gpu_breakpoints:
@@ -3216,7 +3231,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         max_fp_matrix, max_fp_cache_hit = _get_cached_max_fp_matrix(
                             calc_song=calc_song,
                             n_sections=int(n_sections),
-                            ftff_pairs=ftff_pairs,
+                            ftff_pairs=active_ftff_pairs,
                             base_stats_pairs=base_pairs_list,
                             gem_scale_fever=int(GEM_SCALE_FEVER),
                             compute_fn=_compute_max_fp_blocking,
@@ -3235,7 +3250,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         return iter_analytical_breakpoint_groups(
                             fg_scorer,
                             n_sections,
-                            ftff_pairs,
+                            active_ftff_pairs,
                             base_stats_pairs,
                             gem_scale_fever=GEM_SCALE_FEVER,
                             batch_size=breakpoint_batch_size,
@@ -3261,7 +3276,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         # breakpoints are always `range(0, max_fp + 1)` per section.
                         try:
                             for g in _group_ftff_pairs_by_max_fp_matrix(
-                                ftff_pairs,
+                                active_ftff_pairs,
                                 max_fp_matrix,
                                 n_sections=int(n_sections),
                             ):
@@ -3269,7 +3284,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     yield g
                         except Exception:
                             all_groups = {}
-                            for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
+                            for i_pair, (ft_g, ff_g) in enumerate(active_ftff_pairs):
                                 row = max_fp_matrix[i_pair]
                                 max_fp_key = tuple(max(0, int(row[sec])) for sec in range(int(n_sections)))
                                 grp = all_groups.get(max_fp_key)
@@ -3293,15 +3308,15 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     and int(n_sections) > 0
                     and int(len(base_pairs_list or [])) > 0
                     and int(len(base_pairs_list or [])) <= int(breakpoint_group_cache_max_base_pairs)
-                    and int(len(ftff_pairs or [])) > 0
-                    and int(len(ftff_pairs or [])) <= int(breakpoint_group_cache_max_pairs)
+                    and int(len(active_ftff_pairs or [])) > 0
+                    and int(len(active_ftff_pairs or [])) <= int(breakpoint_group_cache_max_pairs)
                 )
                 cacheable_groups_accum: list[dict] | None = None
                 if can_cache_groups:
                     group_list = _peek_cached_breakpoint_groups(
                         calc_song=calc_song,
                         n_sections=int(n_sections),
-                        ftff_pairs=ftff_pairs,
+                        ftff_pairs=active_ftff_pairs,
                         base_stats_pairs=base_pairs_list,
                         merge_threshold_cfgs=int(max_union_cfg),
                         merge_threshold_threads=int(max_union_threads),
@@ -3325,7 +3340,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 _maybe_emit_first_group_iter_ready(
                     group_mode=str(group_mode),
                     cache_hit=bool(group_list is not None) if can_cache_groups else False,
-                    ftff_pairs_count=int(_safe_metric_count(ftff_pairs)),
+                    ftff_pairs_count=int(_safe_metric_count(active_ftff_pairs)),
                     sig_count=int(len(sig_list or [])),
                     n_sections_value=int(n_sections),
                     n_pending_value=int(n_pending),
@@ -3411,7 +3426,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if bps and (_truthy_env("METAFINDER_DEBUG_PROFILE", "0") or _truthy_env("DEBUG_PROFILE", "0")):
                             logger.debug(
                                 "[FG] Per-FT/FF Breakpoints (GPU accumulation): %s FT/FF pairs",
-                                len(ftff_pairs),
+                                len(active_ftff_pairs),
                             )
                             for sec_idx, bp in enumerate(bps):
                                 logger.debug(
@@ -3459,7 +3474,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 n_sections_value=int(n_sections),
                                 n_pending_value=int(n_pending),
                             )
-                            if len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                            if (not first_gpu_submit_emitted) or len(fg_tasks_batch) >= fg_async_tasks_per_request:
                                 flush_plan = plan_fg_async_threshold_flush(
                                     pending_tasks=len(fg_tasks_batch),
                                     tasks_per_request=fg_async_tasks_per_request,
@@ -3542,7 +3557,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     _store_cached_breakpoint_groups(
                         calc_song=calc_song,
                         n_sections=int(n_sections),
-                        ftff_pairs=ftff_pairs,
+                        ftff_pairs=active_ftff_pairs,
                         base_stats_pairs=base_pairs_list,
                         merge_threshold_cfgs=int(max_union_cfg),
                         merge_threshold_threads=int(max_union_threads),
@@ -3559,7 +3574,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     n_configs = int(cfg_next_base)
                     logger.debug(
                         "[FG] Merged breakpoint groups -> 1 batch (pairs=%s, configs=%s, GPU accumulation)",
-                        len(ftff_pairs),
+                        len(active_ftff_pairs),
                         n_configs,
                     )
                     # Breakdown is intentionally omitted here because we do not materialize master configs.
@@ -3698,7 +3713,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 n_sections_value=int(n_sections),
                                 n_pending_value=int(n_pending),
                             )
-                            if len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                            if (not first_gpu_submit_emitted) or len(fg_tasks_batch) >= fg_async_tasks_per_request:
                                 flush_plan = plan_fg_async_threshold_flush(
                                     pending_tasks=len(fg_tasks_batch),
                                     tasks_per_request=fg_async_tasks_per_request,
@@ -4288,6 +4303,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 fg_window_pair_drops,
             )
             logger.debug(
+                "[PERF] FG pre-submit reduction: %.1fms first_submit_delay=%s",
+                fg_pre_submit_reduce_sec * 1000.0,
+                "n/a" if fg_first_submit_delay_sec is None else f"{fg_first_submit_delay_sec * 1000.0:.1f}ms",
+            )
+            logger.debug(
                 "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
                 t_cache_check_sec * 1000.0,
                 t_genome_build_sec * 1000.0,
@@ -4304,7 +4324,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         except Exception:
             pass
 
-    try:
+    def _record_fg_streaming_meta() -> None:
         meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
         meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
@@ -4312,6 +4332,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         meta["FGResolvedPairCacheMisses"] = int(fg_resolved_pair_cache_misses)
         meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
         meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
+        meta["FGPreSubmitReduceMs"] = int(round(float(fg_pre_submit_reduce_sec) * 1000.0))
+        if fg_first_submit_delay_sec is not None:
+            meta["FGFirstSubmitDelayMs"] = int(round(float(fg_first_submit_delay_sec) * 1000.0))
+
+    try:
+        _record_fg_streaming_meta()
     except Exception:
         pass
 
@@ -4329,10 +4355,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
             meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
-            meta["FGResolvedPairCacheHits"] = int(fg_resolved_pair_cache_hits)
-            meta["FGResolvedPairCacheMisses"] = int(fg_resolved_pair_cache_misses)
-            meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
-            meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
+            _record_fg_streaming_meta()
         except Exception:
             pass
 
