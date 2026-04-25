@@ -77,8 +77,9 @@ Why base is not fully exact across all stat triples:
   frontier of signatures or solves per genome, which is a much larger architecture change
 
 The shipped migration still supersedes the old single greedy ceiling behavior with the broader GPU timing-envelope ceiling.
-The CPU-built exact score-proxy DP remains available for proof/regression runs, but is no longer part of the default
-GPU-owner hot path because building overrides synchronously can starve later GPU submissions.
+The CPU-built exact score-proxy DP was removed from the live tree after it stopped being part of production routing.
+Keeping that full-exact proof helper around only preserved a stale implementation surface and risked reintroducing
+GPU-owner stalls through synchronous override generation.
 
 The reviewed breakthrough path is to move the same bounded timing DP to the scoring surface instead of caching one
 signature too early: either solve timing after `(FT, FF, PP, CM, FM, base)` is known, or store a small per-cell Pareto

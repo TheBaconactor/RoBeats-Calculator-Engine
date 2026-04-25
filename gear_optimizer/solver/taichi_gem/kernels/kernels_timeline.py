@@ -1076,25 +1076,7 @@ def compute_timeline_grid_ceiling_envelope_reps_kernel(
         cand_score = _ceiling_compare_score(
             head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
         )
-        better = ti.i32(0)
-        if cand_score > best_score:
-            better = 1
-        elif cand_score == best_score:
-            if cand.body_fever > best.body_fever:
-                better = 1
-            elif cand.body_fever == best.body_fever:
-                if cand.m3 > best.m3:
-                    better = 1
-                elif cand.m3 == best.m3:
-                    if cand.m2 > best.m2:
-                        better = 1
-                    elif cand.m2 == best.m2:
-                        if cand.m1 > best.m1:
-                            better = 1
-                        elif cand.m1 == best.m1:
-                            if cand.m0 > best.m0:
-                                better = 1
-        if better != 0:
+        if _ceiling_variant_is_better(cand, cand_score, best, best_score) != 0:
             best = cand
             best_score = cand_score
 
@@ -1102,25 +1084,7 @@ def compute_timeline_grid_ceiling_envelope_reps_kernel(
         cand_score = _ceiling_compare_score(
             head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
         )
-        better = ti.i32(0)
-        if cand_score > best_score:
-            better = 1
-        elif cand_score == best_score:
-            if cand.body_fever > best.body_fever:
-                better = 1
-            elif cand.body_fever == best.body_fever:
-                if cand.m3 > best.m3:
-                    better = 1
-                elif cand.m3 == best.m3:
-                    if cand.m2 > best.m2:
-                        better = 1
-                    elif cand.m2 == best.m2:
-                        if cand.m1 > best.m1:
-                            better = 1
-                        elif cand.m1 == best.m1:
-                            if cand.m0 > best.m0:
-                                better = 1
-        if better != 0:
+        if _ceiling_variant_is_better(cand, cand_score, best, best_score) != 0:
             best = cand
             best_score = cand_score
 
@@ -1128,25 +1092,7 @@ def compute_timeline_grid_ceiling_envelope_reps_kernel(
         cand_score = _ceiling_compare_score(
             head_len, cand.m0, cand.m1, cand.m2, cand.m3, cand.body_fever, cand.body_normal
         )
-        better = ti.i32(0)
-        if cand_score > best_score:
-            better = 1
-        elif cand_score == best_score:
-            if cand.body_fever > best.body_fever:
-                better = 1
-            elif cand.body_fever == best.body_fever:
-                if cand.m3 > best.m3:
-                    better = 1
-                elif cand.m3 == best.m3:
-                    if cand.m2 > best.m2:
-                        better = 1
-                    elif cand.m2 == best.m2:
-                        if cand.m1 > best.m1:
-                            better = 1
-                        elif cand.m1 == best.m1:
-                            if cand.m0 > best.m0:
-                                better = 1
-        if better != 0:
+        if _ceiling_variant_is_better(cand, cand_score, best, best_score) != 0:
             best = cand
             best_score = cand_score
 

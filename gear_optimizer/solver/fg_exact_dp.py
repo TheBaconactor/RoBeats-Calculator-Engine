@@ -28,8 +28,9 @@ from .timing_envelope import (
     count_timeline_analysis_windows,
     prepare_timeline_analysis_inputs,
 )
-from .timeline_exact_dp import build_score_bonus_prefix
 from .scoring.stats_scoring import build_great_penalty_table
+
+_MAX_HEAD = 100
 
 
 @dataclass
@@ -68,12 +69,31 @@ def _build_fever_bonus_prefix(
     combo_mul: float,
     fever_mul: float,
 ) -> np.ndarray:
-    return build_score_bonus_prefix(
-        total_notes=int(total_notes),
-        base_value=float(base_value),
-        combo_mul=float(combo_mul),
-        fever_mul=float(fever_mul),
-    )
+    n = int(max(0, int(total_notes)))
+    out = np.zeros(n + 1, dtype=np.int64)
+    if n <= 0:
+        return out
+
+    head_len = min(_MAX_HEAD, n)
+    base_f = np.float32(float(base_value))
+    combo_f = np.float32(float(combo_mul))
+    fever_f = np.float32(float(fever_mul))
+    factor = np.float32((combo_f - np.float32(1.0)) * base_f / np.float32(100.0))
+
+    body_normal = int(np.float32(base_f * combo_f))
+    body_fever = int(np.float32(np.float32(base_f * combo_f) * fever_f))
+    body_bonus = int(body_fever - body_normal)
+
+    running = 0
+    for i in range(n):
+        if i < head_len:
+            current_ramp = np.float32(base_f + np.float32(i + 1) * factor)
+            bonus = int(np.float32(current_ramp * fever_f)) - int(current_ramp)
+        else:
+            bonus = int(body_bonus)
+        running += int(bonus)
+        out[i + 1] = int(running)
+    return out
 
 
 def _build_forced_great_penalty_prefix(
