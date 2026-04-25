@@ -343,6 +343,56 @@ def _continuous_fg_should_fill_song_lanes(
     return True
 
 
+def _continuous_ga_should_yield_to_fg(
+    *,
+    fg_enabled: bool,
+    fg_drain_at_end: bool,
+    pending_fg_count: int,
+    ready_fg_count: int,
+    fg_prep_inflight_count: int,
+    fg_inflight_count: int,
+    ga_inflight_count: int,
+    target_song_lanes: int,
+    oldest_wait_s: float,
+    aging_trigger_s: float,
+    blocked_on_slot: bool,
+) -> bool:
+    """
+    Stop GA admission when FG has become the limiting queue.
+
+    This is deliberately an admission rule, not a scoring shortcut. Existing GA
+    work may finish, but the submit loop yields to the FG scheduler before it
+    adds more GA jobs once FG is ready or once FG prep has filled the intended
+    conveyor runway.
+    """
+    if not bool(fg_enabled):
+        return False
+    if (not bool(fg_drain_at_end)) and (not bool(blocked_on_slot)):
+        return False
+
+    pending = max(0, int(pending_fg_count))
+    ready = max(0, int(ready_fg_count))
+    prep = max(0, int(fg_prep_inflight_count))
+    fg_inflight = max(0, int(fg_inflight_count))
+    ga_inflight = max(0, int(ga_inflight_count))
+    target_lanes = max(1, int(target_song_lanes))
+    fg_pressure = int(pending) + int(prep) + int(fg_inflight)
+    if fg_pressure <= 0:
+        return False
+
+    if bool(blocked_on_slot):
+        return True
+    if ready > 0:
+        return True
+    if ga_inflight <= 0:
+        return False
+    if pending > 0 and float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
+        return True
+    if fg_pressure >= target_lanes and ga_inflight >= target_lanes:
+        return True
+    return False
+
+
 def _continuous_fg_should_start(
     *,
     pending_fg_count: int,

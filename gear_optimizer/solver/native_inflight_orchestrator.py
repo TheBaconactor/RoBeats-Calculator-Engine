@@ -46,6 +46,7 @@ from gear_optimizer.solver.native_inflight_prepare import _prepare_song, bump_pr
 from gear_optimizer.solver.native_inflight_scheduler import (
     _closed_loop_bubble_kpi,
     _continuous_fg_allow_not_ready,
+    _continuous_ga_should_yield_to_fg,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_should_start,
     _continuous_fg_submit_budget,
@@ -1780,6 +1781,22 @@ def run_native_inflight_song_pipeline(
                         )
                     except Exception:
                         pass
+
+                ready_fg_for_ga_admission = _ready_pending_fg_count() if pending_fg else 0
+                if _continuous_ga_should_yield_to_fg(
+                    fg_enabled=bool(fg_enabled),
+                    fg_drain_at_end=bool(fg_drain_at_end),
+                    pending_fg_count=len(pending_fg),
+                    ready_fg_count=int(ready_fg_for_ga_admission),
+                    fg_prep_inflight_count=len(fg_prep_inflight),
+                    fg_inflight_count=len(fg_futures),
+                    ga_inflight_count=len(ga_inflight),
+                    target_song_lanes=int(target_song_lanes),
+                    oldest_wait_s=float(fg_oldest_wait_s),
+                    aging_trigger_s=float(fg_aging_trigger_s),
+                    blocked_on_slot=bool(blocked_on_slot_acquire),
+                ):
+                    break
 
                 can_submit_ga = bool(prepared) and len(ga_inflight) < ga_queue_limit_effective
 

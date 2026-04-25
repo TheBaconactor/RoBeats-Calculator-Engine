@@ -4,6 +4,7 @@ import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _closed_loop_bubble_kpi,
     _continuous_fg_allow_not_ready,
+    _continuous_ga_should_yield_to_fg,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
@@ -400,6 +401,95 @@ def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_la
             oldest_wait_s=0.8,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
+        )
+        is False
+    )
+
+
+def test_continuous_ga_yields_to_ready_fg_before_more_ga():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=2,
+            ready_fg_count=1,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            ga_inflight_count=0,
+            target_song_lanes=2,
+            oldest_wait_s=0.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is True
+    )
+
+
+def test_continuous_ga_keeps_small_runway_while_fg_prep_catches_up():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=1,
+            ready_fg_count=0,
+            fg_prep_inflight_count=1,
+            fg_inflight_count=0,
+            ga_inflight_count=1,
+            target_song_lanes=2,
+            oldest_wait_s=0.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=1,
+            ready_fg_count=0,
+            fg_prep_inflight_count=1,
+            fg_inflight_count=0,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=0.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is True
+    )
+
+
+def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=False,
+            fg_drain_at_end=True,
+            pending_fg_count=3,
+            ready_fg_count=3,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=False,
+            pending_fg_count=3,
+            ready_fg_count=3,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
         )
         is False
     )
