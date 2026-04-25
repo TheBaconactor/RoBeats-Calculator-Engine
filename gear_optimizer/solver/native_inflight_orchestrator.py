@@ -1790,6 +1790,7 @@ def run_native_inflight_song_pipeline(
                     ready_fg_count=int(ready_fg_for_ga_admission),
                     fg_prep_inflight_count=len(fg_prep_inflight),
                     fg_inflight_count=len(fg_futures),
+                    fg_worker_count=int(fg_workers),
                     ga_inflight_count=len(ga_inflight),
                     target_song_lanes=int(target_song_lanes),
                     oldest_wait_s=float(fg_oldest_wait_s),

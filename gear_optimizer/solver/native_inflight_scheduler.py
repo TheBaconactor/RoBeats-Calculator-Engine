@@ -351,6 +351,7 @@ def _continuous_ga_should_yield_to_fg(
     ready_fg_count: int,
     fg_prep_inflight_count: int,
     fg_inflight_count: int,
+    fg_worker_count: int,
     ga_inflight_count: int,
     target_song_lanes: int,
     oldest_wait_s: float,
@@ -374,6 +375,7 @@ def _continuous_ga_should_yield_to_fg(
     ready = max(0, int(ready_fg_count))
     prep = max(0, int(fg_prep_inflight_count))
     fg_inflight = max(0, int(fg_inflight_count))
+    fg_workers = max(1, int(fg_worker_count))
     ga_inflight = max(0, int(ga_inflight_count))
     target_lanes = max(1, int(target_song_lanes))
     fg_pressure = int(pending) + int(prep) + int(fg_inflight)
@@ -382,6 +384,8 @@ def _continuous_ga_should_yield_to_fg(
 
     if bool(blocked_on_slot):
         return True
+    if fg_inflight >= fg_workers:
+        return False
     if ready > 0:
         return True
     if ga_inflight <= 0:
