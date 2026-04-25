@@ -124,15 +124,19 @@ def _reduce_ftff_pairs_by_resolved_stat_cost(
     ftff_pairs,
     base_stat_pairs,
     gem_scale_fever: int,
+    total_budget: int = 90,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
 ) -> tuple[list[tuple[int, int]], int]:
     """
-    Drop FT/FF gem pairs that resolve to the same stat cells for every retained
-    base row while spending more or equivalent FT/FF gems.
+    Drop only FT/FF pairs that are strictly dominated after resolving timing.
 
-    Equal resolved cells imply identical downstream fever-timeline generation
-    for this pair. Spending fewer FT/FF gems leaves the exact inner BnB the same
-    remaining search space plus extra budget, so the removed pair cannot be a
-    unique score winner.
+    Equal resolved cells imply identical downstream fever-timeline generation.
+    Within that timing-equivalent bucket, a pair is removable only when another
+    pair leaves at least as much remaining gem budget and at least as much
+    post-pair elemental value on both primary/secondary lanes.
     """
 
     pairs = [] if ftff_pairs is None else [(int(ft), int(ff)) for ft, ff in list(ftff_pairs)]
@@ -143,7 +147,23 @@ def _reduce_ftff_pairs_by_resolved_stat_cost(
     if not base_pairs:
         return pairs, 0
 
-    best_by_signature: dict[tuple[tuple[int, int], ...], tuple[tuple[int, int, int], int, tuple[int, int]]] = {}
+    def _state(pair: tuple[int, int]) -> tuple[int, int, int, int, int]:
+        ft_gems, ff_gems = pair
+        budget = int(total_budget) - int(ft_gems) - int(ff_gems)
+        p_delta = (int(ft_gems) * int(is_p_ft) + int(ff_gems) * int(is_p_ff)) * 3
+        s_delta = (int(ft_gems) * int(is_s_ft) + int(ff_gems) * int(is_s_ff)) * 3
+        return int(budget), int(p_delta), int(s_delta), int(ft_gems), int(ff_gems)
+
+    def _dominates(a: tuple[int, int, int, int, int], b: tuple[int, int, int, int, int]) -> bool:
+        a_budget, a_p, a_s, a_ft, a_ff = a
+        b_budget, b_p, b_s, b_ft, b_ff = b
+        if a_budget < b_budget or a_p < b_p or a_s < b_s:
+            return False
+        if a_budget > b_budget or a_p > b_p or a_s > b_s:
+            return True
+        return (a_ft, a_ff) <= (b_ft, b_ff)
+
+    kept_by_signature: dict[tuple[tuple[int, int], ...], list[tuple[int, tuple[int, int], tuple[int, int, int, int, int]]]] = {}
     for order, (ft_gems, ff_gems) in enumerate(pairs):
         signature = _resolved_ftff_pair_signature(
             ft_gems=ft_gems,
@@ -151,14 +171,20 @@ def _reduce_ftff_pairs_by_resolved_stat_cost(
             base_stat_pairs=base_pairs,
             gem_scale_fever=int(gem_scale_fever),
         )
-        # Lower FT/FF spend dominates; ties are equivalent and resolved
-        # deterministically to keep the retained list stable across platforms.
-        rank_key = (int(ft_gems) + int(ff_gems), int(ft_gems), int(ff_gems))
-        prev = best_by_signature.get(signature)
-        if prev is None or rank_key < prev[0]:
-            best_by_signature[signature] = (rank_key, order, (int(ft_gems), int(ff_gems)))
+        pair = (int(ft_gems), int(ff_gems))
+        state = _state(pair)
+        frontier = kept_by_signature.setdefault(signature, [])
+        if any(_dominates(prev_state, state) for _prev_order, _prev_pair, prev_state in frontier):
+            continue
+        frontier[:] = [
+            (prev_order, prev_pair, prev_state)
+            for prev_order, prev_pair, prev_state in frontier
+            if not _dominates(state, prev_state)
+        ]
+        frontier.append((int(order), pair, state))
 
-    kept = [pair for _rank_key, _order, pair in sorted(best_by_signature.values(), key=lambda item: item[1])]
+    kept_records = [record for frontier in kept_by_signature.values() for record in frontier]
+    kept = [pair for _order, pair, _state_value in sorted(kept_records, key=lambda item: item[0])]
     return kept, int(len(pairs) - len(kept))
 
 
@@ -1059,7 +1085,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_genome_stats_staged_batches = 0
     fg_genome_stats_uploaded_batches = 0
     fg_genome_stats_uploaded_bytes_est = 0
+    fg_resolved_pair_cache_hits = 0
+    fg_resolved_pair_cache_misses = 0
     fg_resolved_pair_drops = 0
+    fg_resolved_pair_reduction_cache: dict[tuple, tuple[tuple[tuple[int, int], ...], int]] = {}
     fg_window_pair_drops = 0
 
     from ....core.constants import (
@@ -2442,11 +2471,48 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         )
         if per_pair_breakpoints:
             group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
-            ftff_pairs, resolved_pair_drops = _reduce_ftff_pairs_by_resolved_stat_cost(
-                ftff_pairs=ftff_pairs,
-                base_stat_pairs=group_base_pairs,
-                gem_scale_fever=int(GEM_SCALE_FEVER),
+            flags = build_color_flags(p_color, s_color, sel_color)
+            is_p_pp = flags["is_p_pp"]
+            is_s_pp = flags["is_s_pp"]
+            is_p_cm = flags["is_p_cm"]
+            is_s_cm = flags["is_s_cm"]
+            is_p_fm = flags["is_p_fm"]
+            is_s_fm = flags["is_s_fm"]
+            is_p_ft = flags["is_p_ft"]
+            is_s_ft = flags["is_s_ft"]
+            is_p_ff = flags["is_p_ff"]
+            is_s_ff = flags["is_s_ff"]
+            is_p_ov = flags["is_p_ov"]
+            is_s_ov = flags["is_s_ov"]
+
+            reduction_key = (
+                tuple((int(ft), int(ff)) for ft, ff in list(ftff_pairs or [])),
+                tuple((int(ft), int(ff)) for ft, ff in list(group_base_pairs or [])),
+                int(GEM_SCALE_FEVER),
+                int(TOTAL_GEM_BUDGET),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
             )
+            cached_reduction = fg_resolved_pair_reduction_cache.get(reduction_key)
+            if cached_reduction is not None:
+                ftff_pairs = list(cached_reduction[0])
+                resolved_pair_drops = int(cached_reduction[1])
+                fg_resolved_pair_cache_hits += 1
+            else:
+                ftff_pairs, resolved_pair_drops = _reduce_ftff_pairs_by_resolved_stat_cost(
+                    ftff_pairs=ftff_pairs,
+                    base_stat_pairs=group_base_pairs,
+                    gem_scale_fever=int(GEM_SCALE_FEVER),
+                    total_budget=int(TOTAL_GEM_BUDGET),
+                    is_p_ft=int(is_p_ft),
+                    is_s_ft=int(is_s_ft),
+                    is_p_ff=int(is_p_ff),
+                    is_s_ff=int(is_s_ff),
+                )
+                fg_resolved_pair_reduction_cache[reduction_key] = (tuple(ftff_pairs), int(resolved_pair_drops))
+                fg_resolved_pair_cache_misses += 1
             fg_resolved_pair_drops += int(resolved_pair_drops)
             ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_max(
                 ftff_pairs=ftff_pairs,
@@ -2506,19 +2572,20 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if perf:
                 t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
-        flags = build_color_flags(p_color, s_color, sel_color)
-        is_p_pp = flags["is_p_pp"]
-        is_s_pp = flags["is_s_pp"]
-        is_p_cm = flags["is_p_cm"]
-        is_s_cm = flags["is_s_cm"]
-        is_p_fm = flags["is_p_fm"]
-        is_s_fm = flags["is_s_fm"]
-        is_p_ft = flags["is_p_ft"]
-        is_s_ft = flags["is_s_ft"]
-        is_p_ff = flags["is_p_ff"]
-        is_s_ff = flags["is_s_ff"]
-        is_p_ov = flags["is_p_ov"]
-        is_s_ov = flags["is_s_ov"]
+        if not per_pair_breakpoints:
+            flags = build_color_flags(p_color, s_color, sel_color)
+            is_p_pp = flags["is_p_pp"]
+            is_s_pp = flags["is_s_pp"]
+            is_p_cm = flags["is_p_cm"]
+            is_s_cm = flags["is_s_cm"]
+            is_p_fm = flags["is_p_fm"]
+            is_s_fm = flags["is_s_fm"]
+            is_p_ft = flags["is_p_ft"]
+            is_s_ft = flags["is_s_ft"]
+            is_p_ff = flags["is_p_ff"]
+            is_s_ff = flags["is_s_ff"]
+            is_p_ov = flags["is_p_ov"]
+            is_s_ov = flags["is_s_ov"]
         fused_solve_kwargs_static = {
             "n_sections": int(n_sections),
             "is_p_ft": is_p_ft,
@@ -4214,8 +4281,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 fg_fused_tile_batches,
             )
             logger.debug(
-                "[PERF] FG resolved-stat pair drops: %s resolved-window pair drops: %s",
+                "[PERF] FG resolved-stat pair drops: %s cache=%s/%s resolved-window pair drops: %s",
                 fg_resolved_pair_drops,
+                fg_resolved_pair_cache_hits,
+                fg_resolved_pair_cache_hits + fg_resolved_pair_cache_misses,
                 fg_window_pair_drops,
             )
             logger.debug(
@@ -4239,6 +4308,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
         meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
+        meta["FGResolvedPairCacheHits"] = int(fg_resolved_pair_cache_hits)
+        meta["FGResolvedPairCacheMisses"] = int(fg_resolved_pair_cache_misses)
         meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
         meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
     except Exception:
@@ -4258,6 +4329,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
             meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
+            meta["FGResolvedPairCacheHits"] = int(fg_resolved_pair_cache_hits)
+            meta["FGResolvedPairCacheMisses"] = int(fg_resolved_pair_cache_misses)
             meta["FGResolvedPairDrops"] = int(fg_resolved_pair_drops)
             meta["FGWindowPairDrops"] = int(fg_window_pair_drops)
         except Exception:

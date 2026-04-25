@@ -107,6 +107,27 @@ def test_resolved_stat_pair_reducer_keeps_pairs_when_any_base_row_differs() -> N
     assert dropped == 0
 
 
+def test_resolved_stat_pair_reducer_keeps_elemental_tradeoff_pairs() -> None:
+    kept, dropped = gpu_dispatch._reduce_ftff_pairs_by_resolved_stat_cost(
+        ftff_pairs=[(1, 0), (2, 0), (0, 1), (0, 2)],
+        base_stat_pairs=[(159, 159)],
+        gem_scale_fever=3,
+        total_budget=90,
+        is_p_ft=1,
+    )
+
+    # (1,0) and (2,0) resolve to the same FT/FF timing cell, but (2,0)
+    # trades one remaining gem for more primary elemental value. Neither state
+    # dominates the other, so dropping either would not be lossless.
+    assert (1, 0) in kept
+    assert (2, 0) in kept
+    # FF has no elemental value in this setup, so the cheaper saturated FF pair
+    # still dominates the more expensive one.
+    assert (0, 1) in kept
+    assert (0, 2) not in kept
+    assert dropped == 1
+
+
 def test_resolved_window_filter_is_group_level_before_genome_chunks() -> None:
     import inspect
 
@@ -117,6 +138,7 @@ def test_resolved_window_filter_is_group_level_before_genome_chunks() -> None:
     chunk_pos = body.index("while idx0 < n_sig:")
 
     assert reducer_pos < filter_pos < pack_pos < chunk_pos
+    assert "fg_resolved_pair_reduction_cache.get" in body
     assert body.rfind("_filter_ftff_pairs_by_resolved_window_max(") == filter_pos
 
 

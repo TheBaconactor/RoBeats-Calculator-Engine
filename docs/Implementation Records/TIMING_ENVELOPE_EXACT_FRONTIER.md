@@ -40,12 +40,17 @@ fill and Great carry can only keep fever ending at the same note or later.
 
 This is the same reduction for base analysis and FG. FG adds only the carry stream needed by the exact-DP objective.
 
-Update on 2026-04-24: the FG finder also applies a lossless FT/FF pair reduction before the resolved-window filter and
-before genome chunking. For each generated pair, it resolves the pair against every retained base row into concrete
-`(Fever Time, Fever Fill Rate)` table cells. If two pairs produce the same resolved-cell vector, the pair that spends
-more FT/FF gems is dominated: downstream timeline generation sees the same timing surface, and the exact inner BnB has
-the same remaining search space plus at least as much budget from the cheaper representative. Equal-cost duplicates are
-equivalent and are resolved deterministically. This cuts saturated plateau states without pruning on a score guess.
+Update on 2026-04-25: the FG finder applies a lossless FT/FF pair reduction before the resolved-window filter and before
+genome chunking. For each generated pair, it resolves the pair against every retained base row into concrete
+`(Fever Time, Fever Fill Rate)` table cells. Pairs sharing the same resolved-cell vector have identical downstream
+timing generation, but they are not necessarily interchangeable because FT/FF gems can also change remaining gem budget
+and elemental primary/secondary values. Production therefore keeps a Pareto frontier per resolved-cell vector and drops a
+pair only when another pair leaves at least as much remaining budget and at least as much post-pair elemental value on
+both lanes. This cuts saturated plateau states without pruning on a score guess or on timing identity alone.
+
+The same reducer is memoized across FG groups by its full pure input key: raw FT/FF pair list, retained base FT/FF rows,
+fever gem scale, total budget, and FT/FF color flags. Cache hits reuse the exact same retained-pair list and drop count;
+they do not change the search surface.
 
 Update on 2026-04-24: `prepare_timeline_window_counter(...)` exposes the shared all-normal window count without building a
 full fixed-stat scoring input. It caches the fever-end table per resolved FT index and the final count per resolved
