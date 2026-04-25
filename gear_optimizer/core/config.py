@@ -367,53 +367,6 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     return safe_int(raw, -1)
 
 
-def read_timeline_analysis_max_windows(cfg: Any, *, default: int = 3) -> int:
-    """Read `[IterationEngine].TimelineAnalysisMaxWindows`.
-
-    A value <= 0 disables the reduced exact timeline-window gate.
-    """
-    try:
-        default_i = int(default)
-    except Exception:
-        default_i = 3
-    default_i = max(0, min(default_i, 64))
-
-    try:
-        raw = str(cfg.get("IterationEngine", "TimelineAnalysisMaxWindows", fallback="") or "").strip()
-    except Exception as exc:
-        warn_fallback(
-            "config.timeline_analysis_max_windows.read",
-            "failed reading TimelineAnalysisMaxWindows; using default",
-            context={"default": default_i},
-            exc=exc,
-        )
-        raw = ""
-
-    raw_env = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
-    if raw_env is not None and str(raw_env).strip() != "":
-        raw = str(raw_env).strip()
-    if not raw:
-        return int(default_i)
-
-    try:
-        value = int(raw)
-    except Exception:
-        warn_fallback(
-            "config.timeline_analysis_max_windows.invalid",
-            "invalid TimelineAnalysisMaxWindows; using default",
-            context={"value": raw, "default": default_i},
-        )
-        return int(default_i)
-
-    return max(0, min(int(value), 64))
-
-
-def read_fg_exact_dp_max_baseline_windows(cfg: Any, *, default: int = 3) -> int:
-    """Legacy alias for the shared timeline-analysis gate."""
-
-    return read_timeline_analysis_max_windows(cfg, default=default)
-
-
 def _canon_outer_search_engine(raw: Any) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     value = "_".join(part for part in value.split("_") if part)

@@ -17,13 +17,13 @@ FF/FT timing path.
 Introduce `gear_optimizer/solver/timing_envelope.py` as the shared timing engine for base and FG:
 
 - base timeline ceiling uses `prepare_perfect_timing_envelope(...)` for chord-group Perfect-window payloads
-- base production uses the GPU-resident timing-envelope ceiling by default; CPU-built exact score-proxy timeline overrides
-  are opt-in via `GPU_TIMELINE_EXACT_OVERRIDES=1`
+- base production uses the GPU-resident timing-envelope ceiling frontier; the old CPU-built exact score-proxy timeline
+  override hook has been removed from production
 - FG exact DP uses `prepare_timeline_analysis_inputs(..., mode="fg")`
-- FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with the same shared window counter before
-  breakpoint generation and exact inner gem solving
+- FG finder pre-filters resolved `(base FT/FF + FG FT/FF gems)` pairs with an admissible score bound derived from the
+  same shared window counter before breakpoint generation and exact inner gem solving
 - FG's only specialization is deterministic late-Great carry via `fg_great_candidate_timestamps`
-- the exact frontier cap is now `TimelineAnalysisMaxWindows = 3`
+- no production FG pair is rejected solely because it crosses a hard activation-window count
 
 Production song prep now calls `apply_timing_envelope(...)`. Root configs no longer ship a sampled-timing section.
 
@@ -40,10 +40,12 @@ This is the same reduction for base analysis and FG. FG adds only the carry stre
 
 Update on 2026-04-24: `prepare_timeline_window_counter(...)` exposes the shared all-normal window count without building a
 full fixed-stat scoring input. It caches the fever-end table per resolved FT index and the final count per resolved
-`(FT, FF)` cell, so a full FT/FF candidate grid can be filtered cheaply after base FT/FF rows are known. The FG finder
-keeps a candidate pair if any reduced signature in the whole group resolves to `<= TimelineAnalysisMaxWindows`; it drops
-the pair only when every resolved row is outside the accepted small-window frontier. The filter runs once per group before
-genome chunking, not once per chunk, so it cannot starve the GPU owner between submissions.
+`(FT, FF)` cell. The FG finder now uses that count as a mathematical ingredient instead of a policy cap: for a resolved
+pair with `w` all-normal windows and fill count `f`, any FG path must pay at least `w*f - 1` non-fever fill notes because
+forced Greats can only delay fill. Production computes an optimistic score upper bound from that minimum normal-note
+count and the remaining gem budget, then drops a pair only when every pending base row's bound cannot beat the group's
+known base incumbent. The filter runs once per group before genome chunking, not once per chunk, so it cannot starve the
+GPU owner between submissions.
 
 ## Base Exactness
 
@@ -91,12 +93,11 @@ The migration keeps the hot path cheap:
 
 - timing-envelope FG streams are deterministic and per-song
 - the timeline ceiling group payload remains cached by song timing signature
-- `TimelineAnalysisMaxWindows` only affects the base timeline cache key when `GPU_TIMELINE_EXACT_OVERRIDES=1`; with
-  overrides disabled, the cache key follows the GPU-resident ceiling payload and avoids useless cache splits
+- the timing cache key follows the GPU-resident ceiling payload and no longer splits on retired exact-override metadata
 - minimized GPU registry payloads preserve chart timestamps, note types, and timing-envelope metadata
 - all-skipped FG exact-DP batches still return before GEM/Taichi readiness, uploads, and exact-DP kernel launch
 - dedup timeline execution remains opt-in via `GPU_TIMELINE_CEILING_DEDUP=1`
-- CPU-built base exact timeline overrides remain opt-in via `GPU_TIMELINE_EXACT_OVERRIDES=1`
+- CPU-built base exact timeline overrides are no longer part of production routing
 
 ## Verification
 
@@ -126,7 +127,7 @@ Throughput-stall follow-up verification (2026-04-24):
 
 - root cause: CPU-built exact timeline override generation ran synchronously inside `precompute_timeline_gpu`, which is
   executed by the single GPU owner before later GPU kernels can be submitted
-- fix: default `GPU_TIMELINE_EXACT_OVERRIDES=0`; proof tests opt in with `GPU_TIMELINE_EXACT_OVERRIDES=1`
+- follow-up: the CPU exact-override hook was removed after the GPU-resident frontier became the maintained product path
 - `python -m py_compile gear_optimizer\solver\taichi_gem\api\timeline.py tests\test_timing_envelope_cache_keys.py tests\test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py`
   - clean
 - `python -m pytest -q tests\test_timing_envelope_cache_keys.py tests\test_fg_finder_exact_inner_routing.py tests\test_fg_resolved_window_pair_filter.py --tb=short`

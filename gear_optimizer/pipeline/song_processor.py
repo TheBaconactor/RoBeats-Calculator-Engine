@@ -46,7 +46,6 @@ from ..core.config import (
     read_fg_search_radius,
     read_fg_solver_mode,
     read_outer_search_engine,
-    read_timeline_analysis_max_windows,
 )
 from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
@@ -627,11 +626,6 @@ def _setup_song_context(
                 )
             except Exception:
                 pass
-    except Exception:
-        pass
-
-    try:
-        calc_song.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = int(read_timeline_analysis_max_windows(cfg))
     except Exception:
         pass
 

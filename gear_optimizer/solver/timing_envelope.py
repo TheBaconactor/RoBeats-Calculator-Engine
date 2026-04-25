@@ -7,8 +7,9 @@ This module owns the deterministic Perfect-window model used by both:
 - FG exact-DP frontier analysis.
 
 The contract is intentionally narrower than full timing exactness: for fixed
-stats, we compute exact properties of the retained timeline frontier and use a
-small activation-window cap to avoid the old full-state explosion.
+stats, we compute exact properties of the retained timeline frontier. FG uses
+the same counter to derive admissible score bounds for pruning, instead of a
+hard activation-window cap.
 """
 
 from __future__ import annotations
@@ -64,6 +65,18 @@ class TimelineWindowCounter:
     _fever_end_cache: dict[int, np.ndarray] = field(default_factory=dict)
     _window_count_cache: dict[tuple[int, int], int] = field(default_factory=dict)
 
+    def total_notes(self) -> int:
+        return int(self.timestamps.shape[0])
+
+    def fill_count(self, ff_idx: int) -> int:
+        ff_i = max(0, min(TOTAL_ROWS, safe_int(ff_idx, 0)))
+        total_notes = int(self.timestamps.shape[0])
+        non_fever_cas = (total_notes - int(self.long_notes)) * float(FEVER_FILL_BASE_RATE)
+        if non_fever_cas < 0.0:
+            non_fever_cas = 0.0
+        raw_fill = float(non_fever_cas) * float(self.ref_ff[ff_i])
+        return max(1, int(ceil(raw_fill)))
+
     def count(self, ft_idx: int, ff_idx: int) -> int:
         ft_i = max(0, min(TOTAL_ROWS, safe_int(ft_idx, 0)))
         ff_i = max(0, min(TOTAL_ROWS, safe_int(ff_idx, 0)))
@@ -77,11 +90,7 @@ class TimelineWindowCounter:
             self._window_count_cache[cache_key] = 0
             return 0
 
-        non_fever_cas = (total_notes - int(self.long_notes)) * float(FEVER_FILL_BASE_RATE)
-        if non_fever_cas < 0.0:
-            non_fever_cas = 0.0
-        raw_fill = float(non_fever_cas) * float(self.ref_ff[ff_i])
-        non_fever_base = int(ceil(raw_fill))
+        non_fever_base = int(self.fill_count(ff_i))
 
         fever_end_song = self._fever_end_cache.get(ft_i)
         if fever_end_song is None:

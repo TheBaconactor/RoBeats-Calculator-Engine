@@ -9,7 +9,14 @@ from typing import Any, TYPE_CHECKING, Optional
 import numpy as np
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.constants import (
+    ELEMENTAL_GEM_SCALE,
+    GEM_SCALE_NORMAL,
+    LOADOUTS_PER_SONG_LIMIT,
+    MAX_STAT_INDEX,
+    TOTAL_GEM_BUDGET,
+    TOTAL_ROWS,
+)
 
 from . import cache_validation, result_application
 from .entry_utils import (
@@ -119,50 +126,138 @@ def _uses_timing_envelope_fg(calc_song: dict) -> bool:
         return False
 
 
-def _resolve_timeline_analysis_max_windows_for_song(calc_song: dict, *, default: int = 3) -> int:
+def _reference_at_or_max(ref_arrays: dict, key: str, idx: int) -> float:
     try:
-        value = int(default)
+        arr = np.asarray(ref_arrays[key], dtype=np.float32)
     except Exception:
-        value = 3
-    try:
-        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-        if isinstance(meta, dict) and meta.get("TimelineAnalysisMaxWindows", None) not in (None, ""):
-            value = int(meta.get("TimelineAnalysisMaxWindows"))
-    except Exception:
-        pass
-    raw_env = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
-    if raw_env is not None and str(raw_env).strip() != "":
-        try:
-            value = int(str(raw_env).strip())
-        except Exception:
-            pass
-    return max(0, min(int(value), 64))
+        return 0.0
+    if arr.size <= 0:
+        return 0.0
+    idx_i = max(0, min(int(TOTAL_ROWS), int(idx)))
+    hi = min(int(arr.size), idx_i + 1)
+    if hi <= 0:
+        return float(arr[0])
+    return float(np.nanmax(arr[:hi]))
 
 
-def _filter_ftff_pairs_by_resolved_window_cap(
+def _score_upper_bound_from_min_normal(
     *,
-    ftff_pairs,
-    base_stats_pairs,
+    total_notes: int,
+    min_normal_notes: int,
+    base_value: float,
+    combo_mul: float,
+    fever_mul: float,
+) -> int:
+    """
+    Optimistic score bound for a timeline with at least `min_normal_notes`.
+
+    Normal notes are placed on the lowest-value hit positions and every other
+    note is treated as fever. That can only overestimate a real timeline, so it
+    is safe for pruning.
+    """
+
+    n = max(0, int(total_notes))
+    normal_left = max(0, min(n, int(min_normal_notes)))
+    base_f = np.float32(base_value)
+    combo_f = np.float32(combo_mul)
+    fever_f = np.float32(fever_mul)
+    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    total = 0
+    head_len = min(n, 100)
+    for i in range(head_len):
+        ramp = base_f + (np.float32(i + 1) * factor)
+        if normal_left > 0:
+            total += int(ramp)
+            normal_left -= 1
+        else:
+            total += int(ramp * fever_f)
+
+    body_notes = n - head_len
+    if body_notes > 0:
+        body_normal = min(body_notes, normal_left)
+        body_fever = body_notes - body_normal
+        normal_val = int(base_f * combo_f)
+        fever_val = int(base_f * combo_f * fever_f)
+        total += int(body_normal * normal_val) + int(body_fever * fever_val)
+    return int(total)
+
+
+def _fg_pair_upper_bound(
+    *,
+    base_stats: dict,
+    ft_gems: int,
+    ff_gems: int,
     calc_song: dict,
     ref_arrays: dict,
-    max_windows: int,
+    counter,
+    gem_scale_fever: int,
+) -> int:
+    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    primary_color = str((metadata or {}).get("Primary Color", "") or "")
+    secondary_color = str((metadata or {}).get("Secondary Color", "") or "")
+
+    base_ft = int((base_stats or {}).get("Fever Time", 0) or 0)
+    base_ff = int((base_stats or {}).get("Fever Fill Rate", 0) or 0)
+    ft_idx = max(0, min(int(MAX_STAT_INDEX), base_ft + int(ft_gems) * int(gem_scale_fever)))
+    ff_idx = max(0, min(int(MAX_STAT_INDEX), base_ff + int(ff_gems) * int(gem_scale_fever)))
+    windows = max(0, int(counter.count(ft_idx, ff_idx)))
+    fill_count = max(1, int(counter.fill_count(ff_idx)))
+    total_notes = int(counter.total_notes())
+    if windows <= 0:
+        min_normal_notes = total_notes
+    else:
+        min_normal_notes = max(0, min(total_notes, windows * fill_count - 1))
+
+    remaining_budget = max(0, int(TOTAL_GEM_BUDGET) - int(ft_gems) - int(ff_gems))
+    base_pp = int((base_stats or {}).get("Perfect Points", 0) or 0)
+    base_cm = int((base_stats or {}).get("Combo Multiplier", 0) or 0)
+    base_fm = int((base_stats or {}).get("Fever Multiplier", 0) or 0)
+    pp_idx = min(int(MAX_STAT_INDEX), base_pp + remaining_budget * int(GEM_SCALE_NORMAL))
+    cm_idx = min(int(MAX_STAT_INDEX), base_cm + remaining_budget * int(GEM_SCALE_NORMAL))
+    fm_idx = min(int(MAX_STAT_INDEX), base_fm + remaining_budget * int(gem_scale_fever))
+
+    primary_val = int((base_stats or {}).get(primary_color, 0) or 0) if primary_color else 0
+    secondary_val = int((base_stats or {}).get(secondary_color, 0) or 0) if secondary_color else 0
+    base_value = (
+        float(primary_val * 2 + secondary_val)
+        + _reference_at_or_max(ref_arrays, "Perfect Points", pp_idx)
+        + float(remaining_budget * int(ELEMENTAL_GEM_SCALE) * 2)
+    )
+    return _score_upper_bound_from_min_normal(
+        total_notes=total_notes,
+        min_normal_notes=min_normal_notes,
+        base_value=base_value,
+        combo_mul=_reference_at_or_max(ref_arrays, "Combo Multiplier", cm_idx),
+        fever_mul=_reference_at_or_max(ref_arrays, "Fever Multiplier", fm_idx),
+    )
+
+
+def _filter_ftff_pairs_by_admissible_score_bound(
+    *,
+    ftff_pairs,
+    base_stat_rows,
+    calc_song: dict,
+    ref_arrays: dict,
     gem_scale_fever: int,
 ) -> tuple[list[tuple[int, int]], int]:
     """
-    Drop FT/FF gem pairs whose resolved base rows all exceed the shared window cap.
+    Drop only pairs whose optimistic upper bound cannot beat known group score.
 
-    This is the production fail-safe gate: it is applied after resolving the actual
-    base FT/FF rows, so a pair survives if any pending base row can still land on
-    the retained small-window frontier.
+    Window counts are used as math, not policy: for a resolved `(FT, FF)` cell,
+    `windows * fill - 1` is a lower bound on non-fever fill notes. Forced Greats
+    can only delay fill, so the upper-bound score is admissible. No hard-coded
+    "max windows" survives this migration.
     """
 
     pairs = [] if ftff_pairs is None else [(int(ft), int(ff)) for ft, ff in list(ftff_pairs)]
-    if int(max_windows) <= 0 or not pairs:
+    if not pairs:
         return pairs, 0
 
-    base_pairs_iter = [] if base_stats_pairs is None else base_stats_pairs
-    base_pairs = sorted({(int(ft), int(ff)) for ft, ff in base_pairs_iter})
-    if not base_pairs:
+    rows = [row for row in list(base_stat_rows or []) if isinstance(row, dict) and isinstance(row.get("base_stats"), dict)]
+    if not rows:
+        return pairs, 0
+    incumbent_score = max(int(row.get("base", 0) or 0) for row in rows)
+    if incumbent_score <= 0:
         return pairs, 0
 
     try:
@@ -176,13 +271,19 @@ def _filter_ftff_pairs_by_resolved_window_cap(
 
     kept: list[tuple[int, int]] = []
     dropped = 0
-    scale = int(gem_scale_fever)
     for ft_gems, ff_gems in pairs:
         keep = False
-        for base_ft, base_ff in base_pairs:
-            ft_idx = max(0, min(160, int(base_ft) + int(ft_gems) * scale))
-            ff_idx = max(0, min(160, int(base_ff) + int(ff_gems) * scale))
-            if int(counter.count(ft_idx, ff_idx)) <= int(max_windows):
+        for row in rows:
+            ub = _fg_pair_upper_bound(
+                base_stats=row["base_stats"],
+                ft_gems=int(ft_gems),
+                ff_gems=int(ff_gems),
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                counter=counter,
+                gem_scale_fever=int(gem_scale_fever),
+            )
+            if int(ub) > int(incumbent_score):
                 keep = True
                 break
         if keep:
@@ -191,6 +292,36 @@ def _filter_ftff_pairs_by_resolved_window_cap(
             dropped += 1
 
     return kept, int(dropped)
+
+
+def _base_stat_rows_from_signature_rows(sig_list, sig_rows_map) -> list[dict]:
+    if not isinstance(sig_rows_map, dict):
+        return []
+
+    rows: dict[tuple[int, int, int], dict] = {}
+    for sig in list(sig_list or []):
+        row = sig_rows_map.get(sig)
+        if not isinstance(row, dict):
+            continue
+        base_stats = row.get("base_stats")
+        if not isinstance(base_stats, dict):
+            continue
+        try:
+            key = (
+                int(base_stats.get("Fever Time", 0) or 0),
+                int(base_stats.get("Fever Fill Rate", 0) or 0),
+                int(row.get("base", 0) or 0),
+            )
+        except Exception:
+            continue
+        rows.setdefault(
+            key,
+            {
+                "base_stats": base_stats,
+                "base": int(row.get("base", 0) or 0),
+            },
+        )
+    return [rows[key] for key in sorted(rows)]
 
 
 def _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map) -> list[tuple[int, int]]:
@@ -2392,15 +2523,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             total_budget=int(TOTAL_GEM_BUDGET),
             use_fast=bool(fast_pairs),
         )
-        max_timeline_windows = _resolve_timeline_analysis_max_windows_for_song(calc_song)
-        if per_pair_breakpoints and max_timeline_windows > 0:
-            group_base_pairs = _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map)
-            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_resolved_window_cap(
+        if per_pair_breakpoints:
+            group_base_rows = _base_stat_rows_from_signature_rows(sig_list, sig_rows_map)
+            ftff_pairs, dropped_pairs = _filter_ftff_pairs_by_admissible_score_bound(
                 ftff_pairs=ftff_pairs,
-                base_stats_pairs=group_base_pairs,
+                base_stat_rows=group_base_rows,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
-                max_windows=int(max_timeline_windows),
                 gem_scale_fever=int(GEM_SCALE_FEVER),
             )
             fg_window_pair_drops += int(dropped_pairs)

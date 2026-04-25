@@ -132,12 +132,6 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
     except Exception:
         pass
 
-    try:
-        raw = os.environ.get("TIMELINE_ANALYSIS_MAX_WINDOWS")
-        calc_song.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = max(0, int(raw or 3))
-    except Exception:
-        pass
-
     return calc_song
 
 
