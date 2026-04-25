@@ -1124,7 +1124,9 @@ def fg_exact_dp_sparse_full_kernel(
 
                 future = ti.cast(0, ti.i64)
                 if fever_end_idx < n:
-                    next_id: ti.i32 = _fg_exact_dp_sparse_hash_lookup(_fg_exact_dp_sparse_pack_key(fever_end_idx, 0, carry_next))
+                    next_id: ti.i32 = _fg_exact_dp_sparse_hash_lookup(
+                        _fg_exact_dp_sparse_pack_key(fever_end_idx, 0, carry_next)
+                    )
                     if next_id >= 0:
                         future = fg_exact_dp_sparse_dp[next_id]
 
@@ -2695,8 +2697,6 @@ def fg_stage1_waves_kernel(
 
                     current_idx = fever_end_idx
                     sec += 1
-                    if sec >= n_sections:
-                        break
 
                 # Compute base score and forced-great penalty for this cfg.
                 body_len = ti.max(total_notes - head_len, 0)
