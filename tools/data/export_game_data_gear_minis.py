@@ -65,7 +65,7 @@ def _export_gears(payload: dict[str, Any]) -> list[list[str]]:
 
     rows: list[list[str]] = []
     seen_names: set[str] = set()
-    for _image_id, entry in source.items():
+    for _source_id, entry in source.items():
         if not isinstance(entry, dict):
             continue
         gears = entry.get("gears", [])
@@ -134,7 +134,7 @@ def _export_minis(payload: dict[str, Any]) -> list[list[str]]:
 
     rows: list[list[str]] = []
     seen_names: set[str] = set()
-    for _image_id, entry in source.items():
+    for _source_id, entry in source.items():
         if not isinstance(entry, dict):
             continue
         minis = entry.get("minis", [])
@@ -218,11 +218,11 @@ def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export RoBeatsMeta image_ids_mapped.json to optimizer CSV formats.")
+    parser = argparse.ArgumentParser(description="Export RoBeatsMeta exported_game_data.json to optimizer CSV formats.")
     parser.add_argument(
         "--input",
-        default="Data/image_ids_mapped.json",
-        help="Path to image_ids_mapped.json (default: Data/image_ids_mapped.json)",
+        default="Data/exported_game_data.json",
+        help="Path to exported_game_data.json (default: Data/exported_game_data.json)",
     )
     parser.add_argument(
         "--gears-out",
@@ -297,4 +297,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
