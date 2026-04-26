@@ -1,7 +1,20 @@
 import queue
 import os
 
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import (
+    GpuExecutor,
+    GpuRequest,
+    GpuRequestType,
+    _effective_owner_batch_max,
+)
+
+
+def test_effective_owner_batch_max_limits_inproc_default_breadth() -> None:
+    assert _effective_owner_batch_max(8, in_process_queues=True, batch_max_overridden=False) == 24
+    assert _effective_owner_batch_max(24, in_process_queues=True, batch_max_overridden=False) == 24
+    assert _effective_owner_batch_max(32, in_process_queues=True, batch_max_overridden=False) == 32
+    assert _effective_owner_batch_max(16, in_process_queues=True, batch_max_overridden=True) == 16
+    assert _effective_owner_batch_max(8, in_process_queues=False, batch_max_overridden=False) == 8
 
 
 def test_gather_batch_inproc_uses_idle_wait_for_first_item(monkeypatch):

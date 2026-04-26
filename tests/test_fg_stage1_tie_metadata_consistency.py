@@ -1,3 +1,4 @@
+import inspect
 import os
 import sys
 
@@ -14,6 +15,20 @@ def _has_taichi() -> bool:
     except Exception:
         return False
     return True
+
+
+def test_vulkan_stage1_keeps_post_config_timeline_surface() -> None:
+    """
+    Regression: the Vulkan Stage-1 ranking kernel must score each FG config over
+    the same full timeline that Stage 2 recomputes. If Stage 1 stops after the
+    configured forced-Great sections, it can select a config that loses once the
+    remaining normal fever windows are included.
+    """
+    from gear_optimizer.solver.taichi_gem.force_greats import kernels as fg_kernels
+
+    body = inspect.getsource(fg_kernels.fg_stage1_waves_kernel)
+
+    assert "if sec >= n_sections" not in body
 
 
 @pytest.mark.gpu

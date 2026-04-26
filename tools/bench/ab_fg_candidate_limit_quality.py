@@ -3,7 +3,7 @@ A/B quality harness for FG_CandidateLimit (non-randomized, reproducible).
 
 Motivation:
 - End-to-end GPU runs have noise unless RNG sources are pinned.
-- With GA_SEED + fixed HumanHitSim.Seed + per-song deterministic GA seeds (app.py),
+- With GA_SEED + per-song deterministic GA seeds (app.py),
   we can quantify whether FG_CandidateLimit changes cause a real quality regression
   vs run-to-run noise.
 
@@ -55,8 +55,6 @@ def _write_variant_config(
     song_repeats: int | None,
     use_evo_db: bool | None,
     inflight_songs: int | None,
-    hitsim_enabled: bool | None,
-    hitsim_seed: int | None,
 ) -> None:
     cfg = configparser.ConfigParser()
     cfg.read(str(base_config_path), encoding="utf-8-sig")
@@ -72,14 +70,6 @@ def _write_variant_config(
         cfg.set("IterationEngine", "UseEvolutionDB", "true" if use_evo_db else "false")
     if inflight_songs is not None:
         cfg.set("IterationEngine", "InFlightSongs", str(int(inflight_songs)))
-
-    if hitsim_enabled is not None or hitsim_seed is not None:
-        if not cfg.has_section("HumanHitSim"):
-            cfg.add_section("HumanHitSim")
-        if hitsim_enabled is not None:
-            cfg.set("HumanHitSim", "Enabled", "true" if hitsim_enabled else "false")
-        if hitsim_seed is not None:
-            cfg.set("HumanHitSim", "Seed", str(int(hitsim_seed)))
 
     out_config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_config_path, "w", encoding="utf-8") as fh:
@@ -228,8 +218,6 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--ga-seed", type=int, default=1337)
     ap.add_argument("--song-repeats", type=int, default=1, help="Override SongRepeats in generated configs.")
-    ap.add_argument("--hitsim-seed", type=int, default=12345)
-    ap.add_argument("--disable-hitsim", action="store_true")
     ap.add_argument(
         "--use-evo-db",
         choices=["keep", "true", "false"],
@@ -258,9 +246,6 @@ def main() -> int:
     song_limit = max(1, int(args.song_limit))
     ga_seed = int(args.ga_seed)
     song_repeats = max(1, int(args.song_repeats)) if int(args.song_repeats) > 0 else None
-    hitsim_enabled = False if bool(args.disable_hitsim) else None
-    hitsim_seed = int(args.hitsim_seed) if int(args.hitsim_seed) > 0 else None
-
     use_evo_db = None
     if str(args.use_evo_db).strip().lower() == "true":
         use_evo_db = True
@@ -300,8 +285,6 @@ def main() -> int:
                 song_repeats=song_repeats,
                 use_evo_db=use_evo_db,
                 inflight_songs=inflight_songs,
-                hitsim_enabled=hitsim_enabled,
-                hitsim_seed=hitsim_seed,
             )
 
             print(f"[ab] rep={rep}/{reps} variant={v.name} FG_CandidateLimit={v.fg_candidate_limit}")
@@ -371,8 +354,6 @@ def main() -> int:
             "reps": reps,
             "ga_seed": ga_seed,
             "song_repeats_override": song_repeats,
-            "hitsim_enabled_override": hitsim_enabled,
-            "hitsim_seed_override": hitsim_seed,
             "use_evo_db_override": use_evo_db,
             "seed_db": str(seed_db_path) if seed_db_path is not None else "",
             "inflight_songs_override": inflight_songs,

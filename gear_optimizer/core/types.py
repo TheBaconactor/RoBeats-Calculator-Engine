@@ -20,7 +20,7 @@ class CalcSongData(TypedDict, total=False):
 
     Notes:
     - Arrays are typically numpy, but may be lists during early parsing.
-    - Some pipelines add additional keys (e.g. HumanHitSim timestamps).
+    - Some pipelines add additional analysis keys used by FG timing.
     """
 
     timestamps: np.ndarray

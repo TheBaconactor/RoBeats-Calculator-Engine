@@ -224,15 +224,24 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
             "FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5' ORDER BY score DESC LIMIT 1",
             (song_name,),
         ).fetchone()
+        fg_row = conn.execute(
+            "SELECT score, fg_score, force_details_json "
+            "FROM team_buff_fg_loadouts WHERE song_name = ? AND team_buff = 'T5' ORDER BY fg_score DESC LIMIT 1",
+            (song_name,),
+        ).fetchone()
 
     assert row is not None
     assert int(row["score"]) == score
     assert int(row["fg_score"]) == fg_score
+    assert row["force_details_json"] is None
+    assert fg_row is not None
+    assert int(fg_row["score"]) == score
+    assert int(fg_row["fg_score"]) == fg_score
 
     from gear_optimizer.data.database import _unpack_stats_after_load
 
     stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
-    stored_force = json.loads(row["force_details_json"])
+    stored_force = json.loads(fg_row["force_details_json"])
     cfg = (stored_force.get("ForceGreats") or {}).get("config") or {}
     counts = _config_dict_to_counts(cfg)
     assert counts == forced_counts

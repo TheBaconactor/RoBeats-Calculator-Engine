@@ -26,6 +26,10 @@ from typing import Any, Optional
 
 from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
+    estimate_fused_payload_threads,
+    split_fused_payload_by_budget,
+)
 
 from .gpu_executor import (
     GpuExecutor,
@@ -115,18 +119,34 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG job coalescing (in-process only). This keeps async FG lanes from
-        # degenerating into many tiny one-request GPU submissions; executor-side
-        # pair/payload caps still bound the actual GPU work per owner pass.
+        # degenerating into many tiny one-request GPU submissions without
+        # undoing the upstream FG tiling that keeps the single owner responsive.
         self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
-            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "256") or "256")
+            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "8") or "8")
         except Exception:
-            self._fg_coalesce_max_payloads = 128
+            self._fg_coalesce_max_payloads = 8
         try:
             executor_max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
         except Exception:
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
+        try:
+            raw_pair_cap = os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAIRS")
+            if raw_pair_cap is None or str(raw_pair_cap).strip() == "":
+                raw_pair_cap = os.environ.get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", "256")
+            self._fg_coalesce_max_pairs = int(str(raw_pair_cap or "256").strip() or "256")
+        except Exception:
+            self._fg_coalesce_max_pairs = 256
+        self._fg_coalesce_max_pairs = max(0, min(int(self._fg_coalesce_max_pairs), 4096))
+        try:
+            raw_work_cap = os.environ.get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST")
+            if raw_work_cap is None or str(raw_work_cap).strip() == "":
+                raw_work_cap = os.environ.get("FG_FUSED_MAX_WORK_PER_REQUEST", "25000000")
+            self._fg_coalesce_max_work = int(str(raw_work_cap or "25000000").strip() or "25000000")
+        except Exception:
+            self._fg_coalesce_max_work = 25_000_000
+        self._fg_coalesce_max_work = max(0, min(int(self._fg_coalesce_max_work), 2_000_000_000))
         try:
             self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "8") or "8")
         except Exception:
@@ -135,6 +155,8 @@ class GpuServiceClient:
         self._fg_coalesce_max_payloads = min(int(self._fg_coalesce_max_payloads), int(executor_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []
+        self._fg_coalesce_pairs = 0
+        self._fg_coalesce_work = 0
         # (future, start, count, submit_ts)
         self._fg_coalesce_slices: list[tuple[Future, int, int, float]] = []
         self._fg_coalesce_first_ts: float | None = None
@@ -239,6 +261,7 @@ class GpuServiceClient:
                 pending = list(self._fg_coalesce_slices)
                 self._fg_coalesce_payloads.clear()
                 self._fg_coalesce_slices.clear()
+                self._fg_coalesce_pairs = 0
                 self._fg_coalesce_first_ts = None
             for fut, _start, _count, _submit_ts in pending:
                 if not fut.done():
@@ -458,28 +481,6 @@ class GpuServiceClient:
             {"args": args, "kwargs": kwargs},
         )
 
-    def submit_solve_force_greats_exact_dp(
-        self,
-        *,
-        stats_list,
-        calc_song: dict[str, Any],
-        ref_arrays: dict[str, Any],
-        timing_aware: bool = True,
-        prune: bool = True,
-        song_slot: int = 0,
-    ) -> GpuJobHandle:
-        return self.submit(
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
-            {
-                "stats_list": list(stats_list or []),
-                "calc_song": calc_song,
-                "ref_arrays": ref_arrays,
-                "timing_aware": bool(timing_aware),
-                "prune": bool(prune),
-                "song_slot": int(song_slot or 0),
-            },
-        )
-
     def submit_fg_compute_breakpoints(
         self,
         *,
@@ -515,14 +516,379 @@ class GpuServiceClient:
 
     def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         payload_list = list(payloads or [])
+        expanded_payloads, tile_spans = self._expand_fg_payload_pair_tiles(payload_list)
+        chunks = self._split_fg_payloads_for_owner_quantum(expanded_payloads)
+        if len(chunks) > 1:
+            return self._submit_fg_batch_tiled(
+                chunks,
+                total_payloads=len(expanded_payloads),
+                tile_spans=tile_spans,
+                original_payloads=payload_list,
+            )
         if (
             self._fg_coalesce_enabled
             and self._in_process_queues
-            and payload_list
-            and all(isinstance(p, dict) for p in payload_list)
+            and expanded_payloads
+            and all(isinstance(p, dict) for p in expanded_payloads)
+            and not self._fg_payload_tiles_expanded(tile_spans)
         ):
-            return self._submit_fg_batch_coalesced(payload_list)
-        return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payload_list})
+            return self._submit_fg_batch_coalesced(expanded_payloads)
+        job = self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": expanded_payloads})
+        if self._fg_payload_tiles_expanded(tile_spans):
+            return self._wrap_fg_tile_merge_job(job, tile_spans=tile_spans, original_payloads=payload_list)
+        return job
+
+    def _fg_payload_tiles_expanded(self, tile_spans: list[tuple[int, int]]) -> bool:
+        for start, end in tile_spans:
+            if int(end) - int(start) != 1:
+                return True
+        return False
+
+    def _fg_payload_pair_count(self, payload: dict[str, Any]) -> int:
+        if self._fg_coalesce_max_pairs <= 0:
+            return 0
+        pairs = payload.get("ftff_pairs") if isinstance(payload, dict) else None
+        if pairs is None:
+            # Unknown work should not be merged with unrelated FG tiles.
+            return int(self._fg_coalesce_max_pairs)
+        try:
+            shape = getattr(pairs, "shape", None)
+            if shape is not None and len(shape) > 0:
+                return max(0, int(shape[0]))
+        except Exception:
+            pass
+        try:
+            return max(0, int(len(pairs)))
+        except Exception:
+            return int(self._fg_coalesce_max_pairs)
+
+    def _fg_payloads_pair_count(self, payloads: list[dict[str, Any]]) -> int:
+        if self._fg_coalesce_max_pairs <= 0:
+            return 0
+        total = 0
+        for payload in payloads:
+            total += int(self._fg_payload_pair_count(payload))
+        return int(total)
+
+    def _fg_payload_work_count(self, payload: dict[str, Any]) -> int:
+        if int(getattr(self, "_fg_coalesce_max_work", 0) or 0) <= 0:
+            return 0
+        try:
+            return max(1, int(estimate_fused_payload_threads(payload)))
+        except Exception:
+            return 1
+
+    def _split_fg_payloads_for_owner_quantum(
+        self, payloads: list[dict[str, Any]]
+    ) -> list[tuple[int, list[dict[str, Any]]]]:
+        if not payloads:
+            return [(0, [])]
+        max_payloads = max(1, int(self._fg_coalesce_max_payloads))
+        max_pairs = int(self._fg_coalesce_max_pairs)
+        max_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0)
+        chunks: list[tuple[int, list[dict[str, Any]]]] = []
+        cur: list[dict[str, Any]] = []
+        cur_start = 0
+        cur_pairs = 0
+        cur_work = 0
+        for idx, payload in enumerate(payloads):
+            item_pairs = int(self._fg_payload_pair_count(payload)) if max_pairs > 0 else 0
+            item_work = int(self._fg_payload_work_count(payload)) if max_work > 0 else 0
+            exceeds_payloads = cur and (len(cur) + 1) > int(max_payloads)
+            exceeds_pairs = cur and max_pairs > 0 and (cur_pairs + item_pairs) > int(max_pairs)
+            exceeds_work = cur and max_work > 0 and (cur_work + item_work) > int(max_work)
+            if exceeds_payloads or exceeds_pairs or exceeds_work:
+                chunks.append((int(cur_start), list(cur)))
+                cur = []
+                cur_start = int(idx)
+                cur_pairs = 0
+                cur_work = 0
+            cur.append(payload)
+            cur_pairs += int(item_pairs)
+            cur_work += int(item_work)
+        if cur:
+            chunks.append((int(cur_start), list(cur)))
+        return chunks
+
+    def _expand_fg_payload_pair_tiles(
+        self, payloads: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
+        """Split oversized FT/FF payloads before they reach the GPU owner.
+
+        The FG kernels already process large FT/FF arrays in internal chunks, but
+        doing that inside one owner request blocks GA/FG interleaving. These tiles
+        are independent search partitions; the aggregate future merges their
+        downloaded winners exactly.
+        """
+        if not payloads:
+            return [], []
+        max_pairs = int(self._fg_coalesce_max_pairs)
+        if max_pairs <= 0:
+            return list(payloads), [(i, i + 1) for i in range(len(payloads))]
+        expanded: list[dict[str, Any]] = []
+        spans: list[tuple[int, int]] = []
+        for payload in payloads:
+            start = int(len(expanded))
+            if not isinstance(payload, dict):
+                expanded.append(payload)
+                spans.append((start, int(len(expanded))))
+                continue
+            pair_count = int(self._fg_payload_pair_count(payload))
+            pairs = payload.get("ftff_pairs")
+            max_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0)
+            if pairs is None or (pair_count <= int(max_pairs) and max_work <= 0):
+                expanded.append(payload)
+                spans.append((start, int(len(expanded))))
+                continue
+            tiles = split_fused_payload_by_budget(
+                payload,
+                max_pairs=int(max_pairs),
+                max_work=int(max_work),
+            )
+            expanded.extend(tiles)
+            spans.append((start, int(len(expanded))))
+        return expanded, spans
+
+    def _merge_fg_tile_results(self, tile_results: list[Any], original_payload: dict[str, Any]) -> Any:
+        if len(tile_results) == 1:
+            return tile_results[0]
+        if not tile_results:
+            return None
+        if not all(isinstance(r, dict) for r in tile_results):
+            return tile_results[0]
+
+        import numpy as np
+
+        first = tile_results[0]
+        score_key = "final_score"
+        if score_key not in first:
+            return first
+        has_selected = any("selected_indices" in r for r in tile_results if isinstance(r, dict))
+        if not has_selected:
+            final0 = np.asarray(first.get(score_key))
+            n = int(final0.shape[0]) if final0.ndim >= 1 else 0
+            if n <= 0:
+                return first
+            best_tile = np.zeros((n,), dtype=np.int32)
+            best_score = np.asarray(first.get(score_key), dtype=np.int64).reshape(-1)
+            for tile_idx, result in enumerate(tile_results[1:], start=1):
+                scores = np.asarray(result.get(score_key), dtype=np.int64).reshape(-1)
+                if int(scores.shape[0]) != n:
+                    return first
+                mask = scores > best_score
+                best_score[mask] = scores[mask]
+                best_tile[mask] = int(tile_idx)
+            merged: dict[str, Any] = {}
+            for key in first.keys():
+                arr0 = first.get(key)
+                try:
+                    arr0_np = np.asarray(arr0)
+                except Exception:
+                    merged[key] = arr0
+                    continue
+                if arr0_np.ndim < 1 or int(arr0_np.shape[0]) != n:
+                    merged[key] = arr0
+                    continue
+                out = np.array(arr0_np, copy=True)
+                for tile_idx, result in enumerate(tile_results[1:], start=1):
+                    mask = best_tile == int(tile_idx)
+                    if not bool(np.any(mask)):
+                        continue
+                    arr = np.asarray(result.get(key))
+                    if arr.ndim < 1 or int(arr.shape[0]) != n:
+                        continue
+                    out[mask] = arr[mask]
+                merged[key] = out
+            return merged
+
+        rows: list[dict[str, Any]] = []
+        for result in tile_results:
+            selected = result.get("selected_indices")
+            if selected is None:
+                return first
+            selected_np = np.asarray(selected, dtype=np.int32).reshape(-1)
+            for row_idx, genome_idx in enumerate(selected_np.tolist()):
+                row: dict[str, Any] = {"selected_indices": int(genome_idx)}
+                for key, value in result.items():
+                    try:
+                        arr = np.asarray(value)
+                    except Exception:
+                        continue
+                    if arr.ndim < 1 or int(arr.shape[0]) <= int(row_idx):
+                        continue
+                    row[key] = arr[int(row_idx)].copy() if hasattr(arr[int(row_idx)], "copy") else arr[int(row_idx)]
+                rows.append(row)
+        if not rows:
+            return first
+
+        best_by_index: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            idx = int(row.get("selected_indices", -1))
+            if idx < 0:
+                continue
+            prev = best_by_index.get(idx)
+            if prev is None or int(row.get(score_key, -(2**63))) > int(prev.get(score_key, -(2**63))):
+                best_by_index[idx] = row
+
+        try:
+            topk = int(original_payload.get("fg_download_topk"))
+        except Exception:
+            topk = 0
+        keep_mask_raw = original_payload.get("fg_download_keep_mask")
+        base_scores_raw = original_payload.get("fg_download_base_scores")
+        keep_indices: set[int] = set()
+        if keep_mask_raw is not None:
+            try:
+                keep_np = np.asarray(keep_mask_raw, dtype=np.int32).reshape(-1)
+                keep_indices = {int(i) for i in np.nonzero(keep_np != 0)[0].tolist()}
+            except Exception:
+                keep_indices = set()
+        base_scores = None
+        if base_scores_raw is not None:
+            try:
+                base_scores = np.asarray(base_scores_raw, dtype=np.int64).reshape(-1)
+            except Exception:
+                base_scores = None
+
+        kept_rows = [row for idx, row in best_by_index.items() if idx in keep_indices]
+        candidate_rows = []
+        for idx, row in best_by_index.items():
+            if idx in keep_indices:
+                continue
+            if base_scores is not None and 0 <= idx < int(base_scores.shape[0]):
+                if int(row.get(score_key, -(2**63))) <= int(base_scores[idx]):
+                    continue
+            candidate_rows.append(row)
+        candidate_rows.sort(key=lambda r: int(r.get(score_key, -(2**63))), reverse=True)
+        selected_rows = kept_rows + candidate_rows[: max(0, int(topk))]
+        selected_rows.sort(key=lambda r: int(r.get(score_key, -(2**63))), reverse=True)
+        if not selected_rows:
+            return first
+
+        merged: dict[str, Any] = {}
+        keys: list[str] = []
+        for result in tile_results:
+            for key in result.keys():
+                if key not in keys:
+                    keys.append(key)
+        for key in keys:
+            vals = [row[key] for row in selected_rows if key in row]
+            if len(vals) != len(selected_rows):
+                continue
+            merged[key] = np.asarray(vals)
+        return merged
+
+    def _merge_fg_expanded_results(
+        self,
+        expanded_results: list[Any],
+        *,
+        tile_spans: list[tuple[int, int]],
+        original_payloads: list[dict[str, Any]],
+    ) -> list[Any]:
+        if not self._fg_payload_tiles_expanded(tile_spans):
+            return list(expanded_results)
+        merged: list[Any] = []
+        for payload, (start, end) in zip(original_payloads, tile_spans):
+            tile_results = list(expanded_results[int(start) : int(end)])
+            if int(end) - int(start) <= 1:
+                merged.append(tile_results[0] if tile_results else None)
+            else:
+                merged.append(self._merge_fg_tile_results(tile_results, payload))
+        return merged
+
+    def _wrap_fg_tile_merge_job(
+        self,
+        job: GpuJobHandle,
+        *,
+        tile_spans: list[tuple[int, int]],
+        original_payloads: list[dict[str, Any]],
+    ) -> GpuJobHandle:
+        aggregate_future: Future = Future()
+
+        def _done(done_fut: Future) -> None:
+            try:
+                expanded_results = done_fut.result()
+                if not isinstance(expanded_results, list):
+                    raise RuntimeError("FG tiled payload returned non-list result")
+                aggregate_future.set_result(
+                    self._merge_fg_expanded_results(
+                        expanded_results,
+                        tile_spans=tile_spans,
+                        original_payloads=original_payloads,
+                    )
+                )
+            except Exception as exc:
+                aggregate_future.set_exception(exc)
+
+        job.future.add_done_callback(_done)
+        return GpuJobHandle(request_id=job.request_id, future=aggregate_future)
+
+    def _submit_fg_batch_tiled(
+        self,
+        chunks: list[tuple[int, list[dict[str, Any]]]],
+        *,
+        total_payloads: int,
+        tile_spans: list[tuple[int, int]] | None = None,
+        original_payloads: list[dict[str, Any]] | None = None,
+    ) -> GpuJobHandle:
+        if not self._running or self._worker_id is None:
+            raise RuntimeError("GpuServiceClient not started")
+        aggregate_request_id = int(next(self._counter))
+        aggregate_future: Future = Future()
+        if not chunks:
+            aggregate_future.set_result([])
+            return GpuJobHandle(request_id=aggregate_request_id, future=aggregate_future)
+
+        results: list[Any] = [None] * int(total_payloads)
+        remaining = len(chunks)
+        done_lock = threading.Lock()
+
+        def _chunk_done(done_fut: Future, *, start: int, count: int) -> None:
+            nonlocal remaining
+            try:
+                chunk_result = done_fut.result()
+                if not isinstance(chunk_result, list):
+                    raise RuntimeError("FG tiled batch returned non-list result")
+                if int(len(chunk_result)) != int(count):
+                    raise RuntimeError("FG tiled batch result length mismatch")
+            except Exception as exc:
+                with done_lock:
+                    if not aggregate_future.done():
+                        aggregate_future.set_exception(exc)
+                return
+
+            with done_lock:
+                if aggregate_future.done():
+                    return
+                results[int(start) : int(start) + int(count)] = list(chunk_result)
+                remaining -= 1
+                if remaining <= 0:
+                    final_results = list(results)
+                    if tile_spans is not None and original_payloads is not None:
+                        final_results = self._merge_fg_expanded_results(
+                            final_results,
+                            tile_spans=tile_spans,
+                            original_payloads=original_payloads,
+                        )
+                    aggregate_future.set_result(final_results)
+
+        for start, chunk in chunks:
+            try:
+                job = self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": list(chunk)})
+            except Exception as exc:
+                with done_lock:
+                    if not aggregate_future.done():
+                        aggregate_future.set_exception(exc)
+                break
+            job.future.add_done_callback(
+                lambda done_fut, start=int(start), count=int(len(chunk)): _chunk_done(
+                    done_fut,
+                    start=start,
+                    count=count,
+                )
+            )
+
+        return GpuJobHandle(request_id=aggregate_request_id, future=aggregate_future)
 
     def _submit_fg_batch_coalesced(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         if not self._running or self._worker_id is None:
@@ -531,26 +897,55 @@ class GpuServiceClient:
         request_id = int(next(self._counter))
         t_submit = time.perf_counter() if self._profile_enabled else 0.0
 
-        batch = None
+        batches_to_submit: list[tuple[list[dict[str, Any]], list[tuple[Future, int, int, float]]]] = []
+        payload_pairs = self._fg_payloads_pair_count(payloads)
+        payload_work = 0
+        if int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0:
+            payload_work = sum(int(self._fg_payload_work_count(payload)) for payload in payloads)
         with self._fg_coalesce_lock:
             if not payloads:
                 fut.set_result([])
                 return GpuJobHandle(request_id=request_id, future=fut)
+            if self._fg_coalesce_payloads:
+                would_exceed_payloads = (len(self._fg_coalesce_payloads) + len(payloads)) > int(
+                    self._fg_coalesce_max_payloads
+                )
+                would_exceed_pairs = int(self._fg_coalesce_max_pairs) > 0 and int(self._fg_coalesce_pairs) + int(
+                    payload_pairs
+                ) > int(self._fg_coalesce_max_pairs)
+                would_exceed_work = int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0 and int(
+                    self._fg_coalesce_work
+                ) + int(payload_work) > int(self._fg_coalesce_max_work)
+                if would_exceed_payloads or would_exceed_pairs or would_exceed_work:
+                    batch = self._pop_fg_coalesce_locked()
+                    if batch is not None:
+                        batches_to_submit.append(batch)
             if self._fg_coalesce_first_ts is None:
                 self._fg_coalesce_first_ts = time.perf_counter()
             start = len(self._fg_coalesce_payloads)
             self._fg_coalesce_payloads.extend(payloads)
+            self._fg_coalesce_pairs += int(payload_pairs)
+            self._fg_coalesce_work += int(payload_work)
             self._fg_coalesce_slices.append((fut, int(start), int(len(payloads)), float(t_submit)))
             if (
                 int(len(self._fg_coalesce_payloads)) >= int(self._fg_coalesce_max_payloads)
                 or int(self._fg_coalesce_max_wait_ms) <= 0
+                or (
+                    int(self._fg_coalesce_max_pairs) > 0
+                    and int(self._fg_coalesce_pairs) >= int(self._fg_coalesce_max_pairs)
+                )
+                or (
+                    int(getattr(self, "_fg_coalesce_max_work", 0) or 0) > 0
+                    and int(self._fg_coalesce_work) >= int(self._fg_coalesce_max_work)
+                )
             ):
                 batch = self._pop_fg_coalesce_locked()
+                if batch is not None:
+                    batches_to_submit.append(batch)
             else:
                 self._fg_coalesce_event.set()
 
-        if batch is not None:
-            payloads_batch, slices_batch = batch
+        for payloads_batch, slices_batch in batches_to_submit:
             self._submit_fg_coalesced_batch(payloads_batch, slices_batch)
 
         return GpuJobHandle(request_id=request_id, future=fut)
@@ -562,6 +957,8 @@ class GpuServiceClient:
         slices = list(self._fg_coalesce_slices)
         self._fg_coalesce_payloads.clear()
         self._fg_coalesce_slices.clear()
+        self._fg_coalesce_pairs = 0
+        self._fg_coalesce_work = 0
         self._fg_coalesce_first_ts = None
         return payloads, slices
 
@@ -768,7 +1165,6 @@ class GpuServiceClient:
             return 240.0
         if request_type in {
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,

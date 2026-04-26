@@ -25,7 +25,6 @@ def test_fg_baseline_params_grid_matches_non_fever_sections(monkeypatch):
             "Difficulty": "Hard",
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
-            "HumanHitSimSeed": 0,
         },
         "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps},
     }
@@ -79,7 +78,6 @@ def test_fg_baseline_params_auto_defers_grid_for_small_lookup_count(monkeypatch)
             "Difficulty": "Hard",
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
-            "HumanHitSimSeed": 0,
         },
         "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps},
     }

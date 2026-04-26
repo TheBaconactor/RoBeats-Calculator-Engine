@@ -100,6 +100,7 @@ Stages are aggregated in:
 ## Safe FG Stage-1 tuning (no quality reduction)
 These knobs **do not change the search space or scoring math**; they only affect kernel launch sizing and banding:
 
+- Canonical policy implementation: `gear_optimizer/solver/gpu_tuning_policy.py`. Keep `genetic.py` and `force_greats/api.py` as thin callers so GA/FG tuning changes stay in one place.
 - `FG_SMALL_WORK_SINGLE_BAND=1` (default): when workloads are small, force a single Stage‑1 band to reduce launch overhead.
 - `FG_SMALL_WORK_MAX_WORK_ITEMS` (default `20000`): max `n_genomes * n_ftff` eligible for single‑band.
 - `FG_SMALL_WORK_MAX_CFG_LEN` (default `4096`): max cfg window length eligible for single‑band.
@@ -107,12 +108,40 @@ These knobs **do not change the search space or scoring math**; they only affect
 You can also sweep the existing knobs for throughput:
 - `FG_TARGET_THREADS_PER_KERNEL`: increases/decreases Stage‑1 `cfg_chunk` target (larger = fewer bands).
 
-## FG job coalescing (safe, queue overhead only)
-These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:
+## Repeatable occupancy sweeps
+Use the maintained sweep harness when you want archived apples-to-apples GA / FG knob comparisons:
+
+- GA example:
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-materialize-modes none,update_global,results --ga-genomes 705 --ga-iters 6 --ga-kernel-profiler`
+- FG example:
+  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode fg --fg-stage1-block-dims 64,128 --fg-target-threads 2000000,4000000,6000000 --fg-genomes 1024 --fg-ftff 128 --fg-tasks 16 --fg-kernel-profiler`
+
+Underlying benches also support machine-readable output directly:
+
+- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode update_global --kernel-profiler --json`
+- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode results_update_runs --kernel-profiler --json`
+- `python tools/bench/bench_fg_batch_throughput.py --mode direct --kernel-profiler --json`
+
+When `--kernel-profiler` is enabled, the bench JSON now includes per-kernel
+entries in `kernel_profiler_kernels` plus accounting fields
+`kernel_profiler_accounted_total_sec`, `kernel_profiler_unaccounted_total_sec`,
+and `kernel_profiler_accounted_pct`. Use those fields to distinguish
+"GPU time is genuinely concentrated in these kernels" from "we are still
+missing profiler attribution."
+
+For the live steady-state GA path, prefer `--materialize-mode results_update_runs`.
+That mode mirrors the shipped orchestration more closely by timing:
+
+- `ga_evaluate_population(..., materialize_mode="none")`
+- `ga_write_best_results_and_update_runs_best(...)`
+
+## FG job coalescing (safe, owner-quantum bounded)
+These knobs **do not change the search space or scoring math**; they only coalesce small FG batch requests in-process while preserving bounded owner turns:
 
 - `FG_COALESCE_BREAKPOINTS_BATCH=1` (default): enable coalescing of FG breakpoint+solve batches across jobs (in-process only).
-- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `128`): max payloads per coalesced request.
-- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `4`): max wait time before flushing a coalesced batch.
+- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `8`): max payloads per coalesced request.
+- `FG_COALESCE_BREAKPOINTS_MAX_PAIRS` (default follows `FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST`, capped at `4096`): max FT/FF pair work per coalesced request.
+- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `8`): max wait time before flushing a coalesced batch.
 
 ## In-flight GA+FG throughput architecture (integrated)
 

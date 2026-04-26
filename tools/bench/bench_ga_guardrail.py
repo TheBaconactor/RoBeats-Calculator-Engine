@@ -71,8 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--use-db", action="store_true")
     ap.add_argument("--fg-candidate-limit", type=int, default=0)
     ap.add_argument("--fg-search-radius", type=int, default=0)
-    ap.add_argument("--hitsim-enabled", action="store_true")
-    ap.add_argument("--hitsim-seed", type=int, default=0)
     ap.add_argument("--db-path", default="")
     ap.add_argument(
         "--candidate-out",
@@ -260,8 +258,6 @@ def _resolve_candidate_payload(args: argparse.Namespace, baseline: dict[str, Any
         use_db=bool(args.use_db or baseline.get("use_db") or False),
         fg_candidate_limit=int(args.fg_candidate_limit or baseline.get("fg_candidate_limit") or 51),
         fg_search_radius=int(args.fg_search_radius or baseline.get("fg_search_radius") or 5),
-        hitsim_enabled=bool(args.hitsim_enabled or baseline.get("hitsim_enabled") or False),
-        hitsim_seed=int(args.hitsim_seed or baseline.get("hitsim_seed") or 1),
         db_path=str(args.db_path or baseline.get("db_source_path") or ""),
     )
     candidate_path = Path(str(args.candidate_out))

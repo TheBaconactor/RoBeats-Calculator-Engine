@@ -252,10 +252,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 $out = '{str(csv_path).replace("'", "''")}'
 $dir = Split-Path -Parent $out
 if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
-$pids = @({pids_literal})
+$targetPids = @({pids_literal})
 $tokens = @()
-foreach ($pid in $pids) {{
-  if ([int]$pid -gt 0) {{ $tokens += ('pid_' + [int]$pid + '_') }}
+foreach ($targetPid in $targetPids) {{
+  if ([int]$targetPid -gt 0) {{ $tokens += ('pid_' + [int]$targetPid + '_') }}
 }}
 $sw = New-Object System.IO.StreamWriter($out, $false, [System.Text.Encoding]::UTF8)
 $sw.WriteLine('wall_ts,instance,util_pct')
@@ -2555,14 +2555,6 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
         "UseEvolutionDB": _cfg_get_bool(cfg, "IterationEngine", "UseEvolutionDB", True),
     }
-    human_hit_sim = {
-        "Enabled": _cfg_get_bool(cfg, "HumanHitSim", "Enabled", False),
-        "ApplyTo": _cfg_get_text(cfg, "HumanHitSim", "ApplyTo", "none"),
-        "Seed": _cfg_get_int(cfg, "HumanHitSim", "Seed", 0),
-        "Distribution": _cfg_get_text(cfg, "HumanHitSim", "Distribution", "normal"),
-        "GreatMode": _cfg_get_text(cfg, "HumanHitSim", "GreatMode", "none"),
-    }
-
     tracked_env = (
         "METAFINDER_CONFIG_PATH",
         "EVOLUTION_DB_PATH",
@@ -2596,7 +2588,6 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "config_loaded": bool(cfg_loaded),
         "config_error": str(cfg_error),
         "IterationEngine": iteration,
-        "HumanHitSim": human_hit_sim,
         "env_overrides": env_overrides,
     }
 

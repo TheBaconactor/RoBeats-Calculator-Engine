@@ -115,7 +115,7 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
     meta0, song_timestamps_np, song_note_types_np = cached
 
     calc_song = {
-        # NOTE: must not share metadata across runs; HumanHitSim mutates metadata in-place.
+        # NOTE: metadata is per-run because timing-envelope/FG prep mutates top-level tags.
         "metadata": copy.deepcopy(meta0) if isinstance(meta0, dict) else {},
         "song_data": {
             "timestamps": song_timestamps_np,
@@ -124,21 +124,11 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
         },
     }
 
-    # Optional: HumanHitSim (match song_processor.py semantics).
+    # Deterministic timing envelope (match song_processor.py semantics).
     try:
-        if cfg_dict is None:
-            from gear_optimizer.core.utils import cfg_to_dict
+        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-            cfg_dict = cfg_to_dict(cfg)
-        from gear_optimizer.solver.hit_simulation import apply_human_hit_sim, plan_human_hit_sim
-
-        # Plan deterministically (records seed/knobs), then:
-        # - Apply immediately when ApplyTo=ALL (affects GA/base scoring).
-        # - Defer when ApplyTo=FG (FG stage will apply later if needed).
-        plan_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
-        apply_to = str((calc_song.get("metadata") or {}).get("HumanHitSimApplyTo", "FG") or "").strip().upper()
-        if apply_to == "ALL":
-            apply_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
+        apply_timing_envelope(calc_song)
     except Exception:
         pass
 

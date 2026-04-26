@@ -367,50 +367,6 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     return safe_int(raw, -1)
 
 
-def read_fg_exact_dp_chunk_size(cfg: Any, *, default: int = 16) -> int:
-    """Read `[IterationEngine].FG_ExactDPChunkSize` with sane clamping."""
-
-    try:
-        default_i = int(default)
-    except Exception:
-        default_i = 16
-    default_i = max(1, min(default_i, 512))
-
-    try:
-        raw = str(cfg.get("IterationEngine", "FG_ExactDPChunkSize", fallback="") or "").strip()
-    except Exception as exc:
-        warn_fallback(
-            "config.fg_exact_dp_chunk_size.read",
-            "failed reading FG_ExactDPChunkSize; using default",
-            context={"default": default_i},
-            exc=exc,
-        )
-        raw = ""
-
-    if not raw:
-        raw_env = os.environ.get("FG_EXACT_DP_CHUNK_SIZE")
-        if raw_env is not None and str(raw_env).strip() != "":
-            raw = str(raw_env).strip()
-        else:
-            return int(default_i)
-    else:
-        raw_env = os.environ.get("FG_EXACT_DP_CHUNK_SIZE")
-        if raw_env is not None and str(raw_env).strip() != "":
-            raw = str(raw_env).strip()
-
-    try:
-        value = int(raw)
-    except Exception:
-        warn_fallback(
-            "config.fg_exact_dp_chunk_size.invalid",
-            "invalid FG_ExactDPChunkSize; using default",
-            context={"value": raw, "default": default_i},
-        )
-        return int(default_i)
-
-    return max(1, min(int(value), 512))
-
-
 def _canon_outer_search_engine(raw: Any) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     value = "_".join(part for part in value.split("_") if part)
@@ -498,7 +454,7 @@ def read_pre_prune_mode(cfg: Any, *, default: str = "none") -> str:
     return default_c
 
 
-def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
+def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
     """Read `[IterationEngine].FG_SolverMode` with legacy alias fallback."""
 
     def _canon(raw: Any) -> str:
@@ -511,12 +467,12 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
         if value in {"manual", "enumeration", "legacy"}:
             return "manual"
         if value in {"exact_dp", "dp", "exact"}:
-            return "exact_dp"
+            return "finder"
         if value in {"off", "disabled", "none"}:
             return "off"
         return value
 
-    default_c = _canon(default) or "exact_dp"
+    default_c = _canon(default) or "finder"
     try:
         raw = cfg.get("IterationEngine", "FG_SolverMode", fallback="")
     except Exception as exc:
@@ -528,7 +484,7 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "exact_dp") -> str:
         )
         raw = ""
     value = _canon(raw)
-    if value in {"finder", "manual", "exact_dp", "off"}:
+    if value in {"finder", "manual", "off"}:
         return value
     if value:
         warn_fallback(

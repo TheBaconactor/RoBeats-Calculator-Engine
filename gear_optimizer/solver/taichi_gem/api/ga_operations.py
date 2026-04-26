@@ -161,6 +161,15 @@ def _compute_array_sig(*arrays: np.ndarray) -> bytes:
     return h.digest()
 
 
+def _probability_to_u32_fp(value: float) -> np.uint32:
+    rate = float(value)
+    if rate <= 0.0:
+        return np.uint32(0)
+    if rate >= 1.0:
+        return np.uint32(0xFFFFFFFF)
+    return np.uint32(int(rate * 4294967295.0))
+
+
 # Cache state for item_stats + slot boundaries
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 
@@ -176,11 +185,15 @@ def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
     global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
+    global _GA_KERNELS_WARMED, _GA_KERNELS_LIGHT_WARMED, _GA_LIVE_REQUEST_WARMED
     _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
     _BASE_FIXED_STATS_CACHE = None
     _ISLAND_BOUNDARIES_CACHE = None
     _ISLAND_ELITES_CACHE = None
     _ISLAND_ELITES_UPLOAD_BUFFER = None
+    _GA_KERNELS_WARMED = False
+    _GA_KERNELS_LIGHT_WARMED = False
+    _GA_LIVE_REQUEST_WARMED = False
 
 
 def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
@@ -393,8 +406,8 @@ def ga_generate_initial_populations(
     seed_prob = float(seed_prob)
     seed_prob = max(0.0, min(1.0, seed_prob))
 
-    heuristic_prob_fp = np.uint32(int(heuristic_prob * 4294967295.0))
-    seed_prob_fp = np.uint32(int(seed_prob * 4294967295.0))
+    heuristic_prob_fp = _probability_to_u32_fp(heuristic_prob)
+    seed_prob_fp = _probability_to_u32_fp(seed_prob)
 
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
@@ -929,6 +942,211 @@ def ga_write_best_and_update_global(
     )
 
 
+def ga_write_best_results_from_key(
+    n_genomes: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    *,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    Materialize per-genome GA result rows from the already-evaluated chunk state.
+
+    This is the explicit "finalize full population now" companion to
+    `ga_evaluate_population(..., materialize_mode="none")`.
+    """
+    ensure_ready()
+    _ga_materialize_population_results(
+        n_genomes=int(n_genomes),
+        n_slots=int(n_slots),
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        song_slot=int(song_slot),
+        use_exact_inner_solver=bool(use_exact_inner_solver),
+        materialize_mode="results_only",
+    )
+
+
+def _validate_ga_runs_batch(
+    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
+) -> tuple[int, int, int, int]:
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return run_idx_start, n_runs, n_genomes_per_run, n_slots
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    return run_idx_start, n_runs, n_genomes_per_run, n_slots
+
+
+def ga_write_best_results_and_update_runs_best(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    FUSED: materialize per-genome GA results and refresh per-run best rows.
+
+    This is the packed multi-run companion to `ga_write_best_and_update_global()`.
+    Call it after `ga_evaluate_population(..., materialize_mode="none")` when the active
+    population packs multiple independent runs contiguously.
+    """
+    ensure_ready()
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+
+    kernels.ga_write_best_results_and_update_runs_best_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+    )
+
+
+def ga_refresh_scores_and_update_runs_best(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+) -> None:
+    """
+    Lightweight live-score refresh for packed multi-run GA execution.
+
+    This keeps `ga_scores` exact from the reduction state and updates each run's row 0 best
+    with exact materialization only when that run improves. It avoids the full-pop
+    `genome_result_stats` write pass that the final FG packing path no longer needs every
+    generation.
+    """
+    ensure_ready()
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+
+    kernels.ga_refresh_scores_and_update_runs_best_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+    )
+
+
 def ga_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
     """Upload fitness scores to GPU (fields.ga_scores). Returns n_genomes used."""
     ensure_ready()
@@ -985,13 +1203,7 @@ def ga_next_generation(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
 
     n_elites = 0
     if elite_count > 0:
@@ -1055,13 +1267,7 @@ def ga_next_generation_gpu_elites(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
 
     # Use fused kernel path (selection+crossover+mutation+elitism), then swap.
     kernels.ga_next_generation_full_kernel(
@@ -1119,21 +1325,8 @@ def ga_next_generation_fused(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
-
-    ir = float(immigrant_rate)
-    if ir <= 0.0:
-        ir_fp = np.uint32(0)
-    elif ir >= 1.0:
-        ir_fp = np.uint32(0xFFFFFFFF)
-    else:
-        ir_fp = np.uint32(int(ir * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
 
     # Precompute island elites once, then run fused next-gen using GPU-resident elite indices.
     elites_per_island_eff = max(1, int(elites_per_island))
@@ -1166,6 +1359,7 @@ def ga_next_generation_fused_runs(
     tournament_k: int = 3,
     n_islands: int = 1,
     elites_per_island: int = 1,
+    novelty_repair_attempts: int = 0,
 ) -> None:
     """
     FULLY FUSED next generation for multiple independent runs packed contiguously.
@@ -1191,26 +1385,14 @@ def ga_next_generation_fused_runs(
         elites_per_island = 0
     if tournament_k < 1:
         tournament_k = 1
+    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
 
     n_total = n_runs * n_genomes_per_run
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
 
-    mr = float(mutation_rate)
-    if mr <= 0.0:
-        mr_fp = np.uint32(0)
-    elif mr >= 1.0:
-        mr_fp = np.uint32(0xFFFFFFFF)
-    else:
-        mr_fp = np.uint32(int(mr * 4294967295.0))
-
-    ir = float(immigrant_rate)
-    if ir <= 0.0:
-        ir_fp = np.uint32(0)
-    elif ir >= 1.0:
-        ir_fp = np.uint32(0xFFFFFFFF)
-    else:
-        ir_fp = np.uint32(int(ir * 4294967295.0))
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
 
     kernels.ga_next_generation_full_runs_kernel(
         n_runs,
@@ -1221,8 +1403,100 @@ def ga_next_generation_fused_runs(
         tournament_k,
         mr_fp,
         ir_fp,
+        int(novelty_repair_attempts),
     )
     kernels.ga_swap_population_kernel(int(n_total), n_slots)
+
+
+def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int = 9,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
+    mutation_rate: float = 0.02,
+    immigrant_rate: float = 0.0,
+    tournament_k: int = 3,
+    n_islands: int = 1,
+    elites_per_island: int = 1,
+    novelty_repair_attempts: int = 0,
+) -> None:
+    """
+    Fused packed multi-run transition.
+
+    This is the non-final, non-migration companion to:
+    `ga_refresh_scores_and_update_runs_best()` followed by `ga_next_generation_fused_runs()`.
+    It preserves row-0 run best before mutating the population, then swaps the next generation in.
+    """
+    ensure_ready()
+    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_ga_runs_batch(
+        run_idx_start=run_idx_start,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+
+    n_islands = int(n_islands)
+    elites_per_island = int(elites_per_island)
+    tournament_k = int(tournament_k)
+    if n_islands < 1:
+        n_islands = 1
+    if elites_per_island < 0:
+        elites_per_island = 0
+    if tournament_k < 1:
+        tournament_k = 1
+    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
+
+    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+
+    kernels.ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
+        int(n_islands),
+        int(elites_per_island),
+        int(tournament_k),
+        mr_fp,
+        ir_fp,
+        int(novelty_repair_attempts),
+    )
+    kernels.ga_swap_population_kernel(int(n_runs) * int(n_genomes_per_run), int(n_slots))
 
 
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
@@ -1558,6 +1832,8 @@ def ga_pack_fg_candidates_table_segmented(
     n_runs: int,
     n_genomes_per_run: int,
     n_slots: int = 9,
+    total_budget: int,
+    gem_scale_fever: int,
     is_p_ft: int = 0,
     is_s_ft: int = 0,
     is_p_ff: int = 0,
@@ -1570,6 +1846,8 @@ def ga_pack_fg_candidates_table_segmented(
     is_s_fm: int = 0,
     is_p_ov: int = 0,
     is_s_ov: int = 0,
+    song_slot: int = 0,
+    use_exact_inner_solver: bool = True,
 ) -> None:
     """
     Pack a compact GA->FG candidate table for packed multi-run execution.
@@ -1601,6 +1879,8 @@ def ga_pack_fg_candidates_table_segmented(
         int(n_runs),
         int(n_genomes_per_run),
         int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
         int(is_p_ft),
         int(is_s_ft),
         int(is_p_ff),
@@ -1613,6 +1893,8 @@ def ga_pack_fg_candidates_table_segmented(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
+        int(song_slot),
+        int(bool(use_exact_inner_solver)),
     )
 
 
@@ -1904,6 +2186,136 @@ def ga_island_migration_runs(
 
 _GA_KERNELS_WARMED = False
 _GA_KERNELS_LIGHT_WARMED = False
+_GA_LIVE_REQUEST_WARMED = False
+
+
+def _warmup_ref_arrays() -> dict[str, np.ndarray]:
+    x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
+    return {
+        "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
+        "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
+        "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
+        "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
+        "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
+    }
+
+
+def _warmup_calc_song() -> dict:
+    timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
+    note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
+    return {
+        "metadata": {
+            "Song Name": "__ga_live_request_warmup__",
+            "Difficulty": "Warmup",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
+        },
+        "song_data": {
+            "timestamps": timestamps,
+            "chart_timestamps": timestamps,
+            "note_types": note_types,
+        },
+    }
+
+
+def warmup_ga_live_request_kernels() -> None:
+    """
+    Warm the kernels and upload paths used by the first real GPU-native GA request.
+
+    The full offline warmup historically covered GA evaluation, but not the live
+    `ensure_ready(refs) -> precompute_timeline_gpu() -> materialize_mode="none"
+    -> refresh row 0` path. Missing that path lets stale sentinels push timeline
+    and live-request JIT/load costs into the first real song, creating a visible
+    0%-utilization valley before the sustained workload begins.
+    """
+    global _GA_LIVE_REQUEST_WARMED
+    if _GA_LIVE_REQUEST_WARMED:
+        return
+
+    ensure_ready()
+
+    import taichi as ti
+
+    from .timeline import precompute_timeline_gpu
+
+    n_slots = 9
+    n_runs = 1
+    n_genomes = min(64, int(getattr(fields, "MAX_GA_RUN_GENOMES", 250) or 250), int(fields.MAX_GENOMES))
+    n_genomes = max(1, int(n_genomes))
+    total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
+    gem_scale_fever = 3
+    song_slot = 0
+
+    ref_arrays = _warmup_ref_arrays()
+    ensure_ready(ref_arrays)
+    precompute_timeline_gpu(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
+
+    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
+    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
+    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
+    ga_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
+    ga_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    ga_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
+
+    ga_generate_initial_populations(
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes=int(n_genomes),
+        n_slots=n_slots,
+        seed=12345,
+    )
+    ga_load_initial_population(run_idx=0, n_genomes=int(n_genomes), n_slots=n_slots)
+    ga_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=int(n_genomes), seed=12345)
+    ga_init_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
+    ga_init_global_best()
+
+    ga_evaluate_population(
+        int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        materialize_mode="none",
+    )
+    ga_refresh_scores_and_update_runs_best(
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    ga_next_generation_fused_runs(
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=1,
+        n_islands=1,
+        elites_per_island=1,
+    )
+    ga_pack_fg_candidates_table_segmented(
+        table_slot=song_slot,
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    _ = ga_download_fg_selected_payload(
+        table_slot=song_slot,
+        n_runs=n_runs,
+        limit=1,
+        top_base_keep=1,
+        base_budget=1,
+        fg_budget_end=1,
+    )
+    ti.sync()
+    _GA_LIVE_REQUEST_WARMED = True
 
 
 def warmup_ga_kernels() -> None:
@@ -2013,6 +2425,9 @@ def warmup_ga_kernels() -> None:
         n_runs=n_runs,
         n_genomes_per_run=n_genomes_per_run,
         n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
     )
     # limit=1 keeps the staging download small while still exercising the kernels.
     _ = ga_download_fg_selected_payload(
@@ -2024,6 +2439,7 @@ def warmup_ga_kernels() -> None:
         fg_budget_end=1,
     )
 
+    warmup_ga_live_request_kernels()
     _GA_KERNELS_WARMED = True
 
 
@@ -2095,6 +2511,11 @@ def warmup_ga_kernels_light() -> None:
         pass
 
     # Warm fused next-gen path (single-run).
+    try:
+        warmup_ga_live_request_kernels()
+    except Exception:
+        pass
+
     try:
         ga_next_generation_fused(
             n_genomes=int(n_genomes),

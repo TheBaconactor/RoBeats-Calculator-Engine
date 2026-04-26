@@ -62,6 +62,37 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
     assert isinstance(entry.get("force"), dict)
 
 
+def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
+    out = build_persistence_entries(
+        {
+            "score": 999,
+            "gear": ["TOP_GEAR"],
+            "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
+            "details": {"marker": "top1"},
+            "fg_score": 0,
+            "force": None,
+        },
+        [
+            {
+                "loadout_hash": "effective-ga-hash",
+                "BaseScore": 123,
+                "Gear": ["G1"],
+                "Minis": ["RepresentativeMini"],
+                "Data": {"marker": "ga"},
+            }
+        ],
+        loadout_entries=None,
+        build_details_fn=lambda data: {"marker": (data or {}).get("marker")},
+        calc_song=None,
+        ref_arrays=None,
+    )
+
+    matches = [entry for entry in out if entry.get("loadout_hash") == "effective-ga-hash"]
+    assert len(matches) == 1
+    assert int(matches[0].get("score", 0) or 0) == 123
+    assert (matches[0].get("details") or {}).get("marker") == "ga"
+
+
 def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monkeypatch):
     """
     Baseline persistence must store the replay-canonical score/details for the retained loadout.

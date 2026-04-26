@@ -302,6 +302,94 @@ def calc_score_cached_device(
 
 
 @ti.func
+def score_solution_from_gems_preloaded(
+    ft: ti.i32,
+    ff: ti.i32,
+    pp_gems: ti.i32,
+    cm_gems: ti.i32,
+    fm_gems: ti.i32,
+    ov_gems: ti.i32,
+    base_pp: ti.i32,
+    base_cm: ti.i32,
+    base_fm: ti.i32,
+    base_p_val: ti.i32,
+    base_s_val: ti.i32,
+    base_ft_stat: ti.i32,
+    base_ff_stat: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.i32:
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6
+    MAX_STAT: ti.i32 = 160
+
+    pp_stat: ti.i32 = ti.min(MAX_STAT, base_pp + (pp_gems * GEM_SCALE_NORMAL))
+    cm_stat: ti.i32 = ti.min(MAX_STAT, base_cm + (cm_gems * GEM_SCALE_NORMAL))
+    fm_stat: ti.i32 = ti.min(MAX_STAT, base_fm + (fm_gems * GEM_SCALE_FEVER))
+
+    p_val: ti.i32 = (
+        base_p_val
+        + (ft * GEM_STAT_TO_ELEMENT * is_p_ft)
+        + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        + (pp_gems * GEM_STAT_TO_ELEMENT * is_p_pp)
+        + (cm_gems * GEM_STAT_TO_ELEMENT * is_p_cm)
+        + (fm_gems * GEM_STAT_TO_ELEMENT * is_p_fm)
+        + (ov_gems * ELEMENTAL_GEM_SCALE * is_p_ov)
+    )
+    s_val: ti.i32 = (
+        base_s_val
+        + (ft * GEM_STAT_TO_ELEMENT * is_s_ft)
+        + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+        + (pp_gems * GEM_STAT_TO_ELEMENT * is_s_pp)
+        + (cm_gems * GEM_STAT_TO_ELEMENT * is_s_cm)
+        + (fm_gems * GEM_STAT_TO_ELEMENT * is_s_fm)
+        + (ov_gems * ELEMENTAL_GEM_SCALE * is_s_ov)
+    )
+
+    pp_factor = kernels_helpers.lookup_ref_pp(pp_stat)
+    combo_mul = kernels_helpers.lookup_ref_cm(cm_stat)
+    fever_mul = kernels_helpers.lookup_ref_fm(fm_stat)
+    base_value = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
+
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+
+    return calc_score_cached_device(
+        base_value,
+        combo_mul,
+        fever_mul,
+        head_len,
+        count_fever,
+        count_normal,
+        m0,
+        m1,
+        m2,
+        m3,
+    )
+
+
+@ti.func
 def _semi_exact_upper_bound(
     base_value: ti.f32,
     combo_mul: ti.f32,
@@ -1016,6 +1104,48 @@ def _optimize_core_device_impl(
 
 
 @ti.func
+def _head_mask_coefficients_bits(
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+) -> ti.types.vector(4, ti.i32):
+    n_hn = ti.i32(0)
+    n_hf = ti.i32(0)
+    sigma_hn = ti.i32(0)
+    sigma_hf = ti.i32(0)
+    head_len_c = ti.max(0, ti.min(head_len, 100))
+
+    for i in range(100):
+        if i < head_len_c:
+            word = ti.u32(0)
+            bit_idx = i
+            if i < 32:
+                word = m0
+            elif i < 64:
+                word = m1
+                bit_idx = i - 32
+            elif i < 96:
+                word = m2
+                bit_idx = i - 64
+            else:
+                word = m3
+                bit_idx = i - 96
+
+            is_fever = ti.cast((word >> ti.u32(bit_idx)) & ti.u32(1), ti.i32)
+            pos = i + 1
+            if is_fever != 0:
+                n_hf += 1
+                sigma_hf += pos
+            else:
+                n_hn += 1
+                sigma_hn += pos
+
+    return ti.Vector([n_hn, n_hf, sigma_hn, sigma_hf])
+
+
+@ti.func
 def _optimize_core_device_exact_bound_preloaded_bits_impl(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -1107,10 +1237,21 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     if max_fm_gems > budget:
         max_fm_gems = budget
 
-    n_hn: ti.i32 = kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx]
-    n_hf: ti.i32 = kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx]
-    sigma_hn: ti.i32 = kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx]
-    sigma_hf: ti.i32 = kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx]
+    n_hn: ti.i32 = 0
+    n_hf: ti.i32 = 0
+    sigma_hn: ti.i32 = 0
+    sigma_hf: ti.i32 = 0
+    if song_slot >= 0:
+        n_hn = kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx]
+        n_hf = kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx]
+        sigma_hn = kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx]
+        sigma_hf = kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx]
+    else:
+        coeffs = _head_mask_coefficients_bits(m0, m1, m2, m3, head_len)
+        n_hn = coeffs[0]
+        n_hf = coeffs[1]
+        sigma_hn = coeffs[2]
+        sigma_hf = coeffs[3]
 
     # ---------------------------------------------------------------------
     # Incumbent seed (no hints): cheap UB-guided greedy over (CM, FM) counts.
@@ -1535,36 +1676,84 @@ def optimize_core_device_exact_bound(
     ft_idx: ti.i32,
     ff_idx: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
-    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-    return _optimize_core_device_exact_bound_preloaded_bits_impl(
-        budget,
-        cur_pp,
-        cur_cm,
-        cur_fm,
-        cur_p_val,
-        cur_s_val,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        m0,
-        m1,
-        m2,
-        m3,
-        head_len,
-        count_fever,
-        count_normal,
-        song_slot,
-        ft_idx,
-        ff_idx,
-    )
+    frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx], ti.i32)
+    result_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
+    if frontier_count > 1:
+        variant_idx = ti.i32(0)
+        while variant_idx < frontier_count and variant_idx < 4:
+            vm0 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 0]
+            vm1 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 1]
+            vm2 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 2]
+            vm3 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 3]
+            v_body_fever = ti.cast(
+                kernels_helpers.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, variant_idx],
+                ti.i32,
+            )
+            v_body_normal = ti.cast(
+                kernels_helpers.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, variant_idx],
+                ti.i32,
+            )
+            cand_vec = _optimize_core_device_exact_bound_preloaded_bits_impl(
+                budget,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                cur_p_val,
+                cur_s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                vm0,
+                vm1,
+                vm2,
+                vm3,
+                head_len,
+                v_body_fever,
+                v_body_normal,
+                -1,
+                0,
+                0,
+            )
+            if cand_vec[0] > result_vec[0]:
+                result_vec = cand_vec
+            variant_idx += 1
+    else:
+        m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+        m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+        m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+        m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+        result_vec = _optimize_core_device_exact_bound_preloaded_bits_impl(
+            budget,
+            cur_pp,
+            cur_cm,
+            cur_fm,
+            cur_p_val,
+            cur_s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            m0,
+            m1,
+            m2,
+            m3,
+            head_len,
+            count_fever,
+            count_normal,
+            song_slot,
+            ft_idx,
+            ff_idx,
+        )
+    return result_vec
 
 
 @ti.func
@@ -1617,6 +1806,58 @@ def optimize_core_device_preloaded_bits(
         m2,
         m3,
         1,
+    )
+
+
+@ti.func
+def optimize_core_device_exact_bound_preloaded_bits(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    return _optimize_core_device_exact_bound_preloaded_bits_impl(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+        -1,
+        0,
+        0,
     )
 
 

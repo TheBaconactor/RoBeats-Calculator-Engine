@@ -13,7 +13,6 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 ## Current Reference
 
 - [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md) - repo-wide engineering doctrine, harness layout, and root-cause fix policy.
-- [MCP_HARNESS_CHARTER.md](MCP_HARNESS_CHARTER.md) - repo-local MCP engineering-harness goals, 1-2 call target, and self-maintenance contract.
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system overview and package boundaries.
 - [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) - SQLite schema and persistence layout.
 - [FEVER_TIMELINE_MATH.md](FEVER_TIMELINE_MATH.md) - fever timeline and scoring math.
@@ -31,12 +30,11 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [MAINTENANCE_PLAYBOOK.md](MAINTENANCE_PLAYBOOK.md) - runtime and GPU maintenance checklist.
 - [INFLIGHT_GA_FG_THROUGHPUT.md](INFLIGHT_GA_FG_THROUGHPUT.md) - throughput protocol for GA + FG work.
 - [GPU_RESIDENT_GA_FG_PLAN.md](GPU_RESIDENT_GA_FG_PLAN.md) - same-slot GPU-resident GA to FG handoff plan.
-- [STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md](STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md) - proposal to replace repeated GA restarts with steady-state search plus exact duplicate-eval reuse.
+- [STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md](STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md) - historical proposal; production GA now uses packed independent-start hybrid scheduling.
 - [PHD_PERFORMANCE_HOMEWORK.md](PHD_PERFORMANCE_HOMEWORK.md) - standalone PhD-level homework focused on multiplicative throughput speedups via scientific/mathematical reductions.
 - [TAICHI_PORT_ROADMAP.md](TAICHI_PORT_ROADMAP.md) - Taichi/Vulkan roadmap and constraints.
 - [OPTIMIZATION_ANALYSIS.md](OPTIMIZATION_ANALYSIS.md) - optimization findings and tradeoffs.
-- [ANALYTICAL_HITSIM_PROBLEM.md](ANALYTICAL_HITSIM_PROBLEM.md) - problem statement for one-shot analytical HitSim (fever timing depends on hit timing).
-- [ANALYTICAL_HITSIM_SOLUTION.md](ANALYTICAL_HITSIM_SOLUTION.md) - proposed deterministic DP/expected-value methods and GPU integration notes.
+- [ANALYTICAL_TIMING_ENVELOPE_CEILING_GPU_TIMELINE.md](Implementation%20Records/ANALYTICAL_TIMING_ENVELOPE_CEILING_GPU_TIMELINE.md) - current deterministic timing-envelope ceiling and GPU integration notes.
 - [REFACTORING_VALIDATION.md](REFACTORING_VALIDATION.md) - refactor validation notes and historical context.
 - [DUPLICATION_REDUCTION.md](DUPLICATION_REDUCTION.md) - duplication cleanup map.
 

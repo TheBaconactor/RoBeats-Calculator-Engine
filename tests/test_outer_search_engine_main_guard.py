@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.core.config import read_outer_search_engine
+from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine
 from gear_optimizer.core.utils import cfg_from_dict
 
 
@@ -83,8 +83,6 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
             False,
         ),
     )
-    monkeypatch.setattr("gear_optimizer.solver.hit_simulation.apply_human_hit_sim", lambda *args, **kwargs: None)
-
     def _fake_prepare_solver_context(*args, **kwargs):
         prepared["pre_prune_mode"] = kwargs.get("pre_prune_mode")
         return SimpleNamespace(registry=None)
@@ -97,6 +95,12 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
 def test_read_outer_search_engine_forces_ga_on_main(requested_mode):
     cfg = cfg_from_dict(_common_cfg(OuterSearchEngine=requested_mode))
     assert read_outer_search_engine(cfg, default="ga") == "ga"
+
+
+@pytest.mark.parametrize("legacy_mode", ["exact_dp", "dp", "exact"])
+def test_read_fg_solver_mode_maps_exact_dp_to_finder(legacy_mode):
+    cfg = cfg_from_dict(_common_cfg(FG_SolverMode=legacy_mode))
+    assert read_fg_solver_mode(cfg, default="finder") == "finder"
 
 
 def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkeypatch):
@@ -121,11 +125,11 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
     assert (result.get("best_data") or {}).get("BaseScore") == 123
 
 
-def test_process_song_task_keeps_fg_exact_dp_with_ga_outer(monkeypatch):
+def test_process_song_task_treats_exact_dp_mode_as_finder_alias(monkeypatch):
     from gear_optimizer.pipeline import song_processor
 
     _patch_common(monkeypatch, song_processor)
-    calls = {"ga": 0, "fg_exact": 0}
+    calls = {"ga": 0}
 
     def _fake_ga(*args, **kwargs):
         calls["ga"] += 1
@@ -140,22 +144,11 @@ def test_process_song_task_keeps_fg_exact_dp_with_ga_outer(monkeypatch):
             [{"Score": 789, "BaseScore": 789, "Gear": [], "Minis": [], "Data": {"Stats": {}}}],
         )
 
-    def _fake_fg_exact(*args, **kwargs):
-        calls["fg_exact"] += 1
-        assert kwargs.get("use_gpu") is True
-        assert kwargs.get("song_slot") == 0
-        assert kwargs.get("loadout_entries") is None
-        assert kwargs.get("force_greats_finder") is False
-        assert kwargs.get("build_details_fn") is None
-        return []
-
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
-    monkeypatch.setattr("gear_optimizer.solver.fg_exact_dp_pipeline.process_fg_exact_dp", _fake_fg_exact)
 
     cfg = _common_cfg(OuterSearchEngine="ga", FG_SolverMode="exact_dp")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest ga exact-fg routing"))
 
     assert calls["ga"] == 1
-    assert calls["fg_exact"] == 1
     assert result.get("_deferred_post") is True
     assert (result.get("best_data") or {}).get("BaseScore") == 789

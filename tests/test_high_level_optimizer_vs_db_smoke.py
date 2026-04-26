@@ -273,8 +273,6 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch, tmp_path):
 
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
-    cfg_dict.setdefault("HumanHitSim", {})["Enabled"] = "false"
-    cfg_dict.setdefault("HumanHitSim", {})["enabled"] = "false"
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedProbability"] = "1.0"
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedMutations"] = "0"
     cfg_dict.setdefault("IterationEngine", {})["GA_MultiStart"] = "1"

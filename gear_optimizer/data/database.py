@@ -354,6 +354,13 @@ _STATS_PACK_KEYS: tuple[str, ...] = (
     "Vibe",
 )
 
+_GEM_PACK_KEYS: tuple[str, ...] = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Element",
+)
+
 
 def _pack_stats_for_storage(details: Any) -> Any:
     """
@@ -364,21 +371,54 @@ def _pack_stats_for_storage(details: Any) -> Any:
     """
     if not isinstance(details, dict) or not details:
         return details
-    if details.get("st") is not None:
-        # Already packed.
-        return details
-    stats = details.get("Stats")
-    if not isinstance(stats, dict) or not stats:
-        return details
-    arr: list[int] = []
-    for k in _STATS_PACK_KEYS:
-        try:
-            arr.append(int(stats.get(k, 0) or 0))
-        except Exception:
-            arr.append(0)
     out = dict(details)
-    out.pop("Stats", None)
-    out["st"] = arr
+    stats = details.get("Stats")
+    if isinstance(stats, dict) and stats and out.get("st") is None:
+        arr: list[int] = []
+        for k in _STATS_PACK_KEYS:
+            try:
+                arr.append(int(stats.get(k, 0) or 0))
+            except Exception:
+                arr.append(0)
+        out.pop("Stats", None)
+        out["st"] = arr
+
+    gems = details.get("GemCounts")
+    if isinstance(gems, dict) and gems and out.get("gc") is None:
+        packed_gems: list[int] = []
+        gem_key_mask = 0
+        for i, k in enumerate(_GEM_PACK_KEYS):
+            if k in gems:
+                gem_key_mask |= 1 << i
+            try:
+                packed_gems.append(int(gems.get(k, 0) or 0))
+            except Exception:
+                packed_gems.append(0)
+        out.pop("GemCounts", None)
+        out["gc"] = packed_gems
+        if gem_key_mask != (1 << len(_GEM_PACK_KEYS)) - 1:
+            out["gk"] = int(gem_key_mask)
+
+    selected = out.pop("Selected Element", None)
+    selected = out.pop("SelectedElement", selected)
+    if selected:
+        out["se"] = str(selected)
+
+    primary = out.pop("Primary Color", None)
+    primary = out.pop("PrimaryColor", primary)
+    if primary:
+        out["pc"] = str(primary)
+
+    secondary = out.pop("Secondary Color", None)
+    secondary = out.pop("SecondaryColor", secondary)
+    if secondary:
+        out["sc"] = str(secondary)
+
+    if not out.get("ForceGreats"):
+        out.pop("ForceGreats", None)
+    out.pop("attempt_lifetime", None)
+    out.pop("attempts_first", None)
+    out.pop("Difficulty", None)
     return out
 
 
@@ -386,52 +426,48 @@ def _unpack_stats_after_load(details: Any) -> Any:
     """Inverse of `_pack_stats_for_storage` (best-effort)."""
     if not isinstance(details, dict) or not details:
         return details
-    stats = details.get("Stats")
-    if isinstance(stats, dict) and stats:
-        return details
-    st = details.get("st")
-    if not isinstance(st, (list, tuple)) or not st:
-        return details
-    if len(st) < len(_STATS_PACK_KEYS):
-        return details
-    out_stats: dict[str, int] = {}
-    for i, k in enumerate(_STATS_PACK_KEYS):
-        try:
-            out_stats[k] = int(st[i] or 0)
-        except Exception:
-            out_stats[k] = 0
     out = dict(details)
-    out["Stats"] = out_stats
+    stats = details.get("Stats")
+    st = details.get("st")
+    if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(_STATS_PACK_KEYS):
+        out_stats: dict[str, int] = {}
+        for i, k in enumerate(_STATS_PACK_KEYS):
+            try:
+                out_stats[k] = int(st[i] or 0)
+            except Exception:
+                out_stats[k] = 0
+        out["Stats"] = out_stats
+
+    gems = details.get("GemCounts")
+    gc = details.get("gc")
+    if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(_GEM_PACK_KEYS):
+        try:
+            gem_key_mask = int(details.get("gk", (1 << len(_GEM_PACK_KEYS)) - 1) or 0)
+        except Exception:
+            gem_key_mask = (1 << len(_GEM_PACK_KEYS)) - 1
+        out_gems: dict[str, int] = {}
+        for i, k in enumerate(_GEM_PACK_KEYS):
+            if (gem_key_mask & (1 << i)) == 0:
+                continue
+            try:
+                out_gems[k] = int(gc[i] or 0)
+            except Exception:
+                out_gems[k] = 0
+        out["GemCounts"] = out_gems
+
+    if "SelectedElement" not in out and "Selected Element" not in out and out.get("se"):
+        out["SelectedElement"] = str(out.get("se") or "")
+    if "PrimaryColor" not in out and "Primary Color" not in out and out.get("pc"):
+        out["PrimaryColor"] = str(out.get("pc") or "")
+    if "SecondaryColor" not in out and "Secondary Color" not in out and out.get("sc"):
+        out["SecondaryColor"] = str(out.get("sc") or "")
+
     return out
 
 
 def _strip_computed_details_fields(details: Any) -> Any:
-    """
-    Remove large derived fields that can be recomputed on demand.
-
-    Currently:
-    - `hitsim_offset_deltas_ms` (per-window deltas) is computed on demand via DB manager,
-      and must not be persisted to keep the DB small.
-    """
-    if not isinstance(details, dict) or not details:
-        return details
-    if (
-        details.get("hitsim_offset_deltas_ms") is None
-        and "hitsim_offset_delta_ms" not in details
-        and not isinstance(details.get("ForceGreats"), dict)
-    ):
-        return details
-
-    out = dict(details)
-    out.pop("hitsim_offset_delta_ms", None)
-    out.pop("hitsim_offset_deltas_ms", None)
-    fg0 = out.get("ForceGreats")
-    if isinstance(fg0, dict):
-        fg1 = dict(fg0)
-        fg1.pop("hitsim_offset_delta_ms", None)
-        fg1.pop("hitsim_offset_deltas_ms", None)
-        out["ForceGreats"] = fg1
-    return out
+    """Return details without large recomputable payloads."""
+    return details
 
 
 def get_evolution_db_path() -> str:
@@ -722,7 +758,6 @@ def init_db():
       - encoding tables: `gear_name_encoding`, `mini_name_encoding`
       - BLOB columns: `gear_ids_blob`, `minis_ids_blob`
     - `details_json` stores packed Stats as `st` (fixed-order int list) instead of verbose `Stats` keys.
-    - Large derived fields (e.g. `hitsim_offset_deltas_ms`) are not persisted.
     """
 
     db_path = get_evolution_db_path()
@@ -1139,8 +1174,7 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
     if not isinstance(details, dict):
         return {}
 
-    # Keep persisted payload compact: do not persist derived HitSim delta fields.
-    out = _strip_computed_details_fields(details)
+    out = dict(details)
 
     if force_data is None or int(fg_score or 0) <= 0:
         return out
@@ -1268,6 +1302,36 @@ def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: i
             )
             if isinstance(computed, dict) and computed:
                 out["Stats"] = computed
+        except Exception:
+            pass
+
+    return out
+
+
+def _compact_force_details_for_storage(force_data: Any) -> Any:
+    """
+    Return the raw FG payload without fields already persisted in FG details.
+
+    `force_details_json` must keep the replay surface: BaseStats, GemCounts,
+    FT/FF, selected element, ForceGreats config, and score. A materialized final
+    `Stats` copy is redundant when BaseStats + gems are present, because tier
+    replay and UI details can reconstruct or read the packed FG `details_json`.
+    """
+    if not isinstance(force_data, dict) or not force_data:
+        return force_data
+
+    out = dict(force_data)
+    if (
+        isinstance(out.get("Stats"), dict)
+        and isinstance(out.get("BaseStats"), dict)
+        and isinstance(out.get("GemCounts"), dict)
+    ):
+        out.pop("Stats", None)
+
+    if "Score" in out and "score" in out:
+        try:
+            if int(out.get("Score") or 0) == int(out.get("score") or 0):
+                out.pop("score", None)
         except Exception:
             pass
 
@@ -1495,32 +1559,6 @@ def save_team_buff_loadouts_batch(
             return force_data
 
         out = dict(force_data)
-        fg0 = out.get("ForceGreats")
-        if isinstance(fg0, dict) and ("hitsim_offset_delta_ms" in fg0 or "hitsim_offset_deltas_ms" in fg0):
-            fg1 = dict(fg0)
-            fg1.pop("hitsim_offset_delta_ms", None)
-            fg1.pop("hitsim_offset_deltas_ms", None)
-            out["ForceGreats"] = fg1
-
-        det0 = out.get("details")
-        if isinstance(det0, dict):
-            det_out = det0
-            if "hitsim_offset_delta_ms" in det_out or "hitsim_offset_deltas_ms" in det_out:
-                det_out = dict(det_out)
-                det_out.pop("hitsim_offset_delta_ms", None)
-                det_out.pop("hitsim_offset_deltas_ms", None)
-            nested_fg0 = det_out.get("ForceGreats")
-            if isinstance(nested_fg0, dict) and (
-                "hitsim_offset_delta_ms" in nested_fg0 or "hitsim_offset_deltas_ms" in nested_fg0
-            ):
-                nested_fg1 = dict(nested_fg0)
-                nested_fg1.pop("hitsim_offset_delta_ms", None)
-                nested_fg1.pop("hitsim_offset_deltas_ms", None)
-                if det_out is det0:
-                    det_out = dict(det_out)
-                det_out["ForceGreats"] = nested_fg1
-            if det_out is not det0:
-                out["details"] = det_out
 
         score_v = _coerce_int(out.get("score", 0))
         if score_v <= 0:
@@ -1602,6 +1640,7 @@ def save_team_buff_loadouts_batch(
             for row in rows:
                 try:
                     details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
+                    details_row = _unpack_stats_after_load(details_row)
                 except Exception:
                     continue
                 p_color, s_color, sel_color = extract_song_colors(details_row)
@@ -1990,7 +2029,8 @@ def save_team_buff_loadouts_batch(
             # Compact storage: names are persisted via encoding tables + BLOB IDs.
             details_storage = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else None
             details_json = _json_dumps_compact(details_storage) if details_storage else None
-            force_json = _json_dumps_compact(force_data) if force_data else None
+            force_storage = _compact_force_details_for_storage(force_data)
+            force_json = _json_dumps_compact(force_storage) if force_storage else None
 
             loadouts_params.append(
                 (
@@ -2002,7 +2042,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob,
                     minis_ids_blob,
                     details_json,
-                    force_json,
+                    None,
                 )
             )
             if bool(entry.get("_deferred_fg_update")):
@@ -2081,12 +2121,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob = CASE WHEN excluded.score >= score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
                     minis_ids_blob = CASE WHEN excluded.score >= score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        ELSE force_details_json
-                    END,
+                    force_details_json = NULL,
                     timestamp = strftime('%s', 'now')
             """,
                 loadouts_params,
@@ -2108,12 +2143,7 @@ def save_team_buff_loadouts_batch(
                     gear_ids_blob = CASE WHEN gear_ids_blob IS NULL THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
                     minis_ids_blob = CASE WHEN minis_ids_blob IS NULL THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
                     details_json = CASE WHEN details_json IS NULL THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        ELSE force_details_json
-                    END,
+                    force_details_json = NULL,
                     timestamp = strftime('%s', 'now')
             """,
                 deferred_fg_loadouts_params,
@@ -2177,6 +2207,23 @@ def save_team_buff_loadouts_batch(
             (song_name, team_buff),
         )
         _log_timing("delete_team_buff_fg_invariant", time.perf_counter() - _t_inv0)
+
+        # Base coverage rows own score/loadout identity only. The replayable FG
+        # payload belongs in team_buff_fg_loadouts; duplicating it across every
+        # retained base row makes the repaired 51-row frontier scale like a
+        # queue dump instead of a compact seed frontier.
+        _t_clear0 = time.perf_counter()
+        conn.execute(
+            """
+            UPDATE team_buff_loadouts
+            SET force_details_json = NULL
+            WHERE song_name = ?
+            AND team_buff = ?
+            AND force_details_json IS NOT NULL
+            """,
+            (song_name, team_buff),
+        )
+        _log_timing("clear_base_force_details", time.perf_counter() - _t_clear0)
 
         # Prune BOTH tables to `LOADOUTS_PER_SONG_LIMIT` for this (song, team_buff).
         for table in ["team_buff_loadouts", "team_buff_fg_loadouts"]:

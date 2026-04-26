@@ -43,7 +43,6 @@ from ..core.constants import (
 
 from ..core.config import (
     read_fg_candidate_limit,
-    read_fg_exact_dp_chunk_size,
     read_fg_search_radius,
     read_fg_solver_mode,
     read_outer_search_engine,
@@ -196,13 +195,13 @@ class _NullLogBuffer:
 
 
 # ---------------------------------------------------------------------------
-# Base calc_song cache (pre-HumanHitSim), keyed by file path + config hash.
+# Base calc_song cache (pre-timing-envelope mutation), keyed by file path + config hash.
 #
 # Motivation:
 # - When the same song is processed multiple times (SongRepeats / repeated queue),
 #   we were fully parsing the file + building arrays on every run.
-# - HumanHitSim.Seed=0 requires re-applying the sim each repeat (unique seed),
-#   so we cache the *base* calc_song and clone it per run before applying HitSim.
+# - Timing-envelope FG streams are attached per run, so we cache the base
+#   calc_song and clone it before adding runtime analysis payloads.
 # ---------------------------------------------------------------------------
 _CFG_HASH_CACHE: dict[int, tuple[int, str]] = {}
 _CFG_HASH_CACHE_LOCK = threading.Lock()
@@ -295,7 +294,7 @@ def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
     Get cached base calc_song for this file/config pair.
 
     The returned object is shared; callers must clone via clone_calc_song()
-    before applying HumanHitSim or any other per-run mutation.
+    before applying timing-envelope streams or any other per-run mutation.
     """
     if not fp:
         return {}
@@ -491,120 +490,6 @@ def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
     return tuple(int(v) for v in out)
 
 
-def _materialize_fg_stats_if_missing(fg_data: dict) -> dict:
-    if not isinstance(fg_data, dict):
-        return {}
-    try:
-        from ..helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
-    except Exception:
-        return {}
-    stats = materialize_stats_from_payload(fg_data, mutate_payload=True)
-    return stats if isinstance(stats, dict) else {}
-
-
-def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict], ref_arrays: dict) -> None:
-    """
-    Populate `ForceGreats.hitsim_offset_deltas_ms` for all improved FG variants.
-
-    This keeps persisted T5 FG rows consistent with tier-postprocessed rows and frontend
-    leaderboard expectations.
-    """
-    if not fg_variants:
-        return
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-        return
-
-    try:
-        from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_fg_variant
-    except Exception:
-        return
-
-    delta_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
-    for variant in fg_variants:
-        if not isinstance(variant, dict):
-            continue
-
-        try:
-            fg_score = int(variant.get("fg_score", 0) or 0)
-        except Exception:
-            fg_score = 0
-        try:
-            base_score = int(variant.get("score", 0) or 0)
-        except Exception:
-            base_score = 0
-        if fg_score <= base_score:
-            continue
-
-        fg_data = variant.get("data") or {}
-        if not isinstance(fg_data, dict):
-            continue
-        fg_meta = fg_data.get("ForceGreats") or {}
-        if not isinstance(fg_meta, dict):
-            continue
-
-        existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")
-        if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
-            if "hitsim_offset_delta_ms" in fg_meta:
-                fg_meta_out = dict(fg_meta)
-                fg_meta_out.pop("hitsim_offset_delta_ms", None)
-                fg_data["ForceGreats"] = fg_meta_out
-            continue
-
-        stats = fg_data.get("Stats") or {}
-        if not isinstance(stats, dict) or not stats:
-            stats = _materialize_fg_stats_if_missing(fg_data)
-        if not isinstance(stats, dict) or not stats:
-            continue
-        counts = _nonfever_counts_from_config(fg_meta.get("config") or {})
-        if not counts:
-            continue
-        try:
-            ff_stat = int(stats.get("Fever Fill Rate", 0) or 0)
-        except Exception:
-            ff_stat = 0
-        try:
-            ft_stat = int(stats.get("Fever Time", 0) or 0)
-        except Exception:
-            ft_stat = 0
-        cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in counts))
-
-        deltas_t = delta_cache.get(cache_key)
-        if deltas_t is None:
-            try:
-                computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
-            except Exception:
-                computed = None
-            if not computed:
-                continue
-            try:
-                deltas_t = tuple(int(x) for x in computed)
-            except Exception:
-                deltas_t = None
-            if not deltas_t:
-                continue
-            delta_cache[cache_key] = deltas_t
-
-        fg_meta_out = dict(fg_meta)
-        if fg_meta_out.get("hitsim_offset_deltas_ms") is None:
-            fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-        fg_meta_out.pop("hitsim_offset_delta_ms", None)
-        fg_data["ForceGreats"] = fg_meta_out
-
-        details_obj = fg_data.get("details")
-        if isinstance(details_obj, dict):
-            fg_det = details_obj.get("ForceGreats")
-            if isinstance(fg_det, dict) and (
-                fg_det.get("hitsim_offset_deltas_ms") is None
-            ):
-                fg_det_out = dict(fg_det)
-                if fg_det_out.get("hitsim_offset_deltas_ms") is None:
-                    fg_det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
-                fg_det_out.pop("hitsim_offset_delta_ms", None)
-                details_out = dict(details_obj)
-                details_out["ForceGreats"] = fg_det_out
-                fg_data["details"] = details_out
-
-
 def read_song_file(fp):
     """
     Read complete song file including metadata and note timestamps.
@@ -728,18 +613,16 @@ def _setup_song_context(
         pass
 
     try:
-        from ..solver.hit_simulation import apply_human_hit_sim
+        from ..solver.timing_envelope import apply_timing_envelope
 
         t_sim0 = time.perf_counter()
-        sim_info = apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+        sim_info = apply_timing_envelope(calc_song)
         if sim_info is not None:
-            stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - t_sim0
+            stage_timing["cpu_timing_envelope_sec"] = time.perf_counter() - t_sim0
             try:
-                sim_dbg = sim_info.get("debug") or {}
                 print(
-                    f"[HumanHitSim] Enabled (ApplyTo={sim_info.get('apply_to')}, dist={sim_info.get('distribution')}, "
-                    f"seed={sim_info.get('seed')}, groups={sim_dbg.get('groups')}, "
-                    f"forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                    f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
+                    f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
                 )
             except Exception:
                 pass
@@ -1003,7 +886,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
         default=FG_CANDIDATE_LIMIT,
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
-    if ctx.manual_force_greats or ctx.force_greats_finder or ctx.fg_solver_mode == "exact_dp":
+    if ctx.manual_force_greats or ctx.force_greats_finder:
         ga_candidates = select_fg_candidates(
             ga_candidates,
             limit=fg_candidate_limit,
@@ -1017,7 +900,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
     fg_wall_sec = 0.0
     direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
 
-    if ctx.fg_solver_mode in {"exact_dp", "finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
+    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
         loadout_entries = build_loadout_entries(
             ctx.found_song_name,
             ctx.use_evo_db,
@@ -1030,32 +913,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             materialize_ga_details=False,
         )
 
-    if ctx.fg_solver_mode == "exact_dp":
-        from gear_optimizer.solver.fg_exact_dp_pipeline import process_fg_exact_dp
-
-        fg_start = time.perf_counter()
-        fg_variants = process_fg_exact_dp(
-            ga_candidates,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            use_gpu=ctx.gpu_mode,
-            gpu_client=None,
-            song_slot=int(ctx.gpu_song_slot or 0),
-            loadout_entries=loadout_entries if isinstance(loadout_entries, dict) else None,
-            manual_force_greats=ctx.manual_force_greats,
-            force_greats_finder=ctx.force_greats_finder,
-            force_greats_config=ctx.force_greats_config,
-            meta_primary_color=ctx.meta_primary_color,
-            build_details_fn=build_details if (ctx.manual_force_greats or ctx.force_greats_finder) else None,
-            fg_search_radius=ctx.fg_search_radius,
-            finder_ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
-            ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
-            exact_dp_chunk_size=read_fg_exact_dp_chunk_size(ctx.cfg),
-        )
-        fg_wall_sec = time.perf_counter() - fg_start
-        if PERF_TIMING_ENABLED:
-            print(f"[PERF] ForceGreats (exact DP): {fg_wall_sec:.2f}s ({len(ga_candidates)} candidates)")
-    elif ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
+    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
         fg_start = time.perf_counter()
         fg_variants = process_force_greats(
             loadout_entries,
@@ -1076,11 +934,6 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
         if PERF_TIMING_ENABLED:
             n_loadouts = len(loadout_entries) if loadout_entries else 0
             print(f"[PERF] ForceGreats: {fg_wall_sec:.2f}s ({n_loadouts} loadouts, finder={ctx.force_greats_finder})")
-
-    try:
-        _attach_hitsim_delta_for_fg_variants(ctx.calc_song, fg_variants, ctx.ref_arrays)
-    except Exception:
-        pass
 
     outer.ga_candidates = ga_candidates
     return FGResult(fg_variants=fg_variants, loadout_entries=loadout_entries, wall_sec=float(fg_wall_sec))
@@ -1234,20 +1087,6 @@ def _build_and_persist(
         )
 
     if outer.best_data:
-        try:
-            from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
-
-            if outer.best_data.get("hitsim_offset_deltas_ms") is None:
-                deltas = summarize_hitsim_offset_deltas_ms_for_base(ctx.calc_song, outer.best_data, ctx.ref_arrays)
-                if deltas:
-                    try:
-                        outer.best_data["hitsim_offset_deltas_ms"] = [int(item) for item in deltas]
-                    except Exception:
-                        pass
-            outer.best_data.pop("hitsim_offset_delta_ms", None)
-        except Exception:
-            pass
-
         t_db0 = time.perf_counter()
         db_payload = build_db_payload(
             outer.best_data,

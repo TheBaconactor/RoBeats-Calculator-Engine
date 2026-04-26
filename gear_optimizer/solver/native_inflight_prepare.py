@@ -447,25 +447,12 @@ def _prepare_song(task: tuple) -> _NativeSong:
     except Exception:
         cfg_data["ga_convergence_trace_song_filter"] = ""
     try:
-        cfg_data["ga_steady_state_enabled"] = bool(
-            cfg.getboolean("IterationEngine", "GPU_GA_SteadyStateEnabled", fallback=True)
-        )
-    except Exception:
-        cfg_data["ga_steady_state_enabled"] = True
-    try:
-        cfg_data["ga_steady_state_refresh_pct"] = max(
-            0.0,
-            min(0.75, safe_float(cfg.get("IterationEngine", "GPU_GA_SteadyStateRefreshPct", fallback="0.25"), 0.25)),
-        )
-    except Exception:
-        cfg_data["ga_steady_state_refresh_pct"] = 0.25
-    try:
-        cfg_data["ga_steady_state_min_refresh"] = max(
+        cfg_data["ga_novelty_repair_attempts"] = max(
             0,
-            safe_int(cfg.get("IterationEngine", "GPU_GA_SteadyStateMinRefresh", fallback="8"), 8),
+            min(4, safe_int(cfg.get("IterationEngine", "GPU_GA_NoveltyRepairAttempts", fallback="2"), 2)),
         )
     except Exception:
-        cfg_data["ga_steady_state_min_refresh"] = 8
+        cfg_data["ga_novelty_repair_attempts"] = 2
 
     # ForceGreatsFinder runs after GA and needs per-candidate BaseStats for signature grouping.
     # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
@@ -608,7 +595,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         init_heuristic_copies=int(init_heuristic_copies),
         db_seed_ids=db_seed_ids,
         db_seed_prob=float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0) if db_seed_ids is not None else 0.0,
-        db_seed_copies=1 if db_seed_ids is not None else 0,
+        db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if db_seed_ids is not None else 0,
         db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         item_stats=gpu_data["item_stats"],
         slot_start=gpu_data["slot_start"],

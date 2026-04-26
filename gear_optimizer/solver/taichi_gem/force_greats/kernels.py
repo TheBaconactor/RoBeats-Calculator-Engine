@@ -14,11 +14,14 @@ import taichi as ti
 from taichi.lang import simt
 
 from ..kernels import kernels_helpers
-from ..kernels.kernels_scoring import optimize_core_device_preloaded_bits
+from ..kernels.kernels_scoring import optimize_core_device_exact_bound_preloaded_bits
 from .fields import (
+    FG_CFG_DEDUPE_SIG_WORDS,
     FG_DOWNLOAD_BATCH_MAX,
     FG_DOWNLOAD_TOPK_MAX,
+    FG_EXACT_DP_BATCH_MAX_ROWS,
     FG_EXACT_DP_MAX_NOTES,
+    FG_EXACT_DP_PREFIX_HEAD_LEN,
     FG_EXACT_DP_SPARSE_HASH_SIZE,
     FG_EXACT_DP_SPARSE_MAX_STATES,
     FG_MAX_SECTIONS,
@@ -53,6 +56,11 @@ fg_cfg_total_len_max = None
 fg_cfg_base_list = None
 fg_cfg_mode_list = None
 fg_cfg_max_fp = None
+fg_cfg_dedupe_hash = None
+fg_cfg_dedupe_sig = None
+fg_cfg_dedupe_rep_cfg_idx = None
+fg_cfg_dedupe_rep_count = None
+fg_cfg_dedupe_active = None
 
 fg_best_final_score = None
 fg_best_base_score = None
@@ -150,6 +158,28 @@ fg_exact_dp_sparse_counts = None
 fg_exact_dp_sparse_states = None
 fg_exact_dp_sparse_transitions = None
 fg_exact_dp_sparse_overflow = None
+fg_exact_dp_batch_raw_fill = None
+fg_exact_dp_batch_non_fever_base = None
+fg_exact_dp_batch_ft_idx = None
+fg_exact_dp_batch_w_head_prefix = None
+fg_exact_dp_batch_c_head_prefix = None
+fg_exact_dp_batch_w_body = None
+fg_exact_dp_batch_c_body = None
+fg_exact_dp_batch_hash_keys = None
+fg_exact_dp_batch_hash_vals = None
+fg_exact_dp_batch_state_i = None
+fg_exact_dp_batch_state_first = None
+fg_exact_dp_batch_state_carry = None
+fg_exact_dp_batch_dp = None
+fg_exact_dp_batch_policy_p = None
+fg_exact_dp_batch_policy_k = None
+fg_exact_dp_batch_order = None
+fg_exact_dp_batch_state_count = None
+fg_exact_dp_batch_best_delta = None
+fg_exact_dp_batch_counts = None
+fg_exact_dp_batch_states = None
+fg_exact_dp_batch_transitions = None
+fg_exact_dp_batch_overflow = None
 
 
 # ============================================================================
@@ -1100,7 +1130,9 @@ def fg_exact_dp_sparse_full_kernel(
 
                 future = ti.cast(0, ti.i64)
                 if fever_end_idx < n:
-                    next_id: ti.i32 = _fg_exact_dp_sparse_hash_lookup(_fg_exact_dp_sparse_pack_key(fever_end_idx, 0, carry_next))
+                    next_id: ti.i32 = _fg_exact_dp_sparse_hash_lookup(
+                        _fg_exact_dp_sparse_pack_key(fever_end_idx, 0, carry_next)
+                    )
                     if next_id >= 0:
                         future = fg_exact_dp_sparse_dp[next_id]
 
@@ -1205,6 +1237,543 @@ def fg_exact_dp_sparse_full_kernel(
         step += 1
 
 
+@ti.func
+def _fg_exact_dp_batch_pack_key(i: ti.i32, is_first: ti.i32, carry_idx: ti.i32) -> ti.i64:
+    return (ti.cast(i, ti.i64) << 32) | (ti.cast(is_first & 1, ti.i64) << 31) | ti.cast(carry_idx + 1, ti.i64)
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_index(key: ti.i64) -> ti.i32:
+    x = key ^ (key >> 33) ^ (key >> 17)
+    return ti.cast(x, ti.i32) & ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_lookup(row: ti.i32, key: ti.i64) -> ti.i32:
+    mask: ti.i32 = ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+    h: ti.i32 = _fg_exact_dp_batch_hash_index(key)
+    found: ti.i32 = -1
+    step: ti.i32 = 0
+    done: ti.i32 = 0
+    while step < ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE, ti.i32) and done == 0:
+        idx: ti.i32 = (h + step) & mask
+        k = fg_exact_dp_batch_hash_keys[row, idx]
+        if k == key:
+            found = ti.cast(fg_exact_dp_batch_hash_vals[row, idx], ti.i32) - 1
+            done = 1
+        elif k == 0:
+            done = 1
+        else:
+            step += 1
+    return found
+
+
+@ti.func
+def _fg_exact_dp_batch_hash_insert(row: ti.i32, key: ti.i64, i: ti.i32, is_first: ti.i32, carry_idx: ti.i32) -> ti.i32:
+    mask: ti.i32 = ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE - 1, ti.i32)
+    h: ti.i32 = _fg_exact_dp_batch_hash_index(key)
+    out_id: ti.i32 = -1
+    step: ti.i32 = 0
+    done: ti.i32 = 0
+    while step < ti.cast(FG_EXACT_DP_SPARSE_HASH_SIZE, ti.i32) and done == 0:
+        idx: ti.i32 = (h + step) & mask
+        k = fg_exact_dp_batch_hash_keys[row, idx]
+        if k == key:
+            out_id = ti.cast(fg_exact_dp_batch_hash_vals[row, idx], ti.i32) - 1
+            done = 1
+        elif k == 0:
+            new_id: ti.i32 = fg_exact_dp_batch_state_count[row]
+            fg_exact_dp_batch_state_count[row] = new_id + 1
+            if new_id >= ti.cast(FG_EXACT_DP_SPARSE_MAX_STATES, ti.i32):
+                fg_exact_dp_batch_overflow[row] = 1
+                out_id = -1
+            else:
+                fg_exact_dp_batch_hash_keys[row, idx] = key
+                fg_exact_dp_batch_hash_vals[row, idx] = new_id + 1
+                fg_exact_dp_batch_state_i[row, new_id] = i
+                fg_exact_dp_batch_state_first[row, new_id] = is_first
+                fg_exact_dp_batch_state_carry[row, new_id] = carry_idx
+                out_id = new_id
+            done = 1
+        else:
+            step += 1
+
+    if out_id < 0 and fg_exact_dp_batch_overflow[row] == 0:
+        fg_exact_dp_batch_overflow[row] = 1
+    return out_id
+
+
+@ti.func
+def _fg_exact_dp_batch_canon_carry(i: ti.i32, carry_idx: ti.i32, n: ti.i32, timing_aware: ti.i32) -> ti.i32:
+    out: ti.i32 = -1
+    if timing_aware != 0 and carry_idx >= 0 and i < n:
+        if song_timestamps_great_candidate[carry_idx] > song_timestamps[i]:
+            out = carry_idx
+    return out
+
+
+@ti.func
+def _fg_exact_dp_batch_w_prefix(row: ti.i32, idx: ti.i32) -> ti.i64:
+    ii: ti.i32 = idx
+    if ii < 0:
+        ii = 0
+    out: ti.i64 = ti.cast(0, ti.i64)
+    head_last: ti.i32 = ti.cast(FG_EXACT_DP_PREFIX_HEAD_LEN - 1, ti.i32)
+    if ii <= head_last:
+        out = fg_exact_dp_batch_w_head_prefix[row, ii]
+    else:
+        out = fg_exact_dp_batch_w_head_prefix[row, head_last]
+        out += fg_exact_dp_batch_w_body[row] * ti.cast(ii - head_last, ti.i64)
+    return out
+
+
+@ti.func
+def _fg_exact_dp_batch_c_prefix(row: ti.i32, idx: ti.i32) -> ti.i64:
+    ii: ti.i32 = idx
+    if ii < 0:
+        ii = 0
+    out: ti.i64 = ti.cast(0, ti.i64)
+    head_last: ti.i32 = ti.cast(FG_EXACT_DP_PREFIX_HEAD_LEN - 1, ti.i32)
+    if ii <= head_last:
+        out = fg_exact_dp_batch_c_head_prefix[row, ii]
+    else:
+        out = fg_exact_dp_batch_c_head_prefix[row, head_last]
+        out += fg_exact_dp_batch_c_body[row] * ti.cast(ii - head_last, ti.i64)
+    return out
+
+
+@ti.kernel
+def fg_exact_dp_sparse_full_batch_kernel(
+    batch_n: ti.i32,
+    total_notes: ti.i32,
+    timing_aware: ti.i32,
+    prune: ti.i32,
+):
+    """Solve multiple independent sparse exact-DP fixed-stat rows in one kernel."""
+    n: ti.i32 = ti.max(0, total_notes)
+    rows: ti.i32 = batch_n
+    if rows < 0:
+        rows = 0
+    if rows > FG_EXACT_DP_BATCH_MAX_ROWS:
+        rows = FG_EXACT_DP_BATCH_MAX_ROWS
+
+    for row in range(rows):
+        fg_exact_dp_batch_best_delta[row] = ti.cast(0, ti.i64)
+        fg_exact_dp_batch_states[row] = 0
+        fg_exact_dp_batch_transitions[row] = 0
+        fg_exact_dp_batch_overflow[row] = 0
+        fg_exact_dp_batch_state_count[row] = 0
+
+    for row, s in ti.ndrange(rows, FG_MAX_SECTIONS):
+        fg_exact_dp_batch_counts[row, s] = ti.cast(-1, ti.i32)
+
+    for row, h in ti.ndrange(rows, FG_EXACT_DP_SPARSE_HASH_SIZE):
+        fg_exact_dp_batch_hash_keys[row, h] = ti.cast(0, ti.i64)
+        fg_exact_dp_batch_hash_vals[row, h] = ti.cast(0, ti.i32)
+
+    for row in range(rows):
+        raw_fill: ti.f32 = fg_exact_dp_batch_raw_fill[row]
+        ft: ti.i32 = fg_exact_dp_batch_ft_idx[row]
+        if ft < 0:
+            ft = 0
+        if ft > FG_MAX_STAT:
+            ft = FG_MAX_STAT
+
+        m: ti.i32 = fg_exact_dp_batch_non_fever_base[row]
+        if m < 0:
+            m = 0
+
+        p_max: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(m, ti.f32) * 0.5), ti.i32) - m
+        if p_max < 0:
+            p_max = 0
+
+        _ = _fg_exact_dp_batch_hash_insert(row, _fg_exact_dp_batch_pack_key(0, 1, -1), 0, 1, -1)
+
+        cur: ti.i32 = 0
+        while cur < ti.cast(fg_exact_dp_batch_state_count[row], ti.i32) and fg_exact_dp_batch_overflow[row] == 0:
+            i: ti.i32 = fg_exact_dp_batch_state_i[row, cur]
+            is_first: ti.i32 = fg_exact_dp_batch_state_first[row, cur]
+            carry_idx: ti.i32 = fg_exact_dp_batch_state_carry[row, cur]
+
+            carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+            fg_exact_dp_batch_state_carry[row, cur] = carry_idx
+
+            min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+            if min_notes < 0:
+                min_notes = 0
+            if i + min_notes >= n:
+                cur += 1
+                continue
+
+            forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+            if forced_start_base < 0:
+                forced_start_base = 0
+
+            p: ti.i32 = 0
+            done_p: ti.i32 = 0
+            while p <= p_max and done_p == 0:
+                if fg_exact_dp_batch_overflow[row] != 0:
+                    done_p = 1
+                else:
+                    notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                    if notes_to_fill < 0:
+                        notes_to_fill = 0
+                    end_normal: ti.i32 = i + notes_to_fill
+                    if end_normal >= n:
+                        done_p = 1
+                    else:
+                        k0: ti.i32 = _forced_from_fp_target(raw_fill, m, p, m)
+                        k1: ti.i32 = k0 + 1
+                        has_k1: ti.i32 = 0
+                        if k1 <= m:
+                            fp1: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(k1, ti.f32) * 0.5), ti.i32) - m
+                            if fp1 == p:
+                                has_k1 = 1
+
+                        forced_val: ti.i32 = k0
+                        if forced_val < 0:
+                            forced_val = 0
+                        if forced_val > m:
+                            forced_val = m
+
+                        actual_notes: ti.i32 = end_normal - i
+                        if actual_notes < 0:
+                            actual_notes = 0
+                        forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                        next_cidx: ti.i32 = carry_idx
+                        if timing_aware != 0 and forced_applied > 0:
+                            forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                            if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                                if next_cidx < 0:
+                                    next_cidx = forced_end
+                                else:
+                                    if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                        next_cidx = forced_end
+
+                        fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                        if timing_aware != 0 and next_cidx >= 0:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                        if fever_end_idx <= end_normal:
+                            fever_end_idx = ti.min(n, end_normal + 1)
+                        if fever_end_idx > n:
+                            fever_end_idx = n
+
+                        if fever_end_idx < n:
+                            carry_next: ti.i32 = -1
+                            if timing_aware != 0 and next_cidx >= 0:
+                                if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                    carry_next = next_cidx
+
+                            key_next = _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next)
+                            _ = _fg_exact_dp_batch_hash_insert(row, key_next, fever_end_idx, 0, carry_next)
+
+                        if has_k1 != 0 and fg_exact_dp_batch_overflow[row] == 0:
+                            forced_val = k1
+                            if forced_val < 0:
+                                forced_val = 0
+                            if forced_val > m:
+                                forced_val = m
+
+                            forced_applied = ti.min(forced_val, actual_notes)
+
+                            next_cidx = carry_idx
+                            if timing_aware != 0 and forced_applied > 0:
+                                forced_end = forced_start_base + forced_applied - 1
+                                if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                    cand_t = song_timestamps_great_candidate[forced_end]
+                                    if next_cidx < 0:
+                                        next_cidx = forced_end
+                                    else:
+                                        if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                            next_cidx = forced_end
+
+                            fever_end_idx = fg_fever_end_idx_song[end_normal, ft]
+                            if timing_aware != 0 and next_cidx >= 0:
+                                if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                    fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                            if fever_end_idx <= end_normal:
+                                fever_end_idx = ti.min(n, end_normal + 1)
+                            if fever_end_idx > n:
+                                fever_end_idx = n
+
+                            if fever_end_idx < n:
+                                carry_next = -1
+                                if timing_aware != 0 and next_cidx >= 0:
+                                    if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                        carry_next = next_cidx
+
+                                key_next = _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next)
+                                _ = _fg_exact_dp_batch_hash_insert(row, key_next, fever_end_idx, 0, carry_next)
+
+                p += 1
+
+            cur += 1
+
+        states_total: ti.i32 = ti.cast(fg_exact_dp_batch_state_count[row], ti.i32)
+        fg_exact_dp_batch_states[row] = states_total
+
+        states_solve: ti.i32 = states_total
+        if fg_exact_dp_batch_overflow[row] != 0:
+            states_solve = 0
+
+        ti.loop_config(serialize=True)
+        for s in range(states_solve):
+            fg_exact_dp_batch_order[row, s] = s
+
+        ti.loop_config(serialize=True)
+        for a in range(states_solve):
+            best_pos: ti.i32 = a
+            best_i: ti.i32 = fg_exact_dp_batch_state_i[row, fg_exact_dp_batch_order[row, a]]
+            for b in range(a + 1, states_solve):
+                bid: ti.i32 = fg_exact_dp_batch_order[row, b]
+                bi: ti.i32 = fg_exact_dp_batch_state_i[row, bid]
+                if bi > best_i:
+                    best_i = bi
+                    best_pos = b
+            if best_pos != a:
+                tmp: ti.i32 = fg_exact_dp_batch_order[row, a]
+                fg_exact_dp_batch_order[row, a] = fg_exact_dp_batch_order[row, best_pos]
+                fg_exact_dp_batch_order[row, best_pos] = tmp
+
+        fg_exact_dp_batch_transitions[row] = 0
+        ti.loop_config(serialize=True)
+        for idx in range(states_solve):
+            sid: ti.i32 = fg_exact_dp_batch_order[row, idx]
+            i: ti.i32 = fg_exact_dp_batch_state_i[row, sid]
+            is_first: ti.i32 = fg_exact_dp_batch_state_first[row, sid]
+            carry_idx: ti.i32 = fg_exact_dp_batch_state_carry[row, sid]
+
+            carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+            fg_exact_dp_batch_state_carry[row, sid] = carry_idx
+
+            if i >= n:
+                fg_exact_dp_batch_dp[row, sid] = ti.cast(0, ti.i64)
+                fg_exact_dp_batch_policy_p[row, sid] = 0
+                fg_exact_dp_batch_policy_k[row, sid] = 0
+                continue
+
+            min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+            if min_notes < 0:
+                min_notes = 0
+            if i + min_notes >= n:
+                fg_exact_dp_batch_dp[row, sid] = ti.cast(0, ti.i64)
+                fg_exact_dp_batch_policy_p[row, sid] = 0
+                fg_exact_dp_batch_policy_k[row, sid] = 0
+                continue
+
+            forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+            if forced_start_base < 0:
+                forced_start_base = 0
+
+            best_val = ti.cast(0, ti.i64)
+            best_p: ti.i32 = 0
+            best_k: ti.i32 = 0
+
+            for p in range(p_max + 1):
+                notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                if notes_to_fill < 0:
+                    notes_to_fill = 0
+                end_normal: ti.i32 = i + notes_to_fill
+                if end_normal >= n:
+                    break
+
+                k0: ti.i32 = _forced_from_fp_target(raw_fill, m, p, m)
+                k1: ti.i32 = k0 + 1
+                has_k1: ti.i32 = 0
+                if k1 <= m:
+                    fp1: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(k1, ti.f32) * 0.5), ti.i32) - m
+                    if fp1 == p:
+                        has_k1 = 1
+
+                if prune != 0 and best_val > 0:
+                    k_min: ti.i32 = k0
+                    if k_min < 0:
+                        k_min = 0
+                    if k_min > m:
+                        k_min = m
+                    actual_notes: ti.i32 = end_normal - i
+                    if actual_notes < 0:
+                        actual_notes = 0
+                    forced_applied_min: ti.i32 = ti.min(k_min, actual_notes)
+                    penalty_min = ti.cast(0, ti.i64)
+                    if forced_applied_min > 0 and forced_start_base < n:
+                        end_excl_min: ti.i32 = forced_start_base + forced_applied_min
+                        if end_excl_min > n:
+                            end_excl_min = n
+                        penalty_min = _fg_exact_dp_batch_c_prefix(row, end_excl_min) - _fg_exact_dp_batch_c_prefix(
+                            row, forced_start_base
+                        )
+
+                    suffix_bonus: ti.i64 = _fg_exact_dp_batch_w_prefix(row, n) - _fg_exact_dp_batch_w_prefix(
+                        row, end_normal
+                    )
+                    ub: ti.i64 = suffix_bonus - penalty_min
+                    if ub <= best_val:
+                        break
+
+                for cand in range(2):
+                    if cand == 1 and has_k1 == 0:
+                        continue
+                    fg_exact_dp_batch_transitions[row] += 1
+
+                    forced_val: ti.i32 = ti.select(cand == 0, k0, k1)
+                    if forced_val < 0:
+                        forced_val = 0
+                    if forced_val > m:
+                        forced_val = m
+
+                    actual_notes: ti.i32 = end_normal - i
+                    if actual_notes < 0:
+                        actual_notes = 0
+                    forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                    penalty = ti.cast(0, ti.i64)
+                    if forced_applied > 0 and forced_start_base < n:
+                        end_excl: ti.i32 = forced_start_base + forced_applied
+                        if end_excl > n:
+                            end_excl = n
+                        penalty = _fg_exact_dp_batch_c_prefix(row, end_excl) - _fg_exact_dp_batch_c_prefix(
+                            row, forced_start_base
+                        )
+
+                    next_cidx: ti.i32 = carry_idx
+                    if timing_aware != 0 and forced_applied > 0:
+                        forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                        if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                            cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                            if next_cidx < 0:
+                                next_cidx = forced_end
+                            else:
+                                if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                    next_cidx = forced_end
+
+                    fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                    if timing_aware != 0 and next_cidx >= 0:
+                        if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                            fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                    if fever_end_idx <= end_normal:
+                        fever_end_idx = ti.min(n, end_normal + 1)
+                    if fever_end_idx > n:
+                        fever_end_idx = n
+
+                    carry_next: ti.i32 = -1
+                    if timing_aware != 0 and next_cidx >= 0 and fever_end_idx < n:
+                        if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                            carry_next = next_cidx
+
+                    fever_bonus: ti.i64 = _fg_exact_dp_batch_w_prefix(row, fever_end_idx) - _fg_exact_dp_batch_w_prefix(
+                        row, end_normal
+                    )
+
+                    future = ti.cast(0, ti.i64)
+                    if fever_end_idx < n:
+                        next_id: ti.i32 = _fg_exact_dp_batch_hash_lookup(
+                            row,
+                            _fg_exact_dp_batch_pack_key(fever_end_idx, 0, carry_next),
+                        )
+                        if next_id >= 0:
+                            future = fg_exact_dp_batch_dp[row, next_id]
+
+                    total: ti.i64 = fever_bonus - penalty + future
+                    if total > best_val:
+                        best_val = total
+                        best_p = p
+                        best_k = forced_val
+
+            fg_exact_dp_batch_dp[row, sid] = best_val
+            fg_exact_dp_batch_policy_p[row, sid] = best_p
+            fg_exact_dp_batch_policy_k[row, sid] = best_k
+
+        start_id: ti.i32 = -1
+        if states_solve > 0:
+            start_id = _fg_exact_dp_batch_hash_lookup(row, _fg_exact_dp_batch_pack_key(0, 1, -1))
+            if start_id >= 0:
+                fg_exact_dp_batch_best_delta[row] = fg_exact_dp_batch_dp[row, start_id]
+
+        i: ti.i32 = 0
+        is_first: ti.i32 = 1
+        carry_idx: ti.i32 = -1
+        sid: ti.i32 = start_id
+
+        step: ti.i32 = 0
+        done: ti.i32 = 0
+        while step < ti.cast(FG_MAX_SECTIONS, ti.i32) and done == 0:
+            if sid < 0 or i >= n:
+                done = 1
+            else:
+                carry_idx = _fg_exact_dp_batch_canon_carry(i, carry_idx, n, timing_aware)
+
+                min_notes: ti.i32 = ti.select(is_first != 0, m - 1, m)
+                if min_notes < 0:
+                    min_notes = 0
+                if i + min_notes >= n:
+                    fg_exact_dp_batch_counts[row, step] = ti.cast(0, ti.i32)
+                    done = 1
+                else:
+                    p: ti.i32 = fg_exact_dp_batch_policy_p[row, sid]
+                    k: ti.i32 = fg_exact_dp_batch_policy_k[row, sid]
+                    fg_exact_dp_batch_counts[row, step] = k
+
+                    notes_to_fill: ti.i32 = m + p - ti.select(is_first != 0, 1, 0)
+                    if notes_to_fill < 0:
+                        notes_to_fill = 0
+                    end_normal: ti.i32 = i + notes_to_fill
+                    if end_normal >= n:
+                        done = 1
+                    else:
+                        forced_start_base: ti.i32 = ti.select(is_first != 0, i, i + 1)
+                        if forced_start_base < 0:
+                            forced_start_base = 0
+
+                        forced_val: ti.i32 = k
+                        if forced_val < 0:
+                            forced_val = 0
+                        if forced_val > m:
+                            forced_val = m
+
+                        actual_notes: ti.i32 = end_normal - i
+                        if actual_notes < 0:
+                            actual_notes = 0
+                        forced_applied: ti.i32 = ti.min(forced_val, actual_notes)
+
+                        next_cidx: ti.i32 = carry_idx
+                        if timing_aware != 0 and forced_applied > 0:
+                            forced_end: ti.i32 = forced_start_base + forced_applied - 1
+                            if forced_end >= forced_start_base and forced_end < end_normal and forced_end < n:
+                                cand_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                                if next_cidx < 0:
+                                    next_cidx = forced_end
+                                else:
+                                    if cand_t > song_timestamps_great_candidate[next_cidx]:
+                                        next_cidx = forced_end
+
+                        fever_end_idx: ti.i32 = fg_fever_end_idx_song[end_normal, ft]
+                        if timing_aware != 0 and next_cidx >= 0:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[end_normal]:
+                                fever_end_idx = fg_fever_end_idx_great_candidate[next_cidx, ft]
+                        if fever_end_idx <= end_normal:
+                            fever_end_idx = ti.min(n, end_normal + 1)
+                        if fever_end_idx > n:
+                            fever_end_idx = n
+
+                        carry_next: ti.i32 = -1
+                        if timing_aware != 0 and next_cidx >= 0 and fever_end_idx < n:
+                            if song_timestamps_great_candidate[next_cidx] > song_timestamps[fever_end_idx]:
+                                carry_next = next_cidx
+
+                        i = fever_end_idx
+                        carry_idx = carry_next
+                        is_first = 0
+                        if i >= n:
+                            done = 1
+                        else:
+                            sid = _fg_exact_dp_batch_hash_lookup(row, _fg_exact_dp_batch_pack_key(i, 0, carry_idx))
+            step += 1
+
+
 # Warm-start hint allocation (bound from fields.py)
 fg_genome_hint_allocation = None
 
@@ -1227,6 +1796,10 @@ FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 FG_STAGE1_SMALL_SECTIONS_FASTPATH = (
     str(os.environ.get("FG_STAGE1_SMALL_SECTIONS_FASTPATH", "0") or "").strip().lower() in _TRUTHY_ENV
 )
+FG_STAGE1_OWNER_CAP_REDUCTION = (
+    str(os.environ.get("FG_STAGE1_OWNER_CAP_REDUCTION", "0") or "").strip().lower() in _TRUTHY_ENV
+)
+FG_STAGE1_DIRECT_ATOMIC = str(os.environ.get("FG_STAGE1_DIRECT_ATOMIC", "1") or "").strip().lower() in _TRUTHY_ENV
 
 
 @ti.func
@@ -1290,6 +1863,80 @@ def _fg_decode_fp_targets_vec4(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sectio
                 base = 1
             out[s] = rem % base
             rem = rem // base
+    return out
+
+
+@ti.func
+def _fg_decode_fp_targets_with_caps_vec(
+    local_cfg_idx: ti.i32, caps: ti.types.vector(FG_MAX_SECTIONS, ti.i32), n_sections: ti.i32
+):
+    """Decode an owner-effective config index using per-section effective caps."""
+    out = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+    rem: ti.i32 = local_cfg_idx
+    for rev in ti.static(range(FG_MAX_SECTIONS)):
+        s: ti.i32 = ti.i32(FG_MAX_SECTIONS - 1 - rev)
+        if s < n_sections:
+            base: ti.i32 = caps[s] + 1
+            if base <= 0:
+                base = 1
+            out[s] = rem % base
+            rem = rem // base
+    return out
+
+
+@ti.func
+def _fg_decode_fp_targets_with_caps_vec4(local_cfg_idx: ti.i32, caps: ti.types.vector(4, ti.i32), n_sections: ti.i32):
+    """Decode an owner-effective config index using per-section effective caps."""
+    out = ti.Vector.zero(ti.i32, 4)
+    rem: ti.i32 = local_cfg_idx
+    for rev in ti.static(range(4)):
+        s: ti.i32 = ti.i32(3 - rev)
+        if s < n_sections:
+            base: ti.i32 = caps[s] + 1
+            if base <= 0:
+                base = 1
+            out[s] = rem % base
+            rem = rem // base
+    return out
+
+
+@ti.func
+def _fg_encode_fp_targets_vec(
+    fp_targets: ti.types.vector(FG_MAX_SECTIONS, ti.i32), ftff_idx: ti.i32, n_sections: ti.i32
+) -> ti.i32:
+    """Encode per-section FP targets into the original global config rectangle order."""
+    out: ti.i32 = 0
+    stride: ti.i32 = 1
+    for rev in ti.static(range(FG_MAX_SECTIONS)):
+        s: ti.i32 = ti.i32(FG_MAX_SECTIONS - 1 - rev)
+        if s < n_sections:
+            val: ti.i32 = fp_targets[s]
+            if val < 0:
+                val = 0
+            out += val * stride
+            base: ti.i32 = fg_cfg_max_fp[ftff_idx, s] + 1
+            if base <= 0:
+                base = 1
+            stride *= base
+    return out
+
+
+@ti.func
+def _fg_encode_fp_targets_vec4(fp_targets: ti.types.vector(4, ti.i32), ftff_idx: ti.i32, n_sections: ti.i32) -> ti.i32:
+    """Encode per-section FP targets into the original global config rectangle order."""
+    out: ti.i32 = 0
+    stride: ti.i32 = 1
+    for rev in ti.static(range(4)):
+        s: ti.i32 = ti.i32(3 - rev)
+        if s < n_sections:
+            val: ti.i32 = fp_targets[s]
+            if val < 0:
+                val = 0
+            out += val * stride
+            base: ti.i32 = fg_cfg_max_fp[ftff_idx, s] + 1
+            if base <= 0:
+                base = 1
+            stride *= base
     return out
 
 
@@ -1408,7 +2055,7 @@ def _optimize_core_bits(
     GEM_SCALE_FEVER: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
-    res = optimize_core_device_preloaded_bits(
+    res = optimize_core_device_exact_bound_preloaded_bits(
         budget,
         cur_pp,
         cur_cm,
@@ -1511,6 +2158,171 @@ def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: t
     return ti.Vector([m0, m1, m2, m3])
 
 
+@ti.func
+def _fg_sig_mix_u32(h: ti.u64, x: ti.i32) -> ti.u64:
+    v = ti.cast(x, ti.u64) & ti.u64(0xFFFFFFFF)
+    h = h ^ v
+    h = h * ti.u64(1099511628211)
+    return h
+
+
+@ti.func
+def _fg_signature_hash(sig: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32)) -> ti.u64:
+    h = ti.u64(1469598103934665603)
+    for i in ti.static(range(FG_CFG_DEDUPE_SIG_WORDS)):
+        h = _fg_sig_mix_u32(h, sig[i])
+    if h == ti.u64(0):
+        h = ti.u64(1)
+    return h
+
+
+@ti.func
+def _fg_config_signature(
+    global_cfg_idx: ti.i32,
+    cfg_base: ti.i32,
+    cfg_mode: ti.i32,
+    ftff_idx: ti.i32,
+    n_sections: ti.i32,
+    total_notes: ti.i32,
+    head_len: ti.i32,
+    non_fever_base: ti.i32,
+    non_fever_base_f: ti.f32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    fever_acts: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
+) -> ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32):
+    sig = ti.Vector.zero(ti.i32, FG_CFG_DEDUPE_SIG_WORDS)
+
+    local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
+    if local_cfg_idx < 0:
+        local_cfg_idx = 0
+    fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+    if cfg_mode != 0:
+        fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+
+    m0 = ti.cast(0, ti.u32)
+    m1 = ti.cast(0, ti.u32)
+    m2 = ti.cast(0, ti.u32)
+    m3 = ti.cast(0, ti.u32)
+    forced_m0 = ti.cast(0, ti.u32)
+    forced_m1 = ti.cast(0, ti.u32)
+    forced_m2 = ti.cast(0, ti.u32)
+    forced_m3 = ti.cast(0, ti.u32)
+    body_fever: ti.i32 = 0
+    forced_body: ti.i32 = 0
+
+    current_idx: ti.i32 = 0
+    sec: ti.i32 = 0
+    carry_time: ti.f32 = 0.0
+    carry_idx: ti.i32 = 0
+    while current_idx < total_notes:
+        base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
+        if base_notes_s < 0:
+            base_notes_s = 0
+
+        fp_target: ti.i32 = 0
+        if sec < n_sections:
+            if cfg_mode != 0:
+                fp_target = fp_targets_vec[sec]
+            else:
+                fp_target = fg_forced_counts[global_cfg_idx, sec]
+            if fp_target < 0:
+                fp_target = 0
+            if sec < FG_MAX_SECTIONS:
+                pair_cap_forced: ti.i32 = 0
+                if pair_caps_from_timeline != 0:
+                    if sec < fever_acts:
+                        pair_cap_forced = _fg_section_forced_cap(sec)
+                    else:
+                        pair_cap_forced = 0
+                else:
+                    pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
+                if pair_cap_forced < 0:
+                    pair_cap_forced = 0
+                notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
+                fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
+                fp_target = ti.min(fp_target, fp_cap)
+
+        forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
+        notes_to_fill: ti.i32 = base_notes_s + fp_target
+        section_start: ti.i32 = current_idx
+        end_normal: ti.i32 = ti.min(total_notes, section_start + notes_to_fill)
+        actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
+        forced_app: ti.i32 = ti.min(forced_val, actual_notes)
+
+        if forced_app > 0:
+            forced_start: ti.i32 = section_start + (1 - ti.cast(sec == 0, ti.i32))
+            forced_end: ti.i32 = forced_start + forced_app - 1
+            forced_end = ti.min(forced_end, end_normal - 1)
+            if forced_end >= forced_start and forced_end < total_notes:
+                forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                if forced_t > carry_time:
+                    carry_time = forced_t
+                    carry_idx = forced_end
+
+            head_cap: ti.i32 = 100 - forced_start
+            if head_cap < 0:
+                head_cap = 0
+            head_n: ti.i32 = forced_app
+            if head_n > head_cap:
+                head_n = head_cap
+            forced_body += forced_app - head_n
+            if head_n > 0:
+                masks_forced = _or_head_mask_range(
+                    forced_m0,
+                    forced_m1,
+                    forced_m2,
+                    forced_m3,
+                    forced_start,
+                    forced_start + head_n,
+                )
+                forced_m0 = masks_forced[0]
+                forced_m1 = masks_forced[1]
+                forced_m2 = masks_forced[2]
+                forced_m3 = masks_forced[3]
+
+        current_idx = end_normal
+        if current_idx >= total_notes:
+            break
+
+        fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
+        if fever_end_idx <= current_idx:
+            fever_end_idx = ti.min(total_notes, current_idx + 1)
+
+        if current_idx < head_len:
+            head_end = ti.min(head_len, fever_end_idx)
+            masks = _or_head_mask_range(m0, m1, m2, m3, current_idx, head_end)
+            m0 = masks[0]
+            m1 = masks[1]
+            m2 = masks[2]
+            m3 = masks[3]
+
+        if fever_end_idx > head_len:
+            body_start = head_len if current_idx < head_len else current_idx
+            if fever_end_idx > body_start:
+                body_fever += fever_end_idx - body_start
+
+        current_idx = fever_end_idx
+        sec += 1
+
+    body_len = ti.max(total_notes - head_len, 0)
+    body_normal: ti.i32 = ti.max(body_len - body_fever, 0)
+    sig[0] = ti.cast(m0, ti.i32)
+    sig[1] = ti.cast(m1, ti.i32)
+    sig[2] = ti.cast(m2, ti.i32)
+    sig[3] = ti.cast(m3, ti.i32)
+    sig[4] = body_fever
+    sig[5] = body_normal
+    sig[6] = ti.cast(forced_m0, ti.i32)
+    sig[7] = ti.cast(forced_m1, ti.i32)
+    sig[8] = ti.cast(forced_m2, ti.i32)
+    sig[9] = ti.cast(forced_m3, ti.i32)
+    sig[10] = forced_body
+    return sig
+
+
 # ============================================================================
 # KERNELS
 # ============================================================================
@@ -1596,6 +2408,174 @@ def fg_upload_cfg_total_len_prefix_kernel(n_pairs: ti.i32, cfg_total_len: ti.typ
     """Upload only active per-pair config lengths for packed FG chunks."""
     for i in range(n_pairs):
         fg_cfg_total_len_list[i] = cfg_total_len[i]
+
+
+@ti.kernel
+def fg_cfg_dedupe_clear_kernel(n_work_items: ti.i32, dedupe_slots: ti.i32):
+    """Clear GPU config-signature dedupe scratch for the next work-item chunk."""
+    for i, j in ti.ndrange(n_work_items, dedupe_slots):
+        fg_cfg_dedupe_hash[i, j] = ti.u64(0)
+        fg_cfg_dedupe_rep_cfg_idx[i, j] = -1
+    for i in range(n_work_items):
+        fg_cfg_dedupe_rep_count[i] = 0
+        fg_cfg_dedupe_active[i] = 1
+
+
+@ti.kernel
+def fg_cfg_dedupe_build_kernel(
+    work_offset: ti.i32,
+    n_work_items: ti.i32,
+    dedupe_slots: ti.i32,
+    total_notes: ti.i32,
+    long_notes: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    n_sections: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
+):
+    """
+    Build per-owner representative cfg indices from exact scoring-relevant signatures.
+
+    This is intentionally GPU-side: configs remain implicit, and Stage 1 later
+    reads representative original cfg_idx values from fg_cfg_dedupe_rep_cfg_idx.
+    If an owner exhausts the bounded table, it is marked inactive and Stage 1
+    falls back to evaluating its full cfg window.
+    """
+    MAX_STAT: ti.i32 = 160
+    head_len: ti.i32 = ti.min(total_notes, 100)
+    non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
+
+    for local_work_idx in range(n_work_items):
+        work_idx: ti.i32 = work_offset + local_work_idx
+        g: ti.i32 = fg_flat_work_genome[work_idx]
+        ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
+        ft_gems: ti.i32 = fg_ft_list[ftff_idx]
+        ff_gems: ti.i32 = fg_ff_list[ftff_idx]
+        total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
+        cfg_base: ti.i32 = fg_cfg_base_list[ftff_idx]
+        cfg_mode: ti.i32 = fg_cfg_mode_list[ftff_idx]
+
+        rep_count: ti.i32 = 0
+        active: ti.i32 = 1
+
+        if ft_gems + ff_gems <= total_budget and total_len > 0:
+            base_stats = kernels_helpers.genome_base_stats[g]
+            base_ft_stat: ti.i32 = base_stats[5]
+            base_ff_stat: ti.i32 = base_stats[6]
+            ft_stat_val: ti.i32 = base_ft_stat + (ft_gems * gem_scale_fever)
+            ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
+            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+            ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+
+            fever_acts: ti.i32 = 0
+            if pair_caps_from_timeline != 0:
+                fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+                if fever_acts < 0:
+                    fever_acts = 0
+
+            non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
+            non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
+
+            dedupe_prefilter_caps = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+            dedupe_loop_len: ti.i32 = total_len
+            dedupe_owner_cap_prefilter: ti.i32 = 0
+            if cfg_mode != 0:
+                total_eff: ti.i64 = 1
+                for sec_cap in ti.static(range(FG_MAX_SECTIONS)):
+                    if sec_cap < n_sections:
+                        pair_cap_forced_eff: ti.i32 = 0
+                        if pair_caps_from_timeline != 0:
+                            if sec_cap < fever_acts:
+                                pair_cap_forced_eff = _fg_section_forced_cap(sec_cap)
+                            else:
+                                pair_cap_forced_eff = 0
+                        else:
+                            pair_cap_forced_eff = fg_pair_caps[ft_idx, ff_idx, sec_cap]
+                        if pair_cap_forced_eff < 0:
+                            pair_cap_forced_eff = 0
+                        notes_with_cap_eff = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced_eff, ti.f32) * 0.5)
+                        fp_cap_eff: ti.i32 = ti.cast(notes_with_cap_eff, ti.i32) - non_fever_base
+                        if fp_cap_eff < 0:
+                            fp_cap_eff = 0
+                        max_fp_eff: ti.i32 = fg_cfg_max_fp[ftff_idx, sec_cap]
+                        if max_fp_eff < 0:
+                            max_fp_eff = 0
+                        if max_fp_eff > fp_cap_eff:
+                            max_fp_eff = fp_cap_eff
+                        dedupe_prefilter_caps[sec_cap] = max_fp_eff
+                        total_eff *= ti.cast(max_fp_eff + 1, ti.i64)
+                if total_eff < 1:
+                    total_eff = 1
+                if total_eff < ti.cast(total_len, ti.i64):
+                    dedupe_owner_cap_prefilter = 1
+                    dedupe_loop_len = ti.cast(total_eff, ti.i32)
+
+            cfg_local: ti.i32 = 0
+            while cfg_local < dedupe_loop_len and active != 0:
+                global_cfg_idx: ti.i32 = cfg_base + cfg_local
+                if dedupe_owner_cap_prefilter != 0:
+                    prefiltered_targets = _fg_decode_fp_targets_with_caps_vec(
+                        cfg_local, dedupe_prefilter_caps, n_sections
+                    )
+                    global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec(prefiltered_targets, ftff_idx, n_sections)
+                sig = _fg_config_signature(
+                    global_cfg_idx,
+                    cfg_base,
+                    cfg_mode,
+                    ftff_idx,
+                    n_sections,
+                    total_notes,
+                    head_len,
+                    non_fever_base,
+                    non_fever_base_f,
+                    ft_idx,
+                    ff_idx,
+                    fever_acts,
+                    song_slot,
+                    pair_caps_from_timeline,
+                )
+                h = _fg_signature_hash(sig)
+                slot: ti.i32 = ti.cast(h % ti.cast(dedupe_slots, ti.u64), ti.i32)
+                probe: ti.i32 = 0
+                found: ti.i32 = 0
+                inserted: ti.i32 = 0
+
+                while probe < dedupe_slots and found == 0 and inserted == 0:
+                    h0 = fg_cfg_dedupe_hash[local_work_idx, slot]
+                    if h0 == ti.u64(0):
+                        fg_cfg_dedupe_hash[local_work_idx, slot] = h
+                        fg_cfg_dedupe_sig[local_work_idx, slot] = sig
+                        fg_cfg_dedupe_rep_cfg_idx[local_work_idx, slot] = global_cfg_idx
+                        rep_count += 1
+                        inserted = 1
+                    elif h0 == h:
+                        same: ti.i32 = 1
+                        old_sig = fg_cfg_dedupe_sig[local_work_idx, slot]
+                        for w in ti.static(range(FG_CFG_DEDUPE_SIG_WORDS)):
+                            if old_sig[w] != sig[w]:
+                                same = 0
+                        if same != 0:
+                            found = 1
+                        else:
+                            slot += 1
+                            if slot >= dedupe_slots:
+                                slot = 0
+                            probe += 1
+                    else:
+                        slot += 1
+                        if slot >= dedupe_slots:
+                            slot = 0
+                        probe += 1
+
+                if found == 0 and inserted == 0:
+                    active = 0
+                    rep_count = 0
+                cfg_local += 1
+
+        fg_cfg_dedupe_rep_count[local_work_idx] = rep_count
+        fg_cfg_dedupe_active[local_work_idx] = active
 
 
 @ti.kernel
@@ -1750,6 +2730,75 @@ def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
 
 
 @ti.kernel
+def fg_zero_dominated_surface_pairs_kernel(
+    n_pairs: ti.i32,
+    n_sections: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+):
+    """
+    Losslessly remove FT/FF pairs that expose an identical FG surface.
+
+    For equal per-section max-FP rows, the exact-inner solver sees the same
+    forced-Great config universe. A pair is dominated when another equal-surface
+    pair leaves at least as much remaining gem budget and at least as much
+    primary/secondary elemental value. We keep one deterministic representative
+    for exact ties.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+
+    for i in range(n_pairs):
+        ft_i: ti.i32 = fg_ft_list[i]
+        ff_i: ti.i32 = fg_ff_list[i]
+        budget_i: ti.i32 = total_budget - ft_i - ff_i
+
+        dominated: ti.i32 = 0
+        if budget_i < 0:
+            dominated = 1
+
+        p_i: ti.i32 = (ft_i * is_p_ft + ff_i * is_p_ff) * gem_scale_fever
+        s_i: ti.i32 = (ft_i * is_s_ft + ff_i * is_s_ff) * gem_scale_fever
+
+        for j in range(n_pairs):
+            if dominated == 0 and j != i:
+                same_surface: ti.i32 = 1
+                for sec in range(n_sections):
+                    if fg_cfg_max_fp[i, sec] != fg_cfg_max_fp[j, sec]:
+                        same_surface = 0
+
+                if same_surface == 1:
+                    ft_j: ti.i32 = fg_ft_list[j]
+                    ff_j: ti.i32 = fg_ff_list[j]
+                    budget_j: ti.i32 = total_budget - ft_j - ff_j
+                    p_j: ti.i32 = (ft_j * is_p_ft + ff_j * is_p_ff) * gem_scale_fever
+                    s_j: ti.i32 = (ft_j * is_s_ft + ff_j * is_s_ff) * gem_scale_fever
+
+                    if budget_j >= budget_i and p_j >= p_i and s_j >= s_i:
+                        strict_better: ti.i32 = 0
+                        if budget_j > budget_i or p_j > p_i or s_j > s_i:
+                            strict_better = 1
+
+                        deterministic_tie: ti.i32 = 0
+                        if strict_better == 0:
+                            if ft_j < ft_i:
+                                deterministic_tie = 1
+                            elif ft_j == ft_i and ff_j < ff_i:
+                                deterministic_tie = 1
+                            elif ft_j == ft_i and ff_j == ff_i and j < i:
+                                deterministic_tie = 1
+
+                        if strict_better == 1 or deterministic_tie == 1:
+                            dominated = 1
+
+        if dominated == 1:
+            fg_cfg_total_len_list[i] = 0
+
+
+@ti.kernel
 def fg_reduce_cfg_total_len_max_kernel(n_pairs: ti.i32):
     """Compute max(fg_cfg_total_len_list[:n_pairs]) into fg_cfg_total_len_max[None]."""
     fg_cfg_total_len_max[None] = 0
@@ -1837,6 +2886,9 @@ def fg_stage1_clear_wave_best_kernel(n_work_items: ti.i32):
 @ti.kernel
 def fg_stage1_waves_kernel(
     use_small_sections: ti.template(),
+    work_offset: ti.i32,
+    use_cfg_dedupe: ti.i32,
+    cfg_dedupe_slots: ti.i32,
     n_work_items: ti.i32,
     n_cfg: ti.i32,
     cfg_offset: ti.i32,
@@ -1880,8 +2932,9 @@ def fg_stage1_waves_kernel(
 
     total_threads = n_work_items * FG_STAGE1_BLOCK_DIM
     for tid in range(total_threads):
-        work_idx = tid // FG_STAGE1_BLOCK_DIM
-        lane = tid - (work_idx * FG_STAGE1_BLOCK_DIM)
+        local_work_idx = tid // FG_STAGE1_BLOCK_DIM
+        work_idx = work_offset + local_work_idx
+        lane = tid - (local_work_idx * FG_STAGE1_BLOCK_DIM)
 
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
@@ -1900,6 +2953,9 @@ def fg_stage1_waves_kernel(
             cfg_len: ti.i32 = n_cfg
             cfg_mode: ti.i32 = 0
             cfg_base: ti.i32 = 0
+            dedupe_active: ti.i32 = 0
+            if use_cfg_dedupe != 0:
+                dedupe_active = fg_cfg_dedupe_active[local_work_idx]
             if cfg_offset < 0:
                 cfg_mode = fg_cfg_mode_list[ftff_idx]
                 cfg_base = fg_cfg_base_list[ftff_idx]
@@ -1910,6 +2966,8 @@ def fg_stage1_waves_kernel(
                 else:
                     band_start: ti.i32 = cfg_read_offset
                     total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
+                    if dedupe_active != 0:
+                        total_len = cfg_dedupe_slots
                     remaining: ti.i32 = total_len - band_start
                     if remaining <= 0:
                         cfg_len = 0
@@ -1944,6 +3002,49 @@ def fg_stage1_waves_kernel(
             non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
             non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
 
+            owner_cap_reduce: ti.i32 = 0
+            owner_cap_total_len: ti.i32 = cfg_len
+            owner_max_fp16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+            owner_max_fp4 = ti.Vector.zero(ti.i32, 4)
+            if ti.static(FG_STAGE1_OWNER_CAP_REDUCTION):
+                if cfg_mode != 0 and dedupe_active == 0 and cfg_read_offset >= 0:
+                    total_eff: ti.i64 = 1
+                    for sec_cap in ti.static(range(FG_MAX_SECTIONS)):
+                        if sec_cap < n_sections:
+                            pair_cap_forced_eff: ti.i32 = 0
+                            if pair_caps_from_timeline != 0:
+                                if sec_cap < fever_acts:
+                                    pair_cap_forced_eff = _fg_section_forced_cap(sec_cap)
+                                else:
+                                    pair_cap_forced_eff = 0
+                            else:
+                                pair_cap_forced_eff = fg_pair_caps[ft_idx, ff_idx, sec_cap]
+                            if pair_cap_forced_eff < 0:
+                                pair_cap_forced_eff = 0
+                            notes_with_cap_eff = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced_eff, ti.f32) * 0.5)
+                            fp_cap_eff: ti.i32 = ti.cast(notes_with_cap_eff, ti.i32) - non_fever_base
+                            if fp_cap_eff < 0:
+                                fp_cap_eff = 0
+                            max_fp_eff: ti.i32 = fg_cfg_max_fp[ftff_idx, sec_cap]
+                            if max_fp_eff < 0:
+                                max_fp_eff = 0
+                            if max_fp_eff > fp_cap_eff:
+                                max_fp_eff = fp_cap_eff
+                            owner_max_fp16[sec_cap] = max_fp_eff
+                            if sec_cap < 4:
+                                owner_max_fp4[sec_cap] = max_fp_eff
+                            total_eff *= ti.cast(max_fp_eff + 1, ti.i64)
+                    if total_eff < 1:
+                        total_eff = 1
+                    if total_eff < ti.cast(cfg_len, ti.i64):
+                        owner_cap_reduce = 1
+                        owner_cap_total_len = ti.cast(total_eff, ti.i32)
+                        remaining_eff: ti.i32 = owner_cap_total_len - cfg_read_offset
+                        if remaining_eff <= 0:
+                            cfg_len = 0
+                        else:
+                            cfg_len = ti.min(remaining_eff, n_cfg)
+
             # Parallel loop over configs (block-strided)
             cfg_idx: ti.i32 = lane
             while cfg_idx < n_cfg:
@@ -1951,16 +3052,43 @@ def fg_stage1_waves_kernel(
                     cfg_idx += FG_STAGE1_BLOCK_DIM
                     continue
                 global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
+                if dedupe_active != 0:
+                    rep_slot: ti.i32 = cfg_read_offset + cfg_idx
+                    if rep_slot >= cfg_dedupe_slots:
+                        cfg_idx += FG_STAGE1_BLOCK_DIM
+                        continue
+                    global_cfg_idx = fg_cfg_dedupe_rep_cfg_idx[local_work_idx, rep_slot]
+                    if global_cfg_idx < 0:
+                        cfg_idx += FG_STAGE1_BLOCK_DIM
+                        continue
                 fp_targets_vec4 = ti.Vector.zero(ti.i32, 4)
                 fp_targets_vec16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
                 if cfg_mode != 0:
                     local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
+                    if owner_cap_reduce != 0:
+                        local_cfg_idx = cfg_read_offset + cfg_idx
                     if local_cfg_idx < 0:
                         local_cfg_idx = 0
                     if ti.static(use_small_sections):
-                        fp_targets_vec4 = _fg_decode_fp_targets_vec4(local_cfg_idx, ftff_idx, n_sections)
+                        if owner_cap_reduce != 0:
+                            fp_targets_vec4 = _fg_decode_fp_targets_with_caps_vec4(
+                                local_cfg_idx, owner_max_fp4, n_sections
+                            )
+                            global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec4(
+                                fp_targets_vec4, ftff_idx, n_sections
+                            )
+                        else:
+                            fp_targets_vec4 = _fg_decode_fp_targets_vec4(local_cfg_idx, ftff_idx, n_sections)
                     else:
-                        fp_targets_vec16 = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+                        if owner_cap_reduce != 0:
+                            fp_targets_vec16 = _fg_decode_fp_targets_with_caps_vec(
+                                local_cfg_idx, owner_max_fp16, n_sections
+                            )
+                            global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec(
+                                fp_targets_vec16, ftff_idx, n_sections
+                            )
+                        else:
+                            fp_targets_vec16 = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
 
                 m0 = ti.cast(0, ti.u32)
                 m1 = ti.cast(0, ti.u32)
@@ -1991,7 +3119,10 @@ def fg_stage1_waves_kernel(
                             else:
                                 fp_target = fp_targets_vec16[sec]
                         else:
-                            fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                            read_cfg_idx: ti.i32 = cfg_read_base + cfg_idx
+                            if dedupe_active != 0:
+                                read_cfg_idx = global_cfg_idx
+                            fp_target = fg_forced_counts[read_cfg_idx, sec]
                         if fp_target < 0:
                             fp_target = 0
                         if sec < FG_MAX_SECTIONS:
@@ -2065,8 +3196,6 @@ def fg_stage1_waves_kernel(
 
                     current_idx = fever_end_idx
                     sec += 1
-                    if sec >= n_sections:
-                        break
 
                 # Compute base score and forced-great penalty for this cfg.
                 body_len = ti.max(total_notes - head_len, 0)
@@ -2201,17 +3330,21 @@ def fg_stage1_waves_kernel(
 
         best_wave = simt.subgroup.reduce_max(local_best_packed)
         if simt.subgroup.elect() and best_wave > ti.u64(0):
-            # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
-            wave_slot = lane >> 5
-            if wave_slot < ti.static(FG_STAGE1_WAVE_SLOTS_MAX):
-                fg_stage1_wave_best[work_idx, wave_slot] = best_wave
+            if ti.static(FG_STAGE1_DIRECT_ATOMIC):
+                ti.atomic_max(fg_stage1_packed[g, ftff_idx], ti.cast(best_wave, ti.i64))
+            else:
+                # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
+                wave_slot = lane >> 5
+                if wave_slot < ti.static(FG_STAGE1_WAVE_SLOTS_MAX):
+                    fg_stage1_wave_best[local_work_idx, wave_slot] = best_wave
 
 
 @ti.kernel
-def fg_stage1_reduce_waves_kernel(n_work_items: ti.i32, is_first_chunk: ti.i32):
+def fg_stage1_reduce_waves_kernel(work_offset: ti.i32, n_work_items: ti.i32, is_first_chunk: ti.i32):
     """Reduce wave-staged Stage-1 winners into `fg_stage1_packed` (accumulates across cfg chunks)."""
     sentinel_i64: ti.i64 = ti.cast(-1, ti.i64) << 32
-    for work_idx in range(n_work_items):
+    for local_work_idx in range(n_work_items):
+        work_idx: ti.i32 = work_offset + local_work_idx
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
 
@@ -2222,7 +3355,7 @@ def fg_stage1_reduce_waves_kernel(n_work_items: ti.i32, is_first_chunk: ti.i32):
                 best = ti.cast(prev, ti.u64)
 
         for i in ti.static(range(FG_STAGE1_WAVE_SLOTS_MAX)):
-            v = fg_stage1_wave_best[work_idx, i]
+            v = fg_stage1_wave_best[local_work_idx, i]
             if v > best:
                 best = v
 

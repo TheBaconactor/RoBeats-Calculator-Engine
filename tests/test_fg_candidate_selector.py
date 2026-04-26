@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import (
+    select_effective_unique_ga_candidates,
+    select_fg_candidates,
+)
 
 
 def _item(name: str, **stats: int) -> dict:
@@ -59,6 +62,48 @@ def test_select_fg_candidates_dedupes_mini_permutations():
     selected = select_fg_candidates([base, perm], limit=10)
     assert len(selected) == 1
     assert selected[0]["BaseScore"] == 1000
+
+
+def test_select_effective_unique_ga_candidates_refills_after_mini_equivalence_dedupe():
+    def mini_stats(name: str, rush: int) -> dict:
+        return {
+            "Name": name,
+            "Perfect Points": 1,
+            "Combo Multiplier": 2,
+            "Fever Multiplier": 3,
+            "Fever Time": 4,
+            "Fever Fill Rate": 5,
+            "Rush": rush,
+            "Flow": 0,
+        }
+
+    minis_by_name = {
+        "A": mini_stats("A", 7),
+        "B": mini_stats("B", 7),
+        "D": mini_stats("D", 8),
+        "X": mini_stats("X", 1),
+        "Y": mini_stats("Y", 2),
+    }
+    raw_a = _candidate(idx=1, base_score=1000, minis=("A", "X", "Y"))
+    raw_b_equivalent = _candidate(idx=1, base_score=999, minis=("B", "X", "Y"))
+    distinct = _candidate(idx=1, base_score=900, minis=("D", "X", "Y"))
+
+    selected = select_effective_unique_ga_candidates(
+        [raw_a, raw_b_equivalent, distinct],
+        limit=2,
+        minis_by_name=minis_by_name,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+    )
+
+    selected_minis = {tuple(sorted((it or {}).get("Name", "") for it in cand["Minis"])) for cand in selected}
+    assert ("A", "X", "Y") in selected_minis
+    assert ("D", "X", "Y") in selected_minis
+    assert ("B", "X", "Y") not in selected_minis
+    assert raw_a.get("loadout_hash")
+    assert raw_a.get("loadout_hash") == raw_b_equivalent.get("loadout_hash")
+    assert raw_a.get("loadout_hash") != distinct.get("loadout_hash")
 
 
 def test_select_fg_candidates_preserves_top_base_slice():

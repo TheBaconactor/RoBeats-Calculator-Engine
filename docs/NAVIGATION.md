@@ -48,18 +48,16 @@
 - Unified script discovery: `python -m tools list` (`--all` includes private/scratch scripts)
 - Unified inventory audit: `python -m tools audit`
 - Unified script execution: `python -m tools run <id> -- <args>`
-- Repo-local MCP harness: `python -m tools.mcp_server`
 - GeneralMeta: `python general_meta_main.py`
 
 ## Reference Docs
 
 - Engineering doctrine and harness layout: `docs/ENGINEERING_PRINCIPLES.md`
-- MCP harness contract: `docs/MCP_HARNESS_CHARTER.md`
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
 - Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`
 - Fever timeline math: `docs/FEVER_TIMELINE_MATH.md`
-- Human HitSim details: `docs/HUMAN_HIT_SIM.md`
+- Timing envelope details: `docs/Implementation Records/TIMING_ENVELOPE_EXACT_FRONTIER.md`
 - Stats verifier: `docs/STATS_VERIFIER.md`
 
 ## Refactoring and Maintenance Notes
@@ -68,5 +66,5 @@
 - Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`
 - In-flight integrated throughput architecture and A/B protocol: `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
 - Same-slot GPU-resident GA->FG handoff and legacy-path cleanup: `docs/GPU_RESIDENT_GA_FG_PLAN.md`
-- Steady-state GA plus global unique-eval proposal: `docs/STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md`
+- Historical steady-state/unique-eval GA proposal: `docs/STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md`
 - Historical implementation records index: `docs/Implementation Records/README.md`

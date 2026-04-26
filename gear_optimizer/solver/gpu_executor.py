@@ -54,8 +54,23 @@ from gear_optimizer.solver.windows_timer import (
 
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
-_WARMUP_SENTINEL_SCHEMA = 2
-_GA_WARMUP_PROFILE = "v3_compile_update_global"
+_WARMUP_SENTINEL_SCHEMA = 3
+_GA_WARMUP_PROFILE = "v4_live_request_setup_refresh"
+
+
+def _effective_owner_batch_max(
+    base_batch_max: int,
+    *,
+    in_process_queues: bool,
+    batch_max_overridden: bool,
+) -> int:
+    batch_max_i = max(1, int(base_batch_max))
+    if in_process_queues and not batch_max_overridden:
+        # Keep owner turns broad enough to drain local producer bursts without
+        # widening the turn so far that same-song downstream readiness gets
+        # buried behind unrelated in-process work.
+        batch_max_i = max(batch_max_i, 24)
+    return int(batch_max_i)
 
 
 def _system_timer_override_allowed() -> bool:
@@ -73,6 +88,13 @@ def _release_windows_timer_period_1ms() -> None:
     _release_windows_timer_period_1ms_shared()
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(_ENV_GET(name, str(default)) or str(default)).strip())
+    except Exception:
+        return int(default)
+
+
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
@@ -80,7 +102,6 @@ class GpuRequestType(Enum):
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
-    SOLVE_FORCE_GREATS_EXACT_DP = "solve_force_greats_exact_dp_gpu_batch"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
@@ -410,10 +431,11 @@ def _registry_static_handle_entry(
         Reduce IPC payload size for `timeline_grid` when it is actually a `calc_song` dict.
 
         `taichi_gem.api.timeline.precompute_timeline_gpu` only needs:
-          - calc_song["song_data"]["timestamps"]
+          - calc_song["song_data"]["timestamps"] / chart_timestamps
+          - calc_song["song_data"]["note_types"]
           - calc_song["metadata"]["Long Notes"]
           - calc_song["metadata"]["Last Note Time"]
-          - HumanHitSim cache-affecting metadata keys (for stable per-slot caching)
+          - timing-envelope metadata used by cache keys
         """
         if not isinstance(calc_song, dict):
             return calc_song
@@ -427,27 +449,46 @@ def _registry_static_handle_entry(
         if timestamps is None:
             return calc_song
 
-        ts_out = timestamps
-        try:
-            import numpy as np
+        def _contiguous_array(value: Any, dtype: Any) -> Any:
+            if value is None:
+                return None
+            out = value
+            try:
+                import numpy as np
 
-            ts_out = np.asarray(timestamps, dtype=np.float32)
-            if not ts_out.flags["C_CONTIGUOUS"]:
-                ts_out = np.ascontiguousarray(ts_out)
-        except Exception:
-            ts_out = timestamps
+                out = np.asarray(value, dtype=dtype)
+                if not out.flags["C_CONTIGUOUS"]:
+                    out = np.ascontiguousarray(out)
+            except Exception:
+                out = value
+            return out
+
+        ts_out = _contiguous_array(timestamps, "float32")
+        chart_ts = song_data.get("chart_timestamps")
+        chart_ts_out = _contiguous_array(chart_ts, "float32") if chart_ts is not None else None
+        note_types = song_data.get("note_types")
+        note_types_out = _contiguous_array(note_types, "int16") if note_types is not None else None
+
+        song_data_out: dict[str, Any] = {"timestamps": ts_out}
+        if chart_ts_out is not None:
+            song_data_out["chart_timestamps"] = chart_ts_out
+        if note_types_out is not None:
+            song_data_out["note_types"] = note_types_out
+        for sig_key in ("_timestamps_sig", "_chart_timestamps_sig", "_note_types_sig"):
+            sig_val = song_data.get(sig_key)
+            if isinstance(sig_val, (bytes, bytearray, memoryview)) and len(sig_val) == 16:
+                song_data_out[sig_key] = bytes(sig_val)
 
         meta_out = {
             "Song Name": meta.get("Song Name", ""),
+            "Difficulty": meta.get("Difficulty", ""),
             "Long Notes": int(meta.get("Long Notes", 0) or 0),
             "Last Note Time": float(meta.get("Last Note Time", 0) or 0.0),
-            "HumanHitSimApplied": bool(meta.get("HumanHitSimApplied")),
-            "HumanHitSimApplyTo": meta.get("HumanHitSimApplyTo", ""),
-            "HumanHitSimDistribution": meta.get("HumanHitSimDistribution", ""),
-            "HumanHitSimGreatMode": meta.get("HumanHitSimGreatMode", ""),
-            "HumanHitSimSeed": meta.get("HumanHitSimSeed", 0),
+            "TimingEnvelopeApplied": bool(meta.get("TimingEnvelopeApplied")),
+            "TimingEnvelopeMode": meta.get("TimingEnvelopeMode", ""),
+            "TimingEnvelopeFGCarry": meta.get("TimingEnvelopeFGCarry", ""),
         }
-        return {"metadata": meta_out, "song_data": {"timestamps": ts_out}}
+        return {"metadata": meta_out, "song_data": song_data_out}
 
     key = (
         int(id(item_stats)),
@@ -548,7 +589,6 @@ class GpuExecutor:
     _FG_REQUEST_TYPES = frozenset(
         {
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
@@ -569,7 +609,6 @@ class GpuExecutor:
     _COALESCABLE_REQUEST_TYPES = frozenset(
         {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -604,6 +643,9 @@ class GpuExecutor:
         except Exception:
             value = ""
         return value in cls._GA_RECOVERY_REQUEST_TYPE_VALUES
+
+    def _is_ga_recovery_request(self, request: "GpuRequest") -> bool:
+        return self._is_ga_recovery_request_type(getattr(request, "request_type", None))
 
     def __new__(cls):
         """Singleton pattern."""
@@ -763,7 +805,6 @@ class GpuExecutor:
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP: self._execute_solve_force_greats_exact_dp,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
             GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
@@ -992,10 +1033,6 @@ class GpuExecutor:
             if isinstance(ftff_chunks, (list, tuple)) and ftff_chunks:
                 return float(max(1, len(ftff_chunks)))
             return 1.0
-
-        if req_type == GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP:
-            stats_list = payload.get("stats_list")
-            return float(max(1, self._size_hint(stats_list)))
 
         if req_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
             payloads = payload.get("payloads")
@@ -1812,8 +1849,6 @@ class GpuExecutor:
             from .taichi_gem.runtime import init_taichi
 
             init_taichi()
-            self._taichi_ready = True
-            self._ready_event.set()
             logger.debug("[GpuExecutor] Taichi initialized")
         except Exception as e:
             self._taichi_ready = False
@@ -1875,6 +1910,26 @@ class GpuExecutor:
                     )
                     if warmup_cached:
                         self._write_heartbeat(phase="warmup_cached", force=True)
+                        try:
+                            if warmup_fg:
+                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
+                                from .taichi_gem.force_greats import fields as fg_fields
+                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                    warmup_force_greats_finder_runtime_imports,
+                                )
+
+                                fg_fields.ensure_ready_with_warmup()
+                                warmup_force_greats_finder_runtime_imports()
+                            if warmup_ga:
+                                self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
+                                from .taichi_gem.api import ga_operations as ga_ops
+
+                                ga_ops.warmup_ga_live_request_kernels()
+                        except Exception as e:
+                            try:
+                                logger.debug("[GpuExecutor] Cached warmup refresh failed: %s: %s", type(e).__name__, e)
+                            except Exception:
+                                pass
                     else:
                         sentinel_error = ""
                         try:
@@ -1887,8 +1942,12 @@ class GpuExecutor:
                                     pass
                                 t0 = perf_counter()
                                 from .taichi_gem.force_greats import fields as fg_fields
+                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                    warmup_force_greats_finder_runtime_imports,
+                                )
 
                                 fg_fields.ensure_ready_with_warmup()
+                                warmup_force_greats_finder_runtime_imports()
                                 dt_ms = (perf_counter() - t0) * 1000.0
                                 if ENV.perf_timing:
                                     logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
@@ -1941,8 +2000,12 @@ class GpuExecutor:
                 try:
                     if warmup_fg:
                         from .taichi_gem.force_greats import fields as fg_fields
+                        from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                            warmup_force_greats_finder_runtime_imports,
+                        )
 
                         fg_fields.ensure_ready_with_warmup()
+                        warmup_force_greats_finder_runtime_imports()
                     if warmup_ga:
                         from .taichi_gem.api import ga_operations as ga_ops
 
@@ -1966,6 +2029,8 @@ class GpuExecutor:
             except Exception:
                 pass
 
+        self._taichi_ready = True
+        self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)
 
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
@@ -2023,7 +2088,6 @@ class GpuExecutor:
         fg_burst_until = 0.0
         fg_burst_request_types = {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-            GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -2097,9 +2161,11 @@ class GpuExecutor:
                 # In-process mode benefits from larger batches but shorter waits because
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
-                    if not cached_batch_max_overridden:
-                        # Keep owner turns broad enough to drain local producer bursts.
-                        batch_max = max(int(batch_max), 32)
+                    batch_max = _effective_owner_batch_max(
+                        int(batch_max),
+                        in_process_queues=True,
+                        batch_max_overridden=bool(cached_batch_max_overridden),
+                    )
                     if not cached_batch_wait_overridden:
                         # Keep a modest default coalescing window so we can batch/coalesce without
                         # forcing the owner loop into sub-ms yield-spin behavior.
@@ -2225,7 +2291,6 @@ class GpuExecutor:
                     GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: (
                         self._coalesce_fg_solve_with_breakpoints_batch_requests
                     ),
-                    GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP: self._coalesce_solve_force_greats_exact_dp_requests,
                     GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_ga_fg_fused_requests,
                     GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._coalesce_solve_genomes_from_registry,
                 }
@@ -2497,10 +2562,7 @@ class GpuExecutor:
             return
         if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
             return
-        if any(
-            self._is_ga_recovery_request_type(getattr(req, "request_type", None))
-            for req in list(self._staged_requests)[1:]
-        ):
+        if any(self._is_ga_recovery_request(req) for req in list(self._staged_requests)[1:]):
             return
 
         lookahead_limit = self._ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))
@@ -2515,7 +2577,7 @@ class GpuExecutor:
             self._staged_requests.append(request)
             if request.request_type == GpuRequestType.SHUTDOWN:
                 break
-            if self._is_ga_recovery_request_type(request.request_type):
+            if self._is_ga_recovery_request(request):
                 break
 
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
@@ -2535,7 +2597,7 @@ class GpuExecutor:
                     continue
                 if staged.request_type == GpuRequestType.SHUTDOWN:
                     return self._pop_staged_request(idx)
-                if self._is_ga_recovery_request_type(staged.request_type):
+                if self._is_ga_recovery_request(staged):
                     return self._pop_staged_request(idx)
 
         return self._pop_staged_request(0)
@@ -3012,9 +3074,9 @@ class GpuExecutor:
             max_payloads = 64
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
-            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "65536") or "65536")
+            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
         except Exception:
-            max_pairs = 65536
+            max_pairs = 256
         max_pairs = max(0, int(max_pairs))
         if max_pairs > 0:
             import numpy as np
@@ -3284,122 +3346,6 @@ class GpuExecutor:
 
         by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]
-
-    def _coalesce_solve_force_greats_exact_dp_requests(
-        self, requests: list["GpuRequest"]
-    ) -> list["GpuResponse"]:
-        """
-        Drain many exact-DP requests in one owner pass.
-
-        Exact DP is song-context sensitive (`calc_song`/`ref_arrays`/slot), so only
-        requests sharing one context are merged into a larger GPU API call. Different
-        song contexts are still executed in the same owner turn, which removes the
-        one-request dequeue bubble without pretending unrelated song timelines can be
-        fused into a single exact-DP kernel.
-        """
-        from .taichi_gem.force_greats.api import solve_force_greats_exact_dp_gpu_batch
-
-        if not requests:
-            return []
-
-        try:
-            max_rows = int(os.environ.get("FG_EXACT_DP_COALESCE_MAX_ROWS", "256") or "256")
-        except Exception:
-            max_rows = 256
-        max_rows = max(1, min(int(max_rows), 4096))
-
-        groups: dict[tuple[Any, ...], list[tuple[GpuRequest, list[dict[str, Any]], dict[str, Any]]]] = {}
-        direct: dict[int, GpuResponse] = {}
-
-        for req in requests:
-            payload = self._payload_dict(req)
-            stats_list = payload.get("stats_list")
-            calc_song = payload.get("calc_song")
-            ref_arrays = payload.get("ref_arrays")
-            if not isinstance(stats_list, (list, tuple)):
-                direct[int(req.request_id)] = GpuResponse(
-                    request_id=req.request_id,
-                    success=False,
-                    error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (stats_list must be list/tuple)",
-                )
-                continue
-            if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-                direct[int(req.request_id)] = GpuResponse(
-                    request_id=req.request_id,
-                    success=False,
-                    error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (calc_song/ref_arrays must be dict)",
-                )
-                continue
-
-            key = (
-                int(id(calc_song)),
-                int(id(ref_arrays)),
-                bool(payload.get("timing_aware", True)),
-                bool(payload.get("prune", True)),
-                int(payload.get("song_slot", 0) or 0),
-            )
-            groups.setdefault(key, []).append((req, list(stats_list), payload))
-
-        out_by_id: dict[int, GpuResponse] = dict(direct)
-
-        for _key, items in groups.items():
-            if not items:
-                continue
-            req0, _stats0, payload0 = items[0]
-            calc_song = payload0.get("calc_song")
-            ref_arrays = payload0.get("ref_arrays")
-            timing_aware = bool(payload0.get("timing_aware", True))
-            prune = bool(payload0.get("prune", True))
-            song_slot = int(payload0.get("song_slot", 0) or 0)
-
-            merged_stats: list[dict[str, Any]] = []
-            slices: list[tuple[GpuRequest, int, int]] = []
-            for req, stats_rows, _payload in items:
-                start = len(merged_stats)
-                merged_stats.extend([dict(row) if isinstance(row, dict) else row for row in stats_rows])
-                slices.append((req, int(start), int(len(stats_rows))))
-
-            try:
-                merged_results: list[dict[str, Any]] = []
-                for start in range(0, len(merged_stats), int(max_rows)):
-                    chunk = merged_stats[start : start + int(max_rows)]
-                    chunk_result = solve_force_greats_exact_dp_gpu_batch(
-                        stats_list=list(chunk),
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        timing_aware=bool(timing_aware),
-                        prune=bool(prune),
-                        song_slot=int(song_slot),
-                    )
-                    if len(chunk_result or []) != len(chunk):
-                        raise RuntimeError(
-                            "coalesced exact-DP chunk returned "
-                            f"{len(chunk_result or [])} results for {len(chunk)} stats rows"
-                        )
-                    merged_results.extend(list(chunk_result or []))
-
-                if len(merged_results) != len(merged_stats):
-                    raise RuntimeError(
-                        "coalesced exact-DP returned "
-                        f"{len(merged_results)} results for {len(merged_stats)} stats rows"
-                    )
-
-                for req, start, count in slices:
-                    out_by_id[int(req.request_id)] = GpuResponse(
-                        request_id=req.request_id,
-                        success=True,
-                        result=list(merged_results[int(start) : int(start) + int(count)]),
-                    )
-            except Exception as exc:
-                err = f"SOLVE_FORCE_GREATS_EXACT_DP coalesced: {type(exc).__name__}: {exc}"
-                for req, _start, _count in slices:
-                    out_by_id[int(req.request_id)] = GpuResponse(
-                        request_id=req.request_id,
-                        success=False,
-                        error=err,
-                    )
-
-        return [out_by_id.get(int(req.request_id)) for req in requests]
 
     def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
@@ -4017,50 +3963,6 @@ class GpuExecutor:
                 result = solve_force_greats_finder_gpu(*base_args, **kwargs)
         else:
             result = solve_force_greats_finder_gpu(*args, **kwargs)
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=result,
-        )
-
-    def _execute_solve_force_greats_exact_dp(self, request: GpuRequest) -> GpuResponse:
-        """Execute the production exact FG DP batch on the GPU owner thread."""
-        from .taichi_gem.force_greats.api import solve_force_greats_exact_dp_gpu_batch
-
-        payload = request.payload or {}
-        stats_list = payload.get("stats_list")
-        calc_song = payload.get("calc_song")
-        ref_arrays = payload.get("ref_arrays")
-
-        if not isinstance(stats_list, (list, tuple)):
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (stats_list must be list/tuple)",
-            )
-        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="Invalid payload for SOLVE_FORCE_GREATS_EXACT_DP (calc_song/ref_arrays must be dict)",
-            )
-
-        try:
-            result = solve_force_greats_exact_dp_gpu_batch(
-                stats_list=list(stats_list),
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                timing_aware=bool(payload.get("timing_aware", True)),
-                prune=bool(payload.get("prune", True)),
-                song_slot=int(payload.get("song_slot", 0) or 0),
-            )
-        except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"SOLVE_FORCE_GREATS_EXACT_DP: {type(e).__name__}: {e}",
-            )
-
         return GpuResponse(
             request_id=request.request_id,
             success=True,
@@ -5086,33 +4988,90 @@ class GpuExecutor:
         except Exception as e:
             raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
+        solve_kwargs_payload = dict(payload.get("solve_kwargs") or {})
         implicit_cfgs = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
+        fused_surface_pair_drops = 0
+        fused_surface_pair_reduce_sec = 0.0
         # Default ON: keeping per-pair max-FP computation on-GPU avoids an expensive
         # host download+re-upload cycle that often appears as unexplained idle time.
         use_gpu_max_fp_compute = env_flag("FG_MAX_FP_GPU_COMPUTE", "1")
         if implicit_cfgs:
             if use_gpu_max_fp_compute:
-                # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
-                # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+                max_fp_matrix_for_task = None
+                if env_flag("FG_FUSED_SURFACE_PAIR_REDUCTION", "1"):
+                    pair_reduce_min_pairs = max(1, _env_int("FG_FUSED_SURFACE_PAIR_REDUCTION_MIN_PAIRS", 1025))
+                    if int(pairs_arr.shape[0]) >= int(pair_reduce_min_pairs):
+                        _t_surface = perf_counter()
+                        try:
+                            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+                            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+                            max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
+                                pair_ft=pair_ft,
+                                pair_ff=pair_ff,
+                                base_ft=base_ft,
+                                base_ff=base_ff,
+                                n_sections=int(n_sections),
+                                song_slot=int(song_slot),
+                                gem_scale_fever=int(gem_scale_fever),
+                                non_fever_base_by_ff=non_fever_base_by_ff,
+                                fp_cap_table=fp_cap_table,
+                            )
+                            from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
+                                reduce_ftff_pairs_by_max_fp_surface,
+                            )
+
+                            surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
+                                pairs_arr,
+                                max_fp_matrix,
+                                n_sections=int(n_sections),
+                                total_budget=int(solve_kwargs_payload.get("total_budget", 90) or 90),
+                                is_p_ft=int(solve_kwargs_payload.get("is_p_ft", 0) or 0),
+                                is_s_ft=int(solve_kwargs_payload.get("is_s_ft", 0) or 0),
+                                is_p_ff=int(solve_kwargs_payload.get("is_p_ff", 0) or 0),
+                                is_s_ff=int(solve_kwargs_payload.get("is_s_ff", 0) or 0),
+                            )
+                            fused_surface_pair_drops = max(0, int(surface_reduction.dropped))
+                            if fused_surface_pair_drops > 0:
+                                pairs_arr = np.ascontiguousarray(surface_reduction.pairs, dtype=np.int32)
+                                max_fp_matrix_for_task = np.ascontiguousarray(
+                                    surface_reduction.max_fp_matrix,
+                                    dtype=np.int16,
+                                )
+                            else:
+                                max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"fused surface pair reduction failed: {type(e).__name__}: {e}"
+                            ) from e
+                        finally:
+                            fused_surface_pair_reduce_sec = perf_counter() - _t_surface
+
+                if max_fp_matrix_for_task is None:
+                    # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
+                    # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+                    counts_max_fp_task: Any = {
+                        "mode": "gpu",
+                        "base_stats_pairs": base_arr,
+                        # Reuse pre-split base stat vectors; avoids repeated host slicing
+                        # in downstream task preparation.
+                        "base_ft": base_ft,
+                        "base_ff": base_ff,
+                        "non_fever_base_by_ff": non_fever_base_by_ff,
+                        "fp_cap_table": fp_cap_table,
+                        "n_sections": int(n_sections),
+                        "song_slot": int(song_slot),
+                        "gem_scale_fever": int(gem_scale_fever),
+                    }
+                else:
+                    counts_max_fp_task = max_fp_matrix_for_task
+
                 fg_tasks.append(
                     {
                         "counts_list": None,
-                        "counts_max_fp": {
-                            "mode": "gpu",
-                            "base_stats_pairs": base_arr,
-                            # Reuse pre-split base stat vectors; avoids repeated host slicing
-                            # in downstream task preparation.
-                            "base_ft": base_ft,
-                            "base_ff": base_ff,
-                            "non_fever_base_by_ff": non_fever_base_by_ff,
-                            "fp_cap_table": fp_cap_table,
-                            "n_sections": int(n_sections),
-                            "song_slot": int(song_slot),
-                            "gem_scale_fever": int(gem_scale_fever),
-                        },
+                        "counts_max_fp": counts_max_fp_task,
                         "ftff_pairs": pairs_arr,
                         "base_cfg_offset": 0,
                     }
@@ -5234,7 +5193,7 @@ class GpuExecutor:
         long_notes = int(payload.get("long_notes", 0) or 0)
         last_note_time = float(payload.get("last_note_time", 0.0) or 0.0)
 
-        kwargs_local = dict(payload.get("solve_kwargs") or {})
+        kwargs_local = dict(solve_kwargs_payload)
         kwargs_local["accumulate_global"] = True
         kwargs_local["return_raw"] = True
 
@@ -5310,6 +5269,8 @@ class GpuExecutor:
                 "base_ff": base_ff,
                 "non_fever_base_by_ff": non_fever_base_by_ff,
                 "fp_cap_table": fp_cap_table,
+                "surface_pair_drops": int(fused_surface_pair_drops),
+                "surface_pair_reduce_ms": int(round(float(fused_surface_pair_reduce_sec) * 1000.0)),
             }
 
         if download_topk is not None and download_base_scores is not None:
@@ -5365,6 +5326,10 @@ class GpuExecutor:
             if cfg_counts is not None and result.get("cfg_counts") is None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts
+            if fused_surface_pair_drops > 0:
+                result = dict(result)
+                result["surface_pair_drops"] = int(fused_surface_pair_drops)
+                result["surface_pair_reduce_ms"] = int(round(float(fused_surface_pair_reduce_sec) * 1000.0))
         return result
 
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
@@ -5725,47 +5690,4 @@ def submit_gpu_solve_genomes_from_registry(
         n_expected = 0
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
-    return result
-
-
-def submit_gpu_solve_force_greats_exact_dp(
-    *,
-    stats_list,
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    timing_aware: bool = True,
-    prune: bool = True,
-    song_slot: int = 0,
-    timeout: float = 180.0,
-) -> list[dict[str, Any]]:
-    """Submit the exact FG DP batch request via IPC from a GPU worker process."""
-    global _REQUEST_COUNTER
-
-    if not _WORKER_MODE:
-        raise RuntimeError("submit_gpu_solve_force_greats_exact_dp called but not in worker mode")
-
-    _REQUEST_COUNTER += 1
-    request_id = _REQUEST_COUNTER
-    request = GpuRequest(
-        request_type=GpuRequestType.SOLVE_FORCE_GREATS_EXACT_DP,
-        request_id=request_id,
-        worker_id=_WORKER_ID,
-        payload={
-            "stats_list": list(stats_list or []),
-            "calc_song": calc_song,
-            "ref_arrays": ref_arrays,
-            "timing_aware": bool(timing_aware),
-            "prune": bool(prune),
-            "song_slot": int(song_slot or 0),
-        },
-        submit_perf_ns=time.perf_counter_ns(),
-    )
-    _ensure_worker_response_router_started()
-    _REQUEST_QUEUE.put(request)
-    response = _wait_for_worker_response(request_id, float(timeout))
-    if not response.success:
-        raise RuntimeError(f"GPU executor error: {response.error}")
-    result = response.result
-    if not isinstance(result, list):
-        raise RuntimeError("GPU executor returned invalid exact FG DP result payload")
     return result

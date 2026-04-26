@@ -4,14 +4,11 @@ Benchmark: exact Force Greats DP cost (count-only vs timing-aware carry).
 This is a reference-only bench. It does NOT change production behavior.
 
 Examples:
-  python tools/bench/bench_fg_exact_dp_cost.py --song-fp "Data/Hard/Insight by Haywyre.txt" --mode timing_aware --hitsim 1
+  python tools/bench/bench_fg_exact_dp_cost.py --song-fp "Data/Hard/Insight by Haywyre.txt" --mode timing_aware
   python tools/bench/bench_fg_exact_dp_cost.py --song-fp "Data/Hard/Insight by Haywyre.txt" --mode count_only
 
 Notes:
-  - When --hitsim=1, we apply HumanHitSim to generate:
-      - fg_timestamps (Perfect-event times, monotone)
-      - fg_great_candidate_timestamps (late-only Great candidates by default)
-    which enables the timing-aware carry semantics in the DP.
+  - Timing-aware mode uses the shared timing-envelope FG stream.
 """
 
 from __future__ import annotations
@@ -25,10 +22,6 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-
-def _truthy(raw: object) -> bool:
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_song_fp(cfg_dict: dict, song_fp: str | None) -> str:
@@ -104,9 +97,6 @@ def main() -> None:
     ap.add_argument("--song-fp", type=str, default=None, help="Path to chart .txt (Data/<diff>/<name>.txt).")
     ap.add_argument("--mode", type=str, default="timing_aware", choices=("count_only", "timing_aware"))
     ap.add_argument("--prune", type=int, default=0, help="Enable monotone upper-bound pruning (default 0).")
-    ap.add_argument("--hitsim", type=int, default=1, help="Apply HumanHitSim to enable carry semantics (default 1).")
-    ap.add_argument("--hitsim-seed", type=int, default=1337, help="HumanHitSim seed (default 1337).")
-    ap.add_argument("--hitsim-great-mode", type=str, default="late", choices=("late", "early", "full"))
 
     # Stat indices (0..160). Defaults are intentionally conservative (worst-case FF cost is often near FF=0).
     ap.add_argument("--pp", type=int, default=0)
@@ -138,19 +128,9 @@ def main() -> None:
     base = get_base_calc_song(song_fp, cfg_dict)
     calc_song = clone_calc_song(base)
 
-    if _truthy(args.hitsim):
-        from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-        hitsim_cfg = {
-            "HumanHitSim": {
-                "Enabled": True,
-                "ApplyTo": "FG",
-                "Seed": int(args.hitsim_seed),
-                "Distribution": "uniform",
-                "GreatMode": str(args.hitsim_great_mode),
-            }
-        }
-        apply_human_hit_sim(calc_song, cfg_dict=hitsim_cfg)
+    apply_timing_envelope(calc_song)
 
     ref_arrays = _load_ref_arrays()
 
@@ -177,7 +157,7 @@ def main() -> None:
     use_carry = bool(song_data.get("fg_great_candidate_timestamps") is not None)
     print(
         f"[fg-dp] song_fp={song_fp!r} notes={n} mode={args.mode} prune={bool(_truthy(args.prune))} "
-        f"hitsim={bool(_truthy(args.hitsim))} carry_ts={use_carry}"
+        f"timing_envelope=True carry_ts={use_carry}"
     )
     print(f"[fg-dp] stats(pp,cm,fm,ff,ft)=({args.pp},{args.cm},{args.fm},{args.ff},{args.ft})")
 
@@ -203,4 +183,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

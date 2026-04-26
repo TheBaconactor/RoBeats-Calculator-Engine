@@ -42,7 +42,7 @@ def _create_mock_ref_arrays():
 
 def _create_mock_song(*, n_notes: int = 750):
     timestamps = np.linspace(0, 120, int(n_notes), dtype=np.float64)
-    # Include HumanHitSim metadata in the GPU timeline cache key so we avoid collisions with other GPU tests.
+    # Include timing-envelope metadata in the GPU timeline cache key so we avoid collisions with other GPU tests.
     return {
         "metadata": {
             "Song Name": "Timeline Parity Test Song",
@@ -52,10 +52,9 @@ def _create_mock_song(*, n_notes: int = 750):
             "Total Notes": int(n_notes),
             "Long Notes": 25,
             "Last Note Time": float(timestamps[-1]),
-            "HumanHitSimSeed": 12345,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
         },
         "song_data": {"timestamps": timestamps},
     }

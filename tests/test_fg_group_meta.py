@@ -34,3 +34,43 @@ def test_fg_group_meta_from_eval_data_returns_cached_meta_without_rebuild(monkey
     )
 
     assert out is cached
+
+
+def test_fg_group_meta_from_eval_data_forwards_prefer_grid(monkeypatch):
+    seen = {}
+
+    def _fake_build_fg_group_meta(**kwargs):
+        seen.update(kwargs)
+        return {
+            "selected_element": "Rush",
+            "center_ft": 4,
+            "center_ff": 6,
+            "skip": False,
+            "n_sections": 3,
+            "max_per_section": 8,
+            "group_key": ("Rush", 3, 8),
+            "signature": ("sig",),
+            "fg_proxy_score": 42,
+        }
+
+    monkeypatch.setattr(entry_utils, "build_fg_group_meta", _fake_build_fg_group_meta)
+
+    eval_data = {
+        "BaseStats": {"Perfect Points": 1},
+        "Selected Element": "Rush",
+        "FT": 4,
+        "FF": 6,
+    }
+
+    out = entry_utils.fg_group_meta_from_eval_data(
+        eval_data,
+        calc_song={"metadata": {}, "song_data": {}},
+        ref_arrays={},
+        meta_primary_color="Rush",
+        primary_color="Rush",
+        secondary_color="Flow",
+        prefer_grid=True,
+    )
+
+    assert out is eval_data["_fg_group_meta"]
+    assert seen["prefer_grid"] is True

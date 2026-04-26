@@ -3,6 +3,8 @@ import configparser
 import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _closed_loop_bubble_kpi,
+    _continuous_fg_allow_not_ready,
+    _continuous_ga_should_yield_to_fg,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
@@ -172,6 +174,41 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
     )
 
 
+def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=True,
+            fg_drain_at_end=True,
+        )
+        is True
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=True,
+            no_ga_remaining=False,
+            fg_drain_at_end=True,
+        )
+        is True
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=True,
+            fg_drain_at_end=False,
+        )
+        is False
+    )
+    assert (
+        _continuous_fg_allow_not_ready(
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            fg_drain_at_end=True,
+        )
+        is False
+    )
+
+
 def test_continuous_fg_should_start_when_reserved_capacity_has_ready_fg():
     assert (
         _continuous_fg_should_start(
@@ -331,6 +368,140 @@ def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
         args = dict(base)
         args.update(override)
         assert _continuous_fg_should_fill_song_lanes(**args) is False
+
+
+def test_continuous_fg_lane_fill_yields_to_ready_fg_backlog():
+    assert (
+        _continuous_fg_should_fill_song_lanes(
+            target_song_lanes=2,
+            active_song_lanes=1,
+            ready_ga_count=1,
+            pending_fg_count=4,
+            ready_fg_count=1,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            oldest_wait_s=0.1,
+            aging_trigger_s=0.75,
+            aging_hard_s=2.5,
+        )
+        is False
+    )
+
+
+def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_lags():
+    assert (
+        _continuous_fg_should_fill_song_lanes(
+            target_song_lanes=2,
+            active_song_lanes=1,
+            ready_ga_count=1,
+            pending_fg_count=4,
+            ready_fg_count=0,
+            blocked_on_slot=False,
+            no_ga_remaining=False,
+            oldest_wait_s=0.8,
+            aging_trigger_s=0.75,
+            aging_hard_s=2.5,
+        )
+        is False
+    )
+
+
+def test_continuous_ga_yields_to_ready_fg_before_more_ga():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=2,
+            ready_fg_count=1,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            fg_worker_count=4,
+            ga_inflight_count=0,
+            target_song_lanes=2,
+            oldest_wait_s=0.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is True
+    )
+
+
+def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
+    for ga_inflight in (1, 2, 8):
+        assert (
+            _continuous_ga_should_yield_to_fg(
+                fg_enabled=True,
+                fg_drain_at_end=True,
+                pending_fg_count=4,
+                ready_fg_count=0,
+                fg_prep_inflight_count=4,
+                fg_inflight_count=0,
+                fg_worker_count=4,
+                ga_inflight_count=ga_inflight,
+                target_song_lanes=2,
+                oldest_wait_s=3.0,
+                aging_trigger_s=0.75,
+                blocked_on_slot=False,
+            )
+            is False
+        )
+
+
+def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=False,
+            fg_drain_at_end=True,
+            pending_fg_count=3,
+            ready_fg_count=3,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            fg_worker_count=4,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=False,
+            pending_fg_count=3,
+            ready_fg_count=3,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=0,
+            fg_worker_count=4,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
+
+
+def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=8,
+            ready_fg_count=8,
+            fg_prep_inflight_count=0,
+            fg_inflight_count=8,
+            fg_worker_count=8,
+            ga_inflight_count=2,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
 
 
 def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():

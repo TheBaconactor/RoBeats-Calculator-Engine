@@ -254,7 +254,7 @@ def _continuous_ga_warm_queue_limit(
     dispatch_burst: int,
 ) -> int:
     """
-    Keep startup GA warmup bounded without starving the steady-state conveyor.
+    Keep startup GA warmup bounded without starving the continuous conveyor.
 
     The original continuous architecture worked best when GA could keep a healthy
     runway of future songs behind the currently visible FG lanes. The important
@@ -263,7 +263,7 @@ def _continuous_ga_warm_queue_limit(
 
     Once decode/FG work exists, return the full GA queue limit and rely on owner
     turn discipline to surface ready FG promptly. Clamping GA to the visible lane
-    count in steady state underfeeds fast GPUs because downstream decode/FG prep
+    count once the conveyor is full underfeeds fast GPUs because downstream decode/FG prep
     latency can exceed a two-lane runway.
     """
     limit = max(1, int(ga_queue_limit))
@@ -283,15 +283,13 @@ def _continuous_ga_warm_queue_limit(
         return int(limit)
 
     handoff_fg_work = (
-        max(0, int(decode_inflight_count))
-        + max(0, int(pending_fg_count))
-        + max(0, int(fg_prep_inflight_count))
+        max(0, int(decode_inflight_count)) + max(0, int(pending_fg_count)) + max(0, int(fg_prep_inflight_count))
     )
     if handoff_fg_work > 0:
         # Decode/pending FG means the first FG handoff is approaching, but if we
         # immediately reopen GA to the full queue depth we can bury that first FG
         # owner turn behind a long GA tail. Keep a modest GA runway until FG has
-        # actually surfaced onto the owner, then restore the full steady-state
+        # actually surfaced onto the owner, then restore the full continuous
         # limit.
         return int(handoff_limit)
 
@@ -306,17 +304,21 @@ def _continuous_fg_should_fill_song_lanes(
     target_song_lanes: int,
     active_song_lanes: int,
     ready_ga_count: int,
+    pending_fg_count: int = 0,
+    ready_fg_count: int = 0,
     blocked_on_slot: bool,
     no_ga_remaining: bool,
     oldest_wait_s: float,
+    aging_trigger_s: float = 0.0,
     aging_hard_s: float,
 ) -> bool:
     """
     Prefer filling the next GA song lane before starting FG when we have immediate GA work.
 
     This turns the in-flight queue into a real two-lane conveyor on one GPU owner:
-    keep song B entering GA while song A is already headed toward FG, unless FG has
-    aged hard enough that fairness must override the lane-fill preference.
+    keep song B entering GA while song A is already headed toward FG, unless FG is
+    already runnable or has aged enough that fairness must override the lane-fill
+    preference.
     """
     if int(target_song_lanes) <= 1:
         return False
@@ -326,9 +328,59 @@ def _continuous_fg_should_fill_song_lanes(
         return False
     if bool(blocked_on_slot) or bool(no_ga_remaining):
         return False
+    if int(pending_fg_count) > 0 and int(ready_fg_count) > 0:
+        return False
+    if int(pending_fg_count) > 0 and float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
+        return False
     if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
         return False
     return True
+
+
+def _continuous_ga_should_yield_to_fg(
+    *,
+    fg_enabled: bool,
+    fg_drain_at_end: bool,
+    pending_fg_count: int,
+    ready_fg_count: int,
+    fg_prep_inflight_count: int,
+    fg_inflight_count: int,
+    fg_worker_count: int,
+    ga_inflight_count: int,
+    target_song_lanes: int,
+    oldest_wait_s: float,
+    aging_trigger_s: float,
+    blocked_on_slot: bool,
+) -> bool:
+    """
+    Stop GA admission when FG has become the limiting queue.
+
+    This is deliberately an admission rule, not a scoring shortcut. Existing GA
+    work may finish, but the submit loop yields to the FG scheduler before it
+    adds more GA jobs once FG is ready. Active-but-unready FG prep is not a
+    runnable GPU lane, so it must not stop GA admission by itself.
+    """
+    if not bool(fg_enabled):
+        return False
+    if (not bool(fg_drain_at_end)) and (not bool(blocked_on_slot)):
+        return False
+
+    pending = max(0, int(pending_fg_count))
+    ready = max(0, int(ready_fg_count))
+    prep = max(0, int(fg_prep_inflight_count))
+    fg_inflight = max(0, int(fg_inflight_count))
+    fg_workers = max(1, int(fg_worker_count))
+    fg_pressure = int(pending) + int(prep) + int(fg_inflight)
+    if fg_pressure <= 0:
+        return False
+
+    if bool(blocked_on_slot):
+        return True
+    if fg_inflight >= fg_workers:
+        return False
+    if ready > 0:
+        return True
+    return False
 
 
 def _continuous_fg_should_start(
@@ -357,6 +409,24 @@ def _continuous_fg_should_start(
     # count can defer runnable FG work behind a full GA drain if bookkeeping
     # lags the actual collect/prep state.
     return True
+
+
+def _continuous_fg_allow_not_ready(
+    *,
+    blocked_on_slot: bool,
+    no_ga_remaining: bool,
+    fg_drain_at_end: bool,
+) -> bool:
+    """
+    Decide whether a pending FG song may be handed to a worker before prep is done.
+
+    During the final FG drain there is no GA work left to protect. Keeping those
+    pending songs in the scheduler until their prep futures finish serializes the
+    last CPU prep/first-submit window and can leave the GPU owner empty.
+    """
+    if bool(blocked_on_slot):
+        return True
+    return bool(no_ga_remaining) and bool(fg_drain_at_end)
 
 
 def _continuous_fg_submit_budget(

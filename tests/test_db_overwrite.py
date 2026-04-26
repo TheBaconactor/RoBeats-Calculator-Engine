@@ -117,7 +117,18 @@ def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connec
     assert row["score"] == 1000
     assert row["fg_score"] == 1500
     assert json.loads(row["details_json"])["test"] == "base"
-    assert row["force_details_json"] is not None
+    assert row["force_details_json"] is None
+
+    fg_row = db_connection.execute(
+        """
+        SELECT force_details_json
+        FROM team_buff_fg_loadouts
+        WHERE song_name=? AND team_buff='T5'
+        """,
+        (song,),
+    ).fetchone()
+    assert fg_row is not None
+    assert fg_row["force_details_json"] is not None
 
 
 def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):

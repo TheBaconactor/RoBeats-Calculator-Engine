@@ -96,7 +96,6 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
             "fever_time": "0",
         },
         "ElementalGems": {"Chill": "0", "Flow": "0", "Rush": "0", "Beat": "0", "Vibe": "63"},
-        "HumanHitSim": {"Enabled": "false"},
     }
 
     captured = {"n": None, "ga_n": None}

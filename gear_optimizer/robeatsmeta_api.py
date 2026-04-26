@@ -20,7 +20,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 # Keep the 24/7 service default aligned with the checked-in config instead of the
-# higher profiling-oriented overlap that materially increases steady-state RAM.
+# higher profiling-oriented overlap that materially increases continuous-service RAM.
 _DEFAULT_INFLIGHT_SONGS = 12
 _DEFAULT_MAX_PENDING_VISITS = 10
 _DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS = 0.05
@@ -202,7 +202,9 @@ class RoBeatsMetaOptimizerApi:
         )
         ttl_override = visit_ttl_seconds
         if ttl_override is None:
-            ttl_override = _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_TTL_SECONDS"), _DEFAULT_VISIT_TTL_SECONDS)
+            ttl_override = _safe_int(
+                os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_TTL_SECONDS"), _DEFAULT_VISIT_TTL_SECONDS
+            )
         self._visit_ttl_seconds = max(60, int(ttl_override))
         self._max_pending_visits = max(
             1,
@@ -225,7 +227,9 @@ class RoBeatsMetaOptimizerApi:
             self._backend_mode_enabled = False
         self._publish_runtime_status = bool(publish_runtime_status)
         self._runtime_status_push_url = self._resolve_runtime_status_push_url() if self._publish_runtime_status else ""
-        self._runtime_status_push_token = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or "").strip()
+        self._runtime_status_push_token = str(
+            os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or ""
+        ).strip()
         self._runtime_status_push_fail_until = 0.0
         self._runtime_status_push_failure_count = 0
         self._last_runtime_status_snapshot: dict[str, Any] | None = None
@@ -241,7 +245,9 @@ class RoBeatsMetaOptimizerApi:
         self._runtime_status_http_conn_key: tuple[str, str, int] | None = None
         heartbeat_raw = os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_HEARTBEAT_SEC", "5")
         heartbeat_seconds = _safe_float(heartbeat_raw, 5.0)
-        self._runtime_status_heartbeat_interval_sec = max(1.0, float(heartbeat_seconds)) if self._publish_runtime_status else 0.0
+        self._runtime_status_heartbeat_interval_sec = (
+            max(1.0, float(heartbeat_seconds)) if self._publish_runtime_status else 0.0
+        )
         self._runtime_status_last_push_monotonic = 0.0
         self._runtime_status_current = self.read_runtime_status()
         self._runtime_status_thread = threading.Thread(
@@ -805,7 +811,11 @@ class RoBeatsMetaOptimizerApi:
                 changed = True
 
         active_bundle_key = str(state.get("active_bundle_key") or "").strip()
-        if active_bundle_key and active_bundle_key in matching_keys and active_bundle_key != str(bundle.bundle_key or "").strip():
+        if (
+            active_bundle_key
+            and active_bundle_key in matching_keys
+            and active_bundle_key != str(bundle.bundle_key or "").strip()
+        ):
             state["active_bundle_key"] = str(bundle.bundle_key or "").strip()
             changed = True
 
@@ -937,7 +947,9 @@ class RoBeatsMetaOptimizerApi:
                 continue
             while True:
                 with self._runtime_status_state_lock:
-                    state = dict(self._runtime_status_pending or {}) if self._runtime_status_pending is not None else None
+                    state = (
+                        dict(self._runtime_status_pending or {}) if self._runtime_status_pending is not None else None
+                    )
                     self._runtime_status_pending = None
                     if state is None:
                         self._runtime_status_pending_event.clear()
@@ -986,7 +998,9 @@ class RoBeatsMetaOptimizerApi:
                 song_id=cleaned_song_id or cached.song_id,
                 title=title_value,
                 artist=artist_value,
-                bundle_key=_build_bundle_key(title=title_value, artist=artist_value, song_id=cleaned_song_id or cached.song_id),
+                bundle_key=_build_bundle_key(
+                    title=title_value, artist=artist_value, song_id=cleaned_song_id or cached.song_id
+                ),
             )
 
         return SongBundleRef(
@@ -1275,7 +1289,9 @@ class RoBeatsMetaOptimizerApi:
         # Bridge-reader instances (`publish_runtime_status=False`) should read through
         # to disk whenever the status file changes. Writer instances can still use the
         # in-memory snapshot unless disk mtime has moved ahead.
-        should_refresh_from_disk = (not self._publish_runtime_status) or cached is None or disk_mtime_ns != cached_mtime_ns
+        should_refresh_from_disk = (
+            (not self._publish_runtime_status) or cached is None or disk_mtime_ns != cached_mtime_ns
+        )
         if not should_refresh_from_disk and cached is not None:
             return cached
 

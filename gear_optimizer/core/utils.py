@@ -175,63 +175,44 @@ def stats_signature(stats, calc_song, selected_color):
         gs("Fever Time", 0),
         base_p_val,
         base_s_val,
-    ) + human_hitsim_timing_context(calc_song)
+    ) + timing_envelope_timing_context(calc_song)
 
 
-def human_hitsim_timing_context(calc_song):
+def timing_envelope_timing_context(calc_song):
     """
-    Return the HumanHitSim settings that can change cache-affecting timing.
+    Return deterministic timing-envelope settings that affect base timing.
     """
     if not isinstance(calc_song, dict):
         return ("", "", "", 0)
 
     meta = calc_song.get("metadata", {}) or {}
-    if not isinstance(meta, dict) or not meta.get("HumanHitSimApplied"):
+    if not isinstance(meta, dict) or not meta.get("TimingEnvelopeApplied"):
         return ("", "", "", 0)
-
-    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    if apply_to != "ALL":
-        return ("", "", "", 0)
-
-    dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
-    great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
-    try:
-        seed = int(meta.get("HumanHitSimSeed", 0) or 0)
-    except Exception:
-        seed = 0
 
     return (
-        apply_to,
-        dist,
-        great_mode,
-        int(seed),
+        "TIMING_ENVELOPE",
+        str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
+        "",
+        0,
     )
 
 
-def human_hitsim_full_context(calc_song):
+def timing_envelope_full_context(calc_song):
     """
-    Return HumanHitSim settings that can affect FG timing/carry.
-
-    Unlike `human_hitsim_timing_context`, this includes ApplyTo=FG because FG evaluation
-    depends on fg_timestamps/fg_great_candidate_timestamps even when GA/base scoring does not.
+    Return deterministic timing-envelope settings that can affect FG carry.
     """
     if not isinstance(calc_song, dict):
         return ("", "", "", 0)
 
     meta = calc_song.get("metadata", {}) or {}
-    if not isinstance(meta, dict) or not (meta.get("HumanHitSimApplied") or meta.get("HumanHitSimPlanned")):
+    if not isinstance(meta, dict) or not meta.get("TimingEnvelopeApplied"):
         return ("", "", "", 0)
 
-    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
-    great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
-    seed = safe_int(meta.get("HumanHitSimSeed", 0) or 0, 0)
-
     return (
-        apply_to,
-        dist,
-        great_mode,
-        int(seed),
+        "TIMING_ENVELOPE",
+        str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
+        str(meta.get("TimingEnvelopeFGCarry", "") or "").strip().lower(),
+        0,
     )
 
 
@@ -276,7 +257,7 @@ def full_pipeline_signature(stats, calc_song, selected_color):
         gs("Fever Time", 0),
         base_p_val,
         base_s_val,
-    ) + human_hitsim_full_context(calc_song)
+    ) + timing_envelope_full_context(calc_song)
 
 
 def get_selected_element(data: object, default: str = "") -> str:

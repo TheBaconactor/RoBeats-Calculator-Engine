@@ -13,6 +13,35 @@ def _has_taichi() -> bool:
 pytestmark = pytest.mark.gpu
 
 
+def _compare_proxy_score(
+    head_bits: tuple[int, int, int, int],
+    body_fever: int,
+    body_normal: int,
+    *,
+    head_len: int,
+) -> int:
+    base_f = np.float32(10000.0)
+    combo_mul_f = np.float32(2.6)
+    fever_mul_f = np.float32(5.25)
+
+    combo_val_per_note = int(base_f * combo_mul_f)
+    fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
+    body_score = (int(body_fever) * int(fever_val_per_note)) + (int(body_normal) * int(combo_val_per_note))
+
+    factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    total_head = 0
+    for i in range(int(head_len)):
+        current_ramp_val = base_f + (np.float32(i + 1) * factor)
+        w = int(i) >> 5
+        b = int(i) & 31
+        is_fever = (int(head_bits[w]) >> int(b)) & 1
+        if is_fever:
+            total_head += int(current_ramp_val * fever_mul_f)
+        else:
+            total_head += int(current_ramp_val)
+    return int(body_score + int(total_head))
+
+
 def _cpu_ceiling_sig_for_cell(
     chart_timestamps: np.ndarray,
     note_types: np.ndarray,
@@ -23,14 +52,14 @@ def _cpu_ceiling_sig_for_cell(
     ft_factor: float,
 ) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
     """
-    CPU reference implementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
+    CPU reference implementation of `compute_timeline_grid_ceiling_envelope_kernel` for one (FT, FF) cell.
 
     Returns a signature tuple:
       (head_len, head_bits_u32x4, body_fever, body_normal, fever_activations, gap)
     """
     from math import ceil
 
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
     ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
@@ -46,7 +75,7 @@ def _cpu_ceiling_sig_for_cell(
     d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
     d_ms = max(0, int(d_ms))
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         ts,
         nt,
         perfect_lower_ms=-20,
@@ -62,7 +91,7 @@ def _cpu_ceiling_sig_for_cell(
     group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
     gcount = int(group_starts.shape[0])
     if n > 0 and gcount <= 0:
-        raise AssertionError("prepare_perfect_hit_simulation produced no chord groups")
+        raise AssertionError("prepare_perfect_timing_envelope produced no chord groups")
 
     note_group_idx = np.full(n, -1, dtype=np.int32)
     for g in range(gcount):
@@ -71,7 +100,7 @@ def _cpu_ceiling_sig_for_cell(
         if e > s:
             note_group_idx[s:e] = int(g)
     if n > 0 and int(np.any(note_group_idx < 0)):
-        raise AssertionError("prepare_perfect_hit_simulation produced uncovered note indices")
+        raise AssertionError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     MAX_HEAD = 100
     head_len = int(min(n, MAX_HEAD))
@@ -87,28 +116,6 @@ def _cpu_ceiling_sig_for_cell(
         out_lo = max(int(group_low[g]), int(lo) - int(d))
         out_hi = max(int(group_high[g]), int(hi) - int(d))
         return int(out_lo), int(out_hi)
-
-    def _compare_score(head_bits: tuple[int, int, int, int], body_fever: int, body_normal: int) -> int:
-        base_f = np.float32(10000.0)
-        combo_mul_f = np.float32(2.6)
-        fever_mul_f = np.float32(5.25)
-
-        combo_val_per_note = int(base_f * combo_mul_f)
-        fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
-        body_score = (int(body_fever) * int(fever_val_per_note)) + (int(body_normal) * int(combo_val_per_note))
-
-        factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
-        total_head = 0
-        for i in range(int(head_len)):
-            current_ramp_val = base_f + (np.float32(i + 1) * factor)
-            w = int(i) >> 5
-            b = int(i) & 31
-            is_fever = (int(head_bits[w]) >> int(b)) & 1
-            if is_fever:
-                total_head += int(current_ramp_val * fever_mul_f)
-            else:
-                total_head += int(current_ramp_val)
-        return int(body_score + int(total_head))
 
     def _simulate(*, pick_high: bool, end_mode: int) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
         m = [0, 0, 0, 0]  # uint32 bits as Python ints
@@ -340,7 +347,7 @@ def _cpu_ceiling_sig_for_cell(
     best = None
     best_key = None
     for sig in candidates:
-        score = int(_compare_score(sig[1], sig[2], sig[3]))
+        score = int(_compare_proxy_score(sig[1], sig[2], sig[3], head_len=sig[0]))
         bits = tuple(int(x) for x in sig[1])
         key = (score, int(sig[2]), int(bits[3]), int(bits[2]), int(bits[1]), int(bits[0]))
         if best_key is None or key > best_key:
@@ -377,7 +384,7 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim CPU/GPU Exact",
+            "Song Name": "CeilingEnvelope CPU/GPU Exact",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -403,7 +410,7 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -467,7 +474,7 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingHitSim Dedup Parity",
+            "Song Name": "CeilingEnvelope Dedup Parity",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -492,7 +499,7 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
         "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
     }
 
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_HITSIM", "1")
+    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "0")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)

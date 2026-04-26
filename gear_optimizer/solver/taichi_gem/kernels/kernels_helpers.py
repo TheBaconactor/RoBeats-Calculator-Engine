@@ -56,6 +56,14 @@ grid_Sigma_hn = None
 grid_Sigma_hf = None
 grid_fever_masks = None
 grid_fever_masks_bits = None
+grid_frontier_count = None
+grid_frontier_body_fever = None
+grid_frontier_body_normal = None
+grid_frontier_N_hn = None
+grid_frontier_N_hf = None
+grid_frontier_Sigma_hn = None
+grid_frontier_Sigma_hf = None
+grid_frontier_masks_bits = None
 grid_sig0 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
 grid_sig1 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
 grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
@@ -68,7 +76,7 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
-# Chord-grouped chart data for Analytical HitSim (ceiling) timeline computation.
+# Chord-grouped chart data for analytical timing-envelope ceiling computation.
 song_note_group_idx = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
 song_group_starts = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
 song_group_base_t_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms

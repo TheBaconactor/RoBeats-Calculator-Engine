@@ -1,5 +1,5 @@
 """
-Benchmark / verification: GPU ceiling timeline vs Monte Carlo HitSim (25 seeds).
+Benchmark / verification: GPU ceiling timeline vs Monte Carlo timing-envelope samples (25 seeds).
 
 This script answers:
 1) Does the new ceiling timeline differ from the old 25-repeat sampling outcome?
@@ -230,14 +230,14 @@ def _cpu_ceiling_timeline(
     end_mode: str = "max",
 ) -> tuple[_TimelineSig, list[dict[str, int]]]:
     """
-    CPU reimplementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
+    CPU reimplementation of `compute_timeline_grid_ceiling_envelope_kernel` for one (FT, FF) cell.
 
     Returns:
       - signature compatible with GPU grid output for the chosen cell
       - trace: list of dicts per fever window for introspection
     """
     from math import ceil
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
     ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
@@ -251,7 +251,7 @@ def _cpu_ceiling_timeline(
     d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
     d_ms = max(0, d_ms)
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         ts,
         nt,
         perfect_lower_ms=-20,
@@ -268,7 +268,7 @@ def _cpu_ceiling_timeline(
     group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
     gcount = int(group_starts.shape[0])
     if n > 0 and gcount <= 0:
-        raise ValueError("prepare_perfect_hit_simulation produced no groups")
+        raise ValueError("prepare_perfect_timing_envelope produced no groups")
 
     note_group_idx = np.full(n, -1, dtype=np.int32)
     for g in range(gcount):
@@ -276,7 +276,7 @@ def _cpu_ceiling_timeline(
         e = int(group_ends[g])
         note_group_idx[s:e] = int(g)
     if n > 0 and int(np.any(note_group_idx < 0)):
-        raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+        raise ValueError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     head_len = min(n, 100)
     head_mask = np.zeros(head_len, dtype=np.bool_)
@@ -535,12 +535,12 @@ def _cpu_ceiling_timeline_normal_lo(
     end_mode: str = "max",
 ) -> tuple[_TimelineSig, list[dict[str, int]]]:
     """
-    CPU reimplementation of `compute_timeline_grid_ceiling_hitsim_kernel` for one (FT, FF) cell.
+    CPU reimplementation of `compute_timeline_grid_ceiling_envelope_kernel` for one (FT, FF) cell.
 
     This variant chooses the earliest nominal carry (group_low) in non-fever segments.
     """
     from math import ceil
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
     ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
@@ -554,7 +554,7 @@ def _cpu_ceiling_timeline_normal_lo(
     d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
     d_ms = max(0, d_ms)
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         ts,
         nt,
         perfect_lower_ms=-20,
@@ -571,7 +571,7 @@ def _cpu_ceiling_timeline_normal_lo(
     group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
     gcount = int(group_starts.shape[0])
     if n > 0 and gcount <= 0:
-        raise ValueError("prepare_perfect_hit_simulation produced no groups")
+        raise ValueError("prepare_perfect_timing_envelope produced no groups")
 
     note_group_idx = np.full(n, -1, dtype=np.int32)
     for g in range(gcount):
@@ -579,7 +579,7 @@ def _cpu_ceiling_timeline_normal_lo(
         e = int(group_ends[g])
         note_group_idx[s:e] = int(g)
     if n > 0 and int(np.any(note_group_idx < 0)):
-        raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+        raise ValueError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     head_len = min(n, 100)
     head_mask = np.zeros(head_len, dtype=np.bool_)
@@ -908,7 +908,7 @@ def _gpu_ceiling_timeline(calc_song: dict, ref_arrays: dict, *, ft_idx: int, ff_
     init_taichi()
     reset_timeline_state()
 
-    os.environ["GPU_TIMELINE_CEILING_HITSIM"] = "1"
+    os.environ["GPU_TIMELINE_CEILING_ENVELOPE"] = "1"
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
 
     ft = int(ft_idx)
@@ -935,6 +935,26 @@ def _gpu_ceiling_timeline(calc_song: dict, ref_arrays: dict, *, ft_idx: int, ff_
         fever_activations=acts,
         gap=gap,
     )
+
+
+def _sample_perfect_timing_sec(chart_ts: np.ndarray, note_types: np.ndarray, *, seed: int) -> tuple[np.ndarray, dict]:
+    from gear_optimizer.solver.timing_envelope import (
+        generate_perfect_timing_events_ms,
+        prepare_perfect_timing_envelope,
+    )
+
+    prepared = prepare_perfect_timing_envelope(
+        chart_ts,
+        note_types,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+    event_ms = generate_perfect_timing_events_ms(prepared, seed=int(seed))
+    event_sec = (np.asarray(event_ms, dtype=np.float32) * np.float32(0.001)).astype(np.float32)
+    return event_sec, {"seed": int(seed), "groups": int(prepared.get("group_count", 0) or 0)}
 
 
 def main() -> int:
@@ -983,16 +1003,8 @@ def main() -> int:
     print(f"[score] base={base:.1f} combo_mul={combo:.6f} fever_mul={fever:.6f} (fixed for comparison)")
 
     # Warm JIT once (fever timeline + fast score).
-    from gear_optimizer.solver.hit_simulation import simulate_perfect_hit_timestamps_with_great_candidates
-
     fever_mask_buffer = np.zeros(n, dtype=np.bool_)
-    warm_ts, _, _ = simulate_perfect_hit_timestamps_with_great_candidates(
-        chart_ts,
-        note_types,
-        seed=1337,
-        distribution="uniform",
-        great_mode="late",
-    )
+    warm_ts, _ = _sample_perfect_timing_sec(chart_ts, note_types, seed=1337)
     _cpu_timeline_for_seed(
         warm_ts,
         long_notes=long_notes,
@@ -1014,13 +1026,7 @@ def main() -> int:
 
     t0 = time.perf_counter()
     for s in range(1, int(args.seeds) + 1):
-        sim_ts, _, dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-            chart_ts,
-            note_types,
-            seed=int(s),
-            distribution="uniform",
-            great_mode="late",
-        )
+        sim_ts, dbg = _sample_perfect_timing_sec(chart_ts, note_types, seed=int(s))
         fever_mask_head, body_fever, body_normal, fever_acts, last_end = _cpu_timeline_for_seed(
             sim_ts,
             long_notes=long_notes,
@@ -1115,13 +1121,7 @@ def main() -> int:
 
     # Deep introspection: window boundaries.
     print("[trace] mc25_best windows (activation,end):")
-    best_sim_ts, _, _ = simulate_perfect_hit_timestamps_with_great_candidates(
-        chart_ts,
-        note_types,
-        seed=int(best_seed),
-        distribution="uniform",
-        great_mode="late",
-    )
+    best_sim_ts, _ = _sample_perfect_timing_sec(chart_ts, note_types, seed=int(best_seed))
     mc_trace = _cpu_trace_windows(
         best_sim_ts,
         long_notes=long_notes,

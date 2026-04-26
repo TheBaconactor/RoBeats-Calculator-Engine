@@ -20,10 +20,9 @@ def test_gpu_prefetch_key_is_tuple_and_stable():
         "metadata": {
             "Song Name": "SongA",
             "Difficulty": "Hard",
-            "HumanHitSimSeed": 123,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
         },
         "song_data": {"timestamps": [0.01, 0.02, 0.03]},
     }

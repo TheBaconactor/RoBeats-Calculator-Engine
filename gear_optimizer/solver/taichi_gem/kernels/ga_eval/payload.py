@@ -14,6 +14,7 @@ import os
 import taichi as ti
 
 from .. import kernels_helpers
+from .write_results import _best_combo_idx_from_chunk_state, _materialize_best_combo_stats
 
 
 def _env_int(name: str, default: int) -> int:
@@ -42,6 +43,101 @@ def _sort3_i32(a: ti.i32, b: ti.i32, c: ti.i32) -> ti.types.vector(3, ti.i32):
     if x1 < x0:
         x0, x1 = x1, x0
     return ti.Vector([x0, x1, x2])
+
+
+@ti.func
+def _clear_fg_candidate_row(table_slot: ti.i32, run_idx: ti.i32, row_idx: ti.i32):
+    for c in ti.static(range(_GA_FG_COLS)):
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, c] = 0
+
+
+@ti.func
+def _write_fg_candidate_row_from_genome(
+    table_slot: ti.i32,
+    run_idx: ti.i32,
+    row_idx: ti.i32,
+    genome_idx: ti.i32,
+    n_slots: ti.i32,
+    result_stats: ti.types.vector(7, ti.i32),
+):
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 0] = result_stats[0]
+
+    for s in range(n_slots):
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + s] = kernels_helpers.population_indices[
+            genome_idx, s
+        ]
+    mm = _sort3_i32(
+        kernels_helpers.population_indices[genome_idx, 6],
+        kernels_helpers.population_indices[genome_idx, 7],
+        kernels_helpers.population_indices[genome_idx, 8],
+    )
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + 6] = mm[0]
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + 7] = mm[1]
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + 8] = mm[2]
+
+    for t in ti.static(range(_GA_FG_RESULTS_COLS)):
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + 9 + t] = result_stats[t]
+
+    base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
+    stats7 = kernels_helpers.genome_base_stats[genome_idx]
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 0] = ti.cast(stats7[0], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 1] = ti.cast(stats7[1], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 2] = ti.cast(stats7[2], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 3] = ti.cast(stats7[3], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 4] = ti.cast(stats7[4], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 5] = ti.cast(stats7[5], ti.i32)
+    kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 6] = ti.cast(stats7[6], ti.i32)
+
+
+@ti.func
+def _population_key_matches(
+    genome_idx: ti.i32,
+    g0: ti.i32,
+    g1: ti.i32,
+    g2: ti.i32,
+    g3: ti.i32,
+    g4: ti.i32,
+    g5: ti.i32,
+    m0: ti.i32,
+    m1: ti.i32,
+    m2: ti.i32,
+) -> ti.i32:
+    mm = _sort3_i32(
+        kernels_helpers.population_indices[genome_idx, 6],
+        kernels_helpers.population_indices[genome_idx, 7],
+        kernels_helpers.population_indices[genome_idx, 8],
+    )
+    return ti.cast(
+        kernels_helpers.population_indices[genome_idx, 0] == g0
+        and kernels_helpers.population_indices[genome_idx, 1] == g1
+        and kernels_helpers.population_indices[genome_idx, 2] == g2
+        and kernels_helpers.population_indices[genome_idx, 3] == g3
+        and kernels_helpers.population_indices[genome_idx, 4] == g4
+        and kernels_helpers.population_indices[genome_idx, 5] == g5
+        and mm[0] == m0
+        and mm[1] == m1
+        and mm[2] == m2,
+        ti.i32,
+    )
+
+
+@ti.func
+def _bubble_fg_candidate_up(
+    top_scores: ti.template(),
+    top_idx: ti.template(),
+    slot: ti.i32,
+) -> ti.i32:
+    cur = slot
+    for _ in range(_GA_FG_CANDIDATES_PER_RUN):
+        if cur > 0 and top_scores[cur] > top_scores[cur - 1]:
+            score_tmp = top_scores[cur - 1]
+            idx_tmp = top_idx[cur - 1]
+            top_scores[cur - 1] = top_scores[cur]
+            top_idx[cur - 1] = top_idx[cur]
+            top_scores[cur] = score_tmp
+            top_idx[cur] = idx_tmp
+            cur -= 1
+    return cur
 
 
 @ti.kernel
@@ -293,6 +389,8 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     n_runs: ti.i32,
     n_genomes_per_run: ti.i32,
     n_slots: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
     is_p_ft: ti.i32,
     is_s_ft: ti.i32,
     is_p_ff: ti.i32,
@@ -305,6 +403,8 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
 ):
     """
     Pack a compact GA->FG candidate table into `ga_fg_candidates_packed`.
@@ -327,9 +427,7 @@ def ga_pack_fg_candidates_table_segmented_kernel(
         # ------------------------------------------------------------------
         # Row 0: best (tracked across generations).
         # ------------------------------------------------------------------
-        # Default to zeros (avoid stale columns when n_slots < 9).
-        for c in ti.static(range(_GA_FG_COLS)):
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, c] = 0
+        _clear_fg_candidate_row(table_slot, run_idx, 0)
 
         # Copy (score + ids + result_row) from ga_runs_payload_packed.
         for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
@@ -386,7 +484,12 @@ def ga_pack_fg_candidates_table_segmented_kernel(
         kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 6] = ff_stat
 
         # ------------------------------------------------------------------
-        # Rows 1..K: top candidates from final population (per run).
+        # Rows 1..K: top unique candidates from final population (per run).
+        #
+        # This must dedupe before the top-K cutoff. A converged GA population can
+        # have dozens of copies of the same high-scoring genome at the front; if
+        # we pack raw rows first, downstream FG/persistence selection only sees a
+        # thin frontier even when lower-ranked unique genomes still exist.
         # ------------------------------------------------------------------
         top_scores = ti.Vector.zero(ti.i32, K)
         top_idx = ti.Vector.zero(ti.i32, K)
@@ -401,72 +504,94 @@ def ga_pack_fg_candidates_table_segmented_kernel(
             if score <= 0:
                 continue
 
-            inserted = ti.i32(0)
+            mm_g = _sort3_i32(
+                kernels_helpers.population_indices[g, 6],
+                kernels_helpers.population_indices[g, 7],
+                kernels_helpers.population_indices[g, 8],
+            )
+
+            duplicate_slot = ti.i32(-1)
             for j in range(K):
-                if inserted == 0 and score > top_scores[j]:
-                    # Shift down 1 slot for indices > j.
-                    for t in range(K - 1):
-                        tt = (K - 1) - t
-                        if tt > j:
-                            top_scores[tt] = top_scores[tt - 1]
-                            top_idx[tt] = top_idx[tt - 1]
-                    top_scores[j] = score
-                    top_idx[j] = g
-                    inserted = 1
+                prev_g = top_idx[j]
+                if (
+                    duplicate_slot < 0
+                    and prev_g >= 0
+                    and _population_key_matches(
+                        prev_g,
+                        kernels_helpers.population_indices[g, 0],
+                        kernels_helpers.population_indices[g, 1],
+                        kernels_helpers.population_indices[g, 2],
+                        kernels_helpers.population_indices[g, 3],
+                        kernels_helpers.population_indices[g, 4],
+                        kernels_helpers.population_indices[g, 5],
+                        mm_g[0],
+                        mm_g[1],
+                        mm_g[2],
+                    )
+                    != 0
+                ):
+                    duplicate_slot = j
+
+            if duplicate_slot >= 0:
+                if score > top_scores[duplicate_slot]:
+                    top_scores[duplicate_slot] = score
+                    top_idx[duplicate_slot] = g
+                    _bubble_fg_candidate_up(top_scores, top_idx, duplicate_slot)
+            else:
+                inserted = ti.i32(0)
+                for j in range(K):
+                    if inserted == 0 and score > top_scores[j]:
+                        # Shift down 1 slot for indices > j.
+                        for t in range(K - 1):
+                            tt = (K - 1) - t
+                            if tt > j:
+                                top_scores[tt] = top_scores[tt - 1]
+                                top_idx[tt] = top_idx[tt - 1]
+                        top_scores[j] = score
+                        top_idx[j] = g
+                        inserted = 1
 
         for j in range(K):
             out_row = 1 + j
             g = top_idx[j]
             score = top_scores[j]
 
-            # Default clear (avoid stale data when fewer than K candidates exist).
-            for c in ti.static(range(_GA_FG_COLS)):
-                kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, c] = 0
+            _clear_fg_candidate_row(table_slot, run_idx, out_row)
 
             if g < 0 or score <= 0:
                 continue
 
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 0] = score
+            combo_idx = _best_combo_idx_from_chunk_state(g)
+            if combo_idx < 0:
+                continue
 
-            # Copy genome IDs; canonicalize minis in output.
-            for s in range(n_slots):
-                kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 1 + s] = (
-                    kernels_helpers.population_indices[g, s]
-                )
-            mm = _sort3_i32(
-                kernels_helpers.population_indices[g, 6],
-                kernels_helpers.population_indices[g, 7],
-                kernels_helpers.population_indices[g, 8],
+            result_stats = _materialize_best_combo_stats(
+                g,
+                combo_idx,
+                total_budget,
+                gem_scale_fever,
+                is_p_ft,
+                is_s_ft,
+                is_p_ff,
+                is_s_ff,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                song_slot,
+                use_exact_inner_solver,
             )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 1 + 6] = mm[0]
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 1 + 7] = mm[1]
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 1 + 8] = mm[2]
-
-            res = kernels_helpers.genome_result_stats[g]
-            for t in ti.static(range(_GA_FG_RESULTS_COLS)):
-                kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, 1 + 9 + t] = res[t]
-
-            stats7 = kernels_helpers.genome_base_stats[g]
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 0] = ti.cast(
-                stats7[0], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 1] = ti.cast(
-                stats7[1], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 2] = ti.cast(
-                stats7[2], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 3] = ti.cast(
-                stats7[3], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 4] = ti.cast(
-                stats7[4], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 5] = ti.cast(
-                stats7[5], ti.i32
-            )
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, out_row, base_col0 + 6] = ti.cast(
-                stats7[6], ti.i32
+            _write_fg_candidate_row_from_genome(
+                table_slot,
+                run_idx,
+                out_row,
+                g,
+                n_slots,
+                result_stats,
             )
 
 

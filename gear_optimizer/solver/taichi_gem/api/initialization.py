@@ -54,6 +54,36 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
     return h.digest()
 
 
+def _build_exact_pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
+    """Build PP-vs-OV prefix argmax table without Python inner loops."""
+    pp_ref = np.asarray(pp_ref, dtype=np.float32)
+    max_budget = int(fields.MAX_TOTAL_BUDGET)
+    gems = np.arange(max_budget + 1, dtype=np.int32)
+    cur_pp = np.arange(GRID_SIZE, dtype=np.int32)[:, None]
+    pp_stat = np.minimum(cur_pp + (gems[None, :] * 2), GRID_SIZE - 1)
+    pp_extra = pp_ref[pp_stat]
+
+    deltas = np.empty((16,), dtype=np.int32)
+    for flags in range(16):
+        is_p_pp = flags & 1
+        is_s_pp = (flags >> 1) & 1
+        is_p_ov = (flags >> 2) & 1
+        is_s_ov = (flags >> 3) & 1
+        deltas[flags] = ((6 * is_p_pp) + (3 * is_s_pp)) - ((12 * is_p_ov) + (6 * is_s_ov))
+
+    extra = pp_extra[None, :, :] + (deltas[:, None, None].astype(np.float32) * gems[None, None, :])
+    best_idx = np.zeros((16, GRID_SIZE, max_budget + 1), dtype=np.int16)
+    best_val = extra[:, :, 0].copy()
+    for g_pp in range(1, max_budget + 1):
+        layer = best_idx[:, :, g_pp]
+        layer[:, :] = best_idx[:, :, g_pp - 1]
+        cand = extra[:, :, g_pp]
+        better = cand > best_val
+        layer[better] = np.int16(g_pp)
+        best_val[better] = cand[better]
+    return best_idx
+
+
 # ============================================================================
 # NUMPY STAGING BUFFERS (avoid huge per-call allocations / CPU zeroing)
 # ============================================================================
@@ -288,7 +318,7 @@ def load_ref_arrays(ref_arrays: dict):
         - "Fever Time": Optional FT reference array (161,)
         - "Fever Fill Rate": Optional FF reference array (161,)
     """
-    global _ref_loaded
+    global _ref_loaded, _last_ref_arrays_sig
 
     ensure_fields_allocated()
 
@@ -310,32 +340,7 @@ def load_ref_arrays(ref_arrays: dict):
     #
     # This removes the inner O(B) PP scan from each (CM, FM) pair and turns the
     # cold exact solver from O(B^3) into O(B^2) per fixed (FT,FF) combo.
-    pp_ref = np.asarray(ref_arrays["Perfect Points"], dtype=np.float32)
-    max_budget = int(fields.MAX_TOTAL_BUDGET)
-    pp_best_prefix = np.zeros((16, GRID_SIZE, max_budget + 1), dtype=np.int16)
-    for flags in range(16):
-        is_p_pp = flags & 1
-        is_s_pp = (flags >> 1) & 1
-        is_p_ov = (flags >> 2) & 1
-        is_s_ov = (flags >> 3) & 1
-
-        w_pp = (6 * is_p_pp) + (3 * is_s_pp)
-        w_ov = (12 * is_p_ov) + (6 * is_s_ov)
-        delta = np.int32(w_pp - w_ov)
-
-        for cur_pp in range(GRID_SIZE):
-            best_g = 0
-            best_extra = np.float32(pp_ref[cur_pp])
-            pp_best_prefix[flags, cur_pp, 0] = 0
-            for g_pp in range(1, max_budget + 1):
-                pp_stat = cur_pp + (g_pp * 2)
-                if pp_stat > 160:
-                    pp_stat = 160
-                extra = np.float32(g_pp * delta) + np.float32(pp_ref[pp_stat])
-                if extra > best_extra:
-                    best_extra = extra
-                    best_g = g_pp
-                pp_best_prefix[flags, cur_pp, g_pp] = best_g
+    pp_best_prefix = _build_exact_pp_best_gems_prefix(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
     fields.exact_pp_best_gems_prefix.from_numpy(pp_best_prefix)
 
     # Optional FT/FF uploads
@@ -351,3 +356,4 @@ def load_ref_arrays(ref_arrays: dict):
         fields.ref_ff_field.from_numpy(ref_arrays["Fever Fill Rate"].astype(np.float32))
 
     _ref_loaded = True
+    _last_ref_arrays_sig = _ref_arrays_sig(ref_arrays)

@@ -3,7 +3,6 @@ Force Greats GPU APIs (Taichi/Vulkan).
 
 Public entrypoints:
   - solve_force_greats_finder_gpu(...)
-  - solve_force_greats_exact_dp_gpu_batch(...)
 
 This module is called from the scoring pipeline and must remain API-stable.
 """
@@ -20,7 +19,7 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
-from gear_optimizer.solver.fg_exact_dp import prepare_force_greats_exact_dp_inputs
+from gear_optimizer.solver.gpu_tuning_policy import plan_fg_stage1_cfg_chunk
 
 from .. import api as gem_api
 from ..api.sync_policy import maybe_sync
@@ -54,52 +53,6 @@ _FORCE_SYNC = _ENV_GET("GPU_FORCE_SYNC", "0") == "1"
 # Per-chunk sync fallback for TDR-prone Windows systems (default OFF for performance)
 _SYNC_PER_CHUNK = _ENV_GET("FG_SYNC_PER_CHUNK", "0") == "1"
 
-# ============================================================================
-# ADAPTIVE CHUNKING POLICY
-# ============================================================================
-
-
-def _get_target_threads_per_kernel(n_work_items: int) -> int:
-    """
-    Pick an adaptive thread budget for the flattened Stage 1 FG kernel.
-
-    Goal: keep kernels large enough to amortize launch overhead (better GPU occupancy),
-    while remaining conservative enough to avoid watchdog/TDR issues on Windows.
-    """
-    try:
-        env = str(_ENV_GET("FG_TARGET_THREADS_PER_KERNEL", "") or "").strip()
-    except Exception:
-        env = ""
-    if env:
-        try:
-            v = int(env)
-        except Exception:
-            v = 0
-        if v > 0:
-            return int(v)
-
-    try:
-        n_work_items = int(n_work_items)
-    except Exception:
-        n_work_items = 0
-    if n_work_items <= 0:
-        return 2_000_000
-
-    # Metal path uses a different kernel strategy; keep the conservative default.
-    if gem_fields.IS_METAL:
-        return 2_000_000
-
-    # Heuristic: increase chunking target when the flat work size is small (common case
-    # for narrow FT/FF windows), which reduces cfg chunk count and improves throughput.
-    if n_work_items <= 40_000:
-        return 6_000_000
-    if n_work_items <= 100_000:
-        return 4_000_000
-    if n_work_items <= 250_000:
-        return 3_000_000
-    return 2_000_000
-
-
 # Enable detailed FG GPU timing output
 _PERF_TIMING = _ENV_GET("PERF_TIMING", "0") == "1"
 _FG_TRANSFER_TRACE = str(_ENV_GET("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -115,7 +68,13 @@ _GPU_PROFILER_CACHE = None
 _GPU_PROFILER_READY = False
 _FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 _FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TARGET_THREADS_PER_KERNEL = _env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
 _FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
+_FG_STAGE1_DIRECT_ATOMIC = bool(getattr(fg_kernels, "FG_STAGE1_DIRECT_ATOMIC", False))
+_FG_GPU_SURFACE_PAIR_REDUCTION = _env_truthy("FG_GPU_SURFACE_PAIR_REDUCTION", "1")
+_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS = max(0, min(_env_int("FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS", 1024), 4096))
+_FG_GPU_CONFIG_DEDUPE = _env_truthy("FG_GPU_CONFIG_DEDUPE", "0")
+_FG_GPU_CONFIG_DEDUPE_MIN_CFG = max(1, _env_int("FG_GPU_CONFIG_DEDUPE_MIN_CFG", 512))
 
 
 def _get_gpu_profiler():
@@ -254,32 +213,43 @@ def _ensure_cfg_mode_defaults() -> None:
         return
 
 
-def _maybe_force_single_band(
-    cfg_chunk: int,
-    *,
-    n_work_items: int,
-    max_cfg_len: int,
-    label: str = "",
-) -> int:
-    if not _FG_SMALL_WORK_SINGLE_BAND:
-        return int(cfg_chunk)
+def _get_stage1_block_dim() -> int:
     try:
-        if int(n_work_items) <= int(_FG_SMALL_WORK_MAX_WORK_ITEMS) and int(max_cfg_len) <= int(
-            _FG_SMALL_WORK_MAX_CFG_LEN
-        ):
-            if _PERF_TIMING and int(cfg_chunk) < int(max_cfg_len):
-                try:
-                    suffix = f" ({label})" if label else ""
-                    print(
-                        f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
-                        f"cfg_chunk={int(max_cfg_len)}"
-                    )
-                except Exception:
-                    pass
-            return int(max_cfg_len)
+        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
     except Exception:
-        return int(cfg_chunk)
-    return int(cfg_chunk)
+        stage1_block_dim = 64
+    if stage1_block_dim <= 0:
+        stage1_block_dim = 64
+    return int(stage1_block_dim)
+
+
+def _build_stage1_chunk_plan(*, n_work_items: int, cfg_chunk: int | None, max_cfg_len: int):
+    return plan_fg_stage1_cfg_chunk(
+        n_work_items=int(n_work_items),
+        stage1_block_dim=_get_stage1_block_dim(),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(max_cfg_len),
+        is_metal=bool(gem_fields.IS_METAL),
+        target_threads_override=int(_FG_TARGET_THREADS_PER_KERNEL),
+        small_work_single_band=bool(_FG_SMALL_WORK_SINGLE_BAND),
+        small_work_max_work_items=int(_FG_SMALL_WORK_MAX_WORK_ITEMS),
+        small_work_max_cfg_len=int(_FG_SMALL_WORK_MAX_CFG_LEN),
+    )
+
+
+def _maybe_log_single_band(plan, *, n_work_items: int, max_cfg_len: int, label: str = "") -> None:
+    if not _PERF_TIMING or not bool(getattr(plan, "single_band_forced", False)):
+        return
+    if int(getattr(plan, "requested_cfg_chunk", 0)) >= int(max_cfg_len):
+        return
+    try:
+        suffix = f" ({label})" if label else ""
+        print(
+            f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
+            f"cfg_chunk={int(getattr(plan, 'cfg_chunk', max_cfg_len))}"
+        )
+    except Exception:
+        return
 
 
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
@@ -760,8 +730,7 @@ def fg_select_signature_frontier_indices(
 
     n = int(base_np.shape[0])
     if any(
-        int(arr.shape[0]) != int(n)
-        for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
+        int(arr.shape[0]) != int(n) for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
     ):
         raise ValueError("FG signature frontier metadata arrays must have matching length")
 
@@ -1343,109 +1312,6 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     _fg_use_great_candidate_field()
 
 
-def _strip_fg_exact_dp_counts(raw_counts: np.ndarray) -> list[int]:
-    counts: list[int] = []
-    for value in np.asarray(raw_counts, dtype=np.int32).tolist():
-        iv = int(value)
-        if iv < 0:
-            break
-        counts.append(iv)
-    return counts
-
-
-def solve_force_greats_exact_dp_gpu_batch(
-    *,
-    stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-    calc_song: dict,
-    ref_arrays: dict,
-    timing_aware: bool = True,
-    prune: bool = True,
-    song_slot: int = 0,
-) -> list[dict[str, Any]]:
-    """
-    Run the production exact FG DP kernel for a batch of fixed stat points.
-
-    This is the stable Taichi/Vulkan entrypoint for the exact FG stage. The
-    kernel remains single-stat-point internally, but batching at the Python API
-    keeps song/timeline uploads shared across candidates.
-    """
-    _ = int(song_slot or 0)
-
-    if not isinstance(stats_list, (list, tuple)):
-        raise TypeError("solve_force_greats_exact_dp_gpu_batch stats_list must be a list/tuple of dicts")
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-        raise TypeError("solve_force_greats_exact_dp_gpu_batch requires calc_song/ref_arrays dicts")
-
-    if not stats_list:
-        return []
-
-    first_prepared = None
-    for stats in stats_list:
-        if isinstance(stats, dict):
-            first_prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
-            if first_prepared is not None:
-                break
-
-    if first_prepared is None:
-        return [{"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}} for _ in stats_list]
-
-    gem_api.ensure_ready(ref_arrays)
-    fg_fields.ensure_ready_with_warmup()
-
-    total_notes = int(first_prepared.total_notes)
-    _fg_upload_song_timestamps(first_prepared.timestamps)
-    if first_prepared.great_candidates is None:
-        global _fg_last_great_key
-        _fg_last_great_key = _fg_last_song_key
-        _fg_use_great_candidate_alias()
-    else:
-        _fg_upload_great_candidate_timestamps(first_prepared.great_candidates, total_notes)
-    _ensure_fever_end_tables(total_notes, float(first_prepared.last_note_time))
-
-    out: list[dict[str, Any]] = []
-    timing_flag = 1 if timing_aware else 0
-    prune_flag = 1 if prune else 0
-
-    for stats in stats_list:
-        prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=ref_arrays)
-        if prepared is None:
-            out.append({"best_delta": 0, "section_counts": [], "profile": {"states": 0, "transitions": 0}})
-            continue
-
-        n = int(prepared.total_notes)
-        fg_kernels.fg_upload_exact_dp_full_w_prefix_kernel(int(n), np.ascontiguousarray(prepared.w_prefix, dtype=np.int64))
-        fg_kernels.fg_upload_exact_dp_full_c_prefix_kernel(int(n), np.ascontiguousarray(prepared.c_prefix, dtype=np.int64))
-        fg_kernels.fg_exact_dp_sparse_full_kernel(
-            int(n),
-            float(prepared.raw_fill),
-            int(prepared.non_fever_base),
-            int(prepared.ft_idx),
-            int(timing_flag),
-            int(prune_flag),
-        )
-        ti.sync()
-
-        overflow = int(fg_fields.fg_exact_dp_sparse_overflow.to_numpy())
-        if overflow != 0:
-            raise RuntimeError(
-                "FG exact DP sparse kernel overflowed scratch buffers; increase "
-                "FG_EXACT_DP_SPARSE_MAX_STATES / FG_EXACT_DP_SPARSE_HASH_SIZE"
-            )
-
-        out.append(
-            {
-                "best_delta": int(fg_fields.fg_exact_dp_sparse_best_delta.to_numpy()),
-                "section_counts": _strip_fg_exact_dp_counts(fg_fields.fg_exact_dp_sparse_counts.to_numpy()),
-                "profile": {
-                    "states": int(fg_fields.fg_exact_dp_sparse_states.to_numpy()),
-                    "transitions": int(fg_fields.fg_exact_dp_sparse_transitions.to_numpy()),
-                },
-            }
-        )
-
-    return out
-
-
 def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
     """
     Download the active prefix of `fg_best_packed`, using bounded staging when available.
@@ -1864,36 +1730,18 @@ def _solve_force_greats_finder_gpu_impl(
     #
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
     # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
-    TARGET_CFG_EVALS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
-    try:
-        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
-    except Exception:
-        stage1_block_dim = 64
-    if stage1_block_dim <= 0:
-        stage1_block_dim = 64
-
-    if cfg_chunk is None or int(cfg_chunk) <= 0:
-        # Auto-calculate based on work items
-        if gem_fields.IS_METAL:
-            # Metal kernel (fg_stage1_kernel) loops SEQUENTIALLY over cfg_chunk.
-            # We must keep this small to avoid TDR (watchdog timeout).
-            # A safe bet is ~16-32 configs per kernel launch.
-            cfg_chunk = 16
-        else:
-            # Vulkan Stage 1: one workgroup per (genome, ftff). Each thread loops cfg indices
-            # with stride=block_dim. Choose cfg_chunk so per-thread work stays bounded.
-            target_cfg_per_thread = max(1, TARGET_CFG_EVALS_PER_KERNEL // max(1, n_work_items * stage1_block_dim))
-            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
-    else:
-        cfg_chunk = int(cfg_chunk)
-
-    cfg_chunk = _maybe_force_single_band(
-        int(cfg_chunk),
+    cfg_chunk_plan = _build_stage1_chunk_plan(
+        n_work_items=int(n_work_items),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(n_cfg_total),
+    )
+    _maybe_log_single_band(
+        cfg_chunk_plan,
         n_work_items=int(n_work_items),
         max_cfg_len=int(n_cfg_total),
         label="single",
     )
-    cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
+    cfg_chunk = min(int(cfg_chunk_plan.cfg_chunk), int(n_cfg_total), int(fg_fields.FG_MAX_CONFIGS))
     # Keep `forced_counts` external array shape stable by clamping chunk size to a fixed staging buffer.
     cfg_chunk = min(cfg_chunk, _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
@@ -2083,9 +1931,13 @@ def _solve_force_greats_finder_gpu_impl(
                 int(is_first_chunk),
             )
         else:
-            fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+            if not _FG_STAGE1_DIRECT_ATOMIC:
+                fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
             fg_kernels.fg_stage1_waves_kernel(
                 bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
+                int(0),
+                int(0),
+                int(0),
                 int(n_work_items),
                 int(n_cfg),
                 int(global_cfg_offset),
@@ -2111,7 +1963,8 @@ def _solve_force_greats_finder_gpu_impl(
                 int(song_slot),
                 int(1 if pair_caps_from_timeline else 0),
             )
-            fg_kernels.fg_stage1_reduce_waves_kernel(int(n_work_items), int(is_first_chunk))
+            if not _FG_STAGE1_DIRECT_ATOMIC:
+                fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
             ti.sync()
@@ -2990,35 +2843,19 @@ def solve_force_greats_finder_gpu_tasks(
     n_work_items_est = int(n_genomes) * int(min(max_ftff, int(total_pairs)))
     if n_work_items_est <= 0:
         return
-    target_threads = _get_target_threads_per_kernel(int(n_work_items_est))
-    try:
-        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
-    except Exception:
-        stage1_block_dim = 64
-    if stage1_block_dim <= 0:
-        stage1_block_dim = 64
-    if cfg_chunk is None or int(cfg_chunk) <= 0:
-        if gem_fields.IS_METAL:
-            cfg_chunk = 16
-        else:
-            target_cfg_per_thread = max(1, int(target_threads) // max(1, n_work_items_est * stage1_block_dim))
-            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
-    cfg_chunk = int(cfg_chunk)
-    # `max_cfg_len` is computed from CPU-visible config windows/matrices.
-    #
-    # In the GPU max-FP compute path (per-ftff mixed-radix caps computed on-device),
-    # we don't know max cfg length up-front; clamping by 0 would collapse cfg_chunk
-    # to 1 and explode band count (severe perf regression).
+    cfg_chunk_plan = _build_stage1_chunk_plan(
+        n_work_items=int(n_work_items_est),
+        cfg_chunk=cfg_chunk,
+        max_cfg_len=int(max_cfg_len),
+    )
     if int(max_cfg_len) > 0:
-        cfg_chunk = _maybe_force_single_band(
-            int(cfg_chunk),
+        _maybe_log_single_band(
+            cfg_chunk_plan,
             n_work_items=int(n_work_items_est),
             max_cfg_len=int(max_cfg_len),
             label="packed",
         )
-        cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
-    else:
-        cfg_chunk = max(1, int(cfg_chunk))
+    cfg_chunk = int(cfg_chunk_plan.cfg_chunk)
 
     # Process FT/FF entries in FG_MAX_FTFF-sized chunks (field shape stability).
     max_ftff = int(max_ftff)
@@ -3086,10 +2923,17 @@ def solve_force_greats_finder_gpu_tasks(
 
         if use_gpu_max_fp and max_fp_compute_ctx is not None:
             try:
+                max_fp_sections_i = max(
+                    0,
+                    min(
+                        int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                        int(fg_fields.FG_MAX_SECTIONS),
+                    ),
+                )
                 fg_kernels.fg_compute_max_fp_for_ftff_kernel(
                     int(n_ftff),
                     int(getattr(max_fp_compute_ctx.get("base_ft"), "shape", (0,))[0] or 0),
-                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                    int(max_fp_sections_i),
                     int(max_fp_compute_ctx.get("song_slot", 0) or 0),
                     int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
                     max_fp_compute_ctx.get("base_ft"),
@@ -3099,8 +2943,23 @@ def solve_force_greats_finder_gpu_tasks(
                 )
                 fg_kernels.fg_compute_cfg_total_len_kernel(
                     int(n_ftff),
-                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                    int(max_fp_sections_i),
                 )
+                if (
+                    _FG_GPU_SURFACE_PAIR_REDUCTION
+                    and int(n_ftff) <= int(_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS)
+                    and int(max_fp_sections_i) > 0
+                ):
+                    fg_kernels.fg_zero_dominated_surface_pairs_kernel(
+                        int(n_ftff),
+                        int(max_fp_sections_i),
+                        int(total_budget),
+                        int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                    )
                 if not use_gpu_cfg_ranges:
                     # CPU needs per-ftff lengths to build cfg_start/cfg_len per band.
                     try:
@@ -3145,98 +3004,186 @@ def solve_force_greats_finder_gpu_tasks(
                 max_cfg_len_chunk = 0
         cfg_chunk_run = int(cfg_chunk)
         if use_gpu_max_fp and int(max_cfg_len_chunk) > 0:
-            try:
-                cfg_chunk_run = _maybe_force_single_band(
-                    int(cfg_chunk_run),
-                    n_work_items=int(n_work_items),
-                    max_cfg_len=int(max_cfg_len_chunk),
-                    label="packed_gpu_max_fp",
-                )
-                cfg_chunk_run = max(1, min(int(cfg_chunk_run), int(max_cfg_len_chunk)))
-            except Exception:
-                cfg_chunk_run = int(cfg_chunk)
-        n_bands = (int(max_cfg_len_chunk) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
+            cfg_chunk_run_plan = _build_stage1_chunk_plan(
+                n_work_items=int(n_work_items),
+                cfg_chunk=int(cfg_chunk),
+                max_cfg_len=int(max_cfg_len_chunk),
+            )
+            _maybe_log_single_band(
+                cfg_chunk_run_plan,
+                n_work_items=int(n_work_items),
+                max_cfg_len=int(max_cfg_len_chunk),
+                label="packed_gpu_max_fp",
+            )
+            cfg_chunk_run = int(cfg_chunk_run_plan.cfg_chunk)
+        use_stage1_cfg_dedupe = bool(
+            _FG_GPU_CONFIG_DEDUPE
+            and (not gem_fields.IS_METAL)
+            and bool(use_gpu_cfg_ranges)
+            and int(max_cfg_len_chunk) >= int(_FG_GPU_CONFIG_DEDUPE_MIN_CFG)
+            and int(n_sections) > 0
+        )
+        dedupe_slots = 0
+        if use_stage1_cfg_dedupe:
+            dedupe_slots = 1
+            target_slots = max(1, int(max_cfg_len_chunk))
+            while int(dedupe_slots) < int(target_slots) and int(dedupe_slots) < int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
+                dedupe_slots *= 2
+            dedupe_slots = max(1, min(int(dedupe_slots), int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)))
+        cfg_span_for_bands = int(max_cfg_len_chunk)
+        if use_stage1_cfg_dedupe:
+            cfg_span_for_bands = max(int(cfg_span_for_bands), int(dedupe_slots))
+        n_bands = (int(cfg_span_for_bands) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
         t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
-        for band_idx in range(n_bands):
-            band_start = int(band_idx) * int(cfg_chunk_run)
-            band_len = min(int(cfg_chunk_run), int(max_cfg_len_chunk) - int(band_start))
-            if band_len <= 0:
-                continue
-
-            # Packed-tasks cfg ranges:
-            # - Fast path: compute per-ftff cfg windows on-the-fly inside the Stage-1 kernel by passing
-            #   cfg_offset<0 and cfg_read_offset=band_start.
-            # - Fallback: precompute/upload fg_cfg_start_list/fg_cfg_len_list for this band and use the
-            #   cfg_offset/cfg_read_offset<0 sentinel.
-            cfg_offset_i = int(-1)
-            cfg_read_offset_i = int(band_start) if use_gpu_cfg_ranges else int(-1)
-            if not use_gpu_cfg_ranges:
-                cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
-                remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
-                cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
-                fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
-
-            # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
-            is_first_chunk = int(1 if int(band_idx) == 0 else 0)
-            if gem_fields.IS_METAL:
-                fg_kernels.fg_stage1_kernel(
-                    int(n_genomes),
+        if use_stage1_cfg_dedupe:
+            work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
+            for work_offset in range(0, int(n_work_items), int(work_chunk)):
+                local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
+                if local_work_items <= 0:
+                    continue
+                fg_kernels.fg_cfg_dedupe_clear_kernel(int(local_work_items), int(dedupe_slots))
+                fg_kernels.fg_cfg_dedupe_build_kernel(
+                    int(work_offset),
+                    int(local_work_items),
+                    int(dedupe_slots),
                     int(total_notes),
                     int(long_notes),
-                    float(last_note_time),
-                    int(total_budget),
-                    int(gem_scale_fever),
-                    int(band_len),
-                    int(n_sections),
-                    int(n_ftff),
-                    int(cfg_offset_i),
-                    int(cfg_read_offset_i),
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
-                    int(song_slot),
-                    int(1 if pair_caps_from_timeline else 0),
-                    int(is_first_chunk),
-                )
-            else:
-                fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
-                fg_kernels.fg_stage1_waves_kernel(
-                    bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
-                    int(n_work_items),
-                    int(band_len),
-                    int(cfg_offset_i),
-                    int(cfg_read_offset_i),
-                    int(total_notes),
-                    int(long_notes),
-                    float(last_note_time),
                     int(total_budget),
                     int(gem_scale_fever),
                     int(n_sections),
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
                     int(song_slot),
                     int(1 if pair_caps_from_timeline else 0),
                 )
-                fg_kernels.fg_stage1_reduce_waves_kernel(int(n_work_items), int(is_first_chunk))
+                for band_idx in range(n_bands):
+                    band_start = int(band_idx) * int(cfg_chunk_run)
+                    band_len = min(int(cfg_chunk_run), int(cfg_span_for_bands) - int(band_start))
+                    if band_len <= 0:
+                        continue
+                    is_first_chunk = int(1 if int(band_idx) == 0 else 0)
+                    if not _FG_STAGE1_DIRECT_ATOMIC:
+                        fg_kernels.fg_stage1_clear_wave_best_kernel(int(local_work_items))
+                    fg_kernels.fg_stage1_waves_kernel(
+                        bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
+                        int(work_offset),
+                        int(1),
+                        int(dedupe_slots),
+                        int(local_work_items),
+                        int(band_len),
+                        int(-1),
+                        int(band_start),
+                        int(total_notes),
+                        int(long_notes),
+                        float(last_note_time),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(n_sections),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                        int(song_slot),
+                        int(1 if pair_caps_from_timeline else 0),
+                    )
+                    if not _FG_STAGE1_DIRECT_ATOMIC:
+                        fg_kernels.fg_stage1_reduce_waves_kernel(
+                            int(work_offset),
+                            int(local_work_items),
+                            int(is_first_chunk),
+                        )
+        else:
+            for band_idx in range(n_bands):
+                band_start = int(band_idx) * int(cfg_chunk_run)
+                band_len = min(int(cfg_chunk_run), int(max_cfg_len_chunk) - int(band_start))
+                if band_len <= 0:
+                    continue
+
+                # Packed-tasks cfg ranges:
+                # - Fast path: compute per-ftff cfg windows on-the-fly inside the Stage-1 kernel by passing
+                #   cfg_offset<0 and cfg_read_offset=band_start.
+                # - Fallback: precompute/upload fg_cfg_start_list/fg_cfg_len_list for this band and use the
+                #   cfg_offset/cfg_read_offset<0 sentinel.
+                cfg_offset_i = int(-1)
+                cfg_read_offset_i = int(band_start) if use_gpu_cfg_ranges else int(-1)
+                if not use_gpu_cfg_ranges:
+                    cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
+                    remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
+                    cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
+                    fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
+
+                # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
+                is_first_chunk = int(1 if int(band_idx) == 0 else 0)
+                if gem_fields.IS_METAL:
+                    fg_kernels.fg_stage1_kernel(
+                        int(n_genomes),
+                        int(total_notes),
+                        int(long_notes),
+                        float(last_note_time),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(band_len),
+                        int(n_sections),
+                        int(n_ftff),
+                        int(cfg_offset_i),
+                        int(cfg_read_offset_i),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                        int(song_slot),
+                        int(1 if pair_caps_from_timeline else 0),
+                        int(is_first_chunk),
+                    )
+                else:
+                    if not _FG_STAGE1_DIRECT_ATOMIC:
+                        fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+                    fg_kernels.fg_stage1_waves_kernel(
+                        bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
+                        int(0),
+                        int(0),
+                        int(0),
+                        int(n_work_items),
+                        int(band_len),
+                        int(cfg_offset_i),
+                        int(cfg_read_offset_i),
+                        int(total_notes),
+                        int(long_notes),
+                        float(last_note_time),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(n_sections),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                        int(song_slot),
+                        int(1 if pair_caps_from_timeline else 0),
+                    )
+                    if not _FG_STAGE1_DIRECT_ATOMIC:
+                        fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
 
         # Ordering is preserved on-device; only force a host sync when timing/tracing.
         did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)

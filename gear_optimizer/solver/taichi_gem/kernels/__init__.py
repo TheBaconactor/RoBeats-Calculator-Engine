@@ -96,6 +96,7 @@ from .kernels_ga import (
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
     ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
     ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
+    ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
     ga_swap_population_kernel,  # FUSED: swap
 )
 
@@ -116,7 +117,9 @@ from .kernels_solvers_batch import (
 # Import GA evaluation & reduction kernels
 from .ga_eval import (
     ga_find_best_combo_key_kernel,
+    ga_refresh_scores_and_update_runs_best_kernel,
     ga_write_best_results_from_key_kernel,
+    ga_write_best_results_and_update_runs_best_kernel,
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_pack_global_best_kernel,
@@ -149,9 +152,9 @@ from .ga_eval import (
 from .kernels_timeline import (
     precompute_fever_end_idx_kernel,
     compute_timeline_grid_kernel,
-    compute_timeline_grid_ceiling_hitsim_kernel,
-    compute_timeline_grid_ceiling_hitsim_reps_kernel,
-    scatter_timeline_grid_ceiling_hitsim_from_reps_kernel,
+    compute_timeline_grid_ceiling_envelope_kernel,
+    compute_timeline_grid_ceiling_envelope_reps_kernel,
+    scatter_timeline_grid_ceiling_envelope_from_reps_kernel,
     compute_timeline_grid_signatures_kernel,
     unpack_timeline_grid_masks_kernel,
 )
@@ -227,6 +230,7 @@ __all__ = [
     "ga_next_generation_full_kernel",
     "ga_next_generation_full_islands_kernel",
     "ga_next_generation_full_runs_kernel",
+    "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     "ga_swap_population_kernel",
     "ga_write_best_and_update_global_kernel",
     # Scoring functions
@@ -244,7 +248,9 @@ __all__ = [
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "ga_find_best_combo_key_kernel",
+    "ga_refresh_scores_and_update_runs_best_kernel",
     "ga_write_best_results_from_key_kernel",
+    "ga_write_best_results_and_update_runs_best_kernel",
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_pack_global_best_kernel",
@@ -274,9 +280,9 @@ __all__ = [
     "binary_search_left",
     "precompute_fever_end_idx_kernel",
     "compute_timeline_grid_kernel",
-    "compute_timeline_grid_ceiling_hitsim_kernel",
-    "compute_timeline_grid_ceiling_hitsim_reps_kernel",
-    "scatter_timeline_grid_ceiling_hitsim_from_reps_kernel",
+    "compute_timeline_grid_ceiling_envelope_kernel",
+    "compute_timeline_grid_ceiling_envelope_reps_kernel",
+    "scatter_timeline_grid_ceiling_envelope_from_reps_kernel",
     "compute_timeline_grid_signatures_kernel",
     "unpack_timeline_grid_masks_kernel",
 ]

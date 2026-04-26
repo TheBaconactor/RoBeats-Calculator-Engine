@@ -197,8 +197,6 @@ def main() -> int:
 
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
-    cfg_dict.setdefault("HumanHitSim", {})["Enabled"] = "false"
-    cfg_dict.setdefault("HumanHitSim", {})["enabled"] = "false"
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedProbability"] = "1.0"
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedMutations"] = "0"
 
@@ -227,7 +225,7 @@ def main() -> int:
     os.environ["GA_SEED"] = str(int(os.environ.get("GA_SEED", "1337") or 1337))
 
     print(f"[Compare] Running live optimizer for {len(songs)} song(s) (GA_SearchDepth={ga_depth}).")
-    print("[Compare] HumanHitSim disabled for this run.")  # deterministic reference compare
+    print("[Compare] Using deterministic timing-envelope analysis.")
 
     results = []
     for item in songs:

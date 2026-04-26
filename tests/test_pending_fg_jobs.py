@@ -9,6 +9,7 @@ from gear_optimizer.data.database import (
     list_pending_fg_jobs,
     upsert_pending_fg_job,
 )
+from gear_optimizer.pipeline.post_processor import _should_persist_pending_fg_job
 
 
 @pytest.fixture
@@ -66,3 +67,17 @@ def test_upsert_pending_fg_job_empty_deletes(db_path):
 
     upsert_pending_fg_job(song, [])
     assert next((j for j in list_pending_fg_jobs() if j.get("song_name") == song), None) is None
+
+
+def test_deferred_post_pending_fg_storage_requires_explicit_deferral_flag():
+    normal_drain_item = {
+        "_pending_fg_job": True,
+        "use_evo_db": True,
+        "ga_candidates": [{"Score": 1, "Gear": ["G1"], "Minis": ["M1"]}],
+    }
+    explicit_defer_item = dict(normal_drain_item, _persist_pending_fg_job=True)
+    disabled_db_item = dict(explicit_defer_item, use_evo_db=False)
+
+    assert not _should_persist_pending_fg_job(normal_drain_item)
+    assert _should_persist_pending_fg_job(explicit_defer_item)
+    assert not _should_persist_pending_fg_job(disabled_db_item)

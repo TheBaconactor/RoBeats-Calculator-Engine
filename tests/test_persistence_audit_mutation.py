@@ -68,3 +68,24 @@ def test_audit_flags_pending_fg_jobs(tmp_path, monkeypatch):
     report = audit_persistence_db(db_path, expected_min_songs=1)
     assert any(i["code"] == "pending_fg_jobs_nonzero" for i in report["issues"])
 
+
+def test_audit_warns_when_pending_fg_jobs_exceed_diagnostic_threshold(tmp_path, monkeypatch):
+    db_path = tmp_path / "pending_jobs_high.db"
+    _make_valid_db(db_path, monkeypatch)
+
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany(
+            "INSERT INTO pending_fg_jobs(song_name, candidates_json, created_ts, updated_ts) VALUES(?, ?, ?, ?)",
+            [(f"pytest_pending_fg_{i}", "[]", 0, 0) for i in range(101)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = audit_persistence_db(db_path, expected_min_songs=1)
+
+    assert report["metrics"]["pending_fg_jobs_count"] == 101
+    assert any(i["code"] == "pending_fg_jobs_high" for i in report["issues"])

@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 from cachetools import LRUCache
 
-from ....core.utils import human_hitsim_timing_context
+from ....core.utils import timing_envelope_timing_context
 
 
 _FG_CHART_SCORER_CACHE_MAX = max(1, int(os.environ.get("FG_CHART_SCORER_CACHE_MAX", "64") or "64"))
@@ -161,7 +161,7 @@ def _breakpoint_groups_cache_key(
 ) -> tuple[object, ...]:
     return (
         chart_signature_key(calc_song),
-        human_hitsim_timing_context(calc_song),
+        timing_envelope_timing_context(calc_song),
         str(mode or ""),
         int(n_sections),
         normalize_pair_signature(ftff_pairs),
@@ -279,7 +279,7 @@ def get_cached_max_fp_matrix(
 ):
     key = (
         chart_signature_key(calc_song),
-        human_hitsim_timing_context(calc_song),
+        timing_envelope_timing_context(calc_song),
         int(n_sections),
         normalize_pair_signature(ftff_pairs),
         normalize_pair_signature(base_stats_pairs),

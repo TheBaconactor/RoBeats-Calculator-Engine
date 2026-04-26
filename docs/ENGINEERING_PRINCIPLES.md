@@ -11,24 +11,16 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - This document holds long-lived engineering doctrine so the root harness can stay short.
 - `tools/dev` and CI are enforcement harnesses.
 - `tools/bench`, `tools/profile`, and replay scripts are evaluation harnesses.
-- The repo-local MCP server under `tools/` is the engineering-query harness for compact repo-specific answers in 1-2 calls.
+- Repo-local MCP servers are not a supported harness layer.
 
-## MCP harness doctrine
+## Repo-Local Automation Doctrine
 
-- Prefer the repo-local MCP harness over repeated manual file spelunking for:
-  - effective settings and env precedence,
-  - worklog / ADR lookup,
-  - DB state,
-  - profile artifact analysis,
-  - verification planning,
-  - benchmark protocol guidance.
-- Keep the MCP harness typed and repo-specific. Do not turn it into a generic shell passthrough.
-- Do not add repo-local custom Codex skills for this surface. The supported extension layer is the repo-local MCP server plus official OpenAI/Codex capabilities.
-- The MCP harness is self-maintaining:
-  - if a change introduces a stable repeated engineering surface,
-  - and that surface would materially improve speed, reduce mistakes, or lower token cost,
-  - the task should update the harness in the same change unless the user explicitly says not to.
-- Common repo questions should stay answerable in 1-2 MCP calls. If a new workflow breaks that property, treat the missing MCP coverage as incomplete engineering work.
+- Do not add or restore repo-local MCP servers.
+- Do not add repo-local custom Codex skills for this surface.
+- Repeated engineering workflows should live in maintained docs or ordinary repo tools under `tools/dev`, `tools/bench`,
+  or `tools/verify`.
+- Keep repo-local automation easy to run from a shell, CI, or PR review without requiring Codex-specific server
+  registration.
 
 ## Root-cause-first fixes
 
@@ -60,6 +52,8 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - Preserve public behavior unless the change is intentionally behavior-affecting and documented.
 - Remove stale names, duplicate wrappers, and obsolete compatibility layers when the real owner is known.
 - Centralize contracts, not just helper functions. Shared logic should live with the layer that owns the contract.
+- Treat optimization by deletion/trimming as high risk when a payload crosses stage boundaries. Before shrinking GA/FG/persistence candidate state, name every downstream consumer and prove both the execution funnel and the retained DB frontier still satisfy their separate contracts.
+- When selecting bounded GA/FG/persistence frontiers, dedupe by the relevant canonical identity before applying top-K cutoffs. A wider host download cannot recover unique candidates discarded by an earlier raw-row cutoff.
 - Keep docs, tests, and implementation records aligned with meaningful behavior or policy changes.
 
 ## Definition of done for behavior work

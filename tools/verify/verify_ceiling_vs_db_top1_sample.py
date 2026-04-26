@@ -1,9 +1,9 @@
 """
-Verify the GPU ceiling HitSim timeline against the repo root DB "top 1" winners.
+Verify the GPU ceiling timing-envelope timeline against the repo root DB "top 1" winners.
 
 Goal
   For a sample of songs from `evolution.db`, take the persisted best base-score loadout
-  and re-evaluate it using the production GPU ceiling timeline (`GPU_TIMELINE_CEILING_HITSIM=1`).
+  and re-evaluate it using the production GPU ceiling timeline (`GPU_TIMELINE_CEILING_ENVELOPE=1`).
 
   The ceiling evaluator should never score *below* an observed persisted best score for the
   same stats snapshot (it is a best-case timing envelope under the modeled Perfect window).
@@ -292,7 +292,7 @@ def main() -> int:
         raise SystemExit(f"DB not found: {db_path!r}")
 
     # Force ceiling mode for this verification run.
-    os.environ["GPU_TIMELINE_CEILING_HITSIM"] = "1"
+    os.environ["GPU_TIMELINE_CEILING_ENVELOPE"] = "1"
     os.environ.setdefault("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
 
     # Init Taichi once.

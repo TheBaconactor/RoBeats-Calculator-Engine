@@ -1,5 +1,6 @@
 import numpy as np
 
+from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import reduce_ftff_pairs_by_max_fp_surface
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _group_ftff_pairs_by_max_fp_matrix
 
 
@@ -53,3 +54,27 @@ def test_group_ftff_pairs_by_max_fp_matrix_matches_reference():
                 np.asarray(ftff_pairs, dtype=np.int32), max_fp, n_sections=n_sections
             )
             assert _normalize(got_arr) == _normalize(exp)
+
+
+def test_reduce_ftff_pairs_by_max_fp_surface_drops_dominated_same_surface_pairs():
+    ftff_pairs = np.asarray([(0, 0), (1, 0), (0, 1), (5, 0)], dtype=np.int32)
+    max_fp_matrix = np.asarray(
+        [
+            [2, 1],
+            [2, 1],
+            [2, 1],
+            [3, 1],
+        ],
+        dtype=np.int16,
+    )
+
+    reduced = reduce_ftff_pairs_by_max_fp_surface(
+        ftff_pairs,
+        max_fp_matrix,
+        n_sections=2,
+        total_budget=90,
+    )
+
+    assert reduced.dropped == 2
+    assert reduced.pairs.tolist() == [[0, 0], [5, 0]]
+    assert reduced.max_fp_matrix.tolist() == [[2, 1], [3, 1]]

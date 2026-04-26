@@ -2419,9 +2419,7 @@ class GearOptimizerApp:
             except Exception:
                 ga_seed_base = None
 
-        # PRODUCTION: repeat / HitSim flags
-        # (SongRepeats, BundleSongRepeats, HumanHitSim.Enabled, HumanHitSim.ApplyTo,
-        #  HumanHitSim.Seed, HumanHitSim.Distribution, HumanHitSim.GreatMode).
+        # PRODUCTION: repeat flags.
         song_repeats = 1
         try:
             song_repeats = safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1)

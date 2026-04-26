@@ -1,3 +1,6 @@
+import numpy as np
+
+
 def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import ga_operations
 
@@ -111,3 +114,163 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
     assert calls[2][1][-1] == 1
     assert calls[3] == ("propagate_chunk", (8,))
     assert calls[4] == "write_results"
+
+
+def test_ga_write_best_results_and_update_runs_best_dispatch(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
+
+    calls = []
+
+    class _Kernels:
+        @staticmethod
+        def ga_write_best_results_and_update_runs_best_kernel(*args):
+            calls.append(args)
+
+    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
+    monkeypatch.setattr(ga_operations, "kernels", _Kernels())
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUNS", 16, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUN_GENOMES", 128, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GENOMES", 1024, raising=False)
+
+    ga_operations.ga_write_best_results_and_update_runs_best(
+        run_idx_start=2,
+        n_runs=3,
+        n_genomes_per_run=8,
+        n_slots=9,
+        total_budget=90,
+        gem_scale_fever=3,
+        song_slot=5,
+        is_p_ft=1,
+        is_s_ff=1,
+    )
+
+    assert calls == [(2, 3, 8, 9, 90, 3, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1)]
+
+
+def test_ga_write_best_results_from_key_dispatch(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
+
+    calls = []
+
+    class _Kernels:
+        @staticmethod
+        def ga_write_best_results_from_key_kernel(*args):
+            calls.append(args)
+
+    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
+    monkeypatch.setattr(ga_operations, "kernels", _Kernels())
+
+    ga_operations.ga_write_best_results_from_key(
+        n_genomes=8,
+        n_slots=9,
+        total_budget=90,
+        gem_scale_fever=3,
+        song_slot=5,
+        is_p_ft=1,
+        is_s_ff=1,
+    )
+
+    assert calls == [(8, 90, 3, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1)]
+
+
+def test_ga_refresh_scores_and_update_runs_best_dispatch(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
+
+    calls = []
+
+    class _Kernels:
+        @staticmethod
+        def ga_refresh_scores_and_update_runs_best_kernel(*args):
+            calls.append(args)
+
+    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
+    monkeypatch.setattr(ga_operations, "kernels", _Kernels())
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUNS", 16, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUN_GENOMES", 128, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GENOMES", 1024, raising=False)
+
+    ga_operations.ga_refresh_scores_and_update_runs_best(
+        run_idx_start=2,
+        n_runs=3,
+        n_genomes_per_run=8,
+        n_slots=9,
+        total_budget=90,
+        gem_scale_fever=3,
+        song_slot=5,
+        is_p_ft=1,
+        is_s_ff=1,
+    )
+
+    assert calls == [(2, 3, 8, 9, 90, 3, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1)]
+
+
+def test_ga_refresh_scores_update_runs_best_and_next_generation_fused_runs_dispatch(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
+
+    calls = []
+    swaps = []
+
+    class _Kernels:
+        @staticmethod
+        def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(*args):
+            calls.append(args)
+
+        @staticmethod
+        def ga_swap_population_kernel(*args):
+            swaps.append(args)
+
+    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
+    monkeypatch.setattr(ga_operations, "kernels", _Kernels())
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUNS", 16, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GA_RUN_GENOMES", 128, raising=False)
+    monkeypatch.setattr(ga_operations.fields, "MAX_GENOMES", 1024, raising=False)
+
+    ga_operations.ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+        run_idx_start=2,
+        n_runs=3,
+        n_genomes_per_run=8,
+        n_slots=9,
+        total_budget=90,
+        gem_scale_fever=3,
+        song_slot=5,
+        is_p_ft=1,
+        is_s_ff=1,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=4,
+        n_islands=2,
+        elites_per_island=1,
+        novelty_repair_attempts=3,
+    )
+
+    assert calls == [
+        (
+            2,
+            3,
+            8,
+            9,
+            90,
+            3,
+            1,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            5,
+            1,
+            2,
+            1,
+            4,
+            np.uint32(0),
+            np.uint32(0),
+            3,
+        )
+    ]
+    assert swaps == [(24, 9)]

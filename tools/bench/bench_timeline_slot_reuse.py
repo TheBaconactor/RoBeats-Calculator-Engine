@@ -55,11 +55,9 @@ def _make_calc_song(song_id: str, *, n_notes: int) -> dict:
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(n_notes),
-            # Include HumanHitSim fields (part of the timeline cache key).
-            "HumanHitSimSeed": 0,
-            "HumanHitSimApplyTo": "",
-            "HumanHitSimDistribution": "",
-            "HumanHitSimGreatMode": "",
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
         },
         "song_data": {"timestamps": timestamps, "chart_timestamps": timestamps},
     }

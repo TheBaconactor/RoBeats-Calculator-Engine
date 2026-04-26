@@ -40,6 +40,82 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
+def test_decode_gpu_native_ga_runs_payload_keeps_overselected_persistence_frontier():
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    base_stats = {
+        "Perfect Points": 1,
+        "Combo Multiplier": 1,
+        "Fever Multiplier": 1,
+        "Fever Time": 1,
+        "Fever Fill Rate": 1,
+        "Rush": 1,
+        "Flow": 1,
+    }
+    gear_pool = {slot: [_item(f"{slot}0", **base_stats)] for slot in slots}
+    mini_pool = [_item(f"M{i}", **base_stats) for i in range(14)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    fg_limit = int(LOADOUTS_PER_SONG_LIMIT)
+    payload_limit = fg_limit + 30
+    n_slots = 9
+    packed_width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((payload_limit + 1, 2 + packed_width), dtype=np.int32)
+    selected_payload[0, 0] = int(payload_limit)
+
+    slot_start = np.asarray(registry.slot_start, dtype=np.int32)
+    mini_start = int(slot_start[6])
+    best_score = -1
+    best_ids = None
+    best_res = None
+    row = 1
+    for a in range(14):
+        for b in range(a + 1, 14):
+            for c in range(b + 1, 14):
+                if row > payload_limit:
+                    break
+                ids = np.asarray([int(slot_start[i]) for i in range(6)] + [mini_start + a, mini_start + b, mini_start + c], dtype=np.int32)
+                score = 10_000 + row
+                res = np.asarray([score, row % 7, row % 5, 1, 2, 3, 4], dtype=np.int32)
+                packed = np.zeros((packed_width,), dtype=np.int32)
+                packed[0] = score
+                packed[1 : 1 + n_slots] = ids
+                packed[1 + n_slots : 1 + n_slots + 7] = res
+                selected_payload[row, 0] = 0
+                selected_payload[row, 1] = row
+                selected_payload[row, 2 : 2 + packed_width] = packed
+                if score > best_score:
+                    best_score = score
+                    best_ids = ids.copy()
+                    best_res = res.copy()
+                row += 1
+            if row > payload_limit:
+                break
+        if row > payload_limit:
+            break
+
+    assert best_ids is not None
+    assert best_res is not None
+    selected_payload[0, 1] = int(best_score)
+    selected_payload[0, 2 : 2 + n_slots] = best_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = best_res
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data={
+            "selected_color": "Rush",
+            "primary_color": "Rush",
+            "secondary_color": "Flow",
+            "fg_candidate_limit": int(fg_limit),
+            "ga_payload_candidate_limit": int(payload_limit),
+        },
+        base_stats_fixed={},
+        fg_candidate_limit=int(fg_limit),
+    )
+
+    assert len(decoded) == payload_limit
+
+
 def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     rng = np.random.default_rng(12345)
 

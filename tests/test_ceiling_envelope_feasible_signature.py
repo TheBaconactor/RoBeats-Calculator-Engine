@@ -36,7 +36,7 @@ def _build_feasible_event_ms_for_ceiling(
     This is used to verify that the ceiling signature corresponds to a realizable hit-timing sequence
     (not an impossible upper bound).
     """
-    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
     ts = np.asarray(timestamps, dtype=np.float32).reshape(-1)
     nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
@@ -44,7 +44,7 @@ def _build_feasible_event_ms_for_ceiling(
     if n <= 0:
         return np.zeros((0,), dtype=np.int32)
 
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         ts,
         nt,
         perfect_lower_ms=-20,
@@ -60,7 +60,7 @@ def _build_feasible_event_ms_for_ceiling(
     group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
     gcount = int(group_starts.shape[0])
     if n > 0 and gcount <= 0:
-        raise AssertionError("prepare_perfect_hit_simulation produced no chord groups")
+        raise AssertionError("prepare_perfect_timing_envelope produced no chord groups")
 
     note_group_idx = np.full(n, -1, dtype=np.int32)
     for g in range(gcount):
@@ -69,7 +69,7 @@ def _build_feasible_event_ms_for_ceiling(
         if e > s:
             note_group_idx[s:e] = int(g)
     if n > 0 and int(np.any(note_group_idx < 0)):
-        raise AssertionError("prepare_perfect_hit_simulation produced uncovered note indices")
+        raise AssertionError("prepare_perfect_timing_envelope produced uncovered note indices")
 
     def _delta_ms(g: int, prev_g: int) -> int:
         d = int(group_base[g]) - int(group_base[prev_g])
@@ -244,7 +244,7 @@ def test_ceiling_signature_is_realizable_via_constructed_event_stream() -> None:
     """
     from math import ceil
 
-    from gear_optimizer.solver.hit_simulation import compute_fever_timeline_signature, prepare_perfect_hit_simulation
+    from gear_optimizer.solver.timing_envelope import compute_fever_timeline_signature, prepare_perfect_timing_envelope
 
     # Synthetic chart in integer ms.
     n_notes = 380
@@ -273,7 +273,7 @@ def test_ceiling_signature_is_realizable_via_constructed_event_stream() -> None:
     event_ms = _build_feasible_event_ms_for_ceiling(timestamps, note_types, fill_count=fill_count, d_ms=d_ms)
 
     # Sanity: verify the constructed event stream respects chord grouping windows + monotonic rule.
-    prepared = prepare_perfect_hit_simulation(
+    prepared = prepare_perfect_timing_envelope(
         timestamps,
         note_types,
         perfect_lower_ms=-20,

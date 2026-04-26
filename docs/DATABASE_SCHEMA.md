@@ -13,8 +13,13 @@ Default persistence behavior (`evolution.db`):
 - Guide: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`
 - Storage is compact by default:
   - Gear/minis are persisted as compact integer IDs via encoding tables + BLOB columns (not repeated JSON strings).
-  - `details_json` stores packed Stats as a short fixed-order array (`st`), not verbose `Stats` keys.
+  - `details_json` stores packed Stats (`st`), gem counts (`gc`), and color context (`se`/`pc`/`sc`) instead of verbose
+    repeated keys.
+  - `force_details_json` stores the replay surface for FG (`BaseStats`, `GemCounts`, `FT`, `FF`, selected element,
+    `ForceGreats`, score); redundant final `Stats` copies are omitted when they can be reconstructed.
   - Large derived fields (notably `hitsim_offset_deltas_ms`) are computed on demand and not persisted.
+  - Full FG replay payloads are stored in `team_buff_fg_loadouts`; base rows keep scalar `fg_score` context but do not
+    duplicate `force_details_json`.
 
 `EVOLUTION_DB_PATH` always overrides the resolved DB path for the current process.
 
@@ -36,12 +41,22 @@ CREATE TABLE songs (
 );
 ```
 
-### 2. `pending_fg_jobs` Table (Deferred Force Greats Work)
-Stores a compact snapshot of GA candidates for songs whose Force Greats evaluation is **deferred** (e.g. GPU-native in-flight mode that batches FG work and may drain later).
+### 2. `pending_fg_jobs` Table (Explicit Deferred Force Greats Work)
+Stores a compact snapshot of GA candidates only for songs whose Force Greats
+evaluation is explicitly made durable for later work.
 
-This exists to:
-- Keep FG candidates safe even if the base leaderboards are pruned (`LOADOUTS_PER_SONG_LIMIT`).
-- Allow FG work to be resumed later without rerunning GA (best-effort; depends on config consistency).
+This table is **not** the retained coverage frontier and should not be populated
+by the normal in-process FG queue. Normal GPU-native in-flight runs drain FG in
+memory; writing every in-memory FG job into SQLite creates large transient JSON
+pages that SQLite may keep after delete.
+
+Rules:
+- `team_buff_loadouts` remains the retained base coverage frontier.
+- Nonzero pending rows after a normal drained run should be treated as FG debt or
+  an interrupted/deferred run, not as healthy coverage.
+- A large pending row count is intentionally diagnostic: audit tooling warns when
+  `pending_fg_jobs` exceeds `100` rows so the run can be inspected instead of
+  silently hiding the backlog.
 
 ```sql
 CREATE TABLE pending_fg_jobs (
@@ -70,7 +85,7 @@ CREATE TABLE team_buff_loadouts (
     gear_ids_blob BLOB,            -- Compact gear IDs (varint list) into `gear_name_encoding`
     minis_ids_blob BLOB,           -- Compact mini variant-group IDs into `mini_name_encoding`
     details_json TEXT,
-    force_details_json TEXT,
+    force_details_json TEXT,       -- legacy/nullable; new writes keep full FG payloads in team_buff_fg_loadouts
     timestamp REAL,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
@@ -165,6 +180,17 @@ context:
 
 This is used by on-demand tier recomputation to re-apply HumanHitSim per persisted row before scoring.
 
+### Packed Gem Counts and Colors
+
+Current writes also compact common per-row context:
+
+- `details_json.gc`: fixed-order gem count list: Perfect Points, Combo Multiplier, Fever Multiplier, Element
+- `details_json.se`: selected element
+- `details_json.pc`: primary song color
+- `details_json.sc`: secondary song color
+
+The Python load helpers unpack these back into `GemCounts`, `SelectedElement`, `PrimaryColor`, and `SecondaryColor`.
+
 ### Not Persisted
 
 Some large derived fields are intentionally not persisted (computed on demand), including:
@@ -178,6 +204,8 @@ Some large derived fields are intentionally not persisted (computed on demand), 
 Most consumers should not query SQLite directly anymore. Use the centralized manager API:
 
 - `EvolutionDbManager.get_song_catalog(...)`: list songs + available ranks for base/FG leaderboards
+- `EvolutionDbManager.get_frontend_song_payload(...)`: get one selected song page with top base/FG lists, difficulty,
+  tier/color metadata, per-section FG config rows, and normalized hitsim delta display fields when available
 - `EvolutionDbManager.get_leaderboard_entry(...)`: view a single (song, tier, leaderboard, rank) entry
 
 Example:
@@ -189,6 +217,13 @@ db = EvolutionDbManager.from_env()
 
 catalog = db.get_song_catalog(max_rank=51)
 
+page = db.get_frontend_song_payload(
+    "Rainshower (Easy) by Silentroom",
+    tier="T10",
+    limit=50,
+    element="selected",
+)
+
 row = db.get_leaderboard_entry(
     "Rainshower (Easy) by Silentroom",
     leaderboard="fg",   # "base" or "fg"
@@ -198,7 +233,10 @@ row = db.get_leaderboard_entry(
 )
 ```
 
-This returns decoded `gear`/`minis` names and scores computed on demand.
+The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors,
+`force_sections` derived from `ForceGreats.config` for FG rows, and row-level `hitsim_offset_deltas_ms` /
+`base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when those deltas are present in the replayed row
+payload. The single-entry API returns full decoded row details.
 
 See: `docs/DB_MANAGER.md`.
 
@@ -213,6 +251,7 @@ If you only need scalar counts/scores, direct SQL is fine. Decoding `*_ids_blob`
 | **Primary Metric** | `score` (Base Score) | `fg_score` (Force Greats Score) |
 | **Content** | All Loadouts (per tier) | Only Valid FG Loadouts (per tier) |
 | **Garbage Collection** | Keeps Top N by Score | Keeps Top N by FG Score |
+| **FG Payload** | Scalar `fg_score`; full payload is not duplicated | Replayable `force_details_json` payload |
 | **Use Case** | General Gameplay, Leaderboards | FG Research, Simulation Analysis |
 
 ### Maintenance
