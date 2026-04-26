@@ -254,7 +254,7 @@ def _continuous_ga_warm_queue_limit(
     dispatch_burst: int,
 ) -> int:
     """
-    Keep startup GA warmup bounded without starving the steady-state conveyor.
+    Keep startup GA warmup bounded without starving the continuous conveyor.
 
     The original continuous architecture worked best when GA could keep a healthy
     runway of future songs behind the currently visible FG lanes. The important
@@ -263,7 +263,7 @@ def _continuous_ga_warm_queue_limit(
 
     Once decode/FG work exists, return the full GA queue limit and rely on owner
     turn discipline to surface ready FG promptly. Clamping GA to the visible lane
-    count in steady state underfeeds fast GPUs because downstream decode/FG prep
+    count once the conveyor is full underfeeds fast GPUs because downstream decode/FG prep
     latency can exceed a two-lane runway.
     """
     limit = max(1, int(ga_queue_limit))
@@ -283,15 +283,13 @@ def _continuous_ga_warm_queue_limit(
         return int(limit)
 
     handoff_fg_work = (
-        max(0, int(decode_inflight_count))
-        + max(0, int(pending_fg_count))
-        + max(0, int(fg_prep_inflight_count))
+        max(0, int(decode_inflight_count)) + max(0, int(pending_fg_count)) + max(0, int(fg_prep_inflight_count))
     )
     if handoff_fg_work > 0:
         # Decode/pending FG means the first FG handoff is approaching, but if we
         # immediately reopen GA to the full queue depth we can bury that first FG
         # owner turn behind a long GA tail. Keep a modest GA runway until FG has
-        # actually surfaced onto the owner, then restore the full steady-state
+        # actually surfaced onto the owner, then restore the full continuous
         # limit.
         return int(handoff_limit)
 
@@ -332,11 +330,7 @@ def _continuous_fg_should_fill_song_lanes(
         return False
     if int(pending_fg_count) > 0 and int(ready_fg_count) > 0:
         return False
-    if (
-        int(pending_fg_count) > 0
-        and float(aging_trigger_s) > 0.0
-        and float(oldest_wait_s) >= float(aging_trigger_s)
-    ):
+    if int(pending_fg_count) > 0 and float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
         return False
     if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
         return False

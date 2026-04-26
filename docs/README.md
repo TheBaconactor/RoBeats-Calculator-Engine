@@ -30,7 +30,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [MAINTENANCE_PLAYBOOK.md](MAINTENANCE_PLAYBOOK.md) - runtime and GPU maintenance checklist.
 - [INFLIGHT_GA_FG_THROUGHPUT.md](INFLIGHT_GA_FG_THROUGHPUT.md) - throughput protocol for GA + FG work.
 - [GPU_RESIDENT_GA_FG_PLAN.md](GPU_RESIDENT_GA_FG_PLAN.md) - same-slot GPU-resident GA to FG handoff plan.
-- [STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md](STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md) - proposal to replace repeated GA restarts with steady-state search plus exact duplicate-eval reuse.
+- [STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md](STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md) - historical proposal; production GA now uses packed independent-start hybrid scheduling.
 - [PHD_PERFORMANCE_HOMEWORK.md](PHD_PERFORMANCE_HOMEWORK.md) - standalone PhD-level homework focused on multiplicative throughput speedups via scientific/mathematical reductions.
 - [TAICHI_PORT_ROADMAP.md](TAICHI_PORT_ROADMAP.md) - Taichi/Vulkan roadmap and constraints.
 - [OPTIMIZATION_ANALYSIS.md](OPTIMIZATION_ANALYSIS.md) - optimization findings and tradeoffs.

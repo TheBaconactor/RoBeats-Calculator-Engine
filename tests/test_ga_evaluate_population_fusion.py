@@ -240,6 +240,7 @@ def test_ga_refresh_scores_update_runs_best_and_next_generation_fused_runs_dispa
         tournament_k=4,
         n_islands=2,
         elites_per_island=1,
+        novelty_repair_attempts=3,
     )
 
     assert calls == [
@@ -269,6 +270,7 @@ def test_ga_refresh_scores_update_runs_best_and_next_generation_fused_runs_dispa
             4,
             np.uint32(0),
             np.uint32(0),
+            3,
         )
     ]
     assert swaps == [(24, 9)]

@@ -78,6 +78,89 @@ def _repair_mini_uniqueness(
 
 
 @ti.func
+def _next_genome_matches_parent(g: ti.i32, parent: ti.i32, n_slots: ti.i32) -> ti.i32:
+    match = ti.i32(0)
+    if parent >= 0:
+        match = ti.i32(1)
+        for s in ti.static(range(9)):
+            if s < n_slots:
+                if kernels_helpers.population_next_indices[g, s] != kernels_helpers.population_indices[parent, s]:
+                    match = ti.i32(0)
+    return match
+
+
+@ti.func
+def _repair_next_genome_mini_uniqueness(g: ti.i32, n_slots: ti.i32, state: ti.u32) -> ti.u32:
+    if n_slots >= 9:
+        mini_pool_start = kernels_helpers.slot_start[6]
+        mini_pool_count = kernels_helpers.slot_count[6]
+        if mini_pool_count > 1:
+            m0 = kernels_helpers.population_next_indices[g, 6]
+            m1 = kernels_helpers.population_next_indices[g, 7]
+            m2 = kernels_helpers.population_next_indices[g, 8]
+            m0, m1, m2, state = _repair_mini_uniqueness(
+                m0,
+                m1,
+                m2,
+                mini_pool_start,
+                mini_pool_count,
+                state,
+            )
+            kernels_helpers.population_next_indices[g, 6] = m0
+            kernels_helpers.population_next_indices[g, 7] = m1
+            kernels_helpers.population_next_indices[g, 8] = m2
+    return state
+
+
+@ti.func
+def _mutate_next_genome_slot(g: ti.i32, n_slots: ti.i32, state: ti.u32) -> ti.u32:
+    if n_slots > 0:
+        state = kernels_helpers._xorshift32(state)
+        mut_slot = ti.cast(state % ti.cast(n_slots, ti.u32), ti.i32)
+        pool_start = kernels_helpers.slot_start[mut_slot]
+        pool_count = kernels_helpers.slot_count[mut_slot]
+        if pool_count > 0:
+            old_item = kernels_helpers.population_next_indices[g, mut_slot]
+            state = kernels_helpers._xorshift32(state)
+            offset = ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+            if pool_count > 1:
+                current_offset = old_item - pool_start
+                if current_offset >= 0 and current_offset < pool_count and offset >= current_offset:
+                    offset = (offset + 1) % pool_count
+            kernels_helpers.population_next_indices[g, mut_slot] = pool_start + offset
+            state = _repair_next_genome_mini_uniqueness(g, n_slots, state)
+    return state
+
+
+@ti.func
+def _repair_parent_clone_child(
+    g: ti.i32,
+    pa: ti.i32,
+    pb: ti.i32,
+    n_slots: ti.i32,
+    state: ti.u32,
+    repair_attempts: ti.i32,
+) -> ti.u32:
+    attempts = repair_attempts
+    if attempts < 0:
+        attempts = 0
+    if attempts > 4:
+        attempts = 4
+
+    clone = _next_genome_matches_parent(g, pa, n_slots)
+    if clone == 0:
+        clone = _next_genome_matches_parent(g, pb, n_slots)
+
+    for attempt in ti.static(range(4)):
+        if attempt < attempts and clone != 0:
+            state = _mutate_next_genome_slot(g, n_slots, state)
+            clone = _next_genome_matches_parent(g, pa, n_slots)
+            if clone == 0:
+                clone = _next_genome_matches_parent(g, pb, n_slots)
+    return state
+
+
+@ti.func
 def _fg_proxy_for_genome(genome_idx: ti.i32) -> ti.i64:
     stats7 = kernels_helpers.genome_base_stats[genome_idx]
     return (
@@ -169,7 +252,9 @@ def _exact_eval_base_stats_matches_genomes(a: ti.i32, b: ti.i32) -> ti.i32:
 @ti.func
 def _store_exact_eval_base_stats_key(pos: ti.i32, genome_idx: ti.i32) -> None:
     for i in ti.static(range(7)):
-        kernels_helpers.ga_exact_eval_hash_keys[pos, i] = ti.cast(kernels_helpers.genome_base_stats[genome_idx][i], ti.i32)
+        kernels_helpers.ga_exact_eval_hash_keys[pos, i] = ti.cast(
+            kernels_helpers.genome_base_stats[genome_idx][i], ti.i32
+        )
     for i in ti.static(range(7, 9)):
         kernels_helpers.ga_exact_eval_hash_keys[pos, i] = 0
 
@@ -1196,6 +1281,8 @@ def ga_select_crossover_mutate_kernel(
             kernels_helpers.population_next_indices[g, 8] = m2
 
         kernels_helpers.ga_rng_state[g] = state
+
+
 @ti.kernel
 def ga_next_generation_full_kernel(
     n_genomes: ti.i32,
@@ -1365,6 +1452,7 @@ def ga_next_generation_full_kernel(
         kernels_helpers.ga_rng_state[g] = state
 
         kernels_helpers.ga_parent_a[g] = pa
+
 
 @ti.kernel
 def ga_next_generation_full_islands_kernel(
@@ -1595,6 +1683,7 @@ def ga_next_generation_full_islands_kernel(
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
 
+
 @ti.func
 def _ga_next_generation_full_runs_impl(
     n_runs: ti.i32,
@@ -1605,6 +1694,7 @@ def _ga_next_generation_full_runs_impl(
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
     immigrant_rate_fp: ti.u32,
+    novelty_repair_attempts: ti.i32,
 ):
     """Shared multi-run next-generation body used by standalone and fused transition kernels."""
     MAX_ELITES_PER_ISLAND: ti.i32 = 16
@@ -1818,6 +1908,9 @@ def _ga_next_generation_full_runs_impl(
 
                 pa = -1
 
+        if pa >= 0 and novelty_repair_attempts > 0:
+            state = _repair_parent_clone_child(g, pa, pb, n_slots, state, novelty_repair_attempts)
+
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
 
@@ -1832,6 +1925,7 @@ def ga_next_generation_full_runs_kernel(
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
     immigrant_rate_fp: ti.u32,
+    novelty_repair_attempts: ti.i32,
 ):
     """
     FUSED next generation for multiple independent runs packed contiguously.
@@ -1851,6 +1945,7 @@ def ga_next_generation_full_runs_kernel(
         tournament_k,
         mutation_rate_fp,
         immigrant_rate_fp,
+        novelty_repair_attempts,
     )
 
 
@@ -1881,9 +1976,10 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
     immigrant_rate_fp: ti.u32,
+    novelty_repair_attempts: ti.i32,
 ):
     """
-    FUSED steady-state multi-run transition:
+    FUSED packed multi-run transition:
     - refresh `ga_scores` from the exact reduction key
     - preserve per-run row 0 before mutation when a run improves
     - build the next generation in the same dispatch
@@ -1968,6 +2064,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         tournament_k_i,
         mutation_rate_fp,
         immigrant_rate_fp,
+        novelty_repair_attempts,
     )
 
 

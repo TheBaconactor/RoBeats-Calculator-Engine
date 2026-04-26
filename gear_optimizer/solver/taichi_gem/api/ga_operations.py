@@ -1044,7 +1044,7 @@ def ga_write_best_results_and_update_runs_best(
     """
     FUSED: materialize per-genome GA results and refresh per-run best rows.
 
-    This is the steady-state multi-run companion to `ga_write_best_and_update_global()`.
+    This is the packed multi-run companion to `ga_write_best_and_update_global()`.
     Call it after `ga_evaluate_population(..., materialize_mode="none")` when the active
     population packs multiple independent runs contiguously.
     """
@@ -1106,7 +1106,7 @@ def ga_refresh_scores_and_update_runs_best(
     use_exact_inner_solver: bool = True,
 ) -> None:
     """
-    Lightweight steady-state refresh for packed multi-run GA execution.
+    Lightweight live-score refresh for packed multi-run GA execution.
 
     This keeps `ga_scores` exact from the reduction state and updates each run's row 0 best
     with exact materialization only when that run improves. It avoids the full-pop
@@ -1359,6 +1359,7 @@ def ga_next_generation_fused_runs(
     tournament_k: int = 3,
     n_islands: int = 1,
     elites_per_island: int = 1,
+    novelty_repair_attempts: int = 0,
 ) -> None:
     """
     FULLY FUSED next generation for multiple independent runs packed contiguously.
@@ -1384,6 +1385,7 @@ def ga_next_generation_fused_runs(
         elites_per_island = 0
     if tournament_k < 1:
         tournament_k = 1
+    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
 
     n_total = n_runs * n_genomes_per_run
     if n_total > fields.MAX_GENOMES:
@@ -1401,6 +1403,7 @@ def ga_next_generation_fused_runs(
         tournament_k,
         mr_fp,
         ir_fp,
+        int(novelty_repair_attempts),
     )
     kernels.ga_swap_population_kernel(int(n_total), n_slots)
 
@@ -1432,9 +1435,10 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     tournament_k: int = 3,
     n_islands: int = 1,
     elites_per_island: int = 1,
+    novelty_repair_attempts: int = 0,
 ) -> None:
     """
-    Fused steady-state multi-run transition.
+    Fused packed multi-run transition.
 
     This is the non-final, non-migration companion to:
     `ga_refresh_scores_and_update_runs_best()` followed by `ga_next_generation_fused_runs()`.
@@ -1459,6 +1463,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         elites_per_island = 0
     if tournament_k < 1:
         tournament_k = 1
+    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
 
     mr_fp = _probability_to_u32_fp(float(mutation_rate))
     ir_fp = _probability_to_u32_fp(float(immigrant_rate))
@@ -1489,6 +1494,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         int(tournament_k),
         mr_fp,
         ir_fp,
+        int(novelty_repair_attempts),
     )
     kernels.ga_swap_population_kernel(int(n_runs) * int(n_genomes_per_run), int(n_slots))
 
@@ -2219,7 +2225,7 @@ def warmup_ga_live_request_kernels() -> None:
     The full offline warmup historically covered GA evaluation, but not the live
     `ensure_ready(refs) -> precompute_timeline_gpu() -> materialize_mode="none"
     -> refresh row 0` path. Missing that path lets stale sentinels push timeline
-    and steady-state JIT/load costs into the first real song, creating a visible
+    and live-request JIT/load costs into the first real song, creating a visible
     0%-utilization valley before the sustained workload begins.
     """
     global _GA_LIVE_REQUEST_WARMED

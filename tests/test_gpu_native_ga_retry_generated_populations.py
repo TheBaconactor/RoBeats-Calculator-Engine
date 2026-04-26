@@ -227,19 +227,18 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
             "TotalBudget": 90,
             "GemScaleFever": 3,
             "fg_candidate_limit": 51,
-            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )
 
     assert isinstance(out, np.ndarray)
     assert fake_gpu.reset_calls >= 1
-    assert fake_gpu.generate_calls == 1
-    assert fake_gpu.download_run_payload_calls == 1
+    assert fake_gpu.generate_calls == 2
+    assert fake_gpu.download_run_payload_calls == 0
     assert fake_gpu.store_payload_calls == 0
-    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 2
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
-    assert fake_gpu.population_upload_calls >= 3
+    assert fake_gpu.population_upload_calls == 0
 
 
 def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
@@ -366,7 +365,7 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
     assert fake_gpu.global_best_update_calls == 0
 
 
-def test_run_gpu_native_ga_steady_state_raises_when_abort_requested(monkeypatch):
+def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypatch):
     from gear_optimizer.solver import genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
@@ -398,10 +397,6 @@ def test_run_gpu_native_ga_steady_state_raises_when_abort_requested(monkeypatch)
                 "TotalBudget": 90,
                 "GemScaleFever": 3,
                 "fg_candidate_limit": 51,
-                "ga_steady_state_enabled": True,
-                "ga_steady_state_refresh_pct": 0.25,
-                "ga_steady_state_min_refresh": 2,
-                "ga_steady_state_allow_multistart_epochs": True,
             },
             ga_seed=123,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
@@ -412,7 +407,7 @@ def test_run_gpu_native_ga_steady_state_raises_when_abort_requested(monkeypatch)
     assert fake_gpu.download_run_payload_calls == 0
 
 
-def test_run_gpu_native_ga_steady_state_forwards_global_ftff_caps(monkeypatch):
+def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch):
     from gear_optimizer.solver import genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
@@ -452,10 +447,6 @@ def test_run_gpu_native_ga_steady_state_forwards_global_ftff_caps(monkeypatch):
             "TotalBudget": 90,
             "GemScaleFever": 3,
             "fg_candidate_limit": 51,
-            "ga_steady_state_enabled": True,
-            "ga_steady_state_refresh_pct": 0.25,
-            "ga_steady_state_min_refresh": 2,
-            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )
@@ -466,10 +457,10 @@ def test_run_gpu_native_ga_steady_state_forwards_global_ftff_caps(monkeypatch):
     assert all("max_ff_gems_global" in kwargs for kwargs in evaluate_kwargs)
     assert all(kwargs.get("materialize_mode") == "none" for kwargs in evaluate_kwargs)
     assert fake_gpu.store_payload_calls == 0
-    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 3
+    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 
 
-def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
+def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
     from gear_optimizer.solver import genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
@@ -506,10 +497,6 @@ def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
             "TotalBudget": 90,
             "GemScaleFever": 3,
             "fg_candidate_limit": 51,
-            "ga_steady_state_enabled": True,
-            "ga_steady_state_refresh_pct": 0.25,
-            "ga_steady_state_min_refresh": 2,
-            "ga_steady_state_allow_multistart_epochs": True,
         },
         ga_seed=123,
     )
@@ -519,9 +506,9 @@ def test_run_gpu_native_ga_steady_state_emits_phase_events(monkeypatch):
 
     assert isinstance(out, np.ndarray)
     assert len(flag_events) == 1
-    assert len(phase_events) == 6
-    assert {event.get("metrics", {}).get("phase") for event in phase_events} == {"evaluate", "update_runs_best"}
-    assert all(int(event.get("metrics", {}).get("batch_runs", 0)) == 1 for event in phase_events)
+    phases = {event.get("metrics", {}).get("phase") for event in phase_events}
+    assert {"evaluate", "update_runs_best", "pack_fg_candidates"}.issubset(phases)
+    assert all(int(event.get("metrics", {}).get("batch_runs", 0)) == 3 for event in phase_events)
 
 
 def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
@@ -583,57 +570,3 @@ def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
     assert fake_gpu.store_payload_calls == 0
     assert len(audit_calls) == 1
     assert len(written_paths) == 1
-
-
-def test_run_gpu_native_ga_steady_state_rejects_archive_rows(monkeypatch):
-    from gear_optimizer.solver import genetic
-
-    fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
-
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
-
-    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "steady-archive", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
-        ref_arrays={},
-        song_slot=0,
-        item_stats=np.zeros((512, 10), dtype=np.int32),
-        slot_start=np.asarray([1, 32, 64, 96, 128, 160, 192, 0, 0], dtype=np.int32),
-        slot_count=np.asarray([31, 31, 31, 31, 31, 31, 31, 0, 0], dtype=np.int32),
-        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
-        n_generations=1,
-        initial_populations=None,
-        num_runs=3,
-        n_genomes=8,
-        elite_count=1,
-        color_flags={},
-        cfg_data={
-            "TotalBudget": 90,
-            "GemScaleFever": 3,
-            "fg_candidate_limit": 51,
-            "selected_color": "Rush",
-            "ga_steady_state_enabled": True,
-            "ga_steady_state_refresh_pct": 0.25,
-            "ga_steady_state_min_refresh": 2,
-            "ga_steady_state_allow_multistart_epochs": True,
-        },
-        ga_seed=123,
-    )
-
-    assert isinstance(out, np.ndarray)
-    assert fake_gpu.population_upload_calls >= 3
-    assert len(fake_gpu.population_upload_history) >= 3
-
-    epoch1_population = fake_gpu.population_upload_history[1]
-    epoch2_population = fake_gpu.population_upload_history[2]
-
-    epoch1_keys = {tuple(int(x) for x in row.tolist()) for row in epoch1_population}
-    epoch2_keys = {tuple(int(x) for x in row.tolist()) for row in epoch2_population}
-
-    assert len(epoch2_keys - epoch1_keys) >= 1

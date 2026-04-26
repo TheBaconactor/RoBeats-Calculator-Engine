@@ -303,7 +303,7 @@ def test_gpu_ga_eval_raw_key_scores_match_materialized_scores() -> None:
         "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float64),
     }
 
-    calc_song = _make_calc_song(name="SteadyStateScoreRefresh_BeatVibe", p_color="Beat", s_color="Vibe")
+    calc_song = _make_calc_song(name="ScoreRefresh_BeatVibe", p_color="Beat", s_color="Vibe")
     flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
 
     genomes: list[list[dict]] = []

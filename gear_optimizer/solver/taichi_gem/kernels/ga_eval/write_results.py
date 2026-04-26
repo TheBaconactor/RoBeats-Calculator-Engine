@@ -530,7 +530,7 @@ def ga_refresh_scores_and_update_runs_best_kernel(
     use_exact_inner_solver: ti.template(),
 ):
     """
-    Lightweight steady-state refresh:
+    Lightweight live-score refresh:
     - keep `ga_scores` exact from the reduction state
     - refresh per-run row 0 with exact materialization only when improved
     - avoid full-pop `genome_result_stats` writes

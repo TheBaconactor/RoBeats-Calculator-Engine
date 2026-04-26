@@ -151,6 +151,48 @@ def test_gpu_ga_next_generation_fused_runs_matches_sequential():
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
+    from gear_optimizer.solver.taichi_gem.api import (
+        ga_download_population_indices,
+        ga_next_generation_fused_runs,
+        ga_seed_rng_runs,
+        ga_set_scores,
+        ga_upload_item_stats,
+        ga_upload_population_indices,
+    )
+
+    n_genomes = 32
+    n_slots = 9
+    row = np.asarray([1, 10, 20, 30, 40, 50, 60, 61, 62], dtype=np.int32)
+    pop = np.tile(row, (n_genomes, 1)).astype(np.int32, copy=False)
+    scores = np.arange(n_genomes, 0, -1, dtype=np.int32)
+    item_stats = np.zeros((128, 10), dtype=np.int32)
+    slot_start = np.asarray([1, 10, 20, 30, 40, 50, 60, 60, 60], dtype=np.int32)
+    slot_count = np.asarray([8, 8, 8, 8, 8, 8, 20, 20, 20], dtype=np.int32)
+
+    ga_upload_item_stats(item_stats, slot_start, slot_count)
+    ga_upload_population_indices(pop, n_slots=n_slots)
+    ga_set_scores(scores, n_genomes=n_genomes)
+    ga_seed_rng_runs(n_runs=1, n_genomes_per_run=n_genomes, seed=123)
+    ga_next_generation_fused_runs(
+        n_runs=1,
+        n_genomes_per_run=n_genomes,
+        n_slots=n_slots,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=3,
+        n_islands=1,
+        elites_per_island=1,
+        novelty_repair_attempts=2,
+    )
+
+    out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+    unique_rows = {tuple(int(x) for x in out[i].tolist()) for i in range(n_genomes)}
+    assert tuple(int(x) for x in out[0].tolist()) == tuple(int(x) for x in row.tolist())
+    assert len(unique_rows) > 1
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import (
