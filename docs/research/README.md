@@ -14,3 +14,7 @@ This folder stores standalone research artifacts that are not required for day-t
 - `eclipse_submission_bundle/prototype_results.json`
 - `eclipse_submission_bundle/eclipse_report.tex`
 - `eclipse_submission_bundle/eclipse_report.pdf`
+
+## Branch Archives
+
+- `branch-archives/README.md` - branch-separated research document archive imported from incompatible research/architecture branches; preserved for comparison only.

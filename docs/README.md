@@ -41,6 +41,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 ## Research
 
 - [research/README.md](research/README.md) - index of standalone research assets and submission bundles.
+- [research/branch-archives/README.md](research/branch-archives/README.md) - branch-separated archive of incompatible research documents imported from other branches.
 
 ## Archive and Logs
 
