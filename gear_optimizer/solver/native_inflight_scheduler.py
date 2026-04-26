@@ -357,8 +357,8 @@ def _continuous_ga_should_yield_to_fg(
 
     This is deliberately an admission rule, not a scoring shortcut. Existing GA
     work may finish, but the submit loop yields to the FG scheduler before it
-    adds more GA jobs once FG is ready or once FG prep has filled the intended
-    conveyor runway.
+    adds more GA jobs once FG is ready. Active-but-unready FG prep is not a
+    runnable GPU lane, so it must not stop GA admission by itself.
     """
     if not bool(fg_enabled):
         return False
@@ -370,8 +370,6 @@ def _continuous_ga_should_yield_to_fg(
     prep = max(0, int(fg_prep_inflight_count))
     fg_inflight = max(0, int(fg_inflight_count))
     fg_workers = max(1, int(fg_worker_count))
-    ga_inflight = max(0, int(ga_inflight_count))
-    target_lanes = max(1, int(target_song_lanes))
     fg_pressure = int(pending) + int(prep) + int(fg_inflight)
     if fg_pressure <= 0:
         return False
@@ -381,12 +379,6 @@ def _continuous_ga_should_yield_to_fg(
     if fg_inflight >= fg_workers:
         return False
     if ready > 0:
-        return True
-    if ga_inflight <= 0:
-        return False
-    if pending > 0 and float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
-        return True
-    if fg_pressure >= target_lanes and ga_inflight >= target_lanes:
         return True
     return False
 

@@ -241,22 +241,22 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
     assert song.ga_candidates
 
 
-def test_prepare_fg_job_sync_warms_fg_jit_for_finder(monkeypatch):
+def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch):
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(stages, "_maybe_prewarm_fg_chart_scorer", lambda _song: None)
     monkeypatch.setattr(stages, "select_fg_candidates", lambda candidates, **_kwargs: list(candidates or []))
-
-    def _fake_warmup(calc_song, ref_arrays):
-        seen["calc_song"] = calc_song
-        seen["ref_arrays"] = ref_arrays
 
     def _fake_runtime_warmup(calc_song, ref_arrays, *, gpu_client=None):
         seen["runtime_calc_song"] = calc_song
         seen["runtime_ref_arrays"] = ref_arrays
         seen["runtime_gpu_client"] = gpu_client
 
-    monkeypatch.setattr(stages, "_warmup_fg_jit", _fake_warmup)
+    monkeypatch.setattr(
+        stages,
+        "_warmup_fg_jit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("dynamic prep should not inline JIT warmup")),
+    )
     monkeypatch.setattr(stages, "_warmup_fg_finder_runtime", _fake_runtime_warmup)
     monkeypatch.setattr(stages, "build_loadout_entries", lambda *_args, **_kwargs: {})
 
@@ -303,8 +303,6 @@ def test_prepare_fg_job_sync_warms_fg_jit_for_finder(monkeypatch):
 
     assert song.fg_calc_song is not None
     assert song.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert seen["calc_song"] is song.fg_calc_song
-    assert seen["ref_arrays"] is ref_arrays
     assert seen["runtime_calc_song"] is song.fg_calc_song
     assert seen["runtime_ref_arrays"] is ref_arrays
     assert seen["runtime_gpu_client"] is None
@@ -345,15 +343,19 @@ def test_warmup_fg_jit_runs_once_across_threads(monkeypatch):
 def test_warmup_fg_finder_runtime_runs_once_across_threads(monkeypatch):
     monkeypatch.setattr(stages, "_FG_FINDER_RUNTIME_WARMED", False)
 
-    calls = {"n": 0}
+    calls = {"imports": 0, "resolve": 0}
 
     import gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async as fg_async
 
-    def _fake_resolve(*_args, **_kwargs):
-        calls["n"] += 1
+    def _fake_imports():
+        calls["imports"] += 1
         time.sleep(0.02)
+
+    def _fake_resolve(*_args, **_kwargs):
+        calls["resolve"] += 1
         return {}
 
+    monkeypatch.setattr(fg_async, "warmup_force_greats_finder_runtime_imports", _fake_imports)
     monkeypatch.setattr(fg_async, "resolve_fg_async_batching_settings", _fake_resolve)
 
     calc_song = {"metadata": {}, "song_data": {"timestamps": [0.0]}, "_gpu_song_slot": 3}
@@ -362,11 +364,13 @@ def test_warmup_fg_finder_runtime_runs_once_across_threads(monkeypatch):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(lambda _n: stages._warmup_fg_finder_runtime(calc_song, ref_arrays), range(2)))
 
-    assert calls["n"] == 1
+    assert calls["imports"] == 1
+    assert calls["resolve"] == 1
 
 
-def test_prepare_fg_job_sync_primes_all_selected_group_meta_by_default(monkeypatch):
+def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_GROUP_META_PRIME_LIMIT", raising=False)
+    monkeypatch.delenv("INFLIGHT_FG_GROUP_META_AUTO_PRIME_CANDIDATE_LIMIT", raising=False)
     monkeypatch.setattr(stages, "_maybe_prewarm_fg_chart_scorer", lambda _song: None)
     monkeypatch.setattr(stages, "_warmup_fg_jit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(stages, "_warmup_fg_finder_runtime", lambda *_args, **_kwargs: None)
@@ -390,29 +394,18 @@ def test_prepare_fg_job_sync_primes_all_selected_group_meta_by_default(monkeypat
         cfg_dict={},
         ga_candidates=[
             {
-                "Score": 100,
-                "BaseScore": 100,
-                "Gear": ["G1"],
-                "Minis": ["M1"],
+                "Score": 100 - idx,
+                "BaseScore": 100 - idx,
+                "Gear": [f"G{idx}"],
+                "Minis": [f"M{idx}"],
                 "Data": {
                     "BaseStats": {"Perfect Points": 1},
                     "Selected Element": "Rush",
-                    "FT": 0,
-                    "FF": 0,
+                    "FT": idx,
+                    "FF": idx,
                 },
-            },
-            {
-                "Score": 99,
-                "BaseScore": 99,
-                "Gear": ["G2"],
-                "Minis": ["M2"],
-                "Data": {
-                    "BaseStats": {"Perfect Points": 1},
-                    "Selected Element": "Rush",
-                    "FT": 1,
-                    "FF": 1,
-                },
-            },
+            }
+            for idx in range(10)
         ],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -436,9 +429,10 @@ def test_prepare_fg_job_sync_primes_all_selected_group_meta_by_default(monkeypat
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
-    assert calls["n"] == 2
+    assert calls["n"] == 8
     assert song.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert song.ga_candidates[1]["Data"]["_fg_group_meta"]["signature"] == "sig-2"
+    assert song.ga_candidates[7]["Data"]["_fg_group_meta"]["signature"] == "sig-8"
+    assert "_fg_group_meta" not in song.ga_candidates[8]["Data"]
 
 
 def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):

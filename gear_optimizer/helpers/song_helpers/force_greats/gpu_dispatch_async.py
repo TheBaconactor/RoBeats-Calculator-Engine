@@ -40,6 +40,43 @@ def plan_fg_async_threshold_flush(*, pending_tasks: int, tasks_per_request: int)
     return FgAsyncThresholdFlushPlan(submit_count=int(pending), keep_queued_count=0)
 
 
+def warmup_force_greats_finder_runtime_imports() -> None:
+    """
+    Load the heavy ForceGreatsFinder runtime modules before per-song FG prep starts.
+
+    Importing the Taichi FG API path can take seconds on cold Windows/Vulkan runs.
+    Doing it under the per-song prep lock makes the prep pool look parallel while
+    all threads actually queue behind one import. The GPU executor calls this
+    during its warmup; the prep path calls it only as a cheap cached fallback.
+    """
+    from gear_optimizer.helpers.fg_utils import (
+        _sample_stat_pairs,
+        collect_analytical_breakpoints,
+        iter_analytical_breakpoint_groups,
+    )
+    from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song, create_scorer_from_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
+    from gear_optimizer.solver.taichi_gem.force_greats.api import (
+        fg_download_global_best,
+        fg_reset_global_best,
+        fg_select_signature_frontier_batch,
+        solve_force_greats_finder_gpu,
+    )
+
+    _ = (
+        _sample_stat_pairs,
+        collect_analytical_breakpoints,
+        iter_analytical_breakpoint_groups,
+        create_chart_scorer_from_calc_song,
+        create_scorer_from_calc_song,
+        fg_fields,
+        fg_download_global_best,
+        fg_reset_global_best,
+        fg_select_signature_frontier_batch,
+        solve_force_greats_finder_gpu,
+    )
+
+
 def resolve_fg_async_batching_settings(
     *,
     gpu_client: Optional["GpuServiceClient"],

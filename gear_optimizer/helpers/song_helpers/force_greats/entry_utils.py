@@ -156,6 +156,7 @@ def fg_group_meta_from_eval_data(
     primary_color: str = "",
     secondary_color: str = "",
     base_stats: dict[str, Any] | None = None,
+    prefer_grid: bool | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(eval_data, dict):
         return None
@@ -179,6 +180,7 @@ def fg_group_meta_from_eval_data(
         secondary_color=secondary_color,
         run_idx=eval_data.get("_ga_gpu_run_idx"),
         row_idx=eval_data.get("_ga_gpu_row_idx"),
+        prefer_grid=prefer_grid,
     )
     if isinstance(meta, dict):
         eval_data["_fg_group_meta"] = meta

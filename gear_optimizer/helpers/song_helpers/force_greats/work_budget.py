@@ -130,12 +130,29 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
 
     pairs = np.asarray(pairs[:, :2], dtype=np.int32)
     base_ff = np.asarray(base_pairs[:, 1], dtype=np.int32)
-    cfg_lens = np.ones((int(pairs.shape[0]),), dtype=np.int64)
+    pair_total = int(pairs.shape[0])
+    base_total = int(base_ff.shape[0])
+    cfg_lens = np.ones((pair_total,), dtype=np.int64)
+    if pair_total <= 0 or base_total <= 0:
+        return cfg_lens
 
-    for pair_idx, (_ft_g, ff_g) in enumerate(pairs):
-        ff_idx = np.clip(base_ff + int(ff_g) * int(gem_scale), 0, 160).astype(np.int32, copy=False)
-        per_pair_cfg = 1
-        for sec in range(max(0, int(n_sections))):
+    # The old estimator walked every FT/FF pair in Python and did a tiny vector
+    # op per pair. Full-window FG has 4,186 pairs, so this became visible CPU
+    # dead air before each GPU submit. Process pair chunks as 2-D NumPy grids:
+    # pair_count x base_signature_count, bounded so wide real groups do not
+    # allocate surprise-huge temporaries.
+    max_cells = 2_000_000
+    pair_chunk = max(1, int(max_cells // max(1, base_total)))
+    n_sections_i = max(0, int(n_sections))
+    base_ff_row = base_ff.reshape(1, base_total)
+
+    for start in range(0, pair_total, pair_chunk):
+        end = min(pair_total, int(start) + int(pair_chunk))
+        pair_ff = pairs[int(start) : int(end), 1].reshape(int(end) - int(start), 1)
+        ff_idx = np.clip(base_ff_row + pair_ff * int(gem_scale), 0, 160).astype(np.intp, copy=False)
+        chunk_lens = np.ones((int(end) - int(start),), dtype=np.int64)
+
+        for sec in range(n_sections_i):
             base_notes = non_fever_base_by_ff[ff_idx].astype(np.int32, copy=False)
             cap = base_notes
             if sec == 1:
@@ -144,14 +161,17 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
                 cap = (cap * 3) // 10
 
             hard_cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
-            cap = np.clip(cap, 0, min(50, int(hard_cap))).astype(np.int32, copy=False)
+            cap = np.clip(cap, 0, min(50, int(hard_cap))).astype(np.intp, copy=False)
             fp = fp_cap_table[ff_idx, cap].astype(np.int32, copy=False)
-            max_fp = int(np.max(fp)) if int(fp.shape[0]) > 0 else 0
-            per_pair_cfg *= max(1, int(max_fp) + 1)
-            if per_pair_cfg >= _WORK_ESTIMATE_LIMIT:
-                per_pair_cfg = _WORK_ESTIMATE_LIMIT
+            max_fp = np.max(fp, axis=1).astype(np.int64, copy=False) if int(fp.size) > 0 else 0
+            chunk_lens = np.minimum(
+                chunk_lens * np.maximum(1, max_fp + 1),
+                int(_WORK_ESTIMATE_LIMIT),
+            ).astype(np.int64, copy=False)
+            if bool(np.all(chunk_lens >= int(_WORK_ESTIMATE_LIMIT))):
                 break
-        cfg_lens[int(pair_idx)] = int(per_pair_cfg)
+
+        cfg_lens[int(start) : int(end)] = chunk_lens
 
     return cfg_lens
 

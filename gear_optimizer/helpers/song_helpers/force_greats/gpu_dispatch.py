@@ -30,7 +30,7 @@ from ..retention import select_retained_hashes
 from .ftff_pairs import (
     _collect_ftff_pairs_from_centers,
     _group_ftff_pairs_by_max_fp_matrix,
-    _reduce_ftff_pairs_by_max_fp_surface,
+    reduce_ftff_pairs_by_max_fp_surface,
 )
 from .signature_frontier import (
     build_signature_frontier_metas as _build_signature_frontier_metas_impl,
@@ -807,6 +807,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     ga_candidates=None,
     ga_registry=None,
 ):
+    finder_wall_t0 = time.perf_counter()
     pre_song_slot = 0
     pre_song_key = ""
     try:
@@ -826,7 +827,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         try:
             from gear_optimizer.core.profile_events import emit_profile_event
 
-            payload = {"song_slot": int(pre_song_slot)}
+            payload = {
+                "song_slot": int(pre_song_slot),
+                "elapsed_ms": max(0.0, (time.perf_counter() - float(finder_wall_t0)) * 1000.0),
+            }
             payload.update(metrics)
             emit_profile_event(
                 component="force_greats_finder",
@@ -945,7 +949,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         try:
             from gear_optimizer.core.profile_events import emit_profile_event
 
-            payload = {"song_slot": int(song_slot)}
+            payload = {
+                "song_slot": int(song_slot),
+                "elapsed_ms": max(0.0, (time.perf_counter() - float(finder_wall_t0)) * 1000.0),
+            }
             payload.update(metrics)
             emit_profile_event(
                 component="force_greats_finder",
@@ -1180,6 +1187,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             tile_count=int(tile_count),
             download_after=int(bool(download_after)),
             tasks_per_request=int(fg_async_tasks_per_request),
+            first_submit_delay_ms=-1.0
+            if fg_first_submit_delay_sec is None
+            else float(fg_first_submit_delay_sec) * 1000.0,
         )
 
     def _record_gpu_results(
@@ -1226,6 +1236,19 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         )
         sig_results.update(collected)
         t_result_apply_sec += elapsed
+
+    def _accumulate_fused_surface_metrics(gpu_results: Any) -> None:
+        nonlocal fg_surface_pair_drops, fg_surface_pair_reduce_sec
+        if not isinstance(gpu_results, dict):
+            return
+        try:
+            fg_surface_pair_drops += max(0, int(gpu_results.get("surface_pair_drops", 0) or 0))
+        except Exception:
+            pass
+        try:
+            fg_surface_pair_reduce_sec += max(0.0, float(gpu_results.get("surface_pair_reduce_ms", 0) or 0)) / 1000.0
+        except Exception:
+            pass
 
     def _iter_ftff_chunks(pairs):
         chunk_size = int(fg_fields.FG_MAX_FTFF)
@@ -1498,11 +1521,20 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     if direct_ga_items:
         base_items = [(k, v) for k, v in base_items if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))]
     entry_items = list(base_items) + list(direct_ga_items)
+    try:
+        group_meta_grid_threshold = int(os.environ.get("FG_GROUP_META_GRID_ENTRY_THRESHOLD", "512") or "512")
+    except Exception:
+        group_meta_grid_threshold = 512
+    group_meta_grid_threshold = max(0, min(int(group_meta_grid_threshold), 512))
+    prefer_group_meta_grid = bool(
+        group_meta_grid_threshold <= 0 or int(len(entry_items)) >= int(group_meta_grid_threshold)
+    )
     _emit_finder_phase(
         "entry_items_ready",
         loadout_entries=int(len(base_items)),
         direct_ga_items=int(len(direct_ga_items)),
         entry_items=int(len(entry_items)),
+        group_meta_grid=int(bool(prefer_group_meta_grid)),
     )
 
     # Collect all candidates (no budget limit)
@@ -1573,6 +1605,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             primary_color=str(p_color or ""),
             secondary_color=str(s_color or ""),
             base_stats=base_stats,
+            prefer_grid=bool(prefer_group_meta_grid),
         )
         if had_reusable_fg_group_meta:
             fg_group_meta_cached += 1
@@ -2897,6 +2930,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             gpu_results = fused_future.result()
                             if not isinstance(gpu_results, dict):
                                 raise RuntimeError("Fused FG request returned no result")
+                            _accumulate_fused_surface_metrics(gpu_results)
                             result_final = gpu_results["final_score"]
                             result_base = gpu_results["base_score"]
                             result_cfg_idx = gpu_results["cfg_idx"]
@@ -2979,28 +3013,28 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 else:
                     import numpy as _np
 
-                    max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
-                    _t_surface_reduce0 = time.perf_counter()
-                    try:
-                        reduced_pairs_arr, reduced_max_fp_matrix, surface_drops = _reduce_ftff_pairs_by_max_fp_surface(
-                            active_ftff_pairs,
-                            max_fp_matrix,
-                            n_sections=int(n_sections),
-                            total_budget=int(TOTAL_GEM_BUDGET),
-                            is_p_ft=int(is_p_ft),
-                            is_s_ft=int(is_s_ft),
-                            is_p_ff=int(is_p_ff),
-                            is_s_ff=int(is_s_ff),
-                        )
-                        surface_drops_i = int(surface_drops)
-                        if surface_drops_i > 0:
-                            active_ftff_pairs = _np.ascontiguousarray(reduced_pairs_arr, dtype=_np.int32)
-                            max_fp_matrix = _np.ascontiguousarray(reduced_max_fp_matrix, dtype=_np.int16)
-                            active_ftff_pairs_packed = active_ftff_pairs
-                            ftff_pairs_submit = active_ftff_pairs
-                            fg_surface_pair_drops += surface_drops_i
-                    finally:
-                        fg_surface_pair_reduce_sec += time.perf_counter() - _t_surface_reduce0
+                max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
+                _t_surface_reduce0 = time.perf_counter()
+                try:
+                    surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
+                        active_ftff_pairs,
+                        max_fp_matrix,
+                        n_sections=int(n_sections),
+                        total_budget=int(TOTAL_GEM_BUDGET),
+                        is_p_ft=int(is_p_ft),
+                        is_s_ft=int(is_s_ft),
+                        is_p_ff=int(is_p_ff),
+                        is_s_ff=int(is_s_ff),
+                    )
+                    surface_drops_i = int(surface_reduction.dropped)
+                    if surface_drops_i > 0:
+                        active_ftff_pairs = _np.ascontiguousarray(surface_reduction.pairs, dtype=_np.int32)
+                        max_fp_matrix = _np.ascontiguousarray(surface_reduction.max_fp_matrix, dtype=_np.int16)
+                        active_ftff_pairs_packed = active_ftff_pairs
+                        ftff_pairs_submit = active_ftff_pairs
+                        fg_surface_pair_drops += surface_drops_i
+                finally:
+                    fg_surface_pair_reduce_sec += time.perf_counter() - _t_surface_reduce0
 
                     def _iter_groups_from_max_fp():
                         # Group by identical per-section FP caps.
@@ -3755,6 +3789,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     gpu_results = _submit_fg_download_global_best(n_pending, blocking=True)
             if not isinstance(gpu_results, dict):
                 raise RuntimeError("Deferred FG download returned no result")
+            _accumulate_fused_surface_metrics(gpu_results)
 
             mode = str(ctx.get("mode") or "")
             if mode not in {"breakpoints", "breakpoints_fused"}:

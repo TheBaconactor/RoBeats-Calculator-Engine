@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from concurrent.futures import Future
 from types import SimpleNamespace
 
@@ -60,7 +62,13 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
 def test_native_fg_pipeline_queue_pop_credit_and_submit():
     pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1, ga_credit_budget=2))
     try:
-        song = SimpleNamespace(task_key="song-a", song_name="Song A", fg_prep_future=None, fg_queued_t0=None)
+        song = SimpleNamespace(
+            task_key="song-a",
+            song_name="Song A",
+            fg_prep_future=None,
+            fg_queued_t0=None,
+            _fg_dynamic_prep_done=True,
+        )
 
         pipeline.queue(song, now_s=10.0)
 
@@ -106,5 +114,62 @@ def test_native_fg_pipeline_does_not_pop_unready_without_slot_pressure():
         pipeline.requeue_front(song)
         assert pipeline.pending[0] is song
     finally:
+        pipeline.shutdown_fg(wait=True, cancel_futures=True)
+        pipeline.shutdown_prep(wait=True, cancel_futures=True)
+
+
+def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2, ga_credit_budget=1))
+    release = threading.Event()
+    started_keys: list[str] = []
+    lock = threading.Lock()
+    try:
+        songs = [
+            SimpleNamespace(
+                task_key=f"song-{idx}",
+                song_name=f"Song {idx}",
+                fg_prep_future=None,
+                fg_queued_t0=None,
+                _fg_dynamic_prep_done=False,
+            )
+            for idx in range(4)
+        ]
+        for song in songs:
+            pipeline.queue(song, now_s=1.0)
+
+        def _prep(song, gpu_client=None):
+            with lock:
+                started_keys.append(song.task_key)
+            release.wait(timeout=2)
+
+        registered = []
+        started = pipeline.start_pending_prep(
+            _prep,
+            gpu_client=None,
+            max_new=4,
+            register_future=registered.append,
+        )
+
+        deadline = time.monotonic() + 2.0
+        while len(started_keys) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert started == 2
+        assert len(registered) == 2
+        assert set(started_keys) == {"song-0", "song-1"}
+        assert pipeline.active_prep_count() == 2
+        assert pipeline.has_active_prep() is True
+        assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 0
+        assert pipeline.pop_next(allow_not_ready=False) is None
+
+        release.set()
+        for song in songs[:2]:
+            song.fg_prep_future.result(timeout=2)
+            song._fg_dynamic_prep_done = True
+
+        assert pipeline.pop_next(allow_not_ready=False) is songs[0]
+        assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 2
+    finally:
+        release.set()
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)

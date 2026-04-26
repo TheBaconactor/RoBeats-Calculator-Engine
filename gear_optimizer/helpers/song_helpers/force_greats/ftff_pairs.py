@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 _FTFF_VALID_MASK_CACHE: dict[int, Any] = {}
 _FTFF_FULL_PAIRS_CACHE: dict[int, list[tuple[int, int]]] = {}
+
+
+@dataclass(frozen=True)
+class FTFFSurfaceReductionResult:
+    """Lossless FT/FF pair reduction result for an exact FG max-FP surface."""
+
+    pairs: Any
+    max_fp_matrix: Any
+    dropped: int
 
 
 def _ftff_pair_state(
@@ -32,7 +42,7 @@ def _ftff_state_dominates(a: tuple[int, int, int, int, int], b: tuple[int, int, 
     return (a_ft, a_ff) <= (b_ft, b_ff)
 
 
-def _reduce_ftff_pairs_by_max_fp_surface(
+def reduce_ftff_pairs_by_max_fp_surface(
     ftff_pairs: Any,
     max_fp_matrix: Any,
     *,
@@ -43,13 +53,16 @@ def _reduce_ftff_pairs_by_max_fp_surface(
     is_p_ff: int = 0,
     is_s_ff: int = 0,
 ) -> tuple[Any, Any, int]:
-    """
-    Losslessly reduce FT/FF pairs after the exact downstream FG surface exists.
+    """Losslessly reduce FT/FF pairs after the exact downstream FG surface exists.
 
     Pairs with identical max-FP rows expose the same forced-Great breakpoint
     surface to the exact-inner solver. Within one surface bucket, a pair can be
     removed only if another pair leaves at least as much remaining gem budget
     and at least as much elemental value on both primary/secondary lanes.
+
+    This is the shared reduction contract for both older explicit max-FP paths
+    and newer fused GPU paths. Full-window callers should run this before
+    pair-tiling so dominance can see representatives across tile boundaries.
     """
     import numpy as np
 
@@ -62,18 +75,18 @@ def _reduce_ftff_pairs_by_max_fp_surface(
     except Exception:
         pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
     if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
-        return ftff_pairs, max_fp_matrix, 0
+        return FTFFSurfaceReductionResult(ftff_pairs, max_fp_matrix, 0)
     n_pairs = int(pairs_arr.shape[0])
     if n_pairs <= 0 or n_sections_i <= 0:
-        return pairs_arr[:, :2], max_fp_matrix, 0
+        return FTFFSurfaceReductionResult(pairs_arr[:, :2], max_fp_matrix, 0)
 
     m = np.asarray(max_fp_matrix, dtype=np.int16)
     if m.ndim != 2 or int(m.shape[0]) < n_pairs:
-        return pairs_arr[:, :2], max_fp_matrix, 0
+        return FTFFSurfaceReductionResult(pairs_arr[:, :2], max_fp_matrix, 0)
     if int(m.shape[1]) < n_sections_i:
         n_sections_i = int(m.shape[1])
     if n_sections_i <= 0:
-        return pairs_arr[:, :2], m[:n_pairs], 0
+        return FTFFSurfaceReductionResult(pairs_arr[:, :2], m[:n_pairs], 0)
 
     rows = np.maximum(m[:n_pairs, :n_sections_i], 0)
     rows = np.ascontiguousarray(rows, dtype=np.int16)
@@ -104,12 +117,12 @@ def _reduce_ftff_pairs_by_max_fp_surface(
         kept_indices.append(int(idx))
 
     if len(kept_indices) >= n_pairs:
-        return pairs_arr[:, :2], m[:n_pairs], 0
+        return FTFFSurfaceReductionResult(pairs_arr[:, :2], m[:n_pairs], 0)
 
     kept_idx_arr = np.asarray(sorted(kept_indices), dtype=np.int64)
     reduced_pairs = np.ascontiguousarray(pairs_arr[kept_idx_arr, :2], dtype=np.int32)
     reduced_matrix = np.ascontiguousarray(m[kept_idx_arr, :], dtype=np.int16)
-    return reduced_pairs, reduced_matrix, int(n_pairs - int(reduced_pairs.shape[0]))
+    return FTFFSurfaceReductionResult(reduced_pairs, reduced_matrix, int(n_pairs - int(reduced_pairs.shape[0])))
 
 
 def _group_ftff_pairs_by_max_fp_matrix(

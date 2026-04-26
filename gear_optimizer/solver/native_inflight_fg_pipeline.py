@@ -118,6 +118,11 @@ class NativeFGPipeline:
     def queue(self, song: _NativeSong, *, now_s: float | None = None) -> None:
         self.pending.append(song)
         try:
+            if not bool(getattr(song, "_fg_dynamic_prep_done", False)):
+                song._fg_dynamic_prep_done = False
+        except Exception:
+            pass
+        try:
             if not isinstance(getattr(song, "fg_queued_t0", None), (int, float)):
                 song.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
         except Exception:
@@ -136,12 +141,90 @@ class NativeFGPipeline:
     ) -> bool:
         if song.fg_prep_future is not None:
             return False
+        try:
+            song._fg_dynamic_prep_done = False
+        except Exception:
+            pass
         setattr(song, "_fg_prep_submit_t0", time.perf_counter())
         song.fg_prep_future = self.prep_executor.submit(prep_fn, song, gpu_client=gpu_client)
         if register_future is not None:
             register_future(song.fg_prep_future)
         self.prep_inflight.append(song)
         return True
+
+    def active_prep_count(self) -> int:
+        active = 0
+        seen: set[int] = set()
+        for song in self.prep_inflight:
+            fut = getattr(song, "fg_prep_future", None)
+            if fut is None:
+                continue
+            try:
+                fut_id = int(id(fut))
+            except Exception:
+                fut_id = 0
+            if fut_id and fut_id in seen:
+                continue
+            if fut_id:
+                seen.add(fut_id)
+            try:
+                if fut.done():
+                    continue
+            except Exception:
+                continue
+            active += 1
+        return int(active)
+
+    def has_active_prep(self) -> bool:
+        if self.active_prep_count() > 0:
+            return True
+        for song in self.pending:
+            fut = getattr(song, "fg_prep_future", None)
+            if fut is None:
+                continue
+            try:
+                if not fut.done():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def start_pending_prep(
+        self,
+        prep_fn: Callable[..., Any],
+        *,
+        gpu_client: Any,
+        max_new: int | None = None,
+        register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
+    ) -> int:
+        """
+        Top up the dynamic FG-prep runway from pending FG songs.
+
+        This keeps backlog/drain CPU prep in the prep executor instead of letting
+        FG worker threads serialize on not-ready songs before each GPU burst.
+        """
+        budget = max(0, int(self.prep_workers) - int(self.active_prep_count()))
+        if max_new is not None:
+            budget = min(int(budget), max(0, int(max_new)))
+        if budget <= 0:
+            return 0
+
+        started = 0
+        for song in list(self.pending):
+            if started >= budget:
+                break
+            if bool(getattr(song, "_fg_dynamic_prep_done", False)):
+                continue
+            if getattr(song, "fg_prep_future", None) is not None:
+                continue
+            if self.start_prep(
+                song,
+                prep_fn,
+                gpu_client=gpu_client,
+                register_future=register_future,
+            ):
+                started += 1
+        return int(started)
 
     def submit_warmup(
         self,
@@ -167,6 +250,14 @@ class NativeFGPipeline:
         for candidate in list(self.pending):
             fut = candidate.fg_prep_future
             if fut is None:
+                if not bool(getattr(candidate, "_fg_dynamic_prep_done", False)):
+                    if not allow_not_ready:
+                        continue
+                    try:
+                        self.pending.remove(candidate)
+                    except Exception:
+                        pass
+                    return candidate
                 try:
                     self.pending.remove(candidate)
                 except Exception:
@@ -209,6 +300,8 @@ class NativeFGPipeline:
         for candidate in self.pending:
             fut = candidate.fg_prep_future
             if fut is None:
+                if not bool(getattr(candidate, "_fg_dynamic_prep_done", False)):
+                    continue
                 ready += 1
                 continue
             try:

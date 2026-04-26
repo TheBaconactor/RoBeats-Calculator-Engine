@@ -88,6 +88,13 @@ def _release_windows_timer_period_1ms() -> None:
     _release_windows_timer_period_1ms_shared()
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(_ENV_GET(name, str(default)) or str(default)).strip())
+    except Exception:
+        return int(default)
+
+
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
@@ -1842,8 +1849,6 @@ class GpuExecutor:
             from .taichi_gem.runtime import init_taichi
 
             init_taichi()
-            self._taichi_ready = True
-            self._ready_event.set()
             logger.debug("[GpuExecutor] Taichi initialized")
         except Exception as e:
             self._taichi_ready = False
@@ -1909,8 +1914,12 @@ class GpuExecutor:
                             if warmup_fg:
                                 self._write_heartbeat(phase="warmup_fg_cached", force=True)
                                 from .taichi_gem.force_greats import fields as fg_fields
+                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                    warmup_force_greats_finder_runtime_imports,
+                                )
 
                                 fg_fields.ensure_ready_with_warmup()
+                                warmup_force_greats_finder_runtime_imports()
                             if warmup_ga:
                                 self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
                                 from .taichi_gem.api import ga_operations as ga_ops
@@ -1933,8 +1942,12 @@ class GpuExecutor:
                                     pass
                                 t0 = perf_counter()
                                 from .taichi_gem.force_greats import fields as fg_fields
+                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                    warmup_force_greats_finder_runtime_imports,
+                                )
 
                                 fg_fields.ensure_ready_with_warmup()
+                                warmup_force_greats_finder_runtime_imports()
                                 dt_ms = (perf_counter() - t0) * 1000.0
                                 if ENV.perf_timing:
                                     logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
@@ -1987,8 +2000,12 @@ class GpuExecutor:
                 try:
                     if warmup_fg:
                         from .taichi_gem.force_greats import fields as fg_fields
+                        from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                            warmup_force_greats_finder_runtime_imports,
+                        )
 
                         fg_fields.ensure_ready_with_warmup()
+                        warmup_force_greats_finder_runtime_imports()
                     if warmup_ga:
                         from .taichi_gem.api import ga_operations as ga_ops
 
@@ -2012,6 +2029,8 @@ class GpuExecutor:
             except Exception:
                 pass
 
+        self._taichi_ready = True
+        self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)
 
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
@@ -4969,33 +4988,90 @@ class GpuExecutor:
         except Exception as e:
             raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
+        solve_kwargs_payload = dict(payload.get("solve_kwargs") or {})
         implicit_cfgs = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
+        fused_surface_pair_drops = 0
+        fused_surface_pair_reduce_sec = 0.0
         # Default ON: keeping per-pair max-FP computation on-GPU avoids an expensive
         # host download+re-upload cycle that often appears as unexplained idle time.
         use_gpu_max_fp_compute = env_flag("FG_MAX_FP_GPU_COMPUTE", "1")
         if implicit_cfgs:
             if use_gpu_max_fp_compute:
-                # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
-                # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+                max_fp_matrix_for_task = None
+                if env_flag("FG_FUSED_SURFACE_PAIR_REDUCTION", "1"):
+                    pair_reduce_min_pairs = max(1, _env_int("FG_FUSED_SURFACE_PAIR_REDUCTION_MIN_PAIRS", 1025))
+                    if int(pairs_arr.shape[0]) >= int(pair_reduce_min_pairs):
+                        _t_surface = perf_counter()
+                        try:
+                            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+                            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+                            max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
+                                pair_ft=pair_ft,
+                                pair_ff=pair_ff,
+                                base_ft=base_ft,
+                                base_ff=base_ff,
+                                n_sections=int(n_sections),
+                                song_slot=int(song_slot),
+                                gem_scale_fever=int(gem_scale_fever),
+                                non_fever_base_by_ff=non_fever_base_by_ff,
+                                fp_cap_table=fp_cap_table,
+                            )
+                            from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
+                                reduce_ftff_pairs_by_max_fp_surface,
+                            )
+
+                            surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
+                                pairs_arr,
+                                max_fp_matrix,
+                                n_sections=int(n_sections),
+                                total_budget=int(solve_kwargs_payload.get("total_budget", 90) or 90),
+                                is_p_ft=int(solve_kwargs_payload.get("is_p_ft", 0) or 0),
+                                is_s_ft=int(solve_kwargs_payload.get("is_s_ft", 0) or 0),
+                                is_p_ff=int(solve_kwargs_payload.get("is_p_ff", 0) or 0),
+                                is_s_ff=int(solve_kwargs_payload.get("is_s_ff", 0) or 0),
+                            )
+                            fused_surface_pair_drops = max(0, int(surface_reduction.dropped))
+                            if fused_surface_pair_drops > 0:
+                                pairs_arr = np.ascontiguousarray(surface_reduction.pairs, dtype=np.int32)
+                                max_fp_matrix_for_task = np.ascontiguousarray(
+                                    surface_reduction.max_fp_matrix,
+                                    dtype=np.int16,
+                                )
+                            else:
+                                max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"fused surface pair reduction failed: {type(e).__name__}: {e}"
+                            ) from e
+                        finally:
+                            fused_surface_pair_reduce_sec = perf_counter() - _t_surface
+
+                if max_fp_matrix_for_task is None:
+                    # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
+                    # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+                    counts_max_fp_task: Any = {
+                        "mode": "gpu",
+                        "base_stats_pairs": base_arr,
+                        # Reuse pre-split base stat vectors; avoids repeated host slicing
+                        # in downstream task preparation.
+                        "base_ft": base_ft,
+                        "base_ff": base_ff,
+                        "non_fever_base_by_ff": non_fever_base_by_ff,
+                        "fp_cap_table": fp_cap_table,
+                        "n_sections": int(n_sections),
+                        "song_slot": int(song_slot),
+                        "gem_scale_fever": int(gem_scale_fever),
+                    }
+                else:
+                    counts_max_fp_task = max_fp_matrix_for_task
+
                 fg_tasks.append(
                     {
                         "counts_list": None,
-                        "counts_max_fp": {
-                            "mode": "gpu",
-                            "base_stats_pairs": base_arr,
-                            # Reuse pre-split base stat vectors; avoids repeated host slicing
-                            # in downstream task preparation.
-                            "base_ft": base_ft,
-                            "base_ff": base_ff,
-                            "non_fever_base_by_ff": non_fever_base_by_ff,
-                            "fp_cap_table": fp_cap_table,
-                            "n_sections": int(n_sections),
-                            "song_slot": int(song_slot),
-                            "gem_scale_fever": int(gem_scale_fever),
-                        },
+                        "counts_max_fp": counts_max_fp_task,
                         "ftff_pairs": pairs_arr,
                         "base_cfg_offset": 0,
                     }
@@ -5117,7 +5193,7 @@ class GpuExecutor:
         long_notes = int(payload.get("long_notes", 0) or 0)
         last_note_time = float(payload.get("last_note_time", 0.0) or 0.0)
 
-        kwargs_local = dict(payload.get("solve_kwargs") or {})
+        kwargs_local = dict(solve_kwargs_payload)
         kwargs_local["accumulate_global"] = True
         kwargs_local["return_raw"] = True
 
@@ -5193,6 +5269,8 @@ class GpuExecutor:
                 "base_ff": base_ff,
                 "non_fever_base_by_ff": non_fever_base_by_ff,
                 "fp_cap_table": fp_cap_table,
+                "surface_pair_drops": int(fused_surface_pair_drops),
+                "surface_pair_reduce_ms": int(round(float(fused_surface_pair_reduce_sec) * 1000.0)),
             }
 
         if download_topk is not None and download_base_scores is not None:
@@ -5248,6 +5326,10 @@ class GpuExecutor:
             if cfg_counts is not None and result.get("cfg_counts") is None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts
+            if fused_surface_pair_drops > 0:
+                result = dict(result)
+                result["surface_pair_drops"] = int(fused_surface_pair_drops)
+                result["surface_pair_reduce_ms"] = int(round(float(fused_surface_pair_reduce_sec) * 1000.0))
         return result
 
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:

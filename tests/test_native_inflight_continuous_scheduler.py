@@ -426,41 +426,25 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
     )
 
 
-def test_continuous_ga_keeps_small_runway_while_fg_prep_catches_up():
-    assert (
-        _continuous_ga_should_yield_to_fg(
-            fg_enabled=True,
-            fg_drain_at_end=True,
-            pending_fg_count=1,
-            ready_fg_count=0,
-            fg_prep_inflight_count=1,
-            fg_inflight_count=0,
-            fg_worker_count=4,
-            ga_inflight_count=1,
-            target_song_lanes=2,
-            oldest_wait_s=0.0,
-            aging_trigger_s=0.75,
-            blocked_on_slot=False,
+def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
+    for ga_inflight in (1, 2, 8):
+        assert (
+            _continuous_ga_should_yield_to_fg(
+                fg_enabled=True,
+                fg_drain_at_end=True,
+                pending_fg_count=4,
+                ready_fg_count=0,
+                fg_prep_inflight_count=4,
+                fg_inflight_count=0,
+                fg_worker_count=4,
+                ga_inflight_count=ga_inflight,
+                target_song_lanes=2,
+                oldest_wait_s=3.0,
+                aging_trigger_s=0.75,
+                blocked_on_slot=False,
+            )
+            is False
         )
-        is False
-    )
-    assert (
-        _continuous_ga_should_yield_to_fg(
-            fg_enabled=True,
-            fg_drain_at_end=True,
-            pending_fg_count=1,
-            ready_fg_count=0,
-            fg_prep_inflight_count=1,
-            fg_inflight_count=0,
-            fg_worker_count=4,
-            ga_inflight_count=2,
-            target_song_lanes=2,
-            oldest_wait_s=0.0,
-            aging_trigger_s=0.75,
-            blocked_on_slot=False,
-        )
-        is True
-    )
 
 
 def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():

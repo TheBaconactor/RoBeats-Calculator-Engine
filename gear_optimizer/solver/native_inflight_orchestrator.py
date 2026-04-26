@@ -83,10 +83,10 @@ from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
+    _prewarm_fg_baseline_point,
     _prepare_fg_static_sync,
     _prepare_fg_job_sync,
     _resolve_active_fg_calc_song,
-    _warmup_fg_jit,
 )
 
 logger = logging.getLogger(__name__)
@@ -611,9 +611,10 @@ def run_native_inflight_song_pipeline(
             pass
     gpu_executor.start(in_process=True)
     try:
-        # Dual-process in-flight can legitimately spend >30s in Taichi/Vulkan init on cold caches
-        # (one worker may wait on the offline-cache init lock while another initializes first).
-        init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "180") or "180")
+        # GPU readiness includes Taichi/Vulkan init plus the configured GA/FG warmups. On cold
+        # Windows/Vulkan caches, that warmup can be minute-scale; do not let work queue behind an
+        # owner that is not accepting requests yet.
+        init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
     except Exception:
         init_timeout = 180.0
     if not gpu_executor.wait_until_ready(timeout=init_timeout):
@@ -627,7 +628,7 @@ def run_native_inflight_song_pipeline(
             pass
         raise RuntimeError(msg)
     if progress_cb is not None:
-        # Executor is initialized, but it may still be running kernel warmups before processing the first requests.
+        # Executor is initialized and warm; requests submitted after this point can be processed.
         try:
             progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU warmup (Taichi JIT)"})
         except Exception:
@@ -936,7 +937,7 @@ def run_native_inflight_song_pipeline(
         thread_name_prefix="FGDBPrefetch",
     )
 
-    fg_jit_warmup_submitted = False
+    fg_baseline_prewarm_submitted: set[str] = set()
 
     last_slot_block_t: float | None = None
     ga_queue_debug = _truthy(os.environ.get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
@@ -1073,6 +1074,33 @@ def run_native_inflight_song_pipeline(
                 pass
             try:
                 completion_event.set()
+            except Exception:
+                pass
+
+    def _submit_fg_baseline_prewarm(song: _NativeSong) -> None:
+        if not bool(getattr(song, "force_greats_finder", False)):
+            return
+        calc_song = getattr(song, "fg_calc_song", None) or getattr(song, "calc_song", None)
+        ref_arrays = getattr(song, "ref_arrays", None)
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
+            return
+        try:
+            task_key = str(getattr(song, "task_key", "") or getattr(song, "song_name", "") or id(song))
+        except Exception:
+            task_key = str(id(song))
+        if task_key in fg_baseline_prewarm_submitted:
+            return
+        fg_baseline_prewarm_submitted.add(task_key)
+        try:
+            fut = prep_executor.submit(_prewarm_fg_baseline_point, calc_song, ref_arrays)
+            try:
+                setattr(song, "fg_baseline_prewarm_future", fut)
+            except Exception:
+                pass
+            _register_completion_future(fut)
+        except Exception:
+            try:
+                fg_baseline_prewarm_submitted.discard(task_key)
             except Exception:
                 pass
 
@@ -1270,17 +1298,8 @@ def run_native_inflight_song_pipeline(
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song_name)
 
-    try:
-        if prepared and not fg_jit_warmup_submitted:
-            fg_pipeline.submit_warmup(
-                _warmup_fg_jit,
-                prepared[0].calc_song,
-                prepared[0].ref_arrays,
-                register_future=_register_completion_future,
-            )
-            fg_jit_warmup_submitted = True
-    except Exception:
-        pass
+    for _prepared_song in list(prepared):
+        _submit_fg_baseline_prewarm(_prepared_song)
 
     def _pop_next_fg(*, allow_not_ready: bool) -> Optional[_NativeSong]:
         return fg_pipeline.pop_next(allow_not_ready=allow_not_ready)
@@ -1671,17 +1690,7 @@ def run_native_inflight_song_pipeline(
                             best_fg=int(getattr(prepared_song, "db_best_fg_score", 0) or 0),
                             mark_valid=True,
                     )
-                    if prepared and not fg_jit_warmup_submitted:
-                        try:
-                            fg_pipeline.submit_warmup(
-                                _warmup_fg_jit,
-                                prepared[0].calc_song,
-                                prepared[0].ref_arrays,
-                                register_future=_register_completion_future,
-                            )
-                            fg_jit_warmup_submitted = True
-                        except Exception:
-                            pass
+                    _submit_fg_baseline_prewarm(prepared_song)
                 except Exception as exc:
                     if stopping and _is_stop_abort_exception(exc):
                         continue
@@ -1727,6 +1736,10 @@ def run_native_inflight_song_pipeline(
                         )
                         setattr(song, "_fg_prep_submit_t0", None)
                     song.fg_prep_future.result()
+                    try:
+                        song._fg_dynamic_prep_done = True
+                    except Exception:
+                        pass
                 except Exception as exc:
                     if stopping and _is_stop_abort_exception(exc):
                         pass
@@ -1742,6 +1755,18 @@ def run_native_inflight_song_pipeline(
                         )
                 finally:
                     song.fg_prep_future = None
+
+            if pending_fg:
+                try:
+                    started_fg_prep = fg_pipeline.start_pending_prep(
+                        _prepare_fg_job_sync,
+                        gpu_client=gpu_client,
+                        register_future=_register_completion_future,
+                    )
+                except Exception:
+                    started_fg_prep = 0
+                if int(started_fg_prep) > 0:
+                    did_work = True
 
             # Keep the GPU queue full while using spare CPU time to prep future songs.
             #
@@ -2495,6 +2520,8 @@ def run_native_inflight_song_pipeline(
                             no_ga_remaining=bool(no_ga_remaining),
                             fg_drain_at_end=bool(fg_drain_at_end),
                         )
+                        if allow_not_ready and fg_pipeline.has_active_prep():
+                            allow_not_ready = False
                         fg_song = _pop_next_fg(allow_not_ready=allow_not_ready)
                         if fg_song is None:
                             break
@@ -2851,15 +2878,35 @@ def _run_fg_job_sync(
     except Exception:
         pass
     if song.fg_prep_future is not None:
+        prep_wait_t0 = time.perf_counter()
         try:
             song.fg_prep_future.result()
+            try:
+                song._fg_dynamic_prep_done = True
+            except Exception:
+                pass
         except Exception:
             pass
         finally:
+            try:
+                emit_profile_event(
+                    component="inflight_fg_worker",
+                    event="prep_wait",
+                    song_key=song_key,
+                    metrics={
+                        "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
+                    },
+                )
+            except Exception:
+                pass
             song.fg_prep_future = None
 
     if song.loadout_entries is None:
         _prepare_fg_job_sync(song, gpu_client=gpu_client)
+        try:
+            song._fg_dynamic_prep_done = True
+        except Exception:
+            pass
 
     try:
         emit_profile_event(
