@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
-from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list
+from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
 from gear_optimizer.data.loadout_equivalence import extract_song_colors
 
 from .keys import ELEMENT_TO_ID
@@ -654,7 +654,7 @@ def parse_candidate_row(
         if len(gear_names) != 6 or len(mini_groups) != 3:
             return None
 
-        details = _parse_json(row["details_json"])
+        details = _unpack_stats_after_load(_parse_json(row["details_json"]))
         gem_totals = _extract_gem_totals(details)
         if sum(gem_totals) != TOTAL_GEM_BUDGET:
             return None
