@@ -57,3 +57,5 @@ def test_general_meta_counts_top1_by_effective_fg_score():
     assert top["win_frequency"] == 2
     assert top["songs_with_set"] == 2
     assert top["peak_in_songs"] == ["Song A", "Song B"]
+    assert top["peak_in_songs_meta"] == ["Song B"]
+    assert top["peak_in_songs_fg"] == ["Song A"]
