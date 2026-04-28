@@ -164,3 +164,34 @@ def test_no_raw_runtime_fallback_prints() -> None:
     assert not offenders, (
         "Fallback paths must go through warn_fallback instead of raw print diagnostics:\n" + "\n".join(offenders)
     )
+
+
+def test_harness_engineering_route_stays_discoverable() -> None:
+    required_routes = {
+        "AGENTS.md": [
+            "docs/ENGINEERING_PRINCIPLES.md",
+            "docs/CODEX_WORKLOG.md",
+        ],
+        "docs/README.md": [
+            "HARNESS_ENGINEERING.md",
+            "ENGINEERING_PRINCIPLES.md",
+        ],
+        "docs/ENGINEERING_PRINCIPLES.md": [
+            "docs/HARNESS_ENGINEERING.md",
+            "repository knowledge as the system of record",
+        ],
+        "docs/Implementation Records/README.md": [
+            "AGENT_HARNESS_ENGINEERING_PRACTICES.md",
+        ],
+    }
+
+    missing: list[str] = []
+    for rel_path, needles in required_routes.items():
+        text = (_REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        for needle in needles:
+            if needle not in text:
+                missing.append(f"{rel_path}: missing {needle!r}")
+
+    assert not missing, (
+        "Harness engineering guidance must remain reachable from the repo routing docs:\n" + "\n".join(missing)
+    )

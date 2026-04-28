@@ -686,7 +686,10 @@ def _parse_json(payload: Optional[str]) -> Dict[str, Any]:
         value = json.loads(payload)
     except Exception:
         return {}
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    unpacked = _unpack_stats_after_load(value)
+    return unpacked if isinstance(unpacked, dict) else value
 
 
 def _extract_gem_totals(details: Dict[str, Any]) -> Tuple[int, ...]:

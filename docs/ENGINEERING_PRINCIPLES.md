@@ -9,9 +9,21 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - Nested `AGENTS.md` files keep local rules close to the code or docs they govern.
 - Use `AGENTS.override.md` only when a subtree truly needs to replace broader guidance instead of extending it.
 - This document holds long-lived engineering doctrine so the root harness can stay short.
+- `docs/HARNESS_ENGINEERING.md` holds agent-first harness practices, feedback loops, and mechanical enforcement
+  expectations.
 - `tools/dev` and CI are enforcement harnesses.
 - `tools/bench`, `tools/profile`, and replay scripts are evaluation harnesses.
 - Repo-local MCP servers are not a supported harness layer.
+
+## Agent-first harness doctrine
+
+- Keep repository knowledge as the system of record. If a decision matters after this session, put it in docs,
+  implementation records, tests, or maintained tools.
+- Prefer concise routers and scoped references over large monolithic instruction files.
+- Make high-risk contracts mechanically checkable when the invariant is stable enough to encode.
+- When an agent struggles, treat that as a harness signal: identify the missing map, tool, verifier, or guardrail and
+  feed it back into the repo.
+- Capture repeated review feedback as durable guidance or executable checks so the correction compounds.
 
 ## Repo-Local Automation Doctrine
 

@@ -7,19 +7,12 @@ from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuReque
 
 
 def _install_fake_taichi_deps_for_executor_managed_fg(monkeypatch):
-    calls: dict[str, list] = {"precompute": [], "stage": [], "solve_kwargs": []}
+    calls: dict[str, list] = {"precompute": [], "solve_kwargs": []}
 
     fake_parent = types.ModuleType("gear_optimizer.solver.taichi_gem")
     fake_parent.__path__ = []
 
     fake_api = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
-
-    def _fake_stage(*, table_slot: int, coords, n_slots: int = 9) -> int:
-        coords_np = np.asarray(coords, dtype=np.int32)
-        calls["stage"].append((int(table_slot), coords_np.copy(), int(n_slots)))
-        return int(coords_np.shape[0])
-
-    fake_api.ga_stage_genome_base_stats_from_fg_candidates_table = _fake_stage
 
     fake_timeline = types.ModuleType("gear_optimizer.solver.taichi_gem.api.timeline")
 
@@ -63,8 +56,6 @@ def test_executor_managed_deps_solve_force_greats_finder(monkeypatch):
 
     calc_song = {"metadata": {"Song Name": "X"}, "song_data": {"timestamps": [0.0, 1.0]}}
     ref_arrays = {"dummy": True}
-    coords = np.asarray([[0, 1], [2, 3]], dtype=np.int32)
-
     req = GpuRequest(
         request_type=GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
         request_id=1,
@@ -76,8 +67,6 @@ def test_executor_managed_deps_solve_force_greats_finder(monkeypatch):
                 "calc_song": calc_song,
                 "ref_arrays": ref_arrays,
                 "song_slot": 3,
-                "ga_stage_coords": coords,
-                "ga_stage_table_slot": 3,
             },
         },
     )
@@ -86,14 +75,35 @@ def test_executor_managed_deps_solve_force_greats_finder(monkeypatch):
     assert resp.result == "ok"
 
     assert calls["precompute"] == [(calc_song, ref_arrays, 3)]
-    assert len(calls["stage"]) == 1
-    assert calls["stage"][0][0] == 3
-    assert calls["stage"][0][2] == 9
-    assert np.array_equal(calls["stage"][0][1], coords)
-
     forwarded = calls["solve_kwargs"][0]
     for k in ("ensure_timeline_precompute", "calc_song", "ga_stage_coords", "ga_stage_table_slot", "ga_stage_n_slots"):
         assert k not in forwarded
+
+
+def test_executor_rejects_removed_ga_stage_coords(monkeypatch):
+    _install_fake_taichi_deps_for_executor_managed_fg(monkeypatch)
+
+    ex = GpuExecutor()
+    ex._in_process_queues = True
+
+    req = GpuRequest(
+        request_type=GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        request_id=10,
+        worker_id=1,
+        payload={
+            "args": (),
+            "kwargs": {
+                "song_slot": 3,
+                "ga_stage_coords": np.asarray([[0, 1]], dtype=np.int32),
+                "ga_stage_table_slot": 3,
+            },
+        },
+    )
+
+    resp = ex._execute_solve_force_greats_finder(req)
+
+    assert not resp.success
+    assert "removed" in (resp.error or "")
 
 
 def test_executor_managed_deps_fg_compute_breakpoints_precomputes_timeline(monkeypatch):

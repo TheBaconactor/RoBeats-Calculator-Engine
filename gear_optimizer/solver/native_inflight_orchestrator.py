@@ -92,26 +92,6 @@ from gear_optimizer.solver.native_inflight_stages import (
 logger = logging.getLogger(__name__)
 
 
-def _set_fg_resident_owner(calc_song: Any, *, song_slot: int, task_key: str) -> None:
-    if not isinstance(calc_song, dict):
-        return
-    calc_song["_fg_ga_candidate_table_slot_held"] = True
-    calc_song["_fg_resident_owner_phase"] = "ga_to_fg"
-    calc_song["_fg_resident_owner_slot"] = int(song_slot)
-    calc_song["_fg_resident_candidate_table_slot"] = int(song_slot)
-    calc_song["_fg_resident_owner_task"] = str(task_key or "")
-
-
-def _clear_fg_resident_owner(calc_song: Any) -> None:
-    if not isinstance(calc_song, dict):
-        return
-    calc_song["_fg_ga_candidate_table_slot_held"] = False
-    calc_song.pop("_fg_resident_owner_phase", None)
-    calc_song.pop("_fg_resident_owner_slot", None)
-    calc_song.pop("_fg_resident_candidate_table_slot", None)
-    calc_song.pop("_fg_resident_owner_task", None)
-
-
 def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     """
     Choose conservative default worker counts for low-end CPUs.
@@ -1878,7 +1858,6 @@ def run_native_inflight_song_pipeline(
                     except Exception as exc:
                         # Ensure we don't leak the reserved slot on submission failure.
                         try:
-                            _clear_fg_resident_owner(getattr(song, "calc_song", None))
                             slot_pool.release(int(song.song_slot))
                             song.song_slot = 0
                         except Exception:
@@ -2035,7 +2014,6 @@ def run_native_inflight_song_pipeline(
                         _post(payload)
                     # GA failed: release the reserved timeline slot for this song.
                     try:
-                        _clear_fg_resident_owner(getattr(song, "calc_song", None))
                         slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
                         song.song_slot = 0
                     except Exception:
@@ -2086,27 +2064,12 @@ def run_native_inflight_song_pipeline(
                         pass
                     keep_slot_for_fg = int(held_slots) < int(hold_budget)
 
-                # When the song slot is released after GA, the GA->FG candidate table for that slot may be
-                # overwritten by other in-flight songs before FG runs. Mark whether the GA slot remained
-                # reserved so FG can safely decide whether to use that fast-path.
-                try:
-                    if isinstance(song.calc_song, dict):
-                        if bool(keep_slot_for_fg):
-                            _set_fg_resident_owner(
-                                song.calc_song, song_slot=int(song.song_slot), task_key=str(song.task_key)
-                            )
-                        else:
-                            _clear_fg_resident_owner(song.calc_song)
-                except Exception:
-                    pass
-
                 if not keep_slot_for_fg:
                     # Release the song slot immediately after GA completes unless we're keeping it
                     # resident for FG reuse (bounded by `fg_hold_budget` so GA won't deadlock on slots).
                     if inflight_fg_hold_slots and needs_fg_stage and hold_budget > 0:
                         stage_profiler.record("fg_hold_drop", 0.0)
                     try:
-                        _clear_fg_resident_owner(getattr(song, "calc_song", None))
                         slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
                     except Exception:
                         pass
@@ -2158,7 +2121,6 @@ def run_native_inflight_song_pipeline(
                         _post(payload)
                     # Decode failed: release the reserved timeline slot for this song.
                     try:
-                        _clear_fg_resident_owner(getattr(song, "calc_song", None))
                         slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
                         song.song_slot = 0
                     except Exception:
@@ -2218,7 +2180,6 @@ def run_native_inflight_song_pipeline(
                 else:
                     # No FG stage for this song: release its reserved timeline slot immediately.
                     try:
-                        _clear_fg_resident_owner(getattr(song, "calc_song", None))
                         slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
                         song.song_slot = 0
                     except Exception:
@@ -2309,7 +2270,6 @@ def run_native_inflight_song_pipeline(
                                 pass
                         # Release this song's reserved timeline slot now that FG is complete.
                         try:
-                            _clear_fg_resident_owner(getattr(fg_song, "calc_song", None))
                             slot_pool.release(int(getattr(fg_song, "song_slot", 0) or 0))
                             fg_song.song_slot = 0
                         except Exception:
@@ -2412,7 +2372,6 @@ def run_native_inflight_song_pipeline(
                     try:
                         for s in list(pending_fg):
                             try:
-                                _clear_fg_resident_owner(getattr(s, "calc_song", None))
                                 slot_pool.release(int(getattr(s, "song_slot", 0) or 0))
                                 s.song_slot = 0
                             except Exception:

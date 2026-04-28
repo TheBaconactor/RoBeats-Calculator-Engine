@@ -54,5 +54,8 @@ def test_inventory_db_resolves_non_t5_baseline_team_buff(tmp_path: Path, monkeyp
         assert missing == []
         assert "Song T10" in candidates_by_song
         assert len(candidates_by_song["Song T10"]) == 1
+        candidate = candidates_by_song["Song T10"][0]
+        assert candidate.gem_totals == (90, 0, 0, 0, 0, 0)
+        assert candidate.selected_element == "Rush"
     finally:
         conn.close()

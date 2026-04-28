@@ -103,7 +103,6 @@ class GpuRequestType(Enum):
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
-    GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     FG_SELECT_SIGNATURE_FRONTIER_BATCH = "fg_select_signature_frontier_batch"
@@ -599,13 +598,7 @@ class GpuExecutor:
         }
     )
     # Downstream FG service work must not stay buried behind unrelated full-song GA turns.
-    # These requests either unlock GA->FG continuity directly or complete FG work for a ready song.
-    _GA_RECOVERY_REQUEST_TYPES = frozenset(
-        set(_FG_REQUEST_TYPES)
-        | {
-            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS,
-        }
-    )
+    _GA_RECOVERY_REQUEST_TYPES = frozenset(set(_FG_REQUEST_TYPES))
     _COALESCABLE_REQUEST_TYPES = frozenset(
         {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
@@ -806,7 +799,6 @@ class GpuExecutor:
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
-            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST: self._execute_fg_download_global_best,
             GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH: self._execute_fg_select_signature_frontier_batch,
@@ -3779,9 +3771,14 @@ class GpuExecutor:
         # ------------------------------------------------------------------
         ensure_timeline_precompute = bool(kwargs.pop("ensure_timeline_precompute", False))
         calc_song = kwargs.pop("calc_song", None)
-        ga_stage_coords = kwargs.pop("ga_stage_coords", None)
-        ga_stage_table_slot = kwargs.pop("ga_stage_table_slot", None)
-        ga_stage_n_slots = kwargs.pop("ga_stage_n_slots", 9)
+        if kwargs.pop("ga_stage_coords", None) is not None:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="SOLVE_FORCE_GREATS_FINDER GA->FG resident genome-stat staging has been removed",
+            )
+        kwargs.pop("ga_stage_table_slot", None)
+        kwargs.pop("ga_stage_n_slots", None)
 
         # Optional: precompute the timeline grid as part of this same request so callers
         # don't need a separate PRECOMPUTE_TIMELINE request that can interleave across songs.
@@ -3806,38 +3803,6 @@ class GpuExecutor:
                     request_id=request.request_id,
                     success=False,
                     error=f"SOLVE_FORCE_GREATS_FINDER timeline precompute failed: {type(e).__name__}: {e}",
-                )
-
-        # Optional: stage genome_base_stats from GPU-native GA -> FG candidate table within
-        # the same request to avoid a GA_STAGE_FG_GENOME_BASE_STATS boundary.
-        if ga_stage_coords is not None:
-            try:
-                from .taichi_gem.api import ga_stage_genome_base_stats_from_fg_candidates_table
-
-                try:
-                    table_slot = (
-                        int(ga_stage_table_slot)
-                        if ga_stage_table_slot is not None
-                        else int(kwargs.get("song_slot", 0) or 0)
-                    )
-                except Exception:
-                    table_slot = int(kwargs.get("song_slot", 0) or 0)
-                n_staged = ga_stage_genome_base_stats_from_fg_candidates_table(
-                    table_slot=int(table_slot),
-                    coords=ga_stage_coords,
-                    n_slots=int(ga_stage_n_slots or 9),
-                )
-                if int(n_staged) <= 0:
-                    return GpuResponse(
-                        request_id=request.request_id,
-                        success=False,
-                        error="SOLVE_FORCE_GREATS_FINDER GA staging produced n_staged<=0",
-                    )
-            except Exception as e:
-                return GpuResponse(
-                    request_id=request.request_id,
-                    success=False,
-                    error=f"SOLVE_FORCE_GREATS_FINDER GA staging failed: {type(e).__name__}: {e}",
                 )
 
         fg_tasks = kwargs.pop("fg_tasks", None)
@@ -4163,47 +4128,6 @@ class GpuExecutor:
             request_id=request.request_id,
             success=True,
             result=runs_payload,
-        )
-
-    def _execute_ga_stage_fg_genome_base_stats(self, request: GpuRequest) -> GpuResponse:
-        """
-        Stage shared `genome_base_stats` from the GPU-native GA -> FG candidate table.
-
-        This enables a GPU-resident GA→FG pipeline: GA packs the candidate table on GPU,
-        callers select candidates on CPU, then send only small (run,row) coordinates to
-        stage the per-genome base stats for FG without host->device uploads.
-        """
-        if not self._in_process_queues:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="GA_STAGE_FG_GENOME_BASE_STATS requires in-process queues (avoid IPC pickling)",
-            )
-
-        payload = request.payload or {}
-        table_slot = int(payload.get("table_slot", 0) or 0)
-        n_slots = int(payload.get("n_slots", 9) or 9)
-        coords = payload.get("coords")
-
-        try:
-            from .taichi_gem.api import ga_stage_genome_base_stats_from_fg_candidates_table
-
-            n = ga_stage_genome_base_stats_from_fg_candidates_table(
-                table_slot=int(table_slot),
-                coords=coords,
-                n_slots=int(n_slots),
-            )
-        except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"{type(e).__name__}: {e}",
-            )
-
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=int(n),
         )
 
     def _execute_fg_reset_global_best(self, request: GpuRequest) -> GpuResponse:
@@ -5207,27 +5131,8 @@ class GpuExecutor:
         if n_genomes <= 0:
             raise ValueError("FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0")
 
-        # Optional GA->FG staging (run on the owner thread to avoid a separate request boundary).
-        ga_stage_coords = payload.get("ga_stage_coords")
-        if ga_stage_coords is not None and bool(kwargs_local.get("genome_stats_preuploaded")):
-            try:
-                table_slot_i = int(payload.get("ga_stage_table_slot", song_slot) or song_slot)
-            except Exception:
-                table_slot_i = int(song_slot)
-            try:
-                from .taichi_gem import api as _taichi_api
-
-                _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                    table_slot=int(table_slot_i),
-                    coords=ga_stage_coords,
-                    n_slots=9,
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "GA->FG staging failed inside executor "
-                    f"(table_slot={table_slot_i}, song_slot={song_slot}, "
-                    f"coords_shape={getattr(ga_stage_coords, 'shape', None)})"
-                ) from exc
+        if payload.get("ga_stage_coords") is not None or bool(kwargs_local.get("genome_stats_preuploaded")):
+            raise ValueError("FG resident genome-stat preupload/staging has been removed")
 
         if bool(payload.get("fg_reset_before", True)):
             fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))

@@ -38,11 +38,6 @@ _FG_DB_LOADOUTS_CACHE: "OrderedDict[tuple[str, str], tuple[int, list[dict]]]" = 
 _FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
 _FG_RUNTIME_CALC_SONG_KEYS = (
     "_gpu_song_slot",
-    "_fg_ga_candidate_table_slot_held",
-    "_fg_resident_owner_phase",
-    "_fg_resident_owner_slot",
-    "_fg_resident_candidate_table_slot",
-    "_fg_resident_owner_task",
 )
 
 

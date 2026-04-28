@@ -1988,46 +1988,6 @@ def ga_download_fg_selected_payload(
     return np.ascontiguousarray(view, dtype=np.int32)
 
 
-def ga_stage_genome_base_stats_from_fg_candidates_table(
-    *,
-    table_slot: int,
-    coords: np.ndarray,
-    n_slots: int = 9,
-) -> int:
-    """
-    Stage `fields.genome_base_stats[0:n]` from the GA->FG candidate table (GPU->GPU copy).
-
-    Args:
-        table_slot: Candidate table slot (usually song_slot).
-        coords: (n, 2) int32 array of (run_idx, row_idx) into the candidate table.
-        n_slots: Expected 9.
-
-    Returns:
-        n (number of staged genomes)
-    """
-    ensure_ready()
-    table_slot = int(table_slot)
-    n_slots = int(n_slots)
-    if n_slots != 9:
-        raise ValueError(f"Expected n_slots=9, got {n_slots}")
-    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
-        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
-
-    coords = np.asarray(coords, dtype=np.int32)
-    if coords.ndim != 2 or int(coords.shape[1]) < 2:
-        raise ValueError(f"coords must have shape (n,2), got shape={getattr(coords, 'shape', None)}")
-    if not coords.flags["C_CONTIGUOUS"]:
-        coords = np.ascontiguousarray(coords, dtype=np.int32)
-    n = int(coords.shape[0])
-    if n <= 0:
-        return 0
-    if n > int(fields.MAX_GENOMES):
-        raise ValueError(f"Too many genomes to stage: {n} > {fields.MAX_GENOMES}")
-
-    kernels.ga_stage_genome_base_stats_from_fg_candidates_table_kernel(int(table_slot), int(n), int(n_slots), coords)
-    return int(n)
-
-
 # ============================================================================
 # GPU-SIDE GLOBAL BEST TRACKING
 # ============================================================================

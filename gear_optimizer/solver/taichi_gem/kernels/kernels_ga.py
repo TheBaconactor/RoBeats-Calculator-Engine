@@ -175,6 +175,24 @@ def _fg_proxy_for_genome(genome_idx: ti.i32) -> ti.i64:
 
 
 @ti.func
+def _base_stats_dominates(a: ti.i32, b: ti.i32) -> ti.i32:
+    """Pointwise pre-allocation base-stat dominance for exact score ties."""
+    dominates = ti.i32(1)
+    strictly_better = ti.i32(0)
+
+    # genome_base_stats layout: [PP, CM, FM, P_val, S_val, FT, FF].
+    for i in ti.static(range(7)):
+        av = ti.cast(kernels_helpers.genome_base_stats[a][i], ti.i32)
+        bv = ti.cast(kernels_helpers.genome_base_stats[b][i], ti.i32)
+        if av < bv:
+            dominates = ti.i32(0)
+        if av > bv:
+            strictly_better = ti.i32(1)
+
+    return dominates & strictly_better
+
+
+@ti.func
 def _hash_exact_eval_input_for_genome(genome_idx: ti.i32, n_slots: ti.i32) -> ti.u32:
     h = ti.u32(2166136261)
     for s in ti.static(range(9)):
@@ -796,7 +814,7 @@ def ga_select_parents_tournament_kernel(n_genomes: ti.i32, tournament_k: ti.i32)
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_a_score:
+            if sc > best_a_score or (sc == best_a_score and _base_stats_dominates(idx, best_a) != 0):
                 best_a_score = sc
                 best_a = idx
 
@@ -817,11 +835,15 @@ def ga_select_parents_tournament_kernel(n_genomes: ti.i32, tournament_k: ti.i32)
             sc = kernels_helpers.ga_scores[idx]
             if use_diverse_b != 0:
                 proxy = _fg_proxy_for_genome(idx)
-                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                if (
+                    proxy > best_b_proxy
+                    or (proxy == best_b_proxy and sc > best_b_score)
+                    or (proxy == best_b_proxy and sc == best_b_score and _base_stats_dominates(idx, best_b) != 0)
+                ):
                     best_b_proxy = proxy
                     best_b_score = sc
                     best_b = idx
-            elif sc > best_b_score:
+            elif sc > best_b_score or (sc == best_b_score and _base_stats_dominates(idx, best_b) != 0):
                 best_b_score = sc
                 best_b = idx
 
@@ -1207,7 +1229,7 @@ def ga_select_crossover_mutate_kernel(
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_a_score:
+            if sc > best_a_score or (sc == best_a_score and _base_stats_dominates(idx, best_a) != 0):
                 best_a_score = sc
                 best_a = idx
 
@@ -1228,11 +1250,15 @@ def ga_select_crossover_mutate_kernel(
             sc = kernels_helpers.ga_scores[idx]
             if use_diverse_b != 0:
                 proxy = _fg_proxy_for_genome(idx)
-                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                if (
+                    proxy > best_b_proxy
+                    or (proxy == best_b_proxy and sc > best_b_score)
+                    or (proxy == best_b_proxy and sc == best_b_score and _base_stats_dominates(idx, best_b) != 0)
+                ):
                     best_b_proxy = proxy
                     best_b_score = sc
                     best_b = idx
-            elif sc > best_b_score:
+            elif sc > best_b_score or (sc == best_b_score and _base_stats_dominates(idx, best_b) != 0):
                 best_b_score = sc
                 best_b = idx
 
@@ -1336,7 +1362,7 @@ def ga_next_generation_full_kernel(
                 state = kernels_helpers._xorshift32(state)
                 idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
                 sc = kernels_helpers.ga_scores[idx]
-                if sc > best_a_score:
+                if sc > best_a_score or (sc == best_a_score and _base_stats_dominates(idx, best_a) != 0):
                     best_a_score = sc
                     best_a = idx
 
@@ -1357,11 +1383,15 @@ def ga_next_generation_full_kernel(
                 sc = kernels_helpers.ga_scores[idx]
                 if use_diverse_b != 0:
                     proxy = _fg_proxy_for_genome(idx)
-                    if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                    if (
+                        proxy > best_b_proxy
+                        or (proxy == best_b_proxy and sc > best_b_score)
+                        or (proxy == best_b_proxy and sc == best_b_score and _base_stats_dominates(idx, best_b) != 0)
+                    ):
                         best_b_proxy = proxy
                         best_b_score = sc
                         best_b = idx
-                elif sc > best_b_score:
+                elif sc > best_b_score or (sc == best_b_score and _base_stats_dominates(idx, best_b) != 0):
                     best_b_score = sc
                     best_b = idx
 
@@ -1576,7 +1606,7 @@ def ga_next_generation_full_islands_kernel(
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_a_score:
+            if sc > best_a_score or (sc == best_a_score and _base_stats_dominates(idx, best_a) != 0):
                 best_a_score = sc
                 best_a = idx
 
@@ -1594,11 +1624,15 @@ def ga_next_generation_full_islands_kernel(
             sc = kernels_helpers.ga_scores[idx]
             if use_diverse_b != 0:
                 proxy = _fg_proxy_for_genome(idx)
-                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                if (
+                    proxy > best_b_proxy
+                    or (proxy == best_b_proxy and sc > best_b_score)
+                    or (proxy == best_b_proxy and sc == best_b_score and _base_stats_dominates(idx, best_b) != 0)
+                ):
                     best_b_proxy = proxy
                     best_b_score = sc
                     best_b = idx
-            elif sc > best_b_score:
+            elif sc > best_b_score or (sc == best_b_score and _base_stats_dominates(idx, best_b) != 0):
                 best_b_score = sc
                 best_b = idx
 
@@ -1803,7 +1837,7 @@ def _ga_next_generation_full_runs_impl(
             idx_local = ti.cast(state % ti.cast(n_genomes_per_run_i, ti.u32), ti.i32)
             idx = run_start + idx_local
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_a_score:
+            if sc > best_a_score or (sc == best_a_score and _base_stats_dominates(idx, best_a) != 0):
                 best_a_score = sc
                 best_a = idx
 
@@ -1822,11 +1856,15 @@ def _ga_next_generation_full_runs_impl(
             sc = kernels_helpers.ga_scores[idx]
             if use_diverse_b != 0:
                 proxy = _fg_proxy_for_genome(idx)
-                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                if (
+                    proxy > best_b_proxy
+                    or (proxy == best_b_proxy and sc > best_b_score)
+                    or (proxy == best_b_proxy and sc == best_b_score and _base_stats_dominates(idx, best_b) != 0)
+                ):
                     best_b_proxy = proxy
                     best_b_score = sc
                     best_b = idx
-            elif sc > best_b_score:
+            elif sc > best_b_score or (sc == best_b_score and _base_stats_dominates(idx, best_b) != 0):
                 best_b_score = sc
                 best_b = idx
 
