@@ -654,7 +654,7 @@ def parse_candidate_row(
         if len(gear_names) != 6 or len(mini_groups) != 3:
             return None
 
-        details = _parse_json(row["details_json"])
+        details = _unpack_stats_after_load(_parse_json(row["details_json"]))
         gem_totals = _extract_gem_totals(details)
         if sum(gem_totals) != TOTAL_GEM_BUDGET:
             return None

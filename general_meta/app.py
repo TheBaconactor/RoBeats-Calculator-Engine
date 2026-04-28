@@ -181,6 +181,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
         mini_names = sorted([min(g) for g in minis_groups if g])
         avg_gems = loadout_data["avg_gems"]
         peak_in_songs = loadout_data.get("peak_in_songs") or []
+        peak_in_songs_meta = loadout_data.get("peak_in_songs_meta") or []
+        peak_in_songs_fg = loadout_data.get("peak_in_songs_fg") or []
 
         stats_base = compute_full_stats(
             gear_names,
@@ -203,6 +205,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
             "gear": gear_names,
             "mini_groups": minis_groups,
             "peak_in_songs": peak_in_songs,
+            "peak_in_songs_meta": peak_in_songs_meta,
+            "peak_in_songs_fg": peak_in_songs_fg,
             "songs_with_set": loadout_data["songs_with_set"],
             "win_frequency": loadout_data["win_frequency"],
             "stats_base": stats_base,

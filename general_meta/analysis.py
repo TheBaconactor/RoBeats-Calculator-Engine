@@ -186,7 +186,21 @@ def find_most_common_loadout(
         gears, _sig = key
         loadout_key = _loadout_key_fingerprint(tuple(gears), tuple(_sig))
         rows = loadout_rows.get(key, [])
-        peak_in_songs = sorted({str(r.get("song_name") or "") for r in rows if (r.get("song_name") or "").strip()})
+        peak_in_songs_meta = sorted(
+            {
+                str(r.get("song_name") or "")
+                for r in rows
+                if (r.get("song_name") or "").strip() and int(r.get("score") or 0) >= int(r.get("fg_score") or 0)
+            }
+        )
+        peak_in_songs_fg = sorted(
+            {
+                str(r.get("song_name") or "")
+                for r in rows
+                if (r.get("song_name") or "").strip() and int(r.get("fg_score") or 0) > int(r.get("score") or 0)
+            }
+        )
+        peak_in_songs = sorted(set(peak_in_songs_meta) | set(peak_in_songs_fg))
 
         # Representative mini variant (preserves per-mini group variants).
         variants = mini_variants.get(key) or Counter()
@@ -221,6 +235,8 @@ def find_most_common_loadout(
                 "gear_names": list(gears),
                 "mini_groups": _groups_from_variant_key(tuple(chosen_variant) if chosen_variant else ()),
                 "peak_in_songs": peak_in_songs,
+                "peak_in_songs_meta": peak_in_songs_meta,
+                "peak_in_songs_fg": peak_in_songs_fg,
                 "songs_with_set": len(rows),
                 "win_frequency": count,
                 "avg_score": avg_score,
