@@ -156,49 +156,6 @@ def _base_stat_pairs_from_signature_rows(sig_list, sig_rows_map) -> list[tuple[i
     return sorted(base_pairs)
 
 
-def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot: int) -> tuple[bool, int, bool]:
-    held = True
-    table_slot = int(current_song_slot)
-    owner_meta_present = False
-
-    try:
-        if not isinstance(calc_song, dict):
-            return held, table_slot, owner_meta_present
-
-        owner_phase = calc_song.get("_fg_resident_owner_phase", None)
-        owner_slot = calc_song.get("_fg_resident_owner_slot", None)
-        candidate_table_slot = calc_song.get("_fg_resident_candidate_table_slot", None)
-        owner_meta_present = any(v is not None for v in (owner_phase, owner_slot, candidate_table_slot))
-
-        if owner_meta_present:
-            try:
-                # Slot 0 is a valid GPU song slot; don't treat falsy as absent.
-                owner_slot_i = int(str(owner_slot if owner_slot is not None else -1))
-            except Exception:
-                owner_slot_i = -1
-            try:
-                table_slot_i = int(str(candidate_table_slot)) if candidate_table_slot is not None else int(owner_slot_i)
-            except Exception:
-                table_slot_i = -1
-            phase_ok = str(owner_phase or "") == "ga_to_fg"
-            held = bool(
-                phase_ok
-                and owner_slot_i >= 0
-                and table_slot_i >= 0
-                and owner_slot_i == table_slot_i
-                and owner_slot_i == int(current_song_slot)
-            )
-            return held, (table_slot_i if table_slot_i >= 0 else int(current_song_slot)), True
-
-        held_flag = calc_song.get("_fg_ga_candidate_table_slot_held", None)
-        if held_flag is not None:
-            held = bool(held_flag)
-    except Exception:
-        return True, int(current_song_slot), owner_meta_present
-
-    return held, int(table_slot), owner_meta_present
-
-
 def _get_cached_chart_scorer(calc_song: dict, ref_arrays: dict, create_chart_scorer_fn):
     return _get_cached_chart_scorer_impl(calc_song, ref_arrays, create_chart_scorer_fn)
 
@@ -814,8 +771,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         if isinstance(calc_song, dict):
             pre_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
             pre_song_key = str(
-                calc_song.get("_fg_resident_owner_task")
-                or calc_song.get("_queue_key")
+                calc_song.get("_queue_key")
                 or calc_song.get("_queue_label")
                 or ""
             ).strip()
@@ -861,7 +817,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_task_tile_splits = 0
     fg_fused_tile_batches = 0
     fg_fused_tile_splits = 0
-    fg_genome_stats_staged_batches = 0
     fg_genome_stats_uploaded_batches = 0
     fg_genome_stats_uploaded_bytes_est = 0
     fg_surface_pair_drops = 0
@@ -937,8 +892,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     try:
         if isinstance(calc_song, dict):
             finder_song_key = str(
-                calc_song.get("_fg_resident_owner_task")
-                or calc_song.get("_queue_key")
+                calc_song.get("_queue_key")
                 or calc_song.get("_queue_label")
                 or ""
             ).strip()
@@ -1037,19 +991,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 kwargs["calc_song"] = calc_song
                 timeline_precompute_queued = True
 
-            if kwargs.get("ga_stage_coords") is not None and kwargs.get("ga_stage_table_slot") is None:
-                try:
-                    kwargs["ga_stage_table_slot"] = int(kwargs.get("song_slot", song_slot) or song_slot)
-                except Exception:
-                    kwargs["ga_stage_table_slot"] = int(song_slot)
+            if kwargs.get("ga_stage_coords") is not None:
+                raise RuntimeError("GA->FG resident genome-stat staging has been removed")
 
             fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
             return fut.result() if blocking else fut
 
-        # Direct (non-service) GPU path: keep control keys out of the Taichi API surface
-        # and do any required staging locally.
-        ga_stage_coords = kwargs.pop("ga_stage_coords", None)
-        ga_stage_table_slot = kwargs.pop("ga_stage_table_slot", None)
+        # Direct (non-service) GPU path: keep control keys out of the Taichi API surface.
+        if kwargs.pop("ga_stage_coords", None) is not None:
+            raise RuntimeError("GA->FG resident genome-stat staging has been removed")
+        kwargs.pop("ga_stage_table_slot", None)
         kwargs.pop("ensure_timeline_precompute", None)
         kwargs.pop("calc_song", None)
         kwargs.pop("ga_stage_n_slots", None)
@@ -1065,29 +1016,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 pass
             timeline_precompute_queued = True
 
-        if ga_stage_coords is not None:
-            try:
-                from ....solver.taichi_gem import api as _taichi_api
-
-                try:
-                    slot0 = (
-                        int(ga_stage_table_slot)
-                        if ga_stage_table_slot is not None
-                        else int(kwargs.get("song_slot", song_slot) or song_slot)
-                    )
-                except Exception:
-                    slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
-                _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                    table_slot=int(slot0),
-                    coords=ga_stage_coords,
-                    n_slots=9,
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    "Direct FG solve GA->FG staging failed "
-                    f"(table_slot={slot0}, song_slot={song_slot}, "
-                    f"coords_shape={getattr(ga_stage_coords, 'shape', None)})"
-                ) from exc
         return solve_force_greats_finder_gpu(*args, **kwargs)
 
     # ---------------------------------------------------------------------
@@ -1112,7 +1040,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_tasks_batch = []
     genome_stats_uploaded = False
     sig_results: dict[str, dict] = {}
-    ga_candidate_owner_mismatch_warned = False
     first_group_iter_ready_emitted = False
     first_gpu_task_queued_emitted = False
     first_gpu_submit_emitted = False
@@ -1287,9 +1214,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     timeline_precompute_queued = False
     genome_stats_arr = None
     genome_stats_n_genomes = 0
-    genome_stats_preuploaded = False
-    ga_stage_coords_pending = None
-    ga_stage_table_slot_pending = None
 
     def _flush_fg_tasks_batch(
         *,
@@ -1300,8 +1224,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         download_keep_mask=None,
     ):
         nonlocal fg_tasks_batch, need_reset, genome_stats_uploaded
-        nonlocal genome_stats_n_genomes, genome_stats_preuploaded
-        nonlocal ga_stage_coords_pending, ga_stage_table_slot_pending
+        nonlocal genome_stats_n_genomes
         nonlocal fg_task_tile_batches, fg_task_tile_splits
         if gpu_client is None:
             return None
@@ -1316,15 +1239,18 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 batch = []
 
         if batch:
-            task_tiles = _split_items_by_work_budget(
-                list(batch),
-                max_work=int(fg_task_tile_max_threads),
-                estimate_fn=lambda item: _estimate_fg_task_threads(
-                    item,
-                    n_sections=int(n_sections),
-                    n_genomes=int(genome_stats_n_genomes),
-                ),
-            )
+            if enforce_single_request:
+                task_tiles = [list(batch)]
+            else:
+                task_tiles = _split_items_by_work_budget(
+                    list(batch),
+                    max_work=int(fg_task_tile_max_threads),
+                    estimate_fn=lambda item: _estimate_fg_task_threads(
+                        item,
+                        n_sections=int(n_sections),
+                        n_genomes=int(genome_stats_n_genomes),
+                    ),
+                )
             if not task_tiles:
                 return None
             fg_task_tile_batches += int(len(task_tiles))
@@ -1381,20 +1307,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 accumulate_global=True,
                 fg_tasks=task_tile,
             )
-            if genome_stats_preuploaded:
-                submit_kwargs["upload_genome_stats"] = False
-                submit_kwargs["genome_stats_preuploaded"] = True
-                submit_kwargs["n_genomes_override"] = int(genome_stats_n_genomes)
-                if ga_stage_coords_pending is not None:
-                    submit_kwargs["ga_stage_coords"] = ga_stage_coords_pending
-                    try:
-                        submit_kwargs["ga_stage_table_slot"] = int(ga_stage_table_slot_pending or song_slot)
-                    except Exception:
-                        submit_kwargs["ga_stage_table_slot"] = int(song_slot)
-            else:
-                # Avoid re-uploading genome stats for subsequent requests while the
-                # `genome_base_stats` field remains valid (in-process GPU owner thread).
-                submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
+            # Avoid re-uploading genome stats for subsequent requests while the
+            # `genome_base_stats` field remains valid (in-process GPU owner thread).
+            submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
             if "base_cfg_offset" in first:
                 try:
                     submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
@@ -1428,8 +1343,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 blocking=False,
                 **submit_kwargs,
             )
-            ga_stage_coords_pending = None
-            ga_stage_table_slot_pending = None
             genome_stats_uploaded = True
             fg_async_futures.append(last_future)
             if len(fg_async_futures) >= fg_async_max_inflight:
@@ -1902,20 +1815,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     pair_caps_from_timeline = False
     song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
 
-    # In GPU-native in-flight mode, GA can release a song slot before FG runs. When that happens, the GA->FG
-    # candidate table for the original slot may be overwritten by other songs, so the staging fast-path is unsafe.
-    ga_candidate_table_slot_held = True
-    ga_candidate_table_slot = int(song_slot)
-    ga_candidate_owner_meta_present = False
-    try:
-        ga_candidate_table_slot_held, ga_candidate_table_slot, ga_candidate_owner_meta_present = (
-            _resolve_fg_candidate_table_residency(calc_song, current_song_slot=int(song_slot))
-        )
-    except Exception:
-        ga_candidate_table_slot_held = True
-        ga_candidate_table_slot = int(song_slot)
-        ga_candidate_owner_meta_present = False
-
     caps_mode = str(os.environ.get("FG_PAIR_CAPS_MODE", "timeline") or "").strip().lower()
     if caps_mode in {"timeline", "gpu", "1", "true", "yes", "on", ""}:
         pair_caps_from_timeline = True
@@ -2000,7 +1899,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         timing_envelope_fg=int(bool(use_timing_envelope_fg)),
         fg_scorer_cache_hit=int(bool(fg_scorer_cache_hit)),
         pair_caps_from_timeline=int(bool(pair_caps_from_timeline)),
-        ga_candidate_table_slot_held=int(bool(ga_candidate_table_slot_held)),
     )
 
     # Generate SMART configs using Analytic Breakpoint Pruning
@@ -2182,7 +2080,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             n_gpu_calls += 1
 
         zipped_items = list(zip(fused_payload_batch, fused_ctx_batch))
-        if max_pairs_total <= 0:
+        if enforce_single_request:
+            pair_chunks = [zipped_items]
+        elif max_pairs_total <= 0:
             pair_chunks = [zipped_items]
         else:
             pair_chunks: list[list[tuple[dict, dict]]] = []
@@ -2200,13 +2100,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 pair_chunks.append(list(chunk_items))
 
         request_chunks: list[list[tuple[dict, dict]]] = []
-        for pair_chunk in pair_chunks:
-            subchunks = _split_items_by_work_budget(
-                list(pair_chunk),
-                max_work=int(fg_fused_tile_max_threads),
-                estimate_fn=lambda item: _estimate_fused_payload_threads(item[0]),
-            )
-            request_chunks.extend(subchunks)
+        if enforce_single_request:
+            request_chunks = [list(zipped_items)]
+        else:
+            for pair_chunk in pair_chunks:
+                subchunks = _split_items_by_work_budget(
+                    list(pair_chunk),
+                    max_work=int(fg_fused_tile_max_threads),
+                    estimate_fn=lambda item: _estimate_fused_payload_threads(item[0]),
+                )
+                request_chunks.extend(subchunks)
 
         fg_fused_tile_batches += int(len(request_chunks))
         if len(request_chunks) > 1:
@@ -2517,45 +2420,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
             n_pending = len(pending)
             genome_stats_n_genomes = int(n_pending)
-            genome_stats_preuploaded = False
-            ga_stage_coords_pending = None
-            ga_stage_table_slot_pending = None
-
-            coords_arr = None
-            if (
-                ga_candidate_owner_meta_present
-                and (not ga_candidate_table_slot_held)
-                and (not ga_candidate_owner_mismatch_warned)
-            ):
-                warn_fallback(
-                    "fg.ga_stage.owner_mismatch",
-                    "FG resident candidate-table ownership mismatch; skipping GA->FG staging",
-                    context={
-                        "current_song_slot": int(song_slot),
-                        "candidate_table_slot": int(ga_candidate_table_slot),
-                    },
-                    fatal=False,
-                )
-                ga_candidate_owner_mismatch_warned = True
-            if ga_candidate_table_slot_held and bool(use_gpu) and sig_rows_map:
-                try:
-                    coords_list = [
-                        (sig_rows_map.get(sig0) or {}).get("ga_coord")
-                        if isinstance(sig_rows_map.get(sig0), dict)
-                        else None
-                        for sig0 in pending_sigs
-                    ]
-                    if coords_list and all(c is not None and len(c) >= 2 for c in coords_list):
-                        coords_arr = np.asarray(coords_list, dtype=np.int32)
-                        if (
-                            coords_arr.ndim == 2
-                            and int(coords_arr.shape[0]) == int(n_pending)
-                            and int(coords_arr.shape[1]) >= 2
-                        ):
-                            genome_stats_preuploaded = True
-                except Exception:
-                    coords_arr = None
-                    genome_stats_preuploaded = False
+            genome_stats_arr = None
 
             # Optional download selection inputs (per pending signature).
             download_base_scores = None
@@ -2585,62 +2450,34 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             genome_stats_backing = None
             genome_stats_arr = None
 
-            if genome_stats_preuploaded:
-                if coords_arr is None:
-                    raise RuntimeError("genome_stats_preuploaded=True but coords_arr is None")
-
-                fg_genome_stats_staged_batches += 1
-                genome_stats_uploaded = True
-                if gpu_client is not None:
-                    ga_stage_coords_pending = coords_arr
-                    ga_stage_table_slot_pending = int(ga_candidate_table_slot)
-                else:
-                    try:
-                        from ....solver.taichi_gem import api as _taichi_api
-
-                        _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                            table_slot=int(ga_candidate_table_slot),
-                            coords=coords_arr,
-                            n_slots=9,
-                        )
-                    except Exception as exc:
-                        raise RuntimeError(
-                            "GA->FG genome stats staging failed in FG dispatcher "
-                            f"(table_slot={ga_candidate_table_slot}, coords_shape={getattr(coords_arr, 'shape', None)})"
-                        ) from exc
+            # FAST PATH: Build numpy array directly instead of list[dict].
+            # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat.
+            if defer_group_apply and in_process and gpu_client is not None:
+                genome_stats_arr, genome_stats_backing = _checkout_deferred_genome_stats_buf(int(n_pending))
             else:
-                # FAST PATH: Build numpy array directly instead of list[dict]
-                # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
-                # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
-                # However, when deferring apply in in-process GPU executor mode, this buffer would be reused
-                # across in-flight async requests (corrupting results). In that mode we allocate a dedicated
-                # array per group instead of fill+copy.
-                if defer_group_apply and in_process and gpu_client is not None:
-                    genome_stats_arr, genome_stats_backing = _checkout_deferred_genome_stats_buf(int(n_pending))
-                else:
-                    if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
-                        process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
+                if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
+                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
+                genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+                if genome_stats_buf.shape[0] < n_pending:
+                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros(
+                        (max(1024, n_pending), 7), dtype=np.int32
+                    )
                     genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-                    if genome_stats_buf.shape[0] < n_pending:
-                        process_force_greats_gpu_finder._genome_stats_buf = np.zeros(
-                            (max(1024, n_pending), 7), dtype=np.int32
-                        )
-                        genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-                    genome_stats_arr = genome_stats_buf[:n_pending, :]
+                genome_stats_arr = genome_stats_buf[:n_pending, :]
 
-                for i, bs in enumerate(pending):
-                    genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
-                    genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
-                    genome_stats_arr[i, 2] = int(bs.get("Fever Multiplier", 0))
-                    genome_stats_arr[i, 3] = int(bs.get(p_color, 0))  # p_val
-                    genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
-                    genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
-                    genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
+            for i, bs in enumerate(pending):
+                genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
+                genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
+                genome_stats_arr[i, 2] = int(bs.get("Fever Multiplier", 0))
+                genome_stats_arr[i, 3] = int(bs.get(p_color, 0))  # p_val
+                genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
+                genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
+                genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
 
-                # New genome batch => require a fresh upload on the first request.
-                genome_stats_uploaded = False
-                fg_genome_stats_uploaded_batches += 1
-                fg_genome_stats_uploaded_bytes_est += int(n_pending) * 7 * 4
+            # New genome batch => require a fresh upload on the first request.
+            genome_stats_uploaded = False
+            fg_genome_stats_uploaded_batches += 1
+            fg_genome_stats_uploaded_bytes_est += int(n_pending) * 7 * 4
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
@@ -2839,14 +2676,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     # Fused path: keep max-FP matrix off the host and solve in one executor request.
                     if base_pairs_list:
                         try:
-                            # Optional GA->FG staging happens inside the fused request to avoid a separate boundary.
                             solve_kwargs = dict(fused_solve_kwargs_static)
-                            if genome_stats_preuploaded and coords_arr is not None:
-                                solve_kwargs["upload_genome_stats"] = False
-                                solve_kwargs["genome_stats_preuploaded"] = True
-                                solve_kwargs["n_genomes_override"] = int(n_pending)
-                            else:
-                                solve_kwargs["upload_genome_stats"] = True
+                            solve_kwargs["upload_genome_stats"] = True
 
                             fused_payload = {
                                 "ftff_pairs": ftff_pairs_submit,
@@ -2869,10 +2700,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 "fg_download_base_scores": download_base_scores,
                                 "fg_download_keep_mask": download_keep_mask,
                             }
-                            if genome_stats_preuploaded and coords_arr is not None:
-                                fused_payload["ga_stage_coords"] = coords_arr
-                                fused_payload["ga_stage_table_slot"] = int(ga_candidate_table_slot)
-
+                            if enforce_single_request:
+                                fused_payload["fg_force_single_owner_request"] = True
                             if defer_group_apply:
                                 ctx = {
                                     "mode": "breakpoints_fused",
@@ -2910,9 +2739,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     n_pending_value=int(n_pending),
                                 )
 
-                                if (not first_gpu_submit_emitted) or len(fused_payload_batch) >= int(
-                                    fused_payloads_per_request
-                                ):
+                                should_submit_fused = len(fused_payload_batch) >= int(fused_payloads_per_request)
+                                if (not bool(enforce_single_request)) and (not first_gpu_submit_emitted):
+                                    should_submit_fused = True
+                                if should_submit_fused:
                                     _flush_fused_payload_batch()
 
                                 continue
@@ -3245,7 +3075,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 n_sections_value=int(n_sections),
                                 n_pending_value=int(n_pending),
                             )
-                            if (not first_gpu_submit_emitted) or len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                            should_submit_tasks = len(fg_tasks_batch) >= fg_async_tasks_per_request
+                            if (not bool(enforce_single_request)) and (not first_gpu_submit_emitted):
+                                should_submit_tasks = True
+                            if should_submit_tasks:
                                 flush_plan = plan_fg_async_threshold_flush(
                                     pending_tasks=len(fg_tasks_batch),
                                     tasks_per_request=fg_async_tasks_per_request,
@@ -3314,9 +3147,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 return_raw=True,
                                 accumulate_global=True,
                                 base_cfg_offset=group_cfg_offset,
-                                upload_genome_stats=bool(not genome_stats_preuploaded),
-                                genome_stats_preuploaded=bool(genome_stats_preuploaded),
-                                n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
+                                upload_genome_stats=True,
                             )
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
@@ -3484,7 +3315,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 n_sections_value=int(n_sections),
                                 n_pending_value=int(n_pending),
                             )
-                            if (not first_gpu_submit_emitted) or len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                            should_submit_tasks = len(fg_tasks_batch) >= fg_async_tasks_per_request
+                            if (not bool(enforce_single_request)) and (not first_gpu_submit_emitted):
+                                should_submit_tasks = True
+                            if should_submit_tasks:
                                 flush_plan = plan_fg_async_threshold_flush(
                                     pending_tasks=len(fg_tasks_batch),
                                     tasks_per_request=fg_async_tasks_per_request,
@@ -3524,9 +3358,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 song_slot=int(song_slot),
                                 return_raw=True,  # Return numpy arrays, not list[dict]
                                 accumulate_global=True,
-                                upload_genome_stats=bool(not genome_stats_preuploaded),
-                                genome_stats_preuploaded=bool(genome_stats_preuploaded),
-                                n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
+                                upload_genome_stats=True,
                             )
 
                     download_future = _flush_fg_tasks_batch(
@@ -3594,9 +3426,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         pair_caps_from_timeline=bool(pair_caps_from_timeline),
                         song_slot=int(song_slot),
                         return_raw=True,  # Return numpy arrays, not list[dict]
-                        upload_genome_stats=bool(not genome_stats_preuploaded),
-                        genome_stats_preuploaded=bool(genome_stats_preuploaded),
-                        n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
+                        upload_genome_stats=True,
                     )
                 if perf:
                     t_gpu_calls_sec += time.perf_counter() - _t_gpu0
@@ -4080,8 +3910,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 t_result_apply_sec * 1000.0,
             )
             logger.debug(
-                "[PERF] FG Transfers: genome_stage_batches=%s genome_upload_batches=%s upload_bytes_est=%.2fMB",
-                fg_genome_stats_staged_batches,
+                "[PERF] FG Transfers: genome_upload_batches=%s upload_bytes_est=%.2fMB",
                 fg_genome_stats_uploaded_batches,
                 float(fg_genome_stats_uploaded_bytes_est) / (1024.0 * 1024.0),
             )
@@ -4091,7 +3920,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             pass
 
     def _record_fg_streaming_meta() -> None:
-        meta["FGGenomeStatsStagedBatches"] = int(fg_genome_stats_staged_batches)
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
         meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
         meta["FGSurfacePairDrops"] = int(fg_surface_pair_drops)

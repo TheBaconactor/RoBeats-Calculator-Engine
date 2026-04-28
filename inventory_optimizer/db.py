@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
-from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list
+from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
 from gear_optimizer.data.loadout_equivalence import extract_song_colors
 
 from .keys import ELEMENT_TO_ID
@@ -686,7 +686,10 @@ def _parse_json(payload: Optional[str]) -> Dict[str, Any]:
         value = json.loads(payload)
     except Exception:
         return {}
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    unpacked = _unpack_stats_after_load(value)
+    return unpacked if isinstance(unpacked, dict) else value
 
 
 def _extract_gem_totals(details: Dict[str, Any]) -> Tuple[int, ...]:

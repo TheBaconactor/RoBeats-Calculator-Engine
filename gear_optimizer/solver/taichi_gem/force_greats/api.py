@@ -1489,15 +1489,15 @@ def _solve_force_greats_finder_gpu_impl(
         cfg_chunk = fg_fields.FG_MAX_CONFIGS
 
     genome_stats_preuploaded = bool(genome_stats_preuploaded)
+    if genome_stats_preuploaded:
+        raise ValueError("genome_stats_preuploaded=True has been removed; pass and upload explicit genome stats")
 
     # Handle both list and numpy array (numpy arrays have ambiguous truth value).
-    # When genome_stats_preuploaded=True, callers may pass genome_stats_list=None and provide n_genomes_override.
-    if not genome_stats_preuploaded:
-        if isinstance(genome_stats_list, np.ndarray):
-            if genome_stats_list.shape[0] == 0:
-                return [] if not return_raw else {}
-        elif not genome_stats_list:
+    if isinstance(genome_stats_list, np.ndarray):
+        if genome_stats_list.shape[0] == 0:
             return [] if not return_raw else {}
+    elif not genome_stats_list:
+        return [] if not return_raw else {}
 
     if "Fever Time" not in ref_arrays or "Fever Fill Rate" not in ref_arrays:
         raise KeyError("FG finder GPU requires ref_arrays to include 'Fever Time' and 'Fever Fill Rate'")
@@ -1508,15 +1508,10 @@ def _solve_force_greats_finder_gpu_impl(
     # Ensure FG-specific fields are allocated, bound, AND kernels pre-warmed.
     fg_fields.ensure_ready_with_warmup()
 
-    if genome_stats_preuploaded:
-        if n_genomes_override is None:
-            raise ValueError("genome_stats_preuploaded=True requires n_genomes_override")
-        n_genomes = int(n_genomes_override)
+    if genome_stats_list is None:
+        n_genomes = 0
     else:
-        if genome_stats_list is None:
-            n_genomes = 0
-        else:
-            n_genomes = int(len(genome_stats_list))
+        n_genomes = int(len(genome_stats_list))
     if n_genomes > gem_fields.MAX_GENOMES:
         raise ValueError(f"Too many genomes for FG finder: {n_genomes} > {gem_fields.MAX_GENOMES}")
 
@@ -1595,20 +1590,15 @@ def _solve_force_greats_finder_gpu_impl(
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
-        if genome_stats_preuploaded:
-            # Callers explicitly staged `genome_base_stats` via another GPU entrypoint and
-            # guarantee no intervening entrypoint overwrote it.
-            pass
-        else:
-            try:
-                ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
-            except Exception:
-                ok = False
-            if not ok:
-                raise RuntimeError(
-                    "Skipping genome stats upload without a compatible prior upload; "
-                    "this indicates a misuse of upload_genome_stats=False."
-                )
+        try:
+            ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
+        except Exception:
+            ok = False
+        if not ok:
+            raise RuntimeError(
+                "Skipping genome stats upload without a compatible prior upload; "
+                "this indicates a misuse of upload_genome_stats=False."
+            )
 
     # Upload FT/FF list
     n_ftff = int(len(ftff_pairs))
@@ -2392,19 +2382,16 @@ def solve_force_greats_finder_gpu_tasks(
         _ensure_pair_caps_uploaded(pair_caps_grid)
 
     genome_stats_preuploaded = bool(genome_stats_preuploaded)
+    if genome_stats_preuploaded:
+        raise ValueError("genome_stats_preuploaded=True has been removed; pass and upload explicit genome stats")
     p = _get_gpu_profiler()
     want_xfer_stats = bool(_PERF_TIMING or _FG_TRANSFER_TRACE or p is not None)
 
     # Upload per-genome base stats once (or reuse the existing GPU-resident buffer).
-    if genome_stats_preuploaded:
-        if n_genomes_override is None:
-            raise ValueError("genome_stats_preuploaded=True requires n_genomes_override")
-        n_genomes = int(n_genomes_override)
+    if genome_stats_list is None:
+        n_genomes = 0
     else:
-        if genome_stats_list is None:
-            n_genomes = 0
-        else:
-            n_genomes = int(len(genome_stats_list))
+        n_genomes = int(len(genome_stats_list))
     if n_genomes <= 0:
         return
     if n_genomes > gem_fields.MAX_GENOMES:
@@ -2442,29 +2429,24 @@ def solve_force_greats_finder_gpu_tasks(
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
-        if genome_stats_preuploaded:
-            # Callers explicitly staged `genome_base_stats` via another GPU entrypoint and
-            # guarantee no intervening entrypoint overwrote it.
-            pass
-        else:
-            # Reuse previously uploaded genome_base_stats (avoid host->device transfer).
-            prev = _fg_genome_stats_upload_key
+        # Reuse previously uploaded genome_base_stats (avoid host->device transfer).
+        prev = _fg_genome_stats_upload_key
+        ok = False
+        try:
+            ok = prev is not None and int(prev[0]) == int(n_genomes)
+        except Exception:
             ok = False
+        if isinstance(genome_stats_list, np.ndarray) and prev is not None:
             try:
-                ok = prev is not None and int(prev[0]) == int(n_genomes)
+                ptr = int(genome_stats_list.__array_interface__["data"][0])
+                ok = ok and int(prev[1]) == int(ptr)
             except Exception:
                 ok = False
-            if isinstance(genome_stats_list, np.ndarray) and prev is not None:
-                try:
-                    ptr = int(genome_stats_list.__array_interface__["data"][0])
-                    ok = ok and int(prev[1]) == int(ptr)
-                except Exception:
-                    ok = False
-            if not ok:
-                raise RuntimeError(
-                    "Skipping genome stats upload without a compatible prior upload; "
-                    "this indicates a misuse of upload_genome_stats=False."
-                )
+        if not ok:
+            raise RuntimeError(
+                "Skipping genome stats upload without a compatible prior upload; "
+                "this indicates a misuse of upload_genome_stats=False."
+            )
 
     # Pack tasks: upload config windows into the global cfg table (explicit window mode) and prepare streaming
     # FT/FF chunks using fixed-size numpy buffers (avoid per-pair Python tuple materialization).

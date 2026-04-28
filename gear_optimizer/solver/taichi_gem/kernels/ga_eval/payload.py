@@ -6,7 +6,6 @@ Includes:
 - ga_pack_and_store_run_payload_kernel
 - ga_pack_fg_candidates_table_segmented_kernel
 - ga_copy_fg_candidates_table_to_download_staging_kernel
-- ga_stage_genome_base_stats_from_fg_candidates_table_kernel
 """
 
 import os
@@ -611,48 +610,6 @@ def ga_copy_fg_candidates_table_to_download_staging_kernel(table_slot: ti.i32, n
             kernels_helpers.ga_fg_candidates_download_staging[r, row, c] = kernels_helpers.ga_fg_candidates_packed[
                 table_slot, r, row, c
             ]
-
-
-@ti.kernel
-def ga_stage_genome_base_stats_from_fg_candidates_table_kernel(
-    table_slot: ti.i32,
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-    coords: ti.types.ndarray(dtype=ti.i32, ndim=2),
-):
-    """
-    Stage `genome_base_stats[0:n_genomes]` directly from the packed GA->FG candidate table.
-
-    coords: (n_genomes, 2) int32 array of (run_idx, row_idx) into the candidate table.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
-    for i in range(n_genomes):
-        run_idx = coords[i, 0]
-        row_idx = coords[i, 1]
-        # Read base_stats7 from candidate table and write to shared genome_base_stats.
-        # [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
-        kernels_helpers.genome_base_stats[i][0] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 0], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][1] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 1], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][2] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 2], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][3] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 3], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][4] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 4], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][5] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 5], ti.i16
-        )
-        kernels_helpers.genome_base_stats[i][6] = ti.cast(
-            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, base_col0 + 6], ti.i16
-        )
 
 
 # ============================================================================

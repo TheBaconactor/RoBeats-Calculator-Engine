@@ -1,15 +1,16 @@
 """
-Compare CURRENT vs LEGACY DB on "overall best" per song.
+Compare CURRENT vs LEGACY/REFERENCE DB on replayed "overall best" per song.
 
 Overall best = max(best base score, best FG score) for a given (song, team_buff).
 
-This script compares *persisted* scores. Legacy DBs can be stale relative to the
-current scorer / current Data charts, so treat regressions here as "candidates"
-until verified by re-scoring.
+This tool can compare persisted scores, replay either side with the current scorer,
+or replay both sides symmetrically. That makes it useful for "recover and compare"
+audits where stale or inflated persisted FG rows must not be trusted at face value.
 
 Usage:
   python tools/db/compare_overall_best_to_legacy_db.py --team-buff T5 --eps 2
-  python tools/db/compare_overall_best_to_legacy_db.py --current evolution.db --legacy evolution_legacy.db --eps 2
+  python tools/db/compare_overall_best_to_legacy_db.py --current evolution.db --legacy evolutionref2.db --eps 2
+  python tools/db/compare_overall_best_to_legacy_db.py --current evolution.db --legacy evolutionref2.db --replay-current-base --replay-current-fg --replay-legacy-base --replay-legacy-fg --eps 2
 """
 
 from __future__ import annotations
@@ -477,6 +478,126 @@ def _best_fg_rescored_legacy(
     return {"best": best_score, "hash": best_hash}
 
 
+def _best_base_replayed(
+    conn: sqlite3.Connection,
+    *,
+    song: str,
+    team_buff: str,
+    project_root: Path,
+    cfg_dict: dict,
+    ref_arrays: dict,
+    calc_song_cache: dict[str, dict],
+):
+    return _best_base_rescored_legacy(
+        conn,
+        song=song,
+        team_buff=team_buff,
+        project_root=project_root,
+        cfg_dict=cfg_dict,
+        ref_arrays=ref_arrays,
+        calc_song_cache=calc_song_cache,
+    )
+
+
+def _best_fg_replayed(
+    conn: sqlite3.Connection,
+    *,
+    song: str,
+    team_buff: str,
+    project_root: Path,
+    cfg_dict: dict,
+    ref_arrays: dict,
+    calc_song_cache: dict[str, dict],
+):
+    return _best_fg_rescored_legacy(
+        conn,
+        song=song,
+        team_buff=team_buff,
+        project_root=project_root,
+        cfg_dict=cfg_dict,
+        ref_arrays=ref_arrays,
+        calc_song_cache=calc_song_cache,
+    )
+
+
+def _best_row_parts(best: BestRow | dict | None) -> tuple[int, str]:
+    if best is None:
+        return 0, ""
+    if isinstance(best, dict):
+        return int(best.get("best") or 0), str(best.get("hash") or "").strip()
+    return int(best.score), str(best.loadout_hash or "").strip()
+
+
+def _resolve_side_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    song: str,
+    team_buff: str,
+    replay_base: bool,
+    replay_fg: bool,
+    project_root: Path,
+    cfg_dict: dict,
+    ref_arrays: dict,
+    calc_song_cache: dict[str, dict],
+) -> dict[str, object]:
+    base_best = (
+        _best_base_replayed(
+            conn,
+            song=song,
+            team_buff=team_buff,
+            project_root=project_root,
+            cfg_dict=cfg_dict,
+            ref_arrays=ref_arrays,
+            calc_song_cache=calc_song_cache,
+        )
+        if replay_base
+        else _best_base(conn, song=song, team_buff=team_buff)
+    )
+    fg_best = (
+        _best_fg_replayed(
+            conn,
+            song=song,
+            team_buff=team_buff,
+            project_root=project_root,
+            cfg_dict=cfg_dict,
+            ref_arrays=ref_arrays,
+            calc_song_cache=calc_song_cache,
+        )
+        if replay_fg
+        else _best_fg(conn, song=song, team_buff=team_buff)
+    )
+
+    base_score, base_hash = _best_row_parts(base_best)
+    fg_score, fg_hash = _best_row_parts(fg_best)
+    if fg_score > base_score:
+        overall_score = int(fg_score)
+        overall_hash = str(fg_hash)
+        overall_source = "fg"
+    else:
+        overall_score = int(base_score)
+        overall_hash = str(base_hash)
+        overall_source = "base"
+
+    return {
+        "base_score": int(base_score),
+        "base_hash": str(base_hash),
+        "fg_score": int(fg_score),
+        "fg_hash": str(fg_hash),
+        "overall_score": int(overall_score),
+        "overall_hash": str(overall_hash),
+        "overall_source": str(overall_source),
+    }
+
+
+def _compare_pair(current_score: int, legacy_score: int, *, eps: int) -> str:
+    delta = int(current_score) - int(legacy_score)
+    if abs(int(delta)) <= int(eps):
+        return "tie"
+    if delta > 0:
+        return "current_win"
+    return "legacy_win"
+
+
 def _songs_in_db(conn: sqlite3.Connection, *, team_buff: str) -> set[str]:
     team_buff = _norm_team_buff(team_buff)
     out: set[str] = set()
@@ -527,22 +648,28 @@ def main() -> int:
     p.add_argument("--artifacts-dir", type=str, default=str(PROJECT_ROOT / "artifacts"))
     p.add_argument("--examples", type=int, default=25, help="Max regression examples to embed in JSON.")
     p.add_argument(
+        "--replay-current-base",
+        "--rescore-current-base",
+        action="store_true",
+        help="Replay current-side best base rows with the current GPU fixed scorer.",
+    )
+    p.add_argument(
+        "--replay-current-fg",
+        "--rescore-current-fg",
+        action="store_true",
+        help="Replay current-side FG rows with the current GPU exact-inner solver.",
+    )
+    p.add_argument(
+        "--replay-legacy-base",
         "--rescore-legacy-base",
         action="store_true",
-        help="Recompute legacy base best via GPU fixed scoring on persisted Stats (staleness correction).",
+        help="Replay legacy/reference-side best base rows with the current GPU fixed scorer.",
     )
     p.add_argument(
+        "--replay-legacy-fg",
         "--rescore-legacy-fg",
         action="store_true",
-        help=(
-            "Recompute legacy FG via the current GPU exact-inner solver when persisted FG would otherwise "
-            "produce a regression."
-        ),
-    )
-    p.add_argument(
-        "--rescore-legacy-fg-full",
-        action="store_true",
-        help="Recompute legacy FG for every compared song. Slower; use for exhaustive audit reports.",
+        help="Replay legacy/reference-side FG rows with the current GPU exact-inner solver.",
     )
     args = p.parse_args()
 
@@ -556,9 +683,10 @@ def main() -> int:
     team_buff = _norm_team_buff(args.team_buff)
     eps = max(0, int(args.eps))
     example_limit = max(0, int(args.examples))
-    rescore_legacy_base = bool(args.rescore_legacy_base)
-    rescore_legacy_fg = bool(args.rescore_legacy_fg or args.rescore_legacy_fg_full)
-    rescore_legacy_fg_full = bool(args.rescore_legacy_fg_full)
+    replay_current_base = bool(args.replay_current_base)
+    replay_current_fg = bool(args.replay_current_fg)
+    replay_legacy_base = bool(args.replay_legacy_base)
+    replay_legacy_fg = bool(args.replay_legacy_fg)
 
     cur = sqlite3.connect(str(current_db))
     leg = sqlite3.connect(str(legacy_db))
@@ -567,8 +695,9 @@ def main() -> int:
 
         cfg_dict: dict = {}
         ref_arrays: dict = {}
-        calc_song_cache: dict[str, dict] = {}
-        if rescore_legacy_base or rescore_legacy_fg:
+        cur_calc_song_cache: dict[str, dict] = {}
+        leg_calc_song_cache: dict[str, dict] = {}
+        if replay_current_base or replay_current_fg or replay_legacy_base or replay_legacy_fg:
             from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
             from gear_optimizer.core.config import load_config
             from gear_optimizer.core.utils import cfg_to_dict
@@ -578,104 +707,98 @@ def main() -> int:
             if not isinstance(ref_arrays, dict) or not ref_arrays:
                 raise SystemExit("ref_arrays unavailable (failed to load Stats lookup tables)")
 
-        improvements = 0
-        ties = 0
-        regressions = 0
-        regression_detail: list[dict] = []
-        regression_buckets: dict[str, int] = {}
+        sections = ("overall", "base", "fg")
+        counts = {
+            section: {"current_wins": 0, "ties": 0, "legacy_wins": 0}
+            for section in sections
+        }
+        fg_presence = {"both_present": 0, "current_only": 0, "legacy_only": 0, "both_missing": 0}
+        current_win_examples: list[dict] = []
+        legacy_win_examples: list[dict] = []
 
         for song in songs:
-            cur_best = _best_overall(cur, song=song, team_buff=team_buff)
-            cur_score = int(cur_best["best"] or 0)
-            if not (rescore_legacy_base or rescore_legacy_fg):
-                leg_best = _best_overall(leg, song=song, team_buff=team_buff)
-            else:
-                leg_fg_persisted = _best_fg(leg, song=song, team_buff=team_buff)
-                leg_base = (
-                    _best_base_rescored_legacy(
-                        leg,
-                        song=song,
-                        team_buff=team_buff,
-                        project_root=PROJECT_ROOT,
-                        cfg_dict=cfg_dict,
-                        ref_arrays=ref_arrays,
-                        calc_song_cache=calc_song_cache,
-                    )
-                    if rescore_legacy_base
-                    else _best_base(leg, song=song, team_buff=team_buff)
-                )
-                leg_base_score = (
-                    int(leg_base.get("best") or 0)
-                    if isinstance(leg_base, dict)
-                    else (int(leg_base.score) if leg_base else 0)
-                )
-                leg_fg_persisted_score = int(leg_fg_persisted.score) if leg_fg_persisted else 0
-                should_rescore_fg = bool(rescore_legacy_fg_full)
-                if rescore_legacy_fg and not should_rescore_fg:
-                    persisted_legacy_best = max(int(leg_base_score), int(leg_fg_persisted_score))
-                    should_rescore_fg = bool(
-                        leg_fg_persisted_score > leg_base_score
-                        and int(cur_score) - int(persisted_legacy_best) < -int(eps)
-                    )
-
-                leg_fg = (
-                    _best_fg_rescored_legacy(
-                        leg,
-                        song=song,
-                        team_buff=team_buff,
-                        project_root=PROJECT_ROOT,
-                        cfg_dict=cfg_dict,
-                        ref_arrays=ref_arrays,
-                        calc_song_cache=calc_song_cache,
-                    )
-                    if should_rescore_fg
-                    else leg_fg_persisted
-                )
-                leg_fg_score = int(leg_fg.get("best") if isinstance(leg_fg, dict) else leg_fg.score) if leg_fg else 0
-                if leg_fg_score > leg_base_score:
-                    leg_fg_hash = str(
-                        leg_fg.get("hash") if isinstance(leg_fg, dict) else (leg_fg.loadout_hash if leg_fg else "")
-                    )
-                    leg_best = {"best": leg_fg_score, "source": "fg", "hash": leg_fg_hash}
-                else:
-                    leg_base_hash = str(
-                        leg_base.get("hash")
-                        if isinstance(leg_base, dict)
-                        else (leg_base.loadout_hash if leg_base else "")
-                    )
-                    leg_best = {"best": leg_base_score, "source": "base", "hash": leg_base_hash}
-
-            leg_score = int(leg_best["best"] or 0)
-            delta = int(cur_score) - int(leg_score)
-
-            if abs(delta) <= eps:
-                ties += 1
-                continue
-            if delta > 0:
-                improvements += 1
-                continue
-
-            regressions += 1
-            legacy_hash = str(leg_best.get("hash") or "").strip()
-            legacy_present = _hash_present(
+            cur_side = _resolve_side_snapshot(
                 cur,
                 song=song,
                 team_buff=team_buff,
-                loadout_hash=legacy_hash,
+                replay_base=replay_current_base,
+                replay_fg=replay_current_fg,
+                project_root=PROJECT_ROOT,
+                cfg_dict=cfg_dict,
+                ref_arrays=ref_arrays,
+                calc_song_cache=cur_calc_song_cache,
             )
-            bucket = f"{leg_best.get('source')}:{'present' if legacy_present else 'missing'}"
-            regression_buckets[bucket] = int(regression_buckets.get(bucket, 0)) + 1
-            if example_limit and len(regression_detail) < example_limit:
-                regression_detail.append(
+            leg_side = _resolve_side_snapshot(
+                leg,
+                song=song,
+                team_buff=team_buff,
+                replay_base=replay_legacy_base,
+                replay_fg=replay_legacy_fg,
+                project_root=PROJECT_ROOT,
+                cfg_dict=cfg_dict,
+                ref_arrays=ref_arrays,
+                calc_song_cache=leg_calc_song_cache,
+            )
+
+            cur_fg_present = int(cur_side["fg_score"] or 0) > 0
+            leg_fg_present = int(leg_side["fg_score"] or 0) > 0
+            if cur_fg_present and leg_fg_present:
+                fg_presence["both_present"] += 1
+            elif cur_fg_present:
+                fg_presence["current_only"] += 1
+            elif leg_fg_present:
+                fg_presence["legacy_only"] += 1
+            else:
+                fg_presence["both_missing"] += 1
+
+            section_scores = {
+                "overall": (int(cur_side["overall_score"]), int(leg_side["overall_score"])),
+                "base": (int(cur_side["base_score"]), int(leg_side["base_score"])),
+                "fg": (int(cur_side["fg_score"]), int(leg_side["fg_score"])),
+            }
+            outcomes: dict[str, str] = {}
+            for section, (cur_score, leg_score) in section_scores.items():
+                outcome = _compare_pair(cur_score, leg_score, eps=eps)
+                outcomes[section] = outcome
+                if outcome == "tie":
+                    counts[section]["ties"] += 1
+                elif outcome == "current_win":
+                    counts[section]["current_wins"] += 1
+                else:
+                    counts[section]["legacy_wins"] += 1
+
+            overall_delta = int(cur_side["overall_score"]) - int(leg_side["overall_score"])
+            if outcomes["overall"] == "current_win" and len(current_win_examples) < example_limit:
+                current_win_examples.append(
                     {
                         "song": song,
-                        "legacy_source": leg_best.get("source"),
-                        "legacy_best": leg_score,
-                        "current_best": cur_score,
-                        "delta": delta,
-                        "legacy_winner_present": legacy_present,
+                        "current_overall": int(cur_side["overall_score"]),
+                        "legacy_overall": int(leg_side["overall_score"]),
+                        "delta": int(overall_delta),
+                        "current_source": str(cur_side["overall_source"]),
+                        "legacy_source": str(leg_side["overall_source"]),
+                        "current_hash": str(cur_side["overall_hash"]),
+                        "legacy_hash": str(leg_side["overall_hash"]),
+                        "base_delta": int(cur_side["base_score"]) - int(leg_side["base_score"]),
+                        "fg_delta": int(cur_side["fg_score"]) - int(leg_side["fg_score"]),
+                    }
+                )
+            if outcomes["overall"] == "legacy_win" and len(legacy_win_examples) < example_limit:
+                legacy_hash = str(leg_side["overall_hash"])
+                legacy_present = _hash_present(cur, song=song, team_buff=team_buff, loadout_hash=legacy_hash)
+                legacy_win_examples.append(
+                    {
+                        "song": song,
+                        "current_overall": int(cur_side["overall_score"]),
+                        "legacy_overall": int(leg_side["overall_score"]),
+                        "delta": int(overall_delta),
+                        "current_source": str(cur_side["overall_source"]),
+                        "legacy_source": str(leg_side["overall_source"]),
+                        "current_hash": str(cur_side["overall_hash"]),
                         "legacy_hash": legacy_hash,
-                        "current_hash": str(cur_best.get("hash") or "").strip(),
+                        "legacy_winner_present_in_current_db": bool(legacy_present),
+                        "base_delta": int(cur_side["base_score"]) - int(leg_side["base_score"]),
+                        "fg_delta": int(cur_side["fg_score"]) - int(leg_side["fg_score"]),
                     }
                 )
 
@@ -685,17 +808,17 @@ def main() -> int:
             "eps": eps,
             "current_db": str(current_db),
             "legacy_db": str(legacy_db),
-            "legacy_base_rescored": rescore_legacy_base,
-            "legacy_fg_rescored": rescore_legacy_fg,
-            "legacy_fg_rescore_full": rescore_legacy_fg_full,
-            "songs_compared": len(songs),
-            "counts": {
-                "improvements": improvements,
-                "ties": ties,
-                "regressions": regressions,
+            "replay": {
+                "current_base": bool(replay_current_base),
+                "current_fg": bool(replay_current_fg),
+                "legacy_base": bool(replay_legacy_base),
+                "legacy_fg": bool(replay_legacy_fg),
             },
-            "regression_buckets": dict(sorted(regression_buckets.items())),
-            "regressions_detail": regression_detail,
+            "songs_compared": len(songs),
+            "counts": counts,
+            "fg_presence": fg_presence,
+            "current_win_examples": current_win_examples,
+            "legacy_win_examples": legacy_win_examples,
         }
 
         artifacts_dir = Path(str(args.artifacts_dir))
@@ -708,11 +831,21 @@ def main() -> int:
         print(f"overall_best (team_buff={team_buff}, eps=+/-{eps})")
         print("=" * 80)
         print(f"Songs compared: {len(songs):,}")
-        print(f"Improvements: {improvements:,}")
-        print(f"Ties: {ties:,}")
-        print(f"Regressions: {regressions:,}")
+        for section in sections:
+            section_counts = counts[section]
+            print(
+                f"{section}: current_wins={section_counts['current_wins']:,} "
+                f"ties={section_counts['ties']:,} legacy_wins={section_counts['legacy_wins']:,}"
+            )
+        print(
+            "fg_presence: "
+            f"both_present={fg_presence['both_present']:,} "
+            f"current_only={fg_presence['current_only']:,} "
+            f"legacy_only={fg_presence['legacy_only']:,} "
+            f"both_missing={fg_presence['both_missing']:,}"
+        )
         print("Wrote report:", str(out_path))
-        return 0 if regressions == 0 else 2
+        return 0 if counts["overall"]["legacy_wins"] == 0 else 2
     finally:
         try:
             cur.close()

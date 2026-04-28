@@ -15,7 +15,6 @@ from .payload import (
     ga_pack_fg_candidates_table_segmented_kernel,
     ga_pack_run_payload_kernel,
     ga_select_fg_candidates_coords_kernel,
-    ga_stage_genome_base_stats_from_fg_candidates_table_kernel,
     ga_store_runs_payload_snapshot_segmented_kernel,
     ga_update_runs_best_kernel,
 )
@@ -48,7 +47,6 @@ __all__ = [
     "ga_copy_fg_candidates_table_to_download_staging_kernel",
     "ga_select_fg_candidates_coords_kernel",
     "ga_copy_fg_selected_payload_to_download_staging_kernel",
-    "ga_stage_genome_base_stats_from_fg_candidates_table_kernel",
     "ga_find_island_elites_kernel",
     "ga_find_best_combo_warmstart_kernel",
     "ga_island_migration_kernel",

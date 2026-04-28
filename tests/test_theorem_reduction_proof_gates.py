@@ -354,6 +354,7 @@ def test_theorem_checklist_rows_all_have_closed_gates() -> None:
     allowed = {
         "`IMPLEMENTED_EXISTING`",
         "`IMPLEMENTED_NOW`",
+        "`READY`",
         "`BLOCKED_FALSE`",
         "`BLOCKED_CONDITIONAL`",
         "`DOC_ONLY`",

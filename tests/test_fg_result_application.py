@@ -75,3 +75,4 @@ def test_apply_signature_result_to_entry_updates_candidate_ref():
     assert candidate_ref["fg_score"] == 1200
     assert candidate_ref["force"]["Score"] == 1200
     assert candidate_ref["_entry_ref"] is entry
+

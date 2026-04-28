@@ -95,7 +95,11 @@ def _has_valid_fg_config(fg_container):
 
 def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=None) -> dict:
     """
-    Evaluate whether the current run beats prior base/FG records.
+    Evaluate whether the current run beats the prior overall song record.
+
+    Base and FG leaderboards remain separate persistence surfaces, but user-facing
+    NEW/win counters should only advance when the run beats the best set overall
+    for the song: max(base score, FG score).
 
     Returns a dict with:
         - record_update (bool)
@@ -141,16 +145,22 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     )
     prev_fg_score = _safe_int_force(prev_fg_score, 0)
     is_fg_better = best_fg_score_run > prev_fg_score
+    prev_overall_score = max(int(prev_score or 0), int(prev_fg_score or 0))
+    best_overall_score_run = max(int(score or 0), int(best_fg_score_run or 0))
+    is_overall_better = best_overall_score_run > prev_overall_score
 
     return {
-        "record_update": bool(is_better or is_fg_better),
+        "record_update": bool(is_overall_better),
         "is_first": bool(is_first),
         "is_better": bool(is_better),
         "is_fg_better": bool(is_fg_better),
+        "is_overall_better": bool(is_overall_better),
         "score": int(score),
         "prev_score": prev_score,
         "best_fg_score_run": int(best_fg_score_run),
         "prev_fg_score": int(prev_fg_score),
+        "best_overall_score_run": int(best_overall_score_run),
+        "prev_overall_score": int(prev_overall_score),
     }
 
 
@@ -197,10 +207,13 @@ def evaluate_progress_record_update(
             "is_first": False,
             "is_better": False,
             "is_fg_better": False,
+            "is_overall_better": False,
             "score": int(score),
             "prev_score": None,
             "best_fg_score_run": int(best_fg_score_run),
             "prev_fg_score": int(_safe_int_force(prev_fg_score, 0)),
+            "best_overall_score_run": int(max(int(score or 0), int(best_fg_score_run or 0))),
+            "prev_overall_score": int(_safe_int_force(prev_fg_score, 0)),
         }
 
     record_info = evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
@@ -208,7 +221,7 @@ def evaluate_progress_record_update(
         return None
     if fg_only:
         record_info = dict(record_info)
-        record_info["record_update"] = bool(record_info.get("is_fg_better"))
+        record_info["record_update"] = bool(record_info.get("is_overall_better"))
     return record_info
 
 
@@ -366,21 +379,27 @@ def build_db_payload(
     is_fg_better = bool(record_info.get("is_fg_better"))
     best_fg_score_run = _safe_int_force(record_info.get("best_fg_score_run", 0), 0)
     prev_fg_score = _safe_int_force(record_info.get("prev_fg_score", 0), 0)
+    is_overall_better = bool(record_info.get("is_overall_better"))
+    best_overall_score_run = _safe_int_force(record_info.get("best_overall_score_run", 0), 0)
+    prev_overall_score = _safe_int_force(record_info.get("prev_overall_score", 0), 0)
 
-    if is_first:
+    if is_first and is_overall_better:
         print(" >> NEW RECORD! (First entry for this song/context). Saving to Evolution Database...")
-    elif is_better:
+    elif is_overall_better and is_better:
         msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score}"
         if is_fg_better and best_fg_score_run > 0:
             msg += f" (FG: {prev_fg_score} -> {best_fg_score_run})"
         msg += " - Updating Evolution Database..."
         print(msg)
-    elif is_fg_better and best_fg_score_run > 0:
-        # FG-only improvement
-        msg = f" >> NEW RECORD (ForceGreats)! Previous FG: {prev_fg_score} | New FG: {best_fg_score_run} - Updating Evolution Database..."
+    elif is_overall_better and is_fg_better and best_fg_score_run > 0:
+        msg = (
+            " >> NEW RECORD (ForceGreats)! "
+            f"Previous Overall: {prev_overall_score} | New Overall: {best_overall_score_run} "
+            f"(FG: {prev_fg_score} -> {best_fg_score_run}) - Updating Evolution Database..."
+        )
         print(msg)
     else:
-        msg = f" >> No improvement over DB Record (Base: {prev_score}, FG: {prev_fg_score})"
+        msg = f" >> No overall improvement over DB Record (Overall: {prev_overall_score}, Base: {prev_score}, FG: {prev_fg_score})"
         if is_first:  # Edge case coverage
             msg = " >> Record exists but no improvement found."
         print(msg)
