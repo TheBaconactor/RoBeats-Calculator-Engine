@@ -108,13 +108,19 @@ CREATE TABLE team_buff_fg_loadouts (
     fg_score INTEGER,              -- Force Greats score under this tier (PRIMARY RANKING METRIC)
     gear_ids_blob BLOB,            -- Compact gear IDs (varint list) into `gear_name_encoding`
     minis_ids_blob BLOB,           -- Compact mini variant-group IDs into `mini_name_encoding`
-    details_json TEXT,
-    force_details_json TEXT,
+    details_json TEXT,             -- Base details/stats that explain and replay `score`
+    force_details_json TEXT,       -- FG details/stats that explain and replay `fg_score`
     timestamp REAL,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
 );
 ```
+
+Contract:
+- `details_json` explains and replays `score`.
+- `force_details_json` explains and replays `fg_score`.
+- Do not write ForceGreats gem reallocations into `details_json`; that creates a mixed-context row where `score`
+  belongs to one stat surface and displayed stats belong to another.
 
 ---
 

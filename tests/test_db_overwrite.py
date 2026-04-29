@@ -21,6 +21,30 @@ def db_connection(tmp_path, monkeypatch):
         conn.close()
 
 
+def _force_payload(fg_score: int, *, base_score: int) -> dict:
+    return {
+        "Score": int(fg_score),
+        "BaseScore": int(base_score),
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+        "BaseStats": {
+            "Perfect Points": 25,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 100,
+            "Beat": 0,
+            "Vibe": 0,
+        },
+        "Selected Element": "Rush",
+        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": int(fg_score)},
+    }
+
+
 def test_save_loadouts_batch_overwrite(db_connection):
     """Test that batch save_loadouts_batch protects high scores."""
     song = "Test Song Batch"
@@ -101,7 +125,7 @@ def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connec
         "gear": gear,
         "minis": minis,
         "details": {"test": "fg_variant"},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 1500}},
+        "force": _force_payload(1500, base_score=1000),
         "_deferred_fg_update": True,
     }
     save_loadouts_batch(song, [entry_deferred_fg])
@@ -148,7 +172,7 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
         "gear": gear,
         "minis": minis,
         "details": {"test": "low_base"},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000}},
+        "force": _force_payload(2000, base_score=900),
     }
     save_loadouts_batch(song, [entry_low_base])
 
@@ -162,7 +186,7 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
     ).fetchone()
     assert row["score"] == 900
     assert row["fg_score"] == 2000
-    assert json.loads(row["details_json"])["test"] == "low_base"
+    assert json.loads(row["details_json"])["BaseScore"] == 900
 
     entry_higher_base = {
         "score": 1000,
@@ -170,7 +194,7 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
         "gear": gear,
         "minis": minis,
         "details": {"test": "higher_base"},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000}},
+        "force": _force_payload(2000, base_score=1000),
     }
     save_loadouts_batch(song, [entry_higher_base])
 
@@ -184,7 +208,7 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
     ).fetchone()
     assert row["score"] == 1000
     assert row["fg_score"] == 2000
-    assert json.loads(row["details_json"])["test"] == "higher_base"
+    assert json.loads(row["details_json"])["BaseScore"] == 1000
 
 
 def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_connection, monkeypatch):
@@ -211,7 +235,7 @@ def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_conn
         "gear": gear,
         "minis": minis,
         "details": {"test": "best_fg"},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000}},
+        "force": _force_payload(2000, base_score=900),
     }
     save_loadouts_batch(song, [entry_best_fg_lower_base])
 
@@ -221,7 +245,7 @@ def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_conn
         "gear": gear,
         "minis": minis,
         "details": {"test": "worse_fg_higher_base"},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 1500}},
+        "force": _force_payload(1500, base_score=1000),
     }
     save_loadouts_batch(song, [entry_worse_fg_higher_base])
 
@@ -235,4 +259,4 @@ def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_conn
     ).fetchone()
     assert row["fg_score"] == 2000
     assert row["score"] == 900
-    assert json.loads(row["details_json"])["test"] == "best_fg"
+    assert json.loads(row["details_json"])["BaseScore"] == 900

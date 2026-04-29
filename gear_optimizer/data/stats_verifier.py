@@ -10,6 +10,7 @@ import sqlite3
 from typing import Dict, Tuple, Iterable
 
 from gear_optimizer.data.database import (
+    _base_details_from_force_payload,
     _ensure_stats_in_details,
     _load_piece_name_encoding_maps,
     _pack_stats_for_storage,
@@ -292,8 +293,9 @@ def _verify_fg_table(
     """
     Verify and repair team_buff_fg_loadouts.
 
-    For FG tables, we can get Stats from BaseStats in force_details_json.
-    If not available, we recompute from gear/minis/gems.
+    FG table `details_json` must explain/replay the paired base `score`.
+    `force_details_json` explains/replays `fg_score`; when the force payload has
+    BaseStats+gems, repair derives the base details from that same allocation.
 
     Returns: (total, empty, repaired)
     """
@@ -310,6 +312,7 @@ def _verify_fg_table(
         "rowid",
         "song_name",
         "team_buff",
+        "loadout_hash",
         "gear_ids_blob",
         "minis_ids_blob",
         "details_json",
@@ -383,16 +386,35 @@ def _verify_fg_table(
             empty_count += 1
 
             if not dry_run:
-                # Try to get Stats from force_details_json BaseStats
-                force_details = json.loads(row["force_details_json"]) if row["force_details_json"] else {}
-                base_stats_from_force = force_details.get("BaseStats")
+                base_row = conn.execute(
+                    """
+                    SELECT details_json
+                    FROM team_buff_loadouts
+                    WHERE song_name = ? AND team_buff = ? AND loadout_hash = ?
+                    LIMIT 1
+                    """,
+                    (row["song_name"], row["team_buff"], row["loadout_hash"]),
+                ).fetchone()
+                base_details = None
+                if base_row is not None and base_row["details_json"]:
+                    try:
+                        base_details = _unpack_stats_after_load(json.loads(base_row["details_json"])) or {}
+                    except Exception:
+                        base_details = None
 
-                if base_stats_from_force and isinstance(base_stats_from_force, dict) and base_stats_from_force:
-                    # Use BaseStats from force_details_json
-                    if isinstance(details, dict):
-                        details = dict(details)
-                        details["Stats"] = base_stats_from_force
-                else:
+                force_payload = {}
+                if row["force_details_json"]:
+                    try:
+                        force_payload = json.loads(row["force_details_json"]) or {}
+                    except Exception:
+                        force_payload = {}
+
+                fg_base_details = _base_details_from_force_payload(base_details or details, force_payload)
+                if isinstance(fg_base_details, dict) and not _is_stats_empty(fg_base_details.get("Stats")):
+                    details = fg_base_details
+                elif isinstance(base_details, dict) and not _is_stats_empty(base_details.get("Stats")):
+                    details = dict(base_details)
+                elif isinstance(details, dict):
                     # Recompute from gear/minis/gems
                     maps = _load_piece_name_encoding_maps(conn, db_path=str(get_evolution_db_path()))
                     gear_names, mini_names = _decode_names_from_row(row, maps)
@@ -405,6 +427,8 @@ def _verify_fg_table(
                         team_buff=row["team_buff"] if isinstance(row, sqlite3.Row) else None,
                         team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
                     )
+                else:
+                    continue
 
                 details = _pack_stats_for_storage(_strip_computed_details_fields(details)) if details else details
 
