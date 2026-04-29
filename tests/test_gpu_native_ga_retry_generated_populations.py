@@ -159,6 +159,9 @@ class _FakeGpuApi:
     def ga_download_population_indices(self, *, n_genomes, n_slots=9):
         return self._current_population[: int(n_genomes), : int(n_slots)].copy()
 
+    def ga_download_scores(self, n_genomes):
+        return np.arange(int(n_genomes), 0, -1, dtype=np.int32) * 100
+
     def ga_pack_fg_candidates_table_segmented(self, *_args, **_kwargs):
         return None
 
@@ -239,6 +242,56 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
     assert fake_gpu.population_upload_calls == 0
+
+
+def test_run_gpu_native_ga_cem_hybrid_patches_tail_population(monkeypatch):
+    from gear_optimizer.solver import genetic
+
+    fake_gpu = _FakeGpuApi(fail_once=False)
+    _install_fake_taichi_modules(monkeypatch)
+
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
+    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
+
+    slot_start = np.asarray([1, 5, 9, 13, 17, 21, 25, 25, 25], dtype=np.int32)
+    slot_count = np.asarray([4, 4, 4, 4, 4, 4, 6, 6, 6], dtype=np.int32)
+    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
+        calc_song={
+            "metadata": {"Song Name": "cem"},
+            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
+        },
+        ref_arrays={},
+        song_slot=0,
+        item_stats=np.zeros((31, 10), dtype=np.int32),
+        slot_start=slot_start,
+        slot_count=slot_count,
+        base_fixed_stats_arr=np.zeros((10,), dtype=np.int32),
+        n_generations=2,
+        initial_populations=None,
+        num_runs=1,
+        n_genomes=8,
+        color_flags={},
+        cfg_data={
+            "TotalBudget": 90,
+            "GemScaleFever": 3,
+            "fg_candidate_limit": 51,
+            "gpu_ga_search_mode": "cem_hybrid",
+            "gpu_ga_cem_refresh_every": 1,
+            "gpu_ga_cem_tail_replace_frac": 0.5,
+            "primary_color": "Rush",
+            "secondary_color": "",
+        },
+        ga_seed=123,
+    )
+
+    assert isinstance(out, np.ndarray)
+    assert fake_gpu.population_upload_calls == 1
+    patched = fake_gpu.population_upload_history[-1]
+    assert patched.shape == (8, 9)
+    assert np.all(patched[-1, :6] >= slot_start[:6])
+    assert len(set(int(x) for x in patched[-1, 6:9])) == 3
 
 
 def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):

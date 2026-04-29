@@ -3,8 +3,11 @@ from __future__ import annotations
 import heapq
 import os
 from dataclasses import dataclass
+from typing import Any
 
-from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+import numpy as np
+
+from ...core.constants import GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
 from .ga_entry_utils import candidate_loadout_hash
 from .item_utils import _item_name
 
@@ -157,6 +160,7 @@ class _CandMeta:
     mini_key: tuple[str, ...]
     center: tuple[int, int]
     fg_priority: int
+    breakpoint_proxy: int = 0
 
 
 def _meta_base_key(meta: _CandMeta) -> tuple[int, int, tuple[str, ...]]:
@@ -165,6 +169,107 @@ def _meta_base_key(meta: _CandMeta) -> tuple[int, int, tuple[str, ...]]:
 
 def _meta_fg_key(meta: _CandMeta) -> tuple[int, int, tuple[str, ...]]:
     return meta.fg_proxy, meta.base, meta.key
+
+
+def _meta_breakpoint_key(meta: _CandMeta) -> tuple[int, int, int, tuple[str, ...]]:
+    return meta.breakpoint_proxy, meta.fg_proxy, meta.base, meta.key
+
+
+def _data_obj(candidate: dict) -> dict[str, Any]:
+    data = candidate.get("Data")
+    if not isinstance(data, dict):
+        data = candidate.get("data")
+        if not isinstance(data, dict):
+            data = {}
+    return data
+
+
+def _candidate_stat(candidate: dict, stat_name: str, *, gem_key: str = "") -> int:
+    data = _data_obj(candidate)
+    stats = data.get("Stats")
+    if isinstance(stats, dict) and stat_name in stats:
+        try:
+            return int(stats.get(stat_name, 0) or 0)
+        except Exception:
+            return 0
+
+    base_stats = data.get("BaseStats")
+    if isinstance(base_stats, dict):
+        try:
+            base = int(base_stats.get(stat_name, 0) or 0)
+        except Exception:
+            base = 0
+        gems = data.get("GemCounts")
+        if isinstance(gems, dict):
+            try:
+                return base + (int(gems.get(stat_name, 0) or 0) * int(GEM_SCALE_FEVER))
+            except Exception:
+                return base
+
+    if gem_key:
+        try:
+            return int(data.get(gem_key, candidate.get(gem_key, 0) or 0) or 0)
+        except Exception:
+            return 0
+    return 0
+
+
+def _timeline_value(summary: tuple) -> tuple[int, int]:
+    try:
+        head_mask = summary[0]
+        head_fever = int(np.asarray(head_mask, dtype=np.bool_).sum())
+        body_fever = int(summary[1])
+        return head_fever, body_fever
+    except Exception:
+        return 0, 0
+
+
+def _breakpoint_marginal_proxy(
+    meta: _CandMeta,
+    *,
+    calc_song: dict | None,
+    ref_arrays: dict | None,
+    max_delta: int,
+) -> int:
+    explicit = meta.cand.get("_breakpoint_marginal")
+    if explicit is None:
+        explicit = meta.cand.get("_breakpoint_proxy")
+    if explicit is not None:
+        try:
+            return max(0, int(explicit or 0))
+        except Exception:
+            return 0
+
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        raise ValueError("breakpoint_hybrid requires calc_song/ref_arrays or explicit _breakpoint_marginal")
+
+    ft_stat = _candidate_stat(meta.cand, "Fever Time", gem_key="FT")
+    ff_stat = _candidate_stat(meta.cand, "Fever Fill Rate", gem_key="FF")
+    ft_stat = max(0, min(TOTAL_ROWS, int(ft_stat)))
+    ff_stat = max(0, min(TOTAL_ROWS, int(ff_stat)))
+    try:
+        delta_limit = max(1, min(30, int(max_delta)))
+    except Exception:
+        delta_limit = 8
+
+    try:
+        from ...solver.fever_timeline import get_song_timeline_grid
+
+        grid = get_song_timeline_grid(calc_song, ref_arrays)
+        base_head, base_body = _timeline_value(grid.get_timeline(ft_stat, ff_stat))
+        best = 0
+        premium = max(1, int(meta.fg_proxy))
+        for delta in range(1, delta_limit + 1):
+            ft_next = min(TOTAL_ROWS, ft_stat + delta)
+            ff_next = min(TOTAL_ROWS, ff_stat + delta)
+            ft_head, ft_body = _timeline_value(grid.get_timeline(ft_next, ff_stat))
+            ff_head, ff_body = _timeline_value(grid.get_timeline(ft_stat, ff_next))
+            ft_gain = max(0, ((ft_head - base_head) * 2) + (ft_body - base_body))
+            ff_gain = max(0, ((ff_head - base_head) * 2) + (ff_body - base_body))
+            best = max(best, int((max(ft_gain, ff_gain) * premium) // delta))
+        return int(best)
+    except Exception as exc:
+        raise RuntimeError(f"breakpoint_hybrid failed to compute timeline breakpoint proxy: {exc}") from exc
 
 
 def select_fg_candidates(
@@ -179,6 +284,9 @@ def select_fg_candidates(
     promising_per_mini: int = 6,
     promising_per_center: int = 6,
     promising_center_bin: int = 2,
+    calc_song: dict | None = None,
+    ref_arrays: dict | None = None,
+    breakpoint_max_delta: int = 8,
 ) -> list[dict]:
     """
     Pick a bounded candidate funnel for ForceGreatsFinder.
@@ -190,6 +298,8 @@ def select_fg_candidates(
     Environment overrides:
       - FG_CANDIDATE_SELECTOR_MODE: "default" (mixed budgets), "promising_archive", "slot_diverse_archive"
       - FG_PROMISING_* and FG_SLOT_DIVERSE_*: tune budgets for those modes
+      - "breakpoint_hybrid": preserve top base rows, then fill the exploration lane by
+        timeline-breakpoint magnitude when song context is available.
     """
     if not candidates:
         return []
@@ -244,6 +354,13 @@ def select_fg_candidates(
     if env_center_bin is not None and str(env_center_bin).strip():
         try:
             promising_center_bin = int(env_center_bin)
+        except Exception:
+            pass
+
+    env_bp_delta = os.environ.get("FG_BREAKPOINT_HYBRID_MAX_DELTA")
+    if env_bp_delta is not None and str(env_bp_delta).strip():
+        try:
+            breakpoint_max_delta = int(env_bp_delta)
         except Exception:
             pass
 
@@ -528,6 +645,71 @@ def select_fg_candidates(
 
         return selected[:limit]
 
+    def _select_breakpoint_hybrid(metas: list[_CandMeta]) -> list[dict]:
+        metas_by_base = heapq.nlargest(min(len(metas), max(limit, 20000)), metas, key=_meta_base_key)
+        metas_by_breakpoint = heapq.nlargest(min(len(metas), max(limit, 20000)), metas, key=_meta_breakpoint_key)
+        metas_by_fg = heapq.nlargest(min(len(metas), max(limit, 20000)), metas, key=_meta_fg_key)
+
+        selected: list[dict] = []
+        seen_keys: set[tuple[str, ...]] = set()
+        seen_centers: set[tuple[int, int]] = set()
+        seen_minis: set[tuple[str, ...]] = set()
+
+        def _add(meta: _CandMeta) -> bool:
+            if meta.key in seen_keys:
+                return False
+            seen_keys.add(meta.key)
+            selected.append(meta.cand)
+            seen_centers.add(meta.center)
+            seen_minis.add(meta.mini_key)
+            return True
+
+        # Protected exploitation slice: never sacrifice the score-ranked winners.
+        top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
+        for meta in metas_by_base:
+            if len(selected) >= top_base_keep:
+                break
+            _add(meta)
+
+        priority_budget = max(0, min(limit - len(selected), max(5, limit // 10)))
+        if priority_budget:
+            for meta in metas_by_breakpoint:
+                if len(selected) >= (top_base_keep + priority_budget):
+                    break
+                if meta.fg_priority:
+                    _add(meta)
+
+        # Breakpoint lane: prefer distinct FT/FF centers first, then magnitude.
+        breakpoint_budget_end = min(limit, max(len(selected), top_base_keep + int((limit - top_base_keep) * 0.85)))
+        for meta in metas_by_breakpoint:
+            if len(selected) >= breakpoint_budget_end:
+                break
+            if meta.center in seen_centers:
+                continue
+            _add(meta)
+        for meta in metas_by_breakpoint:
+            if len(selected) >= breakpoint_budget_end:
+                break
+            _add(meta)
+
+        # Mini diversity and base-score final fill keep the lane from collapsing.
+        for meta in metas_by_base:
+            if len(selected) >= limit:
+                break
+            if meta.mini_key in seen_minis:
+                continue
+            _add(meta)
+        for meta in metas_by_fg:
+            if len(selected) >= limit:
+                break
+            _add(meta)
+        for meta in metas_by_base:
+            if len(selected) >= limit:
+                break
+            _add(meta)
+
+        return selected[:limit]
+
     # 1) Deduplicate by (gear slots, mini set) key; keep the best base-score copy.
     best_by_key: dict[tuple[str, ...], dict] = {}
     best_score_by_key: dict[tuple[str, ...], int] = {}
@@ -572,6 +754,27 @@ def select_fg_candidates(
             fg_priority=fg_priority,
         )
         metas.append(meta)
+
+    if mode in {"breakpoint_hybrid", "breakpoint-hybrid", "protected_breakpoint", "protected-breakpoint"}:
+        metas = [
+            _CandMeta(
+                cand=m.cand,
+                key=m.key,
+                base=m.base,
+                fg_proxy=m.fg_proxy,
+                mini_key=m.mini_key,
+                center=m.center,
+                fg_priority=m.fg_priority,
+                breakpoint_proxy=_breakpoint_marginal_proxy(
+                    m,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    max_delta=breakpoint_max_delta,
+                ),
+            )
+            for m in metas
+        ]
+        return _select_breakpoint_hybrid(metas)
 
     if mode in {"promising_archive", "promising-archive", "promising"}:
         return _select_promising_archive(metas)

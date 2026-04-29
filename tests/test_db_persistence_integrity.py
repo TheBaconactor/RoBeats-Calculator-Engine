@@ -9,6 +9,7 @@ from gear_optimizer.data.database import (
     init_db,
     save_loadouts_batch,
     update_song_counters,
+    _unpack_stats_after_load,
 )
 
 
@@ -18,6 +19,49 @@ def db_path(tmp_path, monkeypatch):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(path))
     init_db()
     return str(path)
+
+
+def _force_payload(
+    fg_score: int,
+    *,
+    base_score: int,
+    tag: str | None = None,
+    config: dict | None = None,
+    ft: int = 0,
+    ff: int = 0,
+    gem_counts: dict | None = None,
+    base_stats: dict | None = None,
+    selected: str = "Rush",
+) -> dict:
+    payload = {
+        "Score": int(fg_score),
+        "BaseScore": int(base_score),
+        "FT": int(ft),
+        "FF": int(ff),
+        "GemCounts": dict(
+            gem_counts or {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0}
+        ),
+        "BaseStats": dict(
+            base_stats
+            or {
+                "Perfect Points": 25,
+                "Combo Multiplier": 0,
+                "Fever Multiplier": 0,
+                "Fever Fill Rate": 0,
+                "Fever Time": 0,
+                "Chill": 0,
+                "Flow": 0,
+                "Rush": 100,
+                "Beat": 0,
+                "Vibe": 0,
+            }
+        ),
+        "Selected Element": selected,
+        "ForceGreats": {"config": dict(config or {"NonFever1": 1}), "final_score": int(fg_score)},
+    }
+    if tag is not None:
+        payload["tag"] = tag
+    return payload
 
 
 def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatch):
@@ -166,7 +210,7 @@ def test_songs_best_scores_and_fg_scores_update(db_path):
                 "gear": ["G2"],
                 "minis": ["M1"],
                 "details": {"tag": "fg"},
-                "force": {"score": 5000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+                "force": _force_payload(5000, base_score=900),
             },
         ],
     )
@@ -181,7 +225,7 @@ def test_songs_best_scores_and_fg_scores_update(db_path):
                 "gear": ["G3"],
                 "minis": ["M1"],
                 "details": {"tag": "base2"},
-                "force": {"score": 4500, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+                "force": _force_payload(4500, base_score=1100),
             }
         ],
     )
@@ -312,7 +356,7 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
                 "gear": ["G1"],
                 "minis": ["M1"],
                 "details": {"tag": "fg_worse_than_base"},
-                "force": {"score": 900, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+                "force": _force_payload(900, base_score=1000),
             }
         ],
     )
@@ -355,7 +399,7 @@ def test_team_buff_fg_loadouts_does_not_update_song_best_fg_score_for_non_t5_tie
                 "gear": ["G1"],
                 "minis": ["M1"],
                 "details": {"tag": "tier_fg"},
-                "force": {"score": 5000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+                "force": _force_payload(5000, base_score=1000),
             }
         ],
         db_path=db_path,
@@ -399,7 +443,7 @@ def test_get_best_loadouts_preserves_fg_base_score_pairing(db_path):
         "gear": gear,
         "minis": minis,
         "details": {"tag": "fg"},
-        "force": {"score": 5000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+        "force": _force_payload(5000, base_score=1000),
     }
     save_team_buff_loadouts_batch(song, "T5", [fg_entry], db_path=db_path)
 
@@ -435,11 +479,8 @@ def test_fg_score_recovers_from_force_details_when_wrapper_missing(db_path):
                 "gear": ["G1"],
                 "minis": ["M1"],
                 "details": {"tag": "fg_missing_wrapper"},
-                "force": {
-                    # both of these are observed shapes across pipeline variants
-                    "score": 5000,
-                    "details": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 5000}},
-                },
+                # both score locations are observed across pipeline variants
+                "force": {**_force_payload(5000, base_score=900), "score": 5000},
             }
         ],
     )
@@ -457,7 +498,7 @@ def test_fg_score_recovers_from_force_details_when_wrapper_missing(db_path):
         ).fetchone()
         assert row["score"] == 900
         assert row["fg_score"] == 5000
-        assert json.loads(row["force_details_json"])["score"] == 5000
+        assert json.loads(row["force_details_json"])["Score"] == 5000
     finally:
         conn.close()
 
@@ -474,7 +515,7 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
                 "gear": ["G1"],
                 "minis": ["M1"],
                 "details": {"tag": "best"},
-                "force": {"score": 1000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+                "force": _force_payload(1000, base_score=100),
             },
             {
                 "score": 200,
@@ -482,7 +523,7 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
                 "gear": ["G1"],
                 "minis": ["M1"],
                 "details": {"tag": "worse"},
-                "force": {"score": 900, "details": {"ForceGreats": {"config": {"NonFever1": 2}}}},
+                "force": _force_payload(900, base_score=200, config={"NonFever1": 2}),
             },
         ],
     )
@@ -495,8 +536,87 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
         ).fetchone()
         assert row["score"] == 100
         assert row["fg_score"] == 1000
-        assert json.loads(row["details_json"])["tag"] == "best"
-        assert json.loads(row["force_details_json"])["score"] == 1000
+        details = _unpack_stats_after_load(json.loads(row["details_json"]))
+        assert details["BaseScore"] == 100
+        assert details["Stats"]["Rush"] == 100
+        assert json.loads(row["force_details_json"])["Score"] == 1000
+    finally:
+        conn.close()
+
+
+def test_fg_loadouts_details_match_paired_base_score_not_fg_reallocation(db_path):
+    song = "FG Details Stay Base Song"
+    base_stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 10,
+        "Fever Multiplier": 75,
+        "Fever Fill Rate": 40,
+        "Fever Time": 45,
+        "Chill": 0,
+        "Flow": 0,
+        "Rush": 100,
+        "Beat": 20,
+        "Vibe": 0,
+    }
+    fg_base_stats = dict(base_stats)
+    fg_base_stats["Fever Multiplier"] = 21
+    fg_base_stats["Rush"] = 70
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 1000,
+                "fg_score": 2000,
+                "fg_base_score": 1000,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {
+                    "FT": 0,
+                    "FF": 0,
+                    "GemCounts": {"Fever Multiplier": 21, "Element": 60},
+                    "Stats": base_stats,
+                    "PrimaryColor": "Rush",
+                    "SecondaryColor": "Beat",
+                    "SelectedElement": "Rush",
+                },
+                "force": {
+                    "BaseScore": 1000,
+                    "Score": 2000,
+                    "FT": 16,
+                    "FF": 0,
+                    "GemCounts": {"Fever Multiplier": 3, "Element": 71},
+                    "BaseStats": fg_base_stats,
+                    "Selected Element": "Rush",
+                    "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000},
+                },
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT score, fg_score, details_json, force_details_json
+            FROM team_buff_fg_loadouts
+            WHERE song_name=? AND team_buff='T5'
+            """,
+            (song,),
+        ).fetchone()
+        assert row["score"] == 1000
+        assert row["fg_score"] == 2000
+
+        details = _unpack_stats_after_load(json.loads(row["details_json"]))
+        assert details["FT"] == 16
+        assert details["GemCounts"]["Element"] == 71
+        assert details["Stats"]["Fever Time"] == 93
+        assert details["Stats"]["Beat"] == 68
+
+        force = json.loads(row["force_details_json"])
+        assert force["FT"] == 16
+        assert force["BaseStats"]["Fever Time"] == 45
+        assert force["ForceGreats"]["final_score"] == 2000
     finally:
         conn.close()
 
@@ -515,7 +635,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_is_better(db_
                 "gear": gear,
                 "minis": minis,
                 "details": {"tag": "first"},
-                "force": {"score": 200, "tag": "first_force", "ForceGreats": {"config": {"NonFever1": 1}}},
+                "force": _force_payload(200, base_score=100, tag="first_force"),
             }
         ],
     )
@@ -541,11 +661,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_is_better(db_
                 "gear": gear,
                 "minis": minis,
                 "details": {"tag": "second"},
-                "force": {
-                    "score": 200,
-                    "tag": "second_force",
-                    "ForceGreats": {"config": {"NonFever1": 1}},
-                },
+                "force": _force_payload(200, base_score=100, tag="second_force"),
             }
         ],
     )
@@ -570,9 +686,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_is_better(db_
         conn.close()
 
 
-def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, monkeypatch):
+def test_team_buff_fg_loadouts_force_gems_stay_in_force_payload(db_path, monkeypatch):
     monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: {})
-    from gear_optimizer.data.database import _unpack_stats_after_load
 
     song = "FG Gem Sync Song"
 
@@ -633,17 +748,13 @@ def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, 
         assert "score" not in stored_force
         assert stored_force["Score"] == 200
 
-        # The FG leaderboard row should show the FG gem allocation (not the base one).
+        # The FG leaderboard row's details explain the paired base score for the
+        # same FG allocation. The FG score/config replay lives in force_details_json.
         assert stored_details["FT"] == 1
         assert stored_details["FF"] == 17
         assert stored_details["GemCounts"]["Element"] == 62
-        assert stored_details["ForceGreats"]["final_score"] == 200
-
-        stats = stored_details["Stats"]
-        assert stats["Fever Time"] == 23  # 20 + 1*3
-        assert stats["Fever Fill Rate"] == 61  # 10 + 17*3
-        assert stats["Beat"] == 8  # 5 + 1*3
-        assert stats["Vibe"] == 430  # 7 + 17*3 + 62*6
+        assert stored_details["Stats"]["Fever Time"] == 23
+        assert "tag" not in stored_details
     finally:
         conn.close()
 
@@ -671,7 +782,7 @@ def test_base_row_conflict_updates_use_base_score_not_fg_score(db_path, monkeypa
                 "gear": ["G_low"],
                 "minis": ["M_low"],
                 "details": {"tag": "low_base_high_fg"},
-                "force": {"score": 300, "ForceGreats": {"config": {"NonFever1": 1}}},
+                "force": _force_payload(300, base_score=100),
             },
         ],
     )
@@ -704,7 +815,7 @@ def test_base_row_conflict_updates_use_base_score_not_fg_score(db_path, monkeypa
         assert fg_row is not None
         assert int(fg_row["score"]) == 100
         assert int(fg_row["fg_score"]) == 300
-        assert json.loads(fg_row["force_details_json"]).get("score") == 300
+        assert json.loads(fg_row["force_details_json"]).get("Score") == 300
     finally:
         conn.close()
 
@@ -723,7 +834,7 @@ def test_fg_table_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatc
                 "gear": ["G_low_base_best_fg"],
                 "minis": ["M1"],
                 "details": {"tag": "base_low"},
-                "force": {"score": 300, "ForceGreats": {"config": {"NonFever1": 1}}},
+                "force": _force_payload(300, base_score=100),
             },
             {
                 "score": 200,
@@ -731,7 +842,7 @@ def test_fg_table_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatc
                 "gear": ["G_high_base_worse_fg"],
                 "minis": ["M2"],
                 "details": {"tag": "base_high"},
-                "force": {"score": 250, "ForceGreats": {"config": {"NonFever1": 2}}},
+                "force": _force_payload(250, base_score=200, config={"NonFever1": 2}),
             },
         ],
     )
@@ -757,7 +868,7 @@ def test_fg_table_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatc
         assert int(fg_row["score"]) == 100
         assert int(fg_row["fg_score"]) == 300
         force = json.loads(fg_row["force_details_json"])
-        assert int(force.get("score", 0)) == 300
+        assert int(force.get("Score", 0)) == 300
         assert (force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
     finally:
         conn.close()
@@ -808,8 +919,7 @@ def test_fg_table_invariant_cleanup_removes_equal_rows(db_path):
     conn = get_db_connection(db_path)
     try:
         invalid = conn.execute(
-            "SELECT COUNT(*) FROM team_buff_fg_loadouts "
-            "WHERE song_name=? AND team_buff='T5' AND fg_score <= score",
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5' AND fg_score <= score",
             (song,),
         ).fetchone()[0]
         assert invalid == 0

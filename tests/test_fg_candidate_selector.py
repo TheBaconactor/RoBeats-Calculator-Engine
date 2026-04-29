@@ -139,3 +139,42 @@ def test_select_fg_candidates_keeps_low_base_high_fever_candidate():
 
     selected = select_fg_candidates(base_only + [fg_focused], limit=100)
     assert _key(fg_focused) in {_key(c) for c in selected}
+
+
+def test_breakpoint_hybrid_preserves_base_slice_and_adds_breakpoint_lane():
+    base_only = [
+        _candidate(idx=i, base_score=100_000 - i, minis=(f"M{i}-1", f"M{i}-2", f"M{i}-3"), ft=0, ff=0)
+        for i in range(90)
+    ]
+    for cand in base_only:
+        cand["_breakpoint_marginal"] = 0
+    breakpoint_candidate = _candidate(
+        idx=999,
+        base_score=1,
+        minis=("M0-1", "M0-2", "M0-3"),
+        fever_mult=0,
+        fever_time=0,
+        fever_fill=0,
+        combo_mult=0,
+        perfect_points=0,
+        ft=1,
+        ff=1,
+    )
+    breakpoint_candidate["_breakpoint_marginal"] = 10_000_000
+
+    hybrid_selected = select_fg_candidates(
+        base_only + [breakpoint_candidate],
+        limit=LOADOUTS_PER_SONG_LIMIT + 4,
+        mode="breakpoint_hybrid",
+    )
+
+    top_base_keys = {
+        _key(c)
+        for c in sorted(base_only + [breakpoint_candidate], key=lambda c: c.get("BaseScore", 0), reverse=True)[
+            :LOADOUTS_PER_SONG_LIMIT
+        ]
+    }
+    hybrid_keys = {_key(c) for c in hybrid_selected}
+
+    assert top_base_keys.issubset(hybrid_keys)
+    assert _key(breakpoint_candidate) in hybrid_keys

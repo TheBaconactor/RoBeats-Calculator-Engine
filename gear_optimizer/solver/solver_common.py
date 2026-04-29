@@ -11,6 +11,7 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
+from gear_optimizer.helpers.ga_helpers.cem_hybrid import apply_cem_config_to_cfg_data
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
@@ -57,7 +58,7 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         except Exception:
             return int(fallback)
 
-    return {
+    out = {
         "selected_color": str(selected_color or ""),
         "primary_color": str(p_color or ""),
         "secondary_color": str(s_color or ""),
@@ -71,6 +72,8 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         "user_fm": _cfg_get("UserInputStatsGems", "fever_multiplier", 0),
         "static_elem_input": _cfg_get("ElementalGems", selected_color, 0),
     }
+    apply_cem_config_to_cfg_data(out, cfg)
+    return out
 
 
 def build_solver_override_cfg(cfg_data: dict[str, Any], *, p_color: str, selected_color: str) -> dict[str, Any]:

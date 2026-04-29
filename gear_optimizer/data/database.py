@@ -1205,106 +1205,71 @@ def _safe_int_for_db(value: Any, default: int = 0) -> int:
             return int(default)
 
 
-def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: int) -> Optional[dict]:
-    """
-    Build the *FG-accurate* details payload for persistence in `team_buff_fg_loadouts`.
-
-    Why: some pipelines persist base `details` (Stats/GemCounts/FT/FF) alongside a richer
-    `force` payload that may include gem re-allocation (FT/FF/Element) used to produce
-    the improved `fg_score`. Frontend consumers expect the FG leaderboard row's details
-    to reflect the FG configuration, not the base configuration.
-    """
-    if not isinstance(details, dict):
-        return None
-    if not isinstance(force_data, dict) or not force_data:
-        return None
-
-    # Prefer a flat force payload (ForceGreats Finder shape). If the nested `details` dict
-    # carries the gem/materialization fields, use it instead.
-    payload = force_data
+def _force_payload_base_score(force_data: Any) -> int:
+    if not isinstance(force_data, dict):
+        return 0
+    for key in ("BaseScore", "base_score"):
+        score = _safe_int_for_db(force_data.get(key), 0)
+        if score > 0:
+            return score
     nested = force_data.get("details")
-    if isinstance(nested, dict) and any(
-        k in nested for k in ("BaseStats", "Stats", "GemCounts", "FT", "FF", "SelectedElement", "Selected Element")
-    ):
-        payload = nested
+    if isinstance(nested, dict):
+        for key in ("BaseScore", "base_score"):
+            score = _safe_int_for_db(nested.get(key), 0)
+            if score > 0:
+                return score
+    return 0
 
-    has_gem_materialization = any(k in payload for k in ("BaseStats", "Stats", "GemCounts", "FT", "FF"))
-    if not has_gem_materialization:
-        return None
 
-    out = dict(details)
+def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict:
+    """
+    Build the FG table details payload that explains the FG row's paired `score`.
 
-    # Selected element
-    selected_element = (
+    `force_details_json` owns the FG replay surface (`fg_score` plus ForceGreats config).
+    The FG row's `details_json` owns the paired base replay surface for the same FG
+    allocation, so it must be derived from the force payload's BaseStats+gems instead
+    of from the loadout's separate best-base winner.
+    """
+    if not isinstance(force_data, dict):
+        return {}
+
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+
+    payload = force_data.get("details") if isinstance(force_data.get("details"), dict) else force_data
+    if not isinstance(payload, dict):
+        return {}
+
+    selected = (
         payload.get("SelectedElement")
         or payload.get("Selected Element")
-        or out.get("SelectedElement")
-        or out.get("Selected Element")
+        or (base_details.get("SelectedElement") if isinstance(base_details, dict) else None)
+        or (base_details.get("Selected Element") if isinstance(base_details, dict) else None)
         or ""
     )
-    selected_element = str(selected_element or "").strip()
-    if selected_element:
-        out["SelectedElement"] = selected_element
+    stats = materialize_stats_from_payload(payload, selected_element=selected)
+    if not isinstance(stats, dict) or not stats:
+        return {}
 
-    # Gem allocations (Finder payload stores FT/FF separately from GemCounts)
-    if "FT" in payload:
-        out["FT"] = _safe_int_for_db(payload.get("FT", 0), 0)
-    if "FF" in payload:
-        out["FF"] = _safe_int_for_db(payload.get("FF", 0), 0)
+    out: dict[str, Any] = {}
+    if isinstance(base_details, dict):
+        for key in ("PrimaryColor", "Primary Color", "SecondaryColor", "Secondary Color"):
+            if base_details.get(key) not in (None, ""):
+                out[key] = base_details.get(key)
 
+    out["Stats"] = dict(stats)
+    out["FT"] = _safe_int_for_db(payload.get("FT", (payload.get("GemCounts") or {}).get("Fever Time", 0)), 0)
+    out["FF"] = _safe_int_for_db(
+        payload.get("FF", (payload.get("GemCounts") or {}).get("Fever Fill Rate", 0)),
+        0,
+    )
     gem_counts = payload.get("GemCounts")
     if isinstance(gem_counts, dict):
-        out["GemCounts"] = gem_counts
-    else:
-        gem_counts = out.get("GemCounts") if isinstance(out.get("GemCounts"), dict) else {}
-
-    # ForceGreats meta: prefer the top-level shape (persisted by Finder), but fall back to payload.
-    fg_meta = None
-    fg_top = force_data.get("ForceGreats")
-    if isinstance(fg_top, dict) and fg_top:
-        fg_meta = fg_top
-    else:
-        fg_payload = payload.get("ForceGreats")
-        if isinstance(fg_payload, dict) and fg_payload:
-            fg_meta = fg_payload
-
-    if isinstance(fg_meta, dict):
-        fg_out = dict(fg_meta)
-        if int(fg_score or 0) > 0:
-            fg_out["final_score"] = int(fg_score)
-        out["ForceGreats"] = fg_out
-
-    # Stats: prefer pre-materialized Stats; else materialize from BaseStats + gems (fast path).
-    stats_obj = payload.get("Stats")
-    if isinstance(stats_obj, dict) and stats_obj:
-        out["Stats"] = stats_obj
-    else:
-        try:
-            from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                materialize_stats_from_payload,
-            )
-
-            materialization_payload = dict(payload)
-            if not (
-                isinstance(materialization_payload.get("BaseStats"), dict) and materialization_payload.get("BaseStats")
-            ):
-                fallback_base = force_data.get("BaseStats")
-                if isinstance(fallback_base, dict) and fallback_base:
-                    materialization_payload["BaseStats"] = fallback_base
-            materialization_payload["FT"] = _safe_int_for_db(out.get("FT", payload.get("FT", 0)), 0)
-            materialization_payload["FF"] = _safe_int_for_db(out.get("FF", payload.get("FF", 0)), 0)
-            materialization_payload["GemCounts"] = gem_counts
-
-            computed = materialize_stats_from_payload(
-                materialization_payload,
-                selected_element=selected_element,
-                mutate_payload=False,
-            )
-            if isinstance(computed, dict) and computed:
-                out["Stats"] = computed
-        except Exception:
-            pass
-
+        out["GemCounts"] = dict(gem_counts)
+    if selected:
+        out["SelectedElement"] = str(selected)
+    base_score = _force_payload_base_score(force_data)
+    if base_score > 0:
+        out["BaseScore"] = int(base_score)
     return out
 
 
@@ -1314,8 +1279,9 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
 
     `force_details_json` must keep the replay surface: BaseStats, GemCounts,
     FT/FF, selected element, ForceGreats config, and score. A materialized final
-    `Stats` copy is redundant when BaseStats + gems are present, because tier
-    replay and UI details can reconstruct or read the packed FG `details_json`.
+    `Stats` copy is redundant when BaseStats + gems are present, because FG
+    replay reconstructs it from `force_details_json`. The FG table `details_json`
+    remains the paired base-score detail surface.
     """
     if not isinstance(force_data, dict) or not force_data:
         return force_data
@@ -1411,10 +1377,19 @@ def save_loadouts_batch(
         force_data = entry.get("force")
         if fg_score <= 0 and force_data is not None:
             fg_score = _fg_score_from_force(force_data)
+        if force_data is not None:
+            force_base_score = _force_payload_base_score(force_data)
+            if force_base_score > 0:
+                fg_base_score = force_base_score
 
         if best_score_max is None or score > best_score_max:
             best_score_max = score
-        if force_data is not None and fg_score > fg_base_score and (best_fg_max is None or fg_score > best_fg_max):
+        if (
+            force_data is not None
+            and fg_score > fg_base_score
+            and _base_details_from_force_payload(entry.get("details", {}), force_data)
+            and (best_fg_max is None or fg_score > best_fg_max)
+        ):
             best_fg_max = fg_score
 
     resolved_db_path = str(db_path or get_evolution_db_path())
@@ -1943,6 +1918,9 @@ def save_team_buff_loadouts_batch(
                 fg_score = _fg_score_from_force(force_data)
 
             force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
+            force_base_score = _force_payload_base_score(force_data)
+            if force_base_score > 0:
+                fg_base_score = force_base_score
             details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
 
             gear_names = _compact_gear_for_db(gear)
@@ -2049,47 +2027,11 @@ def save_team_buff_loadouts_batch(
                 deferred_fg_loadouts_params.append(loadouts_params.pop())
 
             if force_data is not None and fg_score > fg_base_score:
-                fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
-                if isinstance(fg_details, dict) and fg_details:
-                    fg_unpacked = _unpack_stats_after_load(fg_details)
-                    fg_stats = fg_unpacked.get("Stats") if isinstance(fg_unpacked, dict) else None
-                    fg_has_stats = isinstance(fg_stats, dict) and len(fg_stats) > 0
-                    if can_recompute:
-                        fg_details = _recompute_stats_in_details_for_persistence(
-                            fg_unpacked,
-                            gear_names_local=gear_names,
-                            mini_names_local=mini_names,
-                            team_color=str(
-                                fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or ""
-                            ).strip(),
-                        )
-                    elif not fg_has_stats:
-                        fg_details = _ensure_stats_in_details(
-                            fg_unpacked,
-                            gear,
-                            minis,
-                            minis_by_name,
-                            team_buff=team_buff,
-                            team_color=str(
-                                fg_unpacked.get("PrimaryColor") or fg_unpacked.get("Primary Color") or ""
-                            ).strip(),
-                        )
-                    else:
-                        fg_details = fg_unpacked
-                if (
-                    isinstance(fg_details, dict)
-                    and isinstance(fg_details.get("Stats"), dict)
-                    and fg_details.get("Stats")
-                    and fg_details.get("st") is not None
-                ):
-                    fg_details = dict(fg_details)
-                    fg_details.pop("st", None)
-                fg_details_storage = (
-                    _pack_stats_for_storage(_strip_computed_details_fields(fg_details))
-                    if isinstance(fg_details, dict) and fg_details
-                    else None
-                )
-                fg_details_json = _json_dumps_compact(fg_details_storage) if fg_details_storage else details_json
+                fg_details = _base_details_from_force_payload(details, force_data)
+                if not fg_details:
+                    continue
+                fg_details_storage = _pack_stats_for_storage(_strip_computed_details_fields(fg_details))
+                fg_details_json = _json_dumps_compact(fg_details_storage) if fg_details_storage else None
                 fg_loadouts_params.append(
                     (
                         song_name,

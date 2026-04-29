@@ -5,6 +5,8 @@ import numpy as np
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.utils import (
     STAT_KEYS,
+    diagnose_gear_pool_lossless_for_song,
+    diagnose_mini_pool_lossless_for_song,
     empty_stats,
     prune_gear_pool_lossless_for_song,
     prune_mini_pool_lossless_for_song,
@@ -187,6 +189,30 @@ def test_prune_gear_pool_lossless_for_song_collapses_equivalence_and_keeps_timin
     assert [row["Name"] for row in pruned] == ["Hat Keep", "Hat Timing Variant"]
 
 
+def test_prune_gear_pool_diagnostics_report_exact_reasons():
+    gear_rows = [
+        _gear("Hat Keep", "Hat", Rush=24, Flow=9, **{"Perfect Points": 10, "Fever Time": 5, "Fever Fill Rate": 4}),
+        _gear(
+            "Hat Equivalent",
+            "Hat",
+            Rush=24,
+            Flow=9,
+            Beat=99,
+            **{"Perfect Points": 10, "Fever Time": 5, "Fever Fill Rate": 4},
+        ),
+        _gear("Hat Dominated", "Hat", Rush=23, Flow=8, **{"Perfect Points": 9, "Fever Time": 5, "Fever Fill Rate": 4}),
+    ]
+
+    report = diagnose_gear_pool_lossless_for_song(gear_rows, "Rush", "Flow")
+
+    assert [row["Name"] for row in report["survivors"]] == ["Hat Keep"]
+    reasons = {entry["row"]["Name"]: entry["reason"] for entry in report["removed"]}
+    assert reasons["Hat Equivalent"] == "same_slot_relevant_stat_equivalence"
+    assert reasons["Hat Dominated"] == "timing_neutral_dominated"
+    assert report["before_count"] == 3
+    assert report["after_count"] == 1
+
+
 def test_prune_mini_pool_lossless_for_song_caps_exact_equivalence_at_three():
     mini_rows = [
         _mini("Mini A", Rush=12, Flow=4, **{"Fever Time": 2, "Fever Fill Rate": 2}),
@@ -198,6 +224,26 @@ def test_prune_mini_pool_lossless_for_song_caps_exact_equivalence_at_three():
     pruned = prune_mini_pool_lossless_for_song(mini_rows, "Rush", "Flow")
 
     assert [row["Name"] for row in pruned] == ["Mini A", "Mini B", "Mini C"]
+
+
+def test_prune_mini_pool_diagnostics_report_multiplicity_and_dominators():
+    mini_rows = [
+        _mini("Eq A", Rush=12, Flow=4, **{"Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Eq B", Rush=12, Flow=4, **{"Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Eq C", Rush=12, Flow=4, **{"Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Eq D", Rush=12, Flow=4, **{"Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Dom 1", Rush=14, Flow=5, **{"Perfect Points": 3, "Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Dom 2", Rush=14, Flow=5, **{"Perfect Points": 3, "Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Dom 3", Rush=14, Flow=5, **{"Perfect Points": 3, "Fever Time": 2, "Fever Fill Rate": 2}),
+        _mini("Prune Me", Rush=13, Flow=5, **{"Perfect Points": 2, "Fever Time": 2, "Fever Fill Rate": 2}),
+    ]
+
+    report = diagnose_mini_pool_lossless_for_song(mini_rows, "Rush", "Flow")
+
+    reasons = {entry["row"]["Name"]: entry["reason"] for entry in report["removed"]}
+    assert reasons["Eq D"] == "mini_relevant_stat_equivalence_excess_multiplicity"
+    assert reasons["Prune Me"] == "mini_timing_neutral_dominated_by_three_current_rows"
+    assert len(next(entry for entry in report["removed"] if entry["row"]["Name"] == "Prune Me")["dominators"]) == 3
 
 
 def test_prune_mini_pool_lossless_for_song_requires_three_current_dominators():
@@ -320,9 +366,13 @@ def test_initialize_pools_preserves_best_base_and_exact_fg_scores():
         ),
         _gear("Neck Piece", "Neck", Rush=8, Flow=4, **{"Perfect Points": 3, "Fever Time": 24, "Fever Fill Rate": 22}),
         _gear("Face Piece", "Face", Rush=7, Flow=3, **{"Combo Multiplier": 2, "Fever Time": 24, "Fever Fill Rate": 22}),
-        _gear("Shirt Piece", "Shirt", Rush=9, Flow=5, **{"Fever Multiplier": 2, "Fever Time": 24, "Fever Fill Rate": 22}),
+        _gear(
+            "Shirt Piece", "Shirt", Rush=9, Flow=5, **{"Fever Multiplier": 2, "Fever Time": 24, "Fever Fill Rate": 22}
+        ),
         _gear("Back Piece", "Back", Rush=6, Flow=3, **{"Perfect Points": 2, "Fever Time": 24, "Fever Fill Rate": 22}),
-        _gear("Pants Piece", "Pants", Rush=5, Flow=2, **{"Combo Multiplier": 1, "Fever Time": 24, "Fever Fill Rate": 22}),
+        _gear(
+            "Pants Piece", "Pants", Rush=5, Flow=2, **{"Combo Multiplier": 1, "Fever Time": 24, "Fever Fill Rate": 22}
+        ),
     ]
     all_minis = [
         _mini("Mini A", Rush=14, Flow=5, **{"Perfect Points": 3, "Fever Time": 20, "Fever Fill Rate": 20}),

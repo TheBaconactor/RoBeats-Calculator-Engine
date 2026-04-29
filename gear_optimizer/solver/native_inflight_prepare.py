@@ -13,6 +13,7 @@ from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_solver_m
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
+from gear_optimizer.helpers.ga_helpers.cem_hybrid import apply_cem_config_to_cfg_data
 from gear_optimizer.helpers.song_helpers.database_context import load_database_progress_baseline
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -420,6 +421,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0), 0),
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0), 0),
     }
+    apply_cem_config_to_cfg_data(cfg_data, cfg)
     try:
         cfg_data["ga_convergence_trace_enabled"] = bool(
             cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)

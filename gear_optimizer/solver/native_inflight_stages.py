@@ -36,9 +36,7 @@ _FG_JIT_WARM_LOCK = threading.Lock()
 _FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
 _FG_DB_LOADOUTS_CACHE: "OrderedDict[tuple[str, str], tuple[int, list[dict]]]" = OrderedDict()
 _FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
-_FG_RUNTIME_CALC_SONG_KEYS = (
-    "_gpu_song_slot",
-)
+_FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 
 def _fg_db_cache_max() -> int:
@@ -421,7 +419,9 @@ def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
         pass
 
 
-def _warmup_fg_finder_runtime(calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None) -> None:
+def _warmup_fg_finder_runtime(
+    calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None
+) -> None:
     global _FG_FINDER_RUNTIME_WARMED
     if _FG_FINDER_RUNTIME_WARMED:
         return
@@ -622,6 +622,12 @@ def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, 
     except Exception:
         pass
     decode_cfg_data = dict(getattr(song, "cfg_data", {}) or {})
+    selector_mode = str(decode_cfg_data.get("fg_candidate_selector_mode", "") or "").strip().lower()
+    decode_calc_song = None
+    decode_ref_arrays = None
+    if selector_mode in {"breakpoint_hybrid", "breakpoint-hybrid", "protected_breakpoint", "protected-breakpoint"}:
+        decode_calc_song = _resolve_active_fg_calc_song(song)
+        decode_ref_arrays = song.ref_arrays if isinstance(song.ref_arrays, dict) else None
     best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
         registry=song.registry,
@@ -631,10 +637,10 @@ def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, 
             decode_cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
             FG_CANDIDATE_LIMIT,
         ),
-        # Keep decode focused on GA payload reconstruction. FG-specific song context,
-        # runtime warmup, and group-meta priming belong to the explicit FG prep stage.
-        calc_song=None,
-        ref_arrays=None,
+        # Keep group-meta priming in FG prep, but breakpoint_hybrid needs timeline
+        # context here so decode-time candidate selection is truly active.
+        calc_song=decode_calc_song,
+        ref_arrays=decode_ref_arrays,
         fg_group_meta_limit=0,
     )
     out = (best_data, best_gear, best_minis, ga_candidates)
@@ -853,7 +859,13 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         is_gpu_selected_payload = False
 
     t_candidate_select0 = time.perf_counter()
-    if is_gpu_selected_payload:
+    selector_mode = str((getattr(song, "cfg_data", None) or {}).get("fg_candidate_selector_mode", "") or "")
+    if is_gpu_selected_payload and selector_mode.strip().lower() not in {
+        "breakpoint_hybrid",
+        "breakpoint-hybrid",
+        "protected_breakpoint",
+        "protected-breakpoint",
+    }:
         ga_candidates = ga_candidates[: int(fg_candidate_limit)]
     else:
         ga_candidates = select_fg_candidates(
@@ -861,6 +873,9 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             limit=fg_candidate_limit,
             primary_color=str(song.meta_primary_color or ""),
             secondary_color=str(song.meta_secondary_color or ""),
+            mode=selector_mode,
+            calc_song=active_fg_calc_song if isinstance(active_fg_calc_song, dict) else None,
+            ref_arrays=song.ref_arrays if isinstance(song.ref_arrays, dict) else None,
         )
     t_candidate_select = time.perf_counter()
     song.ga_candidates = ga_candidates
@@ -930,7 +945,9 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
 
     build_details = getattr(song, "fg_build_details", None)
     if not callable(build_details):
-        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+        build_details = make_build_details_fn(
+            song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty
+        )
         song.fg_build_details = build_details
     song.fg_direct_ga_candidates = bool(song.force_greats_finder)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and

@@ -892,6 +892,9 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             limit=fg_candidate_limit,
             primary_color=str(ctx.meta_primary_color or ""),
             secondary_color=str(ctx.meta_secondary_color or ""),
+            mode=str(ctx.cfg.get("IterationEngine", "FG_CandidateSelectorMode", fallback="") or ""),
+            calc_song=ctx.calc_song,
+            ref_arrays=ctx.ref_arrays,
         )
 
     build_details = make_build_details_fn(ctx.meta_primary_color, ctx.meta_secondary_color, ctx.effective_difficulty)
@@ -1308,6 +1311,7 @@ def process_song_task(args) -> SongResultPayload:
     _gpu_song_slot = 0
 
     try:
+
         def emit(msg):
             if not status_queue:
                 return

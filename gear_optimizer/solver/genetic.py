@@ -54,6 +54,7 @@ from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     FG_CANDIDATE_LIMIT,
     SKIP_ITEM_KEYS,
+    TOTAL_ROWS,
     GPU_GA_NUM_ISLANDS,
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
@@ -75,6 +76,13 @@ from .scoring.stats_ops import apply_gems_to_base_stats
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
+)
+from ..helpers.ga_helpers.cem_hybrid import (
+    CEMHybridSettings,
+    apply_cem_config_to_cfg_data,
+    build_cem_prior_tables,
+    learn_cem_probability_tables,
+    sample_cem_tail_population,
 )
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from ..helpers.ga_helpers.redundancy_audit import (
@@ -133,6 +141,22 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     except Exception:
         attempts = 2
     return max(0, min(4, int(attempts)))
+
+
+def _resolve_fg_candidate_selector_mode(cfg_data: dict | None = None) -> str:
+    env_mode = str(os.environ.get("FG_CANDIDATE_SELECTOR_MODE", "") or "").strip().lower()
+    if env_mode:
+        return env_mode
+    if isinstance(cfg_data, dict):
+        return str(cfg_data.get("fg_candidate_selector_mode", "") or "").strip().lower()
+    return ""
+
+
+def _resolve_breakpoint_hybrid_max_delta() -> int:
+    try:
+        return max(1, min(30, int(os.environ.get("FG_BREAKPOINT_HYBRID_MAX_DELTA", "8") or 8)))
+    except Exception:
+        return 8
 
 
 def _selected_color_stat_index(color: str) -> int:
@@ -1124,17 +1148,75 @@ def decode_gpu_native_ga_runs_payload(
     s_val = stats_sum[:, s_idx] if s_idx >= 0 else 0
 
     fg_proxy_i64 = fm * 4 + ff_stat * 4 + ft_stat * 3 + cm * 2 + pp + p_val * 2 + s_val
+    breakpoint_proxy_i64 = fg_proxy_i64
 
     # Lexsort tie-breakers need the key in reverse order (element0 has highest priority).
     key_cols_desc = [-(canon_ids_mat[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
 
     base_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-fg_proxy_i64, -scores_i64])).tolist()]
     fg_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-scores_i64, -fg_proxy_i64])).tolist()]
+    selector_mode = _resolve_fg_candidate_selector_mode(cfg_data)
+    use_breakpoint_hybrid = selector_mode in {
+        "breakpoint_hybrid",
+        "breakpoint-hybrid",
+        "protected_breakpoint",
+        "protected-breakpoint",
+    }
+    if use_breakpoint_hybrid:
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+            raise ValueError("breakpoint_hybrid requires calc_song/ref_arrays in GPU GA decode")
+        try:
+            from .fever_timeline import get_song_timeline_grid
+
+            base_fixed_vec = build_stats_array(base_stats_fixed)
+            ft_stats = np.clip(
+                base_fixed_vec[3] + ft_stat + (stub_results[:, 1].astype(np.int64, copy=False) * GEM_SCALE_FEVER),
+                0,
+                TOTAL_ROWS,
+            ).astype(np.int32, copy=False)
+            ff_stats = np.clip(
+                base_fixed_vec[4] + ff_stat + (stub_results[:, 2].astype(np.int64, copy=False) * GEM_SCALE_FEVER),
+                0,
+                TOTAL_ROWS,
+            ).astype(np.int32, copy=False)
+            grid = get_song_timeline_grid(calc_song, ref_arrays)
+            delta_limit = _resolve_breakpoint_hybrid_max_delta()
+            bp_proxy = np.zeros((n_stub,), dtype=np.int64)
+            for idx in range(n_stub):
+                ft0 = int(ft_stats[idx])
+                ff0 = int(ff_stats[idx])
+                base_t = grid.get_timeline(ft0, ff0)
+                base_head = int(np.asarray(base_t[0], dtype=np.bool_).sum())
+                base_body = int(base_t[1])
+                best = 0
+                premium = max(1, int(fg_proxy_i64[idx]))
+                for delta in range(1, delta_limit + 1):
+                    ft_next = min(TOTAL_ROWS, ft0 + delta)
+                    ff_next = min(TOTAL_ROWS, ff0 + delta)
+                    ft_t = grid.get_timeline(ft_next, ff0)
+                    ff_t = grid.get_timeline(ft0, ff_next)
+                    ft_gain = max(
+                        0,
+                        ((int(np.asarray(ft_t[0], dtype=np.bool_).sum()) - base_head) * 2) + (int(ft_t[1]) - base_body),
+                    )
+                    ff_gain = max(
+                        0,
+                        ((int(np.asarray(ff_t[0], dtype=np.bool_).sum()) - base_head) * 2) + (int(ff_t[1]) - base_body),
+                    )
+                    best = max(best, int((max(ft_gain, ff_gain) * premium) // delta))
+                bp_proxy[idx] = int(best)
+            breakpoint_proxy_i64 = bp_proxy
+        except Exception as exc:
+            raise RuntimeError(f"breakpoint_hybrid failed during GPU GA decode: {exc}") from exc
+    bp_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-scores_i64, -breakpoint_proxy_i64])).tolist()]
 
     limit = int(fg_candidate_limit)
     top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
     base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
     fg_budget_end = min(limit, base_budget + int(limit * 0.30))
+    if use_breakpoint_hybrid:
+        base_budget = top_base_keep
+        fg_budget_end = min(limit, max(top_base_keep, top_base_keep + int((limit - top_base_keep) * 0.85)))
 
     selected_stub_indices: list[int] = []
     selected_mask = np.zeros((n_stub,), dtype=bool)
@@ -1160,24 +1242,37 @@ def decode_gpu_native_ga_runs_payload(
             break
         _add(i)
 
-    # 2) Base-score fill (exploitation).
-    for i in base_order:
-        if len(selected_stub_indices) >= base_budget:
-            break
-        _add(i)
+    # 2) Base-score fill (exploitation), or protected breakpoint exploration.
+    if use_breakpoint_hybrid:
+        for i in bp_order:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            c = (int(centers_ft_list[i]), int(centers_ff_list[i]))
+            if c in seen_centers:
+                continue
+            _add(i)
+        for i in bp_order:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            _add(i)
+    else:
+        for i in base_order:
+            if len(selected_stub_indices) >= base_budget:
+                break
+            _add(i)
 
-    # 3) FG-proxy fill; prefer new FT/FF centers first.
-    for i in fg_order:
-        if len(selected_stub_indices) >= fg_budget_end:
-            break
-        c = (int(centers_ft_list[i]), int(centers_ff_list[i]))
-        if c in seen_centers:
-            continue
-        _add(i)
-    for i in fg_order:
-        if len(selected_stub_indices) >= fg_budget_end:
-            break
-        _add(i)
+        # 3) FG-proxy fill; prefer new FT/FF centers first.
+        for i in fg_order:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            c = (int(centers_ft_list[i]), int(centers_ff_list[i]))
+            if c in seen_centers:
+                continue
+            _add(i)
+        for i in fg_order:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            _add(i)
 
     # 4) Mini-team diversity fill.
     for i in base_order:
@@ -1584,6 +1679,35 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         max_ft_gems_global = int(total_budget)
         max_ff_gems_global = int(total_budget)
     novelty_repair_attempts = _resolve_ga_novelty_repair_attempts(cfg_data)
+    cem_settings = CEMHybridSettings.from_cfg_data(cfg_data)
+    cem_probability_tables = None
+    cem_prior_tables = None
+    cem_rng = None
+    if cem_settings.enabled:
+        cem_prior_tables = build_cem_prior_tables(
+            item_stats=item_stats,
+            slot_start=slot_start,
+            slot_count=slot_count,
+            settings=cem_settings,
+            primary_color=str(cfg_data.get("primary_color", "") or ""),
+            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+            n_slots=int(n_slots),
+        )
+        cem_probability_tables = cem_prior_tables
+        cem_rng = np.random.default_rng(int(seed_base) ^ 0xC0FFEE)
+        if float(cem_settings.random_immigrant_floor) > 0.0:
+            immigrant_rate = max(float(immigrant_rate), float(cem_settings.random_immigrant_floor))
+        try:
+            logger.info(
+                "[GPU GA CEM] enabled: elite_frac=%.3f smoothing=%.3f min_prob=%.5f refresh=%d tail=%.3f",
+                float(cem_settings.elite_frac),
+                float(cem_settings.smoothing),
+                float(cem_settings.min_prob),
+                int(cem_settings.refresh_every),
+                float(cem_settings.tail_replace_frac),
+            )
+        except Exception:
+            pass
 
     fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
     if fg_candidate_limit <= 0:
@@ -1842,10 +1966,18 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
                             and gen < (int(n_generations) - 1)
                         )
+                        cem_refresh_this_gen = (
+                            bool(cem_settings.enabled)
+                            and cem_rng is not None
+                            and gen < int(n_generations) - 1
+                            and ((int(gen) + 1) % int(cem_settings.refresh_every) == 0)
+                        )
+                        cem_tables_for_patch = None
                         fuse_refresh_with_next = (
                             use_lightweight_runs_refresh
                             and not bool(phase_timing)
                             and not bool(is_migration_gen)
+                            and not bool(cem_refresh_this_gen)
                             and gen < int(n_generations) - 1
                         )
                         fused_refresh_next_done = False
@@ -1938,6 +2070,43 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 combos=int(n_combos),
                             )
 
+                        if cem_refresh_this_gen:
+                            t0 = time.perf_counter() if phase_timing else 0.0
+                            _raise_if_abort_requested(
+                                abort_requested, f"before GPU-native GA CEM refresh generation {int(gen)}"
+                            )
+                            cem_pop = gpu_api.ga_download_population_indices(
+                                n_genomes=int(n_total),
+                                n_slots=int(n_slots),
+                            )
+                            cem_scores = gpu_api.ga_download_scores(int(n_total))
+                            cem_probability_tables = learn_cem_probability_tables(
+                                population_indices=cem_pop,
+                                scores=cem_scores,
+                                slot_start=slot_start,
+                                slot_count=slot_count,
+                                settings=cem_settings,
+                                previous_tables=cem_probability_tables,
+                                prior_tables=cem_prior_tables,
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_slots=int(n_slots),
+                            )
+                            cem_tables_for_patch = cem_probability_tables
+                            _raise_if_abort_requested(
+                                abort_requested, f"after GPU-native GA CEM refresh generation {int(gen)}"
+                            )
+                            if t0:
+                                _log_phase(
+                                    phase="cem_refresh",
+                                    ms=(time.perf_counter() - t0) * 1000.0,
+                                    runs=int(batch_len),
+                                    pop=int(n_genomes),
+                                    gen=int(gen),
+                                    use_hints=0,
+                                    combos=int(n_combos),
+                                )
+
                         t0 = time.perf_counter() if phase_timing else 0.0
                         if trace_writer is not None:
                             gpu_api.ga_update_global_best(int(n_total), n_slots=int(n_slots))
@@ -2027,6 +2196,46 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     use_hints=0,
                                     combos=int(n_combos),
                                 )
+                            if cem_tables_for_patch is not None and cem_rng is not None:
+                                t0 = time.perf_counter() if phase_timing else 0.0
+                                _raise_if_abort_requested(
+                                    abort_requested, f"before GPU-native GA CEM tail patch generation {int(gen)}"
+                                )
+                                next_pop = gpu_api.ga_download_population_indices(
+                                    n_genomes=int(n_total),
+                                    n_slots=int(n_slots),
+                                )
+                                preserve = max(
+                                    int(elite_count),
+                                    int(round(float(n_genomes) * float(cem_settings.elite_preserve_frac))),
+                                )
+                                patched_pop, patch_stats = sample_cem_tail_population(
+                                    population_indices=next_pop,
+                                    probability_tables=cem_tables_for_patch,
+                                    slot_start=slot_start,
+                                    slot_count=slot_count,
+                                    settings=cem_settings,
+                                    rng=cem_rng,
+                                    n_runs=int(batch_len),
+                                    n_genomes_per_run=int(n_genomes),
+                                    elite_preserve_count=int(preserve),
+                                    n_slots=int(n_slots),
+                                )
+                                if int(patch_stats.get("replaced", 0) or 0) > 0:
+                                    gpu_api.ga_upload_population_indices(patched_pop, n_slots=int(n_slots))
+                                _raise_if_abort_requested(
+                                    abort_requested, f"after GPU-native GA CEM tail patch generation {int(gen)}"
+                                )
+                                if t0:
+                                    _log_phase(
+                                        phase="cem_tail_patch",
+                                        ms=(time.perf_counter() - t0) * 1000.0,
+                                        runs=int(batch_len),
+                                        pop=int(n_genomes),
+                                        gen=int(gen),
+                                        use_hints=0,
+                                        combos=int(n_combos),
+                                    )
 
                     # Pack a compact GA->FG candidate table for this batch, avoiding large
                     # `(runs, pop, payload_cols)` downloads. Row 0 is per-run best (tracked
@@ -2370,6 +2579,14 @@ def solve_coevolution_genetic(
         )
         or FG_CANDIDATE_LIMIT
     )
+    cfg_data["fg_candidate_selector_mode"] = str(
+        cfg_data.get(
+            "fg_candidate_selector_mode",
+            cfg.get("IterationEngine", "FG_CandidateSelectorMode", fallback=""),
+        )
+        or ""
+    ).strip()
+    apply_cem_config_to_cfg_data(cfg_data, cfg)
     cfg_data["ga_payload_candidate_limit"] = _resolve_ga_payload_candidate_limit(int(cfg_data["fg_candidate_limit"]))
     # DEV / DEBUG: convergence trace flags
     # (GAConvergenceTrace, GAConvergenceTraceEvery, GAConvergenceTraceOutDir,

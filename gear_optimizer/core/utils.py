@@ -19,6 +19,7 @@ STAT_KEYS = [
     "Vibe",
 ]
 
+
 def cfg_to_dict(cfg):
     """
     Serialize ConfigParser to a plain dict for safe process transport.
@@ -366,6 +367,63 @@ def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=
     return pruned
 
 
+def diagnose_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=""):
+    """
+    Return the exact-safe gear pruning result plus per-row removal reasons.
+
+    This is a diagnostic companion to `prune_gear_pool_lossless_for_song`; production
+    pruning keeps its lean path, while audits can show which rows were kept/pruned and why.
+    """
+    gear_items = list(gear_list or [])
+    survivors = []
+    removed = []
+    seen_signatures = {}
+
+    for row in gear_items:
+        sig = relevant_row_projection(row, primary_color, secondary_color)
+        kept_equivalent = seen_signatures.get(sig)
+        if kept_equivalent is not None:
+            removed.append(
+                {
+                    "row": row,
+                    "reason": "same_slot_relevant_stat_equivalence",
+                    "kept_row": kept_equivalent,
+                    "signature": sig,
+                }
+            )
+            continue
+        seen_signatures[sig] = row
+        survivors.append(row)
+
+    final_survivors = []
+    for idx, row in enumerate(survivors):
+        dominator = None
+        for other_idx, other in enumerate(survivors):
+            if other_idx == idx:
+                continue
+            if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+                dominator = other
+                break
+        if dominator is None:
+            final_survivors.append(row)
+        else:
+            removed.append(
+                {
+                    "row": row,
+                    "reason": "timing_neutral_dominated",
+                    "dominator": dominator,
+                    "signature": relevant_row_projection(row, primary_color, secondary_color),
+                }
+            )
+
+    return {
+        "survivors": final_survivors,
+        "removed": removed,
+        "before_count": len(gear_items),
+        "after_count": len(final_survivors),
+    }
+
+
 def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=""):
     """
     Exact-safe pre-GA mini pruning for the current single-song shared distinct-3 pool.
@@ -408,3 +466,68 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
             break
 
     return survivors
+
+
+def diagnose_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=""):
+    """
+    Return the exact-safe mini pruning result plus per-row removal reasons.
+
+    Mini diagnostics mirror the live rules: exact relevant-signature multiplicity is
+    capped at three, then rows are removed only when three current dominators remain.
+    """
+    mini_items = list(mini_list or [])
+    survivors = []
+    removed = []
+    multiplicities = {}
+    kept_by_signature = {}
+
+    for row in mini_items:
+        sig = relevant_row_projection(row, primary_color, secondary_color)
+        seen = multiplicities.get(sig, 0)
+        if seen >= 3:
+            removed.append(
+                {
+                    "row": row,
+                    "reason": "mini_relevant_stat_equivalence_excess_multiplicity",
+                    "kept_rows": list(kept_by_signature.get(sig, [])),
+                    "signature": sig,
+                }
+            )
+            continue
+        multiplicities[sig] = seen + 1
+        kept_by_signature.setdefault(sig, []).append(row)
+        survivors.append(row)
+
+    current = list(survivors)
+    while len(current) > 3:
+        removed_any = False
+        for idx, row in enumerate(current):
+            dominators = []
+            for other_idx, other in enumerate(current):
+                if other_idx == idx:
+                    continue
+                if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+                    dominators.append(other)
+                    if len(dominators) >= 3:
+                        break
+            if len(dominators) >= 3:
+                removed.append(
+                    {
+                        "row": row,
+                        "reason": "mini_timing_neutral_dominated_by_three_current_rows",
+                        "dominators": dominators,
+                        "signature": relevant_row_projection(row, primary_color, secondary_color),
+                    }
+                )
+                del current[idx]
+                removed_any = True
+                break
+        if not removed_any:
+            break
+
+    return {
+        "survivors": current,
+        "removed": removed,
+        "before_count": len(mini_items),
+        "after_count": len(current),
+    }
