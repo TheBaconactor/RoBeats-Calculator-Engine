@@ -57,7 +57,7 @@ from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
-from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
+from gear_optimizer.helpers.song_helpers.persistence import RECORD_UPDATE_SCORE_EPSILON, evaluate_progress_record_update
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
 logger = logging.getLogger(__name__)
@@ -399,6 +399,7 @@ class GearOptimizerApp:
         self._stats_verified_once = False
         # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
+        self._session_new_record_keys: set[str] = set()
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
@@ -1851,6 +1852,63 @@ class GearOptimizerApp:
         except Exception:
             return
 
+    def _record_info_song_key(self, record_info: dict | None) -> str:
+        if not isinstance(record_info, dict):
+            return ""
+        raw_song = (
+            record_info.get("song")
+            or record_info.get("_song_name")
+            or record_info.get("_queue_label")
+            or record_info.get("_queue_key")
+            or ""
+        )
+        return self._normalize_song_label(str(raw_song or "").strip())
+
+    def _is_authoritative_new_record(self, record_info: dict | None) -> tuple[bool, str]:
+        if not isinstance(record_info, dict):
+            return False, ""
+        if not bool(record_info.get("record_update")):
+            return False, ""
+
+        song_key = self._record_info_song_key(record_info)
+        if not song_key:
+            return False, ""
+
+        try:
+            best_overall_score = int(record_info.get("best_overall_score_run", 0) or 0)
+        except Exception:
+            best_overall_score = 0
+        try:
+            prev_overall_score = int(record_info.get("prev_overall_score", 0) or 0)
+        except Exception:
+            prev_overall_score = 0
+
+        if best_overall_score <= 0:
+            return False, ""
+        if int(best_overall_score - prev_overall_score) <= int(RECORD_UPDATE_SCORE_EPSILON):
+            return False, ""
+        return True, song_key
+
+    def _apply_authoritative_new_record(self, record_info: dict | None) -> bool:
+        is_authoritative, song_key = self._is_authoritative_new_record(record_info)
+        if not is_authoritative:
+            return False
+        seen_keys = getattr(self, "_session_new_record_keys", None)
+        if not isinstance(seen_keys, set):
+            seen_keys = set()
+            self._session_new_record_keys = seen_keys
+        if song_key in seen_keys:
+            return False
+
+        seen_keys.add(song_key)
+        try:
+            self._session_new_records = int(self._session_new_records) + 1
+        except Exception:
+            self._session_new_records = 1
+        if self._progress is not None:
+            self._progress.add_new_record(1)
+        return True
+
     def _progress_event(
         self,
         *,
@@ -1860,12 +1918,7 @@ class GearOptimizerApp:
     ) -> None:
         song_label = ""
         status_label = ""
-        record_update = bool(record_info and record_info.get("record_update"))
-        if record_update:
-            try:
-                self._session_new_records = int(self._session_new_records) + 1
-            except Exception:
-                self._session_new_records = 1
+        self._apply_authoritative_new_record(record_info)
         if completed_delta:
             self._runtime_completed_count = max(
                 0,
@@ -1917,11 +1970,6 @@ class GearOptimizerApp:
                 self._progress.add_completed(int(completed_delta))
             if failed_delta:
                 self._progress.add_failed(int(failed_delta))
-            if record_update:
-                score = int(record_info.get("score", 0) or 0)
-                best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
-                if score > 0 or best_fg > 0:
-                    self._progress.add_new_record(1)
         else:
             try:
                 current_song = str(song_label or self._run_current_song_label or "").strip()
@@ -2324,12 +2372,7 @@ class GearOptimizerApp:
         except Exception:
             song_label = None
         record_info = None if failed_delta else self._extract_record_info(res)
-        record_update = bool(record_info and record_info.get("record_update"))
-        if record_update:
-            try:
-                self._session_new_records = int(self._session_new_records) + 1
-            except Exception:
-                self._session_new_records = 1
+        self._apply_authoritative_new_record(record_info)
         if song_label:
             try:
                 self._run_current_song_label = str(song_label)
@@ -2341,11 +2384,6 @@ class GearOptimizerApp:
             self._runtime_failed_count = int(self._runtime_failed_count or 0) + int(failed_delta or 0)
             if self._progress is not None:
                 self._progress.add_failed(failed_delta)
-        if record_update:
-            score = int(record_info.get("score", 0) or 0)
-            best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
-            if self._progress is not None and (score > 0 or best_fg > 0):
-                self._progress.add_new_record(1)
         self._set_runtime_progress_counts(
             completed=int(completed or 0),
             total=int(total or 0),
