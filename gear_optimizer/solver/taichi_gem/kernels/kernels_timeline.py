@@ -211,10 +211,7 @@ def _timeline_surface_equal(a: ti.template(), b: ti.template()) -> ti.i32:
 def _timeline_surface_dominates(a: ti.template(), b: ti.template()) -> ti.i32:
     dominates: ti.i32 = 0
     a_contains_b_head = (
-        ((a.m0 | b.m0) == a.m0)
-        and ((a.m1 | b.m1) == a.m1)
-        and ((a.m2 | b.m2) == a.m2)
-        and ((a.m3 | b.m3) == a.m3)
+        ((a.m0 | b.m0) == a.m0) and ((a.m1 | b.m1) == a.m1) and ((a.m2 | b.m2) == a.m2) and ((a.m3 | b.m3) == a.m3)
     )
     if a_contains_b_head and a.body_fever >= b.body_fever and a.body_normal <= b.body_normal:
         dominates = 1
@@ -453,13 +450,16 @@ def compute_timeline_grid_kernel(
 
 
 @ti.func
-def _binary_search_left_i32(arr, n: ti.i32, x: ti.i32) -> ti.i32:
-    """Lower-bound search on a monotone non-decreasing i32 array."""
-    lo = ti.i32(0)
+def _binary_search_event_lo_left(n: ti.i32, x: ti.i32, start: ti.i32) -> ti.i32:
+    """Lower-bound search for first group where base_t_ms + low_ms >= x."""
+    lo = ti.max(ti.i32(0), ti.min(start, n))
     hi = n
     while lo < hi:
         mid = (lo + hi) >> 1
-        if arr[mid] < x:
+        event_lo = ti.cast(kernels_helpers.song_group_base_t_ms[mid], ti.i32) + ti.cast(
+            kernels_helpers.song_group_low_ms[mid], ti.i32
+        )
+        if event_lo < x:
             lo = mid + 1
         else:
             hi = mid
@@ -467,24 +467,20 @@ def _binary_search_left_i32(arr, n: ti.i32, x: ti.i32) -> ti.i32:
 
 
 @ti.func
-def _propagate_carry_interval(lo: ti.i32, hi: ti.i32, g: ti.i32) -> ti.types.vector(2, ti.i32):
-    """
-    Carry propagation over chord groups using the interval propagation lemma:
-
-      T_g([p,q]) = [max(l_g, p - Δ_g), max(u_g, q - Δ_g)]
-
-    where Δ_g = c_g - c_{g-1}.
-    """
-    l_g = ti.cast(kernels_helpers.song_group_low_ms[g], ti.i32)
-    u_g = ti.cast(kernels_helpers.song_group_high_ms[g], ti.i32)
-    c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
-    c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[g - 1], ti.i32)
-    delta = c_g - c_prev
-    if delta < 1:
-        delta = 1
-    out_lo = ti.max(l_g, lo - delta)
-    out_hi = ti.max(u_g, hi - delta)
-    return ti.Vector([out_lo, out_hi])
+def _binary_search_event_hi_left(n: ti.i32, x: ti.i32, start: ti.i32) -> ti.i32:
+    """Lower-bound search for first group where base_t_ms + high_ms >= x."""
+    lo = ti.max(ti.i32(0), ti.min(start, n))
+    hi = n
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        event_hi = ti.cast(kernels_helpers.song_group_base_t_ms[mid], ti.i32) + ti.cast(
+            kernels_helpers.song_group_high_ms[mid], ti.i32
+        )
+        if event_hi < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
 
 
 @ti.func
@@ -681,69 +677,28 @@ def _simulate_ceiling_cell(
         c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
         Q = c_s + r_act + d_ms
 
-        b_minus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q - 80)
-        b_plus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q + 40)
-
         start_g = s + 1
-        if b_minus < start_g:
-            b_minus = start_g
-        if b_plus < start_g:
-            b_plus = start_g
-        if b_minus > gcount:
-            b_minus = gcount
-        if b_plus > gcount:
-            b_plus = gcount
 
         if end_mode != 0:
-            # Variant: end fever as early as possible (first reachable out-group in the swing band).
+            # Variant: end fever as early as possible (first group whose latest event time can
+            # reach the fever end boundary).
             #
-            # This intentionally sacrifices swing groups to shift subsequent activation indices earlier
-            # (cascade), which can improve score vs the greedy "keep fever as long as feasible" variant.
-            lo = r_act
-            hi = r_act
-
-            # Propagate through groups that are always in-fever under the global max offset bound (+80ms).
-            g = start_g
-            while g < b_minus:
-                out = _propagate_carry_interval(lo, hi, g)
-                lo = out[0]
-                hi = out[1]
-                g += 1
-
-            out_group = ti.i32(-1)
+            # This intentionally sacrifices flippable groups to shift subsequent activation
+            # indices earlier (cascade), which can improve score vs the greedy
+            # "keep fever as long as feasible" variant.
+            out_group = _binary_search_event_hi_left(gcount, Q, start_g)
             out_carry = ti.i32(0)
 
-            g = b_minus
-            while g < b_plus and g < gcount:
-                out = _propagate_carry_interval(lo, hi, g)
-                lo = out[0]
-                hi = out[1]
-
-                c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
-                out_threshold = Q - c_g
-
-                if hi >= out_threshold:
-                    out_group = g
-                    # Choose the smallest carry that still forces this group out of fever.
-                    out_carry = ti.max(lo, out_threshold)
-                    break
-
-                remain_hi = out_threshold - 1
-                lo = ti.max(lo, ti.i32(-40))
-                hi = ti.min(hi, remain_hi)
-                g += 1
-
             fever_end_idx = n
-            if out_group >= 0:
+            if out_group < gcount:
+                c_out = ti.cast(kernels_helpers.song_group_base_t_ms[out_group], ti.i32)
+                lo_out = ti.cast(kernels_helpers.song_group_low_ms[out_group], ti.i32)
+                hi_out = ti.cast(kernels_helpers.song_group_high_ms[out_group], ti.i32)
+                out_carry = ti.max(lo_out, Q - c_out)
+                out_carry = ti.min(out_carry, hi_out)
                 fever_end_idx = ti.cast(kernels_helpers.song_group_starts[out_group], ti.i32)
             else:
-                if b_plus < gcount:
-                    out_group = b_plus
-                    out = _propagate_carry_interval(lo, hi, out_group)
-                    out_carry = out[0]
-                    fever_end_idx = ti.cast(kernels_helpers.song_group_starts[out_group], ti.i32)
-                else:
-                    fever_end_idx = n
+                fever_end_idx = n
 
             if fever_end_idx < activation_note:
                 fever_end_idx = activation_note
@@ -762,7 +717,7 @@ def _simulate_ceiling_cell(
 
             # Carry state after fever: we must instantiate an explicit carry for the out-group
             # (otherwise the early-end signature may be infeasible).
-            if out_group >= 0 and out_group < gcount:
+            if out_group < gcount:
                 prev_group = out_group
                 prev_carry = out_carry
             else:
@@ -773,57 +728,19 @@ def _simulate_ceiling_cell(
             current_note = fever_end_idx
             continue
 
-        lo = r_act
-        hi = r_act
-        last_fever_group = s
+        exit_group = _binary_search_event_lo_left(gcount, Q, start_g)
+        last_fever_group = exit_group - 1
+        if last_fever_group < s:
+            last_fever_group = s
         last_fever_hi = r_act
-        g = start_g
-        while g < b_minus:
-            out = _propagate_carry_interval(lo, hi, g)
-            lo = out[0]
-            hi = out[1]
-            last_fever_group = g
-            last_fever_hi = hi
-            g += 1
-
-        exit_group = ti.i32(-1)
-        g = b_minus
-        while g < b_plus and g < gcount:
-            prev_lo = lo
-            prev_hi = hi
-            out = _propagate_carry_interval(lo, hi, g)
-            lo = out[0]
-            hi = out[1]
-
-            c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
-            remain_hi = Q - c_g - 1
-
-            keep_lo = ti.max(lo, ti.i32(-40))
-            keep_hi = ti.min(hi, remain_hi)
-
-            if keep_lo <= keep_hi:
-                lo = keep_lo
-                hi = keep_hi
-                last_fever_group = g
-                last_fever_hi = hi
-                g += 1
-                continue
-
-            exit_group = g
-            lo = prev_lo
-            hi = prev_hi
-            break
+        if last_fever_group != s:
+            last_fever_hi = ti.cast(kernels_helpers.song_group_high_ms[last_fever_group], ti.i32)
 
         fever_end_idx = n
-        if exit_group >= 0:
+        if exit_group < gcount:
             fever_end_idx = ti.cast(kernels_helpers.song_group_starts[exit_group], ti.i32)
         else:
-            if b_plus < gcount:
-                g = b_plus
-                _ = _propagate_carry_interval(lo, hi, g)
-                fever_end_idx = ti.cast(kernels_helpers.song_group_starts[g], ti.i32)
-            else:
-                fever_end_idx = n
+            fever_end_idx = n
 
         if fever_end_idx < activation_note:
             fever_end_idx = activation_note
@@ -885,7 +802,7 @@ def compute_timeline_grid_ceiling_envelope_kernel(
       - normal-hi: choose the latest nominal carry (group_high)
       - normal-lo: choose the earliest nominal carry (group_low)
       - fever-max: keep swing groups in fever whenever feasible
-      - fever-min: end fever at the earliest reachable out-group in the swing band
+      - fever-min: end fever at the earliest group whose latest boundary reaches Q
 
     We emit the better variant via
     `_ceiling_compare_score()` (deterministic selection).
