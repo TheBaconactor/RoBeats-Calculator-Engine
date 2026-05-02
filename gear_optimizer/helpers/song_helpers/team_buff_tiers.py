@@ -4,8 +4,6 @@ import re
 from math import ceil
 from typing import Any
 
-import numpy as np
-
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
@@ -481,9 +479,8 @@ def compute_team_buff_tier_leaderboards(
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
 
-    Base scoring uses the GPU fixed-scoring path and FG scoring uses the GPU ForceGreats
-    kernel (fixed-stats mode) so on-demand tier computation matches production scoring
-    semantics (including GPU timeline behavior).
+    Base and FG scoring use CPU exact replay for retained rows. GPU scoring remains
+    the search path; replay/canonicalization is the final user-visible score authority.
 
     This is designed for post-processing:
     - Uses the existing gem allocations (Stats in details) as-is.
@@ -627,8 +624,7 @@ def compute_team_buff_tier_leaderboards(
             )
 
     # Compute tiered scores for all retained entries.
-    from ...solver.scoring.gpu_solver import _GPU_LOCK
-    from ...solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
+    from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_fixed_value_exact
 
     # Group by calc_song object so we can batch GPU fixed scoring per song context.
     per_entry_by_song_id: dict[int, list[dict]] = {}
@@ -650,13 +646,10 @@ def compute_team_buff_tier_leaderboards(
             int(target_effect.get(secondary_color, 0) - base_effect.get(secondary_color, 0)) if secondary_color else 0,
         )
 
-    # Precompute all FG scores for all tiers in the fewest possible GPU calls.
+    # Precompute all FG scores for retained rows using CPU exact replay.
     fg_scores_by_sid: dict[int, dict[str, list[int]]] = {}
     have_fg = any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
-        from ...solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
-        from ...solver.taichi_gem.force_greats.fields import FG_MAX_SECTIONS
-
         for sid, group_entries in per_entry_by_song_id.items():
             tier_to_scores: dict[str, list[int]] = {str(t): [0] * len(group_entries) for t in tier_list}
 
@@ -665,109 +658,33 @@ def compute_team_buff_tier_leaderboards(
                 fg_scores_by_sid[sid] = tier_to_scores
                 continue
 
-            song_data = group_song.get("song_data", {}) or {}
-            ts_raw = song_data.get("fg_timestamps", song_data.get("timestamps"))
-            if ts_raw is None:
-                fg_scores_by_sid[sid] = tier_to_scores
-                continue
-            timestamps_np = np.asarray(ts_raw, dtype=np.float32)
-            great_raw = song_data.get("fg_great_candidate_timestamps")
-            great_np = np.asarray(great_raw, dtype=np.float32) if great_raw is not None else None
-
-            meta = group_song.get("metadata", {}) or {}
-            long_notes = _safe_int(meta.get("Long Notes"), 0)
-            base_ts_raw = song_data.get("timestamps", ts_raw)
-            base_ts = np.asarray(base_ts_raw, dtype=np.float32)
-            default_last_note = float(base_ts[-1]) if int(base_ts.shape[0]) > 0 else 0.0
-            last_note_time = float(meta.get("Last Note Time", default_last_note))
-
-            # Group by forced-count config; each config requires one FG GPU call.
-            counts_to_indices: dict[tuple[int, ...], list[int]] = {}
-            for idx, e in enumerate(group_entries):
-                fg = e.get("fg")
-                if not isinstance(fg, dict):
+            for t in tier_list:
+                tier_key = str(t)
+                out_list = tier_to_scores.get(tier_key)
+                if out_list is None:
                     continue
-                counts0 = fg.get("fp_targets")
-                if not isinstance(counts0, (list, tuple)) or not counts0:
-                    continue
-                counts_t = tuple(int(x) for x in counts0)
-                if not counts_t:
-                    continue
-                if int(len(counts_t)) > int(FG_MAX_SECTIONS):
-                    # Production FG solver is limited to FG_MAX_SECTIONS; skip rather than crashing.
-                    continue
-                counts_to_indices.setdefault(counts_t, []).append(int(idx))
-
-            for counts_t, idxs in counts_to_indices.items():
-                n_sections = int(len(counts_t))
-                if n_sections <= 0:
-                    continue
-
-                genomes: list[dict[str, Any]] = []
-                for t in tier_list:
-                    dpp, dp, ds = tier_deltas[str(t)]
-                    for idx in idxs:
-                        fg = group_entries[idx].get("fg") or {}
-                        genomes.append(
-                            {
-                                "base_pp": int(fg.get("pp", 0) or 0) + int(dpp),
-                                "base_cm": int(fg.get("cm_stat", 0) or 0),
-                                "base_fm": int(fg.get("fm_stat", 0) or 0),
-                                "base_ft_stat": int(fg.get("ft_stat", 0) or 0),
-                                "base_ff_stat": int(fg.get("ff_stat", 0) or 0),
-                                "base_p_val": int(fg.get("p_val", 0) or 0) + int(dp),
-                                "base_s_val": int(fg.get("s_val", 0) or 0) + int(ds),
-                            }
-                        )
-                if not genomes:
-                    continue
-
-                with _GPU_LOCK:
-                    out_raw = solve_force_greats_finder_gpu(
-                        genomes,
-                        timestamps_np,
-                        great_np,
-                        int(long_notes),
-                        float(last_note_time),
-                        [counts_t],
-                        [(0, 0)],
-                        n_sections=n_sections,
-                        is_p_ft=0,
-                        is_s_ft=0,
-                        is_p_ff=0,
-                        is_s_ff=0,
-                        is_p_pp=0,
-                        is_s_pp=0,
-                        is_p_cm=0,
-                        is_s_cm=0,
-                        is_p_fm=0,
-                        is_s_fm=0,
-                        is_p_ov=0,
-                        is_s_ov=0,
-                        ref_arrays=ref_arrays,
-                        total_budget=0,
-                        return_raw=True,
-                    )
-
-                if not isinstance(out_raw, dict):
-                    continue
-                final_scores = out_raw.get("final_score")
-                if final_scores is None:
-                    continue
-                final_np = np.asarray(final_scores, dtype=np.int32)
-                if int(final_np.shape[0]) != len(genomes):
-                    continue
-
-                k = 0
-                for t in tier_list:
-                    tier_key = str(t)
-                    out_list = tier_to_scores.get(tier_key)
-                    if out_list is None:
-                        k += len(idxs)
+                dpp, dp, ds = tier_deltas[str(t)]
+                for idx, e in enumerate(group_entries):
+                    fg = e.get("fg")
+                    if not isinstance(fg, dict):
                         continue
-                    for idx in idxs:
-                        out_list[idx] = int(final_np[k])
-                        k += 1
+                    counts0 = fg.get("counts")
+                    if not isinstance(counts0, (list, tuple)) or not counts0:
+                        continue
+                    stats = {
+                        "Perfect Points": int(fg.get("pp", 0) or 0) + int(dpp),
+                        "Combo Multiplier": int(fg.get("cm_stat", 0) or 0),
+                        "Fever Multiplier": int(fg.get("fm_stat", 0) or 0),
+                        "Fever Time": int(fg.get("ft_stat", 0) or 0),
+                        "Fever Fill Rate": int(fg.get("ff_stat", 0) or 0),
+                    }
+                    if primary_color:
+                        stats[primary_color] = int(fg.get("p_val", 0) or 0) + int(dp)
+                    if secondary_color:
+                        stats[secondary_color] = int(fg.get("s_val", 0) or 0) + int(ds)
+                    replay = evaluate_force_greats_exact(stats, group_song, ref_arrays, list(counts0))
+                    if isinstance(replay, dict):
+                        out_list[idx] = int(replay.get("final_score", 0) or 0)
 
             fg_scores_by_sid[sid] = tier_to_scores
     else:
@@ -786,7 +703,7 @@ def compute_team_buff_tier_leaderboards(
             if not isinstance(group_song, dict) or not group_entries:
                 continue
 
-            base_inputs: list[dict[str, Any]] = []
+            base_scores: list[int] = []
             for e in group_entries:
                 b = e.get("base") or {}
                 pp_stat = int(b.get("pp", 0) or 0) + int(delta_pp)
@@ -794,18 +711,19 @@ def compute_team_buff_tier_leaderboards(
                 s_val = int(b.get("s_val", 0) or 0) + int(delta_secondary)
                 pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
                 base_value = (p_val * 2) + s_val + float(pp_factor)
-                base_inputs.append(
-                    {
-                        "base_value": float(base_value),
-                        "combo_mul": float(b.get("cm", 1.0) or 1.0),
-                        "fever_mul": float(b.get("fm", 1.0) or 1.0),
-                        "ft_idx": int(b.get("ft_idx", 0) or 0),
-                        "ff_idx": int(b.get("ff_idx", 0) or 0),
-                    }
+                base_scores.append(
+                    int(
+                        score_fixed_value_exact(
+                            base_value=float(base_value),
+                            combo_mul=float(b.get("cm", 1.0) or 1.0),
+                            fever_mul=float(b.get("fm", 1.0) or 1.0),
+                            ft_idx=int(b.get("ft_idx", 0) or 0),
+                            ff_idx=int(b.get("ff_idx", 0) or 0),
+                            calc_song=group_song,
+                            ref_arrays=ref_arrays,
+                        )
+                    )
                 )
-
-            with _GPU_LOCK:
-                base_scores = score_fixed_stats_gpu(base_inputs, group_song, ref_arrays=ref_arrays)
 
             fg_scores_for_tier = (fg_scores_by_sid.get(sid) or {}).get(str(tier)) if have_fg else None
 

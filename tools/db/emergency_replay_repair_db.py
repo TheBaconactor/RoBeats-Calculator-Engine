@@ -20,8 +20,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -37,13 +35,49 @@ def _infer_difficulty_from_song_name(song_name: str) -> str:
 
 
 def _resolve_song_file(project_root: Path, song_name: str) -> Path | None:
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return None
     inferred = _infer_difficulty_from_song_name(song_name)
     diffs = [inferred] + [d for d in ("Easy", "Normal", "Hard") if d != inferred]
     for diff in diffs:
         fp = project_root / "Data" / diff / f"{song_name}.txt"
         if fp.exists():
             return fp
+    for diff in diffs:
+        root = project_root / "Data" / diff
+        if not root.exists():
+            continue
+        match = _build_song_header_index(root).get(song_name)
+        if match:
+            return match
     return None
+
+
+_SONG_HEADER_INDEX_CACHE: dict[Path, dict[str, Path]] = {}
+
+
+def _build_song_header_index(root: Path) -> dict[str, Path]:
+    root = Path(root).resolve()
+    cached = _SONG_HEADER_INDEX_CACHE.get(root)
+    if cached is not None:
+        return cached
+
+    from gear_optimizer.pipeline.song_processor import scan_song_header
+
+    out: dict[str, Path] = {}
+    for fp in root.rglob("*.txt"):
+        try:
+            meta = scan_song_header(str(fp))
+        except Exception:
+            meta = None
+        if not isinstance(meta, dict):
+            continue
+        name = str(meta.get("Song Name") or "").strip()
+        if name:
+            out.setdefault(name, fp)
+    _SONG_HEADER_INDEX_CACHE[root] = out
+    return out
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -108,45 +142,9 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 
 def _score_fixed_stats(stats: dict[str, Any], calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> int:
-    from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.scoring_core import lookup_reference_py
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
-    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
-    meta = calc_song.get("metadata", {}) or {}
-    primary = str(meta.get("Primary Color", "") or "").strip()
-    secondary = str(meta.get("Secondary Color", "") or "").strip()
-
-    pp_stat = _safe_int(stats.get("Perfect Points", 0), 0)
-    primary_val = _safe_int(stats.get(primary, 0), 0) if primary else 0
-    secondary_val = _safe_int(stats.get(secondary, 0), 0) if secondary else 0
-    pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
-    base_value = (primary_val * 2) + secondary_val + float(pp_factor)
-
-    cm_factor = lookup_reference_py(
-        _safe_int(stats.get("Combo Multiplier", 0), 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
-    )
-    fm_factor = lookup_reference_py(
-        _safe_int(stats.get("Fever Multiplier", 0), 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
-    )
-    ft_idx = _safe_int(stats.get("Fever Time", 0), 0)
-    ff_idx = _safe_int(stats.get("Fever Fill Rate", 0), 0)
-
-    with _GPU_LOCK:
-        score = score_fixed_stats_gpu(
-            [
-                {
-                    "base_value": np.float32(base_value),
-                    "combo_mul": np.float32(cm_factor),
-                    "fever_mul": np.float32(fm_factor),
-                    "ft_idx": int(ft_idx),
-                    "ff_idx": int(ff_idx),
-                }
-            ],
-            calc_song,
-            ref_arrays=ref_arrays,
-        )[0]
-    return int(score)
+    return int(score_stats_exact(stats, calc_song, ref_arrays))
 
 
 def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
@@ -162,7 +160,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
         _unpack_stats_after_load,
     )
     from gear_optimizer.pipeline.song_processor import get_base_calc_song
-    from gear_optimizer.solver.scoring import evaluate_force_greats
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
 
     cfg_dict = cfg_to_dict(load_config())
     ref_arrays = _get_team_buff_ref_arrays_cached()
@@ -184,6 +182,8 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
         "unguaranteed_songs": 0,
     }
     bad_songs: set[str] = set()
+    base_changed_songs: set[str] = set()
+    fg_changed_songs: set[str] = set()
 
     def calc_song_for(song_name: str) -> dict[str, Any] | None:
         if song_name in calc_cache:
@@ -221,6 +221,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
                     counts["base_checked"] += 1
                     if replay_score != _safe_int(row["score"], 0):
                         counts["base_updated"] += 1
+                        base_changed_songs.add(song_name)
                         if write:
                             conn.execute(
                                 "UPDATE team_buff_loadouts SET score=?, timestamp=strftime('%s','now') WHERE rowid=?",
@@ -254,7 +255,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
                     continue
 
                 replay_base = _score_fixed_stats(stats, calc_song, ref_arrays)
-                fg_replay = evaluate_force_greats(
+                fg_replay = evaluate_force_greats_exact(
                     stats, calc_song, ref_arrays, _forced_counts_from_payload(force_payload)
                 )
                 if not isinstance(fg_replay, dict) or "final_score" not in fg_replay:
@@ -265,6 +266,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
 
                 if replay_fg <= replay_base:
                     counts["fg_deleted"] += 1
+                    fg_changed_songs.add(song_name)
                     if write:
                         conn.execute("DELETE FROM team_buff_fg_loadouts WHERE rowid=?", (int(row["rowid"]),))
                     continue
@@ -295,6 +297,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
                     or force_json != old_force
                 ):
                     counts["fg_updated"] += 1
+                    fg_changed_songs.add(song_name)
                     if write:
                         conn.execute(
                             """
@@ -307,6 +310,9 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
 
         bad_songs = {s for s in bad_songs if s}
         counts["unguaranteed_songs"] = len(bad_songs)
+        counts["base_changed_songs"] = len(base_changed_songs)
+        counts["fg_changed_songs"] = len(fg_changed_songs)
+        counts["changed_songs"] = len(base_changed_songs | fg_changed_songs | bad_songs)
         if write and bad_songs:
             for table in ("pending_fg_jobs", "team_buff_fg_loadouts", "team_buff_loadouts"):
                 if _table_exists(conn, table):

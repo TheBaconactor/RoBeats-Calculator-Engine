@@ -131,15 +131,9 @@ def _best_base_rescored_legacy(
     if not _table_exists(conn, "team_buff_loadouts"):
         return {"best": 0, "hash": ""}
 
-    # Lazy imports to keep the default compare fast.
-    import numpy as np
-
-    from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline.song_processor import get_base_calc_song
-    from gear_optimizer.solver.scoring_core import lookup_reference_py
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
-    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = calc_song_cache.get(song)
     if calc_song is None:
@@ -171,8 +165,8 @@ def _best_base_rescored_legacy(
         (str(song), str(team_buff)),
     ).fetchall()
 
-    score_inputs = []
-    hashes: list[str] = []
+    best_score = 0
+    best_hash = ""
     for r in rows or []:
         h = str(r[0] or "").strip()
         details_json = r[1]
@@ -186,43 +180,7 @@ def _best_base_rescored_legacy(
         stats = (details or {}).get("Stats") if isinstance(details, dict) else None
         if not isinstance(stats, dict) or not stats:
             continue
-
-        pp_stat = int(stats.get("Perfect Points", 0) or 0)
-        p_val = int(stats.get(primary, 0) or 0) if primary else 0
-        s_val = int(stats.get(secondary, 0) or 0) if secondary else 0
-        pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
-        cm_factor = lookup_reference_py(
-            int(stats.get("Combo Multiplier", 0) or 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
-        )
-        fm_factor = lookup_reference_py(
-            int(stats.get("Fever Multiplier", 0) or 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
-        )
-
-        base_value = (p_val * 2) + s_val + float(pp_factor)
-        ft_idx = int(stats.get("Fever Time", 0) or 0)
-        ff_idx = int(stats.get("Fever Fill Rate", 0) or 0)
-
-        score_inputs.append(
-            {
-                "base_value": np.float32(base_value),
-                "combo_mul": np.float32(cm_factor),
-                "fever_mul": np.float32(fm_factor),
-                "ft_idx": int(ft_idx),
-                "ff_idx": int(ff_idx),
-            }
-        )
-        hashes.append(h)
-
-    if not score_inputs:
-        return {"best": 0, "hash": ""}
-
-    with _GPU_LOCK:
-        gpu_scores = score_fixed_stats_gpu(score_inputs, calc_song, ref_arrays=ref_arrays)
-
-    best_score = 0
-    best_hash = ""
-    for h, s in zip(hashes, gpu_scores, strict=True):
-        si = int(s)
+        si = int(score_stats_exact(stats, calc_song, ref_arrays))
         if si > best_score:
             best_score = si
             best_hash = h
@@ -299,7 +257,7 @@ def _best_fg_rescored_legacy(
     calc_song_cache: dict[str, dict],
 ):
     """
-    Recompute legacy FG rows with the current GPU exact-inner solver.
+    Recompute legacy FG rows with the CPU exact replay scorer.
 
     Legacy FG payloads can be stale in the same way legacy base payloads can be:
     the persisted `fg_score` may have been produced by an older timeline/config
@@ -309,13 +267,9 @@ def _best_fg_rescored_legacy(
     if not _table_exists(conn, "team_buff_fg_loadouts"):
         return {"best": 0, "hash": ""}
 
-    import numpy as np
-
-    from gear_optimizer.core.color_flags import build_color_flags
+    from gear_optimizer.data.database import _base_details_from_force_payload, _unpack_stats_after_load
     from gear_optimizer.pipeline.song_processor import get_base_calc_song
-    from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
-    from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
 
     rows = conn.execute(
         """
@@ -342,19 +296,8 @@ def _best_fg_rescored_legacy(
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
 
-    meta = calc_song.get("metadata", {}) or {}
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = np.asarray(song_data.get("timestamps", ()), dtype=np.float32)
-    if timestamps.size <= 0:
-        return {"best": 0, "hash": ""}
-
-    scorer = create_chart_scorer_from_calc_song(calc_song, ref_arrays)
-    primary_default = str(meta.get("Primary Color", "") or "").strip()
-    secondary_default = str(meta.get("Secondary Color", "") or "").strip()
-    long_notes = int(meta.get("Long Notes", 0) or 0)
-    last_note_time = float(meta.get("Last Note Time", timestamps[-1]) or timestamps[-1])
-
-    groups: dict[tuple, list[tuple[str, dict]]] = {}
+    best_score = 0
+    best_hash = ""
     for row in rows:
         loadout_hash = str(row[0] or "").strip()
         force_json = row[1]
@@ -372,108 +315,22 @@ def _best_fg_rescored_legacy(
             details = {}
         if not isinstance(details, dict):
             details = {}
+        details = _unpack_stats_after_load(details) if isinstance(details, dict) else {}
 
-        base_stats = force_details.get("BaseStats")
-        if not isinstance(base_stats, dict) or not base_stats:
+        fg_details = _base_details_from_force_payload(details, force_details)
+        stats = fg_details.get("Stats") if isinstance(fg_details, dict) else None
+        if not isinstance(stats, dict) or not stats:
             continue
         forced_counts = _force_config_counts(force_details, details)
         if not forced_counts:
             continue
-        try:
-            ft_gems = int(force_details.get("FT", 0) or 0)
-            ff_gems = int(force_details.get("FF", 0) or 0)
-        except Exception:
+        replay = evaluate_force_greats_exact(stats, calc_song, ref_arrays, forced_counts)
+        if not isinstance(replay, dict):
             continue
-
-        selected = str(
-            force_details.get("Selected Element")
-            or force_details.get("SelectedElement")
-            or details.get("SelectedElement")
-            or details.get("se")
-            or ""
-        ).strip()
-        primary = str(details.get("PrimaryColor") or details.get("pc") or primary_default or selected).strip()
-        secondary = str(details.get("SecondaryColor") or details.get("sc") or secondary_default or selected).strip()
-        if not primary or not secondary or not selected:
-            continue
-
-        try:
-            fp_targets = _forced_counts_to_fp_targets(
-                forced_counts=forced_counts,
-                base_stats=base_stats,
-                ft_gems=ft_gems,
-                ff_gems=ff_gems,
-                scorer=scorer,
-            )
-        except Exception:
-            continue
-        if not fp_targets:
-            continue
-
-        try:
-            genome = {
-                "base_pp": int(base_stats.get("Perfect Points", 0) or 0),
-                "base_cm": int(base_stats.get("Combo Multiplier", 0) or 0),
-                "base_fm": int(base_stats.get("Fever Multiplier", 0) or 0),
-                "base_p_val": int(base_stats.get(primary, 0) or 0),
-                "base_s_val": int(base_stats.get(secondary, 0) or 0),
-                "base_ft_stat": int(base_stats.get("Fever Time", 0) or 0),
-                "base_ff_stat": int(base_stats.get("Fever Fill Rate", 0) or 0),
-            }
-        except Exception:
-            continue
-
-        flags = build_color_flags(primary, secondary, selected)
-        key = (
-            primary,
-            secondary,
-            selected,
-            int(ft_gems),
-            int(ff_gems),
-            tuple(int(x) for x in fp_targets),
-            tuple(int(flags[k]) for k in sorted(flags)),
-        )
-        groups.setdefault(key, []).append((loadout_hash, genome))
-
-    best_score = 0
-    best_hash = ""
-    for key, items in groups.items():
-        primary, secondary, selected, ft_gems, ff_gems, fp_targets, _flags_tuple = key
-        flags = build_color_flags(str(primary), str(secondary), str(selected))
-        genomes = [g for _h, g in items]
-        if not genomes:
-            continue
-        try:
-            with _GPU_LOCK:
-                out = solve_force_greats_finder_gpu(
-                    genomes,
-                    timestamps,
-                    None,
-                    int(long_notes),
-                    float(last_note_time),
-                    [list(fp_targets)],
-                    [(int(ft_gems), int(ff_gems))],
-                    n_sections=len(fp_targets),
-                    ref_arrays=ref_arrays,
-                    total_budget=90,
-                    gem_scale_fever=3,
-                    return_raw=True,
-                    pair_caps_grid=None,
-                    pair_caps_from_timeline=False,
-                    song_slot=0,
-                    cfg_chunk=64,
-                    **flags,
-                )
-        except Exception:
-            continue
-        if not isinstance(out, dict) or "final_score" not in out:
-            continue
-        scores = out.get("final_score")
-        for (loadout_hash, _genome), score in zip(items, scores, strict=False):
-            si = int(score)
-            if si > best_score:
-                best_score = si
-                best_hash = str(loadout_hash)
+        si = int(replay.get("final_score", 0) or 0)
+        if si > best_score:
+            best_score = si
+            best_hash = str(loadout_hash)
 
     return {"best": best_score, "hash": best_hash}
 
