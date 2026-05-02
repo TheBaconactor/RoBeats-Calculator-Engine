@@ -102,3 +102,49 @@ def test_evaluate_progress_record_update_counts_fg_when_it_beats_overall_song_be
     assert info["record_update"] is True
     assert info["prev_overall_score"] == 1000
     assert info["best_overall_score_run"] == 1050
+
+
+def test_evaluate_progress_record_update_ignores_two_point_base_drift():
+    info = evaluate_progress_record_update(
+        {"BaseScore": 1002},
+        {"score": 1000},
+        [],
+        db_best_fg_score=0,
+        baseline_valid=True,
+    )
+
+    assert isinstance(info, dict)
+    assert info["is_better"] is False
+    assert info["is_overall_better"] is False
+    assert info["record_update"] is False
+
+
+def test_evaluate_progress_record_update_ignores_two_point_fg_drift():
+    info = evaluate_progress_record_update(
+        {"BaseScore": 1000},
+        {"score": 1000},
+        [{"base_score": 1000, "fg_score": 1002, "data": {"ForceGreats": {"config": {"a": 1}}}}],
+        db_best_fg_score=1000,
+        baseline_valid=True,
+        fg_only=True,
+    )
+
+    assert isinstance(info, dict)
+    assert info["is_fg_better"] is False
+    assert info["is_overall_better"] is False
+    assert info["record_update"] is False
+
+
+def test_evaluate_progress_record_update_counts_three_point_improvement():
+    info = evaluate_progress_record_update(
+        {"BaseScore": 1003},
+        {"score": 1000},
+        [],
+        db_best_fg_score=0,
+        baseline_valid=True,
+    )
+
+    assert isinstance(info, dict)
+    assert info["is_better"] is True
+    assert info["is_overall_better"] is True
+    assert info["record_update"] is True

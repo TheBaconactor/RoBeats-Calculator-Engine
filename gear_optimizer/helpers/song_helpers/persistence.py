@@ -19,6 +19,9 @@ from .item_utils import names_list
 from .retention import select_retained_hashes
 
 
+RECORD_UPDATE_SCORE_EPSILON = 2
+
+
 def _safe_int_force(value: Any, default: int = 0) -> int:
     """Best-effort integer coercion used for DB payload normalization."""
     try:
@@ -122,7 +125,8 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
             prev_score = _safe_int_force(prev_score_raw, 0)
 
     is_first = prev_record is None
-    is_better = (prev_score is None) or (score > prev_score)
+    score_improvement = int(score) - int(prev_score or 0)
+    is_better = (prev_score is None) or (score_improvement > RECORD_UPDATE_SCORE_EPSILON)
 
     best_fg_score_run = 0
     for fg_entry in fg_variants or []:
@@ -144,10 +148,12 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
         db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
     )
     prev_fg_score = _safe_int_force(prev_fg_score, 0)
-    is_fg_better = best_fg_score_run > prev_fg_score
+    fg_improvement = int(best_fg_score_run) - int(prev_fg_score or 0)
+    is_fg_better = fg_improvement > RECORD_UPDATE_SCORE_EPSILON
     prev_overall_score = max(int(prev_score or 0), int(prev_fg_score or 0))
     best_overall_score_run = max(int(score or 0), int(best_fg_score_run or 0))
-    is_overall_better = best_overall_score_run > prev_overall_score
+    overall_improvement = int(best_overall_score_run) - int(prev_overall_score or 0)
+    is_overall_better = is_first or (overall_improvement > RECORD_UPDATE_SCORE_EPSILON)
 
     return {
         "record_update": bool(is_overall_better),
