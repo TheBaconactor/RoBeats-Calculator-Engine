@@ -35,13 +35,49 @@ def _infer_difficulty_from_song_name(song_name: str) -> str:
 
 
 def _resolve_song_file(project_root: Path, song_name: str) -> Path | None:
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return None
     inferred = _infer_difficulty_from_song_name(song_name)
     diffs = [inferred] + [d for d in ("Easy", "Normal", "Hard") if d != inferred]
     for diff in diffs:
         fp = project_root / "Data" / diff / f"{song_name}.txt"
         if fp.exists():
             return fp
+    for diff in diffs:
+        root = project_root / "Data" / diff
+        if not root.exists():
+            continue
+        match = _build_song_header_index(root).get(song_name)
+        if match:
+            return match
     return None
+
+
+_SONG_HEADER_INDEX_CACHE: dict[Path, dict[str, Path]] = {}
+
+
+def _build_song_header_index(root: Path) -> dict[str, Path]:
+    root = Path(root).resolve()
+    cached = _SONG_HEADER_INDEX_CACHE.get(root)
+    if cached is not None:
+        return cached
+
+    from gear_optimizer.pipeline.song_processor import scan_song_header
+
+    out: dict[str, Path] = {}
+    for fp in root.rglob("*.txt"):
+        try:
+            meta = scan_song_header(str(fp))
+        except Exception:
+            meta = None
+        if not isinstance(meta, dict):
+            continue
+        name = str(meta.get("Song Name") or "").strip()
+        if name:
+            out.setdefault(name, fp)
+    _SONG_HEADER_INDEX_CACHE[root] = out
+    return out
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
