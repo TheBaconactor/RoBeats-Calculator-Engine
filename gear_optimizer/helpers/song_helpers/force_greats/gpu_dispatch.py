@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING, Optional
 
 import numpy as np
 
-from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     TOTAL_ROWS,
@@ -26,9 +26,9 @@ from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candid
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
+from ....solver.taichi_gem.ftff_combos import collect_ftff_pairs_from_centers
 from ..retention import select_retained_hashes
 from .ftff_pairs import (
-    _collect_ftff_pairs_from_centers,
     _group_ftff_pairs_by_max_fp_matrix,
     reduce_ftff_pairs_by_max_fp_surface,
 )
@@ -76,7 +76,7 @@ if TYPE_CHECKING:
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
+    return env_flag(name, default)
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
@@ -2176,7 +2176,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
         # Rebuild the FT/FF window from the reduced signature frontier so the exact
         # solve volume actually drops, not just the post-solve materialization volume.
-        ftff_pairs = _collect_ftff_pairs_from_centers(
+        ftff_pairs = collect_ftff_pairs_from_centers(
             centers,
             search_radius=int(search_radius),
             total_budget=int(TOTAL_GEM_BUDGET),

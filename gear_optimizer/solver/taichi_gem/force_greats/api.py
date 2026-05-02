@@ -1312,30 +1312,25 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     _fg_use_great_candidate_field()
 
 
-def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
-    """
-    Download the active prefix of `fg_best_packed`, using bounded staging when available.
+def _fg_download_packed_prefix(
+    n_genomes: int,
+    *,
+    source_field: Any,
+    staging_candidates: list[tuple[str, Any]],
+    copy_kernel: Any,
+    packed_cols: int,
+) -> tuple[np.ndarray, int, str]:
+    """Download an active packed-result prefix through the smallest staging field."""
 
-    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
-    MAX_GENOMES buffer can dominate when n_genomes is small.
-
-    Returns:
-        (view, transfer_bytes, mode)
-    """
     n = int(n_genomes)
     if n <= 0:
-        return np.empty((0, int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0)), dtype=np.int32), 0, "empty"
+        return np.empty((0, int(packed_cols)), dtype=np.int32), 0, "empty"
 
     mode = "full"
     out = None
     try:
-        full_shape = getattr(fg_fields.fg_best_packed, "shape", None)
+        full_shape = getattr(source_field, "shape", None)
         full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
-
-        staging_candidates = [
-            ("staging_256", getattr(fg_fields, "fg_best_packed_download_staging_256", None)),
-            ("staging_1024", getattr(fg_fields, "fg_best_packed_download_staging_1024", None)),
-        ]
         best = None
         for name, fld in staging_candidates:
             if fld is None:
@@ -1351,13 +1346,13 @@ def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, st
         if best is not None and full_elems > int(best[0]):
             _elems, name, fld = best
             mode = str(name)
-            fg_kernels.fg_copy_best_packed_to_download_staging_kernel(fld, int(n))
+            copy_kernel(fld, int(n))
             out = fld.to_numpy()
     except Exception:
         out = None
 
     if out is None:
-        out = fg_fields.fg_best_packed.to_numpy()
+        out = source_field.to_numpy()
 
     try:
         transfer_bytes = int(getattr(out, "nbytes", 0) or 0)
@@ -1368,6 +1363,28 @@ def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, st
     if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
         return view, transfer_bytes, mode
     return np.ascontiguousarray(view, dtype=np.int32), transfer_bytes, mode
+
+
+def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
+    """
+    Download the active prefix of `fg_best_packed`, using bounded staging when available.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES buffer can dominate when n_genomes is small.
+
+    Returns:
+        (view, transfer_bytes, mode)
+    """
+    return _fg_download_packed_prefix(
+        int(n_genomes),
+        source_field=fg_fields.fg_best_packed,
+        staging_candidates=[
+            ("staging_256", getattr(fg_fields, "fg_best_packed_download_staging_256", None)),
+            ("staging_1024", getattr(fg_fields, "fg_best_packed_download_staging_1024", None)),
+        ],
+        copy_kernel=fg_kernels.fg_copy_best_packed_to_download_staging_kernel,
+        packed_cols=int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0),
+    )
 
 
 def _fg_download_global_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
@@ -1380,52 +1397,16 @@ def _fg_download_global_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, 
     Returns:
         (view, transfer_bytes, mode)
     """
-    n = int(n_genomes)
-    if n <= 0:
-        return np.empty((0, int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0)), dtype=np.int32), 0, "empty"
-
-    mode = "full"
-    out = None
-    try:
-        full_shape = getattr(fg_fields.fg_global_best_packed, "shape", None)
-        full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
-
-        staging_candidates = [
+    return _fg_download_packed_prefix(
+        int(n_genomes),
+        source_field=fg_fields.fg_global_best_packed,
+        staging_candidates=[
             ("staging_256", getattr(fg_fields, "fg_global_best_packed_download_staging_256", None)),
             ("staging_1024", getattr(fg_fields, "fg_global_best_packed_download_staging_1024", None)),
-        ]
-        best = None
-        for name, fld in staging_candidates:
-            if fld is None:
-                continue
-            shape = getattr(fld, "shape", None)
-            if not shape or len(shape) < 2:
-                continue
-            if n <= int(shape[0]):
-                elems = int(shape[0]) * int(shape[1])
-                if best is None or elems < best[0]:
-                    best = (elems, name, fld)
-
-        if best is not None and full_elems > int(best[0]):
-            _elems, name, fld = best
-            mode = str(name)
-            fg_kernels.fg_copy_global_best_packed_to_download_staging_kernel(fld, int(n))
-            out = fld.to_numpy()
-    except Exception:
-        out = None
-
-    if out is None:
-        out = fg_fields.fg_global_best_packed.to_numpy()
-
-    try:
-        transfer_bytes = int(getattr(out, "nbytes", 0) or 0)
-    except Exception:
-        transfer_bytes = 0
-
-    view = out[:n, :]
-    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
-        return view, transfer_bytes, mode
-    return np.ascontiguousarray(view, dtype=np.int32), transfer_bytes, mode
+        ],
+        copy_kernel=fg_kernels.fg_copy_global_best_packed_to_download_staging_kernel,
+        packed_cols=int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0),
+    )
 
 
 def _solve_force_greats_finder_gpu_impl(

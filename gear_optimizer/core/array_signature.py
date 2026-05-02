@@ -48,3 +48,12 @@ def array_sig16(v: Any) -> bytes:
         h.update(int(d).to_bytes(4, "little", signed=False))
     h.update(memoryview(arr_c).cast("B"))
     return h.digest()
+
+
+def arrays_sig16(*values: Any) -> bytes:
+    """Return a stable 16-byte content signature for a sequence of arrays."""
+
+    h = hashlib.blake2b(digest_size=16)
+    for value in values:
+        h.update(array_sig16(value))
+    return h.digest()

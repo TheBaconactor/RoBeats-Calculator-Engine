@@ -1,6 +1,10 @@
 import random
 
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _collect_ftff_pairs_from_centers
+from gear_optimizer.solver.taichi_gem.ftff_combos import (
+    collect_ftff_pairs_from_centers,
+    ftff_combo_arrays,
+    ftff_combo_pairs_list,
+)
 
 
 def _reference_pairs(centers: set[tuple[int, int]], *, search_radius: int, total_budget: int) -> list[tuple[int, int]]:
@@ -41,7 +45,7 @@ def test_ftff_pairs_fast_matches_reference():
                     ff = rng.randint(0, total_budget - ft)
                     centers.add((ft, ff))
 
-                got = _collect_ftff_pairs_from_centers(
+                got = collect_ftff_pairs_from_centers(
                     centers, search_radius=search_radius, total_budget=total_budget, use_fast=True
                 )
                 exp = _reference_pairs(centers, search_radius=search_radius, total_budget=total_budget)
@@ -53,6 +57,15 @@ def test_ftff_pairs_fast_matches_reference():
 
 def test_ftff_pairs_slow_matches_reference():
     centers = {(0, 0), (1, 2), (10, 0), (5, 5)}
-    got = _collect_ftff_pairs_from_centers(centers, search_radius=3, total_budget=20, use_fast=False)
+    got = collect_ftff_pairs_from_centers(centers, search_radius=3, total_budget=20, use_fast=False)
     exp = _reference_pairs(centers, search_radius=3, total_budget=20)
     assert got == exp
+
+
+def test_full_fg_window_uses_ga_ftff_combo_order():
+    got = collect_ftff_pairs_from_centers({(2, 1)}, search_radius=-1, total_budget=4, use_fast=True)
+    combo_ft, combo_ff, combo_budget_left = ftff_combo_arrays(4)
+
+    assert got == ftff_combo_pairs_list(4)
+    assert got == [(int(ft), int(ff)) for ft, ff in zip(combo_ft, combo_ff)]
+    assert combo_budget_left.tolist() == [4 - ft - ff for ft, ff in got]

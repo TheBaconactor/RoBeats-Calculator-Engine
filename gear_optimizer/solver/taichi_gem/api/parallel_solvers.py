@@ -19,6 +19,7 @@ from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from .. import fields
 from ..fields import MAX_GENOMES
 from ..kernel_loader import get_kernels
+from ..ftff_combos import ftff_combo_arrays
 
 from .initialization import (
     ensure_ready,
@@ -95,15 +96,7 @@ def _get_ftff_host_combo_arrays(total_budget: int) -> tuple[np.ndarray, np.ndarr
     Order matches the triangular enumeration used by the GPU combo tables:
       ft=0, ff=0..B ; ft=1, ff=0..B-1 ; ... ; ft=B, ff=0
     """
-    b = int(total_budget)
-    if b < 0:
-        b = 0
-    dim = int(b) + 1
-    tri_i, tri_j = np.triu_indices(dim)
-    ft = tri_i.astype(np.int32, copy=False)
-    ff = (tri_j - tri_i).astype(np.int32, copy=False)
-    budget_left = (int(b) - ft - ff).astype(np.int32, copy=False)
-    return ft, ff, budget_left
+    return ftff_combo_arrays(int(total_budget))
 
 
 def _combo_indices_for_limits(

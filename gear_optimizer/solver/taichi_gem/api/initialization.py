@@ -9,13 +9,14 @@ This module provides initialization and setup functions:
 
 from __future__ import annotations
 
-import hashlib
 import taichi as ti
 import numpy as np
 
+from gear_optimizer.core.array_signature import arrays_sig16
 from gear_optimizer.core.env_config import ENV
 from ..runtime import init_taichi, is_initialized
 from .. import fields
+from ..ftff_combos import ftff_combo_arrays
 from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
     GRID_SIZE,
@@ -41,17 +42,13 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
     We avoid caching by `id(ref_arrays)` because in parallel/IPC mode each request
     arrives as a distinct Python object despite having identical contents.
     """
-    h = hashlib.blake2b(digest_size=16)
-    for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time"):
-        if key not in ref_arrays:
-            # Preserve old behavior: some call sites may omit optional FT/FF.
-            h.update(b"\x00")
-            continue
-        arr = np.asarray(ref_arrays[key])
-        h.update(str(arr.dtype).encode("utf-8"))
-        h.update(arr.shape[0].to_bytes(4, "little", signed=False))
-        h.update(arr.tobytes(order="C"))
-    return h.digest()
+    return arrays_sig16(
+        ref_arrays.get("Perfect Points"),
+        ref_arrays.get("Combo Multiplier"),
+        ref_arrays.get("Fever Multiplier"),
+        ref_arrays.get("Fever Fill Rate"),
+        ref_arrays.get("Fever Time"),
+    )
 
 
 def _build_exact_pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
@@ -190,16 +187,11 @@ def _ensure_ftff_combo_tables(
     ft = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
     ff = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
 
-    # Vectorized triangular enumeration preserving the original triangular order:
-    # ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0
-    dim = int(total_budget) + 1
-    tri_i, tri_j = np.triu_indices(dim)
-    ft_vals = tri_i.astype(np.int32, copy=False)
-    ff_vals = (tri_j - tri_i).astype(np.int32, copy=False)
-    if cap_ft < int(total_budget) or cap_ff < int(total_budget):
-        valid = (ft_vals <= int(cap_ft)) & (ff_vals <= int(cap_ff))
-        ft_vals = ft_vals[valid]
-        ff_vals = ff_vals[valid]
+    ft_vals, ff_vals, _budget_left = ftff_combo_arrays(
+        int(total_budget),
+        max_ft_gems=int(cap_ft),
+        max_ff_gems=int(cap_ff),
+    )
 
     n_combos = int(ft_vals.shape[0])
     ft[:n_combos] = ft_vals
