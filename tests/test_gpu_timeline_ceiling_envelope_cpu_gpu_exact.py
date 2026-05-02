@@ -109,14 +109,6 @@ def _cpu_ceiling_sig_for_cell(
         d = int(group_base[g]) - int(group_base[prev_g])
         return int(d if d >= 1 else 1)
 
-    def _propagate_interval(lo: int, hi: int, g: int) -> tuple[int, int]:
-        d = int(group_base[g]) - int(group_base[g - 1])
-        if d < 1:
-            d = 1
-        out_lo = max(int(group_low[g]), int(lo) - int(d))
-        out_hi = max(int(group_high[g]), int(hi) - int(d))
-        return int(out_lo), int(out_hi)
-
     def _simulate(*, pick_high: bool, end_mode: int) -> tuple[int, tuple[int, int, int, int], int, int, int, int]:
         m = [0, 0, 0, 0]  # uint32 bits as Python ints
         body_fever = 0
@@ -140,6 +132,9 @@ def _cpu_ceiling_sig_for_cell(
                 w = i >> 5
                 b = i & 31
                 m[w] |= 1 << b
+
+        event_lo = group_base.astype(np.int64) + group_low.astype(np.int64)
+        event_hi = group_base.astype(np.int64) + group_high.astype(np.int64)
 
         while current_note < n:
             fever_section += 1
@@ -203,49 +198,18 @@ def _cpu_ceiling_sig_for_cell(
             c_s = int(group_base[s])
             Q = int(c_s + r_act + int(d_ms))
 
-            b_minus = int(np.searchsorted(group_base, int(Q - 80), side="left"))
-            b_plus = int(np.searchsorted(group_base, int(Q + 40), side="left"))
-
             start_g = int(s + 1)
-            b_minus = max(start_g, min(b_minus, gcount))
-            b_plus = max(start_g, min(b_plus, gcount))
 
             if int(end_mode) != 0:
-                # End fever as early as possible: first reachable out-group in the swing band.
-                lo = int(r_act)
-                hi = int(r_act)
-
-                g = int(start_g)
-                while g < b_minus:
-                    lo, hi = _propagate_interval(lo, hi, g)
-                    g += 1
-
-                out_group = -1
+                # End fever as early as possible: first group whose latest event time can reach Q.
+                out_group = int(np.searchsorted(event_hi, int(Q), side="left"))
+                out_group = max(int(start_g), min(int(out_group), int(gcount)))
                 out_carry = 0
 
-                g = int(b_minus)
-                while g < b_plus and g < gcount:
-                    lo, hi = _propagate_interval(lo, hi, g)
-
-                    c_g = int(group_base[g])
-                    out_threshold = int(Q - c_g)
-                    if int(hi) >= int(out_threshold):
-                        out_group = int(g)
-                        out_carry = max(int(lo), int(out_threshold))
-                        break
-
-                    remain_hi = int(out_threshold - 1)
-                    lo = max(int(lo), -40)
-                    hi = min(int(hi), int(remain_hi))
-                    g += 1
-
                 if out_group >= 0:
-                    fever_end_idx = int(group_starts[out_group])
-                else:
-                    if b_plus < gcount:
-                        out_group = int(b_plus)
-                        out_lo, _out_hi = _propagate_interval(lo, hi, out_group)
-                        out_carry = int(out_lo)
+                    if out_group < gcount:
+                        out_carry = max(int(group_low[out_group]), int(Q) - int(group_base[out_group]))
+                        out_carry = min(int(out_carry), int(group_high[out_group]))
                         fever_end_idx = int(group_starts[out_group])
                     else:
                         fever_end_idx = n
@@ -269,50 +233,16 @@ def _cpu_ceiling_sig_for_cell(
                 current_note = int(fever_end_idx)
                 continue
 
-            lo = int(r_act)
-            hi = int(r_act)
-            last_fever_group = int(s)
+            exit_group = int(np.searchsorted(event_lo, int(Q), side="left"))
+            exit_group = max(int(start_g), min(int(exit_group), int(gcount)))
+            last_fever_group = max(int(s), int(exit_group) - 1)
             last_fever_hi = int(r_act)
-
-            g = int(start_g)
-            while g < b_minus:
-                lo, hi = _propagate_interval(lo, hi, g)
-                last_fever_group = int(g)
-                last_fever_hi = int(hi)
-                g += 1
-
-            exit_group = -1
-            g = int(b_minus)
-            while g < b_plus and g < gcount:
-                prev_lo = int(lo)
-                prev_hi = int(hi)
-                lo, hi = _propagate_interval(lo, hi, g)
-
-                c_g = int(group_base[g])
-                remain_hi = int(Q - c_g - 1)
-                keep_lo = max(int(lo), -40)
-                keep_hi = min(int(hi), int(remain_hi))
-
-                if keep_lo <= keep_hi:
-                    lo = int(keep_lo)
-                    hi = int(keep_hi)
-                    last_fever_group = int(g)
-                    last_fever_hi = int(hi)
-                    g += 1
-                    continue
-
-                exit_group = int(g)
-                lo = int(prev_lo)
-                hi = int(prev_hi)
-                break
+            if last_fever_group != int(s):
+                last_fever_hi = int(group_high[last_fever_group])
 
             if exit_group >= 0:
-                fever_end_idx = int(group_starts[exit_group])
-            else:
-                if b_plus < gcount:
-                    g = int(b_plus)
-                    _ = _propagate_interval(lo, hi, g)  # One-step propagate to the always-out group (debug parity).
-                    fever_end_idx = int(group_starts[g])
+                if exit_group < gcount:
+                    fever_end_idx = int(group_starts[exit_group])
                 else:
                     fever_end_idx = n
 
