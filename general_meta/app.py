@@ -28,6 +28,29 @@ from .analysis import (
 from .song_scan import get_songs_by_elemental_combo
 
 
+def _representative_mini_names(mini_groups: object) -> list[str]:
+    groups = normalize_minis_groups_for_display(mini_groups or [])
+    return sorted([min(group) for group in groups if group])
+
+
+def _assert_known_mini_names(
+    mini_names: list[str],
+    minis_by_name: Dict[str, dict],
+    *,
+    context: str,
+) -> None:
+    missing = sorted({name for name in mini_names if name and name not in minis_by_name})
+    if not missing:
+        return
+    preview = ", ".join(missing[:8])
+    if len(missing) > 8:
+        preview += ", ..."
+    raise RuntimeError(
+        f"Missing mini stats in GeneralMeta input ({context}): {preview}. "
+        "Refresh optimizer CSVs from Data/exported_game_data.json before running GeneralMeta."
+    )
+
+
 def _serialize_details_json(details: object) -> str | None:
     if not isinstance(details, dict) or not details:
         return None
@@ -178,7 +201,12 @@ def run_general_meta(cfg, paths: dict) -> dict:
         loadout_key = str(loadout_data.get("loadout_key") or "").strip()
         gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
         minis_groups = normalize_minis_groups_for_display(loadout_data.get("mini_groups") or [])
-        mini_names = sorted([min(g) for g in minis_groups if g])
+        mini_names = _representative_mini_names(minis_groups)
+        _assert_known_mini_names(
+            mini_names,
+            minis_by_name,
+            context=f"loadout_key={loadout_key or '<unknown>'}, team_buff={team_buff}",
+        )
         avg_gems = loadout_data["avg_gems"]
         peak_in_songs = loadout_data.get("peak_in_songs") or []
         peak_in_songs_meta = loadout_data.get("peak_in_songs_meta") or []
