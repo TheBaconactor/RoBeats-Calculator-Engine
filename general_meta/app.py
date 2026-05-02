@@ -183,6 +183,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         peak_in_songs = loadout_data.get("peak_in_songs") or []
         peak_in_songs_meta = loadout_data.get("peak_in_songs_meta") or []
         peak_in_songs_fg = loadout_data.get("peak_in_songs_fg") or []
+        song_wins = loadout_data.get("song_wins") or []
 
         stats_base = compute_full_stats(
             gear_names,
@@ -207,6 +208,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             "peak_in_songs": peak_in_songs,
             "peak_in_songs_meta": peak_in_songs_meta,
             "peak_in_songs_fg": peak_in_songs_fg,
+            "song_wins": song_wins,
             "songs_with_set": loadout_data["songs_with_set"],
             "win_frequency": loadout_data["win_frequency"],
             "stats_base": stats_base,

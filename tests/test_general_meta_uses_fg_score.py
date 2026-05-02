@@ -14,6 +14,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
     all_loadouts = [
         {
             "song_name": "Song A",
+            "loadout_hash": "target-song-a",
             "score": 100,
             "fg_score": 500,
             "gear": list(target_gears),
@@ -22,6 +23,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
         },
         {
             "song_name": "Song A",
+            "loadout_hash": "other-song-a",
             "score": 300,
             "fg_score": 300,
             "gear": ["Hat X"],
@@ -30,6 +32,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
         },
         {
             "song_name": "Song B",
+            "loadout_hash": "target-song-b",
             "score": 400,
             "fg_score": 400,
             "gear": list(target_gears),
@@ -38,6 +41,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
         },
         {
             "song_name": "Song B",
+            "loadout_hash": "other-song-b",
             "score": 350,
             "fg_score": 350,
             "gear": ["Hat Y"],
@@ -59,3 +63,27 @@ def test_general_meta_counts_top1_by_effective_fg_score():
     assert top["peak_in_songs"] == ["Song A", "Song B"]
     assert top["peak_in_songs_meta"] == ["Song B"]
     assert top["peak_in_songs_fg"] == ["Song A"]
+    assert top["song_wins"] == [
+        {
+            "song_id": "Song A",
+            "song_name": "Song A",
+            "mode": "fg",
+            "score": 500,
+            "base_score": 100,
+            "fg_score": 500,
+            "loadout_hash": "target-song-a",
+            "rank_index": 0,
+            "rank": 1,
+        },
+        {
+            "song_id": "Song B",
+            "song_name": "Song B",
+            "mode": "meta",
+            "score": 400,
+            "base_score": 400,
+            "fg_score": 400,
+            "loadout_hash": "target-song-b",
+            "rank_index": 0,
+            "rank": 1,
+        },
+    ]

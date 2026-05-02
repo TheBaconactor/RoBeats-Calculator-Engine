@@ -102,6 +102,70 @@ def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
     return min(tied)
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value or default)
+    except Exception:
+        return default
+
+
+def _row_mode(row: dict) -> str:
+    return "fg" if _safe_int(row.get("fg_score")) > _safe_int(row.get("score")) else "meta"
+
+
+def _row_mode_score(row: dict, mode: str) -> int:
+    return _safe_int(row.get("fg_score" if mode == "fg" else "score"))
+
+
+def _rank_index_for_song_mode(rows: list[dict], target: dict, mode: str) -> int | None:
+    ranked = [
+        row
+        for row in rows
+        if _row_mode_score(row, mode) > 0
+        and (mode != "fg" or _safe_int(row.get("fg_score")) > _safe_int(row.get("score")))
+    ]
+    ranked.sort(
+        key=lambda row: (
+            -_row_mode_score(row, mode),
+            str(row.get("loadout_hash") or ""),
+            tuple(str(v or "") for v in (row.get("gear") or [])),
+            tuple(tuple(str(v or "") for v in group) for group in (row.get("mini_groups") or [])),
+        )
+    )
+
+    target_hash = str(target.get("loadout_hash") or "").strip()
+    for idx, row in enumerate(ranked):
+        if target_hash and str(row.get("loadout_hash") or "").strip() == target_hash:
+            return idx
+        if row is target:
+            return idx
+    return None
+
+
+def _song_win_entry(row: dict, *, mode: str, rank_index: int | None, team_buff: str | None = None) -> dict:
+    song_name = str(row.get("song_name") or "").strip()
+    loadout_hash = str(row.get("loadout_hash") or "").strip()
+    score = _row_mode_score(row, mode)
+    out = {
+        "song_id": song_name,
+        "song_name": song_name,
+        "mode": mode,
+        "score": score,
+        "base_score": _safe_int(row.get("score")),
+        "fg_score": _safe_int(row.get("fg_score")),
+    }
+    if team_buff:
+        out["team_buff"] = str(team_buff)
+    if loadout_hash:
+        out["loadout_hash"] = loadout_hash
+    if rank_index is not None:
+        out["rank_index"] = int(rank_index)
+        out["rank"] = int(rank_index) + 1
+    return out
+
+
 def _minis_keys_from_groups(mini_groups: object) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
     """
     Convert decoded mini variant groups into:
@@ -154,6 +218,7 @@ def find_most_common_loadout(
     wins: Counter = Counter()
     loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
     mini_variants: Dict[Tuple[Any, ...], Counter] = {}
+    song_win_rows: Dict[Tuple[Any, ...], List[dict]] = {}
 
     for song_name in song_names:
         loadouts = (loadouts_by_song or {}).get(song_name, [])
@@ -161,6 +226,7 @@ def find_most_common_loadout(
             continue
 
         best = max(loadouts, key=_effective_score)
+        mode = _row_mode(best)
         gears = list(best.get("gear") or [])
         rep_names, variant_key = _minis_keys_from_groups(best.get("mini_groups"))
         sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements)
@@ -173,6 +239,14 @@ def find_most_common_loadout(
         wins[loadout_key] += 1
         loadout_rows.setdefault(loadout_key, []).append(best)
         mini_variants.setdefault(loadout_key, Counter())[variant_key] += 1
+        song_win_rows.setdefault(loadout_key, []).append(
+            _song_win_entry(
+                best,
+                mode=mode,
+                rank_index=_rank_index_for_song_mode(loadouts, best, mode),
+                team_buff=str(best.get("team_buff") or "").strip() or None,
+            )
+        )
 
     if not wins:
         return []
@@ -201,6 +275,10 @@ def find_most_common_loadout(
             }
         )
         peak_in_songs = sorted(set(peak_in_songs_meta) | set(peak_in_songs_fg))
+        song_wins = sorted(
+            song_win_rows.get(key) or [],
+            key=lambda item: (str(item.get("song_name") or ""), str(item.get("mode") or "")),
+        )
 
         # Representative mini variant (preserves per-mini group variants).
         variants = mini_variants.get(key) or Counter()
@@ -237,6 +315,7 @@ def find_most_common_loadout(
                 "peak_in_songs": peak_in_songs,
                 "peak_in_songs_meta": peak_in_songs_meta,
                 "peak_in_songs_fg": peak_in_songs_fg,
+                "song_wins": song_wins,
                 "songs_with_set": len(rows),
                 "win_frequency": count,
                 "avg_score": avg_score,
