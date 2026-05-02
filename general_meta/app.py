@@ -28,6 +28,52 @@ from .analysis import (
 from .song_scan import get_songs_by_elemental_combo
 
 
+def _canonicalize_loadout_identity(loadout: dict) -> tuple:
+    loadout_key = str(loadout.get("loadout_key") or "").strip()
+    team_buff = str(loadout.get("team_buff") or "").strip()
+    gear = tuple(str(name or "").strip() for name in (loadout.get("gear") or []))
+    mini_groups = tuple(
+        tuple(str(name or "").strip() for name in group)
+        for group in normalize_minis_groups_for_display(loadout.get("mini_groups") or [])
+    )
+    gems = loadout.get("gems") if isinstance(loadout.get("gems"), dict) else {}
+    gems_key = tuple(sorted((str(k), int(v or 0)) for k, v in gems.items()))
+    return (loadout_key, team_buff, gear, mini_groups, gems_key)
+
+
+def _stats_payload(loadout: dict) -> tuple:
+    stats = loadout.get("stats") if isinstance(loadout.get("stats"), dict) else {}
+    stats_base = loadout.get("stats_base") if isinstance(loadout.get("stats_base"), dict) else {}
+    stats_key = tuple(sorted((str(k), int(v or 0)) for k, v in stats.items()))
+    stats_base_key = tuple(sorted((str(k), int(v or 0)) for k, v in stats_base.items()))
+    return (stats_key, stats_base_key)
+
+
+def _assert_no_stats_only_duplicate_loadouts(loadouts: list[dict], *, context: str) -> None:
+    """
+    Guardrail: identical loadout identity must never appear with conflicting stats.
+
+    This catches "stats override" drift where a 1:1 loadout identity is duplicated
+    and only stat payload differs, which would create ambiguous duplicate entries.
+    """
+    seen: dict[tuple, tuple[int, tuple]] = {}
+    for idx, loadout in enumerate(loadouts):
+        identity = _canonicalize_loadout_identity(loadout)
+        stats_payload = _stats_payload(loadout)
+        previous = seen.get(identity)
+        if previous is None:
+            seen[identity] = (idx, stats_payload)
+            continue
+        prev_idx, prev_payload = previous
+        if prev_payload != stats_payload:
+            raise AssertionError(
+                f"GeneralMeta duplicate loadout conflict in {context}: "
+                f"identical loadout identity appears at positions {prev_idx + 1} and {idx + 1} "
+                "with different stats/stats_base. You cannot override stats for a 1:1 loadout "
+                "because it will cause a duplicate; manual review required."
+            )
+
+
 def _representative_mini_names(mini_groups: object) -> list[str]:
     groups = normalize_minis_groups_for_display(mini_groups or [])
     return sorted([min(group) for group in groups if group])
@@ -332,6 +378,10 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 _build_loadout_entry(loadout_data, primary, team_buff=tier_label, team_color=team_color)
                 for loadout_data in tier_loadouts
             ]
+            _assert_no_stats_only_duplicate_loadouts(
+                loadout_entries_by_tier[tier_label],
+                context=f"{combo_key} tier={tier_label}",
+            )
             team_buff_winners[tier_label]["songs_count_with_data"] = len(songs_with_data_by_tier[tier_label])
             team_buff_winners[tier_label]["winner"] = (
                 loadout_entries_by_tier[tier_label][0] if loadout_entries_by_tier[tier_label] else None
