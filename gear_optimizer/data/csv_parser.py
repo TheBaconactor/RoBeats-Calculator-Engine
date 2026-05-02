@@ -62,10 +62,16 @@ def _first_val(row_map, keys):
         str: First matching value or empty string
     """
     for key in keys:
-        for val in row_map.get(key, []):
-            v = str(val).strip() if val is not None else ""
-            if v:
-                return v
+        values = row_map.get(key, [])
+        if not values:
+            continue
+        # Some source CSVs contain duplicated stat columns where a trailing
+        # "L1 Stats" block repeats the same header names. Always use the first
+        # occurrence for a header key so we do not silently fall back to the
+        # level-1 duplicate when the primary column is blank.
+        v = str(values[0]).strip() if values[0] is not None else ""
+        if v:
+            return v
     return ""
 
 
