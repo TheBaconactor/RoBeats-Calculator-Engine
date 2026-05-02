@@ -114,9 +114,8 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.solver.scoring.force_greats import _extract_base_stats
-    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
     from gear_optimizer.solver.scoring import solve_best_fever_combination
-    from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 
     song_name = f"pytest_db_roundtrip_fg_manual_{uuid4().hex}"
     calc_song = _mock_song(name=song_name, n_notes=96)
@@ -158,10 +157,10 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
     )
 
     forced_counts = [2, 0]
-    fg_eval = evaluate_force_greats(res["Stats"], calc_song, ref_arrays, forced_counts)
+    fg_eval = evaluate_force_greats_exact(res["Stats"], calc_song, ref_arrays, forced_counts)
     assert fg_eval is not None
 
-    score = int(res["Score"])
+    score = int(score_stats_exact(res["Stats"], calc_song, ref_arrays))
     fg_score = int(fg_eval["final_score"])
     assert score > 0
 
@@ -176,11 +175,11 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
 
     # Phase 1 (in-house): verify score math and backward/forward stat accounting.
     inhouse_stats = {k: int(v) for k, v in (details.get("Stats") or {}).items()}
-    inhouse_base_score = int(evaluate_stats_score(inhouse_stats, calc_song, ref_arrays))
-    assert abs(inhouse_base_score - score) <= 2
+    inhouse_base_score = int(score_stats_exact(inhouse_stats, calc_song, ref_arrays))
+    assert inhouse_base_score == score
 
     inhouse_counts = _config_dict_to_counts(fg_eval["config_dict"])
-    inhouse_fg_eval = evaluate_force_greats(inhouse_stats, calc_song, ref_arrays, inhouse_counts)
+    inhouse_fg_eval = evaluate_force_greats_exact(inhouse_stats, calc_song, ref_arrays, inhouse_counts)
     assert inhouse_fg_eval is not None
     assert int(inhouse_fg_eval["final_score"]) == fg_score
 
@@ -203,6 +202,17 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
         inhouse_ff,
     )
     assert inhouse_forward == inhouse_stats
+
+    force_data = {
+        "BaseStats": dict(inhouse_base_stats),
+        "GemCounts": dict(inhouse_gems),
+        "FT": int(inhouse_ft),
+        "FF": int(inhouse_ff),
+        "Selected Element": str(inhouse_selected),
+        "BaseScore": int(score),
+        "Score": int(fg_score),
+        "ForceGreats": {"mode": "manual", "config": fg_eval["config_dict"], "final_score": int(fg_score)},
+    }
 
     save_loadouts_batch(
         song_name,
@@ -247,10 +257,10 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent(tmp_path, mon
     assert counts == forced_counts
 
     stored_stats = stored_details.get("Stats") or {}
-    stored_base_score = int(evaluate_stats_score(stored_stats, calc_song, ref_arrays))
-    assert abs(stored_base_score - int(row["score"])) <= 2
+    stored_base_score = int(score_stats_exact(stored_stats, calc_song, ref_arrays))
+    assert stored_base_score == int(row["score"])
 
-    fg_eval_roundtrip = evaluate_force_greats(stored_stats, calc_song, ref_arrays, counts)
+    fg_eval_roundtrip = evaluate_force_greats_exact(stored_stats, calc_song, ref_arrays, counts)
     assert fg_eval_roundtrip is not None
     assert int(fg_eval_roundtrip["final_score"]) == fg_score
 

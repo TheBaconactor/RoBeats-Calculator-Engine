@@ -437,6 +437,7 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 
     calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
@@ -467,32 +468,8 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         },
     }
 
-    def _fake_score_fixed_stats_gpu(base_inputs, _group_song, *, ref_arrays=None):
-        assert len(base_inputs) == 1
-        return np.asarray([110], dtype=np.int32)
-
-    def _fake_solve_force_greats_finder_gpu(
-        genomes,
-        timestamps,
-        great_timestamps,
-        long_notes,
-        last_note_time,
-        counts,
-        offsets,
-        **kwargs,
-    ):
-        assert len(genomes) == 1
-        assert counts
-        return {"final_score": np.asarray([95], dtype=np.int32)}
-
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.api.fixed_scoring.score_fixed_stats_gpu",
-        _fake_score_fixed_stats_gpu,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.api.solve_force_greats_finder_gpu",
-        _fake_solve_force_greats_finder_gpu,
-    )
+    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
+    expected_fg = int(evaluate_force_greats_exact(stats, calc_song, ref_arrays, [1])["final_score"])
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -504,18 +481,20 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     )
 
     tier = out["tiers"]["T5"]
-    assert tier["base_top51"][0]["score"] == 110
-    assert tier["base_top51"][0]["fg_score"] == 95
+    assert tier["base_top51"][0]["score"] == expected_base
+    assert tier["base_top51"][0]["fg_score"] == expected_fg
     assert len(tier["fg_top51"]) == 1
-    assert tier["fg_top51"][0]["fg_score"] == 95
+    assert tier["fg_top51"][0]["fg_score"] == expected_fg
     assert tier["fg_top51"][0]["fg_base_score"] == 90
-    assert tier["fg_top51"][0]["score"] == 110
+    assert tier["fg_top51"][0]["score"] == expected_base
 
 
 @pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T20", "T50", "T51"])
 def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(monkeypatch, tier_name: str):
     from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 
     calc_song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
@@ -546,32 +525,13 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
         },
     }
 
-    def _fake_score_fixed_stats_gpu(base_inputs, _group_song, *, ref_arrays=None):
-        assert len(base_inputs) == 1
-        return np.asarray([110], dtype=np.int32)
-
-    def _fake_solve_force_greats_finder_gpu(
-        genomes,
-        timestamps,
-        great_timestamps,
-        long_notes,
-        last_note_time,
-        counts,
-        offsets,
-        **kwargs,
-    ):
-        assert len(genomes) == 1
-        assert counts
-        return {"final_score": np.asarray([120], dtype=np.int32)}
-
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.api.fixed_scoring.score_fixed_stats_gpu",
-        _fake_score_fixed_stats_gpu,
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.api.solve_force_greats_finder_gpu",
-        _fake_solve_force_greats_finder_gpu,
-    )
+    base_effect = team_buff_effect("T5", "Rush")
+    target_effect = team_buff_effect(tier_name, "Rush")
+    tier_stats = dict(stats)
+    for key in set(base_effect) | set(target_effect):
+        tier_stats[key] = int(tier_stats.get(key, 0)) + int(target_effect.get(key, 0)) - int(base_effect.get(key, 0))
+    expected_base = int(score_stats_exact(tier_stats, calc_song, ref_arrays))
+    expected_fg = int(evaluate_force_greats_exact(tier_stats, calc_song, ref_arrays, [1])["final_score"])
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -583,13 +543,16 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     )
 
     tier = out["tiers"][tier_name]
-    assert tier["base_top51"][0]["score"] == 110
-    assert tier["base_top51"][0]["fg_score"] == 120
-    assert len(tier["fg_top51"]) == 1
-    assert tier["fg_top51"][0]["fg_score"] == 120
-    assert tier["fg_top51"][0]["fg_base_score"] == 110
-    assert tier["fg_top51"][0]["source_fg_base_score"] == 130
-    assert tier["fg_top51"][0]["score"] == 110
+    assert tier["base_top51"][0]["score"] == expected_base
+    assert tier["base_top51"][0]["fg_score"] == expected_fg
+    if expected_fg > expected_base:
+        assert len(tier["fg_top51"]) == 1
+        assert tier["fg_top51"][0]["fg_score"] == expected_fg
+        assert tier["fg_top51"][0]["fg_base_score"] == expected_base
+        assert tier["fg_top51"][0]["source_fg_base_score"] == 130
+        assert tier["fg_top51"][0]["score"] == expected_base
+    else:
+        assert tier["fg_top51"] == []
 
 
 def test_team_buff_tier_postprocess_fg_scoring_matches_gpu_force_greats_kernel():
@@ -1201,16 +1164,17 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     assert int(rows[2].get("fg_base_score") or 0) == 190
 
 
-def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monkeypatch):
+def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypatch):
     """
-    Regression test: CPU fixed scoring can diverge from production GPU scoring due to
-    the analytical timing-envelope ceiling path. Tier postprocess must match GPU.
+    Regression test: GPU f32 fixed scoring can diverge at floor boundaries.
+    Tier postprocess now uses CPU exact replay as the retained-row authority.
     """
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
     from gear_optimizer.solver.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
     from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 
     # Enable the ceiling kernel (tests default it off for most of the suite).
@@ -1264,6 +1228,7 @@ def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monke
     }
 
     cpu = int(evaluate_stats_score(stats, calc_song, ref_arrays))
+    exact = int(score_stats_exact(stats, calc_song, ref_arrays))
 
     primary = calc_song["metadata"]["Primary Color"]
     secondary = calc_song["metadata"]["Secondary Color"]
@@ -1314,5 +1279,6 @@ def test_team_buff_tier_postprocess_base_scoring_matches_gpu_fixed_scoring(monke
     )
 
     scored = int(out["tiers"]["T5"]["base_top51"][0]["score"])
-    assert scored == gpu
-    assert scored != cpu
+    assert scored == exact
+    assert gpu != exact
+    assert cpu != gpu
