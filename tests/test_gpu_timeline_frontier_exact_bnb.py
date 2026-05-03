@@ -41,6 +41,7 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
             song_slot = ti.i32(0)
             ft_idx = ti.i32(0)
             ff_idx = ti.i32(0)
+            base_pool_idx = ti.i32(3)
 
             fields.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
             fields.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
@@ -49,13 +50,12 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
             fields.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
             for word in ti.static(range(4)):
                 fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, word] = ti.u32(0)
-                fields.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, 0, word] = ti.u32(0)
-                fields.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, 1, word] = ti.u32(0)
 
             # Primary/proxy timeline: all body notes are normal.
             fields.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
             fields.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(10, ti.i16)
-            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
+            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i32)
+            fields.grid_frontier_offset[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i32)
             fallback = optimize_core_device_exact_bound(
                 0,
                 0,
@@ -79,13 +79,19 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
                 ff_idx,
             )
 
-            # Frontier exposes the same primary/proxy variant plus a fever-body
-            # alternative. BnB must score both against this concrete loadout.
-            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(2, ti.i8)
-            fields.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, 0] = ti.cast(0, ti.i16)
-            fields.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, 0] = ti.cast(10, ti.i16)
-            fields.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, 1] = ti.cast(10, ti.i16)
-            fields.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, 1] = ti.cast(0, ti.i16)
+            # Frontier exposes five packed surfaces with an offset. The best
+            # surface lives in the 5th packed slot, proving the consumer no
+            # longer has a hard four-variant cap.
+            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(5, ti.i32)
+            fields.grid_frontier_offset[song_slot, ft_idx, ff_idx] = base_pool_idx
+            for variant_idx in ti.static(range(5)):
+                pool_idx = base_pool_idx + ti.cast(variant_idx, ti.i32)
+                fields.grid_frontier_masks_bits_pool[song_slot, pool_idx, 0] = ti.u32(0)
+                fields.grid_frontier_masks_bits_pool[song_slot, pool_idx, 1] = ti.u32(0)
+                fields.grid_frontier_masks_bits_pool[song_slot, pool_idx, 2] = ti.u32(0)
+                fields.grid_frontier_masks_bits_pool[song_slot, pool_idx, 3] = ti.u32(0)
+                fields.grid_frontier_body_fever_pool[song_slot, pool_idx] = ti.cast(variant_idx, ti.i32)
+                fields.grid_frontier_body_normal_pool[song_slot, pool_idx] = ti.cast(10 - variant_idx, ti.i32)
             frontier = optimize_core_device_exact_bound(
                 0,
                 0,
@@ -117,11 +123,13 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
 
         @ti.kernel
         def _disable_frontier():
-            fields.grid_frontier_count[0, 0, 0] = ti.cast(0, ti.i8)
+            fields.grid_frontier_count[0, 0, 0] = ti.cast(0, ti.i32)
+            fields.grid_frontier_offset[0, 0, 0] = ti.cast(0, ti.i32)
 
         @ti.kernel
         def _enable_frontier():
-            fields.grid_frontier_count[0, 0, 0] = ti.cast(2, ti.i8)
+            fields.grid_frontier_count[0, 0, 0] = ti.cast(5, ti.i32)
+            fields.grid_frontier_offset[0, 0, 0] = ti.cast(3, ti.i32)
 
         base_value = np.array([10_000.0], dtype=np.float32)
         combo_mul = np.array([2.0], dtype=np.float32)
@@ -138,5 +146,8 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
         _score_fixed_batch(base_value, combo_mul, fever_mul, ft_idx, ff_idx, fixed_scores, 1, 0)
         fixed_frontier = int(fixed_scores[0])
 
+        expected_frontier = int((4 * 100_000) + (6 * 20_000))
+
     assert int(got[1]) > int(got[0])
     assert fixed_frontier > fixed_primary
+    assert fixed_frontier == expected_frontier

@@ -27,7 +27,6 @@ except ImportError:
 try:
     from .timeline import (
         precompute_timeline_gpu,
-        _upload_timeline_grid,
     )
 except ImportError:
     pass
@@ -111,7 +110,6 @@ __all__ = [
     "_maybe_sync",
     # Timeline
     "precompute_timeline_gpu",
-    "_upload_timeline_grid",
     # Parallel solvers
     "solve_genomes_with_ftff",
     "solve_genomes_from_registry",

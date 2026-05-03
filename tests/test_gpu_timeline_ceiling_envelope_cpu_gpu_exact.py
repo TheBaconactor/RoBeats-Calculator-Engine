@@ -288,6 +288,50 @@ def _cpu_ceiling_sig_for_cell(
     return best
 
 
+def _cpu_ceiling_frontier_payload(calc_song: dict, ref_arrays: dict):
+    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
+    from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
+
+    ts = np.asarray(calc_song["song_data"]["chart_timestamps"], dtype=np.float32).reshape(-1)
+    nt = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16).reshape(-1)
+    n = int(ts.shape[0])
+    prepared = prepare_perfect_timing_envelope(
+        ts,
+        nt,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32).reshape(-1)
+    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32).reshape(-1)
+    group_base = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32).reshape(-1)
+    group_low = np.asarray(prepared.get("group_low", ()), dtype=np.int32).reshape(-1)
+    group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
+    note_group_idx = np.full(n, -1, dtype=np.int32)
+    for g in range(int(group_starts.shape[0])):
+        s = int(group_starts[g])
+        e = int(group_ends[g])
+        if e > s:
+            note_group_idx[s:e] = int(g)
+
+    return build_timeline_frontier_grid_payload(
+        song_slot=0,
+        total_notes=int(calc_song["metadata"].get("Total Notes", n) or n),
+        long_notes=int(calc_song["metadata"].get("Long Notes", 0) or 0),
+        last_note_time=float(calc_song["metadata"].get("Last Note Time", 0.0) or 0.0),
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base,
+        group_low_ms=group_low,
+        group_high_ms=group_high,
+        note_group_idx=note_group_idx,
+        ref_ft=np.asarray(ref_arrays["Fever Time"], dtype=np.float32),
+        ref_ff=np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32),
+    )
+
+
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
     """
@@ -342,6 +386,7 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+    cpu_payload = _cpu_ceiling_frontier_payload(calc_song, ref_arrays)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
     bits_grid = np.asarray(gpu_fields.grid_fever_masks_bits.to_numpy()[0], dtype=np.uint32)
@@ -349,6 +394,8 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
     body_normal_grid = np.asarray(gpu_fields.grid_count_body_normal.to_numpy()[0], dtype=np.int32)
     gap_grid = np.asarray(gpu_fields.grid_gap.to_numpy()[0], dtype=np.int32)
     act_grid = np.asarray(gpu_fields.grid_fever_activations.to_numpy()[0], dtype=np.int32)
+    frontier_count_grid = np.asarray(gpu_fields.grid_frontier_count.to_numpy()[0], dtype=np.int32)
+    frontier_offset_grid = np.asarray(gpu_fields.grid_frontier_offset.to_numpy()[0], dtype=np.int32)
 
     long_notes = int(calc_song["metadata"].get("Long Notes", 0) or 0)
     last_note_time = float(calc_song["metadata"].get("Last Note Time", 0.0) or 0.0)
@@ -372,7 +419,19 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
         body_normal = int(body_normal_grid[ft_idx, ff_idx])
         gap = int(gap_grid[ft_idx, ff_idx])
         acts = int(act_grid[ft_idx, ff_idx])
-        gpu_sig = (head_len, bits, body_fever, body_normal, acts, gap)
+        frontier_count = int(frontier_count_grid[ft_idx, ff_idx])
+        frontier_offset = int(frontier_offset_grid[ft_idx, ff_idx])
+        gpu_sig = (head_len, bits, body_fever, body_normal, acts, gap, frontier_count, frontier_offset)
+
+        cpu_count = int(cpu_payload.grid_frontier_count[0, ft_idx, ff_idx])
+        cpu_offset = int(cpu_payload.grid_frontier_offset[0, ft_idx, ff_idx])
+        cpu_head = int(cpu_payload.grid_head_len[0, ft_idx, ff_idx])
+        cpu_bits = tuple(int(x) for x in cpu_payload.grid_fever_masks_bits[0, ft_idx, ff_idx, :].tolist())
+        cpu_body_fever = int(cpu_payload.grid_count_body_fever[0, ft_idx, ff_idx])
+        cpu_body_normal = int(cpu_payload.grid_count_body_normal[0, ft_idx, ff_idx])
+        cpu_gap = int(cpu_payload.grid_gap[0, ft_idx, ff_idx])
+        cpu_acts = int(cpu_payload.grid_fever_activations[0, ft_idx, ff_idx])
+        cpu_sig = (cpu_head, cpu_bits, cpu_body_fever, cpu_body_normal, cpu_acts, cpu_gap, cpu_count, cpu_offset)
 
         assert gpu_sig == cpu_sig, (
             f"CPU/GPU ceiling mismatch for cell (ft={ft_idx},ff={ff_idx}): cpu={cpu_sig} gpu={gpu_sig}"
@@ -382,10 +441,10 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
     """
-    Ensure deduplicated ceiling-grid execution produces identical grid outputs.
+    Ensure repeated ceiling-grid execution produces identical grid outputs.
 
-    This guards the optimization that computes only unique (fill_count, d_ms) cells and
-    scatters representative results across the full 161×161 grid.
+    This guards the cache/upload path that reuses the exact symbolic frontier for
+    repeated requests of the same song and reference arrays.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
@@ -424,17 +483,13 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
-        # Force maximal deduplication: all cells share one (fill_count, d_ms) pair.
+        # Force a degenerate FT/FF surface so repeated precompute hits the same frontier shape.
         "Fever Fill Rate": np.full((rows,), 1.0, dtype=np.float32),
         "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
     }
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
-
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "0")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
-
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_DEDUP", "1")
     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=1)
 
     def _eq(field) -> bool:
@@ -449,3 +504,5 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
     assert _eq(gpu_fields.grid_fever_activations)
     assert _eq(gpu_fields.grid_sig0)
     assert _eq(gpu_fields.grid_sig1)
+    assert _eq(gpu_fields.grid_frontier_count)
+    assert _eq(gpu_fields.grid_frontier_offset)

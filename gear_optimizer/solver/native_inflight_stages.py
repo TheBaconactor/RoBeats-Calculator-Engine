@@ -421,6 +421,41 @@ def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
         pass
 
 
+def _prewarm_timeline_frontier_sync(song: Any) -> None:
+    """
+    Prime the exact timeline frontier payload cache for a prepared future song.
+
+    This is CPU host work only: it builds the symbolic frontier payload/disk cache
+    and deliberately leaves Taichi field upload to the GPU owner when GA/FG dispatches.
+    """
+    t0 = time.perf_counter()
+    cpu0 = _thread_cpu_time_s()
+    calc_song = getattr(song, "calc_song", None)
+    ref_arrays = getattr(song, "ref_arrays", None)
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return
+    from gear_optimizer.solver.taichi_gem.api.timeline import prewarm_timeline_frontier_payload
+
+    prewarm_timeline_frontier_payload(calc_song, ref_arrays)
+    try:
+        setattr(song, "_timeline_prewarm_done", True)
+        setattr(song, "_cpu_timeline_prewarm_s", max(0.0, _thread_cpu_time_s() - float(cpu0)))
+    except Exception:
+        pass
+    try:
+        emit_profile_event(
+            component="inflight_orchestrator",
+            event="timeline_prewarm_done",
+            song_key=str(getattr(song, "task_key", "") or getattr(song, "song_name", "")),
+            metrics={
+                "wall_ms": float((time.perf_counter() - t0) * 1000.0),
+                "cpu_ms": float(max(0.0, _thread_cpu_time_s() - float(cpu0)) * 1000.0),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _warmup_fg_finder_runtime(calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None) -> None:
     global _FG_FINDER_RUNTIME_WARMED
     if _FG_FINDER_RUNTIME_WARMED:

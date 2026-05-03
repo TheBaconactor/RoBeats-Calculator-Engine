@@ -43,51 +43,24 @@ if ti is not None:  # pragma: no cover
             head_len = ti.cast(fields.grid_head_len[song_slot_i, ft, ff], ti.i32)
             best_score = ti.i32(-1)
             frontier_count = ti.cast(fields.grid_frontier_count[song_slot_i, ft, ff], ti.i32)
-            if frontier_count > 1:
-                variant_idx = ti.i32(0)
-                while variant_idx < frontier_count and variant_idx < 4:
-                    m0 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 0]
-                    m1 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 1]
-                    m2 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 2]
-                    m3 = fields.grid_frontier_masks_bits[song_slot_i, ft, ff, variant_idx, 3]
-                    count_fever = ti.cast(fields.grid_frontier_body_fever[song_slot_i, ft, ff, variant_idx], ti.i32)
-                    count_normal = ti.cast(fields.grid_frontier_body_normal[song_slot_i, ft, ff, variant_idx], ti.i32)
-                    score = kernels_helpers.calc_score_with_grid_bits(
-                        base_value_arr[i],
-                        combo_mul_arr[i],
-                        fever_mul_arr[i],
-                        m0,
-                        m1,
-                        m2,
-                        m3,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                    )
-                    if score > best_score:
-                        best_score = score
-                    variant_idx += 1
-            else:
-                count_fever = ti.cast(fields.grid_count_body_fever[song_slot_i, ft, ff], ti.i32)
-                count_normal = ti.cast(fields.grid_count_body_normal[song_slot_i, ft, ff], ti.i32)
-
-                m0 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 0]
-                m1 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 1]
-                m2 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 2]
-                m3 = fields.grid_fever_masks_bits[song_slot_i, ft, ff, 3]
-
-                best_score = kernels_helpers.calc_score_with_grid_bits(
+            variant_idx = ti.i32(0)
+            while variant_idx < frontier_count:
+                frontier = kernels_helpers.read_timeline_frontier_variant(song_slot_i, ft, ff, variant_idx)
+                score = kernels_helpers.calc_score_with_grid_bits(
                     base_value_arr[i],
                     combo_mul_arr[i],
                     fever_mul_arr[i],
-                    m0,
-                    m1,
-                    m2,
-                    m3,
+                    frontier.m0,
+                    frontier.m1,
+                    frontier.m2,
+                    frontier.m3,
                     head_len,
-                    count_fever,
-                    count_normal,
+                    frontier.body_fever,
+                    frontier.body_normal,
                 )
+                if score > best_score:
+                    best_score = score
+                variant_idx += 1
             out_arr[i] = best_score
 
 
@@ -99,7 +72,7 @@ def score_fixed_stats_gpu(
     song_slot: int = 0,
 ) -> list[int]:
     """
-    Score fixed stats snapshots on GPU using the precomputed timeline grid.
+    Score fixed stats snapshots on GPU using the exact symbolic timeline frontier.
 
     Each entry in stats_inputs must include:
       - base_value (float): (primary*2) + secondary + pp_factor
@@ -108,9 +81,7 @@ def score_fixed_stats_gpu(
       - ft_idx (int): Fever Time stat index [0..160]
       - ff_idx (int): Fever Fill Rate stat index [0..160]
 
-    timeline_grid can be:
-      - calc_song dict (will use GPU timeline precompute), or
-      - SongTimelineGrid (will be uploaded).
+    timeline_grid must be a calc_song dict with `metadata` and `song_data`.
     """
     if not stats_inputs:
         return []
@@ -119,20 +90,14 @@ def score_fixed_stats_gpu(
         raise RuntimeError("Taichi not available")
 
     from .initialization import ensure_ready
-    from .timeline import precompute_timeline_gpu, _upload_timeline_grid
+    from .timeline import precompute_timeline_gpu
 
     ensure_ready(ref_arrays)
 
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
-        calc_song = getattr(timeline_grid, "calc_song", None)
-        if isinstance(calc_song, dict):
-            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-        else:
-            if int(song_slot) != 0:
-                raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
-            _upload_timeline_grid(timeline_grid)
+        raise TypeError("score_fixed_stats_gpu requires a calc_song dict with metadata and song_data")
 
     n = int(len(stats_inputs))
     base_value = np.empty(n, dtype=np.float32)

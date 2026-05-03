@@ -84,6 +84,7 @@ from gear_optimizer.solver.native_inflight_stages import (
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
     _prewarm_fg_baseline_point,
+    _prewarm_timeline_frontier_sync,
     _prepare_fg_static_sync,
     _prepare_fg_job_sync,
     _resolve_active_fg_calc_song,
@@ -174,37 +175,74 @@ def _read_fg_static_prep_max_inflight(
     *,
     fg_prep_workers: int,
     inflight_limit: int,
+    cpu_prewarm_lookahead: int | None = None,
 ) -> int:
     """
-    Opt-in budget for speculative FG static prep.
+    Budget for speculative FG static prep.
 
-    Keep this disabled by default: speculative per-song FG work competes with
-    GA decode / visible FG prep on the same CPython process and can recreate
-    long GPU idle bubbles even though the pipeline is "async" on paper.
+    The unified CPU prewarm lookahead owns the default. The legacy explicit
+    FG static setting is still honored as a narrower override when present.
     """
-    limit = 0
-    explicit = False
+    if cpu_prewarm_lookahead is None:
+        limit = 0
+    else:
+        try:
+            limit = int(cpu_prewarm_lookahead)
+        except Exception:
+            limit = 0
     if cfg0 is not None:
         try:
             raw_cfg = cfg0.get("IterationEngine", "InFlight_FGStaticPrepMaxInflight", fallback="")
         except Exception:
             raw_cfg = ""
         if str(raw_cfg).strip() != "":
-            explicit = True
             try:
                 limit = int(raw_cfg)
             except Exception:
                 limit = 0
     raw_env = os.environ.get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
     if raw_env is not None and str(raw_env).strip() != "":
-        explicit = True
         try:
             limit = int(raw_env)
         except Exception:
             limit = 0
-    if not explicit or limit <= 0:
+    if limit <= 0:
         return 0
     return max(0, min(int(limit), int(fg_prep_workers), int(inflight_limit), 8))
+
+
+def _read_cpu_prewarm_lookahead(
+    cfg0: Any,
+    *,
+    prep_limit: int,
+    default: int = 5,
+) -> int:
+    """
+    Unified lookahead for CPU-only prework on prepared future songs.
+
+    This controls host-side timeline frontier payload prewarm, FG baseline
+    point prewarm, and speculative FG static prep admission. It intentionally
+    does not change the prep buffer size; it only decides how many prepared
+    songs get expensive extra work ahead of GPU dispatch.
+    """
+    lookahead = int(default)
+    if cfg0 is not None:
+        try:
+            raw_cfg = cfg0.get("IterationEngine", "InFlight_CPUPrewarmLookahead", fallback="")
+        except Exception:
+            raw_cfg = ""
+        if str(raw_cfg).strip() != "":
+            try:
+                lookahead = int(raw_cfg)
+            except Exception:
+                lookahead = int(default)
+    raw_env = os.environ.get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
+    if raw_env is not None and str(raw_env).strip() != "":
+        try:
+            lookahead = int(raw_env)
+        except Exception:
+            pass
+    return max(0, min(int(lookahead), int(prep_limit), 32))
 
 
 def run_native_inflight_song_pipeline(
@@ -334,6 +372,7 @@ def run_native_inflight_song_pipeline(
         prep_buffer_mult = 12 if inflight_ram_mode else 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
+    cpu_prewarm_lookahead = _read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
 
     # FG aging fairness controls for continuous mode.
     fg_aging_trigger_ms = 750.0
@@ -408,6 +447,7 @@ def run_native_inflight_song_pipeline(
             f"FG_AdaptiveSubmit={int(bool(fg_adaptive_submit_enabled))}, "
             f"FG_AdaptiveMaxBurst={int(fg_adaptive_submit_max_burst)}, "
             f"TargetSongLanes={int(target_song_lanes)}, "
+            f"CPUPrewarmLookahead={int(cpu_prewarm_lookahead)}, "
             f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
             f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
         )
@@ -821,6 +861,35 @@ def run_native_inflight_song_pipeline(
     prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=prep_workers, thread_name_prefix="SongPrep")
     prep_inflight: deque[tuple[tuple, tuple, concurrent.futures.Future, float]] = deque()
 
+    cpu_prewarm_workers = 0
+    if int(cpu_prewarm_lookahead) > 0:
+        if cfg0 is not None:
+            try:
+                cpu_prewarm_workers = safe_int(
+                    cfg0.get("IterationEngine", "InFlight_CPUPrewarmWorkers", fallback="0"),
+                    0,
+                )
+            except Exception:
+                cpu_prewarm_workers = 0
+        raw = os.environ.get("INFLIGHT_CPU_PREWARM_WORKERS")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                cpu_prewarm_workers = int(raw)
+            except Exception:
+                pass
+        if cpu_prewarm_workers <= 0:
+            cpu_prewarm_workers = min(2, max(1, _default_worker_threads(inflight_limit=inflight_limit, kind="prep")))
+        cpu_prewarm_workers = max(1, min(int(cpu_prewarm_workers), int(cpu_prewarm_lookahead), 4))
+    cpu_prewarm_executor = (
+        concurrent.futures.ThreadPoolExecutor(
+            max_workers=int(cpu_prewarm_workers),
+            thread_name_prefix="CPUPrewarm",
+        )
+        if int(cpu_prewarm_workers) > 0
+        else None
+    )
+    cpu_prewarm_inflight: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
+
     decode_workers = 0
     if cfg0 is not None:
         try:
@@ -896,6 +965,7 @@ def run_native_inflight_song_pipeline(
         cfg0,
         fg_prep_workers=int(fg_prep_workers),
         inflight_limit=int(inflight_limit),
+        cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
     )
 
     db_prefetch_workers = 0
@@ -917,7 +987,7 @@ def run_native_inflight_song_pipeline(
         thread_name_prefix="FGDBPrefetch",
     )
 
-    fg_baseline_prewarm_submitted: set[str] = set()
+    cpu_prewarm_submitted: set[str] = set()
 
     last_slot_block_t: float | None = None
     ga_queue_debug = _truthy(os.environ.get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
@@ -980,6 +1050,8 @@ def run_native_inflight_song_pipeline(
             count += 1
 
         for s in ga_inflight:
+            _track(s)
+        for s in prepared:
             _track(s)
         for s in decode_inflight:
             _track(s)
@@ -1057,32 +1129,112 @@ def run_native_inflight_song_pipeline(
             except Exception:
                 pass
 
-    def _submit_fg_baseline_prewarm(song: _NativeSong) -> None:
+    def _run_cpu_prewarm_sync(song: _NativeSong) -> None:
+        _prewarm_timeline_frontier_sync(song)
         if not bool(getattr(song, "force_greats_finder", False)):
             return
         calc_song = getattr(song, "fg_calc_song", None) or getattr(song, "calc_song", None)
         ref_arrays = getattr(song, "ref_arrays", None)
         if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
             return
+        _prewarm_fg_baseline_point(calc_song, ref_arrays)
+
+    def _task_label_for_prewarm(song: _NativeSong) -> str:
         try:
-            task_key = str(getattr(song, "task_key", "") or getattr(song, "song_name", "") or id(song))
+            return str(getattr(song, "task_key", "") or getattr(song, "song_name", "") or id(song))
         except Exception:
-            task_key = str(id(song))
-        if task_key in fg_baseline_prewarm_submitted:
-            return
-        fg_baseline_prewarm_submitted.add(task_key)
+            return str(id(song))
+
+    def _submit_cpu_prewarm(song: _NativeSong) -> bool:
+        if cpu_prewarm_executor is None or int(cpu_prewarm_lookahead) <= 0:
+            return False
+        task_key = _task_label_for_prewarm(song)
+        if task_key in cpu_prewarm_submitted:
+            return False
+        if getattr(song, "cpu_prewarm_future", None) is not None:
+            return False
+        cpu_prewarm_submitted.add(task_key)
         try:
-            fut = prep_executor.submit(_prewarm_fg_baseline_point, calc_song, ref_arrays)
-            try:
-                setattr(song, "fg_baseline_prewarm_future", fut)
-            except Exception:
-                pass
+            setattr(song, "_cpu_prewarm_submit_t0", time.perf_counter())
+            fut = cpu_prewarm_executor.submit(_run_cpu_prewarm_sync, song)
+            song.cpu_prewarm_future = fut
+            cpu_prewarm_inflight.append((song, fut, time.perf_counter()))
             _register_completion_future(fut)
+            return True
         except Exception:
             try:
-                fg_baseline_prewarm_submitted.discard(task_key)
+                cpu_prewarm_submitted.discard(task_key)
             except Exception:
                 pass
+            try:
+                song.cpu_prewarm_future = None
+            except Exception:
+                pass
+            return False
+
+    def _submit_fg_static_prewarm(song: _NativeSong) -> bool:
+        if int(fg_static_prep_max_inflight) <= 0:
+            return False
+        if not bool(getattr(song, "manual_force_greats", False) or getattr(song, "force_greats_finder", False)):
+            return False
+        if getattr(song, "fg_static_prep_future", None) is not None or bool(getattr(song, "_fg_static_prep_done", False)):
+            return False
+        if int(_active_fg_static_prep_count()) >= int(_fg_static_prep_budget()):
+            return False
+        try:
+            setattr(song, "_fg_static_prep_submit_t0", time.perf_counter())
+            static_future = fg_pipeline.prep_executor.submit(_prepare_fg_static_sync, song)
+            song.fg_static_prep_future = static_future
+            _register_completion_future(static_future)
+            return True
+        except Exception:
+            try:
+                song.fg_static_prep_future = None
+            except Exception:
+                pass
+            return False
+
+    def _submit_cpu_prewarm_backlog() -> int:
+        if int(cpu_prewarm_lookahead) <= 0:
+            return 0
+        started = 0
+        for idx, song in enumerate(list(prepared)):
+            if idx >= int(cpu_prewarm_lookahead):
+                break
+            if _submit_cpu_prewarm(song):
+                started += 1
+            if _submit_fg_static_prewarm(song):
+                started += 1
+        return int(started)
+
+    def _finish_cpu_prewarm_jobs() -> int:
+        finished = 0
+        for song, fut, t_submit in list(cpu_prewarm_inflight):
+            if not fut.done():
+                continue
+            cpu_prewarm_inflight.remove((song, fut, t_submit))
+            finished += 1
+            try:
+                fut.result()
+                stage_profiler.record(
+                    "cpu_prewarm",
+                    time.perf_counter() - float(t_submit),
+                    cpu_seconds=getattr(song, "_cpu_timeline_prewarm_s", None),
+                    song=_task_label_for_prewarm(song),
+                )
+            except Exception:
+                # Prewarm is an accelerator only; the dispatch path will rebuild
+                # synchronously if the background attempt failed.
+                try:
+                    cpu_prewarm_submitted.discard(_task_label_for_prewarm(song))
+                except Exception:
+                    pass
+            finally:
+                try:
+                    song.cpu_prewarm_future = None
+                except Exception:
+                    pass
+        return int(finished)
 
     def _effective_ga_queue_limit() -> int:
         nonlocal ga_queue_limit_cache_key, ga_queue_limit_cache_value
@@ -1165,7 +1317,7 @@ def run_native_inflight_song_pipeline(
         return False
 
     def _has_waitable_futures() -> bool:
-        if ga_inflight or prep_inflight or decode_inflight or fg_prep_inflight or fg_futures:
+        if ga_inflight or prep_inflight or cpu_prewarm_inflight or decode_inflight or fg_prep_inflight or fg_futures:
             return True
         for song in pending_fg:
             if song.db_loadouts_future is not None:
@@ -1278,8 +1430,7 @@ def run_native_inflight_song_pipeline(
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song_name)
 
-    for _prepared_song in list(prepared):
-        _submit_fg_baseline_prewarm(_prepared_song)
+    _submit_cpu_prewarm_backlog()
 
     def _pop_next_fg(*, allow_not_ready: bool) -> Optional[_NativeSong]:
         return fg_pipeline.pop_next(allow_not_ready=allow_not_ready)
@@ -1468,6 +1619,7 @@ def run_native_inflight_song_pipeline(
                 len(pending_tasks)
                 + len(prepared)
                 + len(prep_inflight)
+                + len(cpu_prewarm_inflight)
                 + len(decode_inflight)
                 + len(pending_fg)
                 + len(fg_prep_inflight)
@@ -1640,6 +1792,8 @@ def run_native_inflight_song_pipeline(
 
             did_work = False
             blocked_on_slot_acquire = False
+            if _finish_cpu_prewarm_jobs() > 0:
+                did_work = True
 
             # Move completed song preps into the staging queue.
             for task, logical_task, fut, t_submit in list(prep_inflight):
@@ -1670,7 +1824,7 @@ def run_native_inflight_song_pipeline(
                             best_fg=int(getattr(prepared_song, "db_best_fg_score", 0) or 0),
                             mark_valid=True,
                     )
-                    _submit_fg_baseline_prewarm(prepared_song)
+                    _submit_cpu_prewarm_backlog()
                 except Exception as exc:
                     if stopping and _is_stop_abort_exception(exc):
                         continue
@@ -1892,6 +2046,8 @@ def run_native_inflight_song_pipeline(
                     ga_inflight.append(song)
                     did_work = True
                     _continuous_note_ga_submit()
+                    if _submit_cpu_prewarm_backlog() > 0:
+                        did_work = True
 
                     # Prefetch DB loadouts early so FG prep after GA decode doesn't stall
                     # waiting on SQLite reads (keeps the GPU fed during song boundaries).
@@ -2573,6 +2729,7 @@ def run_native_inflight_song_pipeline(
                             "[InFlight][HB] "
                             f"idle={time.monotonic() - last_progress:.1f}s "
                             f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
+                            f"cpu_prewarm={len(cpu_prewarm_inflight)} "
                             f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
                             f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} fg_futures={len(fg_futures)} "
                             f"lanes={int(heartbeat_bubble.get('active_song_lanes', 0) or 0)}/{int(target_song_lanes)} "
@@ -2599,6 +2756,7 @@ def run_native_inflight_song_pipeline(
                             "pending_tasks": int(len(pending_tasks)),
                             "prepared": int(len(prepared)),
                             "prep_inflight": int(len(prep_inflight)),
+                            "cpu_prewarm_inflight": int(len(cpu_prewarm_inflight)),
                             "ga_inflight": int(len(ga_inflight)),
                             "decode_inflight": int(len(decode_inflight)),
                             "pending_fg": int(len(pending_fg)),
@@ -2621,6 +2779,7 @@ def run_native_inflight_song_pipeline(
                     (not ga_inflight)
                     and (not decode_inflight)
                     and (not prep_inflight)
+                    and (not cpu_prewarm_inflight)
                     and (not fg_prep_inflight)
                     and (not fg_futures)
                 )
@@ -2639,11 +2798,12 @@ def run_native_inflight_song_pipeline(
                         fg_inflight = None
                     logger.debug(
                         "[InFlight][STALL] pending=%s prepared=%s prep_inflight=%s ga_inflight=%s "
-                        "decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s fg_done=%s",
+                        "cpu_prewarm=%s decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s fg_done=%s",
                         len(pending_tasks),
                         len(prepared),
                         len(prep_inflight),
                         len(ga_inflight),
+                        len(cpu_prewarm_inflight),
                         len(decode_inflight),
                         len(pending_fg),
                         len(fg_prep_inflight),
@@ -2657,6 +2817,7 @@ def run_native_inflight_song_pipeline(
                             "pending_tasks": int(len(pending_tasks)),
                             "prepared": int(len(prepared)),
                             "prep_inflight": int(len(prep_inflight)),
+                            "cpu_prewarm_inflight": int(len(cpu_prewarm_inflight)),
                             "ga_inflight": int(len(ga_inflight)),
                             "decode_inflight": int(len(decode_inflight)),
                             "pending_fg": int(len(pending_fg)),
@@ -2677,7 +2838,12 @@ def run_native_inflight_song_pipeline(
                 if _has_waitable_futures():
                     t_wait = time.perf_counter()
                     has_gpu = bool(ga_inflight) or bool(fg_futures)
-                    has_cpu = bool(prep_inflight) or bool(decode_inflight) or bool(fg_prep_inflight)
+                    has_cpu = (
+                        bool(prep_inflight)
+                        or bool(cpu_prewarm_inflight)
+                        or bool(decode_inflight)
+                        or bool(fg_prep_inflight)
+                    )
                     signaled = False
                     try:
                         signaled = bool(completion_event.is_set())
@@ -2761,6 +2927,13 @@ def run_native_inflight_song_pipeline(
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
             fg_pipeline.shutdown_prep(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if shutdown_debug:
+                logger.debug("[InFlight][SHUTDOWN] cpu_prewarm_executor.shutdown")
+            if cpu_prewarm_executor is not None:
+                cpu_prewarm_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:

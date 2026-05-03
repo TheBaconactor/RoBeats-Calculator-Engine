@@ -57,13 +57,10 @@ grid_Sigma_hf = None
 grid_fever_masks = None
 grid_fever_masks_bits = None
 grid_frontier_count = None
-grid_frontier_body_fever = None
-grid_frontier_body_normal = None
-grid_frontier_N_hn = None
-grid_frontier_N_hf = None
-grid_frontier_Sigma_hn = None
-grid_frontier_Sigma_hf = None
-grid_frontier_masks_bits = None
+grid_frontier_offset = None
+grid_frontier_body_fever_pool = None
+grid_frontier_body_normal_pool = None
+grid_frontier_masks_bits_pool = None
 grid_sig0 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
 grid_sig1 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
 grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
@@ -258,6 +255,36 @@ def _xorshift32(x: ti.u32) -> ti.u32:
     x ^= x >> ti.u32(17)
     x ^= x << ti.u32(5)
     return x
+
+
+TimelineFrontierRecord = ti.types.struct(
+    m0=ti.u32,
+    m1=ti.u32,
+    m2=ti.u32,
+    m3=ti.u32,
+    body_fever=ti.i32,
+    body_normal=ti.i32,
+)
+
+
+@ti.func
+def read_timeline_frontier_variant(song_slot: ti.i32, ft_idx: ti.i32, ff_idx: ti.i32, variant_idx: ti.i32) -> TimelineFrontierRecord:
+    """
+    Read one packed symbolic frontier record.
+
+    The new exact frontier stores a per-cell offset plus a flat per-slot pool.
+    Callers are expected to check `grid_frontier_count` first and then iterate
+    `[0, count)` against this helper.
+    """
+    pool_idx = grid_frontier_offset[song_slot, ft_idx, ff_idx] + variant_idx
+    return TimelineFrontierRecord(
+        m0=grid_frontier_masks_bits_pool[song_slot, pool_idx, 0],
+        m1=grid_frontier_masks_bits_pool[song_slot, pool_idx, 1],
+        m2=grid_frontier_masks_bits_pool[song_slot, pool_idx, 2],
+        m3=grid_frontier_masks_bits_pool[song_slot, pool_idx, 3],
+        body_fever=grid_frontier_body_fever_pool[song_slot, pool_idx],
+        body_normal=grid_frontier_body_normal_pool[song_slot, pool_idx],
+    )
 
 
 # ============================================================================

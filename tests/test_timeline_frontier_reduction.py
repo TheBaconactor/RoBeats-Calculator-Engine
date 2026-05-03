@@ -1,65 +1,40 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+import numpy as np
+
+from gear_optimizer.solver.timeline_exact_frontier import (
+    TimelineExactSignature,
+    _build_grouped_timeline_context,
+    _build_exact_timeline_frontier_from_context,
+    _enumerate_first_exit_boundary_intervals_from_activation_band,
+    _enumerate_first_exit_boundary_intervals_from_context,
+    _exit_trace_certifies_d_ms,
+    build_exact_timeline_frontier_from_grouped_windows,
+    reduce_timeline_frontier,
+)
 
 
-@dataclass(frozen=True)
-class _Surface:
-    masks: tuple[int, int, int, int]
-    body_fever: int
-    body_normal: int
-
-
-def _equal(a: _Surface, b: _Surface) -> bool:
-    return a == b
-
-
-def _dominates(a: _Surface, b: _Surface) -> bool:
-    return all((am | bm) == am for am, bm in zip(a.masks, b.masks, strict=True)) and (
-        a.body_fever >= b.body_fever and a.body_normal <= b.body_normal
-    )
-
-
-def _reduce_surfaces(surfaces: list[_Surface]) -> list[_Surface]:
-    retained: list[_Surface] = []
-    for idx, cand in enumerate(surfaces):
-        drop = False
-        for other_idx, other in enumerate(surfaces):
-            if other_idx == idx:
-                continue
-            if _equal(other, cand):
-                drop = other_idx < idx
-            elif _dominates(other, cand):
-                drop = True
-            if drop:
-                break
-        if not drop:
-            retained.append(cand)
-    return retained
-
-
-def _score(surface: _Surface, *, head_len: int, normal: int, fever: int) -> int:
+def _score(surface: TimelineExactSignature, *, head_len: int, normal: int, fever: int) -> int:
     fever_head = 0
     for note_idx in range(head_len):
         word = note_idx // 32
         bit = note_idx % 32
-        fever_head += (surface.masks[word] >> bit) & 1
+        fever_head += (surface.head_bits[word] >> bit) & 1
     normal_head = head_len - fever_head
     return fever * (fever_head + surface.body_fever) + normal * (normal_head + surface.body_normal)
 
 
 def test_timeline_surface_dominance_reduction_is_lossless_for_positive_score_weights() -> None:
-    surfaces = [
-        _Surface((0b0001, 0, 0, 0), body_fever=3, body_normal=7),
-        _Surface((0b0001, 0, 0, 0), body_fever=3, body_normal=7),  # exact duplicate
-        _Surface((0b0011, 0, 0, 0), body_fever=4, body_normal=6),  # dominates the first two
-        _Surface((0b0101, 0, 0, 0), body_fever=4, body_normal=6),  # incomparable head mask
-        _Surface((0b0111, 0, 0, 0), body_fever=5, body_normal=6),  # dominates both incomparable children
-    ]
-    retained = _reduce_surfaces(surfaces)
+    surfaces = (
+        TimelineExactSignature(4, (0b0001, 0, 0, 0), 3, 7, 1, 4),
+        TimelineExactSignature(4, (0b0001, 0, 0, 0), 3, 7, 1, 4),  # exact duplicate
+        TimelineExactSignature(4, (0b0011, 0, 0, 0), 4, 6, 1, 3),  # dominates the first two
+        TimelineExactSignature(4, (0b0101, 0, 0, 0), 4, 6, 1, 3),  # incomparable head mask
+        TimelineExactSignature(4, (0b0111, 0, 0, 0), 5, 6, 1, 2),  # dominates both incomparable children
+    )
+    retained = reduce_timeline_frontier(surfaces)
 
-    assert retained == [_Surface((0b0111, 0, 0, 0), body_fever=5, body_normal=6)]
+    assert retained == (TimelineExactSignature(4, (0b0111, 0, 0, 0), 5, 6, 1, 2),)
 
     for normal in range(1, 14):
         for fever in range(normal, normal * 8 + 1):
@@ -68,25 +43,107 @@ def test_timeline_surface_dominance_reduction_is_lossless_for_positive_score_wei
             assert after == before
 
 
-def test_ceiling_envelope_kernels_share_exact_frontier_compactor() -> None:
-    source_path = (
-        Path(__file__).resolve().parents[1]
-        / "gear_optimizer"
-        / "solver"
-        / "taichi_gem"
-        / "kernels"
-        / "kernels_timeline.py"
+def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
+    group_starts = np.array([0, 2, 4], dtype=np.int32)
+    group_ends = np.array([2, 4, 6], dtype=np.int32)
+    group_base_t_ms = np.array([0, 100, 200], dtype=np.int32)
+    group_low_ms = np.array([0, 0, 0], dtype=np.int32)
+    group_high_ms = np.array([10, 10, 10], dtype=np.int32)
+    note_group_idx = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
+
+    pack_a = build_exact_timeline_frontier_from_grouped_windows(
+        6,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+        fill_count=1,
+        d_ms=0,
     )
-    source = source_path.read_text(encoding="utf-8")
+    pack_b = build_exact_timeline_frontier_from_grouped_windows(
+        6,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+        fill_count=1,
+        d_ms=0,
+    )
 
-    direct_start = source.index("def compute_timeline_grid_ceiling_envelope_kernel")
-    reps_start = source.index("def compute_timeline_grid_ceiling_envelope_reps_kernel")
-    scatter_start = source.index("def scatter_timeline_grid_ceiling_envelope_from_reps_kernel")
+    assert pack_a == pack_b
+    assert len(pack_a.surfaces) >= 1
+    assert pack_a.canonical in pack_a.surfaces
+    assert pack_a.head_len == 6
+    assert pack_a.body_fever + pack_a.body_normal == 0
 
-    direct_body = source[direct_start:reps_start]
-    reps_body = source[reps_start:scatter_start]
 
-    assert direct_body.count("_write_exact_timeline_frontier4(") == 1
-    assert reps_body.count("_write_exact_timeline_frontier4(") == 1
-    assert "grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(4, ti.i8)" not in direct_body
-    assert "grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(4, ti.i8)" not in reps_body
+def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:
+    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
+    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
+    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
+    group_low_ms = np.array([-10, -20, -5, 0, -15, 5], dtype=np.int32)
+    group_high_ms = np.array([30, 40, 20, 50, 35, 60], dtype=np.int32)
+    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
+    ctx = _build_grouped_timeline_context(
+        9,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+
+    for activation_group in range(0, 5):
+        for act_lo, act_hi in ((-20, 40), (-5, 20), (10, 60)):
+            for d_ms in (0, 50, 130, 260, 600):
+                scalar = _enumerate_first_exit_boundary_intervals_from_activation_band(
+                    total_notes=9,
+                    group_starts=group_starts,
+                    group_base_t_ms=group_base_t_ms,
+                    group_low_ms=group_low_ms,
+                    group_high_ms=group_high_ms,
+                    activation_group=activation_group,
+                    act_lo=act_lo,
+                    act_hi=act_hi,
+                    d_ms=d_ms,
+                )
+                vectorized = _enumerate_first_exit_boundary_intervals_from_context(
+                    ctx,
+                    activation_group=activation_group,
+                    act_lo=act_lo,
+                    act_hi=act_hi,
+                    d_ms=d_ms,
+                )
+                assert vectorized == scalar
+
+
+def test_exit_trace_certificate_reuse_matches_direct_exact_solve() -> None:
+    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
+    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
+    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
+    group_low_ms = np.array([-10, -20, -5, 0, -15, 5], dtype=np.int32)
+    group_high_ms = np.array([30, 40, 20, 50, 35, 60], dtype=np.int32)
+    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
+    ctx = _build_grouped_timeline_context(
+        9,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+
+    trace = []
+    representative = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=80, exit_trace=trace)
+    assert trace
+
+    for d_ms in (70, 75, 80, 85, 90, 120):
+        if _exit_trace_certifies_d_ms(ctx, trace, d_ms):
+            direct = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=d_ms)
+            assert direct == representative

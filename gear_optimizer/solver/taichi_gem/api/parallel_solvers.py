@@ -27,7 +27,7 @@ from .initialization import (
     _SYNC_FOR_TIMING,
     _ensure_ftff_combo_tables,
 )
-from .timeline import precompute_timeline_gpu, _upload_timeline_grid
+from .timeline import precompute_timeline_gpu
 from .ga_operations import (
     ga_upload_population_indices,
     ga_evaluate_population,
@@ -164,7 +164,7 @@ def solve_genomes_with_ftff(
 
     Args:
         genome_stats_list: List of dicts with base stats per genome
-        timeline_grid: SongTimelineGrid (precompute_all will be called)
+    timeline_grid: calc_song dict (precomputed on GPU)
         is_*: Color contribution flags (0/1)
         ref_arrays: Reference lookup arrays
         total_budget: Gem budget (default 90)
@@ -177,13 +177,7 @@ def solve_genomes_with_ftff(
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
-        calc_song = getattr(timeline_grid, "calc_song", None)
-        if isinstance(calc_song, dict):
-            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-        else:
-            if int(song_slot) != 0:
-                raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
-            _upload_timeline_grid(timeline_grid)
+        raise TypeError("solve_genomes_with_ftff requires a calc_song dict with metadata and song_data")
 
     n_genomes = len(genome_stats_list)
     if n_genomes == 0:
@@ -366,7 +360,7 @@ def solve_genomes_from_registry(
 
     Args:
         population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
-        timeline_grid: SongTimelineGrid or calc_song dict
+    timeline_grid: calc_song dict
         is_*: Color contribution flags (0/1)
         ref_arrays: Reference lookup arrays
         total_budget: Gem budget (default 90)
@@ -382,13 +376,7 @@ def solve_genomes_from_registry(
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=song_slot)
     else:
-        calc_song = getattr(timeline_grid, "calc_song", None)
-        if isinstance(calc_song, dict):
-            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-        else:
-            if int(song_slot) != 0:
-                raise ValueError("SongTimelineGrid upload supports song_slot=0 only")
-            _upload_timeline_grid(timeline_grid)
+        raise TypeError("solve_genomes_from_registry requires a calc_song dict with metadata and song_data")
 
     n_genomes = population_indices.shape[0]
     if n_genomes == 0:

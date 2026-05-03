@@ -245,10 +245,10 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 
     Args:
         ref_arrays: Reference arrays to load (optional)
-        timeline_grid: Timeline grid to upload (optional)
+    timeline_grid: calc_song dict to precompute on GPU (optional)
     """
     # Import here to avoid circular dependency
-    from .timeline import _upload_timeline_grid, precompute_timeline_gpu
+    from .timeline import precompute_timeline_gpu
 
     # 1. Taichi initialization
     if not is_initialized():
@@ -275,14 +275,12 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
         ensure_grid_fields_allocated()
 
     if timeline_grid is not None:
-        # Prefer GPU-native timeline precompute when possible to avoid CPU staging
-        # and keep the "new architecture" GPU-resident by default.
-        calc_song = getattr(timeline_grid, "calc_song", None)
-        refs = getattr(timeline_grid, "ref_arrays", None)
-        if isinstance(calc_song, dict) and isinstance(refs, dict):
-            precompute_timeline_gpu(calc_song, refs, song_slot=0)
+        if ref_arrays is None:
+            raise ValueError("ensure_ready requires ref_arrays when timeline_grid is provided")
+        if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
+            precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=0)
         else:
-            _upload_timeline_grid(timeline_grid)
+            raise TypeError("ensure_ready timeline_grid must be a calc_song dict with metadata and song_data")
 
     # Return the (possibly empty) ref-array signature so hot paths can avoid hashing refs twice.
     return bytes(sig)

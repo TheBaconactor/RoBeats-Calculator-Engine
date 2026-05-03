@@ -16,6 +16,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     _read_fg_static_prep_max_inflight,
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
+    _read_cpu_prewarm_lookahead,
     _read_inflight_target_song_lanes,
     _read_inflight_event_wait_gpu_cap_s,
     _read_inflight_event_wait_short_spin_s,
@@ -301,17 +302,64 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
     assert reserve == 0
 
 
-def test_read_fg_static_prep_max_inflight_defaults_off_and_honors_explicit_override(monkeypatch):
+def test_read_cpu_prewarm_lookahead_defaults_to_five_and_honors_overrides(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", raising=False)
+
+    cfg = _cfg_with_iteration_engine()
+    assert _read_cpu_prewarm_lookahead(cfg, prep_limit=12) == 5
+    assert _read_cpu_prewarm_lookahead(cfg, prep_limit=3) == 3
+
+    cfg_explicit = _cfg_with_iteration_engine(InFlight_CPUPrewarmLookahead="7")
+    assert _read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 7
+
+    monkeypatch.setenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", "2")
+    assert _read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 2
+
+
+def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_explicit_override(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    assert _read_fg_static_prep_max_inflight(cfg, fg_prep_workers=4, inflight_limit=16) == 0
+    assert (
+        _read_fg_static_prep_max_inflight(
+            cfg,
+            fg_prep_workers=4,
+            inflight_limit=16,
+            cpu_prewarm_lookahead=5,
+        )
+        == 4
+    )
+    assert (
+        _read_fg_static_prep_max_inflight(
+            cfg,
+            fg_prep_workers=4,
+            inflight_limit=16,
+            cpu_prewarm_lookahead=0,
+        )
+        == 0
+    )
 
     cfg_explicit = _cfg_with_iteration_engine(InFlight_FGStaticPrepMaxInflight="3")
-    assert _read_fg_static_prep_max_inflight(cfg_explicit, fg_prep_workers=4, inflight_limit=16) == 3
+    assert (
+        _read_fg_static_prep_max_inflight(
+            cfg_explicit,
+            fg_prep_workers=4,
+            inflight_limit=16,
+            cpu_prewarm_lookahead=5,
+        )
+        == 3
+    )
 
     monkeypatch.setenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", "2")
-    assert _read_fg_static_prep_max_inflight(cfg_explicit, fg_prep_workers=4, inflight_limit=16) == 2
+    assert (
+        _read_fg_static_prep_max_inflight(
+            cfg_explicit,
+            fg_prep_workers=4,
+            inflight_limit=16,
+            cpu_prewarm_lookahead=5,
+        )
+        == 2
+    )
 
 
 def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):

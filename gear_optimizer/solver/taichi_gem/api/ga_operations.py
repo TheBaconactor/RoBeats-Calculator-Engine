@@ -662,7 +662,7 @@ def ga_evaluate_population(
     - Call ga_upload_population_indices() with encoded population
     - Call ga_upload_item_stats() with item stats and slot pools
     - Call ga_upload_base_fixed_stats() with base stats
-    - Upload timeline grid using precompute_timeline_gpu() or _upload_timeline_grid()
+    - Precompute the exact timeline frontier using precompute_timeline_gpu()
 
     Args:
         n_genomes: Number of genomes to evaluate

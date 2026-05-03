@@ -1675,59 +1675,13 @@ def optimize_core_device_exact_bound(
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
-) -> ti.types.vector(7, ti.i32):
+    ) -> ti.types.vector(7, ti.i32):
     frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx], ti.i32)
     result_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
-    if frontier_count > 1:
-        variant_idx = ti.i32(0)
-        while variant_idx < frontier_count and variant_idx < 4:
-            vm0 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 0]
-            vm1 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 1]
-            vm2 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 2]
-            vm3 = kernels_helpers.grid_frontier_masks_bits[song_slot, ft_idx, ff_idx, variant_idx, 3]
-            v_body_fever = ti.cast(
-                kernels_helpers.grid_frontier_body_fever[song_slot, ft_idx, ff_idx, variant_idx],
-                ti.i32,
-            )
-            v_body_normal = ti.cast(
-                kernels_helpers.grid_frontier_body_normal[song_slot, ft_idx, ff_idx, variant_idx],
-                ti.i32,
-            )
-            cand_vec = _optimize_core_device_exact_bound_preloaded_bits_impl(
-                budget,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                cur_p_val,
-                cur_s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                vm0,
-                vm1,
-                vm2,
-                vm3,
-                head_len,
-                v_body_fever,
-                v_body_normal,
-                -1,
-                0,
-                0,
-            )
-            if cand_vec[0] > result_vec[0]:
-                result_vec = cand_vec
-            variant_idx += 1
-    else:
-        m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-        m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-        m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-        m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-        result_vec = _optimize_core_device_exact_bound_preloaded_bits_impl(
+    variant_idx = ti.i32(0)
+    while variant_idx < frontier_count:
+        frontier = kernels_helpers.read_timeline_frontier_variant(song_slot, ft_idx, ff_idx, variant_idx)
+        cand_vec = _optimize_core_device_exact_bound_preloaded_bits_impl(
             budget,
             cur_pp,
             cur_cm,
@@ -1742,17 +1696,20 @@ def optimize_core_device_exact_bound(
             is_s_fm,
             is_p_ov,
             is_s_ov,
-            m0,
-            m1,
-            m2,
-            m3,
+            frontier.m0,
+            frontier.m1,
+            frontier.m2,
+            frontier.m3,
             head_len,
-            count_fever,
-            count_normal,
-            song_slot,
-            ft_idx,
-            ff_idx,
+            frontier.body_fever,
+            frontier.body_normal,
+            -1,
+            0,
+            0,
         )
+        if cand_vec[0] > result_vec[0]:
+            result_vec = cand_vec
+        variant_idx += 1
     return result_vec
 
 

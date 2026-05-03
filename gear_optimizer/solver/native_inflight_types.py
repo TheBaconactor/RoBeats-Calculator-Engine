@@ -86,6 +86,7 @@ class _NativeSong:
     # DB prefetch for FG (can overlap with GA)
     db_loadouts_future: Optional[concurrent.futures.Future] = None
     db_loadouts_full: Optional[list[dict]] = None
+    cpu_prewarm_future: Optional[concurrent.futures.Future] = None
 
     loadout_entries: Optional[dict] = None
     fg_variants: Optional[list[dict]] = None
