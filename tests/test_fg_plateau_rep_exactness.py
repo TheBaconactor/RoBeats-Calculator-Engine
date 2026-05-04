@@ -94,7 +94,9 @@ def test_plateau_rep_expansion_empty_valid_fps_keeps_base_only():
 
 def test_has_valid_k1_rep_detects_two_representatives():
     assert gpu_dispatch._has_valid_k1_rep(33.3, 34, 2, 34)
-    assert not gpu_dispatch._has_valid_k1_rep(33.6, 34, 0, 34)
+    # p=0, raw_fill=33.3: k=0 and k=1 both map to p=0 (same plateau)
+    assert gpu_dispatch._has_valid_k1_rep(33.3, 34, 0, 34)
+    # p=0, raw_fill=33.6: k=1 maps to p=1 (different plateau)
     assert not gpu_dispatch._has_valid_k1_rep(33.6, 34, 0, 34)
 
 

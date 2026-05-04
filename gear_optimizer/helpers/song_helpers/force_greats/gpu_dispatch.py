@@ -103,15 +103,16 @@ def _has_valid_k1_rep(
     """
     import math
 
-    if fp_target <= 0:
-        return False
     delta = (float(base_ceil) + float(fp_target) - 1.0) - float(raw_fill)
     if delta < 0.0:
-        return False
-    k0 = int(math.floor(delta * 2.0) + 1)
+        k0 = 0
+    else:
+        k0 = int(math.floor(delta * 2.0) + 1)
     if k0 >= int(non_fever_base):
         return False
     k1 = int(k0 + 1)
+    if k1 > int(non_fever_base):
+        return False
     fp1 = int(math.ceil(float(raw_fill) + float(k1) * 0.5) - float(base_ceil))
     return int(fp1) == int(fp_target)
 
