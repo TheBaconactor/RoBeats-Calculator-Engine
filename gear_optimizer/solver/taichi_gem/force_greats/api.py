@@ -18,7 +18,8 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.core.parsing import env_flag as _env_truthy
+from gear_optimizer.core.parsing import env_int as _env_int
 from gear_optimizer.solver.gpu_tuning_policy import plan_fg_stage1_cfg_chunk
 
 from .. import api as gem_api
@@ -33,17 +34,6 @@ logger = logging.getLogger(__name__)
 _ENV_GET = os.environ.get
 
 
-def _env_truthy(name: str, default: str = "0") -> bool:
-    return str(_ENV_GET(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(_ENV_GET(name, default) or default)
-    except Exception:
-        return int(default)
-
-
 # ============================================================================
 # SYNC POLICY
 # ============================================================================
@@ -55,19 +45,14 @@ _SYNC_PER_CHUNK = _ENV_GET("FG_SYNC_PER_CHUNK", "0") == "1"
 
 # Enable detailed FG GPU timing output
 _PERF_TIMING = _ENV_GET("PERF_TIMING", "0") == "1"
-_FG_TRANSFER_TRACE = str(_ENV_GET("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-_FG_TASK_TRACE = str(_ENV_GET("FG_TASK_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TRANSFER_TRACE = _env_truthy("FG_TRANSFER_TRACE")
+_FG_TASK_TRACE = _env_truthy("FG_TASK_TRACE")
 _FG_TASK_CALL_SEQ = 0
-_GPU_PROFILER_ENABLED = _PERF_TIMING or str(_ENV_GET("GPU_PROFILER", "0") or "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+_GPU_PROFILER_ENABLED = _PERF_TIMING or _env_truthy("GPU_PROFILER")
 _GPU_PROFILER_CACHE = None
 _GPU_PROFILER_READY = False
-_FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
-_FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_GPU_CFG_RANGES = _env_truthy("FG_GPU_CFG_RANGES", "1")
+_FG_IMPLICIT_CONFIGS = _env_truthy("FG_IMPLICIT_CONFIGS", "1")
 _FG_TARGET_THREADS_PER_KERNEL = _env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
 _FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
 _FG_STAGE1_DIRECT_ATOMIC = bool(getattr(fg_kernels, "FG_STAGE1_DIRECT_ATOMIC", False))

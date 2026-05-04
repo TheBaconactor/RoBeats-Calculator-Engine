@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
+from gear_optimizer.core.parsing import env_flag
 
 
 def _truthy_env(name: str) -> bool:
-    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(name)
 
 
 def maybe_print_kernel_profile(*, label: str, enabled: bool) -> None:

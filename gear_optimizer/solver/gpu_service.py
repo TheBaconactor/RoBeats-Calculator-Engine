@@ -24,7 +24,8 @@ from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
+from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.parsing import env_flag, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
     estimate_fused_payload_threads,
@@ -126,8 +127,7 @@ class GpuServiceClient:
                     str(_DEFAULT_FG_OWNER_MAX_PAIRS),
                 )
             self._fg_owner_max_pairs = int(
-                str(raw_pair_cap or str(_DEFAULT_FG_OWNER_MAX_PAIRS)).strip()
-                or str(_DEFAULT_FG_OWNER_MAX_PAIRS)
+                str(raw_pair_cap or str(_DEFAULT_FG_OWNER_MAX_PAIRS)).strip() or str(_DEFAULT_FG_OWNER_MAX_PAIRS)
             )
         except Exception:
             self._fg_owner_max_pairs = _DEFAULT_FG_OWNER_MAX_PAIRS
@@ -157,7 +157,7 @@ class GpuServiceClient:
         timeout_fatal_default = timeout_default_enabled
         raw_timeout_fatal = str(os.environ.get("GPU_SERVICE_TIMEOUT_FATAL", "") or "").strip().lower()
         if raw_timeout_fatal:
-            self._timeout_fatal = raw_timeout_fatal in TRUTHY_ENV_VALUES
+            self._timeout_fatal = truthy(raw_timeout_fatal)
         else:
             self._timeout_fatal = bool(timeout_fatal_default)
         self._request_timeout_default_enabled = bool(timeout_default_enabled)
@@ -449,9 +449,7 @@ class GpuServiceClient:
     def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         payload_list = list(payloads or [])
         force_single_owner_request = any(
-            bool(payload.get("fg_force_single_owner_request"))
-            for payload in payload_list
-            if isinstance(payload, dict)
+            bool(payload.get("fg_force_single_owner_request")) for payload in payload_list if isinstance(payload, dict)
         )
         if force_single_owner_request:
             expanded_payloads = payload_list

@@ -14,9 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-
-def _truthy(v: Any) -> bool:
-    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+from gear_optimizer.core.parsing import truthy
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -73,7 +71,7 @@ class ConvergenceTraceConfig:
     @staticmethod
     def from_cfg_data(cfg_data: dict | None) -> "ConvergenceTraceConfig":
         cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
-        enabled = _truthy(cfg_data.get("ga_convergence_trace_enabled", False))
+        enabled = truthy(cfg_data.get("ga_convergence_trace_enabled", False))
         every = max(1, _safe_int(cfg_data.get("ga_convergence_trace_every", 1), 1))
         out_dir = str(cfg_data.get("ga_convergence_trace_out_dir", "artifacts/ga_trace") or "artifacts/ga_trace")
         song_filter = str(cfg_data.get("ga_convergence_trace_song_filter", "") or "")

@@ -19,6 +19,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.data.database import init_db
 from inventory_optimizer import export_inventory_meta_json, run_inventory_meta_coverage
 from inventory_optimizer.inventory_meta_config import (
@@ -29,14 +30,10 @@ from inventory_optimizer.inventory_meta_config import (
 from inventory_optimizer.macos_gpu_util import MacosGpuUtilSampler
 
 
-def _truthy_env(name: str) -> bool:
-    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _maybe_print_taichi_kernel_profile(*, requested: bool) -> None:
     if not requested:
         return
-    if not _truthy_env("TAICHI_KERNEL_PROFILER"):
+    if not env_flag("TAICHI_KERNEL_PROFILER"):
         return
     try:
         import taichi as ti
@@ -179,9 +176,7 @@ def main() -> None:
 
     try:
         gpu_sampler = None
-        if sys.platform == "darwin" and (
-            bool(getattr(args, "profile", False)) or _truthy_env("MACOS_GPU_UTIL_PROFILE")
-        ):
+        if sys.platform == "darwin" and (bool(getattr(args, "profile", False)) or env_flag("MACOS_GPU_UTIL_PROFILE")):
             # Best-effort macOS GPU utilization sampling (IOKit/ioreg). Never crash a run.
             # Disabled by default to avoid adding host-side overhead to the optimization loop.
             try:
@@ -359,7 +354,7 @@ def main() -> None:
         print(f"Gear variants used: {stats.get('gear_variants_used', 0)} / {stats.get('gear_variants_cap', 0)}")
         print(f"Minis used: {len(results.get('inventory', {}).get('minis', []))}")
         _maybe_print_taichi_kernel_profile(
-            requested=bool(getattr(args, "profile", False) or _truthy_env("TAICHI_KERNEL_PROFILER_PRINT"))
+            requested=bool(getattr(args, "profile", False) or env_flag("TAICHI_KERNEL_PROFILER_PRINT"))
         )
 
     except KeyboardInterrupt:

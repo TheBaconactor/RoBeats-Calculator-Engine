@@ -1,5 +1,7 @@
 from typing import Any
 
+from gear_optimizer.core.parsing import env_flag
+
 # Hard cap fallbacks to prevent config explosion
 # Section 1 can have more FG than section 2, etc. (diminishing returns)
 MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
@@ -241,14 +243,7 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
     # Limit to useful sections (sections beyond fever_activations have no benefit)
     actual_sections = min(num_sections, useful_sections)
 
-    import os
-
-    debug_profile = str(os.environ.get("METAFINDER_DEBUG_PROFILE", "") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    } or str(os.environ.get("DEBUG_PROFILE", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+    debug_profile = env_flag("METAFINDER_DEBUG_PROFILE") or env_flag("DEBUG_PROFILE")
 
     if actual_sections <= 0:
         if debug_profile:

@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
-from ..core.env_config import env_flag
 from ..core.fallback_monitor import warn_fallback
+from ..core.parsing import env_flag
 from ..core.team_buff import (
     canonicalize_team_buff,
     normalize_team_buff,
@@ -1479,7 +1479,7 @@ def save_team_buff_loadouts_batch(
     if not song_name or not team_buff or not entries:
         return
 
-    timing = str(os.environ.get("DB_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    timing = env_flag("DB_TIMING")
     timing_threshold_ms = 50.0
     try:
         timing_threshold_ms = float(os.environ.get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))

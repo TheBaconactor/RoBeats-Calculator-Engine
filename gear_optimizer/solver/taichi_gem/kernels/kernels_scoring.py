@@ -15,20 +15,16 @@ The optimize_core_device function is the core of the gem optimizer - it evaluate
 4 gem options (PP, CM, FM, OV) at each iteration and greedily picks the best.
 """
 
-import os
-
 import taichi as ti
+
+from gear_optimizer.core.parsing import env_flag
 
 from . import kernels_helpers
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 # Diagnostic toggle: allow A/B between fused and split OV/CM/FM scoring paths.
 # Default preserves existing fused behavior.
-GPU_HEAD3_FUSION = _env_flag("GPU_HEAD3_FUSION", "1")
+GPU_HEAD3_FUSION = env_flag("GPU_HEAD3_FUSION", "1")
 
 
 @ti.func
@@ -1505,11 +1501,19 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
             best_cm = seed_cm
             best_fm = seed_fm
             best_ov = g_ov
-            best_p = cur_p_val + (g_pp_best * pp_p_delta) + (seed_cm * cm_p_delta) + (seed_fm * fm_p_delta) + (
-                g_ov * ov_p_delta
+            best_p = (
+                cur_p_val
+                + (g_pp_best * pp_p_delta)
+                + (seed_cm * cm_p_delta)
+                + (seed_fm * fm_p_delta)
+                + (g_ov * ov_p_delta)
             )
-            best_s = cur_s_val + (g_pp_best * pp_s_delta) + (seed_cm * cm_s_delta) + (seed_fm * fm_s_delta) + (
-                g_ov * ov_s_delta
+            best_s = (
+                cur_s_val
+                + (g_pp_best * pp_s_delta)
+                + (seed_cm * cm_s_delta)
+                + (seed_fm * fm_s_delta)
+                + (g_ov * ov_s_delta)
             )
 
         # Candidate 1 (prefer FM ties)
@@ -1588,11 +1592,19 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
                     best_cm = g_cm
                     best_fm = g_fm
                     best_ov = g_ov
-                    best_p = cur_p_val + (g_pp_best * pp_p_delta) + (g_cm * cm_p_delta) + (g_fm * fm_p_delta) + (
-                        g_ov * ov_p_delta
+                    best_p = (
+                        cur_p_val
+                        + (g_pp_best * pp_p_delta)
+                        + (g_cm * cm_p_delta)
+                        + (g_fm * fm_p_delta)
+                        + (g_ov * ov_p_delta)
                     )
-                    best_s = cur_s_val + (g_pp_best * pp_s_delta) + (g_cm * cm_s_delta) + (g_fm * fm_s_delta) + (
-                        g_ov * ov_s_delta
+                    best_s = (
+                        cur_s_val
+                        + (g_pp_best * pp_s_delta)
+                        + (g_cm * cm_s_delta)
+                        + (g_fm * fm_s_delta)
+                        + (g_ov * ov_s_delta)
                     )
 
             g_fm += 1
@@ -1675,7 +1687,7 @@ def optimize_core_device_exact_bound(
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
-    ) -> ti.types.vector(7, ti.i32):
+) -> ti.types.vector(7, ti.i32):
     frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx], ti.i32)
     result_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
     variant_idx = ti.i32(0)

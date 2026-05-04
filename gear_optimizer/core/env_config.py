@@ -19,17 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 from .fallback_monitor import warn_fallback
-
-TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-
-
-def _normalize_env_value(value: Optional[str]) -> str:
-    return str(value or "").strip().lower()
-
-
-def env_flag(key: str, default: str = "0") -> bool:
-    """Parse a boolean environment variable using common truthy values."""
-    return _normalize_env_value(os.environ.get(key, default)) in TRUTHY_ENV_VALUES
+from .parsing import env_flag
 
 
 def _env_bool(key: str, default: str = "0") -> bool:

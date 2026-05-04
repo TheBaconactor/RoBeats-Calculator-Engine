@@ -8,23 +8,16 @@ Includes:
 - ga_copy_fg_candidates_table_to_download_staging_kernel
 """
 
-import os
-
 import taichi as ti
+
+from gear_optimizer.core.parsing import env_int
 
 from .. import kernels_helpers
 from .write_results import _best_combo_idx_from_chunk_state, _materialize_best_combo_stats
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)))
-    except Exception:
-        return default
-
-
 # IMPORTANT: must match `fields.GA_FG_CANDIDATES_PER_RUN` at allocation time.
-_GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(_env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64))))
+_GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64))))
 _GA_FG_BASE_STATS_COLS = 7
 _GA_FG_RESULTS_COLS = 7
 _GA_FG_COLS = 1 + 9 + _GA_FG_RESULTS_COLS + _GA_FG_BASE_STATS_COLS  # score + ids + results + base_stats7
@@ -62,9 +55,9 @@ def _write_fg_candidate_row_from_genome(
     kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 0] = result_stats[0]
 
     for s in range(n_slots):
-        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + s] = kernels_helpers.population_indices[
-            genome_idx, s
-        ]
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 1 + s] = (
+            kernels_helpers.population_indices[genome_idx, s]
+        )
     mm = _sort3_i32(
         kernels_helpers.population_indices[genome_idx, 6],
         kernels_helpers.population_indices[genome_idx, 7],

@@ -8,24 +8,9 @@ Refactored to use GearOptimizerApp.
 import os
 import multiprocessing
 import sys
-import configparser
 
 from gear_optimizer.core.config import get_config_path, load_config
-
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _truthy_cfg(cfg: configparser.ConfigParser, section: str, key: str, default: bool = False) -> bool:
-    try:
-        return cfg.getboolean(section, key, fallback=default)
-    except Exception:
-        try:
-            raw = str(cfg.get(section, key, fallback=str(int(default))) or "").strip().lower()
-            return raw in {"1", "true", "yes", "on"}
-        except Exception:
-            return bool(default)
+from gear_optimizer.core.parsing import config_bool, env_flag
 
 
 def _read_config_path() -> str:
@@ -34,13 +19,13 @@ def _read_config_path() -> str:
 
 def _debug_profile_enabled(cfg_path: str) -> bool:
     # Env overrides win.
-    if _truthy_env("DEBUG_PROFILE", "0") or _truthy_env("METAFINDER_DEBUG_PROFILE", "0"):
+    if env_flag("DEBUG_PROFILE") or env_flag("METAFINDER_DEBUG_PROFILE"):
         return True
     try:
         cfg = load_config(cfg_path)
-        if _truthy_cfg(cfg, "Debug", "DebugProfile", False):
+        if config_bool(cfg, "Debug", "DebugProfile", default=False):
             return True
-        if _truthy_cfg(cfg, "IterationEngine", "DebugProfile", False):
+        if config_bool(cfg, "IterationEngine", "DebugProfile", default=False):
             return True
     except Exception:
         pass
@@ -74,8 +59,8 @@ def _apply_debug_profile_env(cfg_path: str) -> None:
 
 
 def _apply_throughput_mode_env() -> None:
-    throughput = _truthy_env("METAFINDER_THROUGHPUT", "0") or _truthy_env("THROUGHPUT_MODE", "0")
-    allow_profiling = _truthy_env("METAFINDER_ALLOW_PROFILING", "0")
+    throughput = env_flag("METAFINDER_THROUGHPUT") or env_flag("THROUGHPUT_MODE")
+    allow_profiling = env_flag("METAFINDER_ALLOW_PROFILING")
     if not throughput and allow_profiling:
         return
 

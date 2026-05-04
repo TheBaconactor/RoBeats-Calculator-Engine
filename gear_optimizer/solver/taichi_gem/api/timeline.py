@@ -10,6 +10,7 @@ import os
 import hashlib
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 import taichi as ti
@@ -29,7 +30,7 @@ from ..fields import (
 from .. import fields
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC, _ref_arrays_sig
+from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
 
 _profiler = get_gpu_profiler()
 
@@ -72,18 +73,158 @@ def _upload_song_groups_kernel(
         fields.song_group_high_ms[g] = group_high_ms[g]
 
 
-def _merge_timeline_slot_payload(
-    target_field,
-    slot_payload: np.ndarray,
+@ti.kernel
+def _upload_timeline_grid_slot_i32_kernel(
+    dst: ti.template(),
+    song_slot: ti.i32,
+    src: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
+        dst[song_slot, ft, ff] = src[ft, ff]
+
+
+@ti.kernel
+def _upload_timeline_grid_slot_i16_kernel(
+    dst: ti.template(),
+    song_slot: ti.i32,
+    src: ti.types.ndarray(dtype=ti.i16, ndim=2),
+):
+    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
+        dst[song_slot, ft, ff] = src[ft, ff]
+
+
+@ti.kernel
+def _upload_timeline_grid_slot_i8_kernel(
+    dst: ti.template(),
+    song_slot: ti.i32,
+    src: ti.types.ndarray(dtype=ti.i8, ndim=2),
+):
+    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
+        dst[song_slot, ft, ff] = src[ft, ff]
+
+
+@ti.kernel
+def _upload_timeline_grid_slot_u64_kernel(
+    dst: ti.template(),
+    song_slot: ti.i32,
+    src: ti.types.ndarray(dtype=ti.u64, ndim=2),
+):
+    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
+        dst[song_slot, ft, ff] = src[ft, ff]
+
+
+@ti.kernel
+def _upload_timeline_grid_masks_bits_slot_kernel(
+    song_slot: ti.i32,
+    src: ti.types.ndarray(dtype=ti.u32, ndim=3),
+):
+    for ft, ff, word in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE, 4):
+        fields.grid_fever_masks_bits[song_slot, ft, ff, word] = src[ft, ff, word]
+
+
+@ti.kernel
+def _upload_timeline_pool_slot_i32_kernel(
+    dst: ti.template(),
+    song_slot: ti.i32,
+    n: ti.i32,
+    src: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    for i in range(n):
+        dst[song_slot, i] = src[i]
+
+
+@ti.kernel
+def _upload_timeline_pool_masks_bits_slot_kernel(
+    song_slot: ti.i32,
+    n: ti.i32,
+    src: ti.types.ndarray(dtype=ti.u32, ndim=2),
+):
+    for i, word in ti.ndrange(n, 4):
+        fields.grid_frontier_masks_bits_pool[song_slot, i, word] = src[i, word]
+
+
+def _slot_payload(payload: np.ndarray, source_slot_i: int, dtype) -> np.ndarray:
+    return np.ascontiguousarray(np.asarray(payload, dtype=dtype)[int(source_slot_i)])
+
+
+def _upload_timeline_frontier_payload_slot(
+    payload: TimelineFrontierGridPayload,
     song_slot_i: int,
     *,
     source_slot_i: int = 0,
-) -> None:
-    """Merge one slot of a slot-shaped payload into a Taichi field without clobbering other slots."""
-    current = target_field.to_numpy()
-    payload = np.asarray(slot_payload, dtype=current.dtype)
-    current[song_slot_i] = payload[int(source_slot_i)]
-    target_field.from_numpy(current)
+) -> int:
+    """
+    Upload one cached frontier slot without GPU->CPU round-tripping existing fields.
+
+    The old merge path used `field.to_numpy()` to preserve other song slots, patched
+    one slot on the CPU, then `from_numpy()` uploaded the whole field again. On
+    Vulkan that is a large forced download plus a large upload. These prefix kernels
+    update only the active slot.
+    """
+    source_slot_i = int(source_slot_i)
+    song_slot_i = int(song_slot_i)
+    upload_bytes = 0
+
+    def upload_i32_grid(dst, arr: np.ndarray) -> None:
+        nonlocal upload_bytes
+        src = _slot_payload(arr, source_slot_i, np.int32)
+        upload_bytes += int(src.nbytes)
+        _upload_timeline_grid_slot_i32_kernel(dst, song_slot_i, src)
+
+    def upload_i16_grid(dst, arr: np.ndarray) -> None:
+        nonlocal upload_bytes
+        src = _slot_payload(arr, source_slot_i, np.int16)
+        upload_bytes += int(src.nbytes)
+        _upload_timeline_grid_slot_i16_kernel(dst, song_slot_i, src)
+
+    def upload_i8_grid(dst, arr: np.ndarray) -> None:
+        nonlocal upload_bytes
+        src = _slot_payload(arr, source_slot_i, np.int8)
+        upload_bytes += int(src.nbytes)
+        _upload_timeline_grid_slot_i8_kernel(dst, song_slot_i, src)
+
+    def upload_u64_grid(dst, arr: np.ndarray) -> None:
+        nonlocal upload_bytes
+        src = _slot_payload(arr, source_slot_i, np.uint64)
+        upload_bytes += int(src.nbytes)
+        _upload_timeline_grid_slot_u64_kernel(dst, song_slot_i, src)
+
+    upload_i32_grid(fields.grid_count_body_fever, payload.grid_count_body_fever)
+    upload_i32_grid(fields.grid_count_body_normal, payload.grid_count_body_normal)
+    upload_i8_grid(fields.grid_head_len, payload.grid_head_len)
+    upload_i16_grid(fields.grid_N_hn, payload.grid_N_hn)
+    upload_i16_grid(fields.grid_N_hf, payload.grid_N_hf)
+    upload_i16_grid(fields.grid_Sigma_hn, payload.grid_Sigma_hn)
+    upload_i16_grid(fields.grid_Sigma_hf, payload.grid_Sigma_hf)
+
+    masks = _slot_payload(payload.grid_fever_masks_bits, source_slot_i, np.uint32)
+    upload_bytes += int(masks.nbytes)
+    _upload_timeline_grid_masks_bits_slot_kernel(song_slot_i, masks)
+
+    upload_i32_grid(fields.grid_frontier_count, payload.grid_frontier_count)
+    upload_i32_grid(fields.grid_frontier_offset, payload.grid_frontier_offset)
+    upload_u64_grid(fields.grid_sig0, payload.grid_sig0)
+    upload_u64_grid(fields.grid_sig1, payload.grid_sig1)
+    upload_i32_grid(fields.grid_gap, payload.grid_gap)
+    upload_i32_grid(fields.grid_fever_activations, payload.grid_fever_activations)
+
+    pool_used = max(0, min(int(payload.frontier_pool_used), int(fields.MAX_TIMELINE_FRONTIER_SURFACES)))
+    if pool_used > 0:
+        fever_pool = np.ascontiguousarray(
+            np.asarray(payload.grid_frontier_body_fever_pool[source_slot_i, :pool_used], dtype=np.int32)
+        )
+        normal_pool = np.ascontiguousarray(
+            np.asarray(payload.grid_frontier_body_normal_pool[source_slot_i, :pool_used], dtype=np.int32)
+        )
+        mask_pool = np.ascontiguousarray(
+            np.asarray(payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32)
+        )
+        upload_bytes += int(fever_pool.nbytes + normal_pool.nbytes + mask_pool.nbytes)
+        _upload_timeline_pool_slot_i32_kernel(fields.grid_frontier_body_fever_pool, song_slot_i, pool_used, fever_pool)
+        _upload_timeline_pool_slot_i32_kernel(fields.grid_frontier_body_normal_pool, song_slot_i, pool_used, normal_pool)
+        _upload_timeline_pool_masks_bits_slot_kernel(song_slot_i, pool_used, mask_pool)
+
+    return int(upload_bytes)
 
 
 # ============================================================================
@@ -98,7 +239,29 @@ _CEILING_FRONTIER_PAYLOAD_CACHE_MAX = max(
 )
 _ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _ceiling_payload_cache_lock = threading.RLock()
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v3"
+_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v4"
+
+
+@dataclass(frozen=True)
+class TimelineFrontierPrewarmResult:
+    payload: TimelineFrontierGridPayload
+    cache_key: tuple
+    disk_path: Path
+    cache_source: str
+    elapsed_ms: float
+    song_profile_key: str | None
+    total_notes: int
+    long_notes: int
+
+
+@dataclass(frozen=True)
+class TimelineFrontierCacheInfo:
+    cache_key: tuple
+    disk_path: Path
+    cache_source: str
+    song_profile_key: str | None
+    total_notes: int
+    long_notes: int
 
 
 def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.ndarray) -> tuple:
@@ -133,24 +296,77 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
             version = str(data["version"].item())
             if version != _FRONTIER_DISK_CACHE_VERSION:
                 return None
+            grid_count_body_fever = np.asarray(data["grid_count_body_fever"], dtype=np.int32)
+            grid_count_body_normal = np.asarray(data["grid_count_body_normal"], dtype=np.int32)
+            grid_head_len = np.asarray(data["grid_head_len"], dtype=np.int8)
+            grid_N_hn = np.asarray(data["grid_N_hn"], dtype=np.int16)
+            grid_N_hf = np.asarray(data["grid_N_hf"], dtype=np.int16)
+            grid_Sigma_hn = np.asarray(data["grid_Sigma_hn"], dtype=np.int16)
+            grid_Sigma_hf = np.asarray(data["grid_Sigma_hf"], dtype=np.int16)
+            grid_fever_masks_bits = np.asarray(data["grid_fever_masks_bits"], dtype=np.uint32)
+            grid_frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int32)
+            grid_frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int32)
+            grid_frontier_body_fever_pool = np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32)
+            grid_frontier_body_normal_pool = np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32)
+            grid_frontier_masks_bits_pool = np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32)
+            grid_sig0 = np.asarray(data["grid_sig0"], dtype=np.uint64)
+            grid_sig1 = np.asarray(data["grid_sig1"], dtype=np.uint64)
+            grid_gap = np.asarray(data["grid_gap"], dtype=np.int32)
+            grid_fever_activations = np.asarray(data["grid_fever_activations"], dtype=np.int32)
+
+            # Compact on-disk format stores a single source slot; runtime upload remaps it.
+            if grid_count_body_fever.ndim == 2:
+                grid_count_body_fever = np.expand_dims(grid_count_body_fever, axis=0)
+            if grid_count_body_normal.ndim == 2:
+                grid_count_body_normal = np.expand_dims(grid_count_body_normal, axis=0)
+            if grid_head_len.ndim == 2:
+                grid_head_len = np.expand_dims(grid_head_len, axis=0)
+            if grid_N_hn.ndim == 2:
+                grid_N_hn = np.expand_dims(grid_N_hn, axis=0)
+            if grid_N_hf.ndim == 2:
+                grid_N_hf = np.expand_dims(grid_N_hf, axis=0)
+            if grid_Sigma_hn.ndim == 2:
+                grid_Sigma_hn = np.expand_dims(grid_Sigma_hn, axis=0)
+            if grid_Sigma_hf.ndim == 2:
+                grid_Sigma_hf = np.expand_dims(grid_Sigma_hf, axis=0)
+            if grid_fever_masks_bits.ndim == 3:
+                grid_fever_masks_bits = np.expand_dims(grid_fever_masks_bits, axis=0)
+            if grid_frontier_count.ndim == 2:
+                grid_frontier_count = np.expand_dims(grid_frontier_count, axis=0)
+            if grid_frontier_offset.ndim == 2:
+                grid_frontier_offset = np.expand_dims(grid_frontier_offset, axis=0)
+            if grid_frontier_body_fever_pool.ndim == 1:
+                grid_frontier_body_fever_pool = np.expand_dims(grid_frontier_body_fever_pool, axis=0)
+            if grid_frontier_body_normal_pool.ndim == 1:
+                grid_frontier_body_normal_pool = np.expand_dims(grid_frontier_body_normal_pool, axis=0)
+            if grid_frontier_masks_bits_pool.ndim == 2:
+                grid_frontier_masks_bits_pool = np.expand_dims(grid_frontier_masks_bits_pool, axis=0)
+            if grid_sig0.ndim == 2:
+                grid_sig0 = np.expand_dims(grid_sig0, axis=0)
+            if grid_sig1.ndim == 2:
+                grid_sig1 = np.expand_dims(grid_sig1, axis=0)
+            if grid_gap.ndim == 2:
+                grid_gap = np.expand_dims(grid_gap, axis=0)
+            if grid_fever_activations.ndim == 2:
+                grid_fever_activations = np.expand_dims(grid_fever_activations, axis=0)
             return TimelineFrontierGridPayload(
-                grid_count_body_fever=np.asarray(data["grid_count_body_fever"], dtype=np.int32),
-                grid_count_body_normal=np.asarray(data["grid_count_body_normal"], dtype=np.int32),
-                grid_head_len=np.asarray(data["grid_head_len"], dtype=np.int8),
-                grid_N_hn=np.asarray(data["grid_N_hn"], dtype=np.int16),
-                grid_N_hf=np.asarray(data["grid_N_hf"], dtype=np.int16),
-                grid_Sigma_hn=np.asarray(data["grid_Sigma_hn"], dtype=np.int16),
-                grid_Sigma_hf=np.asarray(data["grid_Sigma_hf"], dtype=np.int16),
-                grid_fever_masks_bits=np.asarray(data["grid_fever_masks_bits"], dtype=np.uint32),
-                grid_frontier_count=np.asarray(data["grid_frontier_count"], dtype=np.int32),
-                grid_frontier_offset=np.asarray(data["grid_frontier_offset"], dtype=np.int32),
-                grid_frontier_body_fever_pool=np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32),
-                grid_frontier_body_normal_pool=np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32),
-                grid_frontier_masks_bits_pool=np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32),
-                grid_sig0=np.asarray(data["grid_sig0"], dtype=np.uint64),
-                grid_sig1=np.asarray(data["grid_sig1"], dtype=np.uint64),
-                grid_gap=np.asarray(data["grid_gap"], dtype=np.int32),
-                grid_fever_activations=np.asarray(data["grid_fever_activations"], dtype=np.int32),
+                grid_count_body_fever=grid_count_body_fever,
+                grid_count_body_normal=grid_count_body_normal,
+                grid_head_len=grid_head_len,
+                grid_N_hn=grid_N_hn,
+                grid_N_hf=grid_N_hf,
+                grid_Sigma_hn=grid_Sigma_hn,
+                grid_Sigma_hf=grid_Sigma_hf,
+                grid_fever_masks_bits=grid_fever_masks_bits,
+                grid_frontier_count=grid_frontier_count,
+                grid_frontier_offset=grid_frontier_offset,
+                grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
+                grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
+                grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
+                grid_sig0=grid_sig0,
+                grid_sig1=grid_sig1,
+                grid_gap=grid_gap,
+                grid_fever_activations=grid_fever_activations,
                 frontier_pool_used=int(data["frontier_pool_used"].item()),
             )
     except Exception:
@@ -165,34 +381,47 @@ def _save_frontier_payload_to_disk(cache_key: tuple, payload: TimelineFrontierGr
     if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
         return
     path = _frontier_disk_cache_path(cache_key)
+    tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
-        np.savez(
+        source_slot_i = 0
+        pool_used = max(0, int(payload.frontier_pool_used))
+        np.savez_compressed(
             tmp,
             version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
-            frontier_pool_used=np.asarray(int(payload.frontier_pool_used), dtype=np.int32),
-            grid_count_body_fever=payload.grid_count_body_fever,
-            grid_count_body_normal=payload.grid_count_body_normal,
-            grid_head_len=payload.grid_head_len,
-            grid_N_hn=payload.grid_N_hn,
-            grid_N_hf=payload.grid_N_hf,
-            grid_Sigma_hn=payload.grid_Sigma_hn,
-            grid_Sigma_hf=payload.grid_Sigma_hf,
-            grid_fever_masks_bits=payload.grid_fever_masks_bits,
-            grid_frontier_count=payload.grid_frontier_count,
-            grid_frontier_offset=payload.grid_frontier_offset,
-            grid_frontier_body_fever_pool=payload.grid_frontier_body_fever_pool,
-            grid_frontier_body_normal_pool=payload.grid_frontier_body_normal_pool,
-            grid_frontier_masks_bits_pool=payload.grid_frontier_masks_bits_pool,
-            grid_sig0=payload.grid_sig0,
-            grid_sig1=payload.grid_sig1,
-            grid_gap=payload.grid_gap,
-            grid_fever_activations=payload.grid_fever_activations,
+            frontier_pool_used=np.asarray(pool_used, dtype=np.int32),
+            grid_count_body_fever=np.asarray(payload.grid_count_body_fever[source_slot_i], dtype=np.int32),
+            grid_count_body_normal=np.asarray(payload.grid_count_body_normal[source_slot_i], dtype=np.int32),
+            grid_head_len=np.asarray(payload.grid_head_len[source_slot_i], dtype=np.int8),
+            grid_N_hn=np.asarray(payload.grid_N_hn[source_slot_i], dtype=np.int16),
+            grid_N_hf=np.asarray(payload.grid_N_hf[source_slot_i], dtype=np.int16),
+            grid_Sigma_hn=np.asarray(payload.grid_Sigma_hn[source_slot_i], dtype=np.int16),
+            grid_Sigma_hf=np.asarray(payload.grid_Sigma_hf[source_slot_i], dtype=np.int16),
+            grid_fever_masks_bits=np.asarray(payload.grid_fever_masks_bits[source_slot_i], dtype=np.uint32),
+            grid_frontier_count=np.asarray(payload.grid_frontier_count[source_slot_i], dtype=np.int32),
+            grid_frontier_offset=np.asarray(payload.grid_frontier_offset[source_slot_i], dtype=np.int32),
+            grid_frontier_body_fever_pool=np.asarray(
+                payload.grid_frontier_body_fever_pool[source_slot_i, :pool_used], dtype=np.int32
+            ),
+            grid_frontier_body_normal_pool=np.asarray(
+                payload.grid_frontier_body_normal_pool[source_slot_i, :pool_used], dtype=np.int32
+            ),
+            grid_frontier_masks_bits_pool=np.asarray(
+                payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32
+            ),
+            grid_sig0=np.asarray(payload.grid_sig0[source_slot_i], dtype=np.uint64),
+            grid_sig1=np.asarray(payload.grid_sig1[source_slot_i], dtype=np.uint64),
+            grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
+            grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
         )
         tmp.replace(path)
     except Exception:
-        pass
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
@@ -359,7 +588,7 @@ def _get_or_build_ceiling_group_payload(
     return payload
 
 
-def _get_or_build_ceiling_frontier_payload(
+def _get_or_build_ceiling_frontier_payload_with_source(
     song_key: tuple,
     *,
     song_slot: int,
@@ -370,7 +599,7 @@ def _get_or_build_ceiling_frontier_payload(
     group_payload: dict,
     ref_ft: np.ndarray,
     ref_ff: np.ndarray,
-) -> TimelineFrontierGridPayload:
+) -> tuple[TimelineFrontierGridPayload, str]:
     """Build and cache the packed exact frontier grid for a song/ref signature."""
     global _ceiling_frontier_payload_cache
 
@@ -379,14 +608,14 @@ def _get_or_build_ceiling_frontier_payload(
         cached = _ceiling_frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             _ceiling_frontier_payload_cache.move_to_end(cache_key)
-            return cached
+            return cached, "memory"
 
     cached = _load_frontier_payload_from_disk(cache_key)
     if isinstance(cached, TimelineFrontierGridPayload):
         with _ceiling_payload_cache_lock:
             _ceiling_frontier_payload_cache[cache_key] = cached
             _ceiling_frontier_payload_cache.move_to_end(cache_key)
-        return cached
+        return cached, "disk"
 
     payload = build_timeline_frontier_grid_payload(
         song_slot=0,
@@ -409,12 +638,38 @@ def _get_or_build_ceiling_frontier_payload(
         cached = _ceiling_frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             _ceiling_frontier_payload_cache.move_to_end(cache_key)
-            return cached
+            return cached, "memory"
         _ceiling_frontier_payload_cache[cache_key] = payload
         _ceiling_frontier_payload_cache.move_to_end(cache_key)
         while len(_ceiling_frontier_payload_cache) > int(_CEILING_FRONTIER_PAYLOAD_CACHE_MAX):
             _ceiling_frontier_payload_cache.popitem(last=False)
 
+    return payload, "built"
+
+
+def _get_or_build_ceiling_frontier_payload(
+    song_key: tuple,
+    *,
+    song_slot: int,
+    total_notes: int,
+    long_notes: int,
+    last_note_time: float,
+    song_profile_key: str | None = None,
+    group_payload: dict,
+    ref_ft: np.ndarray,
+    ref_ff: np.ndarray,
+) -> TimelineFrontierGridPayload:
+    payload, _source = _get_or_build_ceiling_frontier_payload_with_source(
+        song_key,
+        song_slot=song_slot,
+        total_notes=total_notes,
+        long_notes=long_notes,
+        last_note_time=last_note_time,
+        song_profile_key=song_profile_key,
+        group_payload=group_payload,
+        ref_ft=ref_ft,
+        ref_ff=ref_ff,
+    )
     return payload
 
 
@@ -425,8 +680,11 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
         raise TypeError("ref_arrays must be a dict")
 
     base_song_key = _song_timing_cache_key(calc_song)
-    ref_sig_b = bytes(_ref_arrays_sig(ref_arrays) if ref_sig is None else ref_sig)
-    song_key = base_song_key + (ref_sig_b,)
+    # Timeline frontier payload depends on song timing + FT/FF axes only.
+    # Keep key independent of unrelated ref tables (PP/CM/FM/etc.) so startup
+    # prebuild and runtime scoring reuse the same disk artifact.
+    _ = ref_sig
+    song_key = base_song_key
     song_data = calc_song.get("song_data", {}) or {}
     chart_ts = song_data.get("chart_timestamps", None)
     src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
@@ -460,6 +718,47 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
     }
 
 
+def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> TimelineFrontierCacheInfo:
+    """
+    Return exact-frontier cache status without building group payloads or loading `.npz`.
+
+    Startup prebuild uses this to skip already-built songs cheaply. It still
+    parses/hash-checks the chart timing data so the decision uses the exact same
+    key that runtime upload will use.
+    """
+    if not isinstance(calc_song, dict):
+        raise TypeError("calc_song must be a dict")
+    if not isinstance(ref_arrays, dict):
+        raise TypeError("ref_arrays must be a dict")
+
+    base_song_key = _song_timing_cache_key(calc_song)
+    song_key = base_song_key
+    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
+    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+
+    cache_source = "missing"
+    with _ceiling_payload_cache_lock:
+        cached = _ceiling_frontier_payload_cache.get(cache_key)
+        if isinstance(cached, TimelineFrontierGridPayload):
+            cache_source = "memory"
+    disk_path = _frontier_disk_cache_path(cache_key)
+    if cache_source == "missing" and env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1") and disk_path.exists():
+        cache_source = "disk"
+
+    song_data = calc_song.get("song_data", {}) or {}
+    chart_ts = song_data.get("chart_timestamps", None)
+    src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+    return TimelineFrontierCacheInfo(
+        cache_key=cache_key,
+        disk_path=disk_path,
+        cache_source=cache_source,
+        song_profile_key=_timeline_song_profile_key(calc_song),
+        total_notes=int(len(src)),
+        long_notes=int((calc_song.get("metadata", {}) or {}).get("Long Notes", 0) or 0),
+    )
+
+
 def prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
     """
     Build/cache the exact symbolic frontier payload without touching Taichi fields.
@@ -467,11 +766,33 @@ def prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None
     Native in-flight mode uses this on background CPU workers for prepared future
     songs. The later GPU request still owns field upload and kernel execution.
     """
+    result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    emit_profile_event(
+        component="inflight_orchestrator",
+        event="timeline_frontier_prewarm",
+        song_key=result.song_profile_key,
+        metrics={
+            "ms": float(result.elapsed_ms),
+            "cache_hit": int(result.cache_source != "built"),
+            "cache_source": str(result.cache_source),
+            "total_notes": int(result.total_notes),
+            "long_notes": int(result.long_notes),
+            "frontier_pool_used": int(result.payload.frontier_pool_used),
+        },
+    )
+
+
+def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
+    """
+    Build or load the reusable exact frontier payload without touching Taichi fields.
+
+    This is the shared host-side entrypoint for background lookahead and offline
+    disk-cache prebuilding, so cache signatures stay identical to runtime scoring.
+    """
     t0 = time.perf_counter()
     ctx = _timeline_payload_context(calc_song, ref_arrays)
-    with _ceiling_payload_cache_lock:
-        cache_hit = _frontier_payload_cache_key(ctx["song_key"], ctx["ref_ft"], ctx["ref_ff"]) in _ceiling_frontier_payload_cache
-    payload = _get_or_build_ceiling_frontier_payload(
+    cache_key = _frontier_payload_cache_key(ctx["song_key"], ctx["ref_ft"], ctx["ref_ff"])
+    payload, cache_source = _get_or_build_ceiling_frontier_payload_with_source(
         ctx["song_key"],
         song_slot=0,
         total_notes=int(ctx["total_notes"]),
@@ -482,17 +803,15 @@ def prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None
         ref_ft=ctx["ref_ft"],
         ref_ff=ctx["ref_ff"],
     )
-    emit_profile_event(
-        component="inflight_orchestrator",
-        event="timeline_frontier_prewarm",
-        song_key=ctx["song_profile_key"],
-        metrics={
-            "ms": float((time.perf_counter() - t0) * 1000.0),
-            "cache_hit": int(bool(cache_hit)),
-            "total_notes": int(ctx["total_notes"]),
-            "long_notes": int(ctx["long_notes"]),
-            "frontier_pool_used": int(payload.frontier_pool_used),
-        },
+    return TimelineFrontierPrewarmResult(
+        payload=payload,
+        cache_key=cache_key,
+        disk_path=_frontier_disk_cache_path(cache_key),
+        cache_source=cache_source,
+        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
+        song_profile_key=ctx["song_profile_key"],
+        total_notes=int(ctx["total_notes"]),
+        long_notes=int(ctx["long_notes"]),
     )
 
 
@@ -613,11 +932,8 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     ref_ff = np.asarray(ctx["ref_ff"], dtype=np.float32).reshape(-1)
     song_slot_i = int(song_slot)
     song_profile_key = ctx["song_profile_key"]
-    frontier_cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    with _ceiling_payload_cache_lock:
-        frontier_cache_hit = frontier_cache_key in _ceiling_frontier_payload_cache
     t_frontier = time.perf_counter()
-    frontier_payload = _get_or_build_ceiling_frontier_payload(
+    frontier_payload, frontier_cache_source = _get_or_build_ceiling_frontier_payload_with_source(
         song_key,
         song_slot=int(song_slot),
         total_notes=int(total_notes),
@@ -628,45 +944,36 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         ref_ft=ref_ft,
         ref_ff=ref_ff,
     )
+    cache_phase = "frontier_payload_built"
+    if str(frontier_cache_source) == "memory":
+        cache_phase = "frontier_payload_cache_hit_memory"
+    elif str(frontier_cache_source) == "disk":
+        cache_phase = "frontier_payload_cache_hit_disk"
     _emit_timeline_phase(
-        phase="frontier_payload_cache_hit" if frontier_cache_hit else "frontier_payload_cache_miss",
+        phase=cache_phase,
         start=t_frontier,
         calc_song=calc_song,
         song_slot=song_slot_i,
+        cache_source=str(frontier_cache_source),
         total_notes=int(total_notes),
         long_notes=int(long_notes),
         frontier_pool_used=int(frontier_payload.frontier_pool_used),
     )
     t_merge = time.perf_counter()
     payload_slot_i = 0
-    _merge_timeline_slot_payload(fields.grid_count_body_fever, frontier_payload.grid_count_body_fever, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_count_body_normal, frontier_payload.grid_count_body_normal, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_head_len, frontier_payload.grid_head_len, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_N_hn, frontier_payload.grid_N_hn, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_N_hf, frontier_payload.grid_N_hf, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_Sigma_hn, frontier_payload.grid_Sigma_hn, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_Sigma_hf, frontier_payload.grid_Sigma_hf, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_fever_masks_bits, frontier_payload.grid_fever_masks_bits, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_frontier_count, frontier_payload.grid_frontier_count, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_frontier_offset, frontier_payload.grid_frontier_offset, song_slot_i)
-    _merge_timeline_slot_payload(
-        fields.grid_frontier_body_fever_pool, frontier_payload.grid_frontier_body_fever_pool, song_slot_i
+    upload_bytes = _upload_timeline_frontier_payload_slot(
+        frontier_payload,
+        song_slot_i,
+        source_slot_i=payload_slot_i,
     )
-    _merge_timeline_slot_payload(
-        fields.grid_frontier_body_normal_pool, frontier_payload.grid_frontier_body_normal_pool, song_slot_i
-    )
-    _merge_timeline_slot_payload(
-        fields.grid_frontier_masks_bits_pool, frontier_payload.grid_frontier_masks_bits_pool, song_slot_i
-    )
-    _merge_timeline_slot_payload(fields.grid_sig0, frontier_payload.grid_sig0, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_sig1, frontier_payload.grid_sig1, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_gap, frontier_payload.grid_gap, song_slot_i)
-    _merge_timeline_slot_payload(fields.grid_fever_activations, frontier_payload.grid_fever_activations, song_slot_i)
+    if _profiler.enabled:
+        _profiler.record_upload(time.perf_counter() - t_merge, bytes_count=int(upload_bytes))
     _emit_timeline_phase(
-        phase="frontier_field_merge",
+        phase="frontier_field_upload",
         start=t_merge,
         calc_song=calc_song,
         song_slot=song_slot_i,
+        upload_bytes=int(upload_bytes),
         frontier_count=int(
             np.count_nonzero(np.asarray(frontier_payload.grid_frontier_count[payload_slot_i], dtype=np.int32))
         ),

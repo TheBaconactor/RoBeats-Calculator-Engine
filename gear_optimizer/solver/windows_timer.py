@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 
-from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.core.parsing import env_flag
 
 _WIN_TIMER_LOCK = threading.Lock()
 _WIN_TIMER_USERS = 0
@@ -17,8 +17,7 @@ def system_timer_override_allowed() -> bool:
     `timeBeginPeriod(1)` affects the entire OS timer resolution while active in this process.
     Keep this disabled by default to avoid unexpected system-wide side effects.
     """
-    raw = str(os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE", "0") or "").strip().lower()
-    return raw in TRUTHY_ENV_VALUES
+    return env_flag("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE")
 
 
 def acquire_windows_timer_period_1ms() -> bool:
@@ -66,4 +65,3 @@ def release_windows_timer_period_1ms() -> None:
         except Exception:
             pass
         _WIN_TIMER_ACTIVE = False
-

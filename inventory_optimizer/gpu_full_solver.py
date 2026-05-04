@@ -6,6 +6,8 @@ from typing import Optional, Tuple
 
 import taichi as ti
 
+from gear_optimizer.core.parsing import env_flag
+
 from .taichi_profile import maybe_print_kernel_profile
 
 _LAST_STATE_SIG: Optional[Tuple[int, int, int, int, int]] = None
@@ -13,7 +15,7 @@ _LAST_STATE: Optional["_GpuFullState"] = None
 
 
 def _truthy_env(name: str) -> bool:
-    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(name)
 
 
 def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:

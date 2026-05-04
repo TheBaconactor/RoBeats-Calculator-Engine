@@ -84,7 +84,6 @@ from gear_optimizer.solver.native_inflight_stages import (
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
     _prewarm_fg_baseline_point,
-    _prewarm_timeline_frontier_sync,
     _prepare_fg_static_sync,
     _prepare_fg_job_sync,
     _resolve_active_fg_calc_song,
@@ -1130,7 +1129,6 @@ def run_native_inflight_song_pipeline(
                 pass
 
     def _run_cpu_prewarm_sync(song: _NativeSong) -> None:
-        _prewarm_timeline_frontier_sync(song)
         if not bool(getattr(song, "force_greats_finder", False)):
             return
         calc_song = getattr(song, "fg_calc_song", None) or getattr(song, "calc_song", None)
@@ -1219,7 +1217,7 @@ def run_native_inflight_song_pipeline(
                 stage_profiler.record(
                     "cpu_prewarm",
                     time.perf_counter() - float(t_submit),
-                    cpu_seconds=getattr(song, "_cpu_timeline_prewarm_s", None),
+                    cpu_seconds=None,
                     song=_task_label_for_prewarm(song),
                 )
             except Exception:

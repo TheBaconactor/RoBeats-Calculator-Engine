@@ -27,6 +27,7 @@ from ...core.output import (
     suppress_stderr,
     suppress_stdout,
 )
+from ...core.parsing import env_flag
 
 # ============================================================================
 # INITIALIZATION STATE
@@ -39,15 +40,12 @@ _offline_cache_dir: str | None = None
 logger = logging.getLogger(__name__)
 
 
-_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
-
-
 def _taichi_verbose_enabled() -> bool:
     # Keep Taichi banners in explicit verbose mode only.
     try:
-        if str(os.environ.get("METAFINDER_OUTPUT", "") or "").strip().lower() in _TRUTHY_ENV_VALUES:
+        if env_flag("METAFINDER_OUTPUT"):
             return True
-        if str(os.environ.get("METAFINDER_VERBOSE", "") or "").strip().lower() in _TRUTHY_ENV_VALUES:
+        if env_flag("METAFINDER_VERBOSE"):
             return True
     except Exception:
         return False
@@ -227,6 +225,7 @@ def _maybe_set_vulkan_visible_device() -> None:
     - We intentionally only accept simple comma-separated integer lists to avoid
       crashing Taichi with unexpected strings.
     """
+
     def _enumerate_vulkan_physical_devices() -> list[dict[str, object]]:
         try:
             import ctypes
@@ -584,6 +583,7 @@ def init_taichi():
             _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
         except Exception:
             _offline_cache_dir = None
+
         # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
         # multiple spawned processes (dual-process in-flight). Serialize `ti.init()` per offline-cache
         # directory to avoid races in the Vulkan loader/driver and on-disk cache setup.

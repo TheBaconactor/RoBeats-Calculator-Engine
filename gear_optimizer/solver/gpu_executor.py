@@ -42,8 +42,9 @@ from dataclasses import dataclass
 from typing import Any, Optional, Dict
 from enum import Enum
 
-from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
+from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.fallback_monitor import warn_fallback
+from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, env_int
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.types import JsonDict
 from gear_optimizer.solver.windows_timer import (
@@ -86,13 +87,6 @@ def _acquire_windows_timer_period_1ms() -> bool:
 def _release_windows_timer_period_1ms() -> None:
     # Wrapper kept for monkeypatch-based tests.
     _release_windows_timer_period_1ms_shared()
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(str(_ENV_GET(name, str(default)) or str(default)).strip())
-    except Exception:
-        return int(default)
 
 
 class GpuRequestType(Enum):
@@ -1372,7 +1366,7 @@ class GpuExecutor:
         self._registry_payload_cache.clear()
 
         # Optional: emit per-interval utilization and/or write a CSV trace.
-        self._live_enabled = str(os.environ.get("GPU_EXECUTOR_LIVE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        self._live_enabled = env_flag("GPU_EXECUTOR_LIVE")
         try:
             self._live_interval_sec = float(os.environ.get("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
         except Exception:
@@ -1662,7 +1656,7 @@ class GpuExecutor:
             except Exception:
                 pass
 
-        if os.environ.get("TAICHI_KERNEL_PROFILER_PRINT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        if env_flag("TAICHI_KERNEL_PROFILER_PRINT"):
             try:
                 import taichi as ti
 
@@ -2287,7 +2281,9 @@ class GpuExecutor:
                     GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._coalesce_solve_genomes_from_registry,
                 }
 
-                def _execute_grouped_requests(request_type: GpuRequestType, requests: list[GpuRequest], handler) -> None:
+                def _execute_grouped_requests(
+                    request_type: GpuRequestType, requests: list[GpuRequest], handler
+                ) -> None:
                     if not requests:
                         return
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -2843,8 +2839,8 @@ class GpuExecutor:
         except Exception:
             task_budget = None
         if task_budget is None:
-            inflight_v3 = str(os.environ.get("INFLIGHT_V3", "") or "").strip().lower() in {"1", "true", "yes", "on"}
-            inflight_v4 = str(os.environ.get("INFLIGHT_V4", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+            inflight_v3 = env_flag("INFLIGHT_V3")
+            inflight_v4 = env_flag("INFLIGHT_V4")
             # Safety default: chunk FG task uploads in in-process mode to avoid multi-second continuous GPU work.
             task_budget = 256 if (inflight_v3 or inflight_v4 or self._in_process_queues) else 0
         task_budget = max(0, int(task_budget))
@@ -3974,9 +3970,7 @@ class GpuExecutor:
         max_reqs = max(1, min(int(max_reqs), 128))
 
         try:
-            max_work_units = float(
-                os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000"
-            )
+            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
         except Exception:
             max_work_units = 720000.0
         if max_work_units <= 0.0:
@@ -4926,7 +4920,7 @@ class GpuExecutor:
             if use_gpu_max_fp_compute:
                 max_fp_matrix_for_task = None
                 if env_flag("FG_FUSED_SURFACE_PAIR_REDUCTION", "1"):
-                    pair_reduce_min_pairs = max(1, _env_int("FG_FUSED_SURFACE_PAIR_REDUCTION_MIN_PAIRS", 1025))
+                    pair_reduce_min_pairs = max(1, env_int("FG_FUSED_SURFACE_PAIR_REDUCTION_MIN_PAIRS", 1025))
                     if int(pairs_arr.shape[0]) >= int(pair_reduce_min_pairs):
                         _t_surface = perf_counter()
                         try:
@@ -4967,9 +4961,7 @@ class GpuExecutor:
                             else:
                                 max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
                         except Exception as e:
-                            raise RuntimeError(
-                                f"fused surface pair reduction failed: {type(e).__name__}: {e}"
-                            ) from e
+                            raise RuntimeError(f"fused surface pair reduction failed: {type(e).__name__}: {e}") from e
                         finally:
                             fused_surface_pair_reduce_sec = perf_counter() - _t_surface
 
@@ -5365,7 +5357,7 @@ def get_gpu_executor() -> GpuExecutor:
 
 
 def _auto_stop_gpu_executor_at_exit() -> None:
-    if str(os.environ.get("GPU_EXECUTOR_AUTO_STOP", "") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+    if not env_flag("GPU_EXECUTOR_AUTO_STOP"):
         return
     global _executor
     ex = _executor

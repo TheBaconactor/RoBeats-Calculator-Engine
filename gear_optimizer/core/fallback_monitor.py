@@ -36,8 +36,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from .parsing import TRUTHY_VALUES, truthy
 
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _COUNTS_LOCK = threading.Lock()
 _COUNTS_BY_SITE: dict[str, int] = {}
 # configparser._UNSET is a private sentinel and isn't typed in stdlib stubs.
@@ -70,7 +70,7 @@ class FallbackViolation(RuntimeError):
 
 
 def _is_truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in _TRUTHY
+    return truthy(value)
 
 
 def _is_enabled() -> bool:
@@ -83,7 +83,7 @@ def _is_enabled() -> bool:
 
 def _include_count() -> bool:
     raw = str(os.environ.get("METAFINDER_FALLBACK_WARN_COUNT", "1") or "").strip().lower()
-    return raw in _TRUTHY
+    return raw in TRUTHY_VALUES
 
 
 def _strict_enabled() -> bool:

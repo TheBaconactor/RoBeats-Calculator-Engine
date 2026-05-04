@@ -10,15 +10,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.config import load_config
+from gear_optimizer.core.parsing import truthy
 from gear_optimizer.data.database import get_best_loadouts, get_song_counters
 from gear_optimizer.ui.progress_ipc import SharedProgress
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
 
 def _truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in _TRUTHY
+    return truthy(value)
 
 
 def _format_duration(seconds: float | None) -> str:

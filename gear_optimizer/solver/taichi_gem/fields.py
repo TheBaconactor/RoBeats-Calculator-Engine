@@ -14,6 +14,8 @@ import sys
 
 import taichi as ti
 
+from gear_optimizer.core.parsing import env_flag, env_int
+
 from .runtime import is_initialized, init_taichi
 
 # Platform detection for Metal-specific fields
@@ -34,17 +36,6 @@ MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_EVALS_PER_DISPATCH = 4_194_304  # Upper bound used for chunking (genomes * FT/FF combos)
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, str(default)))
-    except Exception:
-        return default
-
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _clamp_song_slots(n: int) -> int:
     # Slot 0 is always reserved; keep at least one additional slot for prefetch/batching.
     if n < 2:
@@ -59,23 +50,23 @@ def _clamp_song_slots(n: int) -> int:
     return n
 
 
-MAX_TIMELINE_FRONTIER_SURFACES = _env_int("GPU_TIMELINE_FRONTIER_SURFACES", 262144)
+MAX_TIMELINE_FRONTIER_SURFACES = env_int("GPU_TIMELINE_FRONTIER_SURFACES", 262144)
 MAX_TIMELINE_FRONTIER_SURFACES = max(1, min(int(MAX_TIMELINE_FRONTIER_SURFACES), 1_048_576))
 
 
 # Concurrent song grid slots for batch coalescing / timeline caching.
 # Override via env var `GPU_SONG_SLOTS` (set before process start).
-MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 8))
+MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 
 # Optional allocations: unpacked timeline masks are optional; bitpacked masks are the production path.
-WRITE_UNPACKED_GRID_MASKS_DEFAULT = _env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
+WRITE_UNPACKED_GRID_MASKS_DEFAULT = env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS")
 
 # FT/FF combo reduction sizing (Vulkan path).
 # Used by the warmstart and combo-search reduction kernels.
-GA_FTFF_REDUCE_BLOCK_DIM = _env_int(
+GA_FTFF_REDUCE_BLOCK_DIM = env_int(
     "GA_FTFF_REDUCE_BLOCK_DIM", 256
 )  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
 GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(GA_FTFF_REDUCE_BLOCK_DIM), 256))
@@ -91,12 +82,12 @@ GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 
 #   [score, slot_ids(9), result_row(7), base_stats7(7)]
 # Where base_stats7 is `[pp, cm, fm, p_val, s_val, ft_stat, ff_stat]` (same column order
 # used by ForceGreatsFinder GPU kernels via `genome_base_stats`).
-GA_FG_CANDIDATES_PER_RUN = _env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
+GA_FG_CANDIDATES_PER_RUN = env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
 GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(GA_FG_CANDIDATES_PER_RUN)))
 GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
 
 # GPU-side initial population generation (heuristic sampling)
-GA_INIT_HEURISTIC_K = _env_int("GPU_GA_INIT_HEURISTIC_K", 64)
+GA_INIT_HEURISTIC_K = env_int("GPU_GA_INIT_HEURISTIC_K", 64)
 GA_INIT_HEURISTIC_K = max(0, min(256, int(GA_INIT_HEURISTIC_K)))
 
 # ============================================================================
@@ -299,6 +290,7 @@ def reset_fields_state() -> None:
     global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
     global grid_fever_masks, grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
+    global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
@@ -752,15 +744,9 @@ def allocate_grid_fields():
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     grid_frontier_count = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_frontier_offset = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_frontier_body_fever_pool = ti.field(
-        dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES)
-    )
-    grid_frontier_body_normal_pool = ti.field(
-        dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES)
-    )
-    grid_frontier_masks_bits_pool = ti.field(
-        dtype=ti.u32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4)
-    )
+    grid_frontier_body_fever_pool = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES))
+    grid_frontier_body_normal_pool = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES))
+    grid_frontier_masks_bits_pool = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4))
     grid_sig0 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_sig1 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     # Gap to song end: total_notes - last_fever_end_idx (positive = opportunity, negative = overshoot)

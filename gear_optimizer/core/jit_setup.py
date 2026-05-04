@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from .parsing import truthy
+
 _F = TypeVar("_F", bound=Callable[..., object])
 
 
@@ -16,7 +18,7 @@ def _env_bool(name: str, default: bool) -> bool:
     val = os.environ.get(name)
     if val is None:
         return default
-    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+    return truthy(val, extra_truthy=("y",))
 
 
 def _default_numba_cache_dir() -> str | None:

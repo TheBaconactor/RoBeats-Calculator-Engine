@@ -17,23 +17,13 @@ import importlib.util
 
 import numpy as np
 
-_TRUTHY_ENV = {"1", "true", "yes", "on"}
+from ..core.parsing import env_flag, env_int
+
 logger = logging.getLogger(__name__)
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in _TRUTHY_ENV
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(str(os.environ.get(name, str(default)) or str(default)).strip())
-    except Exception:
-        return int(default)
-
-
 def _ga_redundancy_audit_enabled() -> bool:
-    return _env_flag("GA_REDUNDANCY_AUDIT", "0")
+    return env_flag("GA_REDUNDANCY_AUDIT")
 
 
 # Support deterministic testing via GA_SEED environment variable
@@ -60,7 +50,6 @@ from ..core.constants import (
 )
 from ..core.config import read_fg_candidate_limit
 from ..core.color_flags import build_color_flags
-from ..core.env_config import env_flag
 from ..core.profile_events import emit_profile_event
 from ..core.utils import safe_int, safe_float
 from .base_stats import (
@@ -117,8 +106,8 @@ def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
         fg_limit = int(FG_CANDIDATE_LIMIT)
     fg_limit = max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(fg_limit or FG_CANDIDATE_LIMIT)))
 
-    factor = max(1, _env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", 4))
-    cap = max(fg_limit, _env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", 256))
+    factor = max(1, env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", 4))
+    cap = max(fg_limit, env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", 256))
     target = max(fg_limit, fg_limit * int(factor))
     return max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(cap), int(target)))
 
@@ -327,14 +316,14 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
 
 
 # DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS.
-_PERF_TIMING = _env_flag("PERF_TIMING", "0")
-_GPU_NATIVE_GA_LOG_ISLAND_MODEL = _env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
-_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = _env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
-_GPU_NATIVE_GA_VULKAN_RETRIES = _env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
-_GPU_NATIVE_GA_BATCH_RUNS = _env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
-_GPU_NATIVE_GA_LOG_PROGRESS = _env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
+_PERF_TIMING = env_flag("PERF_TIMING", "0")
+_GPU_NATIVE_GA_LOG_ISLAND_MODEL = env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
+_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
+_GPU_NATIVE_GA_VULKAN_RETRIES = env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
+_GPU_NATIVE_GA_BATCH_RUNS = env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
+_GPU_NATIVE_GA_LOG_PROGRESS = env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
 # Prune FT/FF combo tables to globally feasible caps derived from base-stat ceilings.
-_GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = _env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
+_GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
 
 
 if _GPU_NATIVE_AVAILABLE:
@@ -1475,7 +1464,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     perf = _PERF_TIMING
     phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
     profile_events_enabled = bool(
-        _env_flag("METAFINDER_PROFILE_EVENTS", "0")
+        env_flag("METAFINDER_PROFILE_EVENTS", "0")
         or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
     )
     phase_events_enabled = bool(phase_timing and profile_events_enabled)

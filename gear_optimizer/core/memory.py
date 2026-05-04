@@ -27,6 +27,7 @@ except ImportError:
     psutil = None
 
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
+from .parsing import env_flag
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
@@ -52,7 +53,7 @@ def memory_release_requested():
 def log_memory_usage(label=""):
     """Log current memory usage for leak tracking."""
     # This runs on hot per-song paths; keep it opt-in to avoid throughput regressions.
-    if str(os.environ.get("METAFINDER_MEMORY_LOG", "0") or "").strip().lower() not in ("1", "true", "yes", "on"):
+    if not env_flag("METAFINDER_MEMORY_LOG"):
         return
     if psutil is None:
         return

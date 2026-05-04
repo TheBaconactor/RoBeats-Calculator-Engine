@@ -149,6 +149,18 @@ Follow-up lossless reductions:
 - added a persistent exact frontier disk cache under `bin/timeline_frontier_cache` keyed by song timing, timing-envelope context, FT/FF axes, and cache version
 - precomputed exit-envelope prefix thresholds per activation group and vectorized first-exit enumeration while preserving the scalar recurrence exactly
 - added certified plateau reuse over sorted `d_ms` values for each `fill_count`; a later `d_ms` reuses a representative pack only when every recorded first-exit transition call returns the exact same exit tuple list
+- generalized that reuse from adjacent plateaus to trace-equivalent `d_ms` values anywhere later in the axis; if every reachable first-exit transition in the representative's DP trace is identical for another `d_ms`, the recursive frontier is identical by induction
+- cached first-exit transition tuples across representative solves and certificate checks, keyed by `(activation_group, act_lo, act_hi, d_ms)`
+- vectorized the song-wide exit-envelope context construction by rewriting the scalar carry recurrence as prefix maxima in carry-adjusted coordinates:
+  - `lower(s,g) = max(CARRY_L, max(low(h) + P(h)) - P(g))`
+  - `cap(s,g) = min(CARRY_U, max(min(CARRY_U, high(h)) + P(h)) - P(g))`
+  - where `P` is cumulative clipped carry distance and `h` ranges over groups after activation `s` through `g`
+- added exact fast paths for singleton frontier reduction, repeated all-normal terminal surfaces, monotone prefix stop detection, and repeated head-mask coefficient calculation
+- added a terminal-fever transition shortcut: if even the earliest activation carry puts the fever cutoff after every remaining group's latest feasible event time, the first-exit enumerator returns the terminal exit directly
+- short-circuited terminal recursive exits by materializing the known all-normal empty tail instead of recursing into `gcount`
+- cached carry propagation results across the song payload build; the cache is exact because propagation depends only on `(start_group, lo, hi, target_group)`, not `d_ms`
+- replaced per-cell Python grid materialization with dense `(unique_d_ms, unique_fill_count)` matrices and NumPy remapping back to the 161x161 grid
+- precomputed all possible head-range masks for the first 100 notes so combining a future surface with a fever interval is four ORs instead of a per-note loop
 
 Measured after the reductions:
 
@@ -158,6 +170,18 @@ Measured after the reductions:
 - later process runs can load the exact packed payload from disk instead of rebuilding the frontier
 - after vectorized first-exit enumeration, `%UnDeciphered-CryptoGraph in the Edifice% (Hard)` cold no-disk-cache `pair_builds` measured about `1.66s` for `18,998` exact pairs; total `precompute_timeline_gpu` measured about `4.29s`
 - after certified plateau reuse, `Double Helix (Easy)` cold no-disk-cache solved `7,025` representative pairs and reused `6,660` certified plateau pairs out of `13,685`; `pair_builds` measured about `0.72s`
+- after vectorized exit-envelope context construction and micro fast paths, cold direct payload builds using the real `Data/Gear/Stats.txt` FT/FF curves measured:
+  - `Double Helix (Easy)`: about `0.68s`
+  - `Double Helix (Normal)`: about `1.63s-1.64s`
+  - `Double Helix (Hard)`: about `1.97s`
+- after terminal-transition, dense-grid, and head-mask fast paths, cold direct payload builds measured:
+  - `Double Helix (Easy)`: about `0.45s-0.52s`
+  - `Double Helix (Normal)`: about `1.29s-1.35s`
+  - `Double Helix (Hard)`: best observed about `1.50s-1.55s`, with noisy repeated-process runs up to about `2.47s`
+  - `UnDeciphered-CryptoGraph in the Edifice (Hard)`: about `1.13s`
+  - `#include signal.h (Hard)`: about `1.41s`
+
+The trace-equivalence generalization keeps the same safety condition as adjacent plateau reuse, but removes the requirement that equivalent `d_ms` values be consecutive. This keeps `d_ms` as the physical fever-duration axis while treating boundary behavior as the reusable mathematical object.
 
 ## Unified CPU Prewarm Lookahead
 
@@ -171,15 +195,119 @@ The scheduler uses one shared lookahead setting for expensive CPU-only future-so
 
 For prepared songs within that lookahead window, the scheduler may prewarm:
 
-- exact symbolic timeline frontier payloads and the persistent payload cache
 - FG baseline point work
 - FG static prep, bounded by worker availability and legacy explicit caps
 
-This does not reintroduce CPU production scoring. The CPU work is host payload construction for the GPU/Taichi product path; `precompute_timeline_gpu(...)` still owns field upload/merge when a song is dispatched to GA or FG.
+Exact symbolic timeline frontier construction moved out of live lookahead. It is now startup CPU work managed before Taichi/Vulkan initialization.
+
+This does not reintroduce CPU production scoring. The CPU work is host payload construction for the GPU/Taichi product path; `precompute_timeline_gpu(...)` still owns field upload when a song is dispatched to GA or FG.
 
 The older `InFlight_FGStaticPrepMaxInflight` / `INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT` control remains as a narrower override, but the default admission now comes from the unified CPU prewarm lookahead.
 
 Verification after this scheduler refactor:
 
 - `python -m py_compile gear_optimizer/solver/taichi_gem/api/timeline.py gear_optimizer/solver/native_inflight_orchestrator.py gear_optimizer/solver/native_inflight_stages.py gear_optimizer/solver/native_inflight_types.py tests/test_native_inflight_continuous_scheduler.py`
+- `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 45 passed
+
+## Production Whole-Pool Frontier Cache
+
+The exact frontier payload is now a production startup cache, not only a developer tool.
+
+Runtime and tooling share one host-side API:
+
+- `build_or_load_timeline_frontier_payload(calc_song, ref_arrays)`
+- `timeline_frontier_payload_cache_info(calc_song, ref_arrays)`
+
+That API owns:
+
+- song timing signature construction
+- Stats lookup-axis signatures
+- exact frontier payload construction
+- memory-cache lookup
+- disk-cache lookup/write
+- cache source reporting (`memory`, `disk`, or `built`)
+
+During optimizer startup, after the real Stats lookup arrays and song queue are available, `CpuWorkManager` runs exact-frontier cache construction before Taichi/Vulkan init:
+
+- queued songs are submitted first
+- the rest of `Data/Easy`, `Data/Normal`, and `Data/Hard` follows when scope is `pool`
+- already cached payloads are identified by cache key/path and skipped without loading `.npz`
+- missing payloads are built once and written to `bin/timeline_frontier_cache`
+- live GA/FG timeline upload only loads/uploads the ready payload
+- native in-flight no longer starts live timeline frontier prewarm jobs
+- startup logging reports `[Startup][CPU]` cache build and `[Startup][GPU]` Taichi/Vulkan init
+
+Production config:
+
+```ini
+TimelineFrontierCachePrebuild = true
+TimelineFrontierCachePrebuildScope = pool
+TimelineFrontierCachePrebuildWorkers = 0
+TimelineFrontierCachePrebuildMaxSongs = 0
+TimelineFrontierCachePrebuildExecutor = process
+```
+
+Environment overrides:
+
+- `TIMELINE_FRONTIER_CACHE_PREBUILD`
+- `TIMELINE_FRONTIER_CACHE_PREBUILD_SCOPE`
+- `TIMELINE_FRONTIER_CACHE_PREBUILD_WORKERS`
+- `TIMELINE_FRONTIER_CACHE_PREBUILD_MAX_SONGS`
+- `TIMELINE_FRONTIER_CACHE_PREBUILD_EXECUTOR`
+
+Additional startup-build hardening:
+
+- startup prebuild uses `ProcessPoolExecutor` by default (`TimelineFrontierCachePrebuildExecutor=process`) so CPU-heavy exact frontier construction can use real multi-core parallelism
+- prebuild now applies the same deterministic timing-envelope metadata as runtime before cache-key checks/builds, so startup artifacts are reusable by live queue songs
+- cache key no longer includes unrelated ref-table signatures (PP/CM/FM/etc.); frontier keys are now tied to song timing plus FT/FF axes only
+- stale `*.tmp.npz` cache artifacts are removed at startup before prebuild begins
+
+The maintained helper remains available for manual backfills and focused verification, but it wraps the same production build function:
+
+- `python tools/dev/prebuild_timeline_frontiers.py`
+
+The helper walks `Data/Easy`, `Data/Normal`, and `Data/Hard` by default, parses each chart through the same `get_base_calc_song(...)` path as runtime, loads the same Stats lookup arrays as TeamBuff replay, and calls the shared production prebuild function. This means generated `.npz` files under `bin/timeline_frontier_cache` are directly reusable by later GA/FG timeline upload.
+
+Disk-cache footprint fix (post-production rollout):
+
+- root cause: startup prebuild serialized full payload tensors keyed by runtime `GPU_SONG_SLOTS` and full `MAX_TIMELINE_FRONTIER_SURFACES` capacity, not only the single source slot/prefix actually used by runtime upload
+- effect: with aggressive auto slot sizing, each `.npz` became hundreds of MB and whole-pool prebuild created extreme disk pressure
+- fix:
+  - payload builder now materializes slot-agnostic cache payloads at one source slot
+  - disk writer stores only source-slot arrays and only `frontier_pool_used` prefix rows
+  - disk writer uses compressed `.npz` to avoid zero-filled capacity bloat
+  - cache version bumped to `exact-frontier-v4` so stale inflated payloads are ignored
+- runtime behavior remains exact and unchanged: upload still remaps cached source slot `0` into any active GPU song slot
+
+Example:
+
+```powershell
+python tools/dev/prebuild_timeline_frontiers.py --workers 4
+```
+
+Targeted examples:
+
+```powershell
+python tools/dev/prebuild_timeline_frontiers.py --difficulty Hard --workers 4
+python tools/dev/prebuild_timeline_frontiers.py --difficulty Easy --limit 10 --workers 1
+```
+
+Timeline upload also stopped using the old slot-merge pattern:
+
+- old: `field.to_numpy()` full field download -> patch one slot -> `field.from_numpy()` full upload
+- new: slot-prefix upload kernels update only the active song slot
+
+Measured on a real Easy chart with an already-built payload:
+
+- disk cache skip pass: about `0.5 ms` total per already-cached song in the prebuilder
+- warmed `frontier_field_upload`: about `2.3 ms` for `1.7 MB` of active-slot payload
+- first upload in a fresh process is higher because it includes Taichi kernel compilation
+
+Verification:
+
+- `python -m py_compile gear_optimizer/app.py gear_optimizer/solver/cpu_work_manager.py gear_optimizer/solver/timeline_frontier_cache_prebuild.py gear_optimizer/solver/taichi_gem/api/timeline.py tools/dev/prebuild_timeline_frontiers.py`
+- `python -m ruff check gear_optimizer/app.py gear_optimizer/solver/cpu_work_manager.py gear_optimizer/solver/timeline_frontier_cache_prebuild.py gear_optimizer/solver/taichi_gem/api/timeline.py tools/dev/prebuild_timeline_frontiers.py`
+- temp-cache `CpuWorkManager.run_startup(...)` smoke with `TimelineFrontierCachePrebuildScope=queue`, `Workers=0 (auto/all cores)`, `MaxSongs=1` -> passed
+- temp-cache manual first pass: `python tools/dev/prebuild_timeline_frontiers.py --difficulty Easy --limit 1 --workers 1` -> `built`, about `463 ms` timeline
+- temp-cache manual second pass: same command -> `disk`, `0.0 ms` timeline build/load and about `0.5 ms` total song check
 - `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 45 passed

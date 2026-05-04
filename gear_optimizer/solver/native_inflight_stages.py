@@ -12,6 +12,7 @@ import numpy as np
 
 from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
+from gear_optimizer.core.parsing import truthy
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
@@ -36,9 +37,7 @@ _FG_JIT_WARM_LOCK = threading.Lock()
 _FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
 _FG_DB_LOADOUTS_CACHE: "OrderedDict[tuple[str, str], tuple[int, list[dict]]]" = OrderedDict()
 _FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
-_FG_RUNTIME_CALC_SONG_KEYS = (
-    "_gpu_song_slot",
-)
+_FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 
 def _fg_db_cache_max() -> int:
@@ -104,7 +103,7 @@ def _fg_db_cache_put(song_name: str, *, limit: int, rows: list[dict], team_buff:
 
 
 def _truthy(raw: Any) -> bool:
-    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(raw)
 
 
 def _thread_cpu_time_s() -> float:
@@ -421,42 +420,9 @@ def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
         pass
 
 
-def _prewarm_timeline_frontier_sync(song: Any) -> None:
-    """
-    Prime the exact timeline frontier payload cache for a prepared future song.
-
-    This is CPU host work only: it builds the symbolic frontier payload/disk cache
-    and deliberately leaves Taichi field upload to the GPU owner when GA/FG dispatches.
-    """
-    t0 = time.perf_counter()
-    cpu0 = _thread_cpu_time_s()
-    calc_song = getattr(song, "calc_song", None)
-    ref_arrays = getattr(song, "ref_arrays", None)
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-        return
-    from gear_optimizer.solver.taichi_gem.api.timeline import prewarm_timeline_frontier_payload
-
-    prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-    try:
-        setattr(song, "_timeline_prewarm_done", True)
-        setattr(song, "_cpu_timeline_prewarm_s", max(0.0, _thread_cpu_time_s() - float(cpu0)))
-    except Exception:
-        pass
-    try:
-        emit_profile_event(
-            component="inflight_orchestrator",
-            event="timeline_prewarm_done",
-            song_key=str(getattr(song, "task_key", "") or getattr(song, "song_name", "")),
-            metrics={
-                "wall_ms": float((time.perf_counter() - t0) * 1000.0),
-                "cpu_ms": float(max(0.0, _thread_cpu_time_s() - float(cpu0)) * 1000.0),
-            },
-        )
-    except Exception:
-        pass
-
-
-def _warmup_fg_finder_runtime(calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None) -> None:
+def _warmup_fg_finder_runtime(
+    calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None
+) -> None:
     global _FG_FINDER_RUNTIME_WARMED
     if _FG_FINDER_RUNTIME_WARMED:
         return
@@ -965,7 +931,9 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
 
     build_details = getattr(song, "fg_build_details", None)
     if not callable(build_details):
-        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+        build_details = make_build_details_fn(
+            song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty
+        )
         song.fg_build_details = build_details
     song.fg_direct_ga_candidates = bool(song.force_greats_finder)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and

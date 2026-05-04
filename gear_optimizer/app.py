@@ -18,7 +18,8 @@ import numpy as np
 
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
-from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES
+from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, config_bool, env_flag, env_int, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
@@ -54,6 +55,7 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
+from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
@@ -341,7 +343,7 @@ def _banner_enabled_default(*, stream_is_tty: bool, banner_env: str | None) -> b
     raw = str(banner_env or "").strip().lower()
     if not raw:
         return bool(stream_is_tty)
-    return raw in TRUTHY_ENV_VALUES
+    return truthy(raw)
 
 
 class GearOptimizerApp:
@@ -372,7 +374,7 @@ class GearOptimizerApp:
         try:
             raw = os.environ.get("METAFINDER_UI_PROCESS")
             if raw is not None and str(raw).strip() != "":
-                self._tui_enabled = self._truthy(raw)
+                self._tui_enabled = truthy(raw)
         except Exception:
             self._tui_enabled = True
         self._tui_epoch = 0
@@ -417,6 +419,7 @@ class GearOptimizerApp:
         self._song_path_index_ready = False
         self._song_path_index_roots: tuple[str, ...] = ()
         self._song_path_index_last_force_attempt_monotonic = 0.0
+        self._cpu_work_manager = CpuWorkManager()
         self._song_path_index_force_cooldown_sec = 60.0
         self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
@@ -464,14 +467,7 @@ class GearOptimizerApp:
 
     @staticmethod
     def _cfg_truthy(cfg, section: str, key: str, *, fallback: bool = False) -> bool:
-        try:
-            return bool(cfg.getboolean(section, key, fallback=fallback))
-        except Exception:
-            try:
-                raw = str(cfg.get(section, key, fallback=str(int(bool(fallback)))) or "").strip().lower()
-                return raw in TRUTHY_ENV_VALUES
-            except Exception:
-                return bool(fallback)
+        return config_bool(cfg, section, key, default=fallback)
 
     def _profiling_mode_enabled(self, cfg=None) -> bool:
         # Fast path from centralized env snapshot.
@@ -497,7 +493,7 @@ class GearOptimizerApp:
             "FG_TASK_TRACE",
         )
         for key in truthy_keys:
-            if str(os.environ.get(key, "") or "").strip().lower() in TRUTHY_ENV_VALUES:
+            if env_flag(key):
                 return True
 
         path_keys = (
@@ -816,9 +812,21 @@ class GearOptimizerApp:
             if int(inflight_instances) > 1:
                 return
             try:
+                logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
+                emit_profile_event(
+                    component="app",
+                    event="taichi_init_start",
+                    metrics={"in_process": 1},
+                )
                 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
                 get_gpu_executor().start(in_process=True)
+                logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
+                emit_profile_event(
+                    component="app",
+                    event="taichi_init_done",
+                    metrics={"in_process": 1},
+                )
             except Exception:
                 pass
 
@@ -867,13 +875,13 @@ class GearOptimizerApp:
             # 1. Automatically repair them by recomputing Stats
             # 2. Display a prominent warning if any issues were found
             # This prevents frontend/extractors from seeing 0 for elemental stats.
-            ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
+            ignore_resume = truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
             # StatsVerifier is a heavyweight DB integrity repair pass intended for debugging/one-off recovery,
             # not a default production startup step. Keep it opt-in.
-            enable_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
-            skip_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
+            enable_stats_verify = bool(truthy(os.environ.get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
+            skip_stats_verify = bool(truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:
                 if not self._stats_verified_once:
@@ -919,8 +927,6 @@ class GearOptimizerApp:
             self._maybe_apply_inflight_ram_mode(cfg)
             self._maybe_autoset_gpu_song_slots(cfg)
 
-            self._configure_gpu_execution_and_prewarm(cfg)
-
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 
             # CRITICAL FIX: Prevent DB tainting by disabling inputs in auto mode
@@ -944,6 +950,14 @@ class GearOptimizerApp:
                 event="queue_built",
                 metrics={"queued_songs": int(queued_songs)},
             )
+
+            self._cpu_work_manager.run_startup(
+                cfg=cfg,
+                song_queue=song_queue,
+                ref_arrays=ref_arrays,
+                data_root=PATHS.data_dir,
+            )
+            self._configure_gpu_execution_and_prewarm(cfg)
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
@@ -1378,7 +1392,7 @@ class GearOptimizerApp:
             # Backend queue order and persistence come from the API bridge state file.
             # Ignore memory-guard resume files to avoid replaying stale broad queues.
             ignore_resume = True
-        if self._truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
+        if truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
 
         if not ignore_resume:
@@ -1415,7 +1429,7 @@ class GearOptimizerApp:
         pending_song_ids = _pending_backend_song_ids()
         pending_set = set(pending_song_ids)
         pending_only_mode = bool(
-            backend_service_mode and self._truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
+            backend_service_mode and truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
         )
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)
@@ -2443,9 +2457,6 @@ class GearOptimizerApp:
         tasks = []
         parallel_workers = 1
 
-        def _truthy_cfg(raw) -> bool:
-            return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
-
         # When GA_SEED is set, users expect reproducible A/B comparisons.
         # Historically we still generated per-repeat seeds via `secrets.randbits`,
         # which made runs non-reproducible even in "deterministic mode".
@@ -2472,13 +2483,13 @@ class GearOptimizerApp:
         song_repeats = max(1, min(int(song_repeats), 100))
         bundle_song_repeats = False
         try:
-            bundle_song_repeats = _truthy_cfg(cfg.get("IterationEngine", "BundleSongRepeats", fallback="0"))
+            bundle_song_repeats = truthy(cfg.get("IterationEngine", "BundleSongRepeats", fallback="0"))
         except Exception:
             bundle_song_repeats = False
         try:
             raw_bundle = os.environ.get("BUNDLE_SONG_REPEATS")
             if raw_bundle is not None and str(raw_bundle).strip() != "":
-                bundle_song_repeats = _truthy_cfg(raw_bundle)
+                bundle_song_repeats = truthy(raw_bundle)
         except Exception:
             pass
         used_ga_seeds: set[int] = set()
@@ -2704,15 +2715,11 @@ class GearOptimizerApp:
                 return f"{base} (Run {idx}/{total})"
         return base
 
-    @staticmethod
-    def _truthy(v) -> bool:
-        return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
-
     def _fatal_gpu_errors_enabled(self) -> bool:
         raw = str(os.environ.get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
         if raw:
-            return self._truthy(raw)
-        if self._truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
+            return truthy(raw)
+        if truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
             return True
         try:
             api = getattr(self, "_robeatsmeta_api", None)
@@ -2821,7 +2828,7 @@ class GearOptimizerApp:
         return max(1, min(int(inflight_instances), 8))
 
     def _dual_process_inflight_allowed(self) -> bool:
-        return self._truthy(os.environ.get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
+        return truthy(os.environ.get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
 
     def _get_effective_inflight_instances(self, cfg_or_dict) -> int:
         requested_instances = self._get_inflight_instances_requested(cfg_or_dict)
@@ -2903,7 +2910,7 @@ class GearOptimizerApp:
 
         raw_env = os.environ.get("INFLIGHT_RAM_MODE")
         env_set = raw_env is not None and str(raw_env).strip() != ""
-        ram_mode = self._truthy(raw_env) if env_set else False
+        ram_mode = truthy(raw_env) if env_set else False
         if not env_set:
             try:
                 ram_mode = cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
@@ -3013,7 +3020,7 @@ class GearOptimizerApp:
             try:
                 raw_env = os.environ.get("INFLIGHT_RAM_MODE")
                 if raw_env is not None and str(raw_env).strip() != "":
-                    ram_mode = self._truthy(raw_env)
+                    ram_mode = truthy(raw_env)
                 else:
                     ram_mode = cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
             except Exception:
@@ -3242,7 +3249,7 @@ class GearOptimizerApp:
                         fh.write(tb)
                 except Exception:
                     pass
-                if self._truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
+                if truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
                     try:
                         logger.error(tb)
                     except Exception:
@@ -3361,15 +3368,6 @@ class GearOptimizerApp:
         stop_event = mp_ctx.Event()
         initial_completed_keys = list(completed_songs) if isinstance(completed_songs, set) else []
 
-        def _env_int(name: str, default: int) -> int:
-            raw = os.environ.get(name)
-            if raw is None or str(raw).strip() == "":
-                return int(default)
-            try:
-                return int(str(raw).strip())
-            except Exception:
-                return int(default)
-
         processes: list[multiprocessing.Process] = []
         for shard_idx, shard in shard_items:
             work_items: list[tuple] = []
@@ -3392,17 +3390,17 @@ class GearOptimizerApp:
             )
 
             try:
-                prep_workers = _env_int(
+                prep_workers = env_int(
                     "INFLIGHT_PREP_WORKERS", safe_int(thread_overrides.get("INFLIGHT_PREP_WORKERS"), 1)
                 )
-                decode_workers = _env_int(
+                decode_workers = env_int(
                     "INFLIGHT_DECODE_WORKERS", safe_int(thread_overrides.get("INFLIGHT_DECODE_WORKERS"), 1)
                 )
-                fg_workers = _env_int("INFLIGHT_FG_WORKERS", safe_int(thread_overrides.get("INFLIGHT_FG_WORKERS"), 1))
-                fg_prep_workers = _env_int(
+                fg_workers = env_int("INFLIGHT_FG_WORKERS", safe_int(thread_overrides.get("INFLIGHT_FG_WORKERS"), 1))
+                fg_prep_workers = env_int(
                     "INFLIGHT_FG_PREP_WORKERS", safe_int(thread_overrides.get("INFLIGHT_FG_PREP_WORKERS"), 1)
                 )
-                db_prefetch_workers = _env_int(
+                db_prefetch_workers = env_int(
                     "INFLIGHT_DB_PREFETCH_WORKERS", safe_int(thread_overrides.get("INFLIGHT_DB_PREFETCH_WORKERS"), 1)
                 )
                 logger.debug(

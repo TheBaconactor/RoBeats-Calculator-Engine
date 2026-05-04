@@ -12,6 +12,7 @@ from ...core.team_buff import (
     normalize_team_buff_sequence,
     team_buff_effect,
 )
+from ...core.parsing import truthy
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
 
@@ -23,10 +24,11 @@ def _norm_text(v: object) -> str:
 
 
 def _truthy_cfg(v: object) -> bool:
-    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(v)
 
 
 _MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
+
 
 def _mini_names_from_text(text: str) -> list[str]:
     s = text.strip()

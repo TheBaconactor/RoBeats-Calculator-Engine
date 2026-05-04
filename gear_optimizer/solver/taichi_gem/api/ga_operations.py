@@ -23,6 +23,8 @@ import time
 
 import numpy as np
 
+from gear_optimizer.core.parsing import env_flag
+
 from .. import fields
 from ..fields import MAX_EVALS_PER_DISPATCH
 from ..ga_chunking import compute_ga_combo_chunk
@@ -36,10 +38,8 @@ from .initialization import ensure_ready, _ensure_ftff_combo_tables
 # FT/FF combos that produce better top-1 results). Keep it OFF by default and
 # allow explicit opt-in for profiling/experimentation.
 _GA_PLATEAU_PRUNE_ENABLED: int = 0
-_raw = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "0") or "").strip().lower()
-if _raw in {"1", "true", "yes", "on"}:
+if env_flag("GPU_NATIVE_GA_PLATEAU_PRUNE"):
     _GA_PLATEAU_PRUNE_ENABLED = 1
-del _raw
 
 _GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
 _GA_COMBO_CHUNK_MAX: int = max(
@@ -1758,7 +1758,7 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
     cols = 1 + n_slots + 7
     n_rows = n_genomes + 1
 
-    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    perf = env_flag("PERF_TIMING")
     t_total = time.perf_counter() if perf else 0.0
 
     out = None
@@ -1933,7 +1933,7 @@ def ga_download_fg_selected_payload(
     if limit > int(fields.GA_FG_SELECTED_MAX):
         limit = int(fields.GA_FG_SELECTED_MAX)
 
-    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    perf = env_flag("PERF_TIMING")
     t_total = time.perf_counter() if perf else 0.0
 
     # Select coordinates on GPU, then copy only the selected candidates into a bounded staging field.

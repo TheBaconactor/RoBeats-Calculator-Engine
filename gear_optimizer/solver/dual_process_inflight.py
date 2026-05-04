@@ -6,14 +6,12 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.utils import safe_int
 
 
 def _truthy_env(name: str) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return False
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(name)
 
 
 def _env_override_present(name: str) -> bool:
@@ -192,7 +190,9 @@ def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tup
         except Exception:
             song_name = "Unknown"
             difficulty = "Unknown"
-        idx = int(group_to_shard.get((song_name, difficulty), _shard_index_for_song(song_name, difficulty, instances=n)))
+        idx = int(
+            group_to_shard.get((song_name, difficulty), _shard_index_for_song(song_name, difficulty, instances=n))
+        )
         shards[idx].append(task)
     return shards
 

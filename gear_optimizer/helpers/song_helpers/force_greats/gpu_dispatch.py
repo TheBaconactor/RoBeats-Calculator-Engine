@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING, Optional
 
 import numpy as np
 
-from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES, env_flag
+from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, truthy
 from gear_optimizer.core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     TOTAL_ROWS,
@@ -770,11 +770,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     try:
         if isinstance(calc_song, dict):
             pre_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
-            pre_song_key = str(
-                calc_song.get("_queue_key")
-                or calc_song.get("_queue_label")
-                or ""
-            ).strip()
+            pre_song_key = str(calc_song.get("_queue_key") or calc_song.get("_queue_label") or "").strip()
     except Exception:
         pre_song_slot = 0
         pre_song_key = ""
@@ -868,7 +864,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     # - Set FG_DOWNLOAD_TOPK=0 to restore full downloads (slower; more CPU apply work).
     # - Increase FG_DOWNLOAD_TOPK_K if you want to see more than the default top 51.
     _topk_env = str(os.environ.get("FG_DOWNLOAD_TOPK", "1") or "").strip().lower()
-    download_topk_enabled = _topk_env in {"1", "true", "yes", "on"}
+    download_topk_enabled = truthy(_topk_env)
     topk_retry_on_empty = _truthy_env("FG_DOWNLOAD_TOPK_RETRY_ON_EMPTY", "1")
     try:
         download_topk_k = int(os.environ.get("FG_DOWNLOAD_TOPK_K", str(LOADOUTS_PER_SONG_LIMIT)))
@@ -891,11 +887,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     finder_song_key = ""
     try:
         if isinstance(calc_song, dict):
-            finder_song_key = str(
-                calc_song.get("_queue_key")
-                or calc_song.get("_queue_label")
-                or ""
-            ).strip()
+            finder_song_key = str(calc_song.get("_queue_key") or calc_song.get("_queue_label") or "").strip()
     except Exception:
         finder_song_key = ""
 

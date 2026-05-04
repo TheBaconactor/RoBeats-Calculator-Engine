@@ -15,9 +15,11 @@ from typing import Any, Optional
 
 import numpy as np
 
+from gear_optimizer.core.parsing import truthy
+
 
 def _truthy(v: Any) -> bool:
-    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(v)
 
 
 _SONG_FILE_CACHE: "OrderedDict[str, tuple[dict, np.ndarray, np.ndarray]]" = OrderedDict()

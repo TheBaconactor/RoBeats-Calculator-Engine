@@ -13,7 +13,6 @@ full non-dominated surface set is retained for exact scoring.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from math import ceil
 import time
 from typing import Iterable
@@ -23,7 +22,7 @@ import numpy as np
 from gear_optimizer.core.profile_events import emit_profile_event
 
 from .timing_envelope import prepare_perfect_timing_envelope
-from .taichi_gem.fields import GRID_SIZE, MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES
+from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
 _CARRY_L = -40
 _CARRY_U = 80
@@ -84,6 +83,7 @@ class _GroupedTimelineContext:
     group_low_ms: np.ndarray
     group_high_ms: np.ndarray
     note_group_idx: np.ndarray
+    head_range_masks: np.ndarray
     gcount: int
     head_len: int
     total_body: int
@@ -97,6 +97,7 @@ class _GroupedTimelineContext:
     exit_need: np.ndarray
     exit_need_prefix_prev: np.ndarray
     exit_need_prefix_current: np.ndarray
+    future_high_abs_suffix: np.ndarray
     lo0: int
     hi0: int
 
@@ -193,6 +194,8 @@ def reduce_timeline_frontier(surfaces: Iterable[TimelineExactSignature]) -> tupl
     ordered = list(surfaces)
     if not ordered:
         return ()
+    if len(ordered) == 1:
+        return (ordered[0],)
 
     retained: list[TimelineExactSignature] = []
     for idx, cand in enumerate(ordered):
@@ -236,34 +239,6 @@ def _head_mask_coefficients_py(m0: int, m1: int, m2: int, m3: int, head_len: int
             n_hn += 1
             sigma_hn += pos
     return n_hn, n_hf, sigma_hn, sigma_hf
-
-
-def _or_head_mask_range(
-    m0: int,
-    m1: int,
-    m2: int,
-    m3: int,
-    *,
-    start: int,
-    end: int,
-    head_len: int,
-) -> tuple[int, int, int, int]:
-    s = max(0, int(start))
-    e = min(int(end), int(head_len))
-    if e <= s:
-        return int(m0), int(m1), int(m2), int(m3)
-    for i in range(s, e):
-        w = i >> 5
-        b = i & 31
-        if w == 0:
-            m0 |= 1 << b
-        elif w == 1:
-            m1 |= 1 << b
-        elif w == 2:
-            m2 |= 1 << b
-        else:
-            m3 |= 1 << b
-    return int(m0), int(m1), int(m2), int(m3)
 
 
 def _enumerate_first_exit_boundary_intervals_from_activation_band(
@@ -360,23 +335,34 @@ def _enumerate_first_exit_boundary_intervals_from_context(
     if s + 1 >= gcount:
         return [(int(n), int(gcount), int(lo_band), int(hi_band))]
 
+    if int(ctx.future_high_abs_suffix[s + 1]) < int(ctx.group_base_t_ms[s]) + int(lo_band) + int(d_ms):
+        last_idx = int(gcount - 1)
+        last_delta_sum = int(ctx.exit_delta[s, last_idx])
+        survive_lo = max(int(lo_band), int(ctx.exit_need_prefix_current[s, last_idx]) - int(d_ms))
+        x_hi = int(hi_band) - int(last_delta_sum)
+        end_lo = max(int(ctx.exit_lower[s, last_idx]), int(survive_lo) - int(last_delta_sum))
+        survivor_cap_const = int(ctx.exit_cap[s, last_idx])
+        end_hi = max(int(x_hi), min(int(survivor_cap_const), int(x_hi) + int(d_ms) - 1))
+        return [(int(n), int(gcount), int(end_lo), int(end_hi))]
+
     out: list[tuple[int, int, int, int]] = []
     start = s + 1
     need_current = ctx.exit_need_prefix_current[s, start:gcount]
-    stop_rel = np.flatnonzero(need_current > int(hi_band) + int(d_ms))
-    stopped = bool(stop_rel.size)
-    process_stop = int(start + int(stop_rel[0]) + 1) if stopped else int(gcount)
+    keep_count = int(np.searchsorted(need_current, np.int32(int(hi_band) + int(d_ms)), side="right"))
+    stopped = keep_count < int(need_current.shape[0])
+    process_stop = int(start + keep_count + 1) if stopped else int(gcount)
 
     if process_stop > start:
         sl = slice(start, process_stop)
-        delta = ctx.exit_delta[s, sl].astype(np.int32, copy=False)
+        delta = ctx.exit_delta[s, sl]
         lower = ctx.exit_lower[s, sl].astype(np.int32, copy=False)
-        prev_need = ctx.exit_need_prefix_prev[s, sl].astype(np.int32, copy=False)
+        prev_need = ctx.exit_need_prefix_prev[s, sl]
+        group_high_sl = group_high[sl]
         r_lo_arr = np.maximum(np.int32(lo_band), prev_need - np.int32(d_ms))
-        r_hi_arr = np.minimum(np.int32(hi_band), group_high[sl].astype(np.int32, copy=False) + delta - np.int32(d_ms))
-        exit_hi_arr = np.minimum(np.int32(_CARRY_U), group_high[sl].astype(np.int32, copy=False))
+        r_hi_arr = np.minimum(np.int32(hi_band), group_high_sl + delta - np.int32(d_ms))
+        exit_hi_arr = np.minimum(np.int32(_CARRY_U), group_high_sl)
         exit_lo_arr = np.maximum(lower, r_lo_arr - delta + np.int32(d_ms))
-        valid = np.flatnonzero((r_lo_arr <= r_hi_arr) & (exit_lo_arr <= exit_hi_arr))
+        valid = np.nonzero((r_lo_arr <= r_hi_arr) & (exit_lo_arr <= exit_hi_arr))[0]
         for rel in valid.tolist():
             g = int(start + int(rel))
             out.append((int(group_starts[g]), int(g), int(exit_lo_arr[rel]), int(exit_hi_arr[rel])))
@@ -392,6 +378,43 @@ def _enumerate_first_exit_boundary_intervals_from_context(
     end_hi = max(int(x_hi), min(int(survivor_cap_const), int(x_hi) + int(d_ms) - 1))
     out.append((int(n), int(gcount), int(end_lo), int(end_hi)))
     return out
+
+
+def _transition_cache_key(*, activation_group: int, act_lo: int, act_hi: int, d_ms: int) -> tuple[int, int, int, int]:
+    return (int(activation_group), int(act_lo), int(act_hi), int(d_ms))
+
+
+def _cached_first_exit_boundary_intervals(
+    ctx: _GroupedTimelineContext,
+    *,
+    activation_group: int,
+    act_lo: int,
+    act_hi: int,
+    d_ms: int,
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] | None = None,
+) -> tuple[tuple[int, int, int, int], ...]:
+    key = _transition_cache_key(
+        activation_group=int(activation_group),
+        act_lo=int(act_lo),
+        act_hi=int(act_hi),
+        d_ms=int(d_ms),
+    )
+    if transition_cache is not None:
+        cached = transition_cache.get(key)
+        if cached is not None:
+            return cached
+    exits = tuple(
+        _enumerate_first_exit_boundary_intervals_from_context(
+            ctx,
+            activation_group=int(activation_group),
+            act_lo=int(act_lo),
+            act_hi=int(act_hi),
+            d_ms=int(d_ms),
+        )
+    )
+    if transition_cache is not None:
+        transition_cache[key] = exits
+    return exits
 
 
 def _build_grouped_timeline_context(
@@ -419,6 +442,7 @@ def _build_grouped_timeline_context(
             group_low_ms=np.zeros((0,), dtype=np.int32),
             group_high_ms=np.zeros((0,), dtype=np.int32),
             note_group_idx=np.zeros((0,), dtype=np.int32),
+            head_range_masks=np.zeros((1, 1, 4), dtype=np.uint32),
             gcount=0,
             head_len=0,
             total_body=0,
@@ -432,6 +456,7 @@ def _build_grouped_timeline_context(
             exit_need=np.zeros((0, 0), dtype=np.int32),
             exit_need_prefix_prev=np.zeros((0, 0), dtype=np.int32),
             exit_need_prefix_current=np.zeros((0, 0), dtype=np.int32),
+            future_high_abs_suffix=np.zeros((1,), dtype=np.int32),
             lo0=0,
             hi0=0,
         )
@@ -444,6 +469,28 @@ def _build_grouped_timeline_context(
 
     head_len = int(min(n, _MAX_HEAD))
     total_body = int(max(0, n - head_len))
+    head_range_masks = np.zeros((head_len + 1, head_len + 1, 4), dtype=np.uint32)
+    for start_note in range(head_len):
+        m0 = 0
+        m1 = 0
+        m2 = 0
+        m3 = 0
+        for end_note in range(start_note + 1, head_len + 1):
+            bit_idx = end_note - 1
+            word = bit_idx >> 5
+            bit = bit_idx & 31
+            if word == 0:
+                m0 |= 1 << bit
+            elif word == 1:
+                m1 |= 1 << bit
+            elif word == 2:
+                m2 |= 1 << bit
+            else:
+                m3 |= 1 << bit
+            head_range_masks[start_note, end_note, 0] = np.uint32(m0)
+            head_range_masks[start_note, end_note, 1] = np.uint32(m1)
+            head_range_masks[start_note, end_note, 2] = np.uint32(m2)
+            head_range_masks[start_note, end_note, 3] = np.uint32(m3)
 
     delta_from_prev = np.zeros(gcount, dtype=np.int32)
     for g in range(1, gcount):
@@ -482,30 +529,37 @@ def _build_grouped_timeline_context(
     exit_need = np.zeros((gcount, gcount), dtype=np.int32)
     exit_need_prefix_prev = np.full((gcount, gcount), -1_000_000_000, dtype=np.int32)
     exit_need_prefix_current = np.full((gcount, gcount), -1_000_000_000, dtype=np.int32)
+    carry_pos = np.zeros(gcount, dtype=np.int32)
+    if gcount > 1:
+        carry_pos[1:] = np.cumsum(delta_from_prev[1:], dtype=np.int32)
+    low_source = group_low.astype(np.int32, copy=False) + carry_pos
+    cap_source = np.minimum(group_high.astype(np.int32, copy=False), np.int32(_CARRY_U)) + carry_pos
+    abs_high = group_base.astype(np.int32, copy=False) + group_high.astype(np.int32, copy=False)
+    future_high_abs_suffix = np.full(gcount + 1, -1_000_000_000, dtype=np.int32)
+    if gcount > 0:
+        future_high_abs_suffix[:gcount] = np.maximum.accumulate(abs_high[::-1])[::-1]
     for s in range(0, gcount - 1):
-        lower_const = 0
-        survivor_cap_const = 0
-        prefix_need = -1_000_000_000
-        for g in range(s + 1, gcount):
-            if g == s + 1:
-                lower_const = max(_CARRY_L, int(group_low[g]))
-                survivor_cap_const = min(_CARRY_U, int(group_high[g]))
-            else:
-                delta = int(group_base[g]) - int(group_base[g - 1])
-                if delta < 1:
-                    delta = 1
-                lower_const = max(_CARRY_L, max(int(group_low[g]), int(lower_const) - int(delta)))
-                survivor_cap_const = min(_CARRY_U, max(int(group_high[g]), int(survivor_cap_const) - int(delta)))
-            exit_lower[s, g] = np.int16(int(lower_const))
-            exit_cap[s, g] = np.int16(int(survivor_cap_const))
-            delta_sum = int(group_base[g]) - int(group_base[s])
-            need = int(lower_const) + int(delta_sum) + 1
-            exit_delta[s, g] = np.int32(int(delta_sum))
-            exit_need[s, g] = np.int32(int(need))
-            exit_need_prefix_prev[s, g] = np.int32(int(prefix_need))
-            if need > prefix_need:
-                prefix_need = int(need)
-            exit_need_prefix_current[s, g] = np.int32(int(prefix_need))
+        sl = slice(s + 1, gcount)
+        row_carry = carry_pos[sl]
+        lower_vals = np.maximum(
+            np.int32(_CARRY_L),
+            np.maximum.accumulate(low_source[sl]) - row_carry,
+        ).astype(np.int32, copy=False)
+        cap_vals = np.minimum(
+            np.int32(_CARRY_U),
+            np.maximum.accumulate(cap_source[sl]) - row_carry,
+        ).astype(np.int32, copy=False)
+        delta_vals = group_base[sl].astype(np.int32, copy=False) - np.int32(int(group_base[s]))
+        need_vals = lower_vals + delta_vals + np.int32(1)
+        need_prefix = np.maximum.accumulate(need_vals)
+
+        exit_lower[s, sl] = lower_vals.astype(np.int16, copy=False)
+        exit_cap[s, sl] = cap_vals.astype(np.int16, copy=False)
+        exit_delta[s, sl] = delta_vals.astype(np.int32, copy=False)
+        exit_need[s, sl] = need_vals.astype(np.int32, copy=False)
+        if int(need_prefix.shape[0]) > 1:
+            exit_need_prefix_prev[s, s + 2 : gcount] = need_prefix[:-1].astype(np.int32, copy=False)
+        exit_need_prefix_current[s, sl] = need_prefix.astype(np.int32, copy=False)
 
     lo0 = max(_CARRY_L, int(group_low[0]))
     hi0 = min(_CARRY_U, int(group_high[0]))
@@ -516,6 +570,7 @@ def _build_grouped_timeline_context(
         group_low_ms=group_low,
         group_high_ms=group_high,
         note_group_idx=note_group_idx,
+        head_range_masks=head_range_masks,
         gcount=gcount,
         head_len=head_len,
         total_body=total_body,
@@ -529,6 +584,7 @@ def _build_grouped_timeline_context(
         exit_need=exit_need,
         exit_need_prefix_prev=exit_need_prefix_prev,
         exit_need_prefix_current=exit_need_prefix_current,
+        future_high_abs_suffix=future_high_abs_suffix,
         lo0=lo0,
         hi0=hi0,
     )
@@ -562,6 +618,8 @@ def _build_exact_timeline_frontier_from_context(
     fill_count: int,
     d_ms: int,
     exit_trace: list[_ExitTraceEntry] | None = None,
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] | None = None,
+    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] | None = None,
 ) -> TimelineFrontierPack:
     n = int(ctx.total_notes)
     if n <= 0:
@@ -569,6 +627,7 @@ def _build_exact_timeline_frontier_from_context(
 
     group_starts = ctx.group_starts
     note_group_idx = ctx.note_group_idx
+    head_range_masks = ctx.head_range_masks
     gcount = int(ctx.gcount)
     head_len = int(ctx.head_len)
     total_body = int(ctx.total_body)
@@ -578,6 +637,11 @@ def _build_exact_timeline_frontier_from_context(
     def _propagate_to_group(start_g: int, lo: int, hi: int, target_g: int) -> tuple[int, int]:
         if int(target_g) <= int(start_g):
             return int(lo), int(hi)
+        cache_key = (int(start_g), int(lo), int(hi), int(target_g))
+        if propagation_cache is not None:
+            cached = propagation_cache.get(cache_key)
+            if cached is not None:
+                return cached
         g = int(start_g)
         out_lo = int(lo)
         out_hi = int(hi)
@@ -590,56 +654,79 @@ def _build_exact_timeline_frontier_from_context(
                 out_hi = max(int(ctx.jump_a_hi[g][p2]), int(out_hi) - int(b))
                 g += 1 << p2
                 if out_lo > out_hi:
+                    if propagation_cache is not None:
+                        propagation_cache[cache_key] = (1, 0)
                     return 1, 0
             dist >>= 1
             p2 += 1
+        if propagation_cache is not None:
+            propagation_cache[cache_key] = (int(out_lo), int(out_hi))
         return int(out_lo), int(out_hi)
 
+    all_normal_cache: dict[int, TimelineExactSignature] = {}
+
     def _all_normal_surface(start_note: int) -> TimelineExactSignature:
-        return TimelineExactSignature(
+        start_note_i = int(start_note)
+        cached = all_normal_cache.get(start_note_i)
+        if cached is not None:
+            return cached
+        surface = TimelineExactSignature(
             head_len=head_len,
             head_bits=(0, 0, 0, 0),
             body_fever=0,
             body_normal=total_body,
             fever_activations=0,
-            gap=int(max(0, n - int(start_note))),
+            gap=int(max(0, n - start_note_i)),
         )
+        all_normal_cache[start_note_i] = surface
+        return surface
 
-    @lru_cache(maxsize=None)
+    solve_cache: dict[tuple[int, int, int, int], tuple[TimelineExactSignature, ...]] = {}
+
     def _solve_from_boundary(start_group: int, lo: int, hi: int, is_first: bool) -> tuple[TimelineExactSignature, ...]:
         start_group_i = int(start_group)
         lo_i = int(lo)
         hi_i = int(hi)
+        is_first_i = 1 if bool(is_first) else 0
+        solve_key = (start_group_i, lo_i, hi_i, is_first_i)
+        cached = solve_cache.get(solve_key)
+        if cached is not None:
+            return cached
 
         if start_group_i >= gcount:
             start_note_i = int(n)
         else:
             start_note_i = int(group_starts[start_group_i])
 
-        notes_to_fill = int(fill_count_i - 1 if bool(is_first) else fill_count_i)
+        notes_to_fill = int(fill_count_i - 1 if is_first_i else fill_count_i)
         if notes_to_fill < 0:
             notes_to_fill = 0
         activation_note = int(start_note_i + int(notes_to_fill))
 
         if activation_note >= n or activation_note <= 0 or start_note_i >= n:
-            return (_all_normal_surface(start_note_i),)
+            result = (_all_normal_surface(start_note_i),)
+            solve_cache[solve_key] = result
+            return result
 
         g_act = int(note_group_idx[activation_note])
         if g_act < 0 or g_act >= gcount:
-            return (_all_normal_surface(start_note_i),)
+            result = (_all_normal_surface(start_note_i),)
+            solve_cache[solve_key] = result
+            return result
 
         act_lo, act_hi = _propagate_to_group(start_group_i, lo_i, hi_i, g_act)
         if act_lo > act_hi:
-            return (_all_normal_surface(start_note_i),)
+            result = (_all_normal_surface(start_note_i),)
+            solve_cache[solve_key] = result
+            return result
 
-        exits = tuple(
-            _enumerate_first_exit_boundary_intervals_from_context(
-                ctx,
-                activation_group=int(g_act),
-                act_lo=int(act_lo),
-                act_hi=int(act_hi),
-                d_ms=int(d_ms_i),
-            )
+        exits = _cached_first_exit_boundary_intervals(
+            ctx,
+            activation_group=int(g_act),
+            act_lo=int(act_lo),
+            act_hi=int(act_hi),
+            d_ms=int(d_ms_i),
+            transition_cache=transition_cache,
         )
         if exit_trace is not None:
             exit_trace.append(
@@ -653,6 +740,32 @@ def _build_exact_timeline_frontier_from_context(
 
         candidates: list[TimelineExactSignature] = []
         for boundary_note, exit_group, exit_lo, exit_hi in exits:
+            mask_start = max(0, min(int(activation_note), head_len))
+            mask_end = max(0, min(int(boundary_note), head_len))
+            if int(exit_group) >= gcount:
+                range_mask = head_range_masks[mask_start, mask_end]
+                body_add = 0
+                if boundary_note > head_len:
+                    body_start = max(head_len, int(activation_note))
+                    if boundary_note > body_start:
+                        body_add = int(boundary_note) - int(body_start)
+                candidates.append(
+                    TimelineExactSignature(
+                        head_len=head_len,
+                        head_bits=(
+                            int(range_mask[0]),
+                            int(range_mask[1]),
+                            int(range_mask[2]),
+                            int(range_mask[3]),
+                        ),
+                        body_fever=int(body_add),
+                        body_normal=int(total_body - int(body_add)),
+                        fever_activations=1,
+                        gap=0,
+                    )
+                )
+                continue
+
             future_frontier = _solve_from_boundary(
                 int(exit_group),
                 int(exit_lo),
@@ -660,15 +773,7 @@ def _build_exact_timeline_frontier_from_context(
                 False,
             )
             for future in future_frontier:
-                m0, m1, m2, m3 = _or_head_mask_range(
-                    int(future.head_bits[0]),
-                    int(future.head_bits[1]),
-                    int(future.head_bits[2]),
-                    int(future.head_bits[3]),
-                    start=int(activation_note),
-                    end=int(boundary_note),
-                    head_len=head_len,
-                )
+                range_mask = head_range_masks[mask_start, mask_end]
                 body_add = 0
                 if boundary_note > head_len:
                     body_start = max(head_len, int(activation_note))
@@ -679,7 +784,12 @@ def _build_exact_timeline_frontier_from_context(
                 candidates.append(
                     TimelineExactSignature(
                         head_len=head_len,
-                        head_bits=(int(m0), int(m1), int(m2), int(m3)),
+                        head_bits=(
+                            int(future.head_bits[0]) | int(range_mask[0]),
+                            int(future.head_bits[1]) | int(range_mask[1]),
+                            int(future.head_bits[2]) | int(range_mask[2]),
+                            int(future.head_bits[3]) | int(range_mask[3]),
+                        ),
                         body_fever=int(body_fever),
                         body_normal=int(total_body - body_fever),
                         fever_activations=int(future.fever_activations + 1),
@@ -688,11 +798,16 @@ def _build_exact_timeline_frontier_from_context(
                 )
 
         if not candidates:
-            return (_all_normal_surface(start_note_i),)
+            result = (_all_normal_surface(start_note_i),)
+            solve_cache[solve_key] = result
+            return result
 
         reduced = reduce_timeline_frontier(candidates)
         if not reduced:
-            return (_all_normal_surface(start_note_i),)
+            result = (_all_normal_surface(start_note_i),)
+            solve_cache[solve_key] = result
+            return result
+        solve_cache[solve_key] = reduced
         return reduced
 
     frontier = _solve_from_boundary(0, int(ctx.lo0), int(ctx.hi0), True)
@@ -721,16 +836,21 @@ def _build_exact_timeline_frontier_from_context(
     )
 
 
-def _exit_trace_certifies_d_ms(ctx: _GroupedTimelineContext, trace: list[_ExitTraceEntry], d_ms: int) -> bool:
+def _exit_trace_certifies_d_ms(
+    ctx: _GroupedTimelineContext,
+    trace: list[_ExitTraceEntry],
+    d_ms: int,
+    *,
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] | None = None,
+) -> bool:
     for entry in trace:
-        exits = tuple(
-            _enumerate_first_exit_boundary_intervals_from_context(
-                ctx,
-                activation_group=int(entry.activation_group),
-                act_lo=int(entry.act_lo),
-                act_hi=int(entry.act_hi),
-                d_ms=int(d_ms),
-            )
+        exits = _cached_first_exit_boundary_intervals(
+            ctx,
+            activation_group=int(entry.activation_group),
+            act_lo=int(entry.act_lo),
+            act_hi=int(entry.act_hi),
+            d_ms=int(d_ms),
+            transition_cache=transition_cache,
         )
         if exits != entry.exits:
             return False
@@ -850,8 +970,12 @@ def build_timeline_frontier_grid_payload(
     ref_ff: np.ndarray,
 ) -> TimelineFrontierGridPayload:
     song_slot_i = int(song_slot)
-    if song_slot_i < 0 or song_slot_i >= MAX_SONG_SLOTS:
+    if song_slot_i < 0:
         raise ValueError(f"song_slot out of range: {song_slot_i}")
+    # Disk-cache payloads are slot-agnostic and always materialized at slot 0.
+    # Runtime upload remaps this source slot into the active GPU song slot.
+    payload_slot_i = 0
+    payload_slots = 1
 
     ref_ft = np.asarray(ref_ft, dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_ff, dtype=np.float32).reshape(-1)
@@ -870,28 +994,28 @@ def build_timeline_frontier_grid_payload(
     d_ms_values = np.ceil(np.float32(fever_time_cas) * ref_ft * np.float32(1000.0)).astype(np.int32)
     d_ms_values = np.maximum(d_ms_values, np.int32(0))
 
-    grid_count_body_fever = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    grid_count_body_normal = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    grid_head_len = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
-    grid_N_hn = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_N_hf = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_Sigma_hn = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_Sigma_hf = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_fever_masks_bits = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
-    grid_frontier_count = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    grid_frontier_offset = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    grid_frontier_body_fever_pool = np.zeros((MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES), dtype=np.int32)
-    grid_frontier_body_normal_pool = np.zeros((MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES), dtype=np.int32)
+    grid_count_body_fever = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_count_body_normal = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_head_len = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int8)
+    grid_N_hn = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+    grid_N_hf = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+    grid_Sigma_hn = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+    grid_Sigma_hf = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+    grid_fever_masks_bits = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
+    grid_frontier_count = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_frontier_offset = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_frontier_body_fever_pool = np.zeros((payload_slots, MAX_TIMELINE_FRONTIER_SURFACES), dtype=np.int32)
+    grid_frontier_body_normal_pool = np.zeros((payload_slots, MAX_TIMELINE_FRONTIER_SURFACES), dtype=np.int32)
     grid_frontier_masks_bits_pool = np.zeros(
-        (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4), dtype=np.uint32
+        (payload_slots, MAX_TIMELINE_FRONTIER_SURFACES, 4), dtype=np.uint32
     )
-    grid_sig0 = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
-    grid_sig1 = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
-    grid_gap = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    grid_fever_activations = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_sig0 = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
+    grid_sig1 = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
+    grid_gap = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    grid_fever_activations = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
 
-    unique_fill_counts = np.unique(fill_counts)
-    unique_d_ms = np.unique(d_ms_values)
+    unique_fill_counts, fill_inverse = np.unique(fill_counts, return_inverse=True)
+    unique_d_ms, d_inverse = np.unique(d_ms_values, return_inverse=True)
     ctx = _build_grouped_timeline_context(
         total_notes_i,
         group_starts=group_starts,
@@ -902,6 +1026,8 @@ def build_timeline_frontier_grid_payload(
         note_group_idx=note_group_idx,
     )
     pair_cache: dict[tuple[int, int], tuple[TimelineFrontierPack, int]] = {}
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] = {}
+    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] = {}
     pool_offset_by_pack_signature: dict[tuple[tuple[int, int, int, int, int, int, int], ...], int] = {}
     pool_cursor = 0
     pair_build_ms_total = 0.0
@@ -910,7 +1036,7 @@ def build_timeline_frontier_grid_payload(
     pair_surface_max = 0
     pack_sig_counts: dict[tuple[int, int], int] = {}
     solved_pair_count = 0
-    plateau_reused_pair_count = 0
+    trace_equivalent_reused_pair_count = 0
 
     def _store_pack(pack: TimelineFrontierPack) -> int:
         nonlocal pool_cursor
@@ -939,12 +1065,12 @@ def build_timeline_frontier_grid_payload(
         pool_offset_by_pack_signature[pack_pool_key] = offset
         for local_idx, surf in enumerate(pack.surfaces):
             pool_idx = pool_cursor + local_idx
-            grid_frontier_body_fever_pool[song_slot_i, pool_idx] = int(surf.body_fever)
-            grid_frontier_body_normal_pool[song_slot_i, pool_idx] = int(surf.body_normal)
-            grid_frontier_masks_bits_pool[song_slot_i, pool_idx, 0] = np.uint32(int(surf.head_bits[0]))
-            grid_frontier_masks_bits_pool[song_slot_i, pool_idx, 1] = np.uint32(int(surf.head_bits[1]))
-            grid_frontier_masks_bits_pool[song_slot_i, pool_idx, 2] = np.uint32(int(surf.head_bits[2]))
-            grid_frontier_masks_bits_pool[song_slot_i, pool_idx, 3] = np.uint32(int(surf.head_bits[3]))
+            grid_frontier_body_fever_pool[payload_slot_i, pool_idx] = int(surf.body_fever)
+            grid_frontier_body_normal_pool[payload_slot_i, pool_idx] = int(surf.body_normal)
+            grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 0] = np.uint32(int(surf.head_bits[0]))
+            grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 1] = np.uint32(int(surf.head_bits[1]))
+            grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 2] = np.uint32(int(surf.head_bits[2]))
+            grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 3] = np.uint32(int(surf.head_bits[3]))
         pool_cursor += count
         return offset
 
@@ -966,6 +1092,8 @@ def build_timeline_frontier_grid_payload(
                 fill_count=fill_count_i,
                 d_ms=int(d_ms),
                 exit_trace=trace,
+                transition_cache=transition_cache,
+                propagation_cache=propagation_cache,
             )
             solved_pair_count += 1
             pair_ms = float((time.perf_counter() - t_pair) * 1000.0)
@@ -983,10 +1111,19 @@ def build_timeline_frontier_grid_payload(
             d_idx += 1
             while d_idx < len(d_ms_list):
                 reuse_d_ms = int(d_ms_list[d_idx])
-                if not _exit_trace_certifies_d_ms(ctx, trace, reuse_d_ms):
+                reuse_key = (reuse_d_ms, fill_count_i)
+                if reuse_key in pair_cache:
+                    d_idx += 1
+                    continue
+                if not _exit_trace_certifies_d_ms(
+                    ctx,
+                    trace,
+                    int(reuse_d_ms),
+                    transition_cache=transition_cache,
+                ):
                     break
-                pair_cache[(reuse_d_ms, fill_count_i)] = (pack, offset)
-                plateau_reused_pair_count += 1
+                pair_cache[reuse_key] = (pack, offset)
+                trace_equivalent_reused_pair_count += 1
                 d_idx += 1
 
     _emit_frontier_phase(
@@ -998,7 +1135,10 @@ def build_timeline_frontier_grid_payload(
         unique_d_ms=int(unique_d_ms.size),
         pair_count=int(len(pair_cache)),
         solved_pair_count=int(solved_pair_count),
-        plateau_reused_pair_count=int(plateau_reused_pair_count),
+        plateau_reused_pair_count=int(trace_equivalent_reused_pair_count),
+        trace_equivalent_reused_pair_count=int(trace_equivalent_reused_pair_count),
+        transition_cache_entries=int(len(transition_cache)),
+        propagation_cache_entries=int(len(propagation_cache)),
         pair_build_ms_total=float(pair_build_ms_total),
         pair_build_ms_max=float(pair_build_ms_max),
         pair_surface_total=int(pair_surface_total),
@@ -1010,36 +1150,85 @@ def build_timeline_frontier_grid_payload(
     )
 
     t_cells = time.perf_counter()
-    for ft_idx in range(GRID_SIZE):
-        d_key = int(d_ms_values[ft_idx])
-        for ff_idx in range(GRID_SIZE):
-            fc_key = int(fill_counts[ff_idx])
-            pack, offset = pair_cache[(d_key, fc_key)]
-            canonical = pack.canonical
-            n_hn, n_hf, sigma_hn, sigma_hf = _head_mask_coefficients_py(
-                canonical.head_bits[0], canonical.head_bits[1], canonical.head_bits[2], canonical.head_bits[3], head_len=canonical.head_len
+    head_coeff_cache: dict[tuple[int, int, int, int, int], tuple[int, int, int, int]] = {}
+    dense_shape = (int(unique_d_ms.size), int(unique_fill_counts.size))
+    d_pos = {int(v): idx for idx, v in enumerate(unique_d_ms.tolist())}
+    f_pos = {int(v): idx for idx, v in enumerate(unique_fill_counts.tolist())}
+    dense_body_fever = np.zeros(dense_shape, dtype=np.int32)
+    dense_body_normal = np.zeros(dense_shape, dtype=np.int32)
+    dense_head_len = np.zeros(dense_shape, dtype=np.int8)
+    dense_n_hn = np.zeros(dense_shape, dtype=np.int16)
+    dense_n_hf = np.zeros(dense_shape, dtype=np.int16)
+    dense_sigma_hn = np.zeros(dense_shape, dtype=np.int16)
+    dense_sigma_hf = np.zeros(dense_shape, dtype=np.int16)
+    dense_masks = np.zeros((*dense_shape, 4), dtype=np.uint32)
+    dense_frontier_count = np.zeros(dense_shape, dtype=np.int32)
+    dense_frontier_offset = np.zeros(dense_shape, dtype=np.int32)
+    dense_sig0 = np.zeros(dense_shape, dtype=np.uint64)
+    dense_sig1 = np.zeros(dense_shape, dtype=np.uint64)
+    dense_gap = np.zeros(dense_shape, dtype=np.int32)
+    dense_fever_activations = np.zeros(dense_shape, dtype=np.int32)
+
+    for (d_key, fc_key), (pack, offset) in pair_cache.items():
+        d_i = int(d_pos[int(d_key)])
+        f_i = int(f_pos[int(fc_key)])
+        canonical = pack.canonical
+        head_coeff_key = (
+            int(canonical.head_bits[0]),
+            int(canonical.head_bits[1]),
+            int(canonical.head_bits[2]),
+            int(canonical.head_bits[3]),
+            int(canonical.head_len),
+        )
+        coeffs = head_coeff_cache.get(head_coeff_key)
+        if coeffs is None:
+            coeffs = _head_mask_coefficients_py(
+                canonical.head_bits[0],
+                canonical.head_bits[1],
+                canonical.head_bits[2],
+                canonical.head_bits[3],
+                head_len=canonical.head_len,
             )
+            head_coeff_cache[head_coeff_key] = coeffs
+        n_hn, n_hf, sigma_hn, sigma_hf = coeffs
 
-            grid_count_body_fever[song_slot_i, ft_idx, ff_idx] = int(canonical.body_fever)
-            grid_count_body_normal[song_slot_i, ft_idx, ff_idx] = int(canonical.body_normal)
-            grid_head_len[song_slot_i, ft_idx, ff_idx] = np.int8(int(canonical.head_len))
-            grid_N_hn[song_slot_i, ft_idx, ff_idx] = np.int16(int(n_hn))
-            grid_N_hf[song_slot_i, ft_idx, ff_idx] = np.int16(int(n_hf))
-            grid_Sigma_hn[song_slot_i, ft_idx, ff_idx] = np.int16(int(sigma_hn))
-            grid_Sigma_hf[song_slot_i, ft_idx, ff_idx] = np.int16(int(sigma_hf))
-            grid_fever_masks_bits[song_slot_i, ft_idx, ff_idx, 0] = np.uint32(int(canonical.head_bits[0]))
-            grid_fever_masks_bits[song_slot_i, ft_idx, ff_idx, 1] = np.uint32(int(canonical.head_bits[1]))
-            grid_fever_masks_bits[song_slot_i, ft_idx, ff_idx, 2] = np.uint32(int(canonical.head_bits[2]))
-            grid_fever_masks_bits[song_slot_i, ft_idx, ff_idx, 3] = np.uint32(int(canonical.head_bits[3]))
-            grid_frontier_count[song_slot_i, ft_idx, ff_idx] = int(len(pack.surfaces))
-            grid_frontier_offset[song_slot_i, ft_idx, ff_idx] = int(offset)
-            grid_sig0[song_slot_i, ft_idx, ff_idx] = np.uint64(int(pack.sig0))
-            grid_sig1[song_slot_i, ft_idx, ff_idx] = np.uint64(int(pack.sig1))
-            grid_gap[song_slot_i, ft_idx, ff_idx] = int(canonical.gap)
-            grid_fever_activations[song_slot_i, ft_idx, ff_idx] = int(canonical.fever_activations)
+        dense_body_fever[d_i, f_i] = int(canonical.body_fever)
+        dense_body_normal[d_i, f_i] = int(canonical.body_normal)
+        dense_head_len[d_i, f_i] = np.int8(int(canonical.head_len))
+        dense_n_hn[d_i, f_i] = np.int16(int(n_hn))
+        dense_n_hf[d_i, f_i] = np.int16(int(n_hf))
+        dense_sigma_hn[d_i, f_i] = np.int16(int(sigma_hn))
+        dense_sigma_hf[d_i, f_i] = np.int16(int(sigma_hf))
+        dense_masks[d_i, f_i, 0] = np.uint32(int(canonical.head_bits[0]))
+        dense_masks[d_i, f_i, 1] = np.uint32(int(canonical.head_bits[1]))
+        dense_masks[d_i, f_i, 2] = np.uint32(int(canonical.head_bits[2]))
+        dense_masks[d_i, f_i, 3] = np.uint32(int(canonical.head_bits[3]))
+        dense_frontier_count[d_i, f_i] = int(len(pack.surfaces))
+        dense_frontier_offset[d_i, f_i] = int(offset)
+        dense_sig0[d_i, f_i] = np.uint64(int(pack.sig0))
+        dense_sig1[d_i, f_i] = np.uint64(int(pack.sig1))
+        dense_gap[d_i, f_i] = int(canonical.gap)
+        dense_fever_activations[d_i, f_i] = int(canonical.fever_activations)
 
-    frontier_cells = int(np.count_nonzero(grid_frontier_count[song_slot_i]))
-    frontier_variants = int(np.sum(grid_frontier_count[song_slot_i], dtype=np.int64))
+    grid_d_idx = d_inverse.reshape(GRID_SIZE, 1)
+    grid_f_idx = fill_inverse.reshape(1, GRID_SIZE)
+    grid_count_body_fever[payload_slot_i] = dense_body_fever[grid_d_idx, grid_f_idx]
+    grid_count_body_normal[payload_slot_i] = dense_body_normal[grid_d_idx, grid_f_idx]
+    grid_head_len[payload_slot_i] = dense_head_len[grid_d_idx, grid_f_idx]
+    grid_N_hn[payload_slot_i] = dense_n_hn[grid_d_idx, grid_f_idx]
+    grid_N_hf[payload_slot_i] = dense_n_hf[grid_d_idx, grid_f_idx]
+    grid_Sigma_hn[payload_slot_i] = dense_sigma_hn[grid_d_idx, grid_f_idx]
+    grid_Sigma_hf[payload_slot_i] = dense_sigma_hf[grid_d_idx, grid_f_idx]
+    grid_fever_masks_bits[payload_slot_i] = dense_masks[grid_d_idx, grid_f_idx]
+    grid_frontier_count[payload_slot_i] = dense_frontier_count[grid_d_idx, grid_f_idx]
+    grid_frontier_offset[payload_slot_i] = dense_frontier_offset[grid_d_idx, grid_f_idx]
+    grid_sig0[payload_slot_i] = dense_sig0[grid_d_idx, grid_f_idx]
+    grid_sig1[payload_slot_i] = dense_sig1[grid_d_idx, grid_f_idx]
+    grid_gap[payload_slot_i] = dense_gap[grid_d_idx, grid_f_idx]
+    grid_fever_activations[payload_slot_i] = dense_fever_activations[grid_d_idx, grid_f_idx]
+
+    frontier_cells = int(np.count_nonzero(grid_frontier_count[payload_slot_i]))
+    frontier_variants = int(np.sum(grid_frontier_count[payload_slot_i], dtype=np.int64))
     _emit_frontier_phase(
         phase="grid_fill",
         start=t_cells,

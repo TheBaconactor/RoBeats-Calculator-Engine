@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import psutil
 
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.data.database import get_evolution_db_path
 
 from .coverage_candidates import apply_element_filter, load_candidates_by_song, normalize_element_filter
@@ -67,7 +68,7 @@ class _CoverageSong:
 
 
 def _truthy_env(name: str) -> bool:
-    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(name)
 
 
 def _compute_optionality_stats_from_pairs(
@@ -3353,9 +3354,7 @@ def run_inventory_meta_coverage(
         elif isinstance(getattr(best_sol, "stats", None), dict):
             best_sol.stats["cp_sat_hypergraph"] = {
                 "enabled": bool(cp_sat_hypergraph_enabled),
-                "skipped": "top_candidates_not_one"
-                if int(gpu_full_top_candidates) != 1
-                else "disabled",
+                "skipped": "top_candidates_not_one" if int(gpu_full_top_candidates) != 1 else "disabled",
             }
         result = _materialize_coverage_solution(
             selected_specs,

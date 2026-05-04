@@ -15,8 +15,8 @@ from typing import Any, Sequence
 from urllib.parse import urlsplit
 
 from .core.constants import BIN_DIR, PATHS
+from .core.parsing import truthy
 
-_TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 # Keep the 24/7 service default aligned with the checked-in config instead of the
@@ -31,7 +31,7 @@ def _env_bool_override(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
         return None
-    return str(raw or "").strip().lower() in _TRUTHY
+    return truthy(raw)
 
 
 def _runtime_timestamp(now: int | float | None = None) -> int:
@@ -47,7 +47,7 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
         return bool(default)
-    return str(raw or "").strip().lower() in _TRUTHY
+    return truthy(raw)
 
 
 def _normalize_text(value: str) -> str:

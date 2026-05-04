@@ -7,6 +7,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from gear_optimizer.core.parsing import env_flag
+
 
 def _is_repeat_ctx_dict(extra: Any) -> bool:
     return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
@@ -154,7 +156,7 @@ class _PostSender:
             pass
 
     def _run(self) -> None:
-        timing = str(os.environ.get("POST_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        timing = env_flag("POST_TIMING")
         threshold_ms = 50.0
         try:
             threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
@@ -186,4 +188,3 @@ class _PostSender:
                         print(f"{prefix}post_queue_put={ms:.1f}ms")
             except Exception:
                 pass
-

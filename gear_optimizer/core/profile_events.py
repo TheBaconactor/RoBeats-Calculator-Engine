@@ -19,11 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, TypedDict
 
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def _truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in _TRUTHY
+from .parsing import truthy
 
 
 class ProfileEvent(TypedDict):
@@ -43,12 +39,8 @@ class ProfileEventConfig:
 
 
 def _read_config() -> ProfileEventConfig:
-    path = str(
-        os.environ.get("METAFINDER_PROFILE_EVENTS_PATH")
-        or os.environ.get("PROFILE_EVENTS_PATH")
-        or ""
-    ).strip()
-    enabled = _truthy(os.environ.get("METAFINDER_PROFILE_EVENTS")) or bool(path)
+    path = str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+    enabled = truthy(os.environ.get("METAFINDER_PROFILE_EVENTS")) or bool(path)
     run_id = str(
         os.environ.get("METAFINDER_PROFILE_RUN_ID")
         or os.environ.get("PROFILE_RUN_ID")

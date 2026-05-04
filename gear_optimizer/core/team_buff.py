@@ -15,6 +15,8 @@ This module centralizes:
 
 from typing import Any, Mapping, Sequence
 
+from .parsing import truthy
+
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
     "NONE": {"PP": 0, "Elem": 0},
     "T1": {"PP": 25, "Elem": 35},
@@ -30,8 +32,6 @@ TEAM_BUFF_ELEMENTS: tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 
 CANONICAL_TEAM_BUFF_TIERS: frozenset[str] = frozenset(TEAM_BUFF_TIER_EFFECTS)
 DEFAULT_TEAM_BUFF_REPLAY_TIERS: tuple[str, ...] = TEAM_BUFF_TIER_ORDER
-
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def canonicalize_team_buff(value: Any) -> str:
@@ -118,10 +118,6 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     return out
 
 
-def _truthy_cfg(v: Any) -> bool:
-    return str(v or "").strip().lower() in _TRUTHY
-
-
 def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
     Resolve the baseline TeamBuff tier for a run from cfg_dict.
@@ -135,7 +131,7 @@ def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None,
     ie = cfg_dict.get("IterationEngine") or cfg_dict.get("iterationengine") or {}
     if isinstance(ie, Mapping):
         raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
-        if _truthy_cfg(raw):
+        if truthy(raw):
             return "T5"
 
     sec = cfg_dict.get("TeamContributionBuffConstant") or cfg_dict.get("teamcontributionbuffconstant") or {}

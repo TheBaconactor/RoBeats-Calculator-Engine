@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from gear_optimizer.core.config import get_config_path, load_config
+from gear_optimizer.core.parsing import truthy
 from gear_optimizer.core.utils import safe_float, safe_int
 
 
@@ -19,10 +20,7 @@ def default_inventory_meta_config_path() -> str:
 
 
 def _truthy(val: object) -> bool:
-    s = str(val or "").strip().lower()
-    if not s:
-        return False
-    return s in {"1", "true", "yes", "on"}
+    return truthy(val)
 
 
 def _get_str(cfg: configparser.ConfigParser, section: str, key: str, fallback: str) -> str:
@@ -526,13 +524,9 @@ def load_inventory_meta_coverage_settings(
     # CP-SAT Hypergraph
     settings = replace(
         settings,
-        cp_sat_hypergraph_enabled=_get_bool(
-            cfg, "CPSatHypergraph", "Enabled", settings.cp_sat_hypergraph_enabled
-        ),
+        cp_sat_hypergraph_enabled=_get_bool(cfg, "CPSatHypergraph", "Enabled", settings.cp_sat_hypergraph_enabled),
         cp_sat_hypergraph_rounds=_get_int(cfg, "CPSatHypergraph", "Rounds", settings.cp_sat_hypergraph_rounds),
-        cp_sat_hypergraph_max_songs=_get_int(
-            cfg, "CPSatHypergraph", "MaxSongs", settings.cp_sat_hypergraph_max_songs
-        ),
+        cp_sat_hypergraph_max_songs=_get_int(cfg, "CPSatHypergraph", "MaxSongs", settings.cp_sat_hypergraph_max_songs),
         cp_sat_hypergraph_patterns_per_song=_get_int(
             cfg, "CPSatHypergraph", "PatternsPerSong", settings.cp_sat_hypergraph_patterns_per_song
         ),

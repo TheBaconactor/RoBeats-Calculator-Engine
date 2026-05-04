@@ -18,6 +18,7 @@ from ..ga_entry_utils import materialize_entry_names
 from ..loadout_builder import refresh_ga_candidate_entries
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ....core.fallback_monitor import warn_fallback
+from ....core.parsing import env_flag
 from ....core.utils import stats_signature
 from ....solver.scoring import apply_force_greats_to_result
 
@@ -37,7 +38,7 @@ _FG_SESSION_SLOT_LOGGED = False
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(name, default)
 
 
 def _is_inprocess_gpu_client(gpu_client: Optional["GpuServiceClient"]) -> bool:
@@ -70,6 +71,7 @@ def _get_fg_session_slot_pool():
 
     _FG_SESSION_SLOT_POOL = SongSlotPool(max_song_slots=int(max_slots))
     return _FG_SESSION_SLOT_POOL
+
 
 def _get_inprocess_gpu_client():
     global _FG_INPROCESS_GPU_CLIENT, _FG_INPROCESS_GPU_CLIENT_DISABLED
@@ -249,10 +251,7 @@ def process_force_greats(
         auto_slot_id = None
         had_gpu_slot = False
         prev_gpu_slot = None
-        if (
-            isinstance(calc_song, dict)
-            and _is_inprocess_gpu_client(gpu_client)
-        ):
+        if isinstance(calc_song, dict) and _is_inprocess_gpu_client(gpu_client):
             try:
                 had_gpu_slot = "_gpu_song_slot" in calc_song
                 prev_gpu_slot = calc_song.get("_gpu_song_slot")

@@ -8,10 +8,10 @@ It reuses the shared scoring helpers from `gear_optimizer.solver.taichi_gem.kern
 Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 """
 
-import os
-
 import taichi as ti
 from taichi.lang import simt
+
+from gear_optimizer.core.parsing import env_flag, env_int
 
 from ..kernels import kernels_helpers
 from ..kernels.kernels_scoring import optimize_core_device_exact_bound_preloaded_bits
@@ -33,7 +33,6 @@ from .fields import (
 
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
 _KERNEL_BLOCK_DIM = kernels_helpers._KERNEL_BLOCK_DIM
-_TRUTHY_ENV = {"1", "true", "yes", "on"}
 
 
 # ============================================================================
@@ -1779,10 +1778,7 @@ fg_genome_hint_allocation = None
 
 # Block-per-owner Stage 1 (Vulkan): threads cooperate per (genome, ftff) owner.
 # Must be a multiple of 32 for subgroup slot math.
-try:
-    FG_STAGE1_BLOCK_DIM = int(os.environ.get("FG_STAGE1_BLOCK_DIM", "64") or "64")
-except Exception:
-    FG_STAGE1_BLOCK_DIM = 64
+FG_STAGE1_BLOCK_DIM = env_int("FG_STAGE1_BLOCK_DIM", 64)
 FG_STAGE1_BLOCK_DIM = max(32, min(int(FG_STAGE1_BLOCK_DIM), 256))
 FG_STAGE1_BLOCK_DIM = (FG_STAGE1_BLOCK_DIM // 32) * 32
 if FG_STAGE1_BLOCK_DIM <= 0:
@@ -1793,13 +1789,9 @@ while _fg_block_pow * 2 <= FG_STAGE1_BLOCK_DIM:
     _fg_block_pow *= 2
 FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 # Default OFF: compiling two Stage-1 template variants can hurt cold-start runtime.
-FG_STAGE1_SMALL_SECTIONS_FASTPATH = (
-    str(os.environ.get("FG_STAGE1_SMALL_SECTIONS_FASTPATH", "0") or "").strip().lower() in _TRUTHY_ENV
-)
-FG_STAGE1_OWNER_CAP_REDUCTION = (
-    str(os.environ.get("FG_STAGE1_OWNER_CAP_REDUCTION", "0") or "").strip().lower() in _TRUTHY_ENV
-)
-FG_STAGE1_DIRECT_ATOMIC = str(os.environ.get("FG_STAGE1_DIRECT_ATOMIC", "1") or "").strip().lower() in _TRUTHY_ENV
+FG_STAGE1_SMALL_SECTIONS_FASTPATH = env_flag("FG_STAGE1_SMALL_SECTIONS_FASTPATH")
+FG_STAGE1_OWNER_CAP_REDUCTION = env_flag("FG_STAGE1_OWNER_CAP_REDUCTION")
+FG_STAGE1_DIRECT_ATOMIC = env_flag("FG_STAGE1_DIRECT_ATOMIC", "1")
 
 
 @ti.func

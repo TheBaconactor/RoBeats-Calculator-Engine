@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
-from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.core.parsing import env_flag, truthy
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
     get_evolution_db_path,
@@ -70,10 +70,6 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
         return _TEAM_BUFF_REF_ARRAYS_CACHE
 
 
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
-
-
 def _async_db_strict() -> bool:
     """
     Strict async DB policy.
@@ -83,22 +79,22 @@ def _async_db_strict() -> bool:
     """
     raw = os.environ.get("METAFINDER_ASYNC_DB_STRICT")
     if raw is not None:
-        return str(raw or "").strip().lower() in TRUTHY_ENV_VALUES
-    return _truthy_env("GPU_STRICT", "1")
+        return truthy(raw)
+    return env_flag("GPU_STRICT", "1")
 
 
 def _overlay_backend_mode_enabled() -> bool:
     """
     Enable overlay DB mirroring only when the optimizer is paired with the backend/live site.
     """
-    if _truthy_env("ROBEATSMETA_OVERLAY_DB_ENABLE", "0"):
+    if env_flag("ROBEATSMETA_OVERLAY_DB_ENABLE"):
         return True
     try:
         from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
         return bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
     except Exception:
-        return _truthy_env("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
+        return env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
 
 
 def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:

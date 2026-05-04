@@ -11,7 +11,11 @@ Validates:
 Uses existing fast_calculate_score and calculate_fever_timeline_indices.
 No GPU required. No real Data/ needed.
 """
-import sys, os, math, unittest
+
+import math
+import os
+import sys
+import unittest
 import numpy as np
 
 # Add repo root to path
@@ -43,8 +47,7 @@ def compute_fever_mask(timestamps, total_notes, fever_fill_rate, fever_time_stat
     """Compute fever mask using the existing function."""
     mask_buffer = np.zeros(total_notes, dtype=bool)
     head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
-        timestamps, total_notes, fever_fill_rate, fever_time_stat,
-        long_notes, last_note_time, mask_buffer
+        timestamps, total_notes, fever_fill_rate, fever_time_stat, long_notes, last_note_time, mask_buffer
     )
     return mask_buffer.copy(), head_mask, body_fever, body_normal, activations
 
@@ -92,13 +95,11 @@ class TestS9Decomposition(unittest.TestCase):
         cls.fever_mul = 4.0
 
         # Fever bonus per note: V_fever - V_normal
-        cls.fever_val = int(cls.base_value * cls.combo_mul * cls.fever_mul)     # fever body note
-        cls.normal_val = int(cls.base_value * cls.combo_mul)                    # normal body note
+        cls.fever_val = int(cls.base_value * cls.combo_mul * cls.fever_mul)  # fever body note
+        cls.normal_val = int(cls.base_value * cls.combo_mul)  # normal body note
         cls.bonus_body = cls.fever_val - cls.normal_val
 
-        cls.base_score = compute_score_from_mask(
-            cls.mask, cls.base_value, cls.combo_mul, cls.fever_mul, cls.N
-        )
+        cls.base_score = compute_score_from_mask(cls.mask, cls.base_value, cls.combo_mul, cls.fever_mul, cls.N)
 
     # ── Lemma 1: Body score constancy ──────────────────────────────
     def test_lemma1_body_score_constancy(self):
@@ -115,11 +116,14 @@ class TestS9Decomposition(unittest.TestCase):
             mask_b[170 : 170 + d_fever] = True
             s_b = compute_score_from_mask(mask_b, self.base_value, self.combo_mul, self.fever_mul, self.N)
 
-            self.assertEqual(s_a, s_b,
-                f"Same count at different positions should be equal: {s_a} vs {s_b} for d={d_fever}")
+            self.assertEqual(
+                s_a, s_b, f"Same count at different positions should be equal: {s_a} vs {s_b} for d={d_fever}"
+            )
 
         # Verify per-body-note marginal value is constant
-        s0 = compute_score_from_mask(np.zeros(self.N, dtype=bool), self.base_value, self.combo_mul, self.fever_mul, self.N)
+        s0 = compute_score_from_mask(
+            np.zeros(self.N, dtype=bool), self.base_value, self.combo_mul, self.fever_mul, self.N
+        )
         s1 = compute_score_from_mask(
             self._mask_with_one_fever_at(150), self.base_value, self.combo_mul, self.fever_mul, self.N
         )
@@ -129,8 +133,9 @@ class TestS9Decomposition(unittest.TestCase):
 
         delta_a = s1 - s0
         delta_b = s2 - s0
-        self.assertEqual(delta_a, delta_b,
-            f"Per-body-note fever bonus should be position-independent: {delta_a} vs {delta_b}")
+        self.assertEqual(
+            delta_a, delta_b, f"Per-body-note fever bonus should be position-independent: {delta_a} vs {delta_b}"
+        )
 
     def _mask_with_one_fever_at(self, idx):
         mask = np.zeros(self.N, dtype=bool)
@@ -153,8 +158,9 @@ class TestS9Decomposition(unittest.TestCase):
             scores.append(s)
 
         # All positions should produce identical scores
-        self.assertTrue(all(s == scores[0] for s in scores),
-            f"Body window shift should produce identical scores, got {scores}")
+        self.assertTrue(
+            all(s == scores[0] for s in scores), f"Body window shift should produce identical scores, got {scores}"
+        )
 
     # ── Lemma 3: Head shift benefit is bounded by d * (B_max - B_min) ──
     def test_lemma3_head_shift_bound(self):
@@ -194,8 +200,11 @@ class TestS9Decomposition(unittest.TestCase):
             delta = shifted_s - base_s
             bound = d * (B_max - B_min)
 
-            self.assertLessEqual(delta, bound + 1,  # +1 for floor/rounding
-                f"Shift delta {delta} exceeds bound {bound} for d={d}, W={W}")
+            self.assertLessEqual(
+                delta,
+                bound + 1,  # +1 for floor/rounding
+                f"Shift delta {delta} exceeds bound {bound} for d={d}, W={W}",
+            )
 
     # ── Lemma 4: Decomposition upper bound is admissible ──
     def test_lemma4_decomposition_bound_admissible(self):
@@ -213,7 +222,7 @@ class TestS9Decomposition(unittest.TestCase):
         B_min = min(head_bonuses)
 
         # Maximum possible shift per section (from forced-great caps)
-        max_shift = 30   # typical section cap
+        max_shift = 30  # typical section cap
         n_sections = max(1, self.activations + 1)
 
         # Shift bound
@@ -229,8 +238,7 @@ class TestS9Decomposition(unittest.TestCase):
         total_bound = shift_bound + create_bound
 
         # The bound should be positive (FG could theoretically help)
-        self.assertGreater(total_bound, 0,
-            f"Decomposition bound should be > 0 for this song: {total_bound}")
+        self.assertGreater(total_bound, 0, f"Decomposition bound should be > 0 for this song: {total_bound}")
 
         # Verify: the absolute maximum score (all notes fever) is <= base_score + bound
         all_fever_mask = np.ones(self.N, dtype=bool)
@@ -239,8 +247,9 @@ class TestS9Decomposition(unittest.TestCase):
         )
         max_possible_gain = all_fever_score - self.base_score
 
-        self.assertLessEqual(max_possible_gain, total_bound,
-            f"Max possible gain {max_possible_gain} exceeds bound {total_bound}")
+        self.assertLessEqual(
+            max_possible_gain, total_bound, f"Max possible gain {max_possible_gain} exceeds bound {total_bound}"
+        )
 
     # ── Integration: Pre-FG skip test ──
     def test_integration_pre_fg_skip(self):
@@ -297,8 +306,9 @@ class TestS9Decomposition(unittest.TestCase):
                         actual_gain = max(actual_gain, gain)
 
         # The actual gain should be bounded by the decomposition bound
-        self.assertLessEqual(actual_gain, net_bound + self.base_score,
-            f"Actual FG gain {actual_gain} exceeds net bound {net_bound}")
+        self.assertLessEqual(
+            actual_gain, net_bound + self.base_score, f"Actual FG gain {actual_gain} exceeds net bound {net_bound}"
+        )
 
     # ── Lemma: Body window shift with penalty always negative ──
     def test_body_shift_with_penalty_always_negative(self):
@@ -325,16 +335,15 @@ class TestS9Decomposition(unittest.TestCase):
             shifted[fever_start : fever_start + d] = False
             shifted[fever_end : fever_end + d] = True
 
-            shifted_s = compute_score_from_mask(
-                shifted, self.base_value, self.combo_mul, self.fever_mul, self.N
-            )
+            shifted_s = compute_score_from_mask(shifted, self.base_value, self.combo_mul, self.fever_mul, self.N)
 
             # Base score change from shift alone
             shift_delta = shifted_s - self.base_score
 
             # Should be exactly 0 from Lemma 2
-            self.assertEqual(shift_delta, 0,
-                f"Body-only shift should produce zero base score change, got {shift_delta}")
+            self.assertEqual(
+                shift_delta, 0, f"Body-only shift should produce zero base score change, got {shift_delta}"
+            )
 
             # With penalty: total = shift_delta - penalty = -penalty < 0
             # So FG cannot help via body-only shifting
