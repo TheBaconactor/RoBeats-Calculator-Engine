@@ -6,6 +6,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ....core.fallback_monitor import warn_fallback
 
+from gear_optimizer.core.parsing import env_get
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
@@ -103,7 +104,7 @@ def resolve_fg_async_batching_settings(
         fg_async_max_inflight_default = 32
 
     try:
-        fg_async_max_inflight = int(os.environ.get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
+        fg_async_max_inflight = int(env_get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
     except Exception:
         fg_async_max_inflight = fg_async_max_inflight_default
     fg_async_max_inflight = max(1, int(fg_async_max_inflight))
@@ -124,7 +125,7 @@ def resolve_fg_async_batching_settings(
     fg_async_tasks_per_request = fg_async_tasks_per_request_default
     try:
         fg_async_tasks_per_request = int(
-            os.environ.get("FG_ASYNC_TASKS_PER_REQUEST", str(fg_async_tasks_per_request_default))
+            env_get("FG_ASYNC_TASKS_PER_REQUEST", str(fg_async_tasks_per_request_default))
         )
     except Exception:
         fg_async_tasks_per_request = fg_async_tasks_per_request_default

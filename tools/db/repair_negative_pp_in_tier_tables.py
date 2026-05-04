@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_int as _safe_int
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -50,17 +52,6 @@ def _loads_json(s: Any, default: Any) -> Any:
         return json.loads(text)
     except Exception:
         return default
-
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v if v is not None else default)
-    except Exception:
-        try:
-            return int(float(v))
-        except Exception:
-            return int(default)
-
 
 def _apply_base_effect_to_stats(stats: dict, *, primary_color: str) -> dict:
     if not isinstance(stats, dict) or not stats:

@@ -5,8 +5,8 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 
 ## Harness layout
 
-- Root `AGENTS.md` is the router and non-negotiable contract.
-- Nested `AGENTS.md` files keep local rules close to the code or docs they govern.
+- Root `AGENTS.md` is a concise router and non-negotiable contract.
+- Nested `AGENTS.md` files stay small and keep local rules close to the code or docs they govern.
 - Use `AGENTS.override.md` only when a subtree truly needs to replace broader guidance instead of extending it.
 - This document holds long-lived engineering doctrine so the root harness can stay short.
 - `docs/HARNESS_ENGINEERING.md` holds agent-first harness practices, feedback loops, and mechanical enforcement
@@ -29,6 +29,8 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 
 - Do not add or restore repo-local MCP servers.
 - Do not add repo-local custom Codex skills for this surface.
+- Do not use broad user skills as default routing. Keep reusable repo workflow in docs or ordinary tools unless the user
+  explicitly asks for a skill.
 - Repeated engineering workflows should live in maintained docs or ordinary repo tools under `tools/dev`, `tools/bench`,
   or `tools/verify`.
 - Keep repo-local automation easy to run from a shell, CI, or PR review without requiring Codex-specific server

@@ -6,7 +6,6 @@ This module provides GPU-accelerated timeline precomputation:
 """
 
 import time
-import os
 import hashlib
 import threading
 from collections import OrderedDict
@@ -32,6 +31,7 @@ from ..kernel_loader import get_kernels
 
 from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
 
+from gear_optimizer.core.parsing import env_get
 _profiler = get_gpu_profiler()
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -232,10 +232,10 @@ def _upload_timeline_frontier_payload_slot(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-_CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(os.environ.get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
+_CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(env_get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
 _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CEILING_FRONTIER_PAYLOAD_CACHE_MAX = max(
-    1, int(os.environ.get("CEILING_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8")
+    1, int(env_get("CEILING_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8")
 )
 _ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _ceiling_payload_cache_lock = threading.RLock()
@@ -274,7 +274,7 @@ def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.
 
 
 def _frontier_disk_cache_dir() -> Path:
-    override = str(os.environ.get("TIMELINE_FRONTIER_CACHE_DIR", "") or "").strip()
+    override = str(env_get("TIMELINE_FRONTIER_CACHE_DIR", "") or "").strip()
     if override:
         return Path(override)
     return Path(__file__).resolve().parents[4] / "bin" / "timeline_frontier_cache"

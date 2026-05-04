@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import os
 
 import numpy as np
 
 from gear_optimizer.core.fallback_monitor import warn_fallback
 
 
+from gear_optimizer.core.parsing import env_get
 def resolve_signature_frontier_limit(*, loadouts_per_song_limit: int) -> int:
-    raw = str(os.environ.get("FG_SIGNATURE_FRONTIER_LIMIT", "") or "").strip()
+    raw = str(env_get("FG_SIGNATURE_FRONTIER_LIMIT", "") or "").strip()
     if raw:
         try:
             return max(0, int(raw))
@@ -16,7 +16,7 @@ def resolve_signature_frontier_limit(*, loadouts_per_song_limit: int) -> int:
             return 0
 
     try:
-        mult = int(os.environ.get("FG_SIGNATURE_FRONTIER_MULT", "2") or 2)
+        mult = int(env_get("FG_SIGNATURE_FRONTIER_MULT", "2") or 2)
     except Exception:
         mult = 2
     mult = max(1, int(mult))

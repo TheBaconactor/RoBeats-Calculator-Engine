@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections.abc import Callable
 
 
+from gear_optimizer.core.parsing import env_get
 def read_inflight_event_wait_gpu_cap_s() -> float:
     """
     Optional tighter cap for completion-event waits while GPU work is active.
@@ -14,7 +14,7 @@ def read_inflight_event_wait_gpu_cap_s() -> float:
     Set to 0 to disable this cap.
     """
     timeout_s = 0.01
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC")
+    raw = env_get("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC")
     if raw is not None and str(raw).strip() != "":
         try:
             timeout_s = float(raw)
@@ -31,7 +31,7 @@ def read_inflight_event_wait_short_spin_s() -> float:
     quantization from stretching sub-ms/ms windows into multi-ms idle bubbles.
     """
     short_spin_ms = 3.0
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS")
+    raw = env_get("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS")
     if raw is not None and str(raw).strip() != "":
         try:
             short_spin_ms = float(raw)
@@ -48,7 +48,7 @@ def read_inflight_event_wait_spin_yield_rounds() -> int:
     times, then fall back to a tiny blocking wait to reduce host overhead.
     """
     rounds = 8
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_SPIN_YIELD_ROUNDS")
+    raw = env_get("INFLIGHT_EVENT_WAIT_SPIN_YIELD_ROUNDS")
     if raw is not None and str(raw).strip() != "":
         try:
             rounds = int(raw)

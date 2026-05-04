@@ -41,6 +41,7 @@ from .gpu_executor import (
     _registry_base_fixed_stats_sig,
 )
 
+from gear_optimizer.core.parsing import env_get
 _DEFAULT_FG_OWNER_MAX_PAIRS = 1024
 
 
@@ -105,24 +106,24 @@ class GpuServiceClient:
         # partition-and-merge contract; timed service-level coalescing was removed
         # because dispatch and the GPU owner already batch FG work.
         try:
-            raw_max_payloads = os.environ.get("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST")
+            raw_max_payloads = env_get("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST")
             if raw_max_payloads is None or str(raw_max_payloads).strip() == "":
-                raw_max_payloads = os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "8")
+                raw_max_payloads = env_get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "8")
             self._fg_owner_max_payloads = int(str(raw_max_payloads or "8").strip() or "8")
         except Exception:
             self._fg_owner_max_payloads = 8
         try:
-            raw_payload_hard_cap = os.environ.get("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS")
+            raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS")
             if raw_payload_hard_cap is None or str(raw_payload_hard_cap).strip() == "":
-                raw_payload_hard_cap = os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+                raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
             executor_max_payloads = int(str(raw_payload_hard_cap or "64").strip() or "64")
         except Exception:
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
         try:
-            raw_pair_cap = os.environ.get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST")
+            raw_pair_cap = env_get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST")
             if raw_pair_cap is None or str(raw_pair_cap).strip() == "":
-                raw_pair_cap = os.environ.get(
+                raw_pair_cap = env_get(
                     "FG_COALESCE_BREAKPOINTS_MAX_PAIRS",
                     str(_DEFAULT_FG_OWNER_MAX_PAIRS),
                 )
@@ -133,9 +134,9 @@ class GpuServiceClient:
             self._fg_owner_max_pairs = _DEFAULT_FG_OWNER_MAX_PAIRS
         self._fg_owner_max_pairs = max(0, min(int(self._fg_owner_max_pairs), 4096))
         try:
-            raw_work_cap = os.environ.get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST")
+            raw_work_cap = env_get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST")
             if raw_work_cap is None or str(raw_work_cap).strip() == "":
-                raw_work_cap = os.environ.get("FG_FUSED_MAX_WORK_PER_REQUEST", "25000000")
+                raw_work_cap = env_get("FG_FUSED_MAX_WORK_PER_REQUEST", "25000000")
             self._fg_owner_max_work = int(str(raw_work_cap or "25000000").strip() or "25000000")
         except Exception:
             self._fg_owner_max_work = 25_000_000
@@ -147,7 +148,7 @@ class GpuServiceClient:
         self._registry_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
         try:
             self._registry_static_handle_cache_max = int(
-                os.environ.get("GPU_SERVICE_REGISTRY_STATIC_CACHE_MAX", "512") or "512"
+                env_get("GPU_SERVICE_REGISTRY_STATIC_CACHE_MAX", "512") or "512"
             )
         except Exception:
             self._registry_static_handle_cache_max = 512
@@ -155,14 +156,14 @@ class GpuServiceClient:
 
         timeout_default_enabled = env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
         timeout_fatal_default = timeout_default_enabled
-        raw_timeout_fatal = str(os.environ.get("GPU_SERVICE_TIMEOUT_FATAL", "") or "").strip().lower()
+        raw_timeout_fatal = str(env_get("GPU_SERVICE_TIMEOUT_FATAL", "") or "").strip().lower()
         if raw_timeout_fatal:
             self._timeout_fatal = truthy(raw_timeout_fatal)
         else:
             self._timeout_fatal = bool(timeout_fatal_default)
         self._request_timeout_default_enabled = bool(timeout_default_enabled)
         try:
-            self._timeout_poll_sec = max(0.05, float(os.environ.get("GPU_SERVICE_TIMEOUT_POLL_SEC", "0.25") or "0.25"))
+            self._timeout_poll_sec = max(0.05, float(env_get("GPU_SERVICE_TIMEOUT_POLL_SEC", "0.25") or "0.25"))
         except Exception:
             self._timeout_poll_sec = 0.25
 
@@ -857,9 +858,9 @@ class GpuServiceClient:
             + "".join(ch if ch.isalnum() else "_" for ch in str(request_type.value or "").upper())
             + "_SEC"
         )
-        raw = str(os.environ.get(env_key, "") or "").strip()
+        raw = str(env_get(env_key, "") or "").strip()
         if not raw:
-            raw = str(os.environ.get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
+            raw = str(env_get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
 
         if raw:
             try:

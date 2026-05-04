@@ -8,7 +8,6 @@ This module provides functions for evaluating fixed stats without gem optimizati
 - Helper functions for song caching and config conversion
 """
 
-import os
 import threading
 import numpy as np
 from math import floor
@@ -25,6 +24,7 @@ from ..fever_timeline import (
 from ..scoring_core import fast_calculate_score, lookup_reference_py
 
 
+from gear_optimizer.core.parsing import env_get
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
 _FG_BASELINE_CACHE_MAX = 8192
 _FG_BASELINE_GRID_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -36,7 +36,7 @@ _FG_BASELINE_CACHE_LOCK = threading.Lock()
 
 def _fg_baseline_grid_auto_threshold() -> int:
     try:
-        threshold = int(os.environ.get("FG_BASELINE_GRID_AUTO_THRESHOLD", "16") or "16")
+        threshold = int(env_get("FG_BASELINE_GRID_AUTO_THRESHOLD", "16") or "16")
     except Exception:
         threshold = 16
     return max(0, min(int(threshold), 512))
@@ -304,7 +304,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
 
     # Fast path: use per-song fever_activations/gap grids to avoid per-(FT,FF) timeline stepping.
-    use_grid = str(os.environ.get("FG_BASELINE_GRID", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+    use_grid = str(env_get("FG_BASELINE_GRID", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
     if prefer_grid is None:
         prefer_grid = False
         if use_grid:

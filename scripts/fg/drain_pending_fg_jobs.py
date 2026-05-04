@@ -14,6 +14,7 @@ import sys
 import time
 from typing import Dict, List, Tuple
 
+from gear_optimizer.core.parsing import env_get
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -274,7 +275,7 @@ def main() -> int:
                             build_details_fn,
                             use_gpu=True,
                             fg_search_radius=fg_search_radius,
-                            perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
+                            perf_timing=_truthy(env_get("PERF_TIMING", "0")),
                         )
             else:
                 fg_variants = process_force_greats(
@@ -288,7 +289,7 @@ def main() -> int:
                     build_details_fn,
                     use_gpu=True,
                     fg_search_radius=fg_search_radius,
-                    perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
+                    perf_timing=_truthy(env_get("PERF_TIMING", "0")),
                 )
         except Exception as exc:
             msg = f"[DrainFG][ERROR] {song_name}: {type(exc).__name__}: {exc}"

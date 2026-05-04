@@ -47,12 +47,14 @@ from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, env_int
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.types import JsonDict
+from gear_optimizer.helpers.song_helpers.force_greats.cfg_window_decode import decode_cfg_counts_from_windows
 from gear_optimizer.solver.windows_timer import (
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms_shared,
     release_windows_timer_period_1ms as _release_windows_timer_period_1ms_shared,
     system_timer_override_allowed as _system_timer_override_allowed_shared,
 )
 
+from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
 _WARMUP_SENTINEL_SCHEMA = 3
@@ -1255,7 +1257,7 @@ class GpuExecutor:
             max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
         except Exception:
             try:
-                max_slots = int(os.environ.get("GPU_SONG_SLOTS", "24") or "24")
+                max_slots = int(env_get("GPU_SONG_SLOTS", "24") or "24")
             except Exception:
                 max_slots = 24
         max_slots = max(1, int(max_slots))
@@ -1323,7 +1325,7 @@ class GpuExecutor:
         self._batch_size_sum = 0
         self._idle_gaps = []
         try:
-            idle_ms = float(os.environ.get("GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS", "1.0"))
+            idle_ms = float(env_get("GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS", "1.0"))
         except Exception:
             idle_ms = 1.0
         self._idle_sample_threshold_sec = max(0.0, float(idle_ms) / 1000.0)
@@ -1368,7 +1370,7 @@ class GpuExecutor:
         # Optional: emit per-interval utilization and/or write a CSV trace.
         self._live_enabled = env_flag("GPU_EXECUTOR_LIVE")
         try:
-            self._live_interval_sec = float(os.environ.get("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
+            self._live_interval_sec = float(env_get("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
         except Exception:
             self._live_interval_sec = 1.0
         self._live_interval_sec = max(0.1, float(self._live_interval_sec))
@@ -1380,7 +1382,7 @@ class GpuExecutor:
         self._trace_fp = None
         self._trace_start_perf = None
         self._trace_start_wall = None
-        trace_path = str(os.environ.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
+        trace_path = str(env_get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
         if trace_path:
             try:
                 Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1396,12 +1398,12 @@ class GpuExecutor:
 
         self._in_process_queues = bool(in_process)
         self._high_res_timer_enabled = False
-        heartbeat_raw = str(os.environ.get("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
+        heartbeat_raw = str(env_get("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
         self._heartbeat_path = Path(heartbeat_raw) if heartbeat_raw else _default_executor_heartbeat_path()
         try:
             self._heartbeat_interval_sec = max(
                 0.1,
-                float(os.environ.get("GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC", "2.0") or "2.0"),
+                float(env_get("GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC", "2.0") or "2.0"),
             )
         except Exception:
             self._heartbeat_interval_sec = 2.0
@@ -1411,7 +1413,7 @@ class GpuExecutor:
             # The executor's gather loop uses small timeout waits (<=6ms by default in inproc mode).
             # On Windows, keep 1ms timer resolution so these waits aren't quantized to ~15ms.
             try:
-                raw_wait = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
+                raw_wait = env_get("GPU_EXECUTOR_BATCH_WAIT_MS")
                 if raw_wait is None or str(raw_wait).strip() == "":
                     base_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
                     batch_wait_ms = min(int(base_wait_ms), 6)
@@ -1420,7 +1422,7 @@ class GpuExecutor:
             except Exception:
                 batch_wait_ms = 6
             try:
-                after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
+                after_first_ms = int(env_get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
             except Exception:
                 after_first_ms = 2
             if (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4):
@@ -2087,7 +2089,7 @@ class GpuExecutor:
         cached_fg_burst_window_ms = 6
         cached_fg_burst_batch_wait_ms = 2
         profile_events_enabled = bool(
-            str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+            str(env_get("METAFINDER_PROFILE_EVENTS_PATH") or env_get("PROFILE_EVENTS_PATH") or "").strip()
         )
         trace_enabled = bool(self._trace_fp is not None or profile_events_enabled)
         need_batch_summary = bool(self._workload_profile_enabled or trace_enabled)
@@ -2833,7 +2835,7 @@ class GpuExecutor:
 
         task_budget = None
         try:
-            raw_budget = os.environ.get("FG_TASK_BUDGET")
+            raw_budget = env_get("FG_TASK_BUDGET")
             if raw_budget is not None and str(raw_budget).strip() != "":
                 task_budget = int(str(raw_budget).strip())
         except Exception:
@@ -3058,12 +3060,12 @@ class GpuExecutor:
             return [self._execute_request(req) for req in requests]
 
         try:
-            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
+            max_payloads = int(env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
         except Exception:
             max_payloads = 64
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
-            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
+            max_pairs = int(env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
         except Exception:
             max_pairs = 256
         max_pairs = max(0, int(max_pairs))
@@ -3966,13 +3968,13 @@ class GpuExecutor:
             return [self._execute_gpu_native_ga_run(requests[0])]
 
         try:
-            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
+            max_reqs = int(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
         except Exception:
             max_reqs = 1
         max_reqs = max(1, min(int(max_reqs), 128))
 
         try:
-            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
+            max_work_units = float(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
         except Exception:
             max_work_units = 720000.0
         if max_work_units <= 0.0:
@@ -4464,60 +4466,7 @@ class GpuExecutor:
 
     @staticmethod
     def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
-        import numpy as np
-
-        if cfg_idx is None or not cfg_windows or int(n_sections) <= 0:
-            return None
-        try:
-            cfg_idx_np = np.asarray(cfg_idx, dtype=np.int32)
-        except Exception:
-            return None
-        try:
-            n_out = int(cfg_idx_np.shape[0])
-        except Exception:
-            return None
-        if n_out <= 0:
-            return None
-
-        cfg_counts = np.zeros((int(n_out), int(n_sections)), dtype=np.int32)
-        bases = [int(w.get("base", 0) or 0) for w in cfg_windows]
-        lens = [int(w.get("len", 0) or 0) for w in cfg_windows]
-        ends = [base + length for base, length in zip(bases, lens)]
-
-        for gi in range(int(n_out)):
-            x = int(cfg_idx_np[gi])
-            window_index = -1
-            for wi, (b, e) in enumerate(zip(bases, ends)):
-                if int(b) <= x < int(e):
-                    window_index = wi
-                    break
-            if window_index < 0:
-                continue
-
-            w = cfg_windows[window_index]
-            base = int(w.get("base", 0) or 0)
-            local = int(x - base)
-            if str(w.get("kind") or "") == "list":
-                lst = w.get("counts_list") or []
-                if 0 <= local < len(lst):
-                    row = lst[local]
-                    for s in range(int(n_sections)):
-                        cfg_counts[gi, s] = int(row[s]) if s < len(row) else 0
-                continue
-
-            max_fp_vec = list(w.get("max_fp") or [])
-            rem = int(local)
-            for s in range(int(n_sections) - 1, -1, -1):
-                try:
-                    basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
-                except Exception:
-                    basev = 1
-                if basev <= 0:
-                    basev = 1
-                val = rem % basev
-                rem //= basev
-                cfg_counts[gi, s] = int(val)
-        return cfg_counts
+        return decode_cfg_counts_from_windows(cfg_idx, cfg_windows, n_sections)
 
     @staticmethod
     def _decode_cfg_counts_from_max_fp_matrix(
@@ -4660,7 +4609,7 @@ class GpuExecutor:
 
         debug_batch_pack = env_flag("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0")
         try:
-            min_pack_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_PACK_MIN_PAYLOADS", "2") or "2")
+            min_pack_payloads = int(env_get("FG_BREAKPOINTS_BATCH_PACK_MIN_PAYLOADS", "2") or "2")
         except Exception:
             min_pack_payloads = 2
         min_pack_payloads = max(1, min(int(min_pack_payloads), 128))
@@ -5463,7 +5412,7 @@ def run_gpu_executor_server(
     try:
         logger.debug(
             f"[GpuExecutor][{label}] Starting server loop "
-            f"(TAICHI_VULKAN_VISIBLE_DEVICE={os.environ.get('TAICHI_VULKAN_VISIBLE_DEVICE', '') or 'default'})"
+            f"(TAICHI_VULKAN_VISIBLE_DEVICE={env_get('TAICHI_VULKAN_VISIBLE_DEVICE', '') or 'default'})"
         )
     except Exception:
         pass

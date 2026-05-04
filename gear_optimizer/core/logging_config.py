@@ -42,7 +42,7 @@ def configure_logging(
             parent = os.path.dirname(str(log_file_path))
             if parent:
                 os.makedirs(parent, exist_ok=True)
-        except Exception:
+        except OSError:
             pass
 
         try:
@@ -50,7 +50,7 @@ def configure_logging(
             file_handler.setLevel(int(file_level))
             file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
             handlers.append(file_handler)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
         try:
@@ -58,13 +58,13 @@ def configure_logging(
             stream_handler.setLevel(int(console_level))
             stream_handler.setFormatter(logging.Formatter("%(message)s"))
             handlers.append(stream_handler)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
         for handler in handlers:
             try:
                 root.addHandler(handler)
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
         # Allow the lowest handler level through.
@@ -72,12 +72,11 @@ def configure_logging(
         for handler in handlers:
             try:
                 min_level = min(min_level, int(handler.level))
-            except Exception:
+            except (OSError, ValueError):
                 pass
         try:
             root.setLevel(int(min_level))
-        except Exception:
+        except (OSError, ValueError):
             pass
 
         _CONFIGURED = True
-

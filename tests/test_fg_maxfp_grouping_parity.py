@@ -1,7 +1,9 @@
 import numpy as np
 
-from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import reduce_ftff_pairs_by_max_fp_surface
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _group_ftff_pairs_by_max_fp_matrix
+from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
+    _group_ftff_pairs_by_max_fp_matrix,
+    reduce_ftff_pairs_by_max_fp_surface,
+)
 
 
 def _reference_group(ftff_pairs: list[tuple[int, int]], max_fp_matrix: np.ndarray, *, n_sections: int) -> list[dict]:

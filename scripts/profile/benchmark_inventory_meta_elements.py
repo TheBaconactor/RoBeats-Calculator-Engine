@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+from gear_optimizer.core.parsing import env_get
 ELEMENTS = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -97,7 +98,7 @@ def main() -> int:
                 "restarts": int(args.restarts),
                 "song_limit": int(args.song_limit),
                 "runs_per_element": int(args.runs),
-                "db_path": os.environ.get("EVOLUTION_DB_PATH", ""),
+                "db_path": env_get("EVOLUTION_DB_PATH", ""),
             },
             indent=2,
         )

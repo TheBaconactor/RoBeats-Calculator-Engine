@@ -15,8 +15,11 @@ from typing import Any, Sequence
 from urllib.parse import urlsplit
 
 from .core.constants import BIN_DIR, PATHS
-from .core.parsing import truthy
+from .core.parsing import env_flag
+from .core.utils import safe_int as _safe_int
+from .core.utils import parse_float as _safe_float
 
+from gear_optimizer.core.parsing import env_get
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 # Keep the 24/7 service default aligned with the checked-in config instead of the
@@ -26,14 +29,6 @@ _DEFAULT_MAX_PENDING_VISITS = 10
 _DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS = 0.05
 _VISIT_SCOPE_ENV = "ROBEATSMETA_OPTIMIZER_VISIT_SCOPE"
 
-
-def _env_bool_override(name: str) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    return truthy(raw)
-
-
 def _runtime_timestamp(now: int | float | None = None) -> int:
     if now is None:
         return int(time.time_ns() // 1_000_000)
@@ -41,13 +36,6 @@ def _runtime_timestamp(now: int | float | None = None) -> int:
         return int(now)
     except Exception:
         return int(time.time_ns() // 1_000_000)
-
-
-def _env_truthy(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return bool(default)
-    return truthy(raw)
 
 
 def _normalize_text(value: str) -> str:
@@ -74,21 +62,6 @@ def _strip_run_suffix(value: str) -> str:
     if not text:
         return ""
     return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", text).strip()
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
 
 @dataclass(frozen=True)
 class SongBundleRef:
@@ -171,7 +144,7 @@ class RoBeatsMetaOptimizerApi:
 
     @staticmethod
     def _resolve_song_meta_index_path_static() -> Path:
-        configured = str(os.environ.get("ROBEATSMETA_SONG_META_INDEX_PATH", "") or "").strip()
+        configured = str(env_get("ROBEATSMETA_SONG_META_INDEX_PATH", "") or "").strip()
         if configured:
             return Path(configured).expanduser().resolve()
 
@@ -203,21 +176,21 @@ class RoBeatsMetaOptimizerApi:
         ttl_override = visit_ttl_seconds
         if ttl_override is None:
             ttl_override = _safe_int(
-                os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_TTL_SECONDS"), _DEFAULT_VISIT_TTL_SECONDS
+                env_get("ROBEATSMETA_OPTIMIZER_VISIT_TTL_SECONDS"), _DEFAULT_VISIT_TTL_SECONDS
             )
         self._visit_ttl_seconds = max(60, int(ttl_override))
         self._max_pending_visits = max(
             1,
-            _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_MAX_PENDING_VISITS"), _DEFAULT_MAX_PENDING_VISITS),
+            _safe_int(env_get("ROBEATSMETA_OPTIMIZER_MAX_PENDING_VISITS"), _DEFAULT_MAX_PENDING_VISITS),
         )
-        raw_visit_lock_timeout = os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_LOCK_TIMEOUT_SEC")
+        raw_visit_lock_timeout = env_get("ROBEATSMETA_OPTIMIZER_VISIT_LOCK_TIMEOUT_SEC")
         visit_lock_timeout = _safe_float(raw_visit_lock_timeout, _DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS)
         self._visit_lock_timeout_sec = None if visit_lock_timeout <= 0 else max(0.01, float(visit_lock_timeout))
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
         self._song_ids_by_bundle_key: dict[str, set[str]] = {}
         self._last_task_priority_signature: tuple[tuple[str, int, int], ...] | None = None
-        self._visit_scope = _normalize_visit_scope(os.environ.get(_VISIT_SCOPE_ENV, "song"))
+        self._visit_scope = _normalize_visit_scope(env_get(_VISIT_SCOPE_ENV, "song"))
         self._visit_family_mode = self._visit_scope == "family"
         try:
             self._backend_mode_enabled = bool(
@@ -228,7 +201,7 @@ class RoBeatsMetaOptimizerApi:
         self._publish_runtime_status = bool(publish_runtime_status)
         self._runtime_status_push_url = self._resolve_runtime_status_push_url() if self._publish_runtime_status else ""
         self._runtime_status_push_token = str(
-            os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or ""
+            env_get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or ""
         ).strip()
         self._runtime_status_push_fail_until = 0.0
         self._runtime_status_push_failure_count = 0
@@ -243,7 +216,7 @@ class RoBeatsMetaOptimizerApi:
         self._runtime_status_disk_mtime_ns = -1
         self._runtime_status_http_conn: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
         self._runtime_status_http_conn_key: tuple[str, str, int] | None = None
-        heartbeat_raw = os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_HEARTBEAT_SEC", "5")
+        heartbeat_raw = env_get("ROBEATSMETA_OPTIMIZER_STATUS_HEARTBEAT_SEC", "5")
         heartbeat_seconds = _safe_float(heartbeat_raw, 5.0)
         self._runtime_status_heartbeat_interval_sec = (
             max(1.0, float(heartbeat_seconds)) if self._publish_runtime_status else 0.0
@@ -263,7 +236,7 @@ class RoBeatsMetaOptimizerApi:
                 0.05,
                 # Local backend pushes can see short scheduler/proxy jitter under load; a 350ms
                 # default was causing false self-timeouts on an otherwise healthy loopback path.
-                float(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "3.0") or "3.0"),
+                float(env_get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "3.0") or "3.0"),
             )
         except Exception:
             self._runtime_status_push_timeout_sec = 3.0
@@ -285,20 +258,16 @@ class RoBeatsMetaOptimizerApi:
 
     @classmethod
     def service_mode_enabled(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
-        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
-        if forced is not None:
-            return bool(forced)
-        return False
+        return env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
 
     @classmethod
     def benchmark_mode_enabled(cls) -> bool:
-        return _env_truthy("ROBEATSMETA_OPTIMIZER_BENCHMARK_MODE")
+        return env_flag("ROBEATSMETA_OPTIMIZER_BENCHMARK_MODE")
 
     @classmethod
     def priority_queue_enabled(cls) -> bool:
-        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE")
-        if forced is not None:
-            return bool(forced)
+        if env_get("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE") is not None:
+            return env_flag("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE")
         return cls.service_mode_enabled()
 
     def backend_mode_enabled(self) -> bool:
@@ -307,10 +276,7 @@ class RoBeatsMetaOptimizerApi:
     def service_defaults_enabled(self) -> bool:
         if not self.backend_mode_enabled():
             return False
-        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_SERVICE_DEFAULTS")
-        if forced is not None:
-            return bool(forced)
-        return True
+        return env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_DEFAULTS", "1")
 
     def apply_service_defaults(self, cfg: Any) -> bool:
         if not self.backend_mode_enabled() or cfg is None or not self.service_defaults_enabled():
@@ -324,9 +290,9 @@ class RoBeatsMetaOptimizerApi:
         # Backend-special behavior: keep the optimizer in continuous service mode.
         # Queue selection is controlled by pending song IDs from the API bridge.
         cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
-        cfg.set("IterationEngine", "SongRepeats", str(int(_DEFAULT_SONG_REPEATS)))
+        cfg.set("IterationEngine", "SongRepeats", str(_DEFAULT_SONG_REPEATS))
         cfg.set("IterationEngine", "UseEvolutionDB", "true")
-        cfg.set("IterationEngine", "InFlightSongs", str(int(_DEFAULT_INFLIGHT_SONGS)))
+        cfg.set("IterationEngine", "InFlightSongs", str(_DEFAULT_INFLIGHT_SONGS))
 
         # Keep broad discovery here; the backend pending-song filter narrows execution
         # to requested song IDs before task preparation.
@@ -826,7 +792,7 @@ class RoBeatsMetaOptimizerApi:
         return dict(merged), changed
 
     def _resolve_state_path(self) -> Path:
-        configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_PRIORITY_STATE_PATH", "") or "").strip()
+        configured = str(env_get("ROBEATSMETA_OPTIMIZER_PRIORITY_STATE_PATH", "") or "").strip()
         if configured:
             return Path(configured).expanduser().resolve()
         return Path(BIN_DIR).resolve() / "robeatsmeta_song_priority_queue.json"
@@ -835,16 +801,16 @@ class RoBeatsMetaOptimizerApi:
         return self._resolve_song_meta_index_path_static()
 
     def _resolve_status_path(self) -> Path:
-        configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PATH", "") or "").strip()
+        configured = str(env_get("ROBEATSMETA_OPTIMIZER_STATUS_PATH", "") or "").strip()
         if configured:
             return Path(configured).expanduser().resolve()
         return Path(BIN_DIR).resolve() / "robeatsmeta_optimizer_status.json"
 
     def _resolve_runtime_status_push_url(self) -> str:
-        configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", "") or "").strip()
+        configured = str(env_get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", "") or "").strip()
         if configured:
             return configured
-        if self.backend_mode_enabled() and _env_truthy("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_AUTO", False):
+        if self.backend_mode_enabled() and env_flag("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_AUTO"):
             return "http://127.0.0.1:8000/robeatsmeta/internal/optimizer/status"
         return ""
 

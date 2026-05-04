@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
+from gear_optimizer.core.parsing import env_get
 @dataclass(frozen=True)
 class NativeFGPipelineSettings:
     workers: int
@@ -38,7 +38,7 @@ def read_native_fg_pipeline_settings(
             )
         except Exception:
             fg_workers = fg_workers_default
-    raw = os.environ.get("INFLIGHT_FG_WORKERS")
+    raw = env_get("INFLIGHT_FG_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_workers = int(raw)
@@ -48,7 +48,7 @@ def read_native_fg_pipeline_settings(
 
     fg_batch_max = int(fg_workers)
     try:
-        raw = os.environ.get("INFLIGHT_FG_BATCH_MAX")
+        raw = env_get("INFLIGHT_FG_BATCH_MAX")
         if raw is not None and str(raw).strip() != "":
             fg_batch_max = int(raw)
     except Exception:
@@ -61,7 +61,7 @@ def read_native_fg_pipeline_settings(
             fg_prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_FGPrepWorkers", fallback="0"), 0)
         except Exception:
             fg_prep_workers = 0
-    raw = os.environ.get("INFLIGHT_FG_PREP_WORKERS")
+    raw = env_get("INFLIGHT_FG_PREP_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_prep_workers = int(raw)

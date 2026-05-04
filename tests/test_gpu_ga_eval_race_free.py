@@ -25,6 +25,7 @@ from gear_optimizer.solver.taichi_gem.api.ga_operations import (
 )
 from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
+from gear_optimizer.core.parsing import env_get
 pytestmark = pytest.mark.gpu
 
 
@@ -143,7 +144,7 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
     calc_song = _make_calc_song(name="RaceFreeEval_BeatVibe", p_color="Beat", s_color="Vibe")
     flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
 
-    old_prune = os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE")
+    old_prune = env_get("GPU_NATIVE_GA_PLATEAU_PRUNE")
     os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "0"
     try:
         with _GPU_LOCK:

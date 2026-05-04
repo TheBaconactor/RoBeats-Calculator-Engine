@@ -6,6 +6,7 @@ from typing import Any
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
 from ...data.database import get_loadout_hash
+from .force_greats.entry_resolution import entry_base_score
 from .fg_config import has_valid_fg_config
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .retention import select_retained_hashes
@@ -90,7 +91,7 @@ def build_retained_loadout_entries(
     selected_hashes = select_retained_hashes(
         items,
         limit=int(LOADOUTS_PER_SONG_LIMIT),
-        base_score_fn=_base_score,
+        base_score_fn=entry_base_score,
         fg_score_fn=_fg_score,
         fg_valid_fn=_fg_valid,
     )
@@ -113,7 +114,7 @@ def build_retained_loadout_entries(
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         retained_entry = {
             "loadout_hash": str(h),
-            "score": entry.get("base_score") or entry.get("score", 0),
+            "score": entry_base_score(entry),
             "fg_score": fg_score_to_save,
             "gear": gear_names,
             "minis": mini_names,
@@ -148,11 +149,7 @@ def _resolve_best_fg_base_score(best_fg: dict, loadout_entries: dict | None):
 
     h = get_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
     entry = loadout_entries.get(h) or {}
-    return entry.get("base_score") or entry.get("score", 0) or 0
-
-
-def _base_score(entry: dict) -> int:
-    return safe_int(entry.get("base_score") or entry.get("score", 0), 0)
+    return entry_base_score(entry)
 
 
 def _fg_score(entry: dict) -> int:

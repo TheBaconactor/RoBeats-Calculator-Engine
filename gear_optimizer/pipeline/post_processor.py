@@ -23,6 +23,7 @@ from gear_optimizer.helpers.song_helpers.persistence import (
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
@@ -134,12 +135,12 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     sync_output = env_flag("POST_SYNC_OUTPUT", "1")
     timing_threshold_ms = 50.0
     try:
-        timing_threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
+        timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
     except Exception:
         timing_threshold_ms = 50.0
 
     cpu_profile = env_flag("POST_CPU_PROFILE")
-    cpu_profile_path = str(os.environ.get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
+    cpu_profile_path = str(env_get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
     profiler = _PostCpuProfiler(enabled=cpu_profile, out_path=cpu_profile_path)
 
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:

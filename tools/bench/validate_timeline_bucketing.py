@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 # Ensure repo root is importable when running as a script.
+from gear_optimizer.core.parsing import env_get
 repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
@@ -94,7 +95,7 @@ def _timeline_sig(t) -> tuple:
 
 def main() -> int:
     # We will compare "off" vs mode set by env, for a handful of songs.
-    mode = str(os.environ.get("TIMELINE_BUCKET_MODE", "b") or "b").strip().lower()
+    mode = str(env_get("TIMELINE_BUCKET_MODE", "b") or "b").strip().lower()
     if mode in {"factor", "factors"}:
         mode = "b"
     if mode in {"sig", "signature"}:

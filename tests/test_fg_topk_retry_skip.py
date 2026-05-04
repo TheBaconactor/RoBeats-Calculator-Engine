@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from gear_optimizer.helpers.song_helpers.force_greats.entry_resolution import (
+    sig_results_has_fg_improvement as _sig_results_has_fg_improvement,
+)
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
     _should_skip_full_download_no_candidates,
-    _sig_results_has_fg_improvement,
 )
 
 

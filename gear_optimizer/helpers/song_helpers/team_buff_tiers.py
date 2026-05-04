@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from math import ceil
-from typing import Any
 
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.team_buff import (
@@ -13,6 +12,7 @@ from ...core.team_buff import (
     team_buff_effect,
 )
 from ...core.parsing import truthy
+from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
 
@@ -21,10 +21,6 @@ _ELEMENTS = TEAM_BUFF_ELEMENTS
 
 def _norm_text(v: object) -> str:
     return str(v or "").strip()
-
-
-def _truthy_cfg(v: object) -> bool:
-    return truthy(v)
 
 
 _MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
@@ -129,11 +125,7 @@ def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
     if not isinstance(ie, dict):
         return False
     raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
-    return _truthy_cfg(raw)
-
-
-def _norm_team_buff(v: object) -> str:
-    return canonicalize_team_buff(v)
+    return truthy(raw)
 
 
 def _resolve_team_section(cfg_dict: dict) -> dict:
@@ -165,7 +157,7 @@ def _resolve_base_team_buff(cfg_dict: dict) -> str:
     if _auto_select_team_buff_and_color(cfg_dict):
         return "T5"
     team_section = _resolve_team_section(cfg_dict)
-    base = _norm_team_buff(team_section.get("TeamBuff", team_section.get("teambuff", "T5")))
+    base = canonicalize_team_buff(team_section.get("TeamBuff", team_section.get("teambuff", "T5")))
     return base or "T5"
 
 
@@ -323,17 +315,6 @@ def _force_counts_to_fp_targets(
         fp_targets.append(max(0, int(ceil(raw_fill + (float(forced) * 0.5)) - base_notes)))
     return fp_targets
 
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(str(v)) if v is not None else int(default)
-    except Exception:
-        try:
-            return int(float(str(v)))
-        except Exception:
-            return int(default)
-
-
 def _team_buff_delta_map(
     *,
     base_team_buff: str,
@@ -461,11 +442,6 @@ def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: in
     return out
 
 
-def _stats_get_int(stats: dict, key: str, default: int = 0) -> int:
-    if not isinstance(stats, dict):
-        return default
-    return _safe_int(stats.get(key, default), default)
-
 
 def compute_team_buff_tier_leaderboards(
     *,
@@ -540,18 +516,18 @@ def compute_team_buff_tier_leaderboards(
             minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
             # Base multipliers/indices for GPU fixed scoring (tier changes do not affect CM/FM/FT/FF).
-            ft_idx = _stats_get_int(stats_base, "Fever Time", 0)
-            ff_idx = _stats_get_int(stats_base, "Fever Fill Rate", 0)
+            ft_idx = _safe_int(stats_base, "Fever Time", 0)
+            ff_idx = _safe_int(stats_base, "Fever Fill Rate", 0)
             cm_factor = lookup_reference_py(
-                _stats_get_int(stats_base, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
+                _safe_int(stats_base, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
             )
             fm_factor = lookup_reference_py(
-                _stats_get_int(stats_base, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
+                _safe_int(stats_base, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
             )
 
-            base_pp_stat = _stats_get_int(stats_base, "Perfect Points", 0)
-            base_primary_val = _stats_get_int(stats_base, primary_color, 0) if primary_color else 0
-            base_secondary_val = _stats_get_int(stats_base, secondary_color, 0) if secondary_color else 0
+            base_pp_stat = _safe_int(stats_base, "Perfect Points", 0)
+            base_primary_val = _safe_int(stats_base, primary_color, 0) if primary_color else 0
+            base_secondary_val = _safe_int(stats_base, secondary_color, 0) if secondary_color else 0
 
             # Optional FG stats snapshot (may have a different gem allocation than base).
             force_obj = entry.get("force")
@@ -561,8 +537,8 @@ def compute_team_buff_tier_leaderboards(
             fg_secondary_val = int(base_secondary_val)
             fg_ft_stat = int(ft_idx)
             fg_ff_stat = int(ff_idx)
-            fg_cm_stat = _stats_get_int(stats_base, "Combo Multiplier", 0)
-            fg_fm_stat = _stats_get_int(stats_base, "Fever Multiplier", 0)
+            fg_cm_stat = _safe_int(stats_base, "Combo Multiplier", 0)
+            fg_fm_stat = _safe_int(stats_base, "Fever Multiplier", 0)
             fg_fp_targets = []
             if fg_counts:
                 fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
@@ -572,13 +548,13 @@ def compute_team_buff_tier_leaderboards(
                 if not isinstance(fg_stats, dict) or not fg_stats:
                     fg_stats = stats_base
 
-                fg_pp_stat = _stats_get_int(fg_stats, "Perfect Points", 0)
-                fg_primary_val = _stats_get_int(fg_stats, primary_color, 0) if primary_color else 0
-                fg_secondary_val = _stats_get_int(fg_stats, secondary_color, 0) if secondary_color else 0
-                fg_ft_stat = _stats_get_int(fg_stats, "Fever Time", 0)
-                fg_ff_stat = _stats_get_int(fg_stats, "Fever Fill Rate", 0)
-                fg_cm_stat = _stats_get_int(fg_stats, "Combo Multiplier", 0)
-                fg_fm_stat = _stats_get_int(fg_stats, "Fever Multiplier", 0)
+                fg_pp_stat = _safe_int(fg_stats, "Perfect Points", 0)
+                fg_primary_val = _safe_int(fg_stats, primary_color, 0) if primary_color else 0
+                fg_secondary_val = _safe_int(fg_stats, secondary_color, 0) if secondary_color else 0
+                fg_ft_stat = _safe_int(fg_stats, "Fever Time", 0)
+                fg_ff_stat = _safe_int(fg_stats, "Fever Fill Rate", 0)
+                fg_cm_stat = _safe_int(fg_stats, "Combo Multiplier", 0)
+                fg_fm_stat = _safe_int(fg_stats, "Fever Multiplier", 0)
                 fg_fp_targets = _force_counts_to_fp_targets(
                     fg_counts,
                     calc_song=group_song,

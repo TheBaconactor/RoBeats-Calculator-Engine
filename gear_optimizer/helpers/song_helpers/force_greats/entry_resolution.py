@@ -13,6 +13,13 @@ def entry_fg_score(entry: dict) -> int:
         return 0
 
 
+def entry_base_score(entry: dict) -> int:
+    try:
+        return int(entry.get("base_score") or entry.get("score", 0) or 0)
+    except Exception:
+        return 0
+
+
 def entry_fg_config_dict(entry: dict) -> dict:
     if not isinstance(entry, dict):
         return {}

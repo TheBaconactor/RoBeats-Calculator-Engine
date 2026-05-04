@@ -16,8 +16,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from gear_optimizer.core.parsing import env_get
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = Path(os.environ.get("EVOLUTION_DB_PATH", REPO_ROOT / "evolution.db"))
+DB_PATH = Path(env_get("EVOLUTION_DB_PATH", REPO_ROOT / "evolution.db"))
 LB_PATH = REPO_ROOT / "robeats_top1_song_leaderboards.json"
 
 # T1 is the only tier stronger than our T5 baseline (+5 Elem).

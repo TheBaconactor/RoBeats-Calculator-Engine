@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from gear_optimizer.core.utils import safe_float, safe_int
 from gear_optimizer.solver.inflight_utils import _truthy
 
 
+from gear_optimizer.core.parsing import env_get
 def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
     """
     Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
@@ -70,7 +70,7 @@ def _read_fg_ga_credit_budget(cfg0: Any, *, default_budget: int) -> tuple[int, b
     except Exception:
         pass
 
-    raw = os.environ.get("INFLIGHT_FG_GA_CREDIT_BUDGET")
+    raw = env_get("INFLIGHT_FG_GA_CREDIT_BUDGET")
     if raw is not None and str(raw).strip() != "":
         try:
             budget = int(raw)
@@ -98,7 +98,7 @@ def _read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> 
     except Exception:
         pass
 
-    raw = os.environ.get("INFLIGHT_CONTINUOUS_GA_BURST")
+    raw = env_get("INFLIGHT_CONTINUOUS_GA_BURST")
     if raw is not None and str(raw).strip() != "":
         try:
             burst = int(raw)
@@ -131,11 +131,11 @@ def _read_continuous_fg_adaptive_submit(cfg0: Any) -> tuple[bool, int]:
     except Exception:
         pass
 
-    raw = os.environ.get("INFLIGHT_FG_ADAPTIVE_SUBMIT")
+    raw = env_get("INFLIGHT_FG_ADAPTIVE_SUBMIT")
     if raw is not None and str(raw).strip() != "":
         enabled = _truthy(raw)
 
-    raw = os.environ.get("INFLIGHT_FG_ADAPTIVE_MAX_BURST")
+    raw = env_get("INFLIGHT_FG_ADAPTIVE_MAX_BURST")
     if raw is not None and str(raw).strip() != "":
         try:
             max_burst = int(raw)
@@ -178,7 +178,7 @@ def _read_fg_slot_reserve(
     except Exception:
         pass
 
-    raw = os.environ.get("INFLIGHT_FG_SLOT_RESERVE")
+    raw = env_get("INFLIGHT_FG_SLOT_RESERVE")
     if raw is not None and str(raw).strip() != "":
         try:
             reserve = int(raw)
@@ -186,7 +186,7 @@ def _read_fg_slot_reserve(
         except Exception:
             pass
 
-    raw = os.environ.get("INFLIGHT_FG_SLOT_RESERVE_RATIO")
+    raw = env_get("INFLIGHT_FG_SLOT_RESERVE_RATIO")
     if raw is not None and str(raw).strip() != "":
         try:
             reserve_ratio = float(raw)
@@ -228,7 +228,7 @@ def _read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
     except Exception:
         pass
 
-    raw = os.environ.get("INFLIGHT_TARGET_SONG_LANES")
+    raw = env_get("INFLIGHT_TARGET_SONG_LANES")
     if raw is not None and str(raw).strip() != "":
         try:
             target = int(raw)

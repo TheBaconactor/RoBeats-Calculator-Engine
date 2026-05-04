@@ -94,8 +94,12 @@ def safe_int(val, default=0):
             return int(s, 10)
         except ValueError:
             return int(float(s))
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def ceil_div(n: int, d: int) -> int:
+    return int((int(n) + int(d) - 1) // int(d))
 
 
 def safe_float(val, default=0.0):
@@ -119,28 +123,20 @@ def safe_float(val, default=0.0):
         if not val or val == "-":
             return default
         return float(val)
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
-def stats_signature(stats, calc_song, selected_color):
-    """
-    Compute a cache key that captures exactly the inputs influencing the gem
-    solver for a given song context. Two loadouts with the same signature will
-    produce identical gem allocations and scores.
+def parse_float(val, default=0.0):
+    try:
+        if val is None:
+            return default
+        return float(str(val).strip())
+    except (TypeError, ValueError):
+        return default
 
-    Key insight: elemental stats only matter if they feed into the song's
-    Primary/Secondary/Selected Element paths. Differences in other elements
-    are irrelevant and should share the same cache entry.
 
-    Args:
-        stats: Stats dictionary
-        calc_song: Song calculation context
-        selected_color: Selected element color
-
-    Returns:
-        tuple: Hashable signature for caching
-    """
+def _signature_base(stats, calc_song, selected_color):
     meta = calc_song["metadata"]
     p_color = meta.get("Primary Color", "")
     s_color = meta.get("Secondary Color", "")
@@ -175,7 +171,28 @@ def stats_signature(stats, calc_song, selected_color):
         gs("Fever Time", 0),
         base_p_val,
         base_s_val,
-    ) + timing_envelope_timing_context(calc_song)
+    )
+
+
+def stats_signature(stats, calc_song, selected_color):
+    """
+    Compute a cache key that captures exactly the inputs influencing the gem
+    solver for a given song context. Two loadouts with the same signature will
+    produce identical gem allocations and scores.
+
+    Key insight: elemental stats only matter if they feed into the song's
+    Primary/Secondary/Selected Element paths. Differences in other elements
+    are irrelevant and should share the same cache entry.
+
+    Args:
+        stats: Stats dictionary
+        calc_song: Song calculation context
+        selected_color: Selected element color
+
+    Returns:
+        tuple: Hashable signature for caching
+    """
+    return _signature_base(stats, calc_song, selected_color) + timing_envelope_timing_context(calc_song)
 
 
 def timing_envelope_timing_context(calc_song):
@@ -223,41 +240,7 @@ def full_pipeline_signature(stats, calc_song, selected_color):
     This is a sufficient key (not necessarily minimal). Equal signatures imply identical
     scoring results under the repo's semantics for a fixed calc_song.
     """
-    meta = calc_song["metadata"]
-    p_color = meta.get("Primary Color", "")
-    s_color = meta.get("Secondary Color", "")
-
-    gs = stats.get
-
-    # Mirror the same Beat/Vibe mapping the solver uses
-    base_beat = gs("Beat", 0)
-    base_vibe = gs("Vibe", 0)
-
-    def get_val_inline(k):
-        if k == "Beat":
-            return base_beat
-        if k == "Vibe":
-            return base_vibe
-        return gs(k, 0)
-
-    # Only capture elemental values that actually feed into P/S lanes
-    base_p_val = get_val_inline(p_color)
-    base_s_val = get_val_inline(s_color)
-
-    return (
-        meta.get("Song Name", ""),
-        meta.get("Difficulty", ""),
-        selected_color,
-        p_color,
-        s_color,
-        gs("Perfect Points", 0),
-        gs("Combo Multiplier", 0),
-        gs("Fever Multiplier", 0),
-        gs("Fever Fill Rate", 0),
-        gs("Fever Time", 0),
-        base_p_val,
-        base_s_val,
-    ) + timing_envelope_full_context(calc_song)
+    return _signature_base(stats, calc_song, selected_color) + timing_envelope_full_context(calc_song)
 
 
 def get_selected_element(data: object, default: str = "") -> str:
@@ -284,11 +267,11 @@ def _row_stat_value(row, key):
         return 0
     try:
         return int(row.get(key, 0) or 0)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return safe_int(row.get(key, 0), 0)
 
 
-def relevant_row_projection(row, primary_color, secondary_color=""):
+def _relevant_row_projection(row, primary_color, secondary_color=""):
     """
     Project a row onto the exact score-relevant axes for the current single-song GA pool build.
 
@@ -306,7 +289,7 @@ def relevant_row_projection(row, primary_color, secondary_color=""):
     )
 
 
-def timing_neutral_relevant_dominates(candidate, other, primary_color, secondary_color=""):
+def _timing_neutral_relevant_dominates(candidate, other, primary_color, secondary_color=""):
     """
     Return True when `candidate` exactly-safe dominates `other` for the current song context.
 
@@ -316,8 +299,8 @@ def timing_neutral_relevant_dominates(candidate, other, primary_color, secondary
       `(PP, CM, FM, val_primary, val_secondary)`,
     - with at least one strict improvement.
     """
-    cand_sig = relevant_row_projection(candidate, primary_color, secondary_color)
-    other_sig = relevant_row_projection(other, primary_color, secondary_color)
+    cand_sig = _relevant_row_projection(candidate, primary_color, secondary_color)
+    other_sig = _relevant_row_projection(other, primary_color, secondary_color)
 
     if cand_sig[3] != other_sig[3] or cand_sig[4] != other_sig[4]:
         return False
@@ -346,7 +329,7 @@ def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=
     unique_rows = []
     seen_signatures = set()
     for row in gear_items:
-        sig = relevant_row_projection(row, primary_color, secondary_color)
+        sig = _relevant_row_projection(row, primary_color, secondary_color)
         if sig in seen_signatures:
             continue
         seen_signatures.add(sig)
@@ -358,7 +341,7 @@ def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=
         for other_idx, other in enumerate(unique_rows):
             if other_idx == idx:
                 continue
-            if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+            if _timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
                 dominated = True
                 break
         if not dominated:
@@ -381,7 +364,7 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
     capped_rows = []
     multiplicities = {}
     for row in mini_items:
-        sig = relevant_row_projection(row, primary_color, secondary_color)
+        sig = _relevant_row_projection(row, primary_color, secondary_color)
         seen = multiplicities.get(sig, 0)
         if seen >= 3:
             continue
@@ -396,7 +379,7 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
             for other_idx, other in enumerate(survivors):
                 if other_idx == idx:
                     continue
-                if timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
+                if _timing_neutral_relevant_dominates(other, row, primary_color, secondary_color):
                     dominators += 1
                     if dominators >= 3:
                         break

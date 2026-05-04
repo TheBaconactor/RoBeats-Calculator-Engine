@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+from gear_optimizer.core.parsing import env_get
 def _extract_json_object_from_stdout(stdout: str) -> Dict[str, Any] | None:
     raw = (stdout or "").strip()
     if not raw:
@@ -95,7 +96,7 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     worker_path = Path(__file__).resolve().parent / "inventory_meta_bench_worker.py"
 
-    db_path_str = args.db_path.strip() or (os.environ.get("EVOLUTION_DB_PATH") or "").strip()
+    db_path_str = args.db_path.strip() or (env_get("EVOLUTION_DB_PATH") or "").strip()
     if not db_path_str:
         raise SystemExit("Missing --db-path and EVOLUTION_DB_PATH is not set.")
     db_path = Path(db_path_str).expanduser().resolve()

@@ -7,7 +7,6 @@ This module contains batch solving kernels:
 All kernels use optimize_core_device from kernels_scoring for greedy gem allocation.
 """
 
-import os
 
 import taichi as ti
 from taichi.lang import simt
@@ -16,8 +15,9 @@ from . import kernels_helpers
 
 from .kernels_scoring import optimize_core_device_refined as optimize_core_device
 
+from gear_optimizer.core.parsing import env_get
 try:
-    GA_FTFF_BLOCK_DIM = int(os.environ.get("GA_FTFF_BLOCK_DIM", "64") or "64")
+    GA_FTFF_BLOCK_DIM = int(env_get("GA_FTFF_BLOCK_DIM", "64") or "64")
 except Exception:
     GA_FTFF_BLOCK_DIM = 64
 GA_FTFF_BLOCK_DIM = max(32, min(int(GA_FTFF_BLOCK_DIM), 256))

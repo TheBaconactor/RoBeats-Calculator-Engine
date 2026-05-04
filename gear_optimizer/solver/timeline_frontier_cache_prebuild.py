@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from gear_optimizer.core.constants import PATHS
+from gear_optimizer.core.constants import DIFFICULTIES, PATHS
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.timeline_frontier_cache_manifest import (
@@ -18,11 +18,8 @@ from gear_optimizer.solver.timeline_frontier_cache_manifest import (
     build_manifest_plan,
 )
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
-
-DIFFICULTIES = ("Easy", "Normal", "Hard")
-
-
 @dataclass(frozen=True)
 class TimelineFrontierCacheBuildResult:
     path: str
@@ -304,19 +301,19 @@ def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCache
         except Exception:
             executor = "process"
 
-    raw_enabled = os.environ.get("TIMELINE_FRONTIER_CACHE_PREBUILD")
+    raw_enabled = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD")
     if raw_enabled is not None and str(raw_enabled).strip() != "":
         enabled = str(raw_enabled).strip().lower() not in {"0", "false", "no", "off"}
-    raw_scope = os.environ.get("TIMELINE_FRONTIER_CACHE_PREBUILD_SCOPE")
+    raw_scope = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD_SCOPE")
     if raw_scope is not None and str(raw_scope).strip() != "":
         scope = str(raw_scope).strip()
-    raw_workers = os.environ.get("TIMELINE_FRONTIER_CACHE_PREBUILD_WORKERS")
+    raw_workers = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD_WORKERS")
     if raw_workers is not None and str(raw_workers).strip() != "":
         workers = safe_int(raw_workers, workers)
-    raw_max = os.environ.get("TIMELINE_FRONTIER_CACHE_PREBUILD_MAX_SONGS")
+    raw_max = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD_MAX_SONGS")
     if raw_max is not None and str(raw_max).strip() != "":
         max_songs = safe_int(raw_max, max_songs)
-    raw_executor = os.environ.get("TIMELINE_FRONTIER_CACHE_PREBUILD_EXECUTOR")
+    raw_executor = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD_EXECUTOR")
     if raw_executor is not None and str(raw_executor).strip() != "":
         executor = str(raw_executor).strip()
 

@@ -6,25 +6,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.bench.bench_ga_winner_stability import run_benchmark
-
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except Exception:
-        return float(default)
-
-
-def _safe_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except Exception:
-        return int(default)
 
 
 def _load_payload(path: Path) -> dict[str, Any]:

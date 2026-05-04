@@ -19,6 +19,7 @@ from gear_optimizer.solver.taichi_gem.api.ga_operations import (
 from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
 
+from gear_optimizer.core.parsing import env_get
 pytestmark = pytest.mark.gpu
 
 
@@ -69,9 +70,9 @@ def _color_flags(*, p_color: str, s_color: str, selected_color: str) -> dict[str
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_native_ga_plateau_prune_score_regression_off_vs_on() -> None:
-    trials = int(os.environ.get("PLATEAU_PRUNE_REGRESSION_TRIALS", "20"))
-    n_genomes = int(os.environ.get("PLATEAU_PRUNE_REGRESSION_GENOMES", "96"))
-    total_budget = int(os.environ.get("PLATEAU_PRUNE_REGRESSION_BUDGET", "30"))
+    trials = int(env_get("PLATEAU_PRUNE_REGRESSION_TRIALS", "20"))
+    n_genomes = int(env_get("PLATEAU_PRUNE_REGRESSION_GENOMES", "96"))
+    total_budget = int(env_get("PLATEAU_PRUNE_REGRESSION_BUDGET", "30"))
 
     rng = np.random.default_rng(1337)
 
@@ -152,7 +153,7 @@ def test_gpu_native_ga_plateau_prune_score_regression_off_vs_on() -> None:
     ]
 
     def eval_scores(*, prune: int, flags: dict[str, int]) -> np.ndarray:
-        old = os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE")
+        old = env_get("GPU_NATIVE_GA_PLATEAU_PRUNE")
         os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "1" if prune else "0"
         try:
             ga_evaluate_population(

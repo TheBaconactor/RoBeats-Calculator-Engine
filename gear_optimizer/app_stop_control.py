@@ -6,6 +6,7 @@ import threading
 import time
 
 
+from gear_optimizer.core.parsing import env_get
 class StopController:
     """
     Centralized stop/shutdown control for long-running optimizer runs.
@@ -64,7 +65,7 @@ class StopController:
         return str(self._stop_file_cached_path)
 
     def _refresh_runtime_settings(self, *, force: bool = False) -> None:
-        stop_after_raw = str(os.environ.get("METAFINDER_STOP_AFTER_SEC", "0") or "0").strip()
+        stop_after_raw = str(env_get("METAFINDER_STOP_AFTER_SEC", "0") or "0").strip()
         if force or stop_after_raw != self._stop_after_raw:
             self._stop_after_raw = stop_after_raw
             try:
@@ -77,14 +78,14 @@ class StopController:
             else:
                 self._stop_after_deadline_monotonic = None
 
-        stop_file_raw = str(os.environ.get("METAFINDER_STOP_FILE", "") or "").strip()
+        stop_file_raw = str(env_get("METAFINDER_STOP_FILE", "") or "").strip()
         if force or stop_file_raw != self._stop_file_env_raw:
             self._stop_file_env_raw = stop_file_raw
             self._stop_file_cached_path = stop_file_raw or os.path.join(self._bin_dir, "STOP")
             self._stop_file_next_check_monotonic = 0.0
             self._stop_file_present_cache = False
 
-        stop_file_poll_raw = str(os.environ.get("METAFINDER_STOP_FILE_POLL_SEC", "0.1") or "0.1").strip()
+        stop_file_poll_raw = str(env_get("METAFINDER_STOP_FILE_POLL_SEC", "0.1") or "0.1").strip()
         if force or stop_file_poll_raw != self._stop_file_poll_raw:
             self._stop_file_poll_raw = stop_file_poll_raw
             try:

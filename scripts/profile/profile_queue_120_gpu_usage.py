@@ -26,9 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+from gear_optimizer.core.parsing import env_flag
 
 
 def _repo_root() -> Path:

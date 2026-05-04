@@ -36,7 +36,7 @@ def build_base_stats_from_config(cfg_dict):
             if not text:
                 return 0
             return int(text)
-        except Exception:
+        except (TypeError, ValueError):
             return 0
 
     # UserInputStatsGems values are GEM COUNTS (not raw stats).

@@ -7,6 +7,7 @@ import numpy as np
 
 import sys
 
+from gear_optimizer.core.parsing import env_get
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -214,7 +215,7 @@ def main() -> int:
     gears_by_name = load_csv_db(resolve_stats_csv(paths, "Gears.csv"), "gear")
     minis_by_name = load_csv_db(resolve_stats_csv(paths, "Minis.csv"), "mini")
 
-    count = int(os.environ.get("OPTIMIZER_DB_COMPARE_COUNT", "4") or 4)
+    count = int(env_get("OPTIMIZER_DB_COMPARE_COUNT", "4") or 4)
     count = max(1, count)
     songs = _select_reference_songs(db_path=ref_db_path, paths=paths, count=count)
     if not songs:
@@ -222,7 +223,7 @@ def main() -> int:
         return 2
 
     os.environ["EVOLUTION_DB_PATH"] = str(ref_db_path)
-    os.environ["GA_SEED"] = str(int(os.environ.get("GA_SEED", "1337") or 1337))
+    os.environ["GA_SEED"] = str(int(env_get("GA_SEED", "1337") or 1337))
 
     print(f"[Compare] Running live optimizer for {len(songs)} song(s) (GA_SearchDepth={ga_depth}).")
     print("[Compare] Using deterministic timing-envelope analysis.")

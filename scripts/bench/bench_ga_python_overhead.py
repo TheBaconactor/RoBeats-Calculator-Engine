@@ -12,10 +12,11 @@ import numpy as np
 
 
 # Simulate the old approach with per-call os.environ.get
+from gear_optimizer.core.parsing import env_get
 def old_approach(n_genomes, n_combos):
     """Old approach: os.environ.get on every call"""
     prune_plateaus_i = 1
-    raw_prune = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
+    raw_prune = str(env_get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
     if raw_prune in {"0", "false", "no", "off"}:
         prune_plateaus_i = 0
 
@@ -27,11 +28,11 @@ def old_approach(n_genomes, n_combos):
         except Exception:
             target = 1024
         try:
-            min_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024)
+            min_chunk = int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024)
         except Exception:
             min_chunk = 1024
         try:
-            max_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
+            max_chunk = int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
         except Exception:
             max_chunk = 4096
         min_chunk = max(64, int(min_chunk))

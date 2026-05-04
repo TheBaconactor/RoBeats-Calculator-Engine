@@ -9,7 +9,6 @@ The main function solve_coevolution_genetic() has been refactored to use helper 
 from helpers.ga_helpers for improved modularity and maintainability.
 """
 
-import os
 import logging
 import random
 import time
@@ -19,6 +18,7 @@ import numpy as np
 
 from ..core.parsing import env_flag, env_int
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +27,7 @@ def _ga_redundancy_audit_enabled() -> bool:
 
 
 # Support deterministic testing via GA_SEED environment variable
-_GA_SEED = os.environ.get("GA_SEED")
+_GA_SEED = env_get("GA_SEED")
 if _GA_SEED is not None:
     _GA_SEED = int(_GA_SEED)
     random.seed(_GA_SEED)
@@ -114,7 +114,7 @@ def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     cfg = dict(cfg_data or {})
-    raw = os.environ.get("GPU_GA_NOVELTY_REPAIR_ATTEMPTS")
+    raw = env_get("GPU_GA_NOVELTY_REPAIR_ATTEMPTS")
     if raw is None or str(raw).strip() == "":
         raw = cfg.get("ga_novelty_repair_attempts", 2)
     try:
@@ -1465,7 +1465,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     phase_timing = env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
     profile_events_enabled = bool(
         env_flag("METAFINDER_PROFILE_EVENTS", "0")
-        or str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+        or str(env_get("METAFINDER_PROFILE_EVENTS_PATH") or env_get("PROFILE_EVENTS_PATH") or "").strip()
     )
     phase_events_enabled = bool(phase_timing and profile_events_enabled)
     song_profile_key = None

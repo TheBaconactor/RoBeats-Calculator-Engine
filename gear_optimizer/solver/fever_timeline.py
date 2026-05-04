@@ -6,7 +6,6 @@ that determines when fever starts/ends based on stats. This logic stays
 on CPU and is NOT ported to GPU.
 """
 
-import os
 import numpy as np
 from math import ceil
 from collections import OrderedDict
@@ -19,32 +18,18 @@ from ..core.constants import (
     FEVER_TIME_SCALE,
     FEVER_TIME_OFFSET,
 )
-from ..core.utils import timing_envelope_timing_context
+from ..core.utils import parse_float as _safe_float, safe_int as _safe_int, timing_envelope_timing_context
 
 
 # Global cache for SongTimelineGrid instances (one per song).
 # NOTE: Keep bounded to avoid runaway RAM growth on long runs over large song sets.
+from gear_optimizer.core.parsing import env_get
 try:
-    _SONG_TIMELINE_GRID_CACHE_MAX = int(os.environ.get("SONG_TIMELINE_GRID_CACHE_MAX", "128") or "128")
+    _SONG_TIMELINE_GRID_CACHE_MAX = int(env_get("SONG_TIMELINE_GRID_CACHE_MAX", "128") or "128")
 except Exception:
     _SONG_TIMELINE_GRID_CACHE_MAX = 128
 _SONG_TIMELINE_GRID_CACHE_MAX = max(0, int(_SONG_TIMELINE_GRID_CACHE_MAX))
 SONG_TIMELINE_GRIDS: "OrderedDict[tuple, SongTimelineGrid]" = OrderedDict()
-
-
-def _safe_int(val: object, default: int = 0) -> int:
-    try:
-        return int(val)  # type: ignore[arg-type]
-    except Exception:
-        return int(default)
-
-
-def _safe_float(val: object, default: float = 0.0) -> float:
-    try:
-        return float(val)  # type: ignore[arg-type]
-    except Exception:
-        return float(default)
-
 
 def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
     try:
@@ -484,7 +469,7 @@ class SongTimelineGrid:
         # Default to exact signature bucketing so identical topology cells are reduced
         # by default. Set TIMELINE_BUCKET_MODE=off to disable or TIMELINE_BUCKET_MODE=b
         # to keep factor-only canonicalization.
-        self._bucket_mode = str(os.environ.get("TIMELINE_BUCKET_MODE", "a") or "a").strip().lower()
+        self._bucket_mode = str(env_get("TIMELINE_BUCKET_MODE", "a") or "a").strip().lower()
         if self._bucket_mode in {"none", "0", "false"}:
             self._bucket_mode = "off"
         if self._bucket_mode in {"factor", "factors", "b"}:

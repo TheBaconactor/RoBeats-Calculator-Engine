@@ -18,7 +18,6 @@ population lives on GPU, avoiding CPU-GPU transfers during evolution.
 
 from __future__ import annotations
 
-import os
 import time
 
 import numpy as np
@@ -37,20 +36,21 @@ from .initialization import ensure_ready, _ensure_ftff_combo_tables
 # Note: plateau pruning is currently correctness-risky (it can prune away valid
 # FT/FF combos that produce better top-1 results). Keep it OFF by default and
 # allow explicit opt-in for profiling/experimentation.
+from gear_optimizer.core.parsing import env_get
 _GA_PLATEAU_PRUNE_ENABLED: int = 0
 if env_flag("GPU_NATIVE_GA_PLATEAU_PRUNE"):
     _GA_PLATEAU_PRUNE_ENABLED = 1
 
-_GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
+_GA_COMBO_CHUNK_MIN: int = max(64, int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
 _GA_COMBO_CHUNK_MAX: int = max(
-    _GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
+    _GA_COMBO_CHUNK_MIN, int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
 )
 
 # Merge a tiny remainder into the prior dispatch when it is safe under the max-evals budget.
 # This can reduce dispatch count when chunking would otherwise leave a very small "tail" kernel and the
 # per-dispatch budget still has slack (e.g. when chunking is capped by `chunk_max` rather than the
 # `max_evals` target).
-_GA_COMBO_TAIL_MERGE_MAX: int = max(0, int(os.environ.get("GPU_NATIVE_GA_COMBO_TAIL_MERGE_MAX", "256") or 256))
+_GA_COMBO_TAIL_MERGE_MAX: int = max(0, int(env_get("GPU_NATIVE_GA_COMBO_TAIL_MERGE_MAX", "256") or 256))
 
 # Evaluation budget for GA combo-search chunking (<= MAX_EVALS_PER_DISPATCH).
 #
@@ -68,7 +68,7 @@ _GA_EXACT_STATS_REUSE_ENABLED: int = 0
 
 def _ga_eval_budget() -> int:
     global _GA_EVAL_BUDGET_RAW, _GA_EVAL_BUDGET
-    raw = os.environ.get("GPU_NATIVE_GA_EVAL_BUDGET", None)
+    raw = env_get("GPU_NATIVE_GA_EVAL_BUDGET", None)
     raw_norm = str(raw or "").strip()
     if raw_norm == _GA_EVAL_BUDGET_RAW:
         return int(_GA_EVAL_BUDGET)
@@ -90,7 +90,7 @@ def _ga_eval_budget() -> int:
 
 def _ga_exact_genome_base_stats_reuse_enabled() -> int:
     global _GA_BASE_STATS_REUSE_RAW, _GA_BASE_STATS_REUSE_ENABLED
-    raw = os.environ.get("GPU_NATIVE_GA_BASE_STATS_REUSE", None)
+    raw = env_get("GPU_NATIVE_GA_BASE_STATS_REUSE", None)
     raw_norm = str(raw or "").strip().lower()
     if raw_norm == _GA_BASE_STATS_REUSE_RAW:
         return int(_GA_BASE_STATS_REUSE_ENABLED)
@@ -105,9 +105,9 @@ def _ga_exact_genome_base_stats_reuse_enabled() -> int:
 
 def _ga_exact_genome_eval_results_reuse_enabled() -> int:
     global _GA_EXACT_EVAL_RESULTS_REUSE_RAW, _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED
-    raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_RESULTS_REUSE", None)
+    raw = env_get("GPU_NATIVE_GA_EXACT_EVAL_RESULTS_REUSE", None)
     if raw is None:
-        raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
+        raw = env_get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
     raw_norm = str(raw or "").strip().lower()
     if raw_norm == _GA_EXACT_EVAL_RESULTS_REUSE_RAW:
         return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
@@ -122,9 +122,9 @@ def _ga_exact_genome_eval_results_reuse_enabled() -> int:
 
 def _ga_exact_genome_stats_signature_reuse_enabled() -> int:
     global _GA_EXACT_STATS_REUSE_RAW, _GA_EXACT_STATS_REUSE_ENABLED
-    raw = os.environ.get("GPU_NATIVE_GA_EXACT_STATS_REUSE", None)
+    raw = env_get("GPU_NATIVE_GA_EXACT_STATS_REUSE", None)
     if raw is None:
-        raw = os.environ.get("GPU_NATIVE_GA_SCORE_SIGNATURE_REUSE", None)
+        raw = env_get("GPU_NATIVE_GA_SCORE_SIGNATURE_REUSE", None)
     raw_norm = str(raw or "").strip().lower()
     if raw_norm == _GA_EXACT_STATS_REUSE_RAW:
         return int(_GA_EXACT_STATS_REUSE_ENABLED)

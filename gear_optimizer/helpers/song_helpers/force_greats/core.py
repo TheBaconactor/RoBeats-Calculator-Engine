@@ -8,11 +8,11 @@ Public entrypoint:
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
+from .entry_resolution import entry_base_score
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from ..ga_entry_utils import materialize_entry_names
 from ..loadout_builder import refresh_ga_candidate_entries
@@ -22,6 +22,7 @@ from ....core.parsing import env_flag
 from ....core.utils import stats_signature
 from ....solver.scoring import apply_force_greats_to_result
 
+from gear_optimizer.core.parsing import env_get
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
@@ -35,10 +36,6 @@ _FG_INPROCESS_GPU_CLIENT_DISABLED = False
 _FG_SESSION_SLOT_LOCK = threading.Lock()
 _FG_SESSION_SLOT_POOL = None
 _FG_SESSION_SLOT_LOGGED = False
-
-
-def _truthy_env(name: str, default: str = "0") -> bool:
-    return env_flag(name, default)
 
 
 def _is_inprocess_gpu_client(gpu_client: Optional["GpuServiceClient"]) -> bool:
@@ -56,7 +53,7 @@ def _get_fg_session_slot_pool():
     if _FG_SESSION_SLOT_POOL is not None:
         return _FG_SESSION_SLOT_POOL
     try:
-        raw = os.environ.get("GPU_SONG_SLOTS")
+        raw = env_get("GPU_SONG_SLOTS")
         max_slots = int(raw) if raw is not None and str(raw).strip() != "" else 0
     except Exception:
         max_slots = 0
@@ -141,7 +138,7 @@ def _process_force_greats_cpu(
             and (entry.get("fg_score") or cached_force.get("Score"))
             and cache_validation.is_cached_force_valid(cached_force, expected_sel)
         ):
-            base_score = entry.get("base_score") or entry.get("score", 0)
+            base_score = entry_base_score(entry)
             cached_fg_score = entry.get("fg_score", 0) or cached_force.get("Score", 0)
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             fg_variants.append(
@@ -175,7 +172,7 @@ def _process_force_greats_cpu(
         )
         computed += 1
         if fg_variant:
-            base_score = entry.get("base_score") or entry.get("score", 0)
+            base_score = entry_base_score(entry)
             fg_score = fg_variant.get("Score", 0)
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             fg_variants.append(
@@ -230,7 +227,7 @@ def process_force_greats(
         return loadout_entries_map
 
     if gpu_client is None and bool(use_gpu) and bool(force_greats_finder):
-        if _truthy_env("FG_INPROCESS_EXECUTOR", "1"):
+        if env_flag("FG_INPROCESS_EXECUTOR", "1"):
             gpu_client = _get_inprocess_gpu_client()
             if gpu_client is None:
                 warn_fallback(

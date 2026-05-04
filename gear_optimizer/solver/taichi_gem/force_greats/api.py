@@ -18,8 +18,7 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.parsing import env_flag as _env_truthy
-from gear_optimizer.core.parsing import env_int as _env_int
+from gear_optimizer.core.parsing import env_flag, env_int
 from gear_optimizer.solver.gpu_tuning_policy import plan_fg_stage1_cfg_chunk
 
 from .. import api as gem_api
@@ -45,21 +44,21 @@ _SYNC_PER_CHUNK = _ENV_GET("FG_SYNC_PER_CHUNK", "0") == "1"
 
 # Enable detailed FG GPU timing output
 _PERF_TIMING = _ENV_GET("PERF_TIMING", "0") == "1"
-_FG_TRANSFER_TRACE = _env_truthy("FG_TRANSFER_TRACE")
-_FG_TASK_TRACE = _env_truthy("FG_TASK_TRACE")
+_FG_TRANSFER_TRACE = env_flag("FG_TRANSFER_TRACE")
+_FG_TASK_TRACE = env_flag("FG_TASK_TRACE")
 _FG_TASK_CALL_SEQ = 0
-_GPU_PROFILER_ENABLED = _PERF_TIMING or _env_truthy("GPU_PROFILER")
+_GPU_PROFILER_ENABLED = _PERF_TIMING or env_flag("GPU_PROFILER")
 _GPU_PROFILER_CACHE = None
 _GPU_PROFILER_READY = False
-_FG_GPU_CFG_RANGES = _env_truthy("FG_GPU_CFG_RANGES", "1")
-_FG_IMPLICIT_CONFIGS = _env_truthy("FG_IMPLICIT_CONFIGS", "1")
-_FG_TARGET_THREADS_PER_KERNEL = _env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
+_FG_GPU_CFG_RANGES = env_flag("FG_GPU_CFG_RANGES", "1")
+_FG_IMPLICIT_CONFIGS = env_flag("FG_IMPLICIT_CONFIGS", "1")
+_FG_TARGET_THREADS_PER_KERNEL = env_int("FG_TARGET_THREADS_PER_KERNEL", 0)
 _FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
 _FG_STAGE1_DIRECT_ATOMIC = bool(getattr(fg_kernels, "FG_STAGE1_DIRECT_ATOMIC", False))
-_FG_GPU_SURFACE_PAIR_REDUCTION = _env_truthy("FG_GPU_SURFACE_PAIR_REDUCTION", "1")
-_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS = max(0, min(_env_int("FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS", 1024), 4096))
-_FG_GPU_CONFIG_DEDUPE = _env_truthy("FG_GPU_CONFIG_DEDUPE", "0")
-_FG_GPU_CONFIG_DEDUPE_MIN_CFG = max(1, _env_int("FG_GPU_CONFIG_DEDUPE_MIN_CFG", 512))
+_FG_GPU_SURFACE_PAIR_REDUCTION = env_flag("FG_GPU_SURFACE_PAIR_REDUCTION", "1")
+_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS = max(0, min(env_int("FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS", 1024), 4096))
+_FG_GPU_CONFIG_DEDUPE = env_flag("FG_GPU_CONFIG_DEDUPE", "0")
+_FG_GPU_CONFIG_DEDUPE_MIN_CFG = max(1, env_int("FG_GPU_CONFIG_DEDUPE_MIN_CFG", 512))
 
 
 def _get_gpu_profiler():
@@ -173,9 +172,9 @@ _fg_forced_counts_staging_pool: dict[int, Any] | None = None
 
 # Optional optimization: force a single Stage-1 band for small workloads.
 # This does NOT change the search space or scoring; it only reduces kernel launch overhead.
-_FG_SMALL_WORK_SINGLE_BAND = _env_truthy("FG_SMALL_WORK_SINGLE_BAND", "1")
-_FG_SMALL_WORK_MAX_WORK_ITEMS = _env_int("FG_SMALL_WORK_MAX_WORK_ITEMS", 20000)
-_FG_SMALL_WORK_MAX_CFG_LEN = _env_int("FG_SMALL_WORK_MAX_CFG_LEN", _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
+_FG_SMALL_WORK_SINGLE_BAND = env_flag("FG_SMALL_WORK_SINGLE_BAND", "1")
+_FG_SMALL_WORK_MAX_WORK_ITEMS = env_int("FG_SMALL_WORK_MAX_WORK_ITEMS", 20000)
+_FG_SMALL_WORK_MAX_CFG_LEN = env_int("FG_SMALL_WORK_MAX_CFG_LEN", _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
 
 _fg_cfg_defaults_uploaded = False
 _fg_cfg_defaults_buf: dict[str, np.ndarray] | None = None
@@ -1738,7 +1737,7 @@ def _solve_force_greats_finder_gpu_impl(
     # share the same config list (common across FT/FF chunking) don't pay
     # repeated host packing + host->device uploads.
     # ------------------------------------------------------------------
-    resident_enabled = _env_truthy("FG_RESIDENT_FORCED_CONFIGS", "1")
+    resident_enabled = env_flag("FG_RESIDENT_FORCED_CONFIGS", "1")
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
 
     cfg_sig = None

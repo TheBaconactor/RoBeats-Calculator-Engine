@@ -29,6 +29,7 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 _FG_JIT_WARMED = False
@@ -42,7 +43,7 @@ _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 def _fg_db_cache_max() -> int:
     try:
-        raw = os.environ.get("INFLIGHT_FG_DB_CACHE_MAX")
+        raw = env_get("INFLIGHT_FG_DB_CACHE_MAX")
         if raw is not None and str(raw).strip() != "":
             return max(0, int(raw))
     except Exception:
@@ -171,7 +172,7 @@ def _maybe_prewarm_fg_chart_scorer(song: Any) -> None:
     try:
         # Prewarming can be expensive on some songs; keep it opt-in so FG prep
         # doesn't stall GA->FG readiness by default.
-        if not _truthy(os.environ.get("INFLIGHT_FG_CHART_PREWARM", "0")):
+        if not _truthy(env_get("INFLIGHT_FG_CHART_PREWARM", "0")):
             return
         if not bool(getattr(song, "force_greats_finder", False)):
             return
@@ -233,8 +234,8 @@ class _InFlightStageProfiler:
         self._t0 = time.perf_counter()
         self._stage: dict[str, dict[str, Any]] = {}
         self._song: dict[str, dict[str, float]] = {}
-        self._allow_prefixes = self._parse_prefixes(os.environ.get("INFLIGHT_STAGE_PROFILE_PREFIX", ""))
-        if _truthy(os.environ.get("INFLIGHT_STAGE_PROFILE_FG_ONLY", "0")) and not self._allow_prefixes:
+        self._allow_prefixes = self._parse_prefixes(env_get("INFLIGHT_STAGE_PROFILE_PREFIX", ""))
+        if _truthy(env_get("INFLIGHT_STAGE_PROFILE_FG_ONLY", "0")) and not self._allow_prefixes:
             # Convenience mode: only record FG-related stages (and the "underfed" wait marker that indicates
             # CPU-side bubbles while no GPU work is in flight).
             self._allow_prefixes = ("fg_", "underfed_wait")
@@ -488,7 +489,7 @@ def read_fg_group_meta_prime_settings() -> tuple[int, bool, int]:
     prime_group_meta_limit = 0
     prime_group_meta_limit_explicit = False
     try:
-        raw = os.environ.get("INFLIGHT_FG_GROUP_META_PRIME_LIMIT")
+        raw = env_get("INFLIGHT_FG_GROUP_META_PRIME_LIMIT")
         if raw is not None and str(raw).strip() != "":
             prime_group_meta_limit = int(raw)
             prime_group_meta_limit_explicit = True
@@ -505,7 +506,7 @@ def read_fg_group_meta_prime_settings() -> tuple[int, bool, int]:
 
 def _default_fg_group_meta_prime_limit(max_candidates: int) -> int:
     try:
-        raw = os.environ.get("INFLIGHT_FG_GROUP_META_AUTO_PRIME_CANDIDATE_LIMIT")
+        raw = env_get("INFLIGHT_FG_GROUP_META_AUTO_PRIME_CANDIDATE_LIMIT")
         if raw is not None and str(raw).strip() != "":
             return max(0, min(int(raw), int(max_candidates), 512))
     except Exception:
@@ -836,7 +837,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
 
     cfg = song.cfg
 
-    perf = _truthy(os.environ.get("PERF_TIMING", "0"))
+    perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
 
     fg_candidate_limit = read_fg_candidate_limit(

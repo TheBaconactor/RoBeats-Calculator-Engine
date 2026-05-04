@@ -27,17 +27,17 @@ def array_sig16(v: Any) -> bytes:
         return b"\x00"
     try:
         arr = np.asarray(v)
-    except Exception:
+    except (TypeError, ValueError):
         return bytes(repr(v), "utf-8")
     if arr.ndim == 0:
         try:
             arr = np.asarray([arr.item()], dtype=arr.dtype)
-        except Exception:
+        except (TypeError, ValueError):
             arr = np.asarray([repr(arr)], dtype=np.uint8)
 
     try:
         is_contig = bool(arr.flags["C_CONTIGUOUS"])
-    except Exception:
+    except (AttributeError, KeyError, TypeError, ValueError):
         is_contig = False
     arr_c = arr if is_contig else np.ascontiguousarray(arr)
 

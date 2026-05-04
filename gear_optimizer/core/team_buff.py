@@ -15,6 +15,8 @@ This module centralizes:
 
 from typing import Any, Mapping, Sequence
 
+import configparser
+
 from .parsing import truthy
 
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
@@ -149,7 +151,7 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     auto = False
     try:
         auto = bool(cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False))
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         auto = False
     if auto:
         return "T5"
@@ -157,6 +159,6 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     raw = default
     try:
         raw = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback=default)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         raw = default
     return normalize_team_buff(raw, default=default)

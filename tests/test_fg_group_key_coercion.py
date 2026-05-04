@@ -16,14 +16,13 @@ import pytest
     ],
 )
 def test_coerce_fg_group_key_rejects_invalid_shapes(value):
-    from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _coerce_fg_group_key
+    from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import _normalize_fg_group_key as _coerce_fg_group_key
 
     assert _coerce_fg_group_key(value) is None
 
 
 def test_coerce_fg_group_key_normalizes_tuple_or_list():
-    from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _coerce_fg_group_key
+    from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import _normalize_fg_group_key as _coerce_fg_group_key
 
     assert _coerce_fg_group_key(("Rush", "2", "5")) == ("Rush", 2, 5)
     assert _coerce_fg_group_key(["Beat", 3, 7]) == ("Beat", 3, 7)
-

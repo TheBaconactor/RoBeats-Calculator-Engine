@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ....core.utils import get_selected_element, stats_signature
+from ....core.utils import safe_int
 from ....solver.scoring.stats_scoring import fg_baseline_params
 
 
@@ -27,25 +28,17 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
     except Exception:
         return str(meta_primary_color or "")
 
-
-def _stats_int(stats: dict[str, Any] | None, key: str) -> int:
-    try:
-        return int((stats or {}).get(key, 0) or 0)
-    except Exception:
-        return 0
-
-
 def fg_proxy_from_base_stats(stats: dict[str, Any] | None, primary_color: str, secondary_color: str) -> int:
     score = 0
-    score += _stats_int(stats, "Fever Multiplier") * 4
-    score += _stats_int(stats, "Fever Fill Rate") * 4
-    score += _stats_int(stats, "Fever Time") * 3
-    score += _stats_int(stats, "Combo Multiplier") * 2
-    score += _stats_int(stats, "Perfect Points")
+    score += safe_int((stats or {}).get("Fever Multiplier", 0), 0) * 4
+    score += safe_int((stats or {}).get("Fever Fill Rate", 0), 0) * 4
+    score += safe_int((stats or {}).get("Fever Time", 0), 0) * 3
+    score += safe_int((stats or {}).get("Combo Multiplier", 0), 0) * 2
+    score += safe_int((stats or {}).get("Perfect Points", 0), 0)
     if primary_color:
-        score += _stats_int(stats, primary_color) * 2
+        score += safe_int((stats or {}).get(primary_color, 0), 0) * 2
     if secondary_color and secondary_color != primary_color:
-        score += _stats_int(stats, secondary_color)
+        score += safe_int((stats or {}).get(secondary_color, 0), 0)
     return int(score)
 
 

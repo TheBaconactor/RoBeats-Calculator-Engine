@@ -15,81 +15,9 @@ Usage:
         # Enable performance timing
 """
 
-import os
 from dataclasses import dataclass
-from typing import Optional
-from .fallback_monitor import warn_fallback
-from .parsing import env_flag
 
-
-def _env_bool(key: str, default: str = "0") -> bool:
-    """
-    Parse boolean environment variable (1/true/yes/on).
-
-    Args:
-        key: Environment variable name
-        default: Default value if not set (default: "0")
-
-    Returns:
-        True if value is a recognized truthy token (case-insensitive), False otherwise
-    """
-    return env_flag(key, default)
-
-
-def _env_str(key: str, default: Optional[str] = None) -> Optional[str]:
-    """
-    Get string environment variable.
-
-    Args:
-        key: Environment variable name
-        default: Default value if not set
-
-    Returns:
-        Environment variable value or default
-    """
-    return os.environ.get(key, default)
-
-
-def _env_int(key: str, default: int) -> int:
-    """Parse int environment variable (best-effort, never raises)."""
-    raw = os.environ.get(key, None)
-    if raw is None:
-        warn_fallback(
-            "env.int.missing", "environment variable missing, using default", context={"key": key, "default": default}
-        )
-        return int(default)
-    try:
-        return int(str(raw).strip())
-    except Exception as exc:
-        warn_fallback(
-            "env.int.invalid",
-            "invalid environment variable value, using default",
-            context={"key": key, "value": raw, "default": default},
-            exc=exc,
-        )
-        return int(default)
-
-
-def _env_float(key: str, default: float) -> float:
-    """Parse float environment variable (best-effort, never raises)."""
-    raw = os.environ.get(key, None)
-    if raw is None:
-        warn_fallback(
-            "env.float.missing",
-            "environment variable missing, using default",
-            context={"key": key, "default": default},
-        )
-        return float(default)
-    try:
-        return float(str(raw).strip())
-    except Exception as exc:
-        warn_fallback(
-            "env.float.invalid",
-            "invalid environment variable value, using default",
-            context={"key": key, "value": raw, "default": default},
-            exc=exc,
-        )
-        return float(default)
+from .parsing import env_flag, env_float, env_get, env_int, env_str
 
 
 @dataclass(frozen=True)
@@ -122,10 +50,18 @@ class EnvConfig:
     perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by perf print sites
 
     # Genetic Algorithm
-    ga_seed: Optional[str]  # GA_SEED: Seed for genetic algorithm RNG
+    ga_seed: str | None  # GA_SEED: Seed for genetic algorithm RNG
 
     # ForceGreats
     fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override)
+
+    # JIT / profiling / memory helpers
+    numba_cache_dir: str | None  # NUMBA_CACHE_DIR
+    memory_guard_write_every_n: int  # MEMORY_GUARD_WRITE_EVERY_N
+    memory_guard_write_every_sec: float  # MEMORY_GUARD_WRITE_EVERY_SEC
+    profile_events_enabled: bool  # METAFINDER_PROFILE_EVENTS
+    profile_events_path: str  # METAFINDER_PROFILE_EVENTS_PATH / PROFILE_EVENTS_PATH
+    profile_run_id: str  # METAFINDER_PROFILE_RUN_ID / PROFILE_RUN_ID
 
     # Console output / progress
     output_enabled: bool  # METAFINDER_OUTPUT / METAFINDER_VERBOSE: enable verbose console output
@@ -147,42 +83,50 @@ class EnvConfig:
         Returns:
             EnvConfig instance with all environment variables loaded
         """
-        debug_profile = _env_bool("DEBUG_PROFILE") or _env_bool("METAFINDER_DEBUG_PROFILE")
-        perf_timing_unconditional = _env_bool("PERF_TIMING")
-        output_enabled = _env_bool("METAFINDER_OUTPUT") or _env_bool("METAFINDER_VERBOSE")
-        progress_enabled = _env_bool("METAFINDER_PROGRESS", "1")
-        progress_interval_sec = _env_float("METAFINDER_PROGRESS_INTERVAL", 0.2)
-        progress_bar_width = _env_int("METAFINDER_PROGRESS_WIDTH", 24)
+        debug_profile = env_flag("DEBUG_PROFILE") or env_flag("METAFINDER_DEBUG_PROFILE")
+        perf_timing_unconditional = env_flag("PERF_TIMING")
+        output_enabled = env_flag("METAFINDER_OUTPUT") or env_flag("METAFINDER_VERBOSE")
+        progress_enabled = env_flag("METAFINDER_PROGRESS", "1")
+        progress_interval_sec = env_float("METAFINDER_PROGRESS_INTERVAL", 0.2)
+        progress_bar_width = env_int("METAFINDER_PROGRESS_WIDTH", 24)
         return cls(
             debug_profile=debug_profile,
             # GPU Performance & Timing
-            gpu_sync_for_timing=debug_profile and _env_bool("GPU_SYNC_FOR_TIMING"),
-            gpu_force_sync=debug_profile and _env_bool("GPU_FORCE_SYNC"),
-            gpu_executor_profile=debug_profile and _env_bool("GPU_EXECUTOR_PROFILE"),
-            gpu_executor_warmup_fg=_env_bool("GPU_EXECUTOR_WARMUP_FG", "1"),
-            gpu_executor_warmup_ga=_env_bool("GPU_EXECUTOR_WARMUP_GA", "1"),
-            gpu_profiler=debug_profile and _env_bool("GPU_PROFILER"),
-            gpu_service_profile=debug_profile and _env_bool("GPU_SERVICE_PROFILE"),
-            gpu_service_profile_print=debug_profile and _env_bool("GPU_SERVICE_PROFILE_PRINT"),
-            gpu_timeline_only=_env_bool("GPU_TIMELINE_ONLY", "1"),
-            gpu_strict=_env_bool("GPU_STRICT", "1"),
+            gpu_sync_for_timing=debug_profile and env_flag("GPU_SYNC_FOR_TIMING"),
+            gpu_force_sync=debug_profile and env_flag("GPU_FORCE_SYNC"),
+            gpu_executor_profile=debug_profile and env_flag("GPU_EXECUTOR_PROFILE"),
+            gpu_executor_warmup_fg=env_flag("GPU_EXECUTOR_WARMUP_FG", "1"),
+            gpu_executor_warmup_ga=env_flag("GPU_EXECUTOR_WARMUP_GA", "1"),
+            gpu_profiler=debug_profile and env_flag("GPU_PROFILER"),
+            gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
+            gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
+            gpu_timeline_only=env_flag("GPU_TIMELINE_ONLY", "1"),
+            gpu_strict=env_flag("GPU_STRICT", "1"),
             # General Performance
             perf_timing=debug_profile and perf_timing_unconditional,
             perf_timing_unconditional=perf_timing_unconditional,
             # Genetic Algorithm
-            ga_seed=_env_str("GA_SEED"),
+            ga_seed=env_get("GA_SEED"),
             # ForceGreats
-            fg_search_radius=_env_int("FG_SEARCH_RADIUS", 5),
-            # Console output / progress
-            output_enabled=output_enabled,
-            progress_enabled=progress_enabled,
+            fg_search_radius=env_int("FG_SEARCH_RADIUS", 5),
+            # JIT / profiling / memory helpers
+            numba_cache_dir=env_str("NUMBA_CACHE_DIR") or None,
+            memory_guard_write_every_n=max(1, env_int("MEMORY_GUARD_WRITE_EVERY_N", 1)),
+            memory_guard_write_every_sec=max(0.0, env_float("MEMORY_GUARD_WRITE_EVERY_SEC", 0.0)),
+            profile_events_path=env_str("METAFINDER_PROFILE_EVENTS_PATH") or env_str("PROFILE_EVENTS_PATH"),
+            profile_events_enabled=env_flag("METAFINDER_PROFILE_EVENTS")
+            or bool(env_str("METAFINDER_PROFILE_EVENTS_PATH") or env_str("PROFILE_EVENTS_PATH")),
+            profile_run_id=env_str("METAFINDER_PROFILE_RUN_ID") or env_str("PROFILE_RUN_ID") or None,
+        # Console output / progress
+        output_enabled=output_enabled,
+        progress_enabled=progress_enabled,
             progress_interval_sec=max(0.05, float(progress_interval_sec)),
             progress_bar_width=max(10, int(progress_bar_width)),
             # GPU Executor batching/IPC
-            gpu_executor_batch_wait_ms=max(0, _env_int("GPU_EXECUTOR_BATCH_WAIT_MS", 10)),
-            gpu_executor_max_batch=max(1, _env_int("GPU_EXECUTOR_MAX_BATCH", 8)),
-            gpu_executor_pending_ttl_sec=max(0.0, _env_float("GPU_EXECUTOR_PENDING_TTL_SEC", 300.0)),
-            gpu_executor_pending_max=max(0, _env_int("GPU_EXECUTOR_PENDING_MAX", 2048)),
+            gpu_executor_batch_wait_ms=max(0, env_int("GPU_EXECUTOR_BATCH_WAIT_MS", 10)),
+            gpu_executor_max_batch=max(1, env_int("GPU_EXECUTOR_MAX_BATCH", 8)),
+            gpu_executor_pending_ttl_sec=max(0.0, env_float("GPU_EXECUTOR_PENDING_TTL_SEC", 300.0)),
+            gpu_executor_pending_max=max(0, env_int("GPU_EXECUTOR_PENDING_MAX", 2048)),
         )
 
 

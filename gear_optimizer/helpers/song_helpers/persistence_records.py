@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ...core.utils import safe_int
+from .force_greats.entry_resolution import entry_base_score
 from .fg_config import has_valid_fg_config
 
 
@@ -35,10 +36,7 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
             continue
         if not has_valid_fg_config(fg_entry):
             continue
-        base_score = fg_entry.get("base_score")
-        if base_score is None:
-            base_score = fg_entry.get("score", 0)
-        base_score_i = safe_int(base_score, 0)
+        base_score_i = entry_base_score(fg_entry)
         fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)
         if fg_score_i <= base_score_i:
             continue
@@ -98,10 +96,7 @@ def evaluate_progress_record_update(
                     continue
                 if not has_valid_fg_config(fg_entry):
                     continue
-                base_score = fg_entry.get("base_score")
-                if base_score is None:
-                    base_score = fg_entry.get("score", 0)
-                base_score_i = safe_int(base_score, 0)
+                base_score_i = entry_base_score(fg_entry)
                 fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)
                 if fg_score_i > base_score_i and fg_score_i > best_fg_score_run:
                     best_fg_score_run = fg_score_i

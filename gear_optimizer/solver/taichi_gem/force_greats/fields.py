@@ -8,7 +8,6 @@ reference tables + base genome stats fields for scoring.
 
 from __future__ import annotations
 
-import os
 import numpy as np
 import taichi as ti
 
@@ -19,12 +18,13 @@ from ..fields import IS_METAL, MAX_GENOMES, MAX_SONG_SLOTS
 # CONSTANTS
 # ============================================================================
 
+from gear_optimizer.core.parsing import env_get
 FG_MAX_SECTIONS = 16
 FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
 _FG_MAX_FTFF_DEFAULT = 1024
 try:
-    _fg_max_ftff_env = int(os.environ.get("FG_MAX_FTFF", _FG_MAX_FTFF_DEFAULT) or _FG_MAX_FTFF_DEFAULT)
+    _fg_max_ftff_env = int(env_get("FG_MAX_FTFF", _FG_MAX_FTFF_DEFAULT) or _FG_MAX_FTFF_DEFAULT)
 except Exception:
     _fg_max_ftff_env = _FG_MAX_FTFF_DEFAULT
 # Clamp to a conservative range to avoid pathological allocations on low-memory GPUs.
@@ -35,7 +35,7 @@ FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download
 FG_SIGNATURE_FRONTIER_MAX = MAX_GENOMES  # Max signatures per FG frontier-selection batch
 _FG_EXACT_DP_MAX_NOTES_DEFAULT = 128
 try:
-    _fg_exact_dp_max_notes_env = int(os.environ.get("FG_EXACT_DP_MAX_NOTES", _FG_EXACT_DP_MAX_NOTES_DEFAULT) or 0)
+    _fg_exact_dp_max_notes_env = int(env_get("FG_EXACT_DP_MAX_NOTES", _FG_EXACT_DP_MAX_NOTES_DEFAULT) or 0)
 except Exception:
     _fg_exact_dp_max_notes_env = _FG_EXACT_DP_MAX_NOTES_DEFAULT
 # Keep this small by default: exact DP state scales ~O(n^2) in the timing-aware carry model.
@@ -53,7 +53,7 @@ def _next_pow2(x: int) -> int:
 _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT = 4096
 try:
     _fg_exact_dp_sparse_states_env = int(
-        os.environ.get("FG_EXACT_DP_SPARSE_MAX_STATES", _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT)
+        env_get("FG_EXACT_DP_SPARSE_MAX_STATES", _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT)
         or _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT
     )
 except Exception:
@@ -62,7 +62,7 @@ _fg_exact_dp_sparse_states_env = max(256, min(int(_fg_exact_dp_sparse_states_env
 FG_EXACT_DP_SPARSE_MAX_STATES = int(_fg_exact_dp_sparse_states_env)
 
 try:
-    _fg_exact_dp_sparse_hash_env = int(os.environ.get("FG_EXACT_DP_SPARSE_HASH_SIZE", "0") or "0")
+    _fg_exact_dp_sparse_hash_env = int(env_get("FG_EXACT_DP_SPARSE_HASH_SIZE", "0") or "0")
 except Exception:
     _fg_exact_dp_sparse_hash_env = 0
 if int(_fg_exact_dp_sparse_hash_env) <= 0:
@@ -73,7 +73,7 @@ _fg_exact_dp_sparse_hash_env = max(1024, min(int(_fg_exact_dp_sparse_hash_env), 
 FG_EXACT_DP_SPARSE_HASH_SIZE = int(_fg_exact_dp_sparse_hash_env)
 
 try:
-    _fg_exact_dp_batch_rows_env = int(os.environ.get("FG_EXACT_DP_BATCH_MAX_ROWS", "128") or "128")
+    _fg_exact_dp_batch_rows_env = int(env_get("FG_EXACT_DP_BATCH_MAX_ROWS", "128") or "128")
 except Exception:
     _fg_exact_dp_batch_rows_env = 128
 FG_EXACT_DP_BATCH_MAX_ROWS = max(1, min(int(_fg_exact_dp_batch_rows_env), 256))
@@ -81,12 +81,12 @@ FG_EXACT_DP_PREFIX_HEAD_LEN = 101
 
 FG_EXACT_DP_FULL_PREFIX_LEN = FG_MAX_SONG_NOTES + 1
 try:
-    _fg_signature_frontier_batch_env = int(os.environ.get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
+    _fg_signature_frontier_batch_env = int(env_get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
 except Exception:
     _fg_signature_frontier_batch_env = 64
 FG_SIGNATURE_FRONTIER_BATCH_MAX = max(1, min(int(_fg_signature_frontier_batch_env), 128))
 try:
-    _fg_download_batch_env = int(os.environ.get("FG_DOWNLOAD_BATCH_MAX", "128") or "128")
+    _fg_download_batch_env = int(env_get("FG_DOWNLOAD_BATCH_MAX", "128") or "128")
 except Exception:
     _fg_download_batch_env = 128
 FG_DOWNLOAD_BATCH_MAX = max(1, min(int(_fg_download_batch_env), 256))
@@ -99,12 +99,12 @@ _FG_SECTION_FORCED_CAPS_DEFAULT = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4,
 FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # MAX_GENOMES * FG_MAX_FTFF
 FG_STAGE1_WAVE_SLOTS_MAX = 8  # max waves for FG_STAGE1_BLOCK_DIM<=256 (used by wave-staging kernels)
 try:
-    _fg_cfg_dedupe_work_items_env = int(os.environ.get("FG_CFG_DEDUPE_WORK_ITEMS", "512") or "512")
+    _fg_cfg_dedupe_work_items_env = int(env_get("FG_CFG_DEDUPE_WORK_ITEMS", "512") or "512")
 except Exception:
     _fg_cfg_dedupe_work_items_env = 512
 FG_CFG_DEDUPE_WORK_ITEMS = max(128, min(int(_fg_cfg_dedupe_work_items_env), 2048))
 try:
-    _fg_cfg_dedupe_max_reps_env = int(os.environ.get("FG_CFG_DEDUPE_MAX_REPS", "512") or "512")
+    _fg_cfg_dedupe_max_reps_env = int(env_get("FG_CFG_DEDUPE_MAX_REPS", "512") or "512")
 except Exception:
     _fg_cfg_dedupe_max_reps_env = 512
 FG_CFG_DEDUPE_MAX_REPS = max(512, min(int(_fg_cfg_dedupe_max_reps_env), 8192))

@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
+
 
 DEFAULT_THRESHOLDS = {
     "idle_no_work_p95_ms": 50.0,
@@ -21,26 +23,6 @@ DEFAULT_THRESHOLDS = {
     "backlog_active_min_sec": 10.0,
     "backlog_growth_min": 3.0,
 }
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        try:
-            return float(str(value).strip())
-        except Exception:
-            return float(default)
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        try:
-            return int(str(value).strip())
-        except Exception:
-            return int(default)
 
 
 def _clamp01(v: float) -> float:

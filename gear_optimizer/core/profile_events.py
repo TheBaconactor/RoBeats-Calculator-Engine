@@ -11,7 +11,6 @@ Events are written as JSONL rows to the configured path.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 import uuid
@@ -19,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, TypedDict
 
-from .parsing import truthy
+from .env_config import ENV
 
 
 class ProfileEvent(TypedDict):
@@ -39,13 +38,9 @@ class ProfileEventConfig:
 
 
 def _read_config() -> ProfileEventConfig:
-    path = str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
-    enabled = truthy(os.environ.get("METAFINDER_PROFILE_EVENTS")) or bool(path)
-    run_id = str(
-        os.environ.get("METAFINDER_PROFILE_RUN_ID")
-        or os.environ.get("PROFILE_RUN_ID")
-        or f"profile-{uuid.uuid4().hex[:12]}"
-    ).strip()
+    path = str(ENV.profile_events_path or "").strip()
+    enabled = bool(ENV.profile_events_enabled) or bool(path)
+    run_id = str(ENV.profile_run_id or f"profile-{uuid.uuid4().hex[:12]}").strip()
     return ProfileEventConfig(enabled=bool(enabled), path=path, run_id=run_id)
 
 
@@ -74,7 +69,7 @@ class _ProfileEventWriter:
                 path.parent.mkdir(parents=True, exist_ok=True)
             self._fp = path.open("a", encoding="utf-8", buffering=1)
             return self._fp
-        except Exception:
+        except OSError:
             self._open_failed = True
             return None
 
@@ -101,13 +96,13 @@ class _ProfileEventWriter:
         }
         try:
             line = json.dumps(payload, separators=(",", ":"), sort_keys=False)
-        except Exception:
+        except (TypeError, ValueError):
             return
 
         with self._lock:
             try:
                 fp.write(line + "\n")
-            except Exception:
+            except OSError:
                 return
 
 
@@ -132,13 +127,10 @@ def emit_profile_event(
     metrics: Optional[dict[str, Any]] = None,
     ts_wall: float | None = None,
 ) -> None:
-    try:
-        _get_writer().emit(
-            component=component,
-            event=event,
-            song_key=song_key,
-            metrics=metrics,
-            ts_wall=ts_wall,
-        )
-    except Exception:
-        return
+    _get_writer().emit(
+        component=component,
+        event=event,
+        song_key=song_key,
+        metrics=metrics,
+        ts_wall=ts_wall,
+    )

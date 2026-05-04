@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import heapq
-import os
 from dataclasses import dataclass
 
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
@@ -9,6 +8,7 @@ from .ga_entry_utils import candidate_loadout_hash
 from .item_utils import _item_name
 
 
+from gear_optimizer.core.parsing import env_get
 def _split_gear_minis(candidate: dict) -> tuple[list[dict], list[dict]]:
     """
     Robustly extract (gear, minis) from historical candidate shapes.
@@ -208,39 +208,39 @@ def select_fg_candidates(
     # Optional environment overrides so benchmarks (and power users) can switch
     # candidate selection modes without touching config files.
     if mode == "default":
-        env_mode = os.environ.get("FG_CANDIDATE_SELECTOR_MODE")
+        env_mode = env_get("FG_CANDIDATE_SELECTOR_MODE")
         if env_mode:
             mode = str(env_mode).strip().lower()
 
-    env_band = os.environ.get("FG_PROMISING_BAND_PCT")
+    env_band = env_get("FG_PROMISING_BAND_PCT")
     if env_band is not None and str(env_band).strip():
         try:
             promising_band_pct = float(env_band)
         except Exception:
             pass
 
-    env_max_pool = os.environ.get("FG_PROMISING_MAX_POOL")
+    env_max_pool = env_get("FG_PROMISING_MAX_POOL")
     if env_max_pool is not None and str(env_max_pool).strip():
         try:
             promising_max_pool = int(env_max_pool)
         except Exception:
             pass
 
-    env_per_mini = os.environ.get("FG_PROMISING_PER_MINI")
+    env_per_mini = env_get("FG_PROMISING_PER_MINI")
     if env_per_mini is not None and str(env_per_mini).strip():
         try:
             promising_per_mini = int(env_per_mini)
         except Exception:
             pass
 
-    env_per_center = os.environ.get("FG_PROMISING_PER_CENTER")
+    env_per_center = env_get("FG_PROMISING_PER_CENTER")
     if env_per_center is not None and str(env_per_center).strip():
         try:
             promising_per_center = int(env_per_center)
         except Exception:
             pass
 
-    env_center_bin = os.environ.get("FG_PROMISING_CENTER_BIN")
+    env_center_bin = env_get("FG_PROMISING_CENTER_BIN")
     if env_center_bin is not None and str(env_center_bin).strip():
         try:
             promising_center_bin = int(env_center_bin)
@@ -251,21 +251,21 @@ def select_fg_candidates(
     slot_max_pool = 20000
     slot_per_slot = 10
 
-    env_slot_band = os.environ.get("FG_SLOT_DIVERSE_BAND_PCT")
+    env_slot_band = env_get("FG_SLOT_DIVERSE_BAND_PCT")
     if env_slot_band is not None and str(env_slot_band).strip():
         try:
             slot_band_pct = float(env_slot_band)
         except Exception:
             pass
 
-    env_slot_max_pool = os.environ.get("FG_SLOT_DIVERSE_MAX_POOL")
+    env_slot_max_pool = env_get("FG_SLOT_DIVERSE_MAX_POOL")
     if env_slot_max_pool is not None and str(env_slot_max_pool).strip():
         try:
             slot_max_pool = int(env_slot_max_pool)
         except Exception:
             pass
 
-    env_slot_per_slot = os.environ.get("FG_SLOT_DIVERSE_PER_SLOT")
+    env_slot_per_slot = env_get("FG_SLOT_DIVERSE_PER_SLOT")
     if env_slot_per_slot is not None and str(env_slot_per_slot).strip():
         try:
             slot_per_slot = int(env_slot_per_slot)

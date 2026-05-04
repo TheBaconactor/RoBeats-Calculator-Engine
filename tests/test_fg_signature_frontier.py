@@ -1,10 +1,11 @@
 import pytest
 import numpy as np
 
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
-    _build_signature_frontier_metas,
-    _select_signature_frontier,
-    _select_signature_frontier_cpu,
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.helpers.song_helpers.force_greats.signature_frontier import (
+    build_signature_frontier_metas as _build_signature_frontier_metas,
+    select_signature_frontier as _select_signature_frontier,
+    select_signature_frontier_cpu as _select_signature_frontier_cpu,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.api import fg_select_signature_frontier_batch
 
@@ -53,6 +54,8 @@ def test_signature_frontier_noop_under_limit() -> None:
         keep_sigs=set(),
         limit=8,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        gpu_strict=True,
     )
 
     assert out == sigs
@@ -99,6 +102,8 @@ def test_signature_frontier_preserves_top_base_keep_force_keep_and_priority() ->
         keep_sigs={str(keep_sig)},
         limit=55,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        gpu_strict=True,
     )
 
     assert len(out) == 55
@@ -144,6 +149,8 @@ def test_signature_frontier_prefers_new_timing_buckets_over_duplicate_proxy_rows
         keep_sigs=set(),
         limit=53,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        gpu_strict=True,
     )
 
     assert len(out) == 53
@@ -197,6 +204,7 @@ def test_signature_frontier_gpu_matches_cpu_reference() -> None:
         keep_sigs={str(keep_sig)},
         limit=58,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
     gpu = _select_signature_frontier(
         sigs,
@@ -207,6 +215,8 @@ def test_signature_frontier_gpu_matches_cpu_reference() -> None:
         keep_sigs={str(keep_sig)},
         limit=58,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        gpu_strict=True,
     )
 
     assert gpu == cpu
@@ -238,6 +248,7 @@ def test_signature_frontier_gpu_batch_matches_cpu_reference() -> None:
         keep_sigs={str(sigs[3]), str(sigs[9])},
         limit=57,
         center_bin=2,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
 
     timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}

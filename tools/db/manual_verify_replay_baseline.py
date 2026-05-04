@@ -30,11 +30,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached  # noqa: E402
 from gear_optimizer.core.config import load_config  # noqa: E402
+from gear_optimizer.core.team_buff import normalize_team_buff  # noqa: E402
 from gear_optimizer.core.utils import cfg_to_dict  # noqa: E402
 from tools.db.compare_overall_best_to_legacy_db import (  # noqa: E402
     _best_base,
     _best_fg,
-    _norm_team_buff,
     _resolve_side_snapshot,
     _songs_in_db,
 )
@@ -160,7 +160,7 @@ def main() -> int:
     if not reference_db.exists():
         raise SystemExit(f"Reference DB not found: {reference_db}")
 
-    team_buff = _norm_team_buff(args.team_buff)
+    team_buff = normalize_team_buff(args.team_buff)
     eps = max(0, int(args.eps))
     example_limit = max(0, int(args.examples))
 

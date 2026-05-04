@@ -36,6 +36,7 @@ from typing import Any, Dict, Iterable, List, Optional
 # -----------------------------------------------------------------------------
 
 
+from gear_optimizer.core.parsing import env_get
 def _extract_json_object_from_stdout(stdout: str) -> Optional[Dict[str, Any]]:
     raw = (stdout or "").strip()
     if not raw:
@@ -620,7 +621,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     if bool(args.worker):
         return _run_worker_from_stdin()
 
-    db_path_str = str(args.db_path or "").strip() or (os.environ.get("EVOLUTION_DB_PATH") or "").strip()
+    db_path_str = str(args.db_path or "").strip() or (env_get("EVOLUTION_DB_PATH") or "").strip()
     if not db_path_str:
         raise SystemExit("Missing --db-path and EVOLUTION_DB_PATH is not set.")
     db_path = Path(db_path_str).expanduser().resolve()

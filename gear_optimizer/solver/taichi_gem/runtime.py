@@ -27,12 +27,13 @@ from ...core.output import (
     suppress_stderr,
     suppress_stdout,
 )
-from ...core.parsing import env_flag
+from ...core.parsing import env_flag, env_int
 
 # ============================================================================
 # INITIALIZATION STATE
 # ============================================================================
 
+from gear_optimizer.core.parsing import env_get
 _ti_initialized = False
 _ti_lock = threading.RLock()
 _printed_vulkan_device_hint = False
@@ -173,20 +174,6 @@ def offline_cache_lock(
     lock_path = Path(cache_dir) / ".metafinder_offline_cache.lock"
     with _file_lock(lock_path, timeout_sec=timeout_sec, poll_interval_sec=poll_interval_sec):
         yield cache_dir
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except Exception as exc:
-        warn_fallback(
-            "taichi_runtime.env_int",
-            "invalid integer environment variable; using default",
-            context={"key": name, "default": default},
-            exc=exc,
-        )
-        return default
-
 
 def _clamp_block_dim(x: int) -> int:
     # Conservative clamp; GPU backends typically like 64-512.
@@ -371,7 +358,7 @@ def _maybe_set_vulkan_visible_device() -> None:
                 continue
         return None
 
-    raw = str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
+    raw = str(env_get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
     auto_discrete = (not raw) or (raw.strip().lower() in {"discrete", "dgpu", "auto"})
 
     target = ""
@@ -437,7 +424,7 @@ def _maybe_print_vulkan_device_hint() -> None:
     if _printed_vulkan_device_hint:
         return
     _printed_vulkan_device_hint = True
-    if str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
+    if str(env_get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
         return
     logger.debug(
         "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=discrete "
@@ -448,12 +435,12 @@ def _maybe_print_vulkan_device_hint() -> None:
 # IMPORTANT: These are read when init_taichi() is called, so callers can
 # set env vars before initialization.
 def get_kernel_profiler_enabled() -> bool:
-    return bool(_env_int("TAICHI_KERNEL_PROFILER", 0))
+    return bool(env_int("TAICHI_KERNEL_PROFILER", 0))
 
 
 def get_block_dim() -> int:
     # Empirically good defaults for this workload are 256.
-    return _clamp_block_dim(_env_int("TAICHI_BLOCK_DIM", 256))
+    return _clamp_block_dim(env_int("TAICHI_BLOCK_DIM", 256))
 
 
 def _get_offline_cache_dir() -> str:
@@ -518,7 +505,7 @@ def _get_offline_cache_dir() -> str:
             raw_ver = ".".join(str(x) for x in raw_ver)
         ti_ver = str(raw_ver)
         ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
-        env_key = _sanitize_cache_token(os.environ.get("TAICHI_OFFLINE_CACHE_KEY", ""))
+        env_key = _sanitize_cache_token(env_get("TAICHI_OFFLINE_CACHE_KEY", ""))
         cache_key = env_key or _read_taichi_gem_signature_short(repo_root)
         cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
         os.makedirs(cache_dir, exist_ok=True)

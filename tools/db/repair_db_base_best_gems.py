@@ -37,6 +37,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gear_optimizer.core.team_buff import normalize_team_buff
+
 
 def _infer_difficulty_from_song_name(song_name: str) -> str:
     s = str(song_name or "")
@@ -52,10 +54,6 @@ def _song_file_from_name(project_root: Path, song_name: str) -> Path | None:
     if fp.exists():
         return fp
     return None
-
-
-def _norm_team_buff(team_buff: str) -> str:
-    return str(team_buff or "").strip().upper() or "T5"
 
 
 @dataclass
@@ -124,7 +122,7 @@ def _best_base_for_loadout(
     NOTE: This uses a zero-fixed-gems override (user_* = 0, static_elem_input = 0), matching the
     canonical DB/gem-solver contract for MetaFinder optimization.
     """
-    team_buff = _norm_team_buff(team_buff)
+    team_buff = normalize_team_buff(team_buff)
     if team_buff != "T5":
         raise ValueError(f"Unsupported team_buff for this tool (expected T5): {team_buff}")
 
@@ -225,7 +223,7 @@ def main() -> int:
     if not db_path.exists():
         raise SystemExit(f"DB not found: {db_path}")
 
-    team_buff = _norm_team_buff(args.team_buff)
+    team_buff = normalize_team_buff(args.team_buff)
     eps = max(0, int(args.eps))
 
     targets: list[tuple[str, str]] = []
@@ -389,4 +387,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

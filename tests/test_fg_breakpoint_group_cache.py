@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch
+from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch_caches as gpu_dispatch
 
 
 def _base_calc_song() -> dict:
@@ -43,8 +43,8 @@ def test_breakpoint_group_cache_reuses_identical_group_plan():
         compute_fn=_compute,
     )
 
-    groups_1, hit_1 = gpu_dispatch._get_cached_breakpoint_groups(**kwargs)
-    groups_2, hit_2 = gpu_dispatch._get_cached_breakpoint_groups(**kwargs)
+    groups_1, hit_1 = gpu_dispatch.get_cached_breakpoint_groups(**kwargs)
+    groups_2, hit_2 = gpu_dispatch.get_cached_breakpoint_groups(**kwargs)
 
     assert hit_1 is False
     assert hit_2 is True
@@ -82,7 +82,7 @@ def test_breakpoint_group_cache_is_partitioned_by_timing_envelope_context():
     calc_song_b["metadata"].update(
         {
             "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeMode": "late",
             "TimingEnvelopeFGCarry": "late",
         }
     )
@@ -99,8 +99,8 @@ def test_breakpoint_group_cache_is_partitioned_by_timing_envelope_context():
         compute_fn=_compute,
     )
 
-    _groups_a, hit_a = gpu_dispatch._get_cached_breakpoint_groups(calc_song=calc_song_a, **common)
-    _groups_b, hit_b = gpu_dispatch._get_cached_breakpoint_groups(calc_song=calc_song_b, **common)
+    _groups_a, hit_a = gpu_dispatch.get_cached_breakpoint_groups(calc_song=calc_song_a, **common)
+    _groups_b, hit_b = gpu_dispatch.get_cached_breakpoint_groups(calc_song=calc_song_b, **common)
 
     assert hit_a is False
     assert hit_b is False
@@ -136,13 +136,13 @@ def test_breakpoint_group_cache_peek_miss_does_not_eagerly_materialize_groups():
         mode="max_fp",
     )
 
-    assert gpu_dispatch._peek_cached_breakpoint_groups(**common) is None
+    assert gpu_dispatch.peek_cached_breakpoint_groups(**common) is None
     assert calls["n"] == 0
 
     groups = _compute()
-    gpu_dispatch._store_cached_breakpoint_groups(groups=groups, **common)
+    gpu_dispatch.store_cached_breakpoint_groups(groups=groups, **common)
 
-    cached = gpu_dispatch._peek_cached_breakpoint_groups(**common)
+    cached = gpu_dispatch.peek_cached_breakpoint_groups(**common)
     assert calls["n"] == 1
     assert cached == groups
 
@@ -166,8 +166,8 @@ def test_max_fp_matrix_cache_reuses_identical_matrix():
         compute_fn=_compute,
     )
 
-    matrix_1, hit_1 = gpu_dispatch._get_cached_max_fp_matrix(**kwargs)
-    matrix_2, hit_2 = gpu_dispatch._get_cached_max_fp_matrix(**kwargs)
+    matrix_1, hit_1 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
+    matrix_2, hit_2 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
 
     assert hit_1 is False
     assert hit_2 is True
@@ -175,7 +175,7 @@ def test_max_fp_matrix_cache_reuses_identical_matrix():
     assert np.array_equal(matrix_1, matrix_2)
 
     matrix_1[0, 0] = 99
-    matrix_3, hit_3 = gpu_dispatch._get_cached_max_fp_matrix(**kwargs)
+    matrix_3, hit_3 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
 
     assert hit_3 is True
     assert int(matrix_3[0, 0]) == 1
@@ -203,7 +203,7 @@ def test_max_fp_matrix_cache_is_partitioned_by_timing_envelope_context():
     calc_song_b["metadata"].update(
         {
             "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeMode": "late",
             "TimingEnvelopeFGCarry": "late",
         }
     )
@@ -216,8 +216,8 @@ def test_max_fp_matrix_cache_is_partitioned_by_timing_envelope_context():
         compute_fn=_compute,
     )
 
-    _matrix_a, hit_a = gpu_dispatch._get_cached_max_fp_matrix(calc_song=calc_song_a, **common)
-    _matrix_b, hit_b = gpu_dispatch._get_cached_max_fp_matrix(calc_song=calc_song_b, **common)
+    _matrix_a, hit_a = gpu_dispatch.get_cached_max_fp_matrix(calc_song=calc_song_a, **common)
+    _matrix_b, hit_b = gpu_dispatch.get_cached_max_fp_matrix(calc_song=calc_song_b, **common)
 
     assert hit_a is False
     assert hit_b is False

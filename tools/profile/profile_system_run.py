@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import psutil
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
 
 
 def _utc_ts() -> str:
@@ -2477,27 +2478,6 @@ def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
         "cpu_tree_pct": _series_stats(cpu_tree),
         "rss_tree_bytes": _series_stats(rss_tree),
     }
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        try:
-            return int(str(value).strip())
-        except Exception:
-            return int(default)
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        try:
-            return float(str(value).strip())
-        except Exception:
-            return float(default)
-
 
 def _cfg_get_bool(cfg: configparser.ConfigParser, section: str, key: str, default: bool = False) -> bool:
     try:

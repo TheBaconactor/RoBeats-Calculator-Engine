@@ -81,15 +81,16 @@ from ..helpers.song_helpers.payload_compaction import (
 )
 
 # Global warn-once instance
+from gear_optimizer.core.parsing import env_get
 WARN_ONCE = WarnOnce()
 
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
-_SONG_GC_GEN2_INTERVAL = max(1, int(os.environ.get("SONG_GC_GEN2_INTERVAL", "25") or "25"))
+_SONG_GC_GEN2_INTERVAL = max(1, int(env_get("SONG_GC_GEN2_INTERVAL", "25") or "25"))
 
 # Performance timing flag (set via env var)
 PERF_TIMING_ENABLED = bool(getattr(ENV, "perf_timing_unconditional", False))
-_CAPTURE_SONG_LOG_PAYLOAD = str(os.environ.get("SONG_CAPTURE_LOG_PAYLOAD", "0") or "").strip().lower() in {
+_CAPTURE_SONG_LOG_PAYLOAD = str(env_get("SONG_CAPTURE_LOG_PAYLOAD", "0") or "").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -234,12 +235,12 @@ def _stable_cfg_hash(cfg_dict: dict | None) -> str:
     return out
 
 
-_BASE_CALC_SONG_CACHE_MAX = max(1, int(os.environ.get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))
+_BASE_CALC_SONG_CACHE_MAX = max(1, int(env_get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))
 _BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
 _BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
 
 _SONG_HEADER_CACHE_PATH = PATHS.bin_path("song_header_cache.json")
-_SONG_HEADER_CACHE_MAX = max(256, int(os.environ.get("SONG_HEADER_CACHE_MAX", "4096") or "4096"))
+_SONG_HEADER_CACHE_MAX = max(256, int(env_get("SONG_HEADER_CACHE_MAX", "4096") or "4096"))
 _SONG_HEADER_CACHE_LOCK = threading.Lock()
 _SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SONG_HEADER_CACHE_LOADED = False

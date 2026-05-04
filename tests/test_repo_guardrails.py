@@ -195,3 +195,69 @@ def test_harness_engineering_route_stays_discoverable() -> None:
     assert not missing, (
         "Harness engineering guidance must remain reachable from the repo routing docs:\n" + "\n".join(missing)
     )
+
+
+def test_package_agents_stay_thin_and_route_to_navigation() -> None:
+    text = (_REPO_ROOT / "gear_optimizer" / "AGENTS.md").read_text(encoding="utf-8")
+
+    required = [
+        "docs/NAVIGATION.md",
+        "docs/ENGINEERING_PRINCIPLES.md",
+    ]
+    forbidden = [
+        "## Package navigation",
+        "## Feature map",
+        "| Area |",
+        "| Feature |",
+    ]
+
+    missing = [needle for needle in required if needle not in text]
+    blocked = [needle for needle in forbidden if needle in text]
+
+    assert not missing, "gear_optimizer/AGENTS.md must point to the canonical navigation docs:\n" + "\n".join(missing)
+    assert not blocked, "gear_optimizer/AGENTS.md must not duplicate navigation tables:\n" + "\n".join(blocked)
+
+
+def test_agents_files_stay_concise() -> None:
+    root_limit = 3200
+    nested_limit = 1400
+    offenders: list[str] = []
+
+    for path in _REPO_ROOT.rglob("AGENTS.md"):
+        if any(part in {".git", ".venv", "venv", "__pycache__"} for part in path.parts):
+            continue
+        limit = root_limit if path == _REPO_ROOT / "AGENTS.md" else nested_limit
+        size = len(path.read_text(encoding="utf-8"))
+        if size > limit:
+            rel = path.relative_to(_REPO_ROOT)
+            offenders.append(f"{rel}: {size} bytes > {limit}")
+
+    assert not offenders, "AGENTS.md files must stay concise routers:\n" + "\n".join(offenders)
+
+
+def test_removed_user_skills_are_not_routed_from_repo_docs() -> None:
+    removed_skill_refs = [
+        "$repo-bootstrap",
+        "repo-bootstrap",
+        "dead-code-finder",
+        "docs-sync",
+        "jupyter-notebook",
+        "agents-md",
+    ]
+    checked_roots = [
+        _REPO_ROOT / "AGENTS.md",
+        _REPO_ROOT / "docs" / "AGENTS.md",
+        _REPO_ROOT / "docs" / "HARNESS_ENGINEERING.md",
+        _REPO_ROOT / "docs" / "ENGINEERING_PRINCIPLES.md",
+        _REPO_ROOT / "docs" / "Implementation Records" / "CONTEXT_ROTTING_CONTROL.md",
+    ]
+
+    offenders: list[str] = []
+    for path in checked_roots:
+        text = path.read_text(encoding="utf-8")
+        hits = [needle for needle in removed_skill_refs if needle in text]
+        if hits:
+            rel = path.relative_to(_REPO_ROOT)
+            offenders.append(f"{rel}: {', '.join(hits)}")
+
+    assert not offenders, "Repo routing docs must not point at removed user skills:\n" + "\n".join(offenders)

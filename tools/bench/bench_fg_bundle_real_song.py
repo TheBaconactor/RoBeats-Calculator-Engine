@@ -26,6 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+from gear_optimizer.core.parsing import env_get
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -205,7 +206,7 @@ def main() -> int:
     limit_cfg = int(read_fg_candidate_limit(cfg, default=FG_CANDIDATE_LIMIT, min_limit=1) or FG_CANDIDATE_LIMIT)
     limit = int(args.candidate_limit) if int(args.candidate_limit or 0) > 0 else int(limit_cfg)
     radius = read_fg_search_radius(cfg)
-    radius = int(radius) if radius is not None else int(os.environ.get("FG_SEARCH_RADIUS", "5") or "5")
+    radius = int(radius) if radius is not None else int(env_get("FG_SEARCH_RADIUS", "5") or "5")
 
     team_buff = str(args.team_buff or "").strip().upper()
     if not team_buff:

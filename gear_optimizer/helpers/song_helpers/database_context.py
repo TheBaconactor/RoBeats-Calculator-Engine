@@ -23,6 +23,7 @@ from ...data.database import (
 from ...data.models import WarnOnce
 
 # Global warn-once instance
+from gear_optimizer.core.parsing import env_get
 WARN_ONCE = WarnOnce()
 
 _WAL_MAINT_LOCK = threading.Lock()
@@ -117,7 +118,7 @@ def _maybe_wal_maintenance(conn) -> None:
     and stall concurrent writers, which can indirectly starve the GPU pipeline.
     """
     try:
-        interval_sec = float(os.environ.get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
+        interval_sec = float(env_get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
     except Exception:
         interval_sec = 30.0
 

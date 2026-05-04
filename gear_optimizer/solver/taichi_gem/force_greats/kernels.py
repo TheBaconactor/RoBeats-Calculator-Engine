@@ -11,6 +11,7 @@ Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 import taichi as ti
 from taichi.lang import simt
 
+from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 from gear_optimizer.core.parsing import env_flag, env_int
 
 from ..kernels import kernels_helpers
@@ -1792,8 +1793,6 @@ FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 FG_STAGE1_SMALL_SECTIONS_FASTPATH = env_flag("FG_STAGE1_SMALL_SECTIONS_FASTPATH")
 FG_STAGE1_OWNER_CAP_REDUCTION = env_flag("FG_STAGE1_OWNER_CAP_REDUCTION")
 FG_STAGE1_DIRECT_ATOMIC = env_flag("FG_STAGE1_DIRECT_ATOMIC", "1")
-# Host-expanded plateau representative encoding in fg_forced_counts rows.
-FG_PLATEAU_REP_STRIDE = 64
 FG_PLATEAU_REP_MAX_SECTIONS = 4
 
 

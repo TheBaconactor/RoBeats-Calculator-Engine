@@ -15,17 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.parsing import truthy
-
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v)
-    except Exception:
-        try:
-            return int(float(v))
-        except Exception:
-            return int(default)
-
+from gear_optimizer.core.utils import safe_int as _safe_int
 
 def _sanitize_name(value: str, *, fallback: str) -> str:
     raw = str(value or "").strip()

@@ -5,6 +5,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+from gear_optimizer.core.utils import ceil_div
+
 from .keys import OV_INDEX, STAT_KEYS
 from .variant_space import build_variant_offset_tables
 
@@ -69,11 +71,6 @@ def wildcard_offset_from_vec(vec5: Tuple[int, int, int, int, int], *, total_sum:
     binom = _build_binom(20)
     return _rank5(binom, int(total_sum), pp, cm, fm, ft)
 
-
-def _ceil_div(a: int, b: int) -> int:
-    return int((int(a) + int(b) - 1) // int(b))
-
-
 def _canonical_partition_wildcards(totals: np.ndarray) -> List[Tuple[int, int, int, int, int]]:
     """
     Deterministically decompose a (PP,CM,FM,FT,FF,OV) total into 6 slot vectors (15 each),
@@ -89,7 +86,7 @@ def _canonical_partition_wildcards(totals: np.ndarray) -> List[Tuple[int, int, i
     for slot in range(6):
         slots_left_after = 5 - int(slot)
         ov_left = int(remaining[OV_INDEX])
-        ov_slots_after = _ceil_div(ov_left, 15)
+        ov_slots_after = ceil_div(ov_left, 15)
         must_place_ov = slots_left_after < ov_slots_after
 
         # Allocate OV as late as possible, but ensure feasibility.

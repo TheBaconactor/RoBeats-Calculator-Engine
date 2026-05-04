@@ -18,6 +18,7 @@ from gear_optimizer.data.database import (  # noqa: E402
     _unpack_stats_after_load,
     get_db_connection_readonly,
 )
+from gear_optimizer.data.migrations import _table_exists  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -63,14 +64,6 @@ def _canonical_gem_counts(details: Any) -> Optional[dict[str, int]]:
         except Exception:
             out[key] = 0
     return out or None
-
-
-def _table_exists(conn, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-        (str(table),),
-    ).fetchone()
-    return row is not None
 
 
 def _load_top_rows(conn, *, table: str, metric: str, team_buff: str) -> dict[str, TopRow]:
@@ -444,4 +437,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

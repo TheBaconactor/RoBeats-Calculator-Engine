@@ -11,13 +11,15 @@ import re
 import sys
 from dataclasses import dataclass
 from typing import Any
+
 from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
     SCRIPT_DIR,
 )
-from .utils import safe_int, safe_float
+from .parsing import env_str
+from .utils import safe_int
 
 def get_config_path(default: str = "config.ini") -> str:
     """
@@ -27,11 +29,9 @@ def get_config_path(default: str = "config.ini") -> str:
     - `METAFINDER_CONFIG_PATH` when set and non-empty
     - `default` (typically "config.ini")
     """
-    env_path = os.environ.get("METAFINDER_CONFIG_PATH")
-    if env_path is not None:
-        p = str(env_path).strip()
-        if p:
-            return p
+    env_path = env_str("METAFINDER_CONFIG_PATH", "")
+    if env_path:
+        return env_path
     return str(default)
 
 
@@ -46,7 +46,7 @@ def load_config(path: str | None = None) -> configparser.ConfigParser:
     cfg_path = str(path or get_config_path())
     try:
         cfg.read(cfg_path, encoding="utf-8-sig")
-    except Exception as exc:
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback("config.load.read_error", "failed to read config file", context={"path": cfg_path}, exc=exc)
         logging.debug(f"[Config] Failed to read {cfg_path}: {type(exc).__name__}: {exc}")
     return cfg
@@ -77,14 +77,11 @@ def compute_memory_guard_limit(cfg):
     )
 
     # PRODUCTION: memory guard flags (MemorySoftLimitGB, MemorySoftLimitPercent).
-    limit_gb = safe_float(cfg.get("IterationEngine", "MemorySoftLimitGB", fallback=0.0), default=0.0)
-    limit_percent = safe_float(
-        cfg.get(
-            "IterationEngine",
-            "MemorySoftLimitPercent",
-            fallback=platform_default_percent,
-        ),
-        default=platform_default_percent,
+    limit_gb = cfg.getfloat("IterationEngine", "MemorySoftLimitGB", fallback=0.0)
+    limit_percent = cfg.getfloat(
+        "IterationEngine",
+        "MemorySoftLimitPercent",
+        fallback=platform_default_percent,
     )
 
     # Clamp percent to the stricter platform default to avoid overly loose limits on Windows/macOS
@@ -128,7 +125,7 @@ def load_force_greats_config(cfg):
             idx = max(0, safe_int(match.group(1)) - 1)
             val = max(0, safe_int(raw, 0))
             entries.append((idx, val))
-    except (ValueError, KeyError, AttributeError) as e:
+    except (ValueError, KeyError, AttributeError, TypeError, configparser.Error) as e:
         warn_fallback("config.force_greats.section", "failed to parse [ForceGreats] section; using empty config", exc=e)
         logging.debug(f"[ForceGreats Config] Failed to parse ForceGreats section: {e}")
         return []
@@ -159,7 +156,7 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
         return []
     try:
         raw = cfg.get("IterationEngine", key, fallback="").strip()
-    except Exception as exc:
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback(
             "config.force_greats.inline.read",
             "failed reading inline ForceGreats config; using empty config",
@@ -183,7 +180,7 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
             while out and out[-1] == 0:
                 out.pop()
             return out
-        except Exception as e:
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             warn_fallback(
                 "config.force_greats.inline.json",
                 "failed parsing inline ForceGreats JSON list; using empty config",
@@ -205,7 +202,7 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
             try:
                 _, rhs = p.split("=", 1)
                 p = rhs.strip()
-            except Exception:
+            except ValueError:
                 continue
         values.append(max(0, safe_int(p, 0)))
 
@@ -260,30 +257,30 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     # PRODUCTION: core runtime flags (MetaFinder, AutoSelectBuffAndColor, ForceGreatsMode, ForceGreatsFinder).
     try:
         meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         meta_finder = False
 
     enable_fever = enable_mini = enable_gear = bool(meta_finder)
 
     try:
         auto_select_buff_and_color = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         auto_select_buff_and_color = False
 
     try:
         force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         force_greats_mode = False
 
     try:
         force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         force_greats_finder = False
 
     # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
     try:
         force_greats_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
-    except Exception:
+    except (AttributeError, TypeError, ValueError, configparser.Error):
         force_greats_debug = False
 
     # ForceGreatsMode must be enabled for ForceGreatsFinder to work.
@@ -333,8 +330,8 @@ def read_fg_candidate_limit(
     """
     # PRODUCTION: FG tuning flag (FG_CandidateLimit).
     try:
-        raw = cfg.get("IterationEngine", "FG_CandidateLimit", fallback=default)
-    except Exception as exc:
+        raw = cfg.get("IterationEngine", "FG_CandidateLimit")
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback(
             "config.fg_candidate_limit.read",
             "failed reading FG_CandidateLimit; using default",
@@ -358,8 +355,8 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     """
     # PRODUCTION: FG tuning flag (FG_SearchRadius).
     try:
-        raw = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
-    except Exception as exc:
+        raw = str(cfg.get("IterationEngine", "FG_SearchRadius") or "").strip()
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback("config.fg_search_radius.read", "failed reading FG_SearchRadius; using default behavior", exc=exc)
         raw = ""
     if not raw:
@@ -379,14 +376,14 @@ def _canon_outer_search_engine(raw: Any) -> str:
 
 def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
     default_c = "ga"
-    raw_env = os.environ.get("METAFINDER_OUTER_SEARCH_ENGINE")
-    if raw_env is None or not str(raw_env).strip():
-        raw_env = os.environ.get("OUTER_SEARCH_ENGINE")
-    if raw_env is not None and str(raw_env).strip():
+    raw_env = env_str("METAFINDER_OUTER_SEARCH_ENGINE", "")
+    if not raw_env:
+        raw_env = env_str("OUTER_SEARCH_ENGINE", "")
+    if raw_env:
         return raw_env, default_c
     try:
-        raw = cfg.get("IterationEngine", "OuterSearchEngine", fallback=default_c)
-    except Exception as exc:
+        raw = cfg.get("IterationEngine", "OuterSearchEngine")
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback(
             "config.outer_search_engine.read",
             "failed reading OuterSearchEngine; using default",
@@ -414,46 +411,6 @@ def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
     return default_c
 
 
-def read_pre_prune_mode(cfg: Any, *, default: str = "none") -> str:
-    """Read `[IterationEngine].PrePruneMode` without outer-engine alias coupling."""
-
-    def _canon(raw: Any) -> str:
-        value = str(raw or "").strip().lower().replace("-", "_")
-        value = "_".join(part for part in value.split("_") if part)
-        if not value:
-            return ""
-        if value in {"none", "off", "disabled"}:
-            return "none"
-        if value in {"marginal", "marginal_prune", "marginal_pruning"}:
-            return "marginal"
-        if value in {"auto", "automatic"}:
-            return "auto"
-        return value
-
-    default_c = _canon(default) or "none"
-    try:
-        raw = cfg.get("IterationEngine", "PrePruneMode", fallback="")
-    except Exception as exc:
-        warn_fallback(
-            "config.pre_prune_mode.read",
-            "failed reading PrePruneMode; using default",
-            context={"default": default_c},
-            exc=exc,
-        )
-        raw = ""
-    value = _canon(raw)
-    if value in {"none", "marginal", "auto"}:
-        return value
-    if value:
-        warn_fallback(
-            "config.pre_prune_mode.invalid",
-            "invalid PrePruneMode; using default",
-            context={"value": str(raw), "default": default_c},
-        )
-        return default_c
-    return default_c
-
-
 def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
     """Read `[IterationEngine].FG_SolverMode` with legacy alias fallback."""
 
@@ -474,8 +431,8 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
 
     default_c = _canon(default) or "finder"
     try:
-        raw = cfg.get("IterationEngine", "FG_SolverMode", fallback="")
-    except Exception as exc:
+        raw = cfg.get("IterationEngine", "FG_SolverMode")
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback(
             "config.fg_solver_mode.read",
             "failed reading FG_SolverMode; using default",

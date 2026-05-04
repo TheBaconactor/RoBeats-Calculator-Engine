@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 
+from gear_optimizer.core.parsing import env_get
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 
@@ -280,7 +281,7 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch, tmp_path):
     cfg_dict.setdefault("IterationEngine", {})["InFlightSongs"] = "1"
 
     try:
-        target_count = int(os.environ.get("REF_DB_OPTIMIZER_COMPARE_COUNT", "20"))
+        target_count = int(env_get("REF_DB_OPTIMIZER_COMPARE_COUNT", "20"))
     except Exception:
         target_count = 20
     target_count = max(1, int(target_count))
@@ -303,7 +304,7 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch, tmp_path):
     if not songs:
         pytest.skip("no reference songs found to compare")
 
-    seed = int(os.environ.get("GA_SEED", "1337") or 1337)
+    seed = int(env_get("GA_SEED", "1337") or 1337)
     monkeypatch.setenv("GA_SEED", str(seed))
 
     run1_db_path = tmp_path / "run1_evolution.db"

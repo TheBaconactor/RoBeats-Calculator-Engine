@@ -131,7 +131,7 @@ class ItemRegistry:
             slots_key,
             _fixed_gear_key(slots, fixed_gear),
             _gear_pool_signature(gear_pool, slots),
-            (str(int(id(gear_pool))),),
+            (str(id(gear_pool)),),
         )
         cached = _GEAR_REGISTRY_CACHE.get(cache_key)
 

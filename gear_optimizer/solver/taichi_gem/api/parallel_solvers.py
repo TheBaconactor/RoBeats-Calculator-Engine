@@ -8,7 +8,6 @@ This module provides GPU genome solvers:
 
 from __future__ import annotations
 
-import os
 import time
 
 import numpy as np
@@ -34,6 +33,7 @@ from .ga_operations import (
     ga_download_results,
 )
 
+from gear_optimizer.core.parsing import env_get
 _profiler = get_gpu_profiler()
 
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
@@ -41,7 +41,7 @@ _GENOME_STATS_BUFFER = None
 
 # The Vulkan block-per-genome FT/FF solver is currently unsafe on AMD/Vulkan
 # (score mismatches vs the canonical registry path). Keep it opt-in only.
-_USE_FTFF_BLOCK_KERNEL = str(os.environ.get("GPU_FTFF_BLOCK_KERNEL", "0") or "").strip().lower() in {
+_USE_FTFF_BLOCK_KERNEL = str(env_get("GPU_FTFF_BLOCK_KERNEL", "0") or "").strip().lower() in {
     "1",
     "true",
     "yes",

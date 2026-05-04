@@ -36,7 +36,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .parsing import TRUTHY_VALUES, truthy
+from .parsing import env_flag, env_int, env_str
 
 _COUNTS_LOCK = threading.Lock()
 _COUNTS_BY_SITE: dict[str, int] = {}
@@ -48,58 +48,36 @@ _LOG_FP = None
 _LOG_OPEN_FAILED = False
 
 
-def _sample_every() -> int:
-    raw = str(os.environ.get("METAFINDER_FALLBACK_SAMPLE_EVERY", "256") or "").strip()
-    try:
-        val = int(raw)
-    except Exception:
-        val = 256
-    return max(1, val)
-
-
 def _should_sample_event(count: int) -> bool:
     # Always capture the first few occurrences for diagnostics, then sample.
     c = max(1, int(count))
     if c <= 3:
         return True
-    return (c % _sample_every()) == 0
+    return (c % max(1, env_int("METAFINDER_FALLBACK_SAMPLE_EVERY", 256))) == 0
 
 
 class FallbackViolation(RuntimeError):
     """Raised when fallback strict mode disallows continuing on a fallback path."""
 
 
-def _is_truthy(value: Any) -> bool:
-    return truthy(value)
-
-
 def _is_enabled() -> bool:
-    raw = os.environ.get("METAFINDER_FALLBACK_WARN")
-    if raw is not None:
-        return _is_truthy(raw)
-    # Default to quiet console output; keep strict mode enforcement separate.
-    return False
+    return bool(env_flag("METAFINDER_FALLBACK_WARN"))
 
 
 def _include_count() -> bool:
-    raw = str(os.environ.get("METAFINDER_FALLBACK_WARN_COUNT", "1") or "").strip().lower()
-    return raw in TRUTHY_VALUES
+    return bool(env_flag("METAFINDER_FALLBACK_WARN_COUNT", "1"))
 
 
 def _strict_enabled() -> bool:
-    raw = os.environ.get("METAFINDER_FALLBACK_STRICT")
-    if raw is not None:
-        return _is_truthy(raw)
-    # Default to GPU_STRICT policy and treat unset as strict.
-    return _is_truthy(os.environ.get("GPU_STRICT", "1") or "1")
+    return bool(env_flag("METAFINDER_FALLBACK_STRICT") or env_flag("GPU_STRICT", "1"))
 
 
 def _strict_all() -> bool:
-    return _is_truthy(os.environ.get("METAFINDER_FALLBACK_STRICT_ALL", "0") or "0")
+    return bool(env_flag("METAFINDER_FALLBACK_STRICT_ALL"))
 
 
 def _allow_prefixes() -> tuple[str, ...]:
-    raw = str(os.environ.get("METAFINDER_FALLBACK_ALLOW", "config.,env.") or "")
+    raw = env_str("METAFINDER_FALLBACK_ALLOW", "config.,env.")
     prefixes = [p.strip() for p in raw.split(",") if p and p.strip()]
     return tuple(prefixes)
 
@@ -113,7 +91,7 @@ def _is_allowlisted(site: str) -> bool:
 
 
 def _default_log_path() -> str:
-    return str(os.environ.get("METAFINDER_FALLBACK_LOG_PATH", "") or "").strip()
+    return env_str("METAFINDER_FALLBACK_LOG_PATH", "")
 
 
 def _ensure_log_fp():
@@ -131,7 +109,7 @@ def _ensure_log_fp():
             p.parent.mkdir(parents=True, exist_ok=True)
         _LOG_FP = p.open("a", encoding="utf-8", buffering=1)
         return _LOG_FP
-    except Exception:
+    except OSError:
         _LOG_OPEN_FAILED = True
         return None
 
@@ -142,12 +120,12 @@ def _write_event_jsonl(event: dict[str, Any]) -> None:
         return
     try:
         line = json.dumps(event, separators=(",", ":"), sort_keys=False)
-    except Exception:
+    except (TypeError, ValueError):
         return
     with _LOG_LOCK:
         try:
             fp.write(line + "\n")
-        except Exception:
+        except OSError:
             return
 
 
@@ -158,7 +136,7 @@ def _caller_location() -> str:
         if len(stack) >= 3:
             fr = stack[-3]
             return f"{fr.filename}:{fr.lineno}"
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         pass
     return ""
 
@@ -217,7 +195,7 @@ def warn_fallback(
         if ctx:
             try:
                 ctx_s = ", ".join(f"{k}={ctx[k]!r}" for k in sorted(ctx))
-            except Exception:
+            except (TypeError, ValueError, KeyError):
                 ctx_s = repr(ctx)
             if ctx_s:
                 parts.append(f"context: {ctx_s}")
@@ -231,7 +209,7 @@ def warn_fallback(
         msg = " | ".join(parts)
         try:
             print(msg, file=sys.stderr, flush=True)
-        except Exception:
+        except OSError:
             pass
 
     if sampled:
@@ -252,7 +230,7 @@ def warn_fallback(
                 },
                 ts_wall=ts_wall,
             )
-        except Exception:
+        except OSError:
             pass
 
     if should_raise:
@@ -260,7 +238,7 @@ def warn_fallback(
         if ctx:
             try:
                 detail += " | " + ", ".join(f"{k}={ctx[k]!r}" for k in sorted(ctx))
-            except Exception:
+            except (TypeError, ValueError):
                 pass
         raise FallbackViolation(detail)
 
@@ -288,11 +266,13 @@ class FallbackAwareConfigParser(configparser.ConfigParser):
         )
 
     def get(self, section, option, *, raw=False, vars=None, fallback=_UNSET):  # noqa: A003
-        if fallback is not _UNSET:
-            has_val = self.has_section(section) and self.has_option(section, option)
-            if not has_val:
-                self._warn_missing("get", str(section), str(option), fallback)
-        return super().get(section, option, raw=raw, vars=vars, fallback=fallback)
+        try:
+            return super().get(section, option, raw=raw, vars=vars)
+        except configparser.Error:
+            if fallback is _UNSET:
+                raise
+            self._warn_missing("get", str(section), str(option), fallback)
+            return fallback
 
     def getint(self, section, option, *, raw=False, vars=None, fallback=_UNSET):  # noqa: A003
         if fallback is not _UNSET:

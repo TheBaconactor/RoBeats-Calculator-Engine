@@ -17,6 +17,7 @@ import time
 
 import numpy as np
 
+from gear_optimizer.core.parsing import env_get
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -189,16 +190,16 @@ def _make_population(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--genomes", type=int, default=int(os.environ.get("BENCH_GA_GENOMES", "512")))
-    ap.add_argument("--budget", type=int, default=int(os.environ.get("BENCH_GA_BUDGET", "90")))
-    ap.add_argument("--iters", type=int, default=int(os.environ.get("BENCH_GA_ITERS", "10")))
-    ap.add_argument("--warmup", type=int, default=int(os.environ.get("BENCH_GA_WARMUP", "2")))
-    ap.add_argument("--seed", type=int, default=int(os.environ.get("BENCH_GA_SEED", "1337")))
-    ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
+    ap.add_argument("--genomes", type=int, default=int(env_get("BENCH_GA_GENOMES", "512")))
+    ap.add_argument("--budget", type=int, default=int(env_get("BENCH_GA_BUDGET", "90")))
+    ap.add_argument("--iters", type=int, default=int(env_get("BENCH_GA_ITERS", "10")))
+    ap.add_argument("--warmup", type=int, default=int(env_get("BENCH_GA_WARMUP", "2")))
+    ap.add_argument("--seed", type=int, default=int(env_get("BENCH_GA_SEED", "1337")))
+    ap.add_argument("--prune-plateaus", type=int, default=int(env_get("BENCH_GA_PRUNE", "1")))
     ap.add_argument(
         "--materialize-mode",
         choices=("none", "results", "update_global", "results_update_runs", "refresh_runs"),
-        default=str(os.environ.get("BENCH_GA_MATERIALIZE_MODE", "none") or "none").strip().lower(),
+        default=str(env_get("BENCH_GA_MATERIALIZE_MODE", "none") or "none").strip().lower(),
         help="Mirror the live GA subpath more closely by choosing how results are materialized.",
     )
     ap.add_argument(
@@ -209,25 +210,25 @@ def main() -> int:
     ap.add_argument(
         "--base-ft",
         type=int,
-        default=int(os.environ.get("BENCH_GA_BASE_FT", "-1")),
+        default=int(env_get("BENCH_GA_BASE_FT", "-1")),
         help="Override base fixed Fever Time stat (default: random). Set ~160 to force FT headroom scarcity.",
     )
     ap.add_argument(
         "--base-ff",
         type=int,
-        default=int(os.environ.get("BENCH_GA_BASE_FF", "-1")),
+        default=int(env_get("BENCH_GA_BASE_FF", "-1")),
         help="Override base fixed Fever Fill Rate stat (default: random). Set ~160 to force FF headroom scarcity.",
     )
     ap.add_argument(
         "--item-ft-max",
         type=int,
-        default=int(os.environ.get("BENCH_GA_ITEM_FT_MAX", "40")),
+        default=int(env_get("BENCH_GA_ITEM_FT_MAX", "40")),
         help="Max Fever Time stat on generated items (default: 40).",
     )
     ap.add_argument(
         "--item-ff-max",
         type=int,
-        default=int(os.environ.get("BENCH_GA_ITEM_FF_MAX", "40")),
+        default=int(env_get("BENCH_GA_ITEM_FF_MAX", "40")),
         help="Max Fever Fill Rate stat on generated items (default: 40).",
     )
     ap.add_argument("--json", action="store_true", help="Emit final metrics as machine-readable JSON on stdout.")

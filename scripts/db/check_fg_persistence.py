@@ -21,12 +21,13 @@ import sqlite3
 import sys
 
 
+from gear_optimizer.core.parsing import env_get
 def main() -> int:
     db_path = ""
     if len(sys.argv) > 1:
         db_path = str(sys.argv[1] or "").strip()
     if not db_path:
-        db_path = str(os.environ.get("EVOLUTION_DB_PATH", "") or "").strip()
+        db_path = str(env_get("EVOLUTION_DB_PATH", "") or "").strip()
     if not db_path:
         db_path = "evolution.db"
 

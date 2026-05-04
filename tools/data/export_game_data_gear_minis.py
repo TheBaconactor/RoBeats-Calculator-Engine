@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_int as _safe_int
+
 
 _SLOT_TO_GEAR_TYPE: dict[str, str] = {
     "1": "Shirt",
@@ -26,16 +28,8 @@ _ELEMENT_FROM_STATS = {
     "Vibe": "ColorGreen",
 }
 
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
-
-
 def _blank_if_zero(value: int) -> str:
-    return "" if int(value) == 0 else str(int(value))
+    return "" if int(value) == 0 else str(value)
 
 
 def _infer_mini_type(l1_elements: dict[str, int]) -> str:

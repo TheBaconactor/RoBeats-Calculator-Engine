@@ -62,6 +62,7 @@ from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.helpers.song_helpers.persistence import RECORD_UPDATE_SCORE_EPSILON, evaluate_progress_record_update
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
@@ -364,7 +365,7 @@ class GearOptimizerApp:
         )
         self._banner_enabled = _banner_enabled_default(
             stream_is_tty=bool(self._stdout_is_tty),
-            banner_env=os.environ.get("METAFINDER_BANNER"),
+            banner_env=env_get("METAFINDER_BANNER"),
         )
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
@@ -372,7 +373,7 @@ class GearOptimizerApp:
         # Separate-process TUI (default) keeps console IO out of the compute/GPU owner process.
         self._tui_enabled = True
         try:
-            raw = os.environ.get("METAFINDER_UI_PROCESS")
+            raw = env_get("METAFINDER_UI_PROCESS")
             if raw is not None and str(raw).strip() != "":
                 self._tui_enabled = truthy(raw)
         except Exception:
@@ -410,7 +411,7 @@ class GearOptimizerApp:
         try:
             self._backend_priority_song_repeat_count = max(
                 0,
-                int(os.environ.get("ROBEATSMETA_OPTIMIZER_PRIORITY_REPEAT_COUNT", "0") or "0"),
+                int(env_get("ROBEATSMETA_OPTIMIZER_PRIORITY_REPEAT_COUNT", "0") or "0"),
             )
         except Exception:
             self._backend_priority_song_repeat_count = 0
@@ -503,7 +504,7 @@ class GearOptimizerApp:
             "PROFILE_EVENTS_PATH",
         )
         for key in path_keys:
-            if str(os.environ.get(key, "") or "").strip():
+            if str(env_get(key, "") or "").strip():
                 return True
 
         # DEV / DEBUG: profile-only config overrides (Debug.DebugProfile, IterationEngine.DebugProfile).
@@ -787,7 +788,7 @@ class GearOptimizerApp:
             ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
             ga_multistart = max(1, int(ga_multistart))
             os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(int(GA_POPULATION_SIZE)))
+            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
             try:
                 from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -875,13 +876,13 @@ class GearOptimizerApp:
             # 1. Automatically repair them by recomputing Stats
             # 2. Display a prominent warning if any issues were found
             # This prevents frontend/extractors from seeing 0 for elemental stats.
-            ignore_resume = truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
+            ignore_resume = truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
             # StatsVerifier is a heavyweight DB integrity repair pass intended for debugging/one-off recovery,
             # not a default production startup step. Keep it opt-in.
-            enable_stats_verify = bool(truthy(os.environ.get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
-            skip_stats_verify = bool(truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
+            enable_stats_verify = bool(truthy(env_get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
+            skip_stats_verify = bool(truthy(env_get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:
                 if not self._stats_verified_once:
@@ -1355,7 +1356,7 @@ class GearOptimizerApp:
             except Exception:
                 limit = 0
             for env_key in ("SONG_QUEUE_LIMIT", "METAFINDER_SONG_QUEUE_LIMIT"):
-                raw = os.environ.get(env_key)
+                raw = env_get(env_key)
                 if raw is None:
                     continue
                 try:
@@ -1392,7 +1393,7 @@ class GearOptimizerApp:
             # Backend queue order and persistence come from the API bridge state file.
             # Ignore memory-guard resume files to avoid replaying stale broad queues.
             ignore_resume = True
-        if truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
+        if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
 
         if not ignore_resume:
@@ -1429,7 +1430,7 @@ class GearOptimizerApp:
         pending_song_ids = _pending_backend_song_ids()
         pending_set = set(pending_song_ids)
         pending_only_mode = bool(
-            backend_service_mode and truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
+            backend_service_mode and truthy(env_get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
         )
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)
@@ -2461,7 +2462,7 @@ class GearOptimizerApp:
         # Historically we still generated per-repeat seeds via `secrets.randbits`,
         # which made runs non-reproducible even in "deterministic mode".
         ga_seed_base: int | None = None
-        raw_ga_seed = os.environ.get("GA_SEED")
+        raw_ga_seed = env_get("GA_SEED")
         if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
             try:
                 ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
@@ -2475,7 +2476,7 @@ class GearOptimizerApp:
         except Exception:
             song_repeats = 1
         try:
-            song_repeats_env = safe_int(os.environ.get("SONG_REPEATS", 0), 0)
+            song_repeats_env = safe_int(env_get("SONG_REPEATS", 0), 0)
             if song_repeats_env > 0:
                 song_repeats = song_repeats_env
         except Exception:
@@ -2487,7 +2488,7 @@ class GearOptimizerApp:
         except Exception:
             bundle_song_repeats = False
         try:
-            raw_bundle = os.environ.get("BUNDLE_SONG_REPEATS")
+            raw_bundle = env_get("BUNDLE_SONG_REPEATS")
             if raw_bundle is not None and str(raw_bundle).strip() != "":
                 bundle_song_repeats = truthy(raw_bundle)
         except Exception:
@@ -2716,10 +2717,10 @@ class GearOptimizerApp:
         return base
 
     def _fatal_gpu_errors_enabled(self) -> bool:
-        raw = str(os.environ.get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
+        raw = str(env_get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
         if raw:
             return truthy(raw)
-        if truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
+        if truthy(env_get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
             return True
         try:
             api = getattr(self, "_robeatsmeta_api", None)
@@ -2797,7 +2798,7 @@ class GearOptimizerApp:
             inflight_songs = 0
 
         try:
-            inflight_songs_env = safe_int(os.environ.get("IN_FLIGHT_SONGS", 0), 0)
+            inflight_songs_env = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
             if inflight_songs_env > 0:
                 inflight_songs = inflight_songs_env
         except Exception:
@@ -2821,14 +2822,14 @@ class GearOptimizerApp:
         except Exception:
             inflight_instances = 1
 
-        raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
+        raw_env_instances = env_get("INFLIGHT_INSTANCES")
         if raw_env_instances is not None and str(raw_env_instances).strip() != "":
             inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
 
         return max(1, min(int(inflight_instances), 8))
 
     def _dual_process_inflight_allowed(self) -> bool:
-        return truthy(os.environ.get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
+        return truthy(env_get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
 
     def _get_effective_inflight_instances(self, cfg_or_dict) -> int:
         requested_instances = self._get_inflight_instances_requested(cfg_or_dict)
@@ -2871,7 +2872,7 @@ class GearOptimizerApp:
         if inflight_songs > 0:
             if not cfg.has_section("IterationEngine"):
                 cfg.add_section("IterationEngine")
-            cfg.set("IterationEngine", "InFlightSongs", str(int(inflight_songs)))
+            cfg.set("IterationEngine", "InFlightSongs", str(inflight_songs))
 
         if inflight_songs <= 1:
             return
@@ -2908,7 +2909,7 @@ class GearOptimizerApp:
         if int(inflight_songs) <= 1:
             return
 
-        raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+        raw_env = env_get("INFLIGHT_RAM_MODE")
         env_set = raw_env is not None and str(raw_env).strip() != ""
         ram_mode = truthy(raw_env) if env_set else False
         if not env_set:
@@ -2923,7 +2924,7 @@ class GearOptimizerApp:
         os.environ.setdefault("INFLIGHT_RAM_MODE", "1")
 
         # Cache parsed song files across repeats/LoopForever (system RAM).
-        if os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX") in {None, ""}:
+        if env_get("INFLIGHT_SONG_FILE_CACHE_MAX") in {None, ""}:
             cache_max = 0
             try:
                 cache_max = safe_int(cfg.get("IterationEngine", "InFlight_SongFileCacheMax", fallback="0"), 0)
@@ -2931,10 +2932,10 @@ class GearOptimizerApp:
                 cache_max = 0
             if cache_max <= 0:
                 cache_max = 2048
-            os.environ["INFLIGHT_SONG_FILE_CACHE_MAX"] = str(int(cache_max))
+            os.environ["INFLIGHT_SONG_FILE_CACHE_MAX"] = str(cache_max)
 
         # TeamBuff post-processing can re-parse base calc_song; enlarge cache when allowed.
-        if os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX") in {None, ""}:
+        if env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX") in {None, ""}:
             tb_cache = 0
             try:
                 tb_cache = safe_int(cfg.get("IterationEngine", "TeamBuff_BaseCalcSongCacheMax", fallback="0"), 0)
@@ -2942,13 +2943,13 @@ class GearOptimizerApp:
                 tb_cache = 0
             if tb_cache <= 0:
                 tb_cache = 256
-            os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(int(tb_cache))
+            os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(tb_cache)
 
         try:
             logger.debug(
                 "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
-                    os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX"),
-                    os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
+                    env_get("INFLIGHT_SONG_FILE_CACHE_MAX"),
+                    env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
                 )
             )
         except Exception:
@@ -2968,7 +2969,7 @@ class GearOptimizerApp:
         - Users can always override by setting `GPU_SONG_SLOTS` explicitly.
         """
         # PRODUCTION: GPU slot sizing flag (GPU_SongSlots).
-        raw = os.environ.get("GPU_SONG_SLOTS")
+        raw = env_get("GPU_SONG_SLOTS")
         if raw is not None and str(raw).strip() != "":
             return
 
@@ -2979,7 +2980,7 @@ class GearOptimizerApp:
         except Exception:
             cfg_slots = 0
         if int(cfg_slots) > 0:
-            os.environ["GPU_SONG_SLOTS"] = str(int(cfg_slots))
+            os.environ["GPU_SONG_SLOTS"] = str(cfg_slots)
             try:
                 logger.debug(
                     "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
@@ -3007,7 +3008,7 @@ class GearOptimizerApp:
             ga_queue_mult = safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
         except Exception:
             ga_queue_mult = 0
-        raw = os.environ.get("INFLIGHT_GA_QUEUE_MULT")
+        raw = env_get("INFLIGHT_GA_QUEUE_MULT")
         if raw is not None and str(raw).strip() != "":
             try:
                 ga_queue_mult = int(raw)
@@ -3018,7 +3019,7 @@ class GearOptimizerApp:
             # into a deeper GA backlog (reduces starvation at the cost of VRAM).
             ram_mode = False
             try:
-                raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+                raw_env = env_get("INFLIGHT_RAM_MODE")
                 if raw_env is not None and str(raw_env).strip() != "":
                     ram_mode = truthy(raw_env)
                 else:
@@ -3037,7 +3038,7 @@ class GearOptimizerApp:
         # Power users can opt in to larger values by setting `GPU_SONG_SLOTS` explicitly.
         slots = min(int(slots), 256)
 
-        os.environ["GPU_SONG_SLOTS"] = str(int(slots))
+        os.environ["GPU_SONG_SLOTS"] = str(slots)
         try:
             logger.debug(
                 "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
@@ -3249,7 +3250,7 @@ class GearOptimizerApp:
                         fh.write(tb)
                 except Exception:
                     pass
-                if truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
+                if truthy(env_get("INFLIGHT_PRINT_TRACE", "0")):
                     try:
                         logger.error(tb)
                     except Exception:
@@ -3575,7 +3576,7 @@ class GearOptimizerApp:
     def _start_post_processor(self, total_tasks: int):
         from gear_optimizer.pipeline.post_processor import run_post_processor
 
-        post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
+        post_queue_size = safe_int(env_get("POST_PIPELINE_QUEUE", 0), 0)
         post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
         post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
         post_proc = multiprocessing.Process(
@@ -3650,7 +3651,7 @@ class GearOptimizerApp:
             gpu_executor = get_gpu_executor()
             gpu_executor.start()
             try:
-                init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
+                init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
             except Exception:
                 init_timeout = 30.0
             if not gpu_executor.wait_until_ready(timeout=init_timeout):
@@ -3703,7 +3704,7 @@ class GearOptimizerApp:
                     # drive multiple Vulkan devices from a single process.
                     secondary_workers = 0
                     try:
-                        secondary_workers = int(os.environ.get("GPU_EXECUTOR_SECONDARY_WORKERS", "0") or 0)
+                        secondary_workers = int(env_get("GPU_EXECUTOR_SECONDARY_WORKERS", "0") or 0)
                     except Exception:
                         secondary_workers = 0
                     secondary_workers = max(0, min(int(secondary_workers), int(effective_workers)))
@@ -3730,7 +3731,7 @@ class GearOptimizerApp:
                             secondary_ready = mp_ctx.Event()
                             secondary_status_q = mp_ctx.Queue()
                             visible_device = str(
-                                os.environ.get("GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE", "0") or ""
+                                env_get("GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE", "0") or ""
                             ).strip()
 
                             secondary_gpu_proc = mp_ctx.Process(
@@ -3747,7 +3748,7 @@ class GearOptimizerApp:
                             secondary_gpu_proc.start()
 
                             try:
-                                init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
+                                init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
                             except Exception:
                                 init_timeout = 30.0
                             if not secondary_ready.wait(timeout=max(0.0, float(init_timeout))):
@@ -4242,7 +4243,7 @@ class GearOptimizerApp:
             pass
 
         for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC", "LOOP_RESTART_WAIT_SEC"):
-            raw = os.environ.get(env_key)
+            raw = env_get(env_key)
             if raw is None or str(raw).strip() == "":
                 continue
             try:

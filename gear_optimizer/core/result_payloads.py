@@ -43,7 +43,7 @@ def build_error_payload(
     if extra:
         try:
             payload.update(dict(extra))
-        except Exception:
+        except (TypeError, ValueError):
             # Best-effort only; never fail while formatting an error payload.
             pass
     return payload  # type: ignore[return-value]

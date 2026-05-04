@@ -38,6 +38,7 @@ from ..core.team_buff import (
     normalize_team_buff_sequence,
     team_buff_query_values,
 )
+from ..core.parsing import env_int
 from ..core.types import PersistenceEntry
 from .database import (
     get_db_connection_with_timeout,
@@ -50,17 +51,7 @@ from .database import (
     update_song_counters,
 )
 
-
-def _int_env(name: str, default: int) -> int:
-    try:
-        raw = str(os.environ.get(name, str(default)) or "").strip()
-        v = int(raw) if raw else int(default)
-    except Exception:
-        v = int(default)
-    return max(1, int(v))
-
-
-_DB_MANAGER_EXECUTOR = ThreadPoolExecutor(max_workers=_int_env("DB_MANAGER_MAX_WORKERS", 1))
+_DB_MANAGER_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, env_int("DB_MANAGER_MAX_WORKERS", 1)))
 
 
 def _norm_leaderboard_key(v: object) -> str:

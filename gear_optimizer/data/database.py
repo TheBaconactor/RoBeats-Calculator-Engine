@@ -21,6 +21,7 @@ from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.fallback_monitor import warn_fallback
 from ..core.parsing import env_flag
+from ..core.utils import safe_int as _safe_int_for_db
 from ..core.team_buff import (
     canonicalize_team_buff,
     normalize_team_buff,
@@ -40,6 +41,7 @@ from .loadout_equivalence import (
     rotate_mini_groups_for_slot_display,
 )
 
+from gear_optimizer.core.parsing import env_get
 try:
     import orjson as _orjson
 except Exception:  # pragma: no cover - optional dependency
@@ -668,7 +670,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     # write bursts without immediate failure. This prevents spurious fallbacks
     # to the empty in-memory DB when the AsyncDbSaver is actively writing.
     try:
-        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
+        read_timeout = float(env_get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception:
         read_timeout = 0.2
 
@@ -1192,19 +1194,6 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
     out["ForceGreats"] = fg_out
     return out
 
-
-def _safe_int_for_db(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        return int(value)
-    except Exception:
-        try:
-            return int(float(value))
-        except Exception:
-            return int(default)
-
-
 def _force_payload_base_score(force_data: Any) -> int:
     if not isinstance(force_data, dict):
         return 0
@@ -1482,7 +1471,7 @@ def save_team_buff_loadouts_batch(
     timing = env_flag("DB_TIMING")
     timing_threshold_ms = 50.0
     try:
-        timing_threshold_ms = float(os.environ.get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
+        timing_threshold_ms = float(env_get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
     except Exception:
         timing_threshold_ms = 50.0
 
@@ -2378,7 +2367,7 @@ def get_best_loadouts(
 
     team_buff = normalize_team_buff(team_buff, default="T5")
     query_team_buffs = team_buff_query_values(team_buff, default=team_buff)
-    strict_seed_hash = str(os.environ.get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
+    strict_seed_hash = str(env_get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
         "1",
         "true",
         "yes",

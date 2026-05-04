@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from typing import Any
 
@@ -10,19 +9,20 @@ from cachetools import LRUCache
 from ....core.utils import timing_envelope_timing_context
 
 
-_FG_CHART_SCORER_CACHE_MAX = max(1, int(os.environ.get("FG_CHART_SCORER_CACHE_MAX", "64") or "64"))
+from gear_optimizer.core.parsing import env_get
+_FG_CHART_SCORER_CACHE_MAX = max(1, int(env_get("FG_CHART_SCORER_CACHE_MAX", "64") or "64"))
 _FG_CHART_SCORER_CACHE: LRUCache = LRUCache(maxsize=_FG_CHART_SCORER_CACHE_MAX)
 _FG_CHART_SCORER_LOCK = threading.Lock()
 
-_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX = max(1, int(os.environ.get("FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX", "64") or "64"))
+_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX = max(1, int(env_get("FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX", "64") or "64"))
 _FG_ANALYTICAL_BREAKPOINTS_CACHE: LRUCache = LRUCache(maxsize=_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX)
 _FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
 
-_FG_BREAKPOINT_GROUP_CACHE_MAX = max(1, int(os.environ.get("FG_BREAKPOINT_GROUP_CACHE_MAX", "64") or "64"))
+_FG_BREAKPOINT_GROUP_CACHE_MAX = max(1, int(env_get("FG_BREAKPOINT_GROUP_CACHE_MAX", "64") or "64"))
 _FG_BREAKPOINT_GROUPS_CACHE: LRUCache = LRUCache(maxsize=_FG_BREAKPOINT_GROUP_CACHE_MAX)
 _FG_BREAKPOINT_GROUPS_LOCK = threading.Lock()
 
-_FG_MAX_FP_MATRIX_CACHE_MAX = max(1, int(os.environ.get("FG_MAX_FP_MATRIX_CACHE_MAX", "64") or "64"))
+_FG_MAX_FP_MATRIX_CACHE_MAX = max(1, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX", "64") or "64"))
 _FG_MAX_FP_MATRIX_CACHE: LRUCache = LRUCache(maxsize=_FG_MAX_FP_MATRIX_CACHE_MAX)
 _FG_MAX_FP_MATRIX_LOCK = threading.Lock()
 

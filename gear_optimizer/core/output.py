@@ -93,46 +93,46 @@ def suppress_native_stdio(suppress: bool) -> tuple[int | None, int | None]:
 
     try:
         sys.stdout.flush()
-    except Exception:
+    except OSError:
         pass
     try:
         sys.stderr.flush()
-    except Exception:
+    except OSError:
         pass
 
     saved_out: int | None = None
     saved_err: int | None = None
     try:
         saved_out = os.dup(1)
-    except Exception:
+    except OSError:
         saved_out = None
     try:
         saved_err = os.dup(2)
-    except Exception:
+    except OSError:
         saved_err = None
 
     try:
         with open(os.devnull, "w") as devnull:
             try:
                 os.dup2(devnull.fileno(), 1)
-            except Exception:
+            except OSError:
                 pass
             try:
                 os.dup2(devnull.fileno(), 2)
-            except Exception:
+            except OSError:
                 pass
-    except Exception:
+    except OSError:
         # If we failed to redirect, close any saved fds so we don't leak.
         if saved_out is not None:
             try:
                 os.close(saved_out)
-            except Exception:
+            except OSError:
                 pass
             saved_out = None
         if saved_err is not None:
             try:
                 os.close(saved_err)
-            except Exception:
+            except OSError:
                 pass
             saved_err = None
 
@@ -147,28 +147,28 @@ def restore_native_stdio(saved: tuple[int | None, int | None] | None) -> None:
 
     try:
         sys.stdout.flush()
-    except Exception:
+    except OSError:
         pass
     try:
         sys.stderr.flush()
-    except Exception:
+    except OSError:
         pass
 
     if saved_out is not None:
         try:
             os.dup2(saved_out, 1)
-        except Exception:
+        except OSError:
             pass
         try:
             os.close(saved_out)
-        except Exception:
+        except OSError:
             pass
     if saved_err is not None:
         try:
             os.dup2(saved_err, 2)
-        except Exception:
+        except OSError:
             pass
         try:
             os.close(saved_err)
-        except Exception:
+        except OSError:
             pass

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import queue
 import threading
 import time
@@ -10,6 +9,7 @@ from typing import Any
 from gear_optimizer.core.parsing import env_flag
 
 
+from gear_optimizer.core.parsing import env_get
 def _is_repeat_ctx_dict(extra: Any) -> bool:
     return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
 
@@ -124,7 +124,7 @@ class _PostSender:
         # Default to unbounded backlog to avoid ever blocking the GPU-owner pipeline.
         backlog = 0
         try:
-            backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
+            backlog = int(env_get("POST_LOCAL_BACKLOG", backlog))
         except Exception:
             backlog = 0
         backlog = int(backlog)
@@ -159,7 +159,7 @@ class _PostSender:
         timing = env_flag("POST_TIMING")
         threshold_ms = 50.0
         try:
-            threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
+            threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
         except Exception:
             threshold_ms = 50.0
         while True:

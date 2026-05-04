@@ -3,7 +3,6 @@ import logging
 import queue
 import threading
 import time
-import os
 from typing import Optional
 
 import numpy as np
@@ -19,6 +18,7 @@ from gear_optimizer.data.database import (
     update_song_counters,
 )
 
+from gear_optimizer.core.parsing import env_get
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
 _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
@@ -77,7 +77,7 @@ def _async_db_strict() -> bool:
     When enabled, async DB failures should surface to the caller so the optimizer
     doesn't continue "successfully" while persistence is broken.
     """
-    raw = os.environ.get("METAFINDER_ASYNC_DB_STRICT")
+    raw = env_get("METAFINDER_ASYNC_DB_STRICT")
     if raw is not None:
         return truthy(raw)
     return env_flag("GPU_STRICT", "1")

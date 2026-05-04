@@ -7,23 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from gear_optimizer.core.parsing import env_flag
-from gear_optimizer.core.utils import safe_int
+from gear_optimizer.core.utils import ceil_div, safe_int
 
 
-def _truthy_env(name: str) -> bool:
-    return env_flag(name)
-
-
+from gear_optimizer.core.parsing import env_get
 def _env_override_present(name: str) -> bool:
-    raw = os.environ.get(name)
+    raw = env_get(name)
     return raw is not None and str(raw).strip() != ""
-
-
-def _ceil_div(n: int, d: int) -> int:
-    nn = int(n)
-    dd = max(1, int(d))
-    return int((nn + dd - 1) // dd)
-
 
 def _read_cfg_int(cfg_dict: dict | None, *, section: str, key: str, default: int = 0) -> int:
     if not isinstance(cfg_dict, dict):
@@ -87,7 +77,7 @@ def recommend_dual_process_inflight_thread_overrides(
     def _scaled(cfg_val: int, *, default: int, cap: int) -> int:
         val = safe_int(cfg_val, 0)
         if val > 0:
-            val = _ceil_div(int(val), int(n_instances))
+            val = ceil_div(int(val), max(1, int(n_instances)))
         else:
             val = int(default)
         val = max(1, min(int(val), int(cap), int(inflight_limit_i)))
@@ -118,7 +108,7 @@ def _apply_thread_overrides(thread_overrides: dict[str, int] | None) -> None:
         if _env_override_present(name):
             continue
         try:
-            os.environ[str(name).strip()] = str(int(value))
+            os.environ[str(name).strip()] = str(value)
         except Exception:
             continue
 
@@ -212,19 +202,19 @@ def _default_repo_root() -> Path:
 def _configure_worker_disk_artifacts(worker_index: int) -> None:
     suffix = f".w{int(worker_index)}"
 
-    trace_path = str(os.environ.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
+    trace_path = str(env_get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
     if trace_path:
         os.environ["GPU_EXECUTOR_TRACE_PATH"] = _suffix_path(trace_path, suffix=suffix)
 
-    heartbeat_path = str(os.environ.get("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
+    heartbeat_path = str(env_get("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
     if heartbeat_path:
         os.environ["GPU_EXECUTOR_HEARTBEAT_PATH"] = _suffix_path(heartbeat_path, suffix=suffix)
     else:
         repo_root = _default_repo_root()
         os.environ["GPU_EXECUTOR_HEARTBEAT_PATH"] = str(repo_root / "bin" / f"gpu_executor_heartbeat{suffix}.json")
 
-    if _truthy_env("INFLIGHT_STAGE_PROFILE"):
-        stage_path = str(os.environ.get("INFLIGHT_STAGE_PROFILE_PATH", "") or "").strip()
+    if env_flag("INFLIGHT_STAGE_PROFILE"):
+        stage_path = str(env_get("INFLIGHT_STAGE_PROFILE_PATH", "") or "").strip()
         if stage_path:
             os.environ["INFLIGHT_STAGE_PROFILE_PATH"] = _suffix_path(stage_path, suffix=suffix)
         else:
@@ -233,7 +223,7 @@ def _configure_worker_disk_artifacts(worker_index: int) -> None:
 
 
 def _configure_worker_vulkan_device(worker_index: int, *, instances: int) -> None:
-    raw = str(os.environ.get("INFLIGHT_VULKAN_VISIBLE_DEVICES", "") or "").strip()
+    raw = str(env_get("INFLIGHT_VULKAN_VISIBLE_DEVICES", "") or "").strip()
     if not raw:
         return
     parts = [p.strip() for p in raw.split(",")]

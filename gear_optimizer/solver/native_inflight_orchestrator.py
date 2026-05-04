@@ -32,6 +32,7 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
     materialize_candidate_names,
     materialize_entry_names,
 )
+from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
@@ -90,6 +91,7 @@ from gear_optimizer.solver.native_inflight_stages import (
     run_cpu_prewarm_for_song,
 )
 
+from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
@@ -132,7 +134,7 @@ def _read_inflight_event_wait_timeout_s() -> float:
     GPU owner thread between GA/FG stage transitions.
     """
     timeout_s = 0.05
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC")
+    raw = env_get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC")
     if raw is not None and str(raw).strip() != "":
         try:
             timeout_s = float(raw)
@@ -200,7 +202,7 @@ def _read_fg_static_prep_max_inflight(
                 limit = int(raw_cfg)
             except Exception:
                 limit = 0
-    raw_env = os.environ.get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
+    raw_env = env_get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
     if raw_env is not None and str(raw_env).strip() != "":
         try:
             limit = int(raw_env)
@@ -236,7 +238,7 @@ def _read_cpu_prewarm_lookahead(
                 lookahead = int(raw_cfg)
             except Exception:
                 lookahead = int(default)
-    raw_env = os.environ.get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
+    raw_env = env_get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
     if raw_env is not None and str(raw_env).strip() != "":
         try:
             lookahead = int(raw_env)
@@ -268,7 +270,7 @@ def run_native_inflight_song_pipeline(
 
     inflight_ram_mode = False
     try:
-        raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+        raw_env = env_get("INFLIGHT_RAM_MODE")
         if raw_env is not None and str(raw_env).strip() != "":
             inflight_ram_mode = _truthy(raw_env)
         elif cfg0 is not None:
@@ -342,7 +344,7 @@ def run_native_inflight_song_pipeline(
             ga_queue_mult = safe_int(cfg0.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
         except Exception:
             ga_queue_mult = 0
-    raw = os.environ.get("INFLIGHT_GA_QUEUE_MULT")
+    raw = env_get("INFLIGHT_GA_QUEUE_MULT")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_mult = int(raw)
@@ -362,7 +364,7 @@ def run_native_inflight_song_pipeline(
             prep_buffer_mult = safe_int(cfg0.get("IterationEngine", "InFlight_PrepBufferMult", fallback="0"), 0)
         except Exception:
             prep_buffer_mult = 0
-    raw = os.environ.get("INFLIGHT_PREP_BUFFER_MULT")
+    raw = env_get("INFLIGHT_PREP_BUFFER_MULT")
     if raw is not None and str(raw).strip() != "":
         try:
             prep_buffer_mult = int(raw)
@@ -386,13 +388,13 @@ def run_native_inflight_song_pipeline(
     except Exception:
         fg_aging_trigger_ms = 750.0
         fg_aging_hard_ms = 2500.0
-    raw = os.environ.get("INFLIGHT_FG_AGING_TRIGGER_MS")
+    raw = env_get("INFLIGHT_FG_AGING_TRIGGER_MS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_aging_trigger_ms = float(raw)
         except Exception:
             pass
-    raw = os.environ.get("INFLIGHT_FG_AGING_HARD_MS")
+    raw = env_get("INFLIGHT_FG_AGING_HARD_MS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_aging_hard_ms = float(raw)
@@ -425,9 +427,9 @@ def run_native_inflight_song_pipeline(
     except Exception as exc:
         fg_drain_at_end = False
         fg_drain_src = f"config_error({type(exc).__name__})"
-    raw_env = os.environ.get("INFLIGHT_FG_DRAIN_AT_END")
+    raw_env = env_get("INFLIGHT_FG_DRAIN_AT_END")
     if raw_env is None or str(raw_env).strip() == "":
-        raw_env = os.environ.get("FG_DRAIN_AT_END")
+        raw_env = env_get("FG_DRAIN_AT_END")
     if raw_env is not None and str(raw_env).strip() != "":
         fg_drain_at_end = _truthy(raw_env)
         fg_drain_src = f"env({raw_env})"
@@ -467,7 +469,7 @@ def run_native_inflight_song_pipeline(
             hold_slots_explicit = bool(cfg0.has_option("IterationEngine", "InFlight_FGHoldSlots"))
     except Exception:
         hold_slots_explicit = False
-    raw = os.environ.get("INFLIGHT_FG_HOLD_SLOTS")
+    raw = env_get("INFLIGHT_FG_HOLD_SLOTS")
     if raw is not None and str(raw).strip() != "":
         hold_slots_explicit = True
         inflight_fg_hold_slots = _truthy(raw)
@@ -512,7 +514,7 @@ def run_native_inflight_song_pipeline(
             )
     except Exception:
         pass
-    raw = os.environ.get("INFLIGHT_GA_DYNAMIC_QUEUE")
+    raw = env_get("INFLIGHT_GA_DYNAMIC_QUEUE")
     if raw is not None and str(raw).strip() != "":
         inflight_ga_dynamic_queue = _truthy(raw)
 
@@ -526,7 +528,7 @@ def run_native_inflight_song_pipeline(
             )
     except Exception:
         ga_queue_extra_free_on_slot_pressure = 1
-    raw = os.environ.get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_SLOT_PRESSURE")
+    raw = env_get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_SLOT_PRESSURE")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_extra_free_on_slot_pressure = int(raw)
@@ -542,7 +544,7 @@ def run_native_inflight_song_pipeline(
             )
     except Exception:
         ga_queue_pressure_window_s = 1.5
-    raw = os.environ.get("INFLIGHT_GA_SLOT_PRESSURE_WINDOW_SEC")
+    raw = env_get("INFLIGHT_GA_SLOT_PRESSURE_WINDOW_SEC")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_pressure_window_s = float(raw)
@@ -612,9 +614,9 @@ def run_native_inflight_song_pipeline(
     #
     # Keep this override opt-out: users can set `GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0` to disable.
     try:
-        if os.name == "nt" and os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
+        if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
             os.environ["GPU_ALLOW_SYSTEM_TIMER_OVERRIDE"] = "1"
-            if _truthy(os.environ.get("PERF_TIMING", "0")):
+            if _truthy(env_get("PERF_TIMING", "0")):
                 logger.debug(
                     "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
                     "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
@@ -634,7 +636,7 @@ def run_native_inflight_song_pipeline(
         # GPU readiness includes Taichi/Vulkan init plus the configured GA/FG warmups. On cold
         # Windows/Vulkan caches, that warmup can be minute-scale; do not let work queue behind an
         # owner that is not accepting requests yet.
-        init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
+        init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
     except Exception:
         init_timeout = 180.0
     if not gpu_executor.wait_until_ready(timeout=init_timeout):
@@ -656,8 +658,8 @@ def run_native_inflight_song_pipeline(
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
-    stage_profile_enabled = _truthy(os.environ.get("INFLIGHT_STAGE_PROFILE", "0"))
-    stage_profile_path = os.environ.get("INFLIGHT_STAGE_PROFILE_PATH")
+    stage_profile_enabled = _truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
+    stage_profile_path = env_get("INFLIGHT_STAGE_PROFILE_PATH")
     if stage_profile_enabled and not stage_profile_path:
         try:
             from gear_optimizer.core.constants import PATHS
@@ -668,8 +670,8 @@ def run_native_inflight_song_pipeline(
     stage_profiler = _InFlightStageProfiler(enabled=stage_profile_enabled, out_path=stage_profile_path)
 
     post_sender = _PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
-    fg_decision_debug = _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0"))
-    fg_submit_debug = _truthy(os.environ.get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
+    fg_decision_debug = _truthy(env_get("INFLIGHT_FG_DECISION_DEBUG", "0"))
+    fg_submit_debug = _truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
 
     # Progress UI "New" counter should reflect *session-best* improvements, not the stale DB snapshot
     # that in-flight tasks can start with (DB persistence is async, and many repeats can overlap).
@@ -839,14 +841,14 @@ def run_native_inflight_song_pipeline(
     # backlog so CPU-side decode/post-processing can't create GPU idle gaps.
     ga_inflight: deque[_NativeSong] = deque()
 
-    ga_seed = str(os.environ.get("GA_SEED") or "").strip()
+    ga_seed = str(env_get("GA_SEED") or "").strip()
     prep_workers = 0
     if cfg0 is not None:
         try:
             prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_PrepWorkers", fallback="0"), 0)
         except Exception:
             prep_workers = 0
-    raw = os.environ.get("INFLIGHT_PREP_WORKERS")
+    raw = env_get("INFLIGHT_PREP_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             prep_workers = int(raw)
@@ -871,7 +873,7 @@ def run_native_inflight_song_pipeline(
                 )
             except Exception:
                 cpu_prewarm_workers = 0
-        raw = os.environ.get("INFLIGHT_CPU_PREWARM_WORKERS")
+        raw = env_get("INFLIGHT_CPU_PREWARM_WORKERS")
         if raw is not None and str(raw).strip() != "":
             try:
                 cpu_prewarm_workers = int(raw)
@@ -896,7 +898,7 @@ def run_native_inflight_song_pipeline(
             decode_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DecodeWorkers", fallback="0"), 0)
         except Exception:
             decode_workers = 0
-    raw = os.environ.get("INFLIGHT_DECODE_WORKERS")
+    raw = env_get("INFLIGHT_DECODE_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             decode_workers = int(raw)
@@ -974,7 +976,7 @@ def run_native_inflight_song_pipeline(
             db_prefetch_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DBPrefetchWorkers", fallback="0"), 0)
         except Exception:
             db_prefetch_workers = 0
-    raw = os.environ.get("INFLIGHT_DB_PREFETCH_WORKERS")
+    raw = env_get("INFLIGHT_DB_PREFETCH_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             db_prefetch_workers = int(raw)
@@ -990,7 +992,7 @@ def run_native_inflight_song_pipeline(
     cpu_prewarm_submitted: set[str] = set()
 
     last_slot_block_t: float | None = None
-    ga_queue_debug = _truthy(os.environ.get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
+    ga_queue_debug = _truthy(env_get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
     last_ga_queue_limit_effective: int | None = None
     completion_event = threading.Event()
     completion_future_ids: set[int] = set()
@@ -1372,7 +1374,7 @@ def run_native_inflight_song_pipeline(
             prime_target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
         except Exception:
             prime_target = 0
-    raw = os.environ.get("INFLIGHT_PRIME_TARGET")
+    raw = env_get("INFLIGHT_PRIME_TARGET")
     if raw is not None and str(raw).strip() != "":
         try:
             prime_target = int(raw)
@@ -1565,19 +1567,19 @@ def run_native_inflight_song_pipeline(
         last_stage_emit = last_progress
         heartbeat_sec = 0.0
         try:
-            heartbeat_sec = float(os.environ.get("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
+            heartbeat_sec = float(env_get("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
         except Exception:
             heartbeat_sec = 0.0
 
         throughput_sec = 0.0
         try:
-            throughput_sec = float(os.environ.get("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
+            throughput_sec = float(env_get("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
         except Exception:
             throughput_sec = 0.0
 
         stage_emit_sec = 0.0
         try:
-            stage_emit_sec = float(os.environ.get("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
+            stage_emit_sec = float(env_get("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
         except Exception:
             stage_emit_sec = 0.0
 
@@ -1587,7 +1589,7 @@ def run_native_inflight_song_pipeline(
 
         profile_max_songs = 0
         try:
-            profile_max_songs = int(os.environ.get("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
+            profile_max_songs = int(env_get("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
         except Exception:
             profile_max_songs = 0
         profile_max_songs = max(0, int(profile_max_songs))
@@ -2777,7 +2779,7 @@ def run_native_inflight_song_pipeline(
                     no_active_work
                     and (pending_tasks or prepared or pending_fg or fg_futures or post_emit_pending)
                     and (time.monotonic() - last_stall_report) >= 10.0
-                    and _truthy(os.environ.get("INFLIGHT_STALL_DEBUG", "0"))
+                    and _truthy(env_get("INFLIGHT_STALL_DEBUG", "0"))
                 ):
                     last_stall_report = time.monotonic()
                     try:
@@ -2894,7 +2896,7 @@ def run_native_inflight_song_pipeline(
             stage_profiler.emit()
         except Exception:
             pass
-        shutdown_debug = _truthy(os.environ.get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
+        shutdown_debug = _truthy(env_get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] fg_executor.shutdown")
@@ -3124,7 +3126,7 @@ def _run_fg_job_sync(
             build_details,
             use_gpu=True,
             fg_search_radius=song.fg_search_radius,
-            perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
+            perf_timing=_truthy(env_get("PERF_TIMING", "0")),
             gpu_client=gpu_client,
             ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
             ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
@@ -3218,15 +3220,6 @@ def _run_fg_job_sync(
 
 
 def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
-    def _safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value) if value is not None else int(default)
-        except Exception:
-            try:
-                return int(float(value))
-            except Exception:
-                return int(default)
-
     entries: list[dict] = []
     build_details = getattr(song, "fg_build_details", None)
     if not callable(build_details):
@@ -3253,8 +3246,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         if not isinstance(v, dict):
             continue
         is_ga = bool(v.get("_is_ga"))
-        base_score = _safe_int(v.get("base_score", v.get("score", 0)), 0)
-        fg_score = _safe_int(v.get("fg_score", 0), 0)
+        base_score = safe_int(v.get("base_score", v.get("score", 0)), 0)
+        fg_score = safe_int(v.get("fg_score", 0), 0)
         gear_names = _compact_items(v.get("gear") or [])
         mini_names = _compact_items(v.get("minis") or [])
         data = v.get("data") or {}
@@ -3275,9 +3268,9 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 base_entry = None
 
         if isinstance(base_entry, dict):
-            entry_base_score = _safe_int(
+            entry_base_score = safe_int(
                 base_entry.get("base_score"),
-                _safe_int(base_entry.get("score", 0), base_score),
+                safe_int(base_entry.get("score", 0), base_score),
             )
             if entry_base_score > 0:
                 base_score = entry_base_score
@@ -3300,6 +3293,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         try:
             if isinstance(data, dict) and has_valid_fg_config(data):
                 force_obj = dict(data)
+                materialize_stats_from_payload(force_obj, mutate_payload=True)
         except Exception:
             force_obj = None
         entries.append(

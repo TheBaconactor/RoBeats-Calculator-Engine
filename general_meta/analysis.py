@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
+from gear_optimizer.core.utils import safe_int as _safe_int
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 
@@ -100,16 +101,6 @@ def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
     max_count = max(variants.values())
     tied = [variant for variant, count in variants.items() if count == max_count]
     return min(tied)
-
-
-def _safe_int(value: object, default: int = 0) -> int:
-    try:
-        if isinstance(value, bool):
-            return default
-        return int(value or default)
-    except Exception:
-        return default
-
 
 def _row_mode(row: dict) -> str:
     return "fg" if _safe_int(row.get("fg_score")) > _safe_int(row.get("score")) else "meta"

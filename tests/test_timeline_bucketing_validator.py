@@ -6,6 +6,7 @@ import pytest
 from gear_optimizer.solver.fever_timeline import SongTimelineGrid
 
 
+from gear_optimizer.core.parsing import env_get
 def _make_calc_song(*, name: str, n_notes: int, duration: float) -> dict:
     ts = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float64)
     return {
@@ -48,7 +49,7 @@ def test_timeline_bucketing_matches_unbucketed(mode: str) -> None:
     ref_arrays = _make_ref_arrays_with_plateaus()
     calc_song = _make_calc_song(name="S", n_notes=500, duration=60.0)
 
-    env_prev = os.environ.get("TIMELINE_BUCKET_MODE")
+    env_prev = env_get("TIMELINE_BUCKET_MODE")
     try:
         os.environ["TIMELINE_BUCKET_MODE"] = "off"
         base = SongTimelineGrid(calc_song, ref_arrays)

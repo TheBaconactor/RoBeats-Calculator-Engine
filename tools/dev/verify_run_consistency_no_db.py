@@ -19,19 +19,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_int as _safe_int
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
-
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v if v is not None else default)
-    except Exception:
-        try:
-            return int(float(v))
-        except Exception:
-            return int(default)
-
 
 def _fg_score_from_force(force: Any) -> int:
     if not isinstance(force, dict) or not force:

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import secrets
 import time
@@ -33,6 +32,7 @@ from .real_bench import (
 )
 
 
+from gear_optimizer.core.parsing import env_get
 def _atomic_write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -394,7 +394,7 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
 
-    db_path_str = str(args.db_path or "").strip() or (os.environ.get("EVOLUTION_DB_PATH") or "").strip()
+    db_path_str = str(args.db_path or "").strip() or (env_get("EVOLUTION_DB_PATH") or "").strip()
     if not db_path_str:
         raise SystemExit("Missing --db-path and EVOLUTION_DB_PATH is not set.")
     db_path = Path(db_path_str).expanduser().resolve()

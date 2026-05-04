@@ -91,8 +91,8 @@ def _manifest_key(
             _TIMING_ENVELOPE_MODE,
             str(ref_sig_hex),
             str(abs_song_path).casefold(),
-            str(int(mtime_ns)),
-            str(int(file_size)),
+            str(mtime_ns),
+            str(file_size),
         )
     )
     return hashlib.blake2b(raw.encode("utf-8"), digest_size=16).hexdigest()
@@ -228,4 +228,3 @@ __all__ = [
     "build_manifest_plan",
     "manifest_path",
 ]
-

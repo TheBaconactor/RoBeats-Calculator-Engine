@@ -19,6 +19,7 @@ import traceback
 from pathlib import Path
 
 
+from gear_optimizer.core.parsing import env_get
 def _worker(i: int) -> None:
     # Ensure spawned children can import the repo package when this script is run directly.
     try:
@@ -56,7 +57,7 @@ def _worker(i: int) -> None:
 
 def main() -> None:
     ctx = mp.get_context("spawn")
-    daemon = str(os.environ.get("TAICHI_INIT_DAEMON", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+    daemon = str(env_get("TAICHI_INIT_DAEMON", "") or "").strip().lower() in {"1", "true", "yes", "on"}
     procs: list[mp.Process] = []
     for i in range(2):
         p = ctx.Process(target=_worker, args=(i,))

@@ -23,26 +23,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from gear_optimizer.core.utils import safe_int as _safe_int
+from gear_optimizer.data.migrations import _table_exists
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import get_evolution_db_path
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (str(table_name),),
-    ).fetchone()
-    return bool(row)
-
-
-def _safe_int(value, default: int = 0) -> int:
-    try:
-        return int(value if value is not None else default)
-    except Exception:
-        return int(default)
-
 
 @dataclass
 class RepairCounts:
@@ -160,4 +147,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

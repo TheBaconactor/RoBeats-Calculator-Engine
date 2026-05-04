@@ -5,6 +5,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 
+from gear_optimizer.core.parsing import env_get
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import (
@@ -13,9 +14,11 @@ from gear_optimizer.data.database import (
     get_db_connection,
     get_evolution_db_path,
 )
+from gear_optimizer.data.migrations import _table_exists
+from gear_optimizer.core.utils import safe_int as _safe_int
 
 DEFAULT_SONG_NAME = "Ice Angel (Easy) by Yooh"
-DEFAULT_REFERENCE_TIER = str(os.environ.get("DB_CONSISTENCY_REFERENCE_TIER", "T5") or "T5").strip().upper() or "T5"
+DEFAULT_REFERENCE_TIER = str(env_get("DB_CONSISTENCY_REFERENCE_TIER", "T5") or "T5").strip().upper() or "T5"
 
 
 @dataclass
@@ -27,23 +30,8 @@ class TierStats:
     fg_table_max: int
     fg_row_count: int
 
-
-def _safe_int(value) -> int:
-    try:
-        return int(value or 0)
-    except Exception:
-        return 0
-
-
 def _fmt(value: int) -> str:
     return f"{int(value):,}"
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (str(table_name),)
-    ).fetchone()
-    return bool(row)
 
 
 def _fetch_song_record(conn: sqlite3.Connection, song_name: str):

@@ -9,16 +9,10 @@ import os
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from .parsing import truthy
+from .env_config import ENV
+from .parsing import env_flag
 
 _F = TypeVar("_F", bound=Callable[..., object])
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.environ.get(name)
-    if val is None:
-        return default
-    return truthy(val, extra_truthy=("y",))
 
 
 def _default_numba_cache_dir() -> str | None:
@@ -33,7 +27,7 @@ def _default_numba_cache_dir() -> str | None:
         cache_dir = repo_root / "bin" / "numba_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return str(cache_dir)
-    except Exception:
+    except OSError:
         return None
 
 
@@ -54,7 +48,7 @@ jit = _fallback_jit
 
 # Numba reads some config from env at import time; set our cache dir early so
 # disk caching (when enabled) doesn't leak into user profile dirs.
-_NUMBA_DISK_CACHE_ENABLED = _env_bool("NUMBA_DISK_CACHE", True)
+_NUMBA_DISK_CACHE_ENABLED = env_flag("NUMBA_DISK_CACHE", "1")
 if _NUMBA_DISK_CACHE_ENABLED and "NUMBA_CACHE_DIR" not in os.environ:
     _cache_dir = _default_numba_cache_dir()
     if _cache_dir:
@@ -69,10 +63,15 @@ else:
     try:
         import numba as _numba
 
-        _effective_cache_dir = str(os.environ.get("NUMBA_CACHE_DIR", "") or "").strip()
+        _effective_cache_dir = str(ENV.numba_cache_dir or "").strip()
+        if not _effective_cache_dir:
+            try:
+                _effective_cache_dir = str(os.environ["NUMBA_CACHE_DIR"]).strip()
+            except KeyError:
+                _effective_cache_dir = ""
         if _NUMBA_DISK_CACHE_ENABLED and _effective_cache_dir:
             _numba.config.CACHE_DIR = _effective_cache_dir
-    except Exception:
+    except (AttributeError, OSError, ValueError):
         pass
 
     def _numba_jit_wrapper(nopython: bool = True, cache: bool = True) -> Callable[[_F], _F]:
@@ -83,10 +82,15 @@ else:
         is redirected to `bin/numba_cache/` unless `NUMBA_CACHE_DIR` is already
         set. Disable globally via `NUMBA_DISK_CACHE=0`.
         """
-        disk_cache_enabled = _env_bool("NUMBA_DISK_CACHE", True)
+        disk_cache_enabled = env_flag("NUMBA_DISK_CACHE", "1")
         use_cache = bool(cache) and disk_cache_enabled
         if use_cache:
-            cache_dir = str(os.environ.get("NUMBA_CACHE_DIR", "") or "").strip()
+            cache_dir = str(ENV.numba_cache_dir or "").strip()
+            if not cache_dir:
+                try:
+                    cache_dir = str(os.environ["NUMBA_CACHE_DIR"]).strip()
+                except KeyError:
+                    cache_dir = ""
             if not cache_dir:
                 cache_dir = _default_numba_cache_dir() or ""
                 if cache_dir:
@@ -98,7 +102,7 @@ else:
                     import numba as _numba
 
                     _numba.config.CACHE_DIR = str(cache_dir)
-                except Exception:
+                except (AttributeError, OSError, ValueError):
                     pass
         return _numba_jit(nopython=nopython, cache=use_cache)
 

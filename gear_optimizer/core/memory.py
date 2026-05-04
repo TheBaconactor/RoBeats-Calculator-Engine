@@ -27,6 +27,7 @@ except ImportError:
     psutil = None
 
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
+from .env_config import ENV
 from .parsing import env_flag
 
 # Global watchdog state
@@ -62,7 +63,7 @@ def log_memory_usage(label=""):
         rss_gb = process.memory_info().rss / (1024**3)
         percent = process.memory_percent()
         print(f"[MEMORY] {label}: {rss_gb:.2f} GB ({percent:.1f}%)")
-    except Exception:
+    except (OSError, ValueError, AttributeError):
         logging.debug("[MEMORY] Failed to read memory usage", exc_info=True)
 
 
@@ -95,7 +96,7 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
     def _rss_with_compressed(proc):
         try:
             info = proc.memory_full_info() if include_compressed else proc.memory_info()
-        except Exception:
+        except (OSError, AttributeError, ValueError):
             return 0
         rss_val = getattr(info, "rss", 0) or 0
         if include_compressed:
@@ -106,7 +107,7 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
     try:
         for child in root_process.children(recursive=True):
             total += _rss_with_compressed(child)
-    except Exception:
+    except (OSError, AttributeError, ValueError):
         logging.debug("[MemoryGuard] Failed to read child process memory", exc_info=True)
     return total
 
@@ -189,7 +190,7 @@ def detect_total_physical_memory():
             value = int(func() or 0)
             if value > 0:
                 return value
-        except Exception:
+        except (OSError, TypeError, ValueError):
             return 0
         return 0
 
@@ -327,7 +328,7 @@ def load_memory_guard_resume_queue(expected_context=None):
     try:
         with open(MEMORY_GUARD_RESUME_FILE, "r", encoding="utf-8") as fh:
             payload = json.load(fh)
-    except Exception as exc:
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
         logging.warning(f"[MemoryGuard] Failed to load resume queue: {exc}")
         return []
 
@@ -371,12 +372,12 @@ class MemoryGuardResumeTracker:
         # Defaults preserve existing behavior (write after every completed song).
         # If configured, a crash may re-run up to N-1 songs since the last write.
         try:
-            self._write_every_n = max(1, int(os.environ.get("MEMORY_GUARD_WRITE_EVERY_N", "1") or "1"))
-        except Exception:
+            self._write_every_n = max(1, int(ENV.memory_guard_write_every_n))
+        except (TypeError, ValueError):
             self._write_every_n = 1
         try:
-            self._write_every_sec = float(os.environ.get("MEMORY_GUARD_WRITE_EVERY_SEC", "0") or "0")
-        except Exception:
+            self._write_every_sec = float(ENV.memory_guard_write_every_sec)
+        except (TypeError, ValueError):
             self._write_every_sec = 0.0
 
     def prime(self, queue, context):
@@ -449,17 +450,17 @@ class MemoryGuardResumeTracker:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
             tmp_fd = None
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logging.warning(f"[MemoryGuard] Failed to write resume queue tmp file: {exc}")
             if tmp_fd is not None:
                 try:
                     os.close(tmp_fd)
-                except Exception:
+                except OSError:
                     pass
             if tmp_path:
                 try:
                     os.remove(tmp_path)
-                except Exception:
+                except OSError:
                     pass
             return
 
@@ -482,7 +483,7 @@ class MemoryGuardResumeTracker:
             logging.warning(f"[MemoryGuard] Failed to persist resume queue (continuing): {last_exc}")
             try:
                 os.remove(tmp_path)
-            except Exception:
+            except OSError:
                 pass
             return
 
@@ -512,7 +513,7 @@ def restart_process_for_memory_guard():
     print(message)
     try:
         logging.warning(message)
-    except Exception:
+    except OSError:
         pass
     sys.stdout.flush()
     try:

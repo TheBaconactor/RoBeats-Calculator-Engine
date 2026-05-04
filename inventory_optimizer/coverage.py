@@ -67,10 +67,6 @@ class _CoverageSong:
     candidate: CandidateSpec
 
 
-def _truthy_env(name: str) -> bool:
-    return env_flag(name)
-
-
 def _compute_optionality_stats_from_pairs(
     *,
     gear_names: List[str],
@@ -3389,7 +3385,7 @@ def run_inventory_meta_coverage(
         stats["secondary_element_filter"] = str(secondary_element or "")
         if seed_variants_diag is not None:
             stats["seed_inventory_variants"] = seed_variants_diag
-        if _truthy_env("INVENTORY_META_OPTIONALITY"):
+        if env_flag("INVENTORY_META_OPTIONALITY"):
             try:
                 if use_multi_candidates:
                     if best_multi_specs is not None and best_chosen_candidate_idx is not None:

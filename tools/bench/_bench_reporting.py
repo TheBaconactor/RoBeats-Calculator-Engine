@@ -5,12 +5,14 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES
+
+from gear_optimizer.core.parsing import env_get
 BENCH_JSON_PREFIX = "BENCH_JSON:"
-TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 def env_flag(key: str, default: str = "0") -> bool:
-    return str(os.environ.get(str(key), default) or "").strip().lower() in TRUTHY_ENV_VALUES
+    return str(env_get(str(key), default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 def clear_taichi_kernel_profiler(*, enabled: bool) -> None:
@@ -127,7 +129,7 @@ def add_kernel_profiler_kernel_entries(
 def snapshot_env(keys: Iterable[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for key in keys:
-        value = os.environ.get(str(key), None)
+        value = env_get(str(key), None)
         if value is None:
             continue
         out[str(key)] = str(value)

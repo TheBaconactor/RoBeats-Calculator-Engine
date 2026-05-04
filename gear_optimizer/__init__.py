@@ -1,9 +1,7 @@
 """
 RoBeats MetaFinder optimizer package.
 
-For in-code ownership guidance (to reduce duplicated implementations), inspect:
-    - `gear_optimizer.core.PLACEMENT_HINTS`
-    - `gear_optimizer.core.find_hints("query")`
+For in-code ownership guidance, inspect `docs/NAVIGATION.md`.
 """
 
 __version__ = "2.0.0"

@@ -143,20 +143,6 @@ def test_surface_key_reducer_accepts_structured_exact_keys() -> None:
     assert result.pairs.tolist() == [[0, 0], [1, 1]]
 
 
-def test_base_stat_pairs_from_signature_rows_is_stable_and_unique() -> None:
-    sig_rows = {
-        "a": {"base_stats": {"Fever Time": 3, "Fever Fill Rate": 9}},
-        "b": {"base_stats": {"Fever Time": 3, "Fever Fill Rate": 9}},
-        "c": {"base_stats": {"Fever Time": 6, "Fever Fill Rate": 0}},
-        "ignored": {},
-    }
-
-    assert gpu_dispatch._base_stat_pairs_from_signature_rows(["c", "a", "b", "missing"], sig_rows) == [
-        (3, 9),
-        (6, 0),
-    ]
-
-
 def test_gpu_surface_pair_reduction_runs_after_gpu_max_fp_before_stage1() -> None:
     body = inspect.getsource(fg_api.solve_force_greats_finder_gpu_tasks)
     cfg_len_pos = body.index("fg_compute_cfg_total_len_kernel(")

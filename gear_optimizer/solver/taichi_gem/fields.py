@@ -8,7 +8,6 @@ This module handles:
 - bind_fields() to inject live field objects into kernels module
 """
 
-import os
 import logging
 import sys
 
@@ -19,6 +18,7 @@ from gear_optimizer.core.parsing import env_flag, env_int
 from .runtime import is_initialized, init_taichi
 
 # Platform detection for Metal-specific fields
+from gear_optimizer.core.parsing import env_get
 IS_METAL = sys.platform == "darwin"
 logger = logging.getLogger(__name__)
 
@@ -495,8 +495,8 @@ def _maybe_configure_ga_run_buffers_from_env() -> None:
     if _fields_allocated:
         return
 
-    raw_runs = str(os.environ.get("GPU_NATIVE_GA_MAX_RUNS", "") or "").strip()
-    raw_genomes = str(os.environ.get("GPU_NATIVE_GA_MAX_GENOMES", "") or "").strip()
+    raw_runs = str(env_get("GPU_NATIVE_GA_MAX_RUNS", "") or "").strip()
+    raw_genomes = str(env_get("GPU_NATIVE_GA_MAX_GENOMES", "") or "").strip()
     if not raw_runs and not raw_genomes:
         return
 

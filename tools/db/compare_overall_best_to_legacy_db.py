@@ -29,6 +29,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gear_optimizer.core.team_buff import normalize_team_buff
+from gear_optimizer.data.migrations import _table_exists
+
 
 def _infer_difficulty_from_song_name(song_name: str) -> str:
     s = str(song_name or "")
@@ -44,18 +47,6 @@ def _song_file_from_name(project_root: Path, song_name: str) -> Path | None:
     if fp.exists():
         return fp
     return None
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (str(table),),
-    ).fetchone()
-    return row is not None
-
-
-def _norm_team_buff(team_buff: str) -> str:
-    return str(team_buff or "").strip().upper() or "T5"
 
 
 @dataclass(frozen=True)
@@ -456,7 +447,7 @@ def _compare_pair(current_score: int, legacy_score: int, *, eps: int) -> str:
 
 
 def _songs_in_db(conn: sqlite3.Connection, *, team_buff: str) -> set[str]:
-    team_buff = _norm_team_buff(team_buff)
+    team_buff = normalize_team_buff(team_buff)
     out: set[str] = set()
     for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
         if not _table_exists(conn, table):
@@ -537,7 +528,7 @@ def main() -> int:
     if not legacy_db.exists():
         raise SystemExit(f"Legacy DB not found: {legacy_db}")
 
-    team_buff = _norm_team_buff(args.team_buff)
+    team_buff = normalize_team_buff(args.team_buff)
     eps = max(0, int(args.eps))
     example_limit = max(0, int(args.examples))
     replay_current_base = bool(args.replay_current_base)

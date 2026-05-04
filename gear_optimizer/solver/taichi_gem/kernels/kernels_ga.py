@@ -14,9 +14,10 @@ These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
 
-import os
 import sys
 import taichi as ti
+
+from gear_optimizer.core.parsing import env_float
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
@@ -29,15 +30,7 @@ from .ga_eval.write_results import (
     _write_run_best_payload_row,
 )
 
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, str(default)))
-    except Exception:
-        return float(default)
-
-
-_GA_DIVERSE_PARENT_B_RATE = max(0.0, min(1.0, _env_float("GPU_GA_DIVERSE_PARENT_B_RATE", 0.125)))
+_GA_DIVERSE_PARENT_B_RATE = max(0.0, min(1.0, env_float("GPU_GA_DIVERSE_PARENT_B_RATE", 0.125)))
 _GA_DIVERSE_PARENT_B_RATE_FP = int(_GA_DIVERSE_PARENT_B_RATE * 4294967295.0)
 
 

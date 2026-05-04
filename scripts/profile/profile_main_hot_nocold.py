@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 # Enable profiling features (no algorithm changes).
+from gear_optimizer.core.parsing import env_get
 os.environ.setdefault("PERF_TIMING", "1")
 os.environ.setdefault("GPU_PROFILER", "1")
 os.environ.setdefault("GPU_SYNC_FOR_TIMING", "1")
@@ -92,8 +93,8 @@ if __name__ == "__main__":
     pid = os.getpid()
     # typeperf writes the output file when it exits; run it for a fixed window
     # (slightly longer than the expected hot run) so we always get CSVs.
-    sample_interval = int(os.environ.get("TYPEPERF_SAMPLE_INTERVAL_SEC", "1"))
-    max_samples = int(os.environ.get("TYPEPERF_MAX_SAMPLES", "60"))
+    sample_interval = int(env_get("TYPEPERF_SAMPLE_INTERVAL_SEC", "1"))
+    max_samples = int(env_get("TYPEPERF_MAX_SAMPLES", "60"))
     gpu_tp = _typeperf_start(
         rf"\GPU Engine(pid_{pid}*)\Utilization Percentage",
         gpu_csv,

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.constants import PATHS
 from ..core.fallback_monitor import warn_fallback
-from ..core.utils import get_selected_element
+from ..core.utils import get_selected_element, safe_int
 from .csv_parser import load_csv_db
 
 
@@ -226,22 +226,6 @@ def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str
             out.append(g)
     return out
 
-
-def _stat_int(stats: Any, key: str) -> int:
-    try:
-        if isinstance(stats, dict):
-            return int(stats.get(key, 0) or 0)
-    except Exception:
-        pass
-    return 0
-
-
-def _elem_val(stats: Any, elem: str) -> int:
-    if not elem:
-        return 0
-    return _stat_int(stats, elem)
-
-
 def effective_mini_signature(
     mini_stats: dict,
     primary_color: str,
@@ -256,15 +240,15 @@ def effective_mini_signature(
     - Only elemental stats that can matter for this song context:
       primary, secondary, selected (duplicates allowed; caller may canonicalize)
     """
-    pp = _stat_int(mini_stats, "Perfect Points")
-    cm = _stat_int(mini_stats, "Combo Multiplier")
-    fm = _stat_int(mini_stats, "Fever Multiplier")
-    ft = _stat_int(mini_stats, "Fever Time")
-    ff = _stat_int(mini_stats, "Fever Fill Rate")
+    pp = safe_int((mini_stats or {}).get("Perfect Points", 0), 0)
+    cm = safe_int((mini_stats or {}).get("Combo Multiplier", 0), 0)
+    fm = safe_int((mini_stats or {}).get("Fever Multiplier", 0), 0)
+    ft = safe_int((mini_stats or {}).get("Fever Time", 0), 0)
+    ff = safe_int((mini_stats or {}).get("Fever Fill Rate", 0), 0)
 
-    p_val = _elem_val(mini_stats, primary_color)
-    s_val = _elem_val(mini_stats, secondary_color)
-    sel_val = _elem_val(mini_stats, selected_color)
+    p_val = safe_int((mini_stats or {}).get(primary_color, 0), 0) if primary_color else 0
+    s_val = safe_int((mini_stats or {}).get(secondary_color, 0), 0) if secondary_color else 0
+    sel_val = safe_int((mini_stats or {}).get(selected_color, 0), 0) if selected_color else 0
 
     return (pp, cm, fm, ft, ff, p_val, s_val, sel_val)
 

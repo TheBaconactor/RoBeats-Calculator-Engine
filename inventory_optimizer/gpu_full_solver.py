@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -6,31 +5,12 @@ from typing import Optional, Tuple
 
 import taichi as ti
 
-from gear_optimizer.core.parsing import env_flag
+from gear_optimizer.core.parsing import env_flag, env_int
 
 from .taichi_profile import maybe_print_kernel_profile
 
 _LAST_STATE_SIG: Optional[Tuple[int, int, int, int, int]] = None
 _LAST_STATE: Optional["_GpuFullState"] = None
-
-
-def _truthy_env(name: str) -> bool:
-    return env_flag(name)
-
-
-def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
-    raw = str(os.environ.get(name, "") or "").strip()
-    if not raw:
-        return int(default)
-    try:
-        value = int(raw)
-    except ValueError:
-        return int(default)
-    if value < min_value:
-        return int(min_value)
-    if value > max_value:
-        return int(max_value)
-    return int(value)
 
 
 @dataclass
@@ -2309,8 +2289,8 @@ def _solve_coverage_gpu_full_alns_islands(
     if (max(1, int(s_count - 1).bit_length()) + p_bits) > 32:
         raise ValueError(f"ALNS islands packing needs s_bits+p_bits<=32 (S={s_count}, K={k_count}).")
 
-    cost_weight_base = _int_env("GPU_FULL_COST_WEIGHT_BASE", 2048, 1, 65535)
-    cost_weight_step = _int_env("GPU_FULL_COST_WEIGHT_STEP", 512, 0, 65535)
+    cost_weight_base = max(1, min(env_int("GPU_FULL_COST_WEIGHT_BASE", 2048), 65535))
+    cost_weight_step = max(0, min(env_int("GPU_FULL_COST_WEIGHT_STEP", 512), 65535))
 
     def _repair_pass(seed_u: int) -> None:
         _greedy_fill_steps_islands(
@@ -2480,10 +2460,10 @@ def _solve_coverage_gpu_full_alns_islands(
     # - GPU_FULL_ALNS_EPSILON (percent; default 5 => 0.05)
     # - GPU_FULL_ALNS_BEST_BONUS (tenths; default 25 => 2.5)
     # - GPU_FULL_ALNS_POS_ONLY (0/1; default 1)
-    alns_eta = float(_int_env("GPU_FULL_ALNS_ETA", 20, 1, 1000)) / 100.0
-    alns_epsilon = float(_int_env("GPU_FULL_ALNS_EPSILON", 5, 0, 100)) / 100.0
-    alns_best_bonus = float(_int_env("GPU_FULL_ALNS_BEST_BONUS", 25, 0, 10_000)) / 10.0
-    alns_pos_only = bool(_int_env("GPU_FULL_ALNS_POS_ONLY", 1, 0, 1))
+    alns_eta = float(max(1, min(env_int("GPU_FULL_ALNS_ETA", 20), 1000))) / 100.0
+    alns_epsilon = float(max(0, min(env_int("GPU_FULL_ALNS_EPSILON", 5), 100))) / 100.0
+    alns_best_bonus = float(max(0, min(env_int("GPU_FULL_ALNS_BEST_BONUS", 25), 10_000))) / 10.0
+    alns_pos_only = bool(max(0, min(env_int("GPU_FULL_ALNS_POS_ONLY", 1), 1)))
     arm_w = np.ones((int(islands), len(arms)), dtype=np.float64)
     arm_pulls = np.zeros((int(islands),), dtype=np.int64)
 
@@ -2998,7 +2978,7 @@ def solve_coverage_gpu_full(
     vid_gid.from_numpy(np.asarray(vid_gid_np, dtype=np.int32).reshape(v_count))
     vid_is_wild.from_numpy(np.asarray(vid_is_wild_np, dtype=np.int32).reshape(v_count))
 
-    repack_serial = _truthy_env("GPU_FULL_REPACK_SERIAL")
+    repack_serial = env_flag("GPU_FULL_REPACK_SERIAL")
     try:
         is_metal = ti.cfg.arch == ti.metal
     except Exception:
@@ -3019,7 +2999,7 @@ def solve_coverage_gpu_full(
             f"GPU_FULL key packing needs {key_shift + 32} bits (s_count={s_count}, k_count={k_count}); exceeds u64."
         )
     use_packed32_select = bool(key_shift <= 32)
-    if not is_metal and _truthy_env("GPU_FULL_FORCE_U64_SELECT"):
+    if not is_metal and env_flag("GPU_FULL_FORCE_U64_SELECT"):
         use_packed32_select = False
     if is_metal:
         use_packed32_select = True
@@ -3028,8 +3008,8 @@ def solve_coverage_gpu_full(
             f"GPU_FULL metal packing needs {key_shift} bits (s_count={s_count}, k_count={k_count}); exceeds u32."
         )
 
-    cost_weight_base = _int_env("GPU_FULL_COST_WEIGHT_BASE", 2048, 1, 65535)
-    cost_weight_step = _int_env("GPU_FULL_COST_WEIGHT_STEP", 512, 0, 65535)
+    cost_weight_base = max(1, min(env_int("GPU_FULL_COST_WEIGHT_BASE", 2048), 65535))
+    cost_weight_step = max(0, min(env_int("GPU_FULL_COST_WEIGHT_STEP", 512), 65535))
 
     def select_best_candidate(remaining: int, salt: int) -> Optional[Tuple[int, int, int]]:
         remaining_i = int(remaining)
@@ -3114,7 +3094,7 @@ def solve_coverage_gpu_full(
 
     def greedy_fill() -> int:
         if use_packed32_select:
-            batch_enabled = _truthy_env("GPU_FULL_ENABLE_BATCH_GREEDY")
+            batch_enabled = env_flag("GPU_FULL_ENABLE_BATCH_GREEDY")
             if batch_enabled:
                 salt_base = 0
                 while True:

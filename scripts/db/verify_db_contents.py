@@ -4,6 +4,7 @@ import sqlite3
 import pandas as pd
 
 # Add project root to path
+from gear_optimizer.core.parsing import env_get
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import get_db_connection
@@ -12,7 +13,7 @@ SONG_NAME = "Feeling Alright (Hard) by Rutra"
 
 conn = get_db_connection()
 try:
-    print(f"Inspecting DB: {os.environ.get('EVOLUTION_DB_PATH', 'Default')}")
+    print(f"Inspecting DB: {env_get('EVOLUTION_DB_PATH', 'Default')}")
 
     # Check count
     count = conn.execute("SELECT count(*) FROM team_buff_loadouts WHERE song_name = ?", (SONG_NAME,)).fetchone()[0]

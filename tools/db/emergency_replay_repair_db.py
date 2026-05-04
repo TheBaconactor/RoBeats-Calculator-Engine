@@ -20,6 +20,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_int as _safe_int
+from gear_optimizer.data.migrations import _table_exists
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -79,19 +82,6 @@ def _build_song_header_index(root: Path) -> dict[str, Path]:
     _SONG_HEADER_INDEX_CACHE[root] = out
     return out
 
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        return int(value)
-    except Exception:
-        try:
-            return int(float(value))
-        except Exception:
-            return int(default)
-
-
 def _forced_counts_from_payload(force_payload: dict[str, Any]) -> list[int]:
     raw = force_payload.get("forced_counts")
     if isinstance(raw, list):
@@ -134,11 +124,6 @@ def _load_json(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return {}
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
-    return row is not None
 
 
 def _score_fixed_stats(stats: dict[str, Any], calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> int:

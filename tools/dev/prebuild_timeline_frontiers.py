@@ -8,9 +8,9 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from gear_optimizer.core.constants import DIFFICULTIES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DIFFICULTIES = ("Easy", "Normal", "Hard")
 
 
 def _ensure_repo_on_path() -> None:

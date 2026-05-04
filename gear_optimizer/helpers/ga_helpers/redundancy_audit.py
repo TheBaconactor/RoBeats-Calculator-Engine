@@ -10,10 +10,11 @@ from typing import Any
 import numpy as np
 
 from ...core.constants import PATHS
-from ...core.utils import stats_signature
+from ...core.utils import safe_int as _safe_int, stats_signature
 from ...solver.base_stats import build_stats_dict
 from ..song_helpers.ga_entry_utils import canonicalize_genome_ids
 
+from gear_optimizer.core.parsing import env_get
 _DEFAULT_AUDIT_PATH = os.path.join(PATHS.script_dir, "artifacts", "ga_redundancy_audit.jsonl")
 _CONFIG_SIG_KEYS = (
     "user_ft",
@@ -23,14 +24,6 @@ _CONFIG_SIG_KEYS = (
     "user_fm",
     "static_elem_input",
 )
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return int(default)
-
 
 def _config_signature(cfg_data: Mapping[str, Any] | None) -> tuple[int, ...]:
     cfg = cfg_data or {}
@@ -193,7 +186,7 @@ def write_ga_redundancy_audit_record(
     *,
     out_path: str | None = None,
 ) -> str:
-    target = str(out_path or os.environ.get("GA_REDUNDANCY_AUDIT_PATH") or _DEFAULT_AUDIT_PATH)
+    target = str(out_path or env_get("GA_REDUNDANCY_AUDIT_PATH") or _DEFAULT_AUDIT_PATH)
     parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)

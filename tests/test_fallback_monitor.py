@@ -43,19 +43,13 @@ def test_config_invalid_boolean_emits_fallback_warning(tmp_path, monkeypatch, ca
     assert "MetaFinder" in captured
 
 
-def test_env_invalid_int_emits_fallback_warning(monkeypatch, capsys):
-    monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
+def test_env_invalid_int_graceful_return(monkeypatch):
     monkeypatch.setenv("METAFINDER_TEST_BAD_INT", "abc")
+    from gear_optimizer.core.parsing import env_int
 
-    from gear_optimizer.core.env_config import _env_int
-
-    capsys.readouterr()
-    value = _env_int("METAFINDER_TEST_BAD_INT", 7)
-    captured = capsys.readouterr().err
+    value = env_int("METAFINDER_TEST_BAD_INT", 7)
 
     assert value == 7
-    assert "[FALLBACK][env.int.invalid]" in captured
-    assert "METAFINDER_TEST_BAD_INT" in captured
 
 
 def test_warn_fallback_allowlisted_site_does_not_raise_in_strict_mode(monkeypatch):

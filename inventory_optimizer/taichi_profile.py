@@ -3,10 +3,6 @@ from __future__ import annotations
 from gear_optimizer.core.parsing import env_flag
 
 
-def _truthy_env(name: str) -> bool:
-    return env_flag(name)
-
-
 def maybe_print_kernel_profile(*, label: str, enabled: bool) -> None:
     """
     Print and clear Taichi kernel profiler info when TAICHI_KERNEL_PROFILER=1.
@@ -15,7 +11,7 @@ def maybe_print_kernel_profile(*, label: str, enabled: bool) -> None:
     """
     if not enabled:
         return
-    if not _truthy_env("TAICHI_KERNEL_PROFILER"):
+    if not env_flag("TAICHI_KERNEL_PROFILER"):
         return
 
     try:

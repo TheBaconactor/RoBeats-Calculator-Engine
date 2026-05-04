@@ -1,10 +1,10 @@
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
-    _estimate_fg_task_threads,
-    _estimate_fused_payload_threads,
-    _split_items_by_work_budget,
+from gear_optimizer.helpers.song_helpers.force_greats.work_budget import fused_payload_cfg_len_per_pair
+from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
+    estimate_fg_task_threads as _estimate_fg_task_threads,
+    estimate_fused_payload_threads as _estimate_fused_payload_threads,
+    split_items_by_work_budget as _split_items_by_work_budget,
 )
 from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
-from gear_optimizer.helpers.song_helpers.force_greats.work_budget import fused_payload_cfg_len_per_pair
 
 import numpy as np
 

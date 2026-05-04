@@ -16,6 +16,7 @@ from gear_optimizer.ui.progress_ipc import SharedProgress
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
 
+from gear_optimizer.core.parsing import env_get
 def _truthy(value: Any) -> bool:
     return truthy(value)
 
@@ -133,8 +134,8 @@ def _render_progress_line(
     spinner_s = _color(spinner, "36")
     bar_s = _color(bar, "96")
     pct_s = _color(f"{pct:5.1f}%", "92" if pct >= 99.9 else "36")
-    new_s = _color(str(int(new_records)), "92")
-    failed_s = _color(str(int(failed)), "91")
+    new_s = _color(str(new_records), "92")
+    failed_s = _color(str(failed), "91")
     line = (
         f"{spinner_s} [{bar_s}] {int(completed)}/{int(total)} {pct_s} "
         f"| ETA {eta_str} | Elapsed {elapsed_str} | New: {new_s} | Failed: {failed_s}{tail}"
@@ -228,7 +229,7 @@ def run_tui_process(
     stream = getattr(sys, "__stdout__", None) or sys.stdout
     ui = _UiState(epoch=-1, start_perf=time.perf_counter())
     progress = SharedProgress.attach(progress_shm_name)
-    hotkeys_enabled = _truthy(os.environ.get("METAFINDER_HOTKEYS", "1"))
+    hotkeys_enabled = _truthy(env_get("METAFINDER_HOTKEYS", "1"))
 
     # Windows-only hotkeys.
     msvcrt = None

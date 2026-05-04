@@ -63,9 +63,13 @@ DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score
 FG_CANDIDATE_LIMIT = 51  # Default FG funnel size (retention cap minimum)
 
+# --- SHARED ENUMS / TOKENS ---
+DIFFICULTIES = ("Easy", "Normal", "Hard")
+
 # --- FORCE GREATS OPTIMIZATION ---
 # FT/FF search radius around loadout centers (default ±5)
 FG_SEARCH_RADIUS = int(getattr(ENV, "fg_search_radius", 5) or 5)
+FG_PLATEAU_REP_STRIDE = 64
 
 # --- MEMORY MANAGEMENT CONSTANTS ---
 DEFAULT_MEMORY_GUARD_PERCENT = 50.0

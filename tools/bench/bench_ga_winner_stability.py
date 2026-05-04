@@ -17,25 +17,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
 
+
+from gear_optimizer.core.parsing import env_get
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-
-def _safe_int(value: object, default: int = 0) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except Exception:
-        return int(default)
-
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except Exception:
-        return float(default)
-
 
 def _summary_stats(values: list[float]) -> dict[str, float]:
     if not values:
@@ -295,7 +283,7 @@ def _resolve_db_source_path(explicit_db_path: str | None = None) -> Path | None:
     if explicit_db_path:
         path = Path(str(explicit_db_path))
         return path if path.exists() else None
-    env_path = os.environ.get("EVOLUTION_DB_PATH")
+    env_path = env_get("EVOLUTION_DB_PATH")
     if env_path:
         path = Path(str(env_path))
         return path if path.exists() else None
@@ -347,7 +335,7 @@ def _cleanup_temp_root(temp_root: Path) -> None:
 def _start_post_processor(total_tasks: int) -> tuple[Any, Any]:
     from gear_optimizer.pipeline.post_processor import run_post_processor
 
-    post_queue_size = _safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
+    post_queue_size = _safe_int(env_get("POST_PIPELINE_QUEUE", 0), 0)
     post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
     post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
     post_proc = multiprocessing.Process(
@@ -508,9 +496,9 @@ def run_single_seed_direct(
         repeat_ctx,
     )
 
-    old_audit = os.environ.get("GA_REDUNDANCY_AUDIT")
-    old_audit_path = os.environ.get("GA_REDUNDANCY_AUDIT_PATH")
-    old_db_path = os.environ.get("EVOLUTION_DB_PATH")
+    old_audit = env_get("GA_REDUNDANCY_AUDIT")
+    old_audit_path = env_get("GA_REDUNDANCY_AUDIT_PATH")
+    old_db_path = env_get("EVOLUTION_DB_PATH")
     os.environ["GA_REDUNDANCY_AUDIT"] = "1"
     os.environ["GA_REDUNDANCY_AUDIT_PATH"] = str(audit_path)
     os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)
@@ -606,9 +594,9 @@ def run_single_seed_inflight(
         repeat_ctx,
     )
 
-    old_audit = os.environ.get("GA_REDUNDANCY_AUDIT")
-    old_audit_path = os.environ.get("GA_REDUNDANCY_AUDIT_PATH")
-    old_db_path = os.environ.get("EVOLUTION_DB_PATH")
+    old_audit = env_get("GA_REDUNDANCY_AUDIT")
+    old_audit_path = env_get("GA_REDUNDANCY_AUDIT_PATH")
+    old_db_path = env_get("EVOLUTION_DB_PATH")
     os.environ["GA_REDUNDANCY_AUDIT"] = "1"
     os.environ["GA_REDUNDANCY_AUDIT_PATH"] = str(audit_path)
     os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)

@@ -3,13 +3,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ....core.constants import GEM_SCALE_FEVER
+from ....core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER
 from ....core.utils import get_selected_element
 from ....solver.scoring import _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
-
-FG_PLATEAU_REP_STRIDE = 64
 
 
 def apply_gems_to_base_fast(
@@ -334,6 +332,7 @@ def apply_signature_result_to_entry(*, entry: dict[str, Any], sig_result: dict[s
 
     force_obj = sig_result.get("force")
     if isinstance(force_obj, dict):
+        materialize_stats_from_payload(force_obj, mutate_payload=True)
         entry["force"] = force_obj
     entry.pop("_fg_raw", None)
 
