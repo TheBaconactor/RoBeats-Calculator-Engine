@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 
 import numpy as np
@@ -7,8 +8,10 @@ import numpy as np
 from gear_optimizer.pipeline.song_processor import get_base_calc_song
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
+    TimelineFrontierCacheBuildResult,
     build_timeline_frontier_cache_for_path,
     cleanup_timeline_frontier_cache_temp_files,
+    run_timeline_frontier_cache_prebuild,
 )
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -176,3 +179,134 @@ def test_cleanup_stale_tmp_cache_files(tmp_path: Path) -> None:
     assert removed == 1
     assert not (cache_dir / "a.tmp.npz").exists()
     assert (cache_dir / "b.npz").exists()
+
+
+def _prebuild_cfg(*, executor: str = "thread") -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser()
+    cfg.add_section("IterationEngine")
+    cfg.set("IterationEngine", "TimelineFrontierCachePrebuild", "true")
+    cfg.set("IterationEngine", "TimelineFrontierCachePrebuildScope", "queue")
+    cfg.set("IterationEngine", "TimelineFrontierCachePrebuildWorkers", "1")
+    cfg.set("IterationEngine", "TimelineFrontierCachePrebuildExecutor", str(executor))
+    return cfg
+
+
+def _write_min_song(path: Path, *, extra_tail: str = "") -> None:
+    payload = [
+        "Song Name\tUnit Test Song",
+        "Difficulty\tEasy",
+        "Primary Color\tRush",
+        "Secondary Color\tFlow",
+        "Last Note Time\t0.4",
+        "Long Notes\t0",
+        "Song Data",
+        "0.000 0 0 1",
+        "0.200 0 0 1",
+        "0.400 0 0 1",
+    ]
+    if extra_tail:
+        payload.append(str(extra_tail))
+    path.write_text("\n".join(payload), encoding="utf-8")
+
+
+def _ref_arrays() -> dict[str, np.ndarray]:
+    return {
+        "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
+    }
+
+
+def test_prebuild_manifest_skips_worker_build_on_warm_cache(tmp_path: Path, monkeypatch) -> None:
+    cache_dir = tmp_path / "timeline_frontier_cache"
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    song_path = tmp_path / "unit_song.txt"
+    _write_min_song(song_path)
+
+    cfg = _prebuild_cfg(executor="thread")
+    queue = [(str(song_path), "Unit Test Song", "Easy")]
+    first = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue,
+        ref_arrays=_ref_arrays(),
+        data_root=tmp_path,
+    )
+    assert int(first.total) == 1
+    assert int(first.completed) == 1
+
+    def _raise_build(*args, **kwargs):
+        raise AssertionError("worker build path should be skipped by manifest on warm cache")
+
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timeline_frontier_cache_prebuild.build_timeline_frontier_cache_for_path",
+        _raise_build,
+    )
+    second = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue,
+        ref_arrays=_ref_arrays(),
+        data_root=tmp_path,
+    )
+    assert int(second.total) == 1
+    assert int(second.completed) == 1
+    assert int(second.disk) >= 1
+    assert int(second.built) == 0
+
+
+def test_prebuild_manifest_invalidates_when_song_changes(tmp_path: Path, monkeypatch) -> None:
+    cache_dir = tmp_path / "timeline_frontier_cache"
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    song_path = tmp_path / "unit_song.txt"
+    _write_min_song(song_path)
+
+    cfg = _prebuild_cfg(executor="thread")
+    queue = [(str(song_path), "Unit Test Song", "Easy")]
+    first = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue,
+        ref_arrays=_ref_arrays(),
+        data_root=tmp_path,
+    )
+    assert int(first.total) == 1
+    assert int(first.completed) == 1
+
+    _write_min_song(song_path, extra_tail="#mtime-bump")
+
+    calls: list[str] = []
+    existing = list(cache_dir.glob("*.npz"))
+    cache_file = str(existing[0]) if existing else str(cache_dir / "dummy.npz")
+    if not existing:
+        Path(cache_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(cache_file).write_bytes(b"dummy")
+
+    def _fake_build(song_path_text: str, ref_arrays: dict, *, skip_cached: bool = True):
+        calls.append(str(song_path_text))
+        return TimelineFrontierCacheBuildResult(
+            path=str(song_path_text),
+            song="Unit Test Song",
+            source="disk",
+            ms=0.1,
+            timeline_ms=0.0,
+            notes=3,
+            long_notes=0,
+            frontier_pool_used=0,
+            cache_file=str(cache_file),
+            skipped=True,
+        )
+
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timeline_frontier_cache_prebuild.build_timeline_frontier_cache_for_path",
+        _fake_build,
+    )
+    second = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue,
+        ref_arrays=_ref_arrays(),
+        data_root=tmp_path,
+    )
+    assert int(second.total) == 1
+    assert int(second.completed) == 1
+    assert len(calls) == 1

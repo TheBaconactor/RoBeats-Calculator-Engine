@@ -311,3 +311,41 @@ Verification:
 - temp-cache manual first pass: `python tools/dev/prebuild_timeline_frontiers.py --difficulty Easy --limit 1 --workers 1` -> `built`, about `463 ms` timeline
 - temp-cache manual second pass: same command -> `disk`, `0.0 ms` timeline build/load and about `0.5 ms` total song check
 - `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 45 passed
+
+## Startup Manifest Fast-Hit (Warm Cache)
+
+Warm startup still had deterministic host work that does not affect correctness:
+
+- parse song file into `calc_song`
+- apply timing-envelope metadata/streams
+- then discover that exact frontier payload already exists on disk
+
+For large warm pools this repeated parse path costs CPU time even though no frontier build is needed.
+
+Implemented:
+
+- added a persistent startup manifest under `bin/timeline_frontier_cache/manifest_v1.json`
+- manifest key includes:
+  - frontier cache version
+  - timing-envelope mode
+  - FT/FF ref-axis signatures
+  - absolute song path
+  - song file `mtime_ns` and `size`
+- startup prebuild now performs a fast manifest pass first:
+  - manifest hit + existing cache file => skip worker parse/build entirely
+  - manifest miss => retain existing worker path (still exact, still skip-safe)
+- prebuild then writes successful worker results back into the manifest for future runs
+
+Safety:
+
+- exactness is unchanged; this is startup scheduling only
+- stale manifest entries self-heal because key includes file identity and cache version
+- worker path remains authoritative for misses and version transitions
+
+Measured with queue scope over 80 songs (thread executor, same process):
+
+- cold run: `44,045.97 ms` (`built=80`)
+- warm run with manifest: `5.48 ms` (`disk=80`)
+- warm run after deleting manifest only: `85.76 ms` (`disk=80`)
+
+So manifest fast-hit removed most warm startup overhead that was previously spent on deterministic parse/envelope checks.

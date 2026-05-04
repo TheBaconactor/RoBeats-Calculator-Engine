@@ -13,6 +13,10 @@ from typing import Iterable
 from gear_optimizer.core.constants import PATHS
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
+from gear_optimizer.solver.timeline_frontier_cache_manifest import (
+    apply_manifest_results,
+    build_manifest_plan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +79,7 @@ class TimelineFrontierCachePrebuilder:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self.summary = TimelineFrontierCachePrebuildSummary(total=len(self.song_paths))
+        self.completed_results: list[TimelineFrontierCacheBuildResult] = []
 
     def start(self) -> None:
         if not self.settings.enabled or not self.song_paths:
@@ -145,6 +150,7 @@ class TimelineFrontierCachePrebuilder:
         if executor is None:
             self.summary = TimelineFrontierCachePrebuildSummary(total=0)
             return self.summary
+        self.completed_results = []
         t0 = time.perf_counter()
         source_counts: Counter[str] = Counter()
         failures = 0
@@ -173,6 +179,7 @@ class TimelineFrontierCachePrebuilder:
                     logger.warning("[TimelineCache] Failed to prebuild %s: %s", path, exc)
                     continue
                 completed += 1
+                self.completed_results.append(result)
                 source_counts[result.source] += 1
                 if completed == 1 or completed % 25 == 0:
                     logger.info(
@@ -451,14 +458,74 @@ def run_timeline_frontier_cache_prebuild(
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
 ) -> TimelineFrontierCachePrebuildSummary:
+    t0 = time.perf_counter()
     settings, paths = _timeline_frontier_prebuild_paths(cfg=cfg, song_queue=song_queue, data_root=data_root)
     if not settings.enabled or not paths:
         return TimelineFrontierCachePrebuildSummary(total=0)
+
+    manifest_plan = build_manifest_plan(paths, ref_arrays)
+    missing_paths = list(manifest_plan.missing_paths)
+    manifest_hits = int(manifest_plan.hit_count)
+    if manifest_hits > 0:
+        logger.info(
+            "[TimelineCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
+            manifest_hits,
+            int(manifest_plan.total_paths),
+        )
+
     removed_tmp = cleanup_timeline_frontier_cache_temp_files()
     if int(removed_tmp) > 0:
         logger.info("[TimelineCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
-    prebuilder = TimelineFrontierCachePrebuilder(settings=settings, song_paths=paths, ref_arrays=ref_arrays)
-    return prebuilder.run_to_completion()
+
+    if not missing_paths:
+        elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
+        emit_profile_event(
+            component="timeline_cache",
+            event="prebuild_manifest_only",
+            metrics={
+                "completed": int(manifest_hits),
+                "total": int(manifest_plan.total_paths),
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return TimelineFrontierCachePrebuildSummary(
+            total=int(manifest_plan.total_paths),
+            completed=int(manifest_hits),
+            failures=0,
+            built=0,
+            disk=int(manifest_hits),
+            memory=0,
+            elapsed_ms=elapsed_ms,
+        )
+
+    prebuilder = TimelineFrontierCachePrebuilder(settings=settings, song_paths=missing_paths, ref_arrays=ref_arrays)
+    run_summary = prebuilder.run_to_completion()
+    apply_manifest_results(plan=manifest_plan, results=prebuilder.completed_results)
+    elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
+    combined = TimelineFrontierCachePrebuildSummary(
+        total=int(manifest_plan.total_paths),
+        completed=int(manifest_hits + run_summary.completed),
+        failures=int(run_summary.failures),
+        built=int(run_summary.built),
+        disk=int(manifest_hits + run_summary.disk),
+        memory=int(run_summary.memory),
+        elapsed_ms=elapsed_ms,
+    )
+    emit_profile_event(
+        component="timeline_cache",
+        event="prebuild_with_manifest",
+        metrics={
+            "manifest_hits": int(manifest_hits),
+            "completed": int(combined.completed),
+            "total": int(combined.total),
+            "failures": int(combined.failures),
+            "built": int(combined.built),
+            "disk": int(combined.disk),
+            "memory": int(combined.memory),
+            "elapsed_ms": elapsed_ms,
+        },
+    )
+    return combined
 
 
 def start_timeline_frontier_cache_prebuild(
@@ -473,6 +540,10 @@ def start_timeline_frontier_cache_prebuild(
         return None
     if not paths:
         return None
-    prebuilder = TimelineFrontierCachePrebuilder(settings=settings, song_paths=paths, ref_arrays=ref_arrays)
+    manifest_plan = build_manifest_plan(paths, ref_arrays)
+    missing_paths = list(manifest_plan.missing_paths)
+    if not missing_paths:
+        return None
+    prebuilder = TimelineFrontierCachePrebuilder(settings=settings, song_paths=missing_paths, ref_arrays=ref_arrays)
     prebuilder.start()
     return prebuilder
