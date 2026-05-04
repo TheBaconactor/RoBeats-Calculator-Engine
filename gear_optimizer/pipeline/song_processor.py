@@ -72,8 +72,13 @@ from ..helpers.song_helpers import (
 )
 from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
-from ..helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
-from ..helpers.song_helpers.item_utils import names_list
+from ..helpers.song_helpers.payload_compaction import (
+    compact_fg_variants,
+    compact_ga_candidates,
+    compact_item_names,
+    compact_loadout_entries,
+    compact_prev_record,
+)
 
 # Global warn-once instance
 WARN_ONCE = WarnOnce()
@@ -953,84 +958,6 @@ def _build_and_persist(
     buf_content = ""
 
     if ctx.defer_post and outer.best_data:
-
-        def _compact_items(items):
-            return names_list(items)
-
-        def _compact_fg_variants(variants):
-            out = []
-            for variant in variants or []:
-                if not isinstance(variant, dict):
-                    continue
-                out.append(
-                    {
-                        "score": variant.get("score", 0),
-                        "fg_score": variant.get("fg_score", 0),
-                        "gear": _compact_items(variant.get("gear")),
-                        "minis": _compact_items(variant.get("minis")),
-                        "data": variant.get("data") or {},
-                    }
-                )
-            return out
-
-        def _compact_ga_candidates(candidates):
-            out = []
-            for candidate in candidates or []:
-                if not isinstance(candidate, dict):
-                    continue
-                gear_names, mini_names = materialize_candidate_names(candidate, mutate=False)
-                out.append(
-                    {
-                        "Score": candidate.get("Score", 0),
-                        "BaseScore": candidate.get("BaseScore", candidate.get("Score", 0)),
-                        "Gear": list(gear_names),
-                        "Minis": list(mini_names),
-                        "Data": candidate.get("Data") or {},
-                        "_fg_priority": candidate.get("_fg_priority", 0),
-                    }
-                )
-            return out
-
-        def _compact_loadout_entries(entries):
-            if entries is None:
-                return None
-            out = {}
-            for key, value in entries.items():
-                if not isinstance(value, dict):
-                    continue
-                gear_names, mini_names = materialize_entry_names(value, mutate=False)
-                out[str(key)] = {
-                    "score": value.get("score", 0),
-                    "base_score": value.get("base_score", value.get("score", 0)),
-                    "fg_score": value.get("fg_score", 0),
-                    "gear": list(gear_names),
-                    "minis": list(mini_names),
-                    "details": value.get("details") or {},
-                    "force": value.get("force"),
-                }
-            return out
-
-        def _compact_prev_record(record):
-            if not isinstance(record, dict):
-                return None
-            out = dict(record)
-            out["gear"] = _compact_items(record.get("gear"))
-            out["minis"] = _compact_items(record.get("minis"))
-            loadout = out.get("loadout")
-            if isinstance(loadout, (list, tuple)):
-                out["loadout"] = [str(item) if item is not None else "" for item in loadout]
-            force_obj = out.get("force")
-            if isinstance(force_obj, dict):
-                force_copy = dict(force_obj)
-                force_gear = force_copy.get("gear")
-                if isinstance(force_gear, (list, tuple)):
-                    force_copy["gear"] = [str(item) if item is not None else "" for item in force_gear]
-                force_minis = force_copy.get("minis")
-                if isinstance(force_minis, (list, tuple)):
-                    force_copy["minis"] = [str(item) if item is not None else "" for item in force_minis]
-                out["force"] = force_copy
-            return out
-
         if capture_log_payload:
             buf_content = buf.getvalue() if buf else ""
 
@@ -1063,16 +990,16 @@ def _build_and_persist(
                 "ref_arrays": ctx.ref_arrays,
                 "calc_song": ctx.calc_song,
                 "best_data": outer.best_data,
-                "best_gear": _compact_items(outer.best_gear),
-                "best_minis": _compact_items(outer.best_minis),
-                "current_gear": _compact_items(ctx.current_gear_list),
-                "current_minis": _compact_items(ctx.current_mini_list),
+                "best_gear": compact_item_names(outer.best_gear),
+                "best_minis": compact_item_names(outer.best_minis),
+                "current_gear": compact_item_names(ctx.current_gear_list),
+                "current_minis": compact_item_names(ctx.current_mini_list),
                 "enable_gear": bool(ctx.enable_gear),
                 "enable_mini": bool(ctx.enable_mini),
-                "fg_variants": _compact_fg_variants(fg.fg_variants),
-                "ga_candidates": _compact_ga_candidates(outer.ga_candidates),
-                "loadout_entries": _compact_loadout_entries(fg.loadout_entries),
-                "prev_record": _compact_prev_record(ctx.prev_record),
+                "fg_variants": compact_fg_variants(fg.fg_variants),
+                "ga_candidates": compact_ga_candidates(outer.ga_candidates),
+                "loadout_entries": compact_loadout_entries(fg.loadout_entries),
+                "prev_record": compact_prev_record(ctx.prev_record),
                 "attempt_lifetime": ctx.attempt_lifetime,
                 "prev_attempts_first": ctx.prev_attempts_first,
                 "db_best_score": ctx.db_best_score,

@@ -1,3 +1,7 @@
+from ...core.utils import get_selected_element
+from .fg_config import has_valid_fg_config
+
+
 def print_results(
     found_song_name,
     best_data,
@@ -99,25 +103,6 @@ def print_results(
 
     if fg_variants:
 
-        def _has_nonzero_fg_config(entry: dict) -> bool:
-            try:
-                data = entry.get("data", {}) or {}
-                fg_meta = data.get("ForceGreats") or {}
-                if not isinstance(fg_meta, dict):
-                    return False
-                config = fg_meta.get("config") or {}
-                if not isinstance(config, dict) or not config:
-                    return False
-                total = 0
-                for v in config.values():
-                    try:
-                        total += int(v)
-                    except Exception:
-                        continue
-                return total > 0
-            except Exception:
-                return False
-
         # "Best FG Score Found" should reflect the best FG-scored result available for printing.
         #
         # Important: `fg_variants` can include DB-cached FG results (source="db") as well as
@@ -127,7 +112,7 @@ def print_results(
         for v in fg_variants or []:
             if not isinstance(v, dict):
                 continue
-            if not _has_nonzero_fg_config(v):
+            if not has_valid_fg_config(v):
                 continue
             candidates.append(v)
         if candidates:
@@ -328,6 +313,3 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
             final_score_int = 0
 
     print(f"\nTotal Score: {final_score_int}")
-
-
-from ...core.utils import get_selected_element

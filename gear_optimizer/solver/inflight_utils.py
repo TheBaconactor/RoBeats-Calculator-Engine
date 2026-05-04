@@ -16,6 +16,7 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.core.parsing import truthy
+from gear_optimizer.helpers.song_helpers.payload_compaction import compact_item_names, compact_prev_record
 
 
 def _truthy(v: Any) -> bool:
@@ -138,34 +139,11 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
 
 
 def _compact_items(items: list) -> list[str]:
-    out: list[str] = []
-    for it in items or []:
-        if isinstance(it, dict):
-            name = it.get("Name", "")
-        else:
-            name = str(it) if it else ""
-        if name:
-            out.append(name)
-    return out
+    return compact_item_names(items, drop_empty=True)
 
 
 def _compact_prev_record(record: Optional[dict]) -> Optional[dict]:
-    if not isinstance(record, dict):
-        return None
-    out = dict(record)
-    out["gear"] = _compact_items(record.get("gear"))
-    out["minis"] = _compact_items(record.get("minis"))
-    if isinstance(out.get("loadout"), (list, tuple)):
-        out["loadout"] = [str(x) if x is not None else "" for x in out.get("loadout")]
-    force_obj = out.get("force")
-    if isinstance(force_obj, dict):
-        force_copy = dict(force_obj)
-        if isinstance(force_copy.get("gear"), (list, tuple)):
-            force_copy["gear"] = [str(x) if x is not None else "" for x in force_copy.get("gear")]
-        if isinstance(force_copy.get("minis"), (list, tuple)):
-            force_copy["minis"] = [str(x) if x is not None else "" for x in force_copy.get("minis")]
-        out["force"] = force_copy
-    return out
+    return compact_prev_record(record, drop_empty_item_names=True)
 
 
 def _summarize_db_context(

@@ -235,7 +235,7 @@ _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per s
 _CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(os.environ.get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
 _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CEILING_FRONTIER_PAYLOAD_CACHE_MAX = max(
-    1, int(os.environ.get("CEILING_FRONTIER_PAYLOAD_CACHE_MAX", "2") or "2")
+    1, int(os.environ.get("CEILING_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8")
 )
 _ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _ceiling_payload_cache_lock = threading.RLock()
@@ -283,6 +283,128 @@ def _frontier_disk_cache_dir() -> Path:
 def _frontier_disk_cache_path(cache_key: tuple) -> Path:
     digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
     return _frontier_disk_cache_dir() / f"{digest}.npz"
+
+
+def _group_payload_from_cache_arrays(
+    *,
+    group_starts: np.ndarray,
+    group_ends: np.ndarray,
+    group_base_t_ms: np.ndarray,
+    group_low_ms: np.ndarray,
+    group_high_ms: np.ndarray,
+    note_group_idx: np.ndarray,
+    group_n: int,
+    group_count: int,
+    expected_n: int | None = None,
+) -> dict | None:
+    try:
+        n = int(group_n)
+        gcount = int(group_count)
+    except Exception:
+        return None
+    if n < 0 or gcount < 0:
+        return None
+    if expected_n is not None and int(expected_n) != int(n):
+        return None
+    starts = np.ascontiguousarray(np.asarray(group_starts, dtype=np.int32).reshape(-1))
+    ends = np.ascontiguousarray(np.asarray(group_ends, dtype=np.int32).reshape(-1))
+    base_t = np.ascontiguousarray(np.asarray(group_base_t_ms, dtype=np.int32).reshape(-1))
+    low = np.ascontiguousarray(np.asarray(group_low_ms, dtype=np.int32).reshape(-1))
+    high = np.ascontiguousarray(np.asarray(group_high_ms, dtype=np.int32).reshape(-1))
+    idx = np.ascontiguousarray(np.asarray(note_group_idx, dtype=np.int32).reshape(-1))
+    if int(idx.shape[0]) != int(n):
+        return None
+    if int(starts.shape[0]) != int(gcount):
+        return None
+    if int(ends.shape[0]) != int(gcount):
+        return None
+    if int(base_t.shape[0]) != int(gcount):
+        return None
+    if int(low.shape[0]) != int(gcount):
+        return None
+    if int(high.shape[0]) != int(gcount):
+        return None
+    if int(n) > 0 and int(gcount) <= 0:
+        return None
+    return {
+        "n": int(n),
+        "group_count": int(gcount),
+        "note_group_idx": idx,
+        "group_starts": starts,
+        "group_ends": ends,
+        "group_base_t_ms": base_t,
+        "group_low_ms": low,
+        "group_high_ms": high,
+    }
+
+
+def _group_payload_from_npz(data: object, *, expected_n: int | None = None) -> dict | None:
+    keys = (
+        "group_starts",
+        "group_ends",
+        "group_base_t_ms",
+        "group_low_ms",
+        "group_high_ms",
+        "note_group_idx",
+        "group_n",
+        "group_count",
+    )
+    try:
+        if not all(k in data for k in keys):
+            return None
+        return _group_payload_from_cache_arrays(
+            group_starts=np.asarray(data["group_starts"], dtype=np.int32),
+            group_ends=np.asarray(data["group_ends"], dtype=np.int32),
+            group_base_t_ms=np.asarray(data["group_base_t_ms"], dtype=np.int32),
+            group_low_ms=np.asarray(data["group_low_ms"], dtype=np.int32),
+            group_high_ms=np.asarray(data["group_high_ms"], dtype=np.int32),
+            note_group_idx=np.asarray(data["note_group_idx"], dtype=np.int32),
+            group_n=int(np.asarray(data["group_n"]).item()),
+            group_count=int(np.asarray(data["group_count"]).item()),
+            expected_n=expected_n,
+        )
+    except Exception:
+        return None
+
+
+def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
+    with _ceiling_payload_cache_lock:
+        cached = _ceiling_group_payload_cache.get(base_song_key)
+        if not isinstance(cached, dict):
+            return None
+        try:
+            if int(cached.get("n", -1) or -1) != int(expected_n):
+                return None
+            if int(cached.get("group_count", 0) or 0) <= 0 and int(expected_n) > 0:
+                return None
+        except Exception:
+            return None
+        _ceiling_group_payload_cache.move_to_end(base_song_key)
+        return cached
+
+
+def _group_cache_put(base_song_key: tuple, payload: dict) -> None:
+    with _ceiling_payload_cache_lock:
+        _ceiling_group_payload_cache[base_song_key] = payload
+        _ceiling_group_payload_cache.move_to_end(base_song_key)
+        while len(_ceiling_group_payload_cache) > int(_CEILING_GROUP_PAYLOAD_CACHE_MAX):
+            _ceiling_group_payload_cache.popitem(last=False)
+
+
+def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int) -> dict | None:
+    if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
+        return None
+    path = _frontier_disk_cache_path(cache_key)
+    if not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            version = str(data["version"].item())
+            if version != _FRONTIER_DISK_CACHE_VERSION:
+                return None
+            return _group_payload_from_npz(data, expected_n=expected_n)
+    except Exception:
+        return None
 
 
 def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPayload | None:
@@ -377,7 +499,12 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
         return None
 
 
-def _save_frontier_payload_to_disk(cache_key: tuple, payload: TimelineFrontierGridPayload) -> None:
+def _save_frontier_payload_to_disk(
+    cache_key: tuple,
+    payload: TimelineFrontierGridPayload,
+    *,
+    group_payload: dict | None = None,
+) -> None:
     if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
         return
     path = _frontier_disk_cache_path(cache_key)
@@ -387,6 +514,32 @@ def _save_frontier_payload_to_disk(cache_key: tuple, payload: TimelineFrontierGr
         tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
         source_slot_i = 0
         pool_used = max(0, int(payload.frontier_pool_used))
+        save_kwargs: dict[str, object] = {}
+        if isinstance(group_payload, dict):
+            persisted_group = _group_payload_from_cache_arrays(
+                group_starts=np.asarray(group_payload.get("group_starts", ()), dtype=np.int32),
+                group_ends=np.asarray(group_payload.get("group_ends", ()), dtype=np.int32),
+                group_base_t_ms=np.asarray(group_payload.get("group_base_t_ms", ()), dtype=np.int32),
+                group_low_ms=np.asarray(group_payload.get("group_low_ms", ()), dtype=np.int32),
+                group_high_ms=np.asarray(group_payload.get("group_high_ms", ()), dtype=np.int32),
+                note_group_idx=np.asarray(group_payload.get("note_group_idx", ()), dtype=np.int32),
+                group_n=int(group_payload.get("n", 0) or 0),
+                group_count=int(group_payload.get("group_count", 0) or 0),
+                expected_n=None,
+            )
+            if isinstance(persisted_group, dict):
+                save_kwargs.update(
+                    {
+                        "group_n": np.asarray(int(persisted_group["n"]), dtype=np.int32),
+                        "group_count": np.asarray(int(persisted_group["group_count"]), dtype=np.int32),
+                        "group_starts": np.asarray(persisted_group["group_starts"], dtype=np.int32),
+                        "group_ends": np.asarray(persisted_group["group_ends"], dtype=np.int32),
+                        "group_base_t_ms": np.asarray(persisted_group["group_base_t_ms"], dtype=np.int32),
+                        "group_low_ms": np.asarray(persisted_group["group_low_ms"], dtype=np.int32),
+                        "group_high_ms": np.asarray(persisted_group["group_high_ms"], dtype=np.int32),
+                        "note_group_idx": np.asarray(persisted_group["note_group_idx"], dtype=np.int32),
+                    }
+                )
         np.savez_compressed(
             tmp,
             version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
@@ -414,6 +567,7 @@ def _save_frontier_payload_to_disk(cache_key: tuple, payload: TimelineFrontierGr
             grid_sig1=np.asarray(payload.grid_sig1[source_slot_i], dtype=np.uint64),
             grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
             grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
+            **save_kwargs,
         )
         tmp.replace(path)
     except Exception:
@@ -500,18 +654,10 @@ def _get_or_build_ceiling_group_payload(
     fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
     maps when the same song is revisited across slots or after timeline cache resets.
     """
-    global _ceiling_group_payload_cache
-
     n = int(getattr(timestamps, "shape", (0,))[0] or 0)
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_group_payload_cache.get(base_song_key)
-        if isinstance(cached, dict):
-            try:
-                if int(cached.get("n", -1) or -1) == int(n) and int(cached.get("group_count", 0) or 0) > 0:
-                    _ceiling_group_payload_cache.move_to_end(base_song_key)
-                    return cached
-            except Exception:
-                pass
+    cached = _group_cache_get(base_song_key, expected_n=n)
+    if isinstance(cached, dict):
+        return cached
 
     from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
 
@@ -566,25 +712,25 @@ def _get_or_build_ceiling_group_payload(
         "group_count": int(group_count),
         "note_group_idx": np.ascontiguousarray(note_group_idx),
         "group_starts": np.ascontiguousarray(group_starts),
+        "group_ends": np.ascontiguousarray(group_ends),
         "group_base_t_ms": np.ascontiguousarray(group_base_t_ms),
         "group_low_ms": np.ascontiguousarray(group_low_ms),
         "group_high_ms": np.ascontiguousarray(group_high_ms),
     }
-
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_group_payload_cache.get(base_song_key)
-        if isinstance(cached, dict):
-            try:
-                if int(cached.get("n", -1) or -1) == int(n) and int(cached.get("group_count", 0) or 0) > 0:
-                    _ceiling_group_payload_cache.move_to_end(base_song_key)
-                    return cached
-            except Exception:
-                pass
-        _ceiling_group_payload_cache[base_song_key] = payload
-        _ceiling_group_payload_cache.move_to_end(base_song_key)
-        while len(_ceiling_group_payload_cache) > int(_CEILING_GROUP_PAYLOAD_CACHE_MAX):
-            _ceiling_group_payload_cache.popitem(last=False)
-
+    validated = _group_payload_from_cache_arrays(
+        group_starts=np.asarray(payload["group_starts"], dtype=np.int32),
+        group_ends=np.asarray(payload["group_ends"], dtype=np.int32),
+        group_base_t_ms=np.asarray(payload["group_base_t_ms"], dtype=np.int32),
+        group_low_ms=np.asarray(payload["group_low_ms"], dtype=np.int32),
+        group_high_ms=np.asarray(payload["group_high_ms"], dtype=np.int32),
+        note_group_idx=np.asarray(payload["note_group_idx"], dtype=np.int32),
+        group_n=int(payload["n"]),
+        group_count=int(payload["group_count"]),
+        expected_n=n,
+    )
+    if isinstance(validated, dict):
+        _group_cache_put(base_song_key, validated)
+        return validated
     return payload
 
 
@@ -633,7 +779,7 @@ def _get_or_build_ceiling_frontier_payload_with_source(
         ref_ff=np.asarray(ref_ff, dtype=np.float32),
     )
 
-    _save_frontier_payload_to_disk(cache_key, payload)
+    _save_frontier_payload_to_disk(cache_key, payload, group_payload=group_payload)
     with _ceiling_payload_cache_lock:
         cached = _ceiling_frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
@@ -693,11 +839,22 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
     if total_notes > fields.MAX_SONG_NOTES:
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
 
-    group_payload = _get_or_build_ceiling_group_payload(
-        base_song_key[:-1],
-        timestamps=timestamps,
-        note_types=song_data.get("note_types", None),
-    )
+    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
+    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+
+    group_payload = _group_cache_get(base_song_key[:-1], expected_n=int(total_notes))
+    if group_payload is None:
+        disk_group_payload = _load_group_payload_from_frontier_disk(cache_key, expected_n=int(total_notes))
+        if isinstance(disk_group_payload, dict):
+            _group_cache_put(base_song_key[:-1], disk_group_payload)
+            group_payload = disk_group_payload
+        else:
+            group_payload = _get_or_build_ceiling_group_payload(
+                base_song_key[:-1],
+                timestamps=timestamps,
+                note_types=song_data.get("note_types", None),
+            )
     payload_n = int(group_payload.get("n", 0) or 0)
     if int(payload_n) != int(total_notes):
         raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
@@ -713,8 +870,8 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
         "long_notes": int(calc_song["metadata"].get("Long Notes", 0)),
         "last_note_time": float(calc_song["metadata"].get("Last Note Time", 0)),
         "song_profile_key": _timeline_song_profile_key(calc_song),
-        "ref_ft": np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1),
-        "ref_ff": np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1),
+        "ref_ft": ref_ft,
+        "ref_ff": ref_ff,
     }
 
 

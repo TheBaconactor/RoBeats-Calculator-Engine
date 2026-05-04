@@ -349,3 +349,27 @@ Measured with queue scope over 80 songs (thread executor, same process):
 - warm run after deleting manifest only: `85.76 ms` (`disk=80`)
 
 So manifest fast-hit removed most warm startup overhead that was previously spent on deterministic parse/envelope checks.
+
+## Follow-up: Lookahead CPU Prewarm + Group Payload Persistence
+
+After the startup prebuild shift, one scheduler path still needed explicit wiring:
+
+- native in-flight lookahead CPU prewarm now routes through one shared stage helper (`run_cpu_prewarm_for_song(...)`)
+- timeline frontier payload prewarm is part of that helper
+- FG baseline-point prewarm remains conditional on `force_greats_finder`
+
+This keeps CPU prewarm policy centralized and removes orchestrator-local duplicate gating logic.
+
+Exact frontier disk cache payloads were also extended to persist grouped timing metadata:
+
+- `group_starts`, `group_ends`
+- `group_base_t_ms`, `group_low_ms`, `group_high_ms`
+- `note_group_idx`, `group_n`, `group_count`
+
+Runtime timeline context now resolves group payloads in this order:
+
+1. in-memory group cache
+2. disk-cached group payload from the frontier `.npz`
+3. live grouped-timing rebuild
+
+This does not change exactness semantics. It reduces repeat host-side grouping work and keeps runtime/loadahead behavior aligned with prebuilt frontier payloads.

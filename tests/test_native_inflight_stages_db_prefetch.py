@@ -39,6 +39,56 @@ def test_prefetch_db_loadouts_sync_uses_song_key_cache(monkeypatch):
     assert a == b
 
 
+def test_run_cpu_prewarm_for_song_always_warms_timeline_and_fg_is_conditional(monkeypatch):
+    calls = {"timeline": 0, "fg": 0}
+
+    monkeypatch.setattr(
+        stages,
+        "_prewarm_timeline_frontier_payload",
+        lambda *_args, **_kwargs: calls.__setitem__("timeline", calls["timeline"] + 1),
+    )
+    monkeypatch.setattr(
+        stages,
+        "_prewarm_fg_baseline_point",
+        lambda *_args, **_kwargs: calls.__setitem__("fg", calls["fg"] + 1),
+    )
+
+    song_no_fg = SimpleNamespace(
+        calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        force_greats_finder=False,
+    )
+    stages.run_cpu_prewarm_for_song(song_no_fg)
+    assert calls["timeline"] == 1
+    assert calls["fg"] == 0
+
+    song_fg = SimpleNamespace(
+        calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        force_greats_finder=True,
+    )
+    stages.run_cpu_prewarm_for_song(song_fg)
+    assert calls["timeline"] == 2
+    assert calls["fg"] == 1
+
+
+def test_run_cpu_prewarm_for_song_ignores_invalid_payload_shapes(monkeypatch):
+    calls = {"timeline": 0}
+    monkeypatch.setattr(
+        stages,
+        "_prewarm_timeline_frontier_payload",
+        lambda *_args, **_kwargs: calls.__setitem__("timeline", calls["timeline"] + 1),
+    )
+
+    invalid_song = SimpleNamespace(calc_song=None, ref_arrays={"Fever Time": [0.0]})
+    stages.run_cpu_prewarm_for_song(invalid_song)
+
+    invalid_ref = SimpleNamespace(calc_song={"metadata": {}, "song_data": {}}, ref_arrays=None)
+    stages.run_cpu_prewarm_for_song(invalid_ref)
+
+    assert calls["timeline"] == 0
+
+
 def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monkeypatch):
     pending = concurrent.futures.Future()
     seen = {"allow_db_query": None}

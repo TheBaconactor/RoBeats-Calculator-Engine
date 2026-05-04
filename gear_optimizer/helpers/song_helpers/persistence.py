@@ -13,24 +13,14 @@ Extension rule:
 from collections.abc import Callable
 from typing import Any
 
-from ...core.utils import get_selected_element
+from ...core.utils import get_selected_element, safe_int
+from .fg_config import has_valid_fg_config
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .item_utils import names_list
 from .retention import select_retained_hashes
 
 
 RECORD_UPDATE_SCORE_EPSILON = 2
-
-
-def _safe_int_force(value: Any, default: int = 0) -> int:
-    """Best-effort integer coercion used for DB payload normalization."""
-    try:
-        return int(str(value)) if value is not None else int(default)
-    except Exception:
-        try:
-            return int(float(str(value)))
-        except Exception:
-            return int(default)
 
 
 def _normalize_force_payload(force_obj: object) -> dict:
@@ -72,30 +62,6 @@ def _normalize_force_payload(force_obj: object) -> dict:
     return out
 
 
-def _has_valid_fg_config(fg_container):
-    """
-    Check if FG container (entry or force obj) has a non-empty/non-zero configuration.
-    Handles both 'fg_entry' result format and flat `force` payload format.
-    """
-    try:
-        # Path 1: Result dict (has "data")
-        data = fg_container.get("data", {})
-        if data:
-            fg_meta = data.get("ForceGreats", {})
-            config = fg_meta.get("config", {})
-            return bool(config and sum(config.values()) > 0)
-
-        # Path 2: Flat force payload (persisted in force_details_json)
-        fg_meta = fg_container.get("ForceGreats", {})
-        if fg_meta:
-            config = fg_meta.get("config", {})
-            return bool(config and sum(config.values()) > 0)
-
-        return False
-    except Exception:
-        return False
-
-
 def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=None) -> dict:
     """
     Evaluate whether the current run beats the prior overall song record.
@@ -116,13 +82,13 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     """
     score = 0
     if isinstance(best_data, dict):
-        score = _safe_int_force(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+        score = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
 
     prev_score = None
     if isinstance(prev_record, dict):
         prev_score_raw = prev_record.get("score")
         if prev_score_raw is not None:
-            prev_score = _safe_int_force(prev_score_raw, 0)
+            prev_score = safe_int(prev_score_raw, 0)
 
     is_first = prev_record is None
     score_improvement = int(score) - int(prev_score or 0)
@@ -132,13 +98,13 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     for fg_entry in fg_variants or []:
         if not isinstance(fg_entry, dict):
             continue
-        if not _has_valid_fg_config(fg_entry):
+        if not has_valid_fg_config(fg_entry):
             continue
         base_score = fg_entry.get("base_score")
         if base_score is None:
             base_score = fg_entry.get("score", 0)
-        base_score_i = _safe_int_force(base_score, 0)
-        fg_score_i = _safe_int_force(fg_entry.get("fg_score", 0), 0)
+        base_score_i = safe_int(base_score, 0)
+        fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)
         if fg_score_i <= base_score_i:
             continue
         if fg_score_i > best_fg_score_run:
@@ -147,7 +113,7 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     prev_fg_score = (
         db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
     )
-    prev_fg_score = _safe_int_force(prev_fg_score, 0)
+    prev_fg_score = safe_int(prev_fg_score, 0)
     fg_improvement = int(best_fg_score_run) - int(prev_fg_score or 0)
     is_fg_better = fg_improvement > RECORD_UPDATE_SCORE_EPSILON
     prev_overall_score = max(int(prev_score or 0), int(prev_fg_score or 0))
@@ -189,19 +155,19 @@ def evaluate_progress_record_update(
     if not baseline_valid:
         score = 0
         if isinstance(best_data, dict):
-            score = _safe_int_force(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+            score = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
         best_fg_score_run = 0
         if fg_only:
             for fg_entry in fg_variants or []:
                 if not isinstance(fg_entry, dict):
                     continue
-                if not _has_valid_fg_config(fg_entry):
+                if not has_valid_fg_config(fg_entry):
                     continue
                 base_score = fg_entry.get("base_score")
                 if base_score is None:
                     base_score = fg_entry.get("score", 0)
-                base_score_i = _safe_int_force(base_score, 0)
-                fg_score_i = _safe_int_force(fg_entry.get("fg_score", 0), 0)
+                base_score_i = safe_int(base_score, 0)
+                fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)
                 if fg_score_i > base_score_i and fg_score_i > best_fg_score_run:
                     best_fg_score_run = fg_score_i
         prev_fg_score = (
@@ -217,9 +183,9 @@ def evaluate_progress_record_update(
             "score": int(score),
             "prev_score": None,
             "best_fg_score_run": int(best_fg_score_run),
-            "prev_fg_score": int(_safe_int_force(prev_fg_score, 0)),
+            "prev_fg_score": int(safe_int(prev_fg_score, 0)),
             "best_overall_score_run": int(max(int(score or 0), int(best_fg_score_run or 0))),
-            "prev_overall_score": int(_safe_int_force(prev_fg_score, 0)),
+            "prev_overall_score": int(safe_int(prev_fg_score, 0)),
         }
 
     record_info = evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
@@ -336,7 +302,7 @@ def build_db_payload(
     current_run_fg_candidates = []
 
     for fg_entry in fg_variants:
-        if not _has_valid_fg_config(fg_entry):
+        if not has_valid_fg_config(fg_entry):
             continue
 
         fg_gear = fg_entry.get("gear", [])
@@ -378,16 +344,16 @@ def build_db_payload(
 
     # Centralized record comparison to keep all callers aligned.
     record_info = evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
-    score = _safe_int_force(record_info.get("score", score), 0)
+    score = safe_int(record_info.get("score", score), 0)
     prev_score = record_info.get("prev_score")
     is_first = bool(record_info.get("is_first"))
     is_better = bool(record_info.get("is_better"))
     is_fg_better = bool(record_info.get("is_fg_better"))
-    best_fg_score_run = _safe_int_force(record_info.get("best_fg_score_run", 0), 0)
-    prev_fg_score = _safe_int_force(record_info.get("prev_fg_score", 0), 0)
+    best_fg_score_run = safe_int(record_info.get("best_fg_score_run", 0), 0)
+    prev_fg_score = safe_int(record_info.get("prev_fg_score", 0), 0)
     is_overall_better = bool(record_info.get("is_overall_better"))
-    best_overall_score_run = _safe_int_force(record_info.get("best_overall_score_run", 0), 0)
-    prev_overall_score = _safe_int_force(record_info.get("prev_overall_score", 0), 0)
+    best_overall_score_run = safe_int(record_info.get("best_overall_score_run", 0), 0)
+    prev_overall_score = safe_int(record_info.get("prev_overall_score", 0), 0)
 
     if is_first and is_overall_better:
         print(" >> NEW RECORD! (First entry for this song/context). Saving to Evolution Database...")
@@ -477,7 +443,7 @@ def build_db_payload(
         prev_force = prev_record.get("force")
         # Validate propagated force data
 
-        if not _has_valid_fg_config(prev_force):
+        if not has_valid_fg_config(prev_force):
             prev_force = None
 
         if prev_force:
@@ -831,7 +797,7 @@ def build_persistence_entries(
 
         def _fg_valid(entry: dict) -> bool:
             force_obj = entry.get("force")
-            return force_obj is not None and _has_valid_fg_config(force_obj)
+            return force_obj is not None and has_valid_fg_config(force_obj)
 
         selected_hashes = select_retained_hashes(
             items,
@@ -851,7 +817,7 @@ def build_persistence_entries(
             fg_score_to_save = entry.get("fg_score", 0)
             force_obj = entry.get("force")
 
-            if force_obj and not _has_valid_fg_config(force_obj):
+            if force_obj and not has_valid_fg_config(force_obj):
                 fg_score_to_save = 0
                 force_obj = None  # Explicitly clear valid force object if invalid (prevent empty JSON)
 

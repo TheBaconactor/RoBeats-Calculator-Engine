@@ -84,6 +84,64 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
     assert int(loaded.grid_frontier_masks_bits_pool.shape[1]) == int(payload.frontier_pool_used)
 
 
+def test_frontier_disk_cache_persists_group_payload_and_reuses_it(tmp_path: Path, monkeypatch) -> None:
+    payload = _build_small_payload()
+    key = ("unit", "group-payload", 3)
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+
+    group_payload = {
+        "n": 6,
+        "group_count": 3,
+        "group_starts": np.array([0, 2, 4], dtype=np.int32),
+        "group_ends": np.array([2, 4, 6], dtype=np.int32),
+        "group_base_t_ms": np.array([0, 100, 220], dtype=np.int32),
+        "group_low_ms": np.array([0, -10, -5], dtype=np.int32),
+        "group_high_ms": np.array([20, 30, 25], dtype=np.int32),
+        "note_group_idx": np.array([0, 0, 1, 1, 2, 2], dtype=np.int32),
+    }
+    timeline_api._save_frontier_payload_to_disk(key, payload, group_payload=group_payload)
+
+    loaded_group = timeline_api._load_group_payload_from_frontier_disk(key, expected_n=6)
+    assert loaded_group is not None
+    assert int(loaded_group["n"]) == 6
+    assert int(loaded_group["group_count"]) == 3
+    assert np.array_equal(loaded_group["group_ends"], group_payload["group_ends"])
+    assert np.array_equal(loaded_group["note_group_idx"], group_payload["note_group_idx"])
+
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Unit Disk Group",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+    ref_arrays = {
+        "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
+    }
+    song_key = timeline_api._song_timing_cache_key(calc_song)
+    cache_key = timeline_api._frontier_payload_cache_key(song_key, ref_arrays["Fever Time"], ref_arrays["Fever Fill Rate"])
+    saved_path = timeline_api._frontier_disk_cache_path(cache_key)
+    timeline_api._frontier_disk_cache_path(key).replace(saved_path)
+
+    def _raise_group_build(*_args, **_kwargs):
+        raise AssertionError("group payload should come from disk cache")
+
+    monkeypatch.setattr(timeline_api, "_get_or_build_ceiling_group_payload", _raise_group_build)
+    context = timeline_api._timeline_payload_context(calc_song, ref_arrays, ref_sig=None)
+    loaded = context["group_payload"]
+    assert int(loaded["n"]) == 6
+    assert int(loaded["group_count"]) == 3
+    assert np.array_equal(loaded["group_ends"], group_payload["group_ends"])
+
+
 def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
     payload = _build_small_payload()
     key = ("unit", "replace-fail", 2)

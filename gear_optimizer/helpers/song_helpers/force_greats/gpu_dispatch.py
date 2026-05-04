@@ -23,6 +23,7 @@ from .entry_utils import (
     fg_group_meta_from_eval_data,
 )
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
+from ..fg_config import extract_fg_config, has_valid_fg_config, is_nonzero_fg_config
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
@@ -486,26 +487,19 @@ def _entry_fg_score(entry: dict) -> int:
 
 
 def _entry_fg_config_dict(entry: dict) -> dict:
-    try:
-        force_obj = entry.get("force") or {}
-        fg0 = force_obj.get("ForceGreats") or {}
-        cfg0 = fg0.get("config") or {}
-        if isinstance(cfg0, dict):
-            return cfg0
-    except Exception:
-        pass
-    return {}
+    if not isinstance(entry, dict):
+        return {}
+    return extract_fg_config(entry.get("force"))
 
 
 def _is_valid_fg_config(cfg: dict) -> bool:
-    try:
-        return bool(cfg and sum(int(v or 0) for v in cfg.values()) > 0)
-    except Exception:
-        return False
+    return is_nonzero_fg_config(cfg)
 
 
 def _entry_has_valid_fg_config(entry: dict) -> bool:
-    return _is_valid_fg_config(_entry_fg_config_dict(entry))
+    if not isinstance(entry, dict):
+        return False
+    return has_valid_fg_config(entry.get("force"))
 
 
 def _build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tuple[str, dict]]:
@@ -583,7 +577,7 @@ def _sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> bo
         force_obj = row.get("force")
         if not isinstance(force_obj, dict):
             continue
-        if _is_valid_fg_config((force_obj.get("ForceGreats") or {}).get("config") or {}):
+        if has_valid_fg_config(force_obj):
             try:
                 if int(row.get("fg_score", 0) or 0) > int(row.get("base_score", 0) or 0):
                     return True
@@ -3782,7 +3776,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         force_obj = sig_row.get("force")
         if not isinstance(force_obj, dict):
             return False
-        return _is_valid_fg_config((force_obj.get("ForceGreats") or {}).get("config") or {})
+        return has_valid_fg_config(force_obj)
 
     retained_hashes = select_retained_hashes(
         items,

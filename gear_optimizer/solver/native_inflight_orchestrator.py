@@ -83,10 +83,10 @@ from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
-    _prewarm_fg_baseline_point,
     _prepare_fg_static_sync,
     _prepare_fg_job_sync,
     _resolve_active_fg_calc_song,
+    run_cpu_prewarm_for_song,
 )
 
 logger = logging.getLogger(__name__)
@@ -1129,13 +1129,7 @@ def run_native_inflight_song_pipeline(
                 pass
 
     def _run_cpu_prewarm_sync(song: _NativeSong) -> None:
-        if not bool(getattr(song, "force_greats_finder", False)):
-            return
-        calc_song = getattr(song, "fg_calc_song", None) or getattr(song, "calc_song", None)
-        ref_arrays = getattr(song, "ref_arrays", None)
-        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
-            return
-        _prewarm_fg_baseline_point(calc_song, ref_arrays)
+        run_cpu_prewarm_for_song(song)
 
     def _task_label_for_prewarm(song: _NativeSong) -> str:
         try:

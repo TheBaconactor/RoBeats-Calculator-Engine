@@ -420,6 +420,29 @@ def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
         pass
 
 
+def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
+    if not calc_song or not ref_arrays:
+        return
+    try:
+        from gear_optimizer.solver.taichi_gem.api.timeline import prewarm_timeline_frontier_payload
+
+        prewarm_timeline_frontier_payload(calc_song, ref_arrays)
+    except Exception:
+        pass
+
+
+def run_cpu_prewarm_for_song(song: Any) -> None:
+    calc_song = getattr(song, "fg_calc_song", None) or getattr(song, "calc_song", None)
+    ref_arrays = getattr(song, "ref_arrays", None)
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
+        return
+
+    _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
+
+    if bool(getattr(song, "force_greats_finder", False)):
+        _prewarm_fg_baseline_point(calc_song, ref_arrays)
+
+
 def _warmup_fg_finder_runtime(
     calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None
 ) -> None:
