@@ -1428,7 +1428,6 @@ def _solve_force_greats_finder_gpu_impl(
     base_cfg_offset: int = 0,
     upload_genome_stats: bool = True,
     genome_stats_preuploaded: bool = False,
-    n_genomes_override: int | None = None,
 ) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
     """
     Full GPU ForceGreatsFinder (tolerant mode).
@@ -2220,7 +2219,6 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
                 base_cfg_offset=int(kwargs.get("base_cfg_offset", 0)),
                 upload_genome_stats=bool(kwargs.get("upload_genome_stats", True)),
                 genome_stats_preuploaded=bool(kwargs.get("genome_stats_preuploaded", False)),
-                n_genomes_override=kwargs.get("n_genomes_override"),
             )
         except Exception as e:
             if attempt >= max(0, _FG_VULKAN_RETRIES) or not _is_vulkan_backend_failure(e):
@@ -2266,7 +2264,6 @@ def solve_force_greats_finder_gpu_tasks(
     return_raw: bool = True,
     upload_genome_stats: bool = True,
     genome_stats_preuploaded: bool = False,
-    n_genomes_override: int | None = None,
 ) -> None:
     """
     Execute multiple FG finder tasks as one logical GPU job.

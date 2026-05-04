@@ -24,8 +24,9 @@ from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.result_payloads import build_error_payload
-from gear_optimizer.core.utils import cfg_from_dict, get_selected_element, safe_int
+from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
     entry_loadout_hash,
     materialize_candidate_names,
@@ -1942,7 +1943,6 @@ def run_native_inflight_song_pipeline(
                     fg_prep_inflight_count=len(fg_prep_inflight),
                     fg_inflight_count=len(fg_futures),
                     fg_worker_count=int(fg_workers),
-                    ga_inflight_count=len(ga_inflight),
                     target_song_lanes=int(target_song_lanes),
                     oldest_wait_s=float(fg_oldest_wait_s),
                     aging_trigger_s=float(fg_aging_trigger_s),
@@ -2556,7 +2556,6 @@ def run_native_inflight_song_pipeline(
                     fg_drain_at_end=bool(fg_drain_at_end),
                     aging_trigger_s=float(fg_aging_trigger_s),
                     aging_hard_s=float(fg_aging_hard_s),
-                    ga_inflight_count=len(ga_inflight),
                     ga_queue_limit=int(ga_queue_limit_effective),
                     fg_slot_reserve=int(fg_slot_reserve),
                 )
@@ -2612,7 +2611,6 @@ def run_native_inflight_song_pipeline(
                     oldest_wait_s=float(fg_oldest_wait_s),
                     aging_trigger_s=float(fg_aging_trigger_s),
                     aging_hard_s=float(fg_aging_hard_s),
-                    ga_inflight_count=len(ga_inflight),
                     ga_queue_limit=int(ga_queue_limit_effective),
                     adaptive_submit=bool(fg_adaptive_submit_enabled),
                     adaptive_max_burst=int(fg_adaptive_submit_max_burst),
@@ -3230,6 +3228,13 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 return int(default)
 
     entries: list[dict] = []
+    build_details = getattr(song, "fg_build_details", None)
+    if not callable(build_details):
+        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+        try:
+            song.fg_build_details = build_details
+        except Exception:
+            pass
     loadout_entries = song.loadout_entries if isinstance(song.loadout_entries, dict) else {}
     loadout_hash_index: dict[str, dict] = {}
     if loadout_entries:
@@ -3282,60 +3287,19 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             # Keep base payload consistent with base score on deferred FG updates.
             details = dict(details_obj)
         else:
-            base_eval_data = base_entry.get("eval_data") if isinstance(base_entry, dict) else None
-            if isinstance(base_eval_data, dict) and base_eval_data:
-                stats_obj = base_eval_data.get("Stats", {})
-                if not stats_obj:
-                    try:
-                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                            materialize_stats_from_payload,
-                        )
-
-                        stats_obj = materialize_stats_from_payload(base_eval_data, mutate_payload=False) or {}
-                    except Exception:
-                        stats_obj = stats_obj or {}
-
-                details = {
-                    "FT": base_eval_data.get("FT", 0),
-                    "FF": base_eval_data.get("FF", 0),
-                    "GemCounts": base_eval_data.get("GemCounts", {}),
-                    "Stats": stats_obj or {},
-                    "SelectedElement": get_selected_element(base_eval_data, ""),
-                    "PrimaryColor": song.meta_primary_color,
-                    "SecondaryColor": song.meta_secondary_color,
-                    "Difficulty": song.effective_difficulty,
-                    "ForceGreats": data.get("ForceGreats", {}),
-                }
-            else:
-                stats_obj = data.get("Stats", {})
-                if not stats_obj:
-                    try:
-                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                            materialize_stats_from_payload,
-                        )
-
-                        stats_obj = materialize_stats_from_payload(data, mutate_payload=True) or {}
-                    except Exception:
-                        stats_obj = stats_obj or {}
-
-                details = {
-                    "FT": data.get("FT", 0),
-                    "FF": data.get("FF", 0),
-                    "GemCounts": data.get("GemCounts", {}),
-                    "Stats": stats_obj or {},
-                    "SelectedElement": get_selected_element(data, ""),
-                    "PrimaryColor": song.meta_primary_color,
-                    "SecondaryColor": song.meta_secondary_color,
-                    "Difficulty": song.effective_difficulty,
-                    "ForceGreats": data.get("ForceGreats", {}),
-                }
+            details_source = base_entry.get("eval_data") if isinstance(base_entry, dict) else None
+            if not isinstance(details_source, dict) or not details_source:
+                details_source = data if isinstance(data, dict) else {}
+            details = build_details(details_source) if callable(build_details) else {}
+            if not isinstance(details, dict):
+                details = {}
+            details = dict(details)
+            details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
 
         force_obj = None
         try:
-            fg_meta = (data.get("ForceGreats") or {}) if isinstance(data, dict) else {}
-            cfg_obj = fg_meta.get("config") if isinstance(fg_meta, dict) else None
-            if cfg_obj and isinstance(cfg_obj, dict) and sum(int(x or 0) for x in cfg_obj.values()) > 0:
-                force_obj = dict(data) if isinstance(data, dict) else None
+            if isinstance(data, dict) and has_valid_fg_config(data):
+                force_obj = dict(data)
         except Exception:
             force_obj = None
         entries.append(

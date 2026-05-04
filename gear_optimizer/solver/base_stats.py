@@ -108,3 +108,52 @@ def build_base_fixed_stats_array(
         fallback_selected_color=fallback_selected_color,
     )
     return np.asarray(base_fixed, dtype=np.int32), sel
+
+
+def build_base_fixed_stats_dict(
+    base_stats_fixed: Mapping[str, Any] | None,
+    cfg_data: Mapping[str, Any] | None,
+    *,
+    fallback_selected_color: str | None = None,
+) -> tuple[dict[str, int], str]:
+    base_fixed, sel = build_base_fixed_stats_list(
+        base_stats_fixed,
+        cfg_data,
+        fallback_selected_color=fallback_selected_color,
+    )
+    return build_stats_dict(base_fixed), sel
+
+
+def build_solver_stat_row(
+    base_stats_fixed: Mapping[str, Any] | None,
+    cfg_data: Mapping[str, Any] | None,
+    *,
+    primary_color: str,
+    secondary_color: str,
+    fallback_selected_color: str | None = None,
+) -> tuple[int, int, int, int, int, int, int]:
+    """
+    Build the canonical 7-column solver row after fixed user-gem subtraction.
+
+    Column order:
+    - Perfect Points
+    - Combo Multiplier
+    - Fever Multiplier
+    - Primary color stat value
+    - Secondary color stat value
+    - Fever Time
+    - Fever Fill Rate
+    """
+    fixed_stats, _sel = build_base_fixed_stats_dict(
+        base_stats_fixed,
+        cfg_data,
+        fallback_selected_color=fallback_selected_color,
+    )
+    pp = int(fixed_stats.get("Perfect Points", 0))
+    cm = int(fixed_stats.get("Combo Multiplier", 0))
+    fm = int(fixed_stats.get("Fever Multiplier", 0))
+    ft = int(fixed_stats.get("Fever Time", 0))
+    ff = int(fixed_stats.get("Fever Fill Rate", 0))
+    p_val = int(fixed_stats.get(str(primary_color or ""), 0))
+    s_val = int(fixed_stats.get(str(secondary_color or ""), 0))
+    return (pp, cm, fm, p_val, s_val, ft, ff)

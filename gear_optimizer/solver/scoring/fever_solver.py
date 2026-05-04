@@ -35,7 +35,7 @@ from ..scoring_core import (
     lookup_reference_py,
     optimize_core_jit,
 )
-from ..base_stats import build_stats_array
+from ..base_stats import build_base_fixed_stats_dict, build_stats_array
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
 from .stats_scoring import evaluate_stats_score
@@ -520,17 +520,19 @@ def solve_best_fever_combination(
             "Selected Element": selected_color,
         }
 
-    base_stats["Fever Time"] -= user_ft * GEM_SCALE_FEVER
-    base_stats["Beat"] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE
-    base_stats["Fever Fill Rate"] -= user_ff * GEM_SCALE_FEVER
-    base_stats["Vibe"] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE
-    base_stats["Fever Multiplier"] -= user_fm * GEM_SCALE_FEVER
-    base_stats["Rush"] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE
-    base_stats["Combo Multiplier"] -= user_cm * GEM_SCALE_NORMAL
-    base_stats["Flow"] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE
-    base_stats["Perfect Points"] -= user_pp * GEM_SCALE_NORMAL
-    base_stats["Chill"] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE
-    base_stats[selected_color] -= static_elem_input * ELEMENTAL_GEM_SCALE
+    base_stats, _selected_color = build_base_fixed_stats_dict(
+        base_stats,
+        {
+            "user_ft": user_ft,
+            "user_ff": user_ff,
+            "user_pp": user_pp,
+            "user_cm": user_cm,
+            "user_fm": user_fm,
+            "static_elem_input": static_elem_input,
+            "selected_color": selected_color,
+        },
+        fallback_selected_color=selected_color,
+    )
 
     remaining_ft_stat = MAX_STAT_INDEX - base_stats["Fever Time"]
     remaining_ff_stat = MAX_STAT_INDEX - base_stats["Fever Fill Rate"]

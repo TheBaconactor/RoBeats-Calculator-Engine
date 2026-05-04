@@ -346,7 +346,6 @@ def _continuous_ga_should_yield_to_fg(
     fg_prep_inflight_count: int,
     fg_inflight_count: int,
     fg_worker_count: int,
-    ga_inflight_count: int,
     target_song_lanes: int,
     oldest_wait_s: float,
     aging_trigger_s: float,
@@ -394,7 +393,6 @@ def _continuous_fg_should_start(
     fg_drain_at_end: bool,
     aging_trigger_s: float,
     aging_hard_s: float,
-    ga_inflight_count: int,
     ga_queue_limit: int,
     fg_slot_reserve: int,
 ) -> bool:
@@ -442,7 +440,6 @@ def _continuous_fg_submit_budget(
     oldest_wait_s: float,
     aging_trigger_s: float,
     aging_hard_s: float,
-    ga_inflight_count: int,
     ga_queue_limit: int,
     adaptive_submit: bool,
     adaptive_max_burst: int,

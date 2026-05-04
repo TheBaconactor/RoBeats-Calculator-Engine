@@ -17,12 +17,6 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from ...core.constants import (
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    ELEMENTAL_GEM_SCALE,
-)
 from ...core.color_flags import build_color_flags
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.env_config import ENV
@@ -31,6 +25,7 @@ from ...core.utils import stats_signature
 from .gpu_solver import GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
 from .stats_ops import apply_gems_to_base_stats
+from ..base_stats import build_solver_stat_row
 from ..registry_solve_request import (
     build_registry_solve_request,
     dispatch_registry_solve,
@@ -188,56 +183,23 @@ def prepare_gpu_batch_eval_plan(
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")
 
-    user_ft = cfg_data["user_ft"]
-    user_ff = cfg_data["user_ff"]
-    user_pp = cfg_data["user_pp"]
-    user_cm = cfg_data["user_cm"]
-    user_fm = cfg_data["user_fm"]
-    static_elem_input = cfg_data["static_elem_input"]
-
     n_unique = len(unique_stats)
     genome_stats_np = np.empty((n_unique, 7), dtype=np.int16)
     for unique_idx, (_sig, stats) in enumerate(unique_stats):
-        base_pp = stats.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL
-        base_cm = stats.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL
-        base_fm = stats.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER
-        base_ft_stat = stats.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER
-        base_ff_stat = stats.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER
-
-        base_beat = stats.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE
-        base_vibe = stats.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE
-        base_rush = stats.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE
-        base_flow = stats.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE
-        base_chill = stats.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE
-
-        if sel_color == "Beat":
-            base_beat -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Vibe":
-            base_vibe -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Rush":
-            base_rush -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Flow":
-            base_flow -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Chill":
-            base_chill -= static_elem_input * ELEMENTAL_GEM_SCALE
-
-        color_vals = {
-            "Beat": base_beat,
-            "Vibe": base_vibe,
-            "Rush": base_rush,
-            "Flow": base_flow,
-            "Chill": base_chill,
-        }
-        base_p_val = color_vals.get(p_color, 0)
-        base_s_val = color_vals.get(s_color, 0)
-
-        genome_stats_np[unique_idx, 0] = int(base_pp)
-        genome_stats_np[unique_idx, 1] = int(base_cm)
-        genome_stats_np[unique_idx, 2] = int(base_fm)
-        genome_stats_np[unique_idx, 3] = int(base_p_val)
-        genome_stats_np[unique_idx, 4] = int(base_s_val)
-        genome_stats_np[unique_idx, 5] = int(base_ft_stat)
-        genome_stats_np[unique_idx, 6] = int(base_ff_stat)
+        row = build_solver_stat_row(
+            stats,
+            cfg_data,
+            primary_color=str(p_color or ""),
+            secondary_color=str(s_color or ""),
+            fallback_selected_color=str(sel_color or ""),
+        )
+        genome_stats_np[unique_idx, 0] = int(row[0])
+        genome_stats_np[unique_idx, 1] = int(row[1])
+        genome_stats_np[unique_idx, 2] = int(row[2])
+        genome_stats_np[unique_idx, 3] = int(row[3])
+        genome_stats_np[unique_idx, 4] = int(row[4])
+        genome_stats_np[unique_idx, 5] = int(row[5])
+        genome_stats_np[unique_idx, 6] = int(row[6])
 
     flags = build_color_flags(p_color, s_color, sel_color)
 

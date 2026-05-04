@@ -78,7 +78,6 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )
@@ -95,7 +94,6 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )
@@ -112,7 +110,6 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )
@@ -129,7 +126,6 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )
@@ -146,7 +142,6 @@ def test_continuous_fg_should_probe_pending_fg_while_ga_can_continue():
         "fg_drain_at_end": True,
         "aging_trigger_s": 0.75,
         "aging_hard_s": 2.5,
-        "ga_inflight_count": 0,
         "ga_queue_limit": 12,
         "fg_slot_reserve": 0,
     }
@@ -167,7 +162,6 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )
@@ -222,7 +216,6 @@ def test_continuous_fg_should_start_when_reserved_capacity_has_ready_fg():
             fg_drain_at_end=True,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=4,
             ga_queue_limit=4,
             fg_slot_reserve=1,
         )
@@ -243,7 +236,6 @@ def test_continuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=4,
         ga_queue_limit=4,
         adaptive_submit=False,
         adaptive_max_burst=3,
@@ -464,7 +456,6 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
             fg_prep_inflight_count=0,
             fg_inflight_count=0,
             fg_worker_count=4,
-            ga_inflight_count=0,
             target_song_lanes=2,
             oldest_wait_s=0.0,
             aging_trigger_s=0.75,
@@ -475,24 +466,22 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
 
 
 def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
-    for ga_inflight in (1, 2, 8):
-        assert (
-            _continuous_ga_should_yield_to_fg(
-                fg_enabled=True,
-                fg_drain_at_end=True,
-                pending_fg_count=4,
-                ready_fg_count=0,
-                fg_prep_inflight_count=4,
-                fg_inflight_count=0,
-                fg_worker_count=4,
-                ga_inflight_count=ga_inflight,
-                target_song_lanes=2,
-                oldest_wait_s=3.0,
-                aging_trigger_s=0.75,
-                blocked_on_slot=False,
-            )
-            is False
+    assert (
+        _continuous_ga_should_yield_to_fg(
+            fg_enabled=True,
+            fg_drain_at_end=True,
+            pending_fg_count=4,
+            ready_fg_count=0,
+            fg_prep_inflight_count=4,
+            fg_inflight_count=0,
+            fg_worker_count=4,
+            target_song_lanes=2,
+            oldest_wait_s=3.0,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
         )
+        is False
+    )
 
 
 def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
@@ -505,7 +494,6 @@ def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
             fg_prep_inflight_count=0,
             fg_inflight_count=0,
             fg_worker_count=4,
-            ga_inflight_count=2,
             target_song_lanes=2,
             oldest_wait_s=3.0,
             aging_trigger_s=0.75,
@@ -522,7 +510,6 @@ def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
             fg_prep_inflight_count=0,
             fg_inflight_count=0,
             fg_worker_count=4,
-            ga_inflight_count=2,
             target_song_lanes=2,
             oldest_wait_s=3.0,
             aging_trigger_s=0.75,
@@ -542,7 +529,6 @@ def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
             fg_prep_inflight_count=0,
             fg_inflight_count=8,
             fg_worker_count=8,
-            ga_inflight_count=2,
             target_song_lanes=2,
             oldest_wait_s=3.0,
             aging_trigger_s=0.75,
@@ -653,7 +639,6 @@ def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=1,
         ga_queue_limit=12,
         adaptive_submit=False,
         adaptive_max_burst=3,
@@ -673,7 +658,6 @@ def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=1,
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -695,7 +679,6 @@ def test_continuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
         oldest_wait_s=3.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=1,
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -717,7 +700,6 @@ def test_continuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=16,
         ga_queue_limit=16,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -739,7 +721,6 @@ def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists()
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=0,
         ga_queue_limit=16,
         adaptive_submit=False,
         adaptive_max_burst=3,
@@ -759,7 +740,6 @@ def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists()
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=0,
         ga_queue_limit=16,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -781,7 +761,6 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=0,
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -814,7 +793,6 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
         oldest_wait_s=0.0,
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
-        ga_inflight_count=0,
         ga_queue_limit=12,
         adaptive_submit=True,
         adaptive_max_burst=3,
@@ -832,7 +810,6 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
             fg_drain_at_end=False,
             aging_trigger_s=0.75,
             aging_hard_s=2.5,
-            ga_inflight_count=0,
             ga_queue_limit=12,
             fg_slot_reserve=0,
         )

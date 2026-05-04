@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+import itertools
 from typing import Any, TYPE_CHECKING, Optional
 
 import numpy as np
@@ -22,17 +23,21 @@ from .entry_utils import (
     expected_selected_element,
     fg_group_meta_from_eval_data,
 )
-from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
-from ..fg_config import extract_fg_config, has_valid_fg_config, is_nonzero_fg_config
+from ..ga_entry_utils import materialize_entry_names
+from .entry_resolution import (
+    build_direct_ga_entry_items as _build_direct_ga_entry_items,
+    selected_count as _selected_count,
+    sig_results_has_fg_improvement as _sig_results_has_fg_improvement,
+)
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
 from ....solver.taichi_gem.ftff_combos import collect_ftff_pairs_from_centers
-from ..retention import select_retained_hashes
 from .ftff_pairs import (
     _group_ftff_pairs_by_max_fp_matrix,
     reduce_ftff_pairs_by_max_fp_surface,
 )
+from .retained_variants import retain_and_build_fg_variants as _retain_and_build_fg_variants
 from .signature_frontier import (
     build_signature_frontier_metas as _build_signature_frontier_metas_impl,
     build_signature_frontier_metas_from_rows as _build_signature_frontier_metas_from_rows_impl,
@@ -81,6 +86,34 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
+FG_PLATEAU_REP_STRIDE = 64
+
+
+def _has_valid_k1_rep(
+    raw_fill: float,
+    base_ceil: int,
+    fp_target: int,
+    non_fever_base: int,
+) -> bool:
+    """
+    Check if the k_min+1 representative stays on the same FP plateau.
+
+    Returns True when |K(fp_target)| == 2, i.e. the k+1 forced count still
+    maps to the same p value and does not exceed the cap.
+    """
+    import math
+
+    if fp_target <= 0:
+        return False
+    delta = (float(base_ceil) + float(fp_target) - 1.0) - float(raw_fill)
+    if delta < 0.0:
+        return False
+    k0 = int(math.floor(delta * 2.0) + 1)
+    if k0 >= int(non_fever_base):
+        return False
+    k1 = int(k0 + 1)
+    fp1 = int(math.ceil(float(raw_fill) + float(k1) * 0.5) - float(base_ceil))
+    return int(fp1) == int(fp_target)
 
 
 def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: bool) -> bool:
@@ -109,6 +142,170 @@ def _default_fused_payloads_per_request() -> int:
 
     # Keep the upper bound low even as worker count grows.
     return 8 if workers >= 2 else 4
+
+
+def _expand_plateau_rep_counts_list(
+    counts_list: Any,
+    *,
+    n_sections: int,
+    section_k1_valid_fps: list[set[int]] | None = None,
+) -> list[tuple[int, ...]]:
+    """
+    Expand FP-target configs with bounded same-plateau representatives.
+
+    Encoding:
+    - base FP target p
+    - representative flag bit per section is encoded as `p + FG_PLATEAU_REP_STRIDE`
+      when selecting the k+1 representative on that section's FP plateau.
+
+    If section_k1_valid_fps is provided (per-section set of fp targets where
+    the k+1 representative stays on the same plateau), masks with rep_flag=1
+    are only emitted for sections whose fp target is known to have a valid
+    second representative. This pre-filters redundant rows before GPU
+    submission.
+    """
+    try:
+        n_sections_i = int(n_sections)
+    except Exception:
+        n_sections_i = 0
+    if n_sections_i <= 0 or n_sections_i > 4:
+        return list(counts_list or [])
+
+    rows = list(counts_list or [])
+    if not rows:
+        return []
+
+    use_filter = section_k1_valid_fps is not None
+    valid_sets: list[set[int]] = list(section_k1_valid_fps or [])[:n_sections_i]
+    if use_filter:
+        while len(valid_sets) < n_sections_i:
+            valid_sets.append(set())
+
+    # Avoid double-expansion when a cached payload is already encoded.
+    already_encoded = False
+    for row in rows:
+        try:
+            vals = list(row[:n_sections_i]) if hasattr(row, "__getitem__") else []
+        except Exception:
+            vals = []
+        for v in vals:
+            try:
+                if int(v) >= int(FG_PLATEAU_REP_STRIDE):
+                    already_encoded = True
+                    break
+            except Exception:
+                continue
+        if already_encoded:
+            break
+    if already_encoded:
+        return [tuple(int(x) for x in list(r[:n_sections_i])) for r in rows]
+
+    out: list[tuple[int, ...]] = []
+    for row in rows:
+        base: list[int] = []
+        try:
+            vals = list(row)
+        except Exception:
+            vals = []
+        for s in range(n_sections_i):
+            try:
+                fp = int(vals[s]) if s < len(vals) else 0
+            except Exception:
+                fp = 0
+            if fp < 0:
+                fp = 0
+            base.append(int(fp))
+
+        for mask in range(1 << n_sections_i):
+            enc: list[int] = []
+            skip_mask = False
+            for s in range(n_sections_i):
+                want_rep = bool((int(mask) >> int(s)) & 1)
+                if use_filter and want_rep and int(base[s]) not in valid_sets[s]:
+                    skip_mask = True
+                    break
+                enc_val = int(base[s]) + (int(FG_PLATEAU_REP_STRIDE) if want_rep else 0)
+                enc.append(int(enc_val))
+            if skip_mask:
+                continue
+            out.append(tuple(enc))
+    return out
+
+
+def _expand_plateau_rep_counts_from_max_fp(
+    counts_max_fp: Any,
+    *,
+    n_sections: int,
+    section_k1_valid_fps: list[set[int]] | None = None,
+) -> list[tuple[int, ...]]:
+    try:
+        n_sections_i = int(n_sections)
+    except Exception:
+        n_sections_i = 0
+    if n_sections_i <= 0:
+        return [()]
+
+    src_max_fp = list(counts_max_fp or [])
+    max_fp_vals: list[int] = []
+    for s in range(n_sections_i):
+        try:
+            v = int(src_max_fp[s]) if s < len(src_max_fp) else 0
+        except Exception:
+            v = 0
+        if v < 0:
+            v = 0
+        max_fp_vals.append(int(v))
+
+    base_rows = list(itertools.product(*[range(0, int(v) + 1) for v in max_fp_vals]))
+    return _expand_plateau_rep_counts_list(
+        base_rows,
+        n_sections=n_sections_i,
+        section_k1_valid_fps=section_k1_valid_fps,
+    )
+
+
+def _build_section_k1_valid_fps(
+    fg_scorer: Any,
+    n_sections: int,
+    stat_pairs: set[tuple[int, int]],
+    max_fp_per_section: list[int] | None = None,
+) -> list[set[int]]:
+    """
+    Build per-section sets of fp targets where k+1 stays on the same plateau.
+
+    Checks across all provided (FT, FF) stat pairs and takes the union:
+    if k+1 is valid for ANY pair, the fp target is kept valid for that section.
+    """
+    if n_sections <= 0:
+        return []
+
+    pairs = set(stat_pairs or [])
+    if not pairs:
+        pairs = {(80, 80)}
+
+    valid_sets: list[set[int]] = [set() for _ in range(int(n_sections))]
+    for ft_stat, ff_stat in pairs:
+        try:
+            non_fever_base, _, _, raw_fill = fg_scorer.get_fever_params(
+                int(ft_stat), int(ff_stat)
+            )
+        except Exception:
+            continue
+        base_ceil = int(non_fever_base)
+        nfb = int(non_fever_base)
+
+        for s in range(int(n_sections)):
+            max_fp_s = int(max_fp_per_section[s]) if max_fp_per_section and s < len(max_fp_per_section) else (nfb * 2)
+            for fp in range(0, min(int(max_fp_s), 64) + 1):
+                if fp in valid_sets[s]:
+                    continue
+                try:
+                    if _has_valid_k1_rep(float(raw_fill), base_ceil, int(fp), nfb):
+                        valid_sets[s].add(int(fp))
+                except Exception:
+                    continue
+
+    return valid_sets
 
 
 def _chart_signature_key(calc_song: dict) -> tuple:
@@ -477,125 +674,6 @@ def _build_topk_keep_signature_set(
     if int(max_keep_total) > 0 and len(ordered) > int(max_keep_total):
         ordered = ordered[: int(max_keep_total)]
     return set(ordered)
-
-
-def _entry_fg_score(entry: dict) -> int:
-    try:
-        return int(entry.get("fg_score", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _entry_fg_config_dict(entry: dict) -> dict:
-    if not isinstance(entry, dict):
-        return {}
-    return extract_fg_config(entry.get("force"))
-
-
-def _is_valid_fg_config(cfg: dict) -> bool:
-    return is_nonzero_fg_config(cfg)
-
-
-def _entry_has_valid_fg_config(entry: dict) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    return has_valid_fg_config(entry.get("force"))
-
-
-def _build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tuple[str, dict]]:
-    items: list[tuple[str, dict]] = []
-    for idx, candidate in enumerate(ga_candidates or []):
-        if not isinstance(candidate, dict):
-            continue
-        eval_data = candidate.get("Data") or {}
-        if not isinstance(eval_data, dict) or not eval_data:
-            continue
-        genome_ids = candidate_genome_ids(candidate)
-        registry_obj = ga_registry if ga_registry is not None else candidate.get("_ga_registry")
-        entry = {
-            "gear": list(candidate.get("Gear") or []),
-            "minis": list(candidate.get("Minis") or []),
-            "score": int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0),
-            "base_score": int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0),
-            "details": {},
-            "fg_score": int(candidate.get("fg_score", 0) or 0),
-            "force": candidate.get("force"),
-            "eval_data": eval_data,
-            "_source": "ga",
-            "_fg_direct_ga": True,
-            "_candidate_ref": candidate,
-        }
-        try:
-            entry["selected_element"] = str(eval_data.get("Selected Element", "") or "")
-        except Exception:
-            entry["selected_element"] = ""
-        if genome_ids is not None:
-            entry["ga_genome_ids"] = list(genome_ids)
-        if registry_obj is not None:
-            entry["_ga_registry"] = registry_obj
-
-        key = None
-        if entry.get("gear") or entry.get("minis"):
-            try:
-                key = str(entry_loadout_hash(entry) or "")
-            except Exception:
-                key = None
-        if not key and genome_ids is not None:
-            key = ga_candidate_key(genome_ids)
-        if not key:
-            key = f"ga-direct:{int(idx)}"
-        items.append((str(key), entry))
-    return items
-
-
-def _merge_retained_direct_ga_entries(
-    loadout_entries, ga_entry_items: list[tuple[str, dict]], retained_hashes: set[str]
-) -> None:
-    if not isinstance(loadout_entries, dict):
-        return
-
-    stale = [k for k, v in loadout_entries.items() if isinstance(v, dict) and bool(v.get("_fg_direct_ga"))]
-    for key in stale:
-        loadout_entries.pop(str(key), None)
-
-    for key, entry in ga_entry_items:
-        if str(key) not in retained_hashes:
-            continue
-        resolved_key = str(entry_loadout_hash(entry) or key)
-        loadout_entries[resolved_key] = entry
-        if resolved_key != str(key):
-            loadout_entries.pop(str(key), None)
-
-
-def _sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> bool:
-    if not isinstance(sig_results, dict) or not sigs:
-        return False
-    for sig in sigs:
-        row = sig_results.get(str(sig))
-        if not isinstance(row, dict):
-            continue
-        force_obj = row.get("force")
-        if not isinstance(force_obj, dict):
-            continue
-        if has_valid_fg_config(force_obj):
-            try:
-                if int(row.get("fg_score", 0) or 0) > int(row.get("base_score", 0) or 0):
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _selected_count(selected_indices: Any) -> int:
-    if selected_indices is None:
-        return 0
-    try:
-        return int(len(selected_indices))
-    except Exception:
-        try:
-            return int(getattr(selected_indices, "shape", (0,))[0] or 0)
-        except Exception:
-            return 0
 
 
 def _should_skip_full_download_no_candidates(
@@ -2211,6 +2289,17 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 counts_list = [()]
             else:
                 counts_list = list(group_counts_list)
+            if bool(_truthy_env("FG_PLATEAU_EXACT_REP", "1")) and 0 < int(n_sections) <= 4:
+                plateau_k1_valid = _build_section_k1_valid_fps(
+                    fg_scorer,
+                    int(n_sections),
+                    rep_pairs or set(),
+                )
+                counts_list = _expand_plateau_rep_counts_list(
+                    counts_list,
+                    n_sections=int(n_sections),
+                    section_k1_valid_fps=plateau_k1_valid,
+                )
 
             if perf:
                 t_cfg_build_sec += time.perf_counter() - _t_cfg0
@@ -2776,6 +2865,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     and int(len(active_ftff_pairs or [])) > 0
                     and int(len(active_ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
                 )
+                plateau_exact_enabled = bool(_truthy_env("FG_PLATEAU_EXACT_REP", "1"))
+                plateau_exact_sections = bool(plateau_exact_enabled and 0 < int(n_sections) <= 4)
+                # Exact plateau-representative mode requires explicit config rows.
+                # Disable max-FP implicit config grouping for this bounded domain.
+                if plateau_exact_sections:
+                    can_cache_max_fp_matrix = False
+                    max_fp_matrix = None
 
                 if max_fp_matrix is None and use_gpu_breakpoints:
 
@@ -2961,6 +3057,31 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         cacheable_groups_accum.append(group)
                     group_count += 1
                     counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
+                    plateau_exact_sections = bool(_truthy_env("FG_PLATEAU_EXACT_REP", "1") and 0 < int(n_sections) <= 4)
+                    if plateau_exact_sections:
+                        plateau_k1_valid = _build_section_k1_valid_fps(
+                            fg_scorer,
+                            int(n_sections),
+                            {(int(ft), int(ff)) for ft, ff in (group_pairs or [])},
+                            max_fp_per_section=(
+                                [max(0, int(v or 0)) for v in list(counts_max_fp)[: int(n_sections)]]
+                                if counts_max_fp
+                                else None
+                            ),
+                        ) if group_pairs else None
+                        if counts_list:
+                            counts_list = _expand_plateau_rep_counts_list(
+                                counts_list,
+                                n_sections=int(n_sections),
+                                section_k1_valid_fps=plateau_k1_valid,
+                            )
+                        elif counts_max_fp:
+                            counts_list = _expand_plateau_rep_counts_from_max_fp(
+                                counts_max_fp,
+                                n_sections=int(n_sections),
+                                section_k1_valid_fps=plateau_k1_valid,
+                            )
+                            counts_max_fp = []
                     if (not counts_list and not counts_max_fp) or _is_empty_pairs(group_pairs):
                         continue
 
@@ -3747,106 +3868,15 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     # ------------------------------------------------------------------
     # Build `fg_variants` only for the retained set (DB/UI retention).
     # ------------------------------------------------------------------
-    items = list(entry_items)
-
-    def _resolved_sig_result(entry: dict) -> dict | None:
-        try:
-            return sig_results.get(str(entry_sig.get(int(id(entry)), "") or ""))
-        except Exception:
-            return None
-
-    def _resolved_fg_score(entry: dict) -> int:
-        current = _entry_fg_score(entry)
-        if current > 0:
-            return int(current)
-        sig_row = _resolved_sig_result(entry)
-        if not isinstance(sig_row, dict):
-            return 0
-        try:
-            return int(sig_row.get("fg_score", 0) or 0)
-        except Exception:
-            return 0
-
-    def _resolved_fg_valid(entry: dict) -> bool:
-        if _entry_has_valid_fg_config(entry):
-            return True
-        sig_row = _resolved_sig_result(entry)
-        if not isinstance(sig_row, dict):
-            return False
-        force_obj = sig_row.get("force")
-        if not isinstance(force_obj, dict):
-            return False
-        return has_valid_fg_config(force_obj)
-
-    retained_hashes = select_retained_hashes(
-        items,
-        limit=int(LOADOUTS_PER_SONG_LIMIT),
-        base_score_fn=_entry_base_score,
-        fg_score_fn=_resolved_fg_score,
-        fg_valid_fn=_resolved_fg_valid,
+    fg_variants = _retain_and_build_fg_variants(
+        entry_items=entry_items,
+        sig_results=sig_results,
+        entry_sig=entry_sig,
+        loadout_entries=loadout_entries,
+        direct_ga_items=direct_ga_items,
+        loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        entry_base_score_fn=_entry_base_score,
     )
-
-    for h, entry in items:
-        if str(h) not in retained_hashes or not isinstance(entry, dict):
-            continue
-        sig_row = _resolved_sig_result(entry)
-        if not isinstance(sig_row, dict):
-            continue
-        result_application.apply_signature_result_to_entry(entry=entry, sig_result=sig_row)
-
-    _merge_retained_direct_ga_entries(loadout_entries, direct_ga_items, retained_hashes)
-
-    # Build fg_variants for UI/debug.
-    fg_variants.clear()
-    seen_variant_hashes: set[str] = set()
-    for h, entry in items:
-        if str(h) not in retained_hashes:
-            continue
-
-        base_score_best = _entry_base_score(entry)
-        fg_score = _entry_fg_score(entry)
-
-        # IMPORTANT:
-        # `team_buff_loadouts.score` can represent the best base gem allocation for a loadout hash,
-        # while `fg_score`+`force` can be from a different allocation (paired in `team_buff_fg_loadouts`).
-        # When present, `fg_base_score` preserves the base-score context for the FG payload so
-        # downstream comparisons use (fg_score > fg_base_score) instead of (fg_score > best_base_score).
-        try:
-            fg_base_score_i = int((entry.get("fg_base_score") if isinstance(entry, dict) else 0) or 0)
-        except Exception:
-            fg_base_score_i = 0
-        if fg_base_score_i <= 0:
-            fg_base_score_i = int(base_score_best or 0)
-
-        force_obj = entry.get("force") if isinstance(entry, dict) else None
-        if not isinstance(force_obj, dict):
-            continue
-        cfg = _entry_fg_config_dict(entry)
-        if not _is_valid_fg_config(cfg):
-            continue
-        gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-        loadout_hash = str(entry_loadout_hash(entry) or h)
-        if loadout_hash in seen_variant_hashes:
-            continue
-        seen_variant_hashes.add(loadout_hash)
-        fg_variants.append(
-            {
-                "data": force_obj,
-                "gear": gear_names,
-                "minis": mini_names,
-                "score": fg_base_score_i,
-                "fg_score": fg_score,
-                "base_score": fg_base_score_i,
-                "_entry_ref": entry,
-                "_is_ga": str(entry.get("_source") or "") == "ga",
-            }
-        )
-
-    # Keep output deterministic and small (UI/debug only): sort by FG score descending.
-    try:
-        fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
-    except Exception:
-        pass
 
     unique_sig_count = 0
     try:

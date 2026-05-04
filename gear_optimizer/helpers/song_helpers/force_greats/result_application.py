@@ -9,6 +9,8 @@ from ....solver.scoring import _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
 
+FG_PLATEAU_REP_STRIDE = 64
+
 
 def apply_gems_to_base_fast(
     base: dict[str, Any],
@@ -104,6 +106,7 @@ def materialize_stats_from_payload(
 
 def fp_targets_to_forced_counts(
     fp_counts: list[Any],
+    rep_flags: list[Any] | None,
     base_stats: dict[str, Any],
     ft_gems: int,
     ff_gems: int,
@@ -128,10 +131,25 @@ def fp_targets_to_forced_counts(
             return 0
         return int(math.floor(delta * 2.0) + 1)
 
+    rep_flags_list = list(rep_flags or [])
     forced_counts: list[int] = []
-    for fp in fp_counts:
+    for idx, fp in enumerate(fp_counts):
         fp_i = int(fp)
         forced = _min_forced_for_fp(fp_i)
+        # Plateau-aware representative:
+        # If requested and valid, move from minimal-k to k+1 on the same FP plateau.
+        rep_flag = 0
+        try:
+            if idx < len(rep_flags_list):
+                rep_flag = 1 if int(rep_flags_list[idx] or 0) > 0 else 0
+        except Exception:
+            rep_flag = 0
+        if rep_flag:
+            alt = int(forced + 1)
+            if alt <= int(non_fever_base):
+                fp_alt = int(math.ceil(raw_fever_fill + (float(alt) * 0.5)) - base_ceil)
+                if fp_alt == fp_i:
+                    forced = alt
         if forced > non_fever_base:
             forced = non_fever_base
         forced_counts.append(int(forced))
@@ -180,12 +198,29 @@ def _build_raw_gpu_result(
         cfg_idx_i = int(cfg_idx) if cfg_idx is not None else -1
         cfg_counts = list(counts_list[cfg_idx_i]) if 0 <= cfg_idx_i < len(counts_list) else []
 
-    forced_counts = cfg_counts
-    if cfg_counts and fg_scorer is not None:
+    fp_counts: list[int] = []
+    rep_flags: list[int] = []
+    for raw_val in list(cfg_counts or []):
         try:
-            forced_counts = fp_targets_to_forced_counts(cfg_counts, base_stats, ft_val, ff_val, fg_scorer)
+            raw_i = int(raw_val)
         except Exception:
-            forced_counts = cfg_counts
+            raw_i = 0
+        if raw_i < 0:
+            raw_i = 0
+        rep_flag_i = 0
+        fp_i = int(raw_i)
+        if raw_i >= int(FG_PLATEAU_REP_STRIDE):
+            rep_flag_i = 1
+            fp_i = int(raw_i % int(FG_PLATEAU_REP_STRIDE))
+        fp_counts.append(int(fp_i))
+        rep_flags.append(int(rep_flag_i))
+
+    forced_counts = fp_counts
+    if fp_counts and fg_scorer is not None:
+        try:
+            forced_counts = fp_targets_to_forced_counts(fp_counts, rep_flags, base_stats, ft_val, ff_val, fg_scorer)
+        except Exception:
+            forced_counts = fp_counts
 
     gem_counts = {
         "Perfect Points": g_pp_i,

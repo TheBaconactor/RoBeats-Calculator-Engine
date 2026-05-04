@@ -1792,6 +1792,9 @@ FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 FG_STAGE1_SMALL_SECTIONS_FASTPATH = env_flag("FG_STAGE1_SMALL_SECTIONS_FASTPATH")
 FG_STAGE1_OWNER_CAP_REDUCTION = env_flag("FG_STAGE1_OWNER_CAP_REDUCTION")
 FG_STAGE1_DIRECT_ATOMIC = env_flag("FG_STAGE1_DIRECT_ATOMIC", "1")
+# Host-expanded plateau representative encoding in fg_forced_counts rows.
+FG_PLATEAU_REP_STRIDE = 64
+FG_PLATEAU_REP_MAX_SECTIONS = 4
 
 
 @ti.func
@@ -2109,6 +2112,55 @@ def _forced_from_fp_target(
 
 
 @ti.func
+def _decode_fp_target_and_rep_flag(cfg_val: ti.i32) -> ti.types.vector(2, ti.i32):
+    """
+    Decode a per-section FP target with optional plateau representative flag.
+
+    Encoding is host-side:
+      value = fp_target + FG_PLATEAU_REP_STRIDE * rep_flag
+    where rep_flag is 0 (minimal-k) or 1 (k+1 representative on same FP plateau).
+    """
+    v: ti.i32 = cfg_val
+    if v < 0:
+        v = 0
+    rep: ti.i32 = 0
+    fp: ti.i32 = v
+    if v >= FG_PLATEAU_REP_STRIDE:
+        rep = v // FG_PLATEAU_REP_STRIDE
+        fp = v - rep * FG_PLATEAU_REP_STRIDE
+        if rep > 0:
+            rep = 1
+    if fp < 0:
+        fp = 0
+    return ti.Vector([fp, rep])
+
+
+@ti.func
+def _forced_from_fp_target_with_rep(
+    raw_fill: ti.f32,
+    base_ceil: ti.i32,
+    fp_target: ti.i32,
+    non_fever_base: ti.i32,
+    rep_alt: ti.i32,
+) -> ti.i32:
+    """
+    Plateau-aware forced-count selector.
+
+    Returns minimal-k for fp_target by default. When rep_alt!=0 and the same
+    plateau has a valid k+1 representative, returns k+1.
+    """
+    k0: ti.i32 = _forced_from_fp_target(raw_fill, base_ceil, fp_target, non_fever_base)
+    out: ti.i32 = k0
+    if rep_alt != 0:
+        k1: ti.i32 = k0 + 1
+        if k1 <= non_fever_base:
+            fp1: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(k1, ti.f32) * 0.5), ti.i32) - base_ceil
+            if fp1 == fp_target:
+                out = k1
+    return out
+
+
+@ti.func
 def _mask_range_u32(lo: ti.i32, hi: ti.i32) -> ti.u32:
     """
     Build a u32 mask with bits [lo, hi) set (0 <= lo < hi <= 32).
@@ -2169,6 +2221,66 @@ def _fg_signature_hash(sig: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32)) ->
 
 
 @ti.func
+def _fg_sig_is_dominated(
+    sig_a: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
+    sig_b: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
+) -> ti.i32:
+    """
+    Check if sig_b is structurally dominated by sig_a.
+
+    Dominance criteria (Lemma 5):
+    - sig_a has superset of sig_b's fever head mask  (sig[0..3])
+    - sig_a has >= sig_b's body_fever               (sig[4])
+    - sig_a has <= sig_b's body_normal              (sig[5])
+    - sig_a has subset of sig_b's forced head mask  (sig[6..9])
+    - sig_a has <= sig_b's forced_body              (sig[10])
+
+    When these all hold, sig_a's score >= sig_b's score for ANY gem
+    allocation, so sig_b can never be a unique winner.
+
+    Returns 1 if sig_b is dominated by sig_a, 0 otherwise.
+    """
+    fever_dominates: ti.i32 = 1
+    for w in ti.static(range(4)):
+        ma = ti.cast(sig_a[w], ti.u32)
+        mb = ti.cast(sig_b[w], ti.u32)
+        if (ma & mb) != mb:
+            fever_dominates = 0
+
+    forced_dominates: ti.i32 = 1
+    for w in ti.static(range(4)):
+        ma = ti.cast(sig_a[6 + w], ti.u32)
+        mb = ti.cast(sig_b[6 + w], ti.u32)
+        if (ma & ~mb) != ti.u32(0):
+            forced_dominates = 0
+
+    body_fever_ok: ti.i32 = sig_a[4] >= sig_b[4]
+    body_normal_ok: ti.i32 = sig_a[5] <= sig_b[5]
+    forced_body_ok: ti.i32 = sig_a[10] <= sig_b[10]
+
+    dominated: ti.i32 = 0
+    if fever_dominates != 0 and forced_dominates != 0:
+        if body_fever_ok and body_normal_ok and forced_body_ok:
+            # Require strict improvement on at least one dimension.
+            # Otherwise sig_a == sig_b, handled by dedup equivalence.
+            all_equal: ti.i32 = 1
+            for w in ti.static(range(4)):
+                if sig_a[w] != sig_b[w]:
+                    all_equal = 0
+                if sig_a[6 + w] != sig_b[6 + w]:
+                    all_equal = 0
+            if sig_a[4] != sig_b[4]:
+                all_equal = 0
+            if sig_a[5] != sig_b[5]:
+                all_equal = 0
+            if sig_a[10] != sig_b[10]:
+                all_equal = 0
+            if all_equal == 0:
+                dominated = 1
+    return dominated
+
+
+@ti.func
 def _fg_config_signature(
     global_cfg_idx: ti.i32,
     cfg_base: ti.i32,
@@ -2215,11 +2327,16 @@ def _fg_config_signature(
             base_notes_s = 0
 
         fp_target: ti.i32 = 0
+        rep_alt: ti.i32 = 0
         if sec < n_sections:
             if cfg_mode != 0:
                 fp_target = fp_targets_vec[sec]
             else:
-                fp_target = fg_forced_counts[global_cfg_idx, sec]
+                cfg_raw: ti.i32 = fg_forced_counts[global_cfg_idx, sec]
+                decoded = _decode_fp_target_and_rep_flag(cfg_raw)
+                fp_target = decoded[0]
+                if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                    rep_alt = decoded[1]
             if fp_target < 0:
                 fp_target = 0
             if sec < FG_MAX_SECTIONS:
@@ -2237,7 +2354,13 @@ def _fg_config_signature(
                 fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                 fp_target = ti.min(fp_target, fp_cap)
 
-        forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
+        forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+            non_fever_base_f,
+            non_fever_base,
+            fp_target,
+            non_fever_base,
+            rep_alt,
+        )
         notes_to_fill: ti.i32 = base_notes_s + fp_target
         section_start: ti.i32 = current_idx
         end_normal: ti.i32 = ti.min(total_notes, section_start + notes_to_fill)
@@ -2565,6 +2688,27 @@ def fg_cfg_dedupe_build_kernel(
                     active = 0
                     rep_count = 0
                 cfg_local += 1
+
+        # Dominance pruning: remove entries structurally dominated by another entry.
+        # Two entries with different signatures can still have a dominance relationship.
+        if rep_count > 1 and active != 0:
+            for i in range(dedupe_slots):
+                hash_i = fg_cfg_dedupe_hash[local_work_idx, i]
+                if hash_i == ti.u64(0):
+                    continue
+                for j in range(i + 1, dedupe_slots):
+                    hash_j = fg_cfg_dedupe_hash[local_work_idx, j]
+                    if hash_j == ti.u64(0):
+                        continue
+                    sig_i = fg_cfg_dedupe_sig[local_work_idx, i]
+                    sig_j = fg_cfg_dedupe_sig[local_work_idx, j]
+                    if _fg_sig_is_dominated(sig_i, sig_j) != 0:
+                        fg_cfg_dedupe_hash[local_work_idx, j] = ti.u64(0)
+                        rep_count -= 1
+                    elif _fg_sig_is_dominated(sig_j, sig_i) != 0:
+                        fg_cfg_dedupe_hash[local_work_idx, i] = ti.u64(0)
+                        rep_count -= 1
+                        break
 
         fg_cfg_dedupe_rep_count[local_work_idx] = rep_count
         fg_cfg_dedupe_active[local_work_idx] = active
@@ -3103,6 +3247,7 @@ def fg_stage1_waves_kernel(
                         base_notes_s = 0
 
                     fp_target: ti.i32 = 0
+                    rep_alt: ti.i32 = 0
                     if sec < n_sections:
                         if cfg_mode != 0:
                             if ti.static(use_small_sections):
@@ -3114,7 +3259,11 @@ def fg_stage1_waves_kernel(
                             read_cfg_idx: ti.i32 = cfg_read_base + cfg_idx
                             if dedupe_active != 0:
                                 read_cfg_idx = global_cfg_idx
-                            fp_target = fg_forced_counts[read_cfg_idx, sec]
+                            cfg_raw: ti.i32 = fg_forced_counts[read_cfg_idx, sec]
+                            decoded = _decode_fp_target_and_rep_flag(cfg_raw)
+                            fp_target = decoded[0]
+                            if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                                rep_alt = decoded[1]
                         if fp_target < 0:
                             fp_target = 0
                         if sec < FG_MAX_SECTIONS:
@@ -3132,8 +3281,12 @@ def fg_stage1_waves_kernel(
                             fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                             fp_target = ti.min(fp_target, fp_cap)
 
-                    forced_val: ti.i32 = _forced_from_fp_target(
-                        non_fever_base_f, non_fever_base, fp_target, non_fever_base
+                    forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+                        non_fever_base_f,
+                        non_fever_base,
+                        fp_target,
+                        non_fever_base,
+                        rep_alt,
                     )
 
                     fp_calc: ti.i32 = fp_target
@@ -3522,11 +3675,16 @@ def fg_stage1_kernel(
                     base_notes_s = 0
 
                 fp_target: ti.i32 = 0
+                rep_alt: ti.i32 = 0
                 if sec < n_sections:
                     if cfg_mode != 0:
                         fp_target = fp_targets_vec[sec]
                     else:
-                        fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                        cfg_raw: ti.i32 = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                        decoded = _decode_fp_target_and_rep_flag(cfg_raw)
+                        fp_target = decoded[0]
+                        if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                            rep_alt = decoded[1]
                     if fp_target < 0:
                         fp_target = 0
                     if sec < FG_MAX_SECTIONS:
@@ -3546,8 +3704,14 @@ def fg_stage1_kernel(
                         fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                         fp_target = ti.min(fp_target, fp_cap)
 
-                # Derive forced_val from fp_target using raw_fill-based inverse.
-                forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
+                # Derive forced_val from fp_target using raw_fill-based inverse and optional plateau rep.
+                forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+                    non_fever_base_f,
+                    non_fever_base,
+                    fp_target,
+                    non_fever_base,
+                    rep_alt,
+                )
 
                 fp_calc: ti.i32 = fp_target
 
@@ -3896,6 +4060,7 @@ def fg_stage2_recompute_and_update_global_best_kernel(
         cfg_base: ti.i32 = fg_cfg_base_list[best_ftff]
         fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
         cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        cfg_rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
         if cfg_mode != 0:
             local_cfg_idx: ti.i32 = best_cfg - cfg_base
             if local_cfg_idx < 0:
@@ -3907,7 +4072,11 @@ def fg_stage2_recompute_and_update_global_best_kernel(
             if best_cfg >= 0:
                 for s in ti.static(range(FG_MAX_SECTIONS)):
                     if s < n_sections:
-                        cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
+                        raw_cfg: ti.i32 = fg_forced_counts[best_cfg, s]
+                        decoded = _decode_fp_target_and_rep_flag(raw_cfg)
+                        cfg_counts_vec[s] = decoded[0]
+                        if s < FG_PLATEAU_REP_MAX_SECTIONS:
+                            cfg_rep_flags_vec[s] = decoded[1]
 
         m0 = ti.cast(0, ti.u32)
         m1 = ti.cast(0, ti.u32)
@@ -3940,11 +4109,14 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                 base_notes_s = 0
 
             fp_target: ti.i32 = 0
+            rep_alt: ti.i32 = 0
             if sec < n_sections:
                 if cfg_mode != 0:
                     fp_target = fp_targets_vec[sec]
                 else:
-                    fp_target = fg_forced_counts[best_cfg, sec]
+                    fp_target = cfg_counts_vec[sec]
+                    if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                        rep_alt = cfg_rep_flags_vec[sec]
                 if fp_target < 0:
                     fp_target = 0
 
@@ -3964,7 +4136,13 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                     fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                     fp_target = ti.min(fp_target, fp_cap)
 
-            forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
+            forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+                non_fever_base_f,
+                non_fever_base,
+                fp_target,
+                non_fever_base,
+                rep_alt,
+            )
             fp_calc: ti.i32 = fp_target
 
             notes_to_fill: ti.i32 = base_notes_s + fp_calc

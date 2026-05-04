@@ -2960,6 +2960,7 @@ class GpuExecutor:
                 kwargs_local.pop("fg_download_topk", None)
                 kwargs_local.pop("fg_download_base_scores", None)
                 kwargs_local.pop("fg_download_keep_mask", None)
+                kwargs_local.pop("n_genomes_override", None)
 
                 t_pack0 = perf_counter()
                 try:
@@ -3860,6 +3861,7 @@ class GpuExecutor:
             download_topk = kwargs_local.pop("fg_download_topk", None)
             download_base_scores = kwargs_local.pop("fg_download_base_scores", None)
             download_keep_mask = kwargs_local.pop("fg_download_keep_mask", None)
+            kwargs_local.pop("n_genomes_override", None)
             kwargs_local["accumulate_global"] = True
             kwargs_local["return_raw"] = True
             # Allow callers to keep genome stats GPU-resident across multiple requests.
@@ -5125,6 +5127,8 @@ class GpuExecutor:
 
         if payload.get("ga_stage_coords") is not None or bool(kwargs_local.get("genome_stats_preuploaded")):
             raise ValueError("FG resident genome-stat preupload/staging has been removed")
+
+        kwargs_local.pop("n_genomes_override", None)
 
         if bool(payload.get("fg_reset_before", True)):
             fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))
