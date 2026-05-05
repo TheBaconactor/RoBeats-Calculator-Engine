@@ -13,7 +13,7 @@ import typing
 import numpy as np
 
 # Import from refactored modules
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import config_bool, env_flag, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
@@ -76,6 +76,8 @@ from gear_optimizer.ui.progress import (
 )
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
+from gear_optimizer.app_gpu_lifecycle import GPULifecycleManager
+from gear_optimizer.app_inflight_runner import InflightRunner
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
@@ -106,6 +108,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self.setup_logging()
         self._async_db_saver = AsyncDbSaver()
         self._stop_control = StopController(bin_dir=BIN_DIR)
+        self._inflight_runner = InflightRunner(self)
+        self._gpu_lifecycle = GPULifecycleManager(self, self._inflight_runner)
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = bool(getattr(ENV, "output_enabled", False))
@@ -130,7 +134,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             raw = env_get("METAFINDER_UI_PROCESS")
             if raw is not None and str(raw).strip() != "":
                 self._tui_enabled = truthy(raw)
-        except Exception:
+        except (TypeError, ValueError):
             self._tui_enabled = True
         self._tui_epoch = 0
         self._tui_progress = None
@@ -167,7 +171,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 0,
                 int(env_get("ROBEATSMETA_OPTIMIZER_PRIORITY_REPEAT_COUNT", "0") or "0"),
             )
-        except Exception:
+        except (TypeError, ValueError):
             self._backend_priority_song_repeat_count = 0
         self._song_path_index_lock = threading.Lock()
         self._song_path_index: dict[str, list[dict[str, str]]] = {}
@@ -405,70 +409,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             self._robeatsmeta_api = None
             logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")
 
-    def _configure_gpu_execution_and_prewarm(self, cfg) -> None:
-        # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
-        # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
-        # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
-        # PRODUCTION: GPU execution flags (GPU_Mode, GPU_Native_GA, GA_MultiStart).
-        runtime_settings = self._current_runtime_settings(cfg)
-        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
-        if not gpu_mode_requested:
-            logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-            try:
-                if not cfg.has_section("IterationEngine"):
-                    cfg.add_section("IterationEngine")
-                cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception:
-                pass
-
-        gpu_native_ga = bool(runtime_settings.gpu.gpu_native_ga)
-
-        if gpu_native_ga:
-            ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
-            try:
-                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-                gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-            except Exception:
-                pass
-
-        # InFlightSongs uses the singleton in-process GPU executor. Start it early so
-        # Taichi init + kernel warmups overlap with CPU-heavy data/path loading.
-        # This improves first-task latency on macOS where Metal JIT can be costly.
-        # PRODUCTION: in-flight overlap flag (InFlightSongs).
-        try:
-            inflight_req = int(runtime_settings.inflight.songs or 0)
-        except Exception:
-            inflight_req = 0
-        if inflight_req > 1:
-            # Dual-process native in-flight mode intentionally runs Taichi/Vulkan inside the worker
-            # processes (one context per worker). Starting the in-process GPU executor here would
-            # create an extra (idle) Taichi context in the coordinator, wasting VRAM and slowing
-            # cold-start warmups.
-            inflight_instances = self._get_effective_inflight_instances(cfg)
-            if int(inflight_instances) > 1:
-                return
-            try:
-                logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
-                emit_profile_event(
-                    component="app",
-                    event="taichi_init_start",
-                    metrics={"in_process": 1},
-                )
-                from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
-                get_gpu_executor().start(in_process=True)
-                logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
-                emit_profile_event(
-                    component="app",
-                    event="taichi_init_done",
-                    metrics={"in_process": 1},
-                )
-            except Exception:
-                pass
-
     def _run_single_iteration(self):
         memory_guard_restart = False
         memory_resume_tracker = None
@@ -564,9 +504,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     )
                 loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
-            self._apply_inflight_overrides(cfg)
-            self._maybe_apply_inflight_ram_mode(cfg)
-            self._maybe_autoset_gpu_song_slots(cfg)
+            self._inflight_runner.apply_overrides(cfg)
+            self._inflight_runner.maybe_apply_ram_mode(cfg)
+            self._inflight_runner.maybe_autoset_gpu_song_slots(cfg)
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 
@@ -598,7 +538,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 ref_arrays=ref_arrays,
                 data_root=PATHS.data_dir,
             )
-            self._configure_gpu_execution_and_prewarm(cfg)
+            self._gpu_lifecycle.configure_execution_and_prewarm(cfg)
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
@@ -1623,260 +1563,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if any(marker in message for marker in fatal_markers):
                 return True
         return False
-
-    def _get_inflight_songs_requested(self, cfg) -> int:
-        inflight_songs = int(self._current_runtime_settings(cfg).inflight.songs)
-
-        try:
-            inflight_songs_env = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
-            if inflight_songs_env > 0:
-                inflight_songs = inflight_songs_env
-        except Exception:
-            pass
-
-        return inflight_songs
-
-    def _get_inflight_instances_requested(self, cfg_or_dict) -> int:
-        inflight_instances = 1
-        try:
-            if isinstance(cfg_or_dict, dict):
-                ie = cfg_or_dict.get("IterationEngine")
-                if not isinstance(ie, dict):
-                    ie = cfg_or_dict.get("iterationengine", {})
-                inflight_instances = safe_int(
-                    ie.get("inflightinstances", ie.get("InFlightInstances", 1)) if isinstance(ie, dict) else 1,
-                    1,
-                )
-            else:
-                inflight_instances = int(self._current_runtime_settings(cfg_or_dict).inflight.instances)
-        except Exception:
-            inflight_instances = 1
-
-        raw_env_instances = env_get("INFLIGHT_INSTANCES")
-        if raw_env_instances is not None and str(raw_env_instances).strip() != "":
-            inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
-
-        return max(1, min(int(inflight_instances), 8))
-
-    def _dual_process_inflight_allowed(self) -> bool:
-        return truthy(env_get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
-
-    def _get_effective_inflight_instances(self, cfg_or_dict) -> int:
-        requested_instances = self._get_inflight_instances_requested(cfg_or_dict)
-        if int(requested_instances) <= 1:
-            return 1
-        if self._dual_process_inflight_allowed():
-            return int(requested_instances)
-
-        if not bool(getattr(self, "_logged_dual_process_quarantine", False)):
-            try:
-                logger.warning(
-                    "[InFlight] Dual-process mode is quarantined on main; forcing single-process GPU ownership. "
-                    "Set INFLIGHT_ALLOW_DUAL_PROCESS=1 to re-enable the experimental path."
-                )
-            except Exception:
-                pass
-            try:
-                emit_profile_event(
-                    component="app",
-                    event="inflight_dual_process_quarantined",
-                    metrics={"requested_instances": int(requested_instances)},
-                )
-            except Exception:
-                pass
-            try:
-                self._logged_dual_process_quarantine = True
-            except Exception:
-                pass
-
-        return 1
-
-    def _apply_inflight_overrides(self, cfg) -> None:
-        """Normalize config so InFlightSongs behaves predictably.
-
-        - InFlightSongs is a single-process, GPU-backed pipeline.
-        - It supports both CPU GA (GPU eval) and GPU_Native_GA via separate orchestrators.
-        """
-        # PRODUCTION: in-flight overlap flag (InFlightSongs) and GPU runtime flag (GPU_Mode).
-        runtime_settings = self._current_runtime_settings(cfg)
-        inflight_songs = int(runtime_settings.inflight.songs)
-        if inflight_songs > 0:
-            if not cfg.has_section("IterationEngine"):
-                cfg.add_section("IterationEngine")
-            cfg.set("IterationEngine", "InFlightSongs", str(inflight_songs))
-
-        if inflight_songs <= 1:
-            return
-
-        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
-
-        if not gpu_mode_requested:
-            logger.warning(
-                "[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); enabling GPU_Mode for in-flight."
-            )
-            try:
-                cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception:
-                pass
-
-        # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
-
-    def _maybe_apply_inflight_ram_mode(self, cfg) -> None:
-        """
-        Opt-in "RAM mode" for in-flight runs.
-
-        Goal: reduce periodic GPU starvation on very fast GPUs by increasing CPU-side buffering/caching.
-
-        Enable via:
-        - config: IterationEngine.InFlight_RamMode=true
-        - env: INFLIGHT_RAM_MODE=1
-        """
-        # PRODUCTION: in-flight RAM/cache flags
-        # (InFlight_RamMode, InFlight_SongFileCacheMax, TeamBuff_BaseCalcSongCacheMax).
-        runtime_settings = self._current_runtime_settings(cfg)
-        inflight_songs = int(runtime_settings.inflight.songs)
-        if int(inflight_songs) <= 1:
-            return
-
-        raw_env = env_get("INFLIGHT_RAM_MODE")
-        env_set = raw_env is not None and str(raw_env).strip() != ""
-        ram_mode = truthy(raw_env) if env_set else bool(runtime_settings.inflight.ram_mode)
-
-        if not ram_mode:
-            return
-
-        os.environ.setdefault("INFLIGHT_RAM_MODE", "1")
-
-        # Cache parsed song files across repeats/LoopForever (system RAM).
-        if env_get("INFLIGHT_SONG_FILE_CACHE_MAX") in {None, ""}:
-            cache_max = int(runtime_settings.inflight.song_file_cache_max)
-            if cache_max <= 0:
-                cache_max = 2048
-            os.environ["INFLIGHT_SONG_FILE_CACHE_MAX"] = str(cache_max)
-
-        # TeamBuff post-processing can re-parse base calc_song; enlarge cache when allowed.
-        if env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX") in {None, ""}:
-            tb_cache = int(runtime_settings.inflight.team_buff_calc_cache_max)
-            if tb_cache <= 0:
-                tb_cache = 256
-            os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(tb_cache)
-
-        try:
-            logger.debug(
-                "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
-                    env_get("INFLIGHT_SONG_FILE_CACHE_MAX"),
-                    env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
-                )
-            )
-        except Exception:
-            pass
-
-    def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
-        """
-        Best-effort auto sizing for `GPU_SONG_SLOTS` when native in-flight mode is enabled.
-
-        This targets a common throughput/stability failure mode on Vulkan:
-        the GPU owner thread goes idle because GA submission stalls on song-slot acquisition
-        (slot pressure), which users often interpret as the GPU executor "hanging".
-
-        Notes:
-        - Only applies when `GPU_SONG_SLOTS` is not already set in the environment.
-        - Must run before `gear_optimizer.solver.taichi_gem.fields` is imported.
-        - Users can always override by setting `GPU_SONG_SLOTS` explicitly.
-        """
-        # PRODUCTION: GPU slot sizing flag (GPU_SongSlots).
-        raw = env_get("GPU_SONG_SLOTS")
-        if raw is not None and str(raw).strip() != "":
-            return
-
-        # Allow config to explicitly set song slots (useful when users want more slot slack
-        # than the conservative auto-sizing heuristic provides).
-        runtime_settings = self._current_runtime_settings(cfg)
-        cfg_slots = int(runtime_settings.gpu.gpu_song_slots)
-        if int(cfg_slots) > 0:
-            os.environ["GPU_SONG_SLOTS"] = str(cfg_slots)
-            try:
-                logger.debug(
-                    "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
-                        int(cfg_slots)
-                    )
-                )
-            except Exception:
-                pass
-            return
-
-        inflight_songs = self._get_inflight_songs_requested(cfg)
-        if int(inflight_songs) <= 1:
-            return
-
-        try:
-            if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
-                logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
-                return
-        except Exception:
-            pass
-
-        ga_queue_mult = 0
-        # PRODUCTION: in-flight overlap flag (InFlight_GA_QueueMult).
-        ga_queue_mult = int(runtime_settings.gpu.ga_queue_mult)
-        raw = env_get("INFLIGHT_GA_QUEUE_MULT")
-        if raw is not None and str(raw).strip() != "":
-            try:
-                ga_queue_mult = int(raw)
-            except Exception:
-                pass
-        if ga_queue_mult <= 0:
-            # Match the in-flight orchestrator defaults, but allow "RAM mode" to opt
-            # into a deeper GA backlog (reduces starvation at the cost of VRAM).
-            raw_env = env_get("INFLIGHT_RAM_MODE")
-            if raw_env is not None and str(raw_env).strip() != "":
-                ram_mode = truthy(raw_env)
-            else:
-                ram_mode = bool(runtime_settings.inflight.ram_mode)
-            ga_queue_mult = 4 if ram_mode else 2
-        ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
-
-        # Slot 0 is reserved. In-flight also reserves at least one free slot so FG can submit without deadlocking.
-        # Make the default large enough that `ga_queue_mult` isn't immediately capped by slot availability.
-        required = int(inflight_songs) * int(ga_queue_mult) + 2
-        slots = max(24, int(required))
-
-        # Keep auto-sizing conservative to avoid surprising VRAM growth on smaller GPUs.
-        # Power users can opt in to larger values by setting `GPU_SONG_SLOTS` explicitly.
-        slots = min(int(slots), 256)
-
-        os.environ["GPU_SONG_SLOTS"] = str(slots)
-        try:
-            logger.debug(
-                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
-                    int(slots),
-                    int(inflight_songs),
-                    int(ga_queue_mult),
-                )
-            )
-        except Exception:
-            pass
-
-    def _execute_tasks(self, *args, **kwargs):
-        return super()._execute_tasks(*args, **kwargs)
-
-    def _run_sequential(self, *args, **kwargs):
-        return super()._run_sequential(*args, **kwargs)
-
-    def _run_dual_process_inflight(self, *args, **kwargs):
-        return super()._run_dual_process_inflight(*args, **kwargs)
-
-    def _start_post_processor(self, *args, **kwargs):
-        return super()._start_post_processor(*args, **kwargs)
-
-    def _stop_post_processor(self, *args, **kwargs):
-        return super()._stop_post_processor(*args, **kwargs)
-
-    def _run_parallel(self, *args, **kwargs):
-        return super()._run_parallel(*args, **kwargs)
-
-    def _consume_results(self, *args, **kwargs):
-        return super()._consume_results(*args, **kwargs)
 
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:

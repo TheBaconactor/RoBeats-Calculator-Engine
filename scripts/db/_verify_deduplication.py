@@ -1,3 +1,5 @@
+"""Verify that duplicate leaderboard rows are deduplicated correctly."""
+
 import sqlite3
 
 from gear_optimizer.data.database import get_db_connection, get_evolution_db_path

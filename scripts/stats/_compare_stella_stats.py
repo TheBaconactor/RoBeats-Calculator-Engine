@@ -1,3 +1,5 @@
+"""Inspect the top Stella loadout and its stored stats payload."""
+
 import sqlite3
 import json
 

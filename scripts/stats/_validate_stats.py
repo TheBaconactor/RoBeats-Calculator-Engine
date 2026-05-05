@@ -1,6 +1,4 @@
-"""
-Quick validation: Check recent DB entries for Stats
-"""
+"""Quick validation: Check recent DB entries for Stats."""
 
 import sqlite3, json
 

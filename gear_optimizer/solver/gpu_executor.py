@@ -47,48 +47,24 @@ from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, env_int
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.types import JsonDict
-from gear_optimizer.helpers.song_helpers.force_greats.cfg_window_decode import decode_cfg_counts_from_windows
-from gear_optimizer.solver.windows_timer import (
-    acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms_shared,
-    release_windows_timer_period_1ms as _release_windows_timer_period_1ms_shared,
-    system_timer_override_allowed as _system_timer_override_allowed_shared,
+from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
+from gear_optimizer.solver.gpu_executor_batching import (
+    BatchPlan as _BatchPlan,
+    effective_owner_batch_max as _effective_owner_batch_max,
+)
+from gear_optimizer.solver.gpu_executor_lifecycle import (
+    GA_WARMUP_PROFILE as _GA_WARMUP_PROFILE,
+    WARMUP_SENTINEL_SCHEMA as _WARMUP_SENTINEL_SCHEMA,
+    acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
+    default_executor_heartbeat_path as _default_executor_heartbeat_path,
+    release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
+    system_timer_override_allowed as _system_timer_override_allowed,
+    warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
 )
 
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
-_WARMUP_SENTINEL_SCHEMA = 3
-_GA_WARMUP_PROFILE = "v4_live_request_setup_refresh"
-
-
-def _effective_owner_batch_max(
-    base_batch_max: int,
-    *,
-    in_process_queues: bool,
-    batch_max_overridden: bool,
-) -> int:
-    batch_max_i = max(1, int(base_batch_max))
-    if in_process_queues and not batch_max_overridden:
-        # Keep owner turns broad enough to drain local producer bursts without
-        # widening the turn so far that same-song downstream readiness gets
-        # buried behind unrelated in-process work.
-        batch_max_i = max(batch_max_i, 24)
-    return int(batch_max_i)
-
-
-def _system_timer_override_allowed() -> bool:
-    # Wrapper kept for monkeypatch-based tests.
-    return bool(_system_timer_override_allowed_shared())
-
-
-def _acquire_windows_timer_period_1ms() -> bool:
-    # Wrapper kept for monkeypatch-based tests.
-    return bool(_acquire_windows_timer_period_1ms_shared())
-
-
-def _release_windows_timer_period_1ms() -> None:
-    # Wrapper kept for monkeypatch-based tests.
-    _release_windows_timer_period_1ms_shared()
 
 
 class GpuRequestType(Enum):
@@ -132,17 +108,6 @@ class GpuResponse:
     error: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class _BatchPlan:
-    """Batch gather decision metadata for one executor loop."""
-
-    wait_ms: int
-    max_batch: int
-    mode: str
-    queue_depth_hint: int
-    pressure_hint: float
-
-
 # Global state for worker processes
 _WORKER_MODE = False
 _WORKER_ID: Optional[int] = None
@@ -159,40 +124,6 @@ _REGISTRY_STATIC_HANDLE_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = Or
 
 _WORKER_RESPONSE_ROUTER_THREAD: threading.Thread | None = None
 _WORKER_RESPONSE_ROUTER_STOP = threading.Event()
-
-
-def _default_executor_heartbeat_path() -> Path:
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "bin" / "gpu_executor_heartbeat.json"
-
-
-def _warmup_sentinel_is_fresh(
-    *,
-    sentinel_path: Path,
-    warmup_fg: bool,
-    warmup_ga: bool,
-) -> bool:
-    try:
-        payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    try:
-        schema = int(payload.get("schema", 0) or 0)
-    except Exception:
-        schema = 0
-    if schema < _WARMUP_SENTINEL_SCHEMA:
-        return False
-    if not bool(payload.get("ok", False)):
-        return False
-    if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
-        return False
-    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
-        return False
-    if str(payload.get("ga_warmup_profile", "") or "") != _GA_WARMUP_PROFILE:
-        return False
-    return True
 
 
 def _prune_pending_responses(now: float | None = None) -> None:

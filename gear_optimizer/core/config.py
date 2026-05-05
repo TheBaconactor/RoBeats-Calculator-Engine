@@ -55,6 +55,118 @@ def load_config(path: str | None = None) -> configparser.ConfigParser:
     return cfg
 
 
+def _warn_cfg_fallback(method: str, section: str, key: str, default: Any, exc: BaseException) -> None:
+    warn_fallback(
+        f"config.{method}.invalid",
+        "failed reading config value; using default",
+        context={"section": section, "option": key, "fallback": default},
+        exc=exc,
+    )
+
+
+def _parse_cfg_int(raw: Any) -> int:
+    sentinel = object()
+    parsed = safe_int(raw, sentinel)
+    if parsed is sentinel:
+        raise ValueError(f"invalid integer value: {raw!r}")
+    return int(parsed)
+
+
+_parse_cfg_int.__name__ = "getint"
+
+
+def _parse_cfg_float(raw: Any) -> float:
+    sentinel = object()
+    parsed = safe_float(raw, sentinel)
+    if parsed is sentinel:
+        raise ValueError(f"invalid float value: {raw!r}")
+    return float(parsed)
+
+
+_parse_cfg_float.__name__ = "getfloat"
+
+
+def cfg_get(cfg: Any, section: str, key: str, type_, default: Any, *, clamp_min=None, clamp_max=None):
+    try:
+        raw = cfg.get(section, key, fallback=default)
+        if type_ is str:
+            value = default if raw is None or raw == "" else str(raw)
+        else:
+            value = type_(raw)
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
+        method = "get"
+        if type_ is _parse_cfg_int:
+            method = "getint"
+        elif type_ is _parse_cfg_float:
+            method = "getfloat"
+        _warn_cfg_fallback(method, section, key, default, exc)
+        return default
+
+    if clamp_min is not None or clamp_max is not None:
+        try:
+            if clamp_min is not None:
+                value = max(clamp_min, value)
+            if clamp_max is not None:
+                value = min(clamp_max, value)
+        except (TypeError, ValueError) as exc:
+            _warn_cfg_fallback("get", section, key, default, exc)
+            return default
+
+    return value
+
+
+def cfg_get_bool(cfg: Any, section: str, key: str, default: bool = False) -> bool:
+    try:
+        return bool(cfg.getboolean(section, key, fallback=default))
+    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
+        _warn_cfg_fallback("getboolean", section, key, default, exc)
+        return bool(default)
+
+
+def cfg_get_int(
+    cfg: Any,
+    section: str,
+    key: str,
+    default: int,
+    *,
+    clamp_min=None,
+    clamp_max=None,
+) -> int:
+    return int(
+        cfg_get(
+            cfg,
+            section,
+            key,
+            _parse_cfg_int,
+            default,
+            clamp_min=clamp_min,
+            clamp_max=clamp_max,
+        )
+    )
+
+
+def cfg_get_float(
+    cfg: Any,
+    section: str,
+    key: str,
+    default: float,
+    *,
+    clamp_min=None,
+    clamp_max=None,
+) -> float:
+    return float(
+        cfg_get(
+            cfg,
+            section,
+            key,
+            _parse_cfg_float,
+            default,
+            clamp_min=clamp_min,
+            clamp_max=clamp_max,
+        )
+    )
+
+
 def compute_memory_guard_limit(cfg):
     """
     Compute the RSS ceiling in bytes.
@@ -245,22 +357,10 @@ class GPUExecutionSettings:
     def from_config(cls, cfg: Any) -> "GPUExecutionSettings":
         if cfg is None:
             return cls()
-        try:
-            cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
-        except Exception:
-            pass
-        try:
-            cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True)
-        except Exception:
-            pass
-        try:
-            gpu_song_slots = max(0, safe_int(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0"), 0))
-        except Exception:
-            gpu_song_slots = 0
-        try:
-            ga_queue_mult = max(0, safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0))
-        except Exception:
-            ga_queue_mult = 0
+        cfg_get_bool(cfg, "IterationEngine", "GPU_Mode", True)
+        cfg_get_bool(cfg, "IterationEngine", "GPU_Native_GA", True)
+        gpu_song_slots = cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0, clamp_min=0)
+        ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
         # GPU-first policy: runtime executes with GPU enabled.
         return cls(
             gpu_mode=True,
@@ -288,70 +388,50 @@ class GASettings:
     def from_config(cls, cfg: Any) -> "GASettings":
         if cfg is None:
             return cls()
-        try:
-            tournament_k = max(1, min(8, safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback="3"), 3)))
-        except Exception:
-            tournament_k = 3
-        try:
-            mutation_rate = max(
-                0.0,
-                min(
-                    1.0,
-                    safe_float(cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=str(GA_MUTATION_RATE)), GA_MUTATION_RATE),
-                ),
-            )
-        except Exception:
-            mutation_rate = float(GA_MUTATION_RATE)
-        try:
-            immigrant_rate = max(
-                0.0,
-                min(1.0, safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback="0.0"), 0.0)),
-            )
-        except Exception:
-            immigrant_rate = 0.0
-        try:
-            elite_count = max(0, safe_int(cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=str(GA_ELITISM)), GA_ELITISM))
-        except Exception:
-            elite_count = int(GA_ELITISM)
-        try:
-            novelty_repair_attempts = max(
-                0,
-                min(4, safe_int(cfg.get("IterationEngine", "GPU_GA_NoveltyRepairAttempts", fallback="2"), 2)),
-            )
-        except Exception:
-            novelty_repair_attempts = 2
-        try:
-            convergence_trace = bool(cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False))
-        except Exception:
-            convergence_trace = False
-        try:
-            convergence_trace_every = max(
-                1,
-                safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
-            )
-        except Exception:
-            convergence_trace_every = 1
-        try:
-            convergence_trace_out_dir = str(
-                cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace") or "artifacts/ga_trace"
-            )
-        except Exception:
-            convergence_trace_out_dir = "artifacts/ga_trace"
-        try:
-            convergence_trace_song_filter = str(cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or "")
-        except Exception:
-            convergence_trace_song_filter = ""
-        try:
-            search_depth = max(1, safe_int(cfg.get("IterationEngine", "GA_Depth", fallback="50"), 50))
-        except Exception:
-            search_depth = 50
-        try:
-            multi_start = max(
-                1,
-                safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=str(GA_MULTI_RUNS_DEFAULT)), GA_MULTI_RUNS_DEFAULT),
-            )
-        except Exception:
-            multi_start = int(GA_MULTI_RUNS_DEFAULT)
+        tournament_k = cfg_get_int(cfg, "IterationEngine", "GPU_GA_TournamentK", 3, clamp_min=1, clamp_max=8)
+        mutation_rate = cfg_get_float(
+            cfg,
+            "IterationEngine",
+            "GPU_GA_MutationRate",
+            GA_MUTATION_RATE,
+            clamp_min=0.0,
+            clamp_max=1.0,
+        )
+        immigrant_rate = cfg_get_float(
+            cfg,
+            "IterationEngine",
+            "GPU_GA_ImmigrantRate",
+            0.0,
+            clamp_min=0.0,
+            clamp_max=1.0,
+        )
+        elite_count = cfg_get_int(cfg, "IterationEngine", "GPU_GA_EliteCount", GA_ELITISM, clamp_min=0)
+        novelty_repair_attempts = cfg_get_int(
+            cfg,
+            "IterationEngine",
+            "GPU_GA_NoveltyRepairAttempts",
+            2,
+            clamp_min=0,
+            clamp_max=4,
+        )
+        convergence_trace = cfg_get_bool(cfg, "IterationEngine", "GAConvergenceTrace", False)
+        convergence_trace_every = cfg_get_int(cfg, "IterationEngine", "GAConvergenceTraceEvery", 1, clamp_min=1)
+        convergence_trace_out_dir = cfg_get(
+            cfg,
+            "IterationEngine",
+            "GAConvergenceTraceOutDir",
+            str,
+            "artifacts/ga_trace",
+        )
+        convergence_trace_song_filter = cfg_get(cfg, "IterationEngine", "GAConvergenceTraceSongFilter", str, "")
+        search_depth = cfg_get_int(cfg, "IterationEngine", "GA_Depth", 50, clamp_min=1)
+        multi_start = cfg_get_int(
+            cfg,
+            "IterationEngine",
+            "GA_MultiStart",
+            GA_MULTI_RUNS_DEFAULT,
+            clamp_min=1,
+        )
 
         return cls(
             tournament_k=int(tournament_k),
@@ -381,39 +461,18 @@ class InflightSettings:
     def from_config(cls, cfg: Any) -> "InflightSettings":
         if cfg is None:
             return cls()
-        try:
-            songs = max(0, safe_int(cfg.get("IterationEngine", "InFlightSongs", fallback="0"), 0))
-        except Exception:
-            songs = 0
-        try:
-            instances = max(1, safe_int(cfg.get("IterationEngine", "InFlightInstances", fallback="1"), 1))
-        except Exception:
-            instances = 1
-        try:
-            ram_mode = bool(cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False))
-        except Exception:
-            ram_mode = False
-        try:
-            song_file_cache_max = max(
-                0,
-                safe_int(cfg.get("IterationEngine", "InFlight_SongFileCacheMax", fallback="0"), 0),
-            )
-        except Exception:
-            song_file_cache_max = 0
-        try:
-            team_buff_calc_cache_max = max(
-                0,
-                safe_int(cfg.get("IterationEngine", "TeamBuff_BaseCalcSongCacheMax", fallback="0"), 0),
-            )
-        except Exception:
-            team_buff_calc_cache_max = 0
-        try:
-            ga_queue_mult = max(
-                0,
-                safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0),
-            )
-        except Exception:
-            ga_queue_mult = 0
+        songs = cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0, clamp_min=0)
+        instances = cfg_get_int(cfg, "IterationEngine", "InFlightInstances", 1, clamp_min=1)
+        ram_mode = cfg_get_bool(cfg, "IterationEngine", "InFlight_RamMode", False)
+        song_file_cache_max = cfg_get_int(cfg, "IterationEngine", "InFlight_SongFileCacheMax", 0, clamp_min=0)
+        team_buff_calc_cache_max = cfg_get_int(
+            cfg,
+            "IterationEngine",
+            "TeamBuff_BaseCalcSongCacheMax",
+            0,
+            clamp_min=0,
+        )
+        ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
         return cls(
             songs=int(songs),
             instances=int(instances),
@@ -435,22 +494,10 @@ class CalculateSongSettings:
     def from_config(cls, cfg: Any) -> "CalculateSongSettings":
         if cfg is None:
             return cls()
-        try:
-            difficulty = str(cfg.get("CalculateSong", "Difficulty", fallback="Hard") or "Hard")
-        except Exception:
-            difficulty = "Hard"
-        try:
-            song_name = str(cfg.get("CalculateSong", "Song_Name", fallback="") or "")
-        except Exception:
-            song_name = ""
-        try:
-            target_primary = str(cfg.get("CalculateSong", "TargetPrimary", fallback="") or "")
-        except Exception:
-            target_primary = ""
-        try:
-            target_secondary = str(cfg.get("CalculateSong", "TargetSecondary", fallback="") or "")
-        except Exception:
-            target_secondary = ""
+        difficulty = cfg_get(cfg, "CalculateSong", "Difficulty", str, "Hard")
+        song_name = cfg_get(cfg, "CalculateSong", "Song_Name", str, "")
+        target_primary = cfg_get(cfg, "CalculateSong", "TargetPrimary", str, "")
+        target_secondary = cfg_get(cfg, "CalculateSong", "TargetSecondary", str, "")
         return cls(
             difficulty=str(difficulty or "Hard"),
             song_name=str(song_name or ""),
@@ -492,39 +539,21 @@ class AppRuntimeSettings:
         ga = GASettings.from_config(cfg)
         inflight = InflightSettings.from_config(cfg)
 
-        try:
-            use_evolution_db = bool(cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True))
-        except Exception:
-            use_evolution_db = True
-        try:
-            loop_forever = bool(cfg.getboolean("IterationEngine", "LoopForever", fallback=False))
-        except Exception:
-            loop_forever = False
-        try:
-            eval_cpu_cores = max(0, safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback="0"), 0))
-        except Exception:
-            eval_cpu_cores = 0
-        try:
-            song_queue_limit = max(0, safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0))
-        except Exception:
-            song_queue_limit = 0
-        try:
-            ignore_resume_queue = bool(cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False))
-        except Exception:
-            ignore_resume_queue = False
-        try:
-            song_repeats = max(1, safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1))
-        except Exception:
-            song_repeats = 1
-        try:
-            bundle_song_repeats = bool(cfg.getboolean("IterationEngine", "BundleSongRepeats", fallback=False))
-        except Exception:
-            bundle_song_repeats = False
-        try:
-            loop_restart_wait_sec = float(cfg.get("IterationEngine", "LoopRestartWaitSec", fallback="0.0"))
-        except Exception:
-            loop_restart_wait_sec = 0.0
-        loop_restart_wait_sec = max(0.0, min(float(loop_restart_wait_sec), 60.0))
+        use_evolution_db = cfg_get_bool(cfg, "IterationEngine", "UseEvolutionDB", True)
+        loop_forever = cfg_get_bool(cfg, "IterationEngine", "LoopForever", False)
+        eval_cpu_cores = cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0, clamp_min=0)
+        song_queue_limit = cfg_get_int(cfg, "IterationEngine", "SongQueueLimit", 0, clamp_min=0)
+        ignore_resume_queue = cfg_get_bool(cfg, "IterationEngine", "IgnoreResumeQueue", False)
+        song_repeats = cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1, clamp_min=1)
+        bundle_song_repeats = cfg_get_bool(cfg, "IterationEngine", "BundleSongRepeats", False)
+        loop_restart_wait_sec = cfg_get_float(
+            cfg,
+            "IterationEngine",
+            "LoopRestartWaitSec",
+            0.0,
+            clamp_min=0.0,
+            clamp_max=60.0,
+        )
 
         return cls(
             iteration_engine=iteration_engine,
@@ -567,33 +596,16 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
         )
 
     # PRODUCTION: core runtime flags (MetaFinder, AutoSelectBuffAndColor, ForceGreatsMode, ForceGreatsFinder).
-    try:
-        meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        meta_finder = False
+    meta_finder = cfg_get_bool(cfg, "IterationEngine", "MetaFinder", False)
 
     enable_fever = enable_mini = enable_gear = bool(meta_finder)
 
-    try:
-        auto_select_buff_and_color = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        auto_select_buff_and_color = False
-
-    try:
-        force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        force_greats_mode = False
-
-    try:
-        force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        force_greats_finder = False
+    auto_select_buff_and_color = cfg_get_bool(cfg, "IterationEngine", "AutoSelectBuffAndColor", False)
+    force_greats_mode = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsMode", False)
+    force_greats_finder = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsFinder", False)
 
     # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
-    try:
-        force_greats_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        force_greats_debug = False
+    force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False)
 
     # ForceGreatsMode must be enabled for ForceGreatsFinder to work.
     if not force_greats_mode:
@@ -641,19 +653,14 @@ def read_fg_candidate_limit(
     DB reads or GPU batches.
     """
     # PRODUCTION: FG tuning flag (FG_CandidateLimit).
-    try:
-        raw = cfg.get("IterationEngine", "FG_CandidateLimit")
-    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback(
-            "config.fg_candidate_limit.read",
-            "failed reading FG_CandidateLimit; using default",
-            context={"default": default},
-            exc=exc,
-        )
-        raw = default
-    limit = safe_int(raw, default)
-    limit = max(int(min_limit), min(int(max_limit), int(limit)))
-    return limit
+    return cfg_get_int(
+        cfg,
+        "IterationEngine",
+        "FG_CandidateLimit",
+        default,
+        clamp_min=int(min_limit),
+        clamp_max=int(max_limit),
+    )
 
 
 def read_fg_search_radius(cfg: Any) -> int | None:
@@ -666,11 +673,7 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     - >=0 => radius in gem-space around each loadout's (FT, FF) center
     """
     # PRODUCTION: FG tuning flag (FG_SearchRadius).
-    try:
-        raw = str(cfg.get("IterationEngine", "FG_SearchRadius") or "").strip()
-    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback("config.fg_search_radius.read", "failed reading FG_SearchRadius; using default behavior", exc=exc)
-        raw = ""
+    raw = str(cfg_get(cfg, "IterationEngine", "FG_SearchRadius", str, "") or "").strip()
     if not raw:
         return None
     return safe_int(raw, -1)
@@ -686,30 +689,14 @@ def _canon_outer_search_engine(raw: Any) -> str:
     return value
 
 
-def _read_outer_search_engine_raw(cfg: Any, *, default: str) -> tuple[Any, str]:
+def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
+    """Read `[IterationEngine].OuterSearchEngine` for mainline production routing."""
+
     default_c = "ga"
     raw_env = env_str("METAFINDER_OUTER_SEARCH_ENGINE", "")
     if not raw_env:
         raw_env = env_str("OUTER_SEARCH_ENGINE", "")
-    if raw_env:
-        return raw_env, default_c
-    try:
-        raw = cfg.get("IterationEngine", "OuterSearchEngine")
-    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback(
-            "config.outer_search_engine.read",
-            "failed reading OuterSearchEngine; using default",
-            context={"default": default_c},
-            exc=exc,
-        )
-        raw = default_c
-    return raw, default_c
-
-
-def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
-    """Read `[IterationEngine].OuterSearchEngine` for mainline production routing."""
-
-    raw, default_c = _read_outer_search_engine_raw(cfg, default=default)
+    raw = raw_env or cfg_get(cfg, "IterationEngine", "OuterSearchEngine", str, default_c)
     value = _canon_outer_search_engine(raw)
     if value == "ga":
         return value
@@ -736,16 +723,7 @@ def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
         return value
 
     default_c = _canon(default) or "finder"
-    try:
-        raw = cfg.get("IterationEngine", "FG_SolverMode")
-    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback(
-            "config.fg_solver_mode.read",
-            "failed reading FG_SolverMode; using default",
-            context={"default": default_c},
-            exc=exc,
-        )
-        raw = ""
+    raw = cfg_get(cfg, "IterationEngine", "FG_SolverMode", str, "")
     value = _canon(raw)
     if value in {"finder", "manual", "off"}:
         return value

@@ -68,7 +68,7 @@ class TaskExecutionMixin:
                 ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
                 if isinstance(ie, dict):
                     inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
-            except Exception:
+            except (TypeError, ValueError):
                 inflight_songs = 0
 
             logical_cpus = os.cpu_count() or 1
@@ -113,7 +113,7 @@ class TaskExecutionMixin:
                     total = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
                 self._last_completed_tasks = max(0, int(completed))
                 self._last_total_tasks = max(0, int(total))
-            except Exception:
+            except (TypeError, ValueError):
                 self._last_completed_tasks = None
                 self._last_total_tasks = None
 
@@ -159,9 +159,18 @@ class TaskExecutionMixin:
                 ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
                 raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
                 inflight_songs = safe_int(raw, 0)
-            except Exception:
+            except (TypeError, ValueError):
                 inflight_songs = 0
-            inflight_instances = self._get_effective_inflight_instances(cfg_dict0)
+            inflight_runner = getattr(self, "_inflight_runner", None)
+            if inflight_runner is None:
+                from gear_optimizer.app_inflight_runner import InflightRunner
+
+                inflight_runner = InflightRunner(self)
+                try:
+                    self._inflight_runner = inflight_runner
+                except Exception:
+                    pass
+            inflight_instances = inflight_runner.get_effective_inflight_instances(cfg_dict0)
 
             if inflight_songs <= 0:
                 inflight_songs = min(12, max(1, song_task_count))

@@ -7,10 +7,18 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.solver.native_inflight_types import _NativeSong
-
-
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
+from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update, make_build_details_fn
+from gear_optimizer.solver.inflight_utils import _truthy
+from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
+from gear_optimizer.solver.native_inflight_support import _loadout_entries_have_db_source
+from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_types import _NativeSong, native_song_get, native_song_group, native_song_set
 @dataclass(frozen=True)
 class NativeFGPipelineSettings:
     workers: int
@@ -116,6 +124,7 @@ class NativeFGPipeline:
         return int(self.settings.prep_workers)
 
     def queue(self, song: _NativeSong, *, now_s: float | None = None) -> None:
+        runtime = native_song_group(song, "runtime")
         self.pending.append(song)
         try:
             if not bool(getattr(song, "_fg_dynamic_prep_done", False)):
@@ -123,8 +132,8 @@ class NativeFGPipeline:
         except Exception:
             pass
         try:
-            if not isinstance(getattr(song, "fg_queued_t0", None), (int, float)):
-                song.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
+            if not isinstance(native_song_get(song, "fg_queued_t0", None), (int, float)):
+                runtime.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
         except Exception:
             pass
 
@@ -139,16 +148,17 @@ class NativeFGPipeline:
         gpu_client: Any,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
-        if song.fg_prep_future is not None:
+        runtime = native_song_group(song, "runtime")
+        if runtime.fg_prep_future is not None:
             return False
         try:
             song._fg_dynamic_prep_done = False
         except Exception:
             pass
         setattr(song, "_fg_prep_submit_t0", time.perf_counter())
-        song.fg_prep_future = self.prep_executor.submit(prep_fn, song, gpu_client=gpu_client)
+        runtime.fg_prep_future = self.prep_executor.submit(prep_fn, song, gpu_client=gpu_client)
         if register_future is not None:
-            register_future(song.fg_prep_future)
+            register_future(runtime.fg_prep_future)
         self.prep_inflight.append(song)
         return True
 
@@ -156,7 +166,7 @@ class NativeFGPipeline:
         active = 0
         seen: set[int] = set()
         for song in self.prep_inflight:
-            fut = getattr(song, "fg_prep_future", None)
+            fut = native_song_get(song, "fg_prep_future", None)
             if fut is None:
                 continue
             try:
@@ -179,7 +189,7 @@ class NativeFGPipeline:
         if self.active_prep_count() > 0:
             return True
         for song in self.pending:
-            fut = getattr(song, "fg_prep_future", None)
+            fut = native_song_get(song, "fg_prep_future", None)
             if fut is None:
                 continue
             try:
@@ -215,7 +225,7 @@ class NativeFGPipeline:
                 break
             if bool(getattr(song, "_fg_dynamic_prep_done", False)):
                 continue
-            if getattr(song, "fg_prep_future", None) is not None:
+            if native_song_get(song, "fg_prep_future", None) is not None:
                 continue
             if self.start_prep(
                 song,
@@ -248,7 +258,8 @@ class NativeFGPipeline:
         instead of losing the job or stalling the owner loop.
         """
         for candidate in list(self.pending):
-            fut = candidate.fg_prep_future
+            runtime = native_song_group(candidate, "runtime")
+            fut = runtime.fg_prep_future
             if fut is None:
                 if not bool(getattr(candidate, "_fg_dynamic_prep_done", False)):
                     if not allow_not_ready:
@@ -282,10 +293,11 @@ class NativeFGPipeline:
             return 0.0
         oldest_t0 = None
         for candidate in self.pending:
-            t0 = getattr(candidate, "fg_queued_t0", None)
+            runtime = native_song_group(candidate, "runtime")
+            t0 = native_song_get(candidate, "fg_queued_t0", None)
             if not isinstance(t0, (int, float)) or float(t0) <= 0.0:
                 try:
-                    candidate.fg_queued_t0 = float(now_s)
+                    runtime.fg_queued_t0 = float(now_s)
                 except Exception:
                     pass
                 t0 = float(now_s)
@@ -298,7 +310,8 @@ class NativeFGPipeline:
     def ready_count(self) -> int:
         ready = 0
         for candidate in self.pending:
-            fut = candidate.fg_prep_future
+            runtime = native_song_group(candidate, "runtime")
+            fut = runtime.fg_prep_future
             if fut is None:
                 if not bool(getattr(candidate, "_fg_dynamic_prep_done", False)):
                     continue
@@ -320,7 +333,7 @@ class NativeFGPipeline:
         **kwargs: Any,
     ) -> concurrent.futures.Future:
         try:
-            song.fg_queued_t0 = None
+            native_song_group(song, "runtime").fg_queued_t0 = None
         except Exception:
             pass
         t_submit = time.perf_counter()
@@ -330,6 +343,27 @@ class NativeFGPipeline:
         self.futures.append((song, future, t_submit))
         self.note_fg_submit()
         return future
+
+    def run_job_sync(
+        self,
+        song: _NativeSong,
+        *,
+        gpu_client: GpuServiceClient,
+        post_sender: Any | None = None,
+        progress_cb=None,
+        progress_best: dict[str, tuple[int, int]] | None = None,
+        progress_best_valid: set[str] | None = None,
+        progress_best_lock: Any | None = None,
+    ) -> None:
+        run_fg_job_sync(
+            song,
+            gpu_client=gpu_client,
+            post_sender=post_sender,
+            progress_cb=progress_cb,
+            progress_best=progress_best,
+            progress_best_valid=progress_best_valid,
+            progress_best_lock=progress_best_lock,
+        )
 
     def replace_futures(self, futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]]) -> None:
         self.futures.clear()
@@ -373,6 +407,277 @@ class NativeFGPipeline:
     @staticmethod
     def _song_key(song: _NativeSong) -> str:
         try:
-            return str(getattr(song, "task_key", "") or getattr(song, "song_name", "")).strip()
+            return str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
         except Exception:
             return ""
+
+
+def run_fg_job_sync(
+    song: _NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+    post_sender: Any | None = None,
+    progress_cb=None,
+    progress_best: dict[str, tuple[int, int]] | None = None,
+    progress_best_valid: set[str] | None = None,
+    progress_best_lock: Any | None = None,
+) -> None:
+    cpu_t0 = _thread_cpu_time_s()
+    song_key = str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "") or "")
+    active_fg_calc_song = _resolve_active_fg_calc_song(song)
+    if not isinstance(active_fg_calc_song, dict):
+        active_fg_calc_song = native_song_get(song, "calc_song", {})
+
+    def _count_fg_group_meta_ready(candidates: Any) -> int:
+        ready = 0
+        for candidate in candidates or []:
+            if not isinstance(candidate, dict):
+                continue
+            data = candidate.get("Data")
+            if not isinstance(data, dict):
+                continue
+            if isinstance(data.get("_fg_group_meta"), dict):
+                ready += 1
+        return int(ready)
+
+    try:
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="start",
+            song_key=song_key,
+            metrics={
+                "had_prep_future": int(native_song_get(song, "fg_prep_future", None) is not None),
+                "ga_candidates": int(len(native_song_get(song, "ga_candidates", None) or [])),
+                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(native_song_get(song, "ga_candidates", None))),
+            },
+        )
+    except Exception:
+        pass
+    fg_prep_future = native_song_get(song, "fg_prep_future", None)
+    if fg_prep_future is not None:
+        prep_wait_t0 = time.perf_counter()
+        try:
+            fg_prep_future.result()
+            try:
+                song._fg_dynamic_prep_done = True
+            except Exception:
+                pass
+        except Exception:
+            pass
+        finally:
+            try:
+                emit_profile_event(
+                    component="inflight_fg_worker",
+                    event="prep_wait",
+                    song_key=song_key,
+                    metrics={
+                        "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
+                    },
+                )
+            except Exception:
+                pass
+            native_song_set(song, "fg_prep_future", None)
+
+    if native_song_get(song, "loadout_entries", None) is None:
+        _prepare_fg_job_sync(song, gpu_client=gpu_client)
+        try:
+            song._fg_dynamic_prep_done = True
+        except Exception:
+            pass
+
+    try:
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="prep_ready",
+            song_key=song_key,
+            metrics={
+                "loadout_entries": int(len(native_song_get(song, "loadout_entries", None) or {}))
+                if isinstance(native_song_get(song, "loadout_entries", None), dict)
+                else 0,
+                "ga_candidates": int(len(native_song_get(song, "ga_candidates", None) or [])),
+                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(native_song_get(song, "ga_candidates", None))),
+            },
+        )
+    except Exception:
+        pass
+
+    # Late non-blocking DB prefetch consume:
+    # - If FG prep skipped DB rows because prefetch was still in-flight, harvest now if ready.
+    # - Never block FG worker threads on SQLite here.
+    if native_song_get(song, "db_loadouts_full", None) is None and native_song_get(song, "db_loadouts_future", None) is not None:
+        fut = native_song_get(song, "db_loadouts_future", None)
+        try:
+            if fut.done():
+                try:
+                    db_rows = fut.result(timeout=0)
+                    if isinstance(db_rows, list):
+                        native_song_set(song, "db_loadouts_full", db_rows)
+                except Exception:
+                    native_song_set(song, "db_loadouts_full", None)
+            else:
+                # Best effort: avoid keeping stale prefetch work around if FG is already running.
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            native_song_set(song, "db_loadouts_future", None)
+
+    build_details = getattr(song, "fg_build_details", None)
+    if not callable(build_details):
+        build_details = make_build_details_fn(
+            native_song_get(song, "meta_primary_color", ""),
+            native_song_get(song, "meta_secondary_color", ""),
+            native_song_get(song, "effective_difficulty", ""),
+        )
+        try:
+            song.fg_build_details = build_details
+        except Exception:
+            pass
+
+    # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
+    # without rebuilding the full GA union.
+    db_loadouts_full = native_song_get(song, "db_loadouts_full", None)
+    loadout_entries = native_song_get(song, "loadout_entries", None)
+    if db_loadouts_full is not None and not _loadout_entries_have_db_source(loadout_entries):
+        if not isinstance(loadout_entries, dict):
+            loadout_entries = {}
+            native_song_set(song, "loadout_entries", loadout_entries)
+        merge_db_loadouts_into_entries(loadout_entries, db_loadouts_full)
+
+    try:
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="pre_dispatch",
+            song_key=song_key,
+            metrics={
+                "loadout_entries": int(len(native_song_get(song, "loadout_entries", None) or {}))
+                if isinstance(native_song_get(song, "loadout_entries", None), dict)
+                else 0,
+                "ga_candidates": int(len(native_song_get(song, "ga_candidates", None) or [])),
+                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(native_song_get(song, "ga_candidates", None))),
+            },
+        )
+    except Exception:
+        pass
+
+    fg_solver_mode = str((native_song_get(song, "cfg_data", None) or {}).get("fg_solver_mode") or "finder").strip().lower()
+    try:
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="dispatch_start",
+            song_key=song_key,
+            metrics={
+                "solver_mode": str(fg_solver_mode),
+                "song_slot": int(native_song_get(song, "song_slot", 0) or 0),
+            },
+        )
+    except Exception:
+        pass
+    if fg_solver_mode == "off":
+        fg_variants = []
+    else:
+        fg_variants = process_force_greats(
+            native_song_get(song, "loadout_entries", None) or {},
+            bool(native_song_get(song, "manual_force_greats", False)),
+            bool(native_song_get(song, "force_greats_finder", False)),
+            native_song_get(song, "force_greats_config", None),
+            active_fg_calc_song,
+            native_song_get(song, "ref_arrays", None),
+            native_song_get(song, "meta_primary_color", ""),
+            build_details,
+            use_gpu=True,
+            fg_search_radius=native_song_get(song, "fg_search_radius", None),
+            perf_timing=_truthy(env_get("PERF_TIMING", "0")),
+            gpu_client=gpu_client,
+            ga_candidates=native_song_get(song, "ga_candidates", None) if bool(native_song_get(song, "fg_direct_ga_candidates", False)) else None,
+            ga_registry=native_song_get(song, "registry", None) if bool(native_song_get(song, "fg_direct_ga_candidates", False)) else None,
+        )
+
+    native_song_set(song, "fg_variants", list(fg_variants or []))
+    try:
+        setattr(song, "_cpu_fg_run_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+    except Exception:
+        pass
+    try:
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="dispatch_done",
+            song_key=song_key,
+            metrics={
+                "fg_variants": int(len(native_song_get(song, "fg_variants", None) or [])),
+                "solver_mode": str(fg_solver_mode),
+            },
+        )
+    except Exception:
+        pass
+
+    if progress_cb is not None:
+        fg_record_info = None
+        try:
+            prev_best_score = safe_int(native_song_get(song, "db_best_score", 0), 0)
+            prev_best_fg = safe_int(native_song_get(song, "db_best_fg_score", 0), 0)
+            baseline_valid = bool(native_song_get(song, "db_baseline_valid", True))
+
+            key = str(native_song_get(song, "db_key", "") or "").strip()
+            if progress_best is not None and progress_best_lock is not None and key:
+                try:
+                    with progress_best_lock:
+                        best_pair = progress_best.get(key)
+                        if isinstance(best_pair, tuple) and len(best_pair) == 2:
+                            prev_best_score = safe_int(best_pair[0], prev_best_score)
+                            prev_best_fg = safe_int(best_pair[1], prev_best_fg)
+                        baseline_valid = key in (progress_best_valid or set())
+                except Exception:
+                    pass
+
+            fg_record_info = evaluate_progress_record_update(
+                native_song_get(song, "best_data", None) or {},
+                {"score": int(prev_best_score)},
+                native_song_get(song, "fg_variants", None) or [],
+                db_best_fg_score=int(prev_best_fg),
+                baseline_valid=bool(baseline_valid),
+                fg_only=True,
+            )
+        except Exception:
+            fg_record_info = None
+        if isinstance(fg_record_info, dict):
+            fg_record_info = dict(fg_record_info)
+            if fg_record_info.get("is_fg_better") and progress_best is not None and progress_best_lock is not None:
+                try:
+                    best_fg_new = safe_int(fg_record_info.get("best_fg_score_run", 0), 0)
+                except Exception:
+                    best_fg_new = 0
+                if best_fg_new > 0:
+                    key = str(native_song_get(song, "db_key", "") or "").strip()
+                    if key:
+                        try:
+                            with progress_best_lock:
+                                score0, fg0 = progress_best.get(key, (int(prev_best_score), int(prev_best_fg)))
+                                if int(best_fg_new) > int(fg0):
+                                    progress_best[key] = (int(score0), int(best_fg_new))
+                                if bool(baseline_valid) and progress_best_valid is not None:
+                                    progress_best_valid.add(key)
+                        except Exception:
+                            pass
+            try:
+                progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
+            except Exception:
+                pass
+
+    if post_sender is not None:
+        post_sender.send(
+            {
+                "_fg_update": True,
+                "song": native_song_get(song, "song_name", ""),
+                "db_key": native_song_get(song, "db_key", ""),
+                "use_evo_db": bool(native_song_get(song, "use_evo_db", True)),
+                "persist_entries": _build_fg_persist_entries(song),
+                # Allow downstream post-process / async DB hooks (e.g., TeamBuff tier leaderboards)
+                # to run without requiring ForceGreatsDebug (which ships large objects).
+                "file_path": native_song_get(song, "fp", ""),
+                "cfg_dict": native_song_get(song, "cfg_dict", None),
+            }
+        )

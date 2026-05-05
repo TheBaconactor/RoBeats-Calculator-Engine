@@ -6,5 +6,6 @@ This package hosts the Force Greats helper logic. The public entrypoint is:
 """
 
 from .core import process_force_greats
+from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
 
-__all__ = ["process_force_greats"]
+__all__ = ["process_force_greats", "decode_cfg_counts_from_windows"]

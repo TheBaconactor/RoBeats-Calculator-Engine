@@ -1,3 +1,5 @@
+"""Explain how many rows exist in each FG tier bucket."""
+
 import sqlite3
 
 conn = sqlite3.connect("evolution.db")

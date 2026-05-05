@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     registry = object()
@@ -38,7 +39,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(orchestrator, "process_force_greats", _fake_process_force_greats)
+    monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
     song = SimpleNamespace(
         fg_prep_future=None,
@@ -84,6 +85,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
 
@@ -101,7 +103,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(orchestrator, "process_force_greats", _fake_process_force_greats)
+    monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
     song = SimpleNamespace(
         fg_prep_future=None,

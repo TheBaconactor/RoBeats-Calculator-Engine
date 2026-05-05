@@ -1,3 +1,5 @@
+"""Quick validation: check recent DB entries for Stats."""
+
 import sqlite3
 import json
 

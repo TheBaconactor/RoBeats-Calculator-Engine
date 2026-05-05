@@ -7,7 +7,7 @@ The goal is to make refactors and performance work safer without forcing a full 
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Dict, List, Mapping, Optional, Tuple, TypedDict
 
 import numpy as np
 
@@ -53,26 +53,17 @@ class DbLoadoutPayload(TypedDict, total=False):
     minis: List[Any]
     details: JsonDict
     force: Optional[JsonDict]
+    base_score: int
+    selected_element: str
+    _source: str
 
 
-class PersistenceEntry(TypedDict, total=False):
+class PersistenceEntry(DbLoadoutPayload, total=False):
     """
     A single persistence entry passed to DB batch insert.
 
     This corresponds to the `entries` element passed into `save_loadouts_batch(...)`.
     """
-
-    score: int
-    fg_score: int
-    gear: List[Any]
-    minis: List[Any]
-    details: JsonDict
-    force: Optional[JsonDict]
-
-    # Optional/debug fields (used by some pipelines)
-    base_score: int
-    selected_element: str
-    _source: str
 
 
 class StageTiming(TypedDict, total=False):
@@ -149,16 +140,16 @@ BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bo
 class SolveGenomesFromRegistryPayload(TypedDict, total=False):
     """Payload for `GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY`."""
 
-    population_indices: Any
-    timeline_grid: Any
-    ref_arrays: Any
+    population_indices: np.ndarray
+    timeline_grid: np.ndarray
+    ref_arrays: RefArrays
     song_slot: int
     total_budget: int
     gem_scale_fever: int
-    item_stats: Any
-    slot_start: Any
-    slot_count: Any
-    base_fixed_stats: Any
+    item_stats: np.ndarray
+    slot_start: np.ndarray
+    slot_count: np.ndarray
+    base_fixed_stats: np.ndarray
 
     # color/stat flags (p/s x {ft,ff,pp,cm,fm,ov})
     is_p_ft: bool
@@ -178,5 +169,5 @@ class SolveGenomesFromRegistryPayload(TypedDict, total=False):
 class SolveForceGreatsFinderPayload(TypedDict, total=False):
     """Payload for `GpuRequestType.SOLVE_FORCE_GREATS_FINDER`."""
 
-    args: Sequence[Any]
+    args: Tuple[Any, ...]
     kwargs: JsonDict
