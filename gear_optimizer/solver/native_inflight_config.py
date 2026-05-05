@@ -8,6 +8,7 @@ into a frozen dataclass so the orchestrator body stays focused on runtime logic.
 from __future__ import annotations
 
 import logging
+import configparser
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -38,7 +39,7 @@ def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     ncpu = os.cpu_count() or 1
     try:
         ncpu = int(ncpu)
-    except Exception:
+    except (ValueError, TypeError):
         ncpu = 1
     ncpu = max(1, ncpu)
     inflight_limit = max(1, int(inflight_limit))
@@ -73,23 +74,23 @@ def _read_fg_static_prep_max_inflight(
     else:
         try:
             limit = int(cpu_prewarm_lookahead)
-        except Exception:
+        except (ValueError, TypeError):
             limit = 0
     if cfg0 is not None:
         try:
             raw_cfg = cfg0.get("IterationEngine", "InFlight_FGStaticPrepMaxInflight", fallback="")
-        except Exception:
+        except (configparser.Error, ValueError, TypeError):
             raw_cfg = ""
         if str(raw_cfg).strip() != "":
             try:
                 limit = int(raw_cfg)
-            except Exception:
+            except (ValueError, TypeError):
                 limit = 0
     raw_env = env_get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
     if raw_env is not None and str(raw_env).strip() != "":
         try:
             limit = int(raw_env)
-        except Exception:
+        except (ValueError, TypeError):
             limit = 0
     if limit <= 0:
         return 0
@@ -114,18 +115,18 @@ def _read_cpu_prewarm_lookahead(
     if cfg0 is not None:
         try:
             raw_cfg = cfg0.get("IterationEngine", "InFlight_CPUPrewarmLookahead", fallback="")
-        except Exception:
+        except (configparser.Error, ValueError, TypeError):
             raw_cfg = ""
         if str(raw_cfg).strip() != "":
             try:
                 lookahead = int(raw_cfg)
-            except Exception:
+            except (ValueError, TypeError):
                 lookahead = int(default)
     raw_env = env_get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
     if raw_env is not None and str(raw_env).strip() != "":
         try:
             lookahead = int(raw_env)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     return max(0, min(int(lookahead), int(prep_limit), 32))
 
@@ -174,7 +175,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     cfg0 = None
     try:
         cfg0 = cfg_from_dict(tasks[0][3] or {})
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         cfg0 = None
 
     inflight_ram_mode = False
@@ -184,7 +185,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             inflight_ram_mode = _truthy(raw_env)
         elif cfg0 is not None:
             inflight_ram_mode = cfg0.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         inflight_ram_mode = False
 
     pool_cache_max = 0
@@ -197,7 +198,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 "[InFlight][RAM] enabled: default InFlight_GA_QueueMult=4 InFlight_PrepBufferMult=12 "
                 f"cache_max={{pool:{int(pool_cache_max)} registry:{int(registry_cache_max)} heur:{int(init_heur_cache_max)}}}"
             )
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
     requested_inflight = max(1, int(in_flight_songs))
@@ -217,12 +218,12 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             try:
                 if int(len(tasks)) < int(requested_inflight):
                     cap_reasons.append(f"queue={int(len(tasks))}")
-            except Exception:
+            except (ValueError, TypeError):
                 pass
             try:
                 if int(song_slot_limit) < int(requested_inflight):
                     cap_reasons.append(f"usable_slots={int(song_slot_limit)}")
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
             msg = (
@@ -236,7 +237,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                     msg += " [capped"
                 msg += "; set GPU_SONG_SLOTS >= InFlightSongs + 1 to avoid slot caps]"
             logger.debug(msg)
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
     target_song_lanes = _read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
@@ -245,13 +246,13 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     if cfg0 is not None:
         try:
             ga_queue_mult = safe_int(cfg0.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
-        except Exception:
+        except (configparser.Error, ValueError, TypeError):
             ga_queue_mult = 0
     raw = env_get("INFLIGHT_GA_QUEUE_MULT")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_mult = int(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     if ga_queue_mult <= 0:
         ga_queue_mult = 4 if inflight_ram_mode else 2
@@ -263,13 +264,13 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     if cfg0 is not None:
         try:
             prep_buffer_mult = safe_int(cfg0.get("IterationEngine", "InFlight_PrepBufferMult", fallback="0"), 0)
-        except Exception:
+        except (configparser.Error, ValueError, TypeError):
             prep_buffer_mult = 0
     raw = env_get("INFLIGHT_PREP_BUFFER_MULT")
     if raw is not None and str(raw).strip() != "":
         try:
             prep_buffer_mult = int(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     if prep_buffer_mult <= 0:
         prep_buffer_mult = 12 if inflight_ram_mode else 4
@@ -285,20 +286,20 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 fg_aging_trigger_ms = float(cfg0.get("IterationEngine", "InFlight_FGAgingTriggerMs", fallback="750"))
             if cfg0.has_option("IterationEngine", "InFlight_FGAgingHardMs"):
                 fg_aging_hard_ms = float(cfg0.get("IterationEngine", "InFlight_FGAgingHardMs", fallback="2500"))
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         fg_aging_trigger_ms = 750.0
         fg_aging_hard_ms = 2500.0
     raw = env_get("INFLIGHT_FG_AGING_TRIGGER_MS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_aging_trigger_ms = float(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     raw = env_get("INFLIGHT_FG_AGING_HARD_MS")
     if raw is not None and str(raw).strip() != "":
         try:
             fg_aging_hard_ms = float(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     fg_aging_trigger_s = max(0.0, float(fg_aging_trigger_ms) / 1000.0)
     fg_aging_hard_s = max(0.0, float(fg_aging_hard_ms) / 1000.0)
@@ -316,7 +317,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             fg_drain_src = f"config({raw})"
         elif cfg0 is not None:
             fg_drain_src = "config(missing->false)"
-    except Exception as exc:
+    except (configparser.Error, ValueError, TypeError) as exc:
         fg_drain_at_end = False
         fg_drain_src = f"config_error({type(exc).__name__})"
     raw_env = env_get("INFLIGHT_FG_DRAIN_AT_END")
@@ -346,20 +347,20 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
         )
         logger.debug(msg)
-    except Exception:
+    except (ValueError, TypeError):
         pass
 
     inflight_fg_hold_slots = True
     try:
         if cfg0 is not None:
             inflight_fg_hold_slots = cfg0.getboolean("IterationEngine", "InFlight_FGHoldSlots", fallback=True)
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         inflight_fg_hold_slots = True
     hold_slots_explicit = False
     try:
         if cfg0 is not None:
             hold_slots_explicit = bool(cfg0.has_option("IterationEngine", "InFlight_FGHoldSlots"))
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         hold_slots_explicit = False
     raw = env_get("INFLIGHT_FG_HOLD_SLOTS")
     if raw is not None and str(raw).strip() != "":
@@ -388,7 +389,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     inflight_ga_dynamic_queue = False
     try:
         inflight_ga_dynamic_queue = bool(fg_enabled and int(in_flight_songs) > 1)
-    except Exception:
+    except (ValueError, TypeError):
         inflight_ga_dynamic_queue = False
     try:
         if cfg0 is not None:
@@ -397,7 +398,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 "InFlight_GA_DynamicQueue",
                 fallback=bool(inflight_ga_dynamic_queue),
             )
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         pass
     raw = env_get("INFLIGHT_GA_DYNAMIC_QUEUE")
     if raw is not None and str(raw).strip() != "":
@@ -410,13 +411,13 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 cfg0.get("IterationEngine", "InFlight_GA_ExtraFreeSlotsOnSlotPressure", fallback="1"),
                 1,
             )
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         ga_queue_extra_free_on_slot_pressure = 1
     raw = env_get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_SLOT_PRESSURE")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_extra_free_on_slot_pressure = int(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     ga_queue_extra_free_on_slot_pressure = max(0, min(int(ga_queue_extra_free_on_slot_pressure), 8))
 
@@ -426,20 +427,20 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             ga_queue_pressure_window_s = float(
                 cfg0.get("IterationEngine", "InFlight_GA_SlotPressureWindowSec", fallback="1.5")
             )
-    except Exception:
+    except (configparser.Error, ValueError, TypeError):
         ga_queue_pressure_window_s = 1.5
     raw = env_get("INFLIGHT_GA_SLOT_PRESSURE_WINDOW_SEC")
     if raw is not None and str(raw).strip() != "":
         try:
             ga_queue_pressure_window_s = float(raw)
-        except Exception:
+        except (ValueError, TypeError):
             pass
     ga_queue_pressure_window_s = max(0.0, min(float(ga_queue_pressure_window_s), 60.0))
 
     ga_slack_slots = 0
     try:
         ga_slack_slots = max(0, int(song_slot_limit) - int(ga_queue_limit))
-    except Exception:
+    except (ValueError, TypeError):
         ga_slack_slots = 0
 
     fg_hold_budget = int(ga_slack_slots)
@@ -450,7 +451,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             try:
                 required_usable = int(ga_queue_limit)
                 required_gpu_slots = int(required_usable) + 1
-            except Exception:
+            except (ValueError, TypeError):
                 required_gpu_slots = None
             try:
                 msg = (
@@ -461,14 +462,14 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 if required_gpu_slots is not None:
                     msg += f" (For full slot reuse: set GPU_SONG_SLOTS>={int(required_gpu_slots)} or reduce InFlight_GA_QueueMult.)"
                 logger.debug(msg)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
             if not hold_slots_explicit:
                 inflight_fg_hold_slots = False
                 fg_hold_budget = 0
                 try:
                     logger.debug("[InFlight][Auto] Disabling InFlight_FGHoldSlots (no slack song slots available).")
-                except Exception:
+                except (ValueError, TypeError):
                     pass
 
     try:
@@ -496,7 +497,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                     "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
                     "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
                 )
-    except Exception:
+    except (ValueError, TypeError):
         pass
 
     stage_profile_enabled = _truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
