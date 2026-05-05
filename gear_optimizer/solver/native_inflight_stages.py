@@ -182,11 +182,11 @@ def _maybe_prewarm_fg_chart_scorer(song: _NativeSong) -> None:
         ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
         if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
             return
-        if bool(getattr(song, "_fg_chart_scorer_prewarmed", False)):
+        if bool(getattr(song.runtime.prep, "fg_chart_scorer_prewarmed", False)):
             return
 
         get_cached_chart_scorer(calc_song, ref_arrays, create_chart_scorer_from_calc_song)
-        setattr(song, "_fg_chart_scorer_prewarmed", True)
+        song.runtime.prep.fg_chart_scorer_prewarmed = True
     except Exception:
         return
 
@@ -668,7 +668,7 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:
         cpu_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
-        setattr(song, "_cpu_decode_s", cpu_s)
+        song.runtime.decode.cpu_decode_s = cpu_s
     except (AttributeError, TypeError, ValueError):
         cpu_s = None
     try:
@@ -740,10 +740,10 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
         default=FG_CANDIDATE_LIMIT,
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
-    runtime.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg_search_radius = read_fg_search_radius(cfg)
-    runtime.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
-    song.fg_build_details = make_build_details_fn(
+    runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
+    runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
+    runtime.fg.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
+    song.runtime.fg.fg_build_details = make_build_details_fn(
         gpu_inputs.meta_primary_color,
         gpu_inputs.meta_secondary_color,
         config.effective_difficulty,
@@ -752,31 +752,31 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
 
     # Manual-only FG needs GA candidates merged into loadout_entries, so it stays
     # in the late prep phase. Finder-mode can use DB/static entries immediately.
-    if not bool(runtime.fg_direct_ga_candidates):
+    if not bool(runtime.fg.fg_direct_ga_candidates):
         try:
-            setattr(song, "_fg_static_prep_done", True)
-            setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+            song.runtime.fg.fg_static_prep_done = True
+            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
 
-    if getattr(song.runtime, "loadout_entries", None) is not None:
+    if getattr(song.runtime.fg, "loadout_entries", None) is not None:
         try:
-            setattr(song, "_fg_static_prep_done", True)
-            setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+            song.runtime.fg.fg_static_prep_done = True
+            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
 
-    db_loadouts_full = runtime.db_loadouts_full
+    db_loadouts_full = runtime.db.db_loadouts_full
     prefetch_pending = False
-    if db_loadouts_full is None and runtime.db_loadouts_future is not None:
+    if db_loadouts_full is None and runtime.db.db_loadouts_future is not None:
         try:
-            fut = runtime.db_loadouts_future
+            fut = runtime.db.db_loadouts_future
             if fut.done():
                 try:
                     db_loadouts_full = fut.result(timeout=0)
-                    runtime.db_loadouts_full = db_loadouts_full
+                    runtime.db.db_loadouts_full = db_loadouts_full
                     if isinstance(db_loadouts_full, list):
                         _fg_db_cache_put(
                             config.db_key,
@@ -787,21 +787,21 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
                 except Exception:
                     db_loadouts_full = None
                 finally:
-                    runtime.db_loadouts_future = None
+                    runtime.db.db_loadouts_future = None
             else:
                 prefetch_pending = True
                 db_loadouts_full = None
         except Exception:
             db_loadouts_full = None
 
-    runtime.loadout_entries = build_loadout_entries(
+    runtime.fg.loadout_entries = build_loadout_entries(
         config.db_key,
         bool(config.use_evo_db),
         [],
         int(fg_candidate_limit),
         gpu_inputs.gears_by_name,
         gpu_inputs.minis_by_name,
-        song.fg_build_details,
+        song.runtime.fg.fg_build_details,
         team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
         db_loadouts_full=db_loadouts_full,
         allow_db_query=not bool(prefetch_pending),
@@ -809,8 +809,8 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
         ga_registry=gpu_inputs.registry,
     )
     try:
-        setattr(song, "_fg_static_prep_done", True)
-        setattr(song, "_cpu_fg_static_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+        song.runtime.fg.fg_static_prep_done = True
+        song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
     except AttributeError:
         pass
 
@@ -820,11 +820,11 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
     wall_t0 = time.perf_counter()
-    prep_submit_t0 = getattr(song, "_fg_prep_submit_t0", None)
+    prep_submit_t0 = song.runtime.fg.fg_prep_submit_t0
     queue_wait_ms = 0.0
     if isinstance(prep_submit_t0, (int, float)):
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
-    static_future = getattr(song, "fg_static_prep_future", None)
+    static_future = getattr(song.runtime.fg, "fg_static_prep_future", None)
     if static_future is not None:
         static_done = False
         try:
@@ -837,7 +837,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             except Exception:
                 pass
             try:
-                song.fg_static_prep_future = None
+                song.runtime.fg.fg_static_prep_future = None
             except AttributeError:
                 pass
     # Static prep is a best-effort accelerator only. If it is not ready yet, FG
@@ -856,8 +856,8 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         default=FG_CANDIDATE_LIMIT,
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
-    runtime.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg_search_radius = read_fg_search_radius(cfg)
+    runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
+    runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
 
     active_fg_calc_song = _resolve_active_fg_calc_song(song)
 
@@ -875,7 +875,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     _maybe_prewarm_fg_chart_scorer(song)
     t_chart_prewarm = time.perf_counter()
 
-    ga_candidates = runtime.ga_candidates if isinstance(runtime.ga_candidates, list) else list(runtime.ga_candidates or [])
+    ga_candidates = runtime.decode.ga_candidates if isinstance(runtime.decode.ga_candidates, list) else list(runtime.decode.ga_candidates or [])
     preselect_ga_candidates = len(ga_candidates)
     # If GA came from the GPU-native "selected payload" path, candidates are already GPU-selected
     # (bounded + deduped) and re-running the CPU selector is pure overhead on slower machines.
@@ -899,7 +899,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             secondary_color=str(gpu_inputs.meta_secondary_color or ""),
         )
     t_candidate_select = time.perf_counter()
-    runtime.ga_candidates = ga_candidates
+    runtime.decode.ga_candidates = ga_candidates
     hydrated_fg_stats = False
     if bool(getattr(song.gpu_inputs, "force_greats_finder", False)) and ga_candidates:
         hydrated_fg_stats = True
@@ -933,16 +933,16 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     # Non-blocking DB prefetch: check if future is ready without blocking.
     # If the DB read is still in progress, proceed with GA candidates only.
     # This prevents FG worker threads from stalling on DB I/O and starving the GPU.
-    db_loadouts_full = runtime.db_loadouts_full
+    db_loadouts_full = runtime.db.db_loadouts_full
     prefetch_pending = False
-    if db_loadouts_full is None and runtime.db_loadouts_future is not None:
+    if db_loadouts_full is None and runtime.db.db_loadouts_future is not None:
         try:
-            fut = runtime.db_loadouts_future
+            fut = runtime.db.db_loadouts_future
             # Use done() check to avoid blocking - if DB read isn't ready, skip it
             if fut.done():
                 try:
                     db_loadouts_full = fut.result(timeout=0)
-                    runtime.db_loadouts_full = db_loadouts_full
+                    runtime.db.db_loadouts_full = db_loadouts_full
                     if isinstance(db_loadouts_full, list):
                         _fg_db_cache_put(
                             config.db_key,
@@ -953,7 +953,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                 except Exception:
                     db_loadouts_full = None
                 finally:
-                    runtime.db_loadouts_future = None
+                    runtime.db.db_loadouts_future = None
             else:
                 # DB prefetch still running - proceed without it to keep GPU fed
                 if perf:
@@ -964,18 +964,18 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             db_loadouts_full = None
     t_db = time.perf_counter()
 
-    build_details = getattr(song, "fg_build_details", None)
+    build_details = song.runtime.fg.fg_build_details
     if not callable(build_details):
         build_details = make_build_details_fn(
             gpu_inputs.meta_primary_color, gpu_inputs.meta_secondary_color, config.effective_difficulty
         )
-        song.fg_build_details = build_details
-    runtime.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
+        song.runtime.fg.fg_build_details = build_details
+    runtime.fg.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
     # only the retained GA subset is merged back into `runtime.loadout_entries` after FG.
-    loadout_ga_candidates = [] if bool(runtime.fg_direct_ga_candidates) else list(ga_candidates or [])
-    if getattr(song.runtime, "loadout_entries", None) is None or not bool(runtime.fg_direct_ga_candidates):
-        runtime.loadout_entries = build_loadout_entries(
+    loadout_ga_candidates = [] if bool(runtime.fg.fg_direct_ga_candidates) else list(ga_candidates or [])
+    if getattr(song.runtime.fg, "loadout_entries", None) is None or not bool(runtime.fg.fg_direct_ga_candidates):
+        runtime.fg.loadout_entries = build_loadout_entries(
             config.db_key,
             bool(config.use_evo_db),
             loadout_ga_candidates,
@@ -1004,7 +1004,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     build_ms = (t_build - t_db) * 1000.0
     total_ms = (t_build - t0) * 1000.0
     try:
-        loadouts_n = len(runtime.loadout_entries or {})
+        loadouts_n = len(runtime.fg.loadout_entries or {})
     except (TypeError, AttributeError):
         loadouts_n = 0
     db_n = -1
@@ -1026,7 +1026,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         )
 
     try:
-        setattr(song, "_cpu_fg_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+        song.runtime.fg.cpu_fg_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
     except (AttributeError, TypeError, ValueError):
         pass
     try:
@@ -1051,7 +1051,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                 "ga_candidates": int(len(ga_candidates or [])),
                 "gpu_selected_payload": int(bool(is_gpu_selected_payload)),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
-                "loadouts": int(len(getattr(song.runtime, "loadout_entries", {}) or {})),
+                "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
                 "direct_ga_candidates": int(bool(getattr(song.runtime, "fg_direct_ga_candidates", False))),
                 "db_prefetch_pending": int(bool(prefetch_pending)),
                 "db_rows": int(len(db_loadouts_full or [])) if isinstance(db_loadouts_full, list) else -1,

@@ -70,20 +70,36 @@ class _NativeSongGPUInputs:
 
 
 @dataclass
-class _NativeSongRuntimeState:
-    song_slot: int = 0
+class _NativeSongPrepState:
+    cpu_prewarm_future: Optional[concurrent.futures.Future] = None
+    cpu_prewarm_s: float = 0.0
+    cpu_prewarm_submit_t0: float | None = None
+    cpu_prep_s: float = 0.0
+    fg_chart_scorer_prewarmed: bool = False
+
+
+@dataclass
+class _NativeSongGAState:
     ga_future: Optional[concurrent.futures.Future] = None
+    ga_submit_t0: float | None = None
+    ga_initial_populations: Optional[list[Any]] = None
+    outer_engine: str = ""
+
+
+@dataclass
+class _NativeSongDecodeState:
     decode_future: Optional[concurrent.futures.Future] = None
+    decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
     ga_persistence_candidates: Optional[list[JsonDict]] = None
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
     best_minis: Optional[list[Any]] = None
-    record_info: Optional[JsonDict] = None
-    db_loadouts_future: Optional[concurrent.futures.Future] = None
-    db_loadouts_full: Optional[list[JsonDict]] = None
-    cpu_prewarm_future: Optional[concurrent.futures.Future] = None
-    loadout_entries: Optional[dict[str, JsonDict]] = None
+    cpu_decode_s: float = 0.0
+
+
+@dataclass
+class _NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
     fg_candidate_limit: int = 0
     fg_search_radius: Optional[int] = None
@@ -91,12 +107,84 @@ class _NativeSongRuntimeState:
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None
     fg_direct_ga_candidates: bool = False
+    fg_static_prep_future: Optional[concurrent.futures.Future] = None
+    fg_static_prep_done: bool = False
+    fg_dynamic_prep_done: bool = False
+    fg_static_prep_submit_t0: float | None = None
+    fg_prep_submit_t0: float | None = None
+    fg_build_details: Any | None = None
+    loadout_entries: Optional[dict[str, JsonDict]] = None
+    cpu_fg_static_prep_s: float = 0.0
+    cpu_fg_prep_s: float = 0.0
+    cpu_fg_run_s: float = 0.0
+
+
+@dataclass
+class _NativeSongDBState:
     prev_record: Optional[JsonDict] = None
     db_best_score: int = 0
-    attempt_lifetime: int = 0
-    prev_attempts_first: int = 0
     db_best_fg_score: int = 0
     db_baseline_valid: bool = False
+    attempt_lifetime: int = 0
+    prev_attempts_first: int = 0
+    record_info: Optional[JsonDict] = None
+    db_loadouts_future: Optional[concurrent.futures.Future] = None
+    db_loadouts_full: Optional[list[JsonDict]] = None
+
+
+@dataclass
+class _NativeSongBundleState:
+    bundle_parent_task: Any | None = None
+    bundle_task_key: str = ""
+    bundle_repeat_index: int = 0
+    bundle_repeat_total: int = 0
+    bundle_wait_for_fg: bool = False
+
+
+@dataclass
+class _NativeSongPostState:
+    deferred_post_emitted: bool = False
+    await_fg_completion_progress: bool = False
+
+
+@dataclass
+class _NativeSongRuntimeState:
+    song_slot: int = 0
+    prep: _NativeSongPrepState = field(default_factory=_NativeSongPrepState)
+    ga: _NativeSongGAState = field(default_factory=_NativeSongGAState)
+    decode: _NativeSongDecodeState = field(default_factory=_NativeSongDecodeState)
+    fg: _NativeSongFGState = field(default_factory=_NativeSongFGState)
+    db: _NativeSongDBState = field(default_factory=_NativeSongDBState)
+    bundle: _NativeSongBundleState = field(default_factory=_NativeSongBundleState)
+    post: _NativeSongPostState = field(default_factory=_NativeSongPostState)
+
+    def __getattr__(self, name: str):
+        path = _RUNTIME_COMPAT_FIELD_PATH_BY_NAME.get(str(name))
+        if path:
+            owner = _resolve_owner(self, path)
+            if owner is not None:
+                return getattr(owner, str(name))
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in self.__dataclass_fields__:
+            substate_cls = _RUNTIME_SUBSTATE_CLASS_BY_FIELD.get(str(name))
+            if substate_cls is not None:
+                if isinstance(value, dict):
+                    value = substate_cls(**value)
+                elif value is None:
+                    value = substate_cls()
+                elif not isinstance(value, substate_cls):
+                    value = value
+            object.__setattr__(self, name, value)
+            return
+        path = _RUNTIME_COMPAT_FIELD_PATH_BY_NAME.get(str(name))
+        if path:
+            owner = _resolve_owner(self, path)
+            if owner is not None:
+                setattr(owner, str(name), value)
+                return
+        object.__setattr__(self, name, value)
 
 
 _CONFIG_FIELDS = (
@@ -155,20 +243,37 @@ _GPU_INPUT_FIELDS = (
     "db_seed_mutations",
 )
 
-_RUNTIME_FIELDS = (
+_RUNTIME_TOP_LEVEL_FIELDS = (
     "song_slot",
+)
+
+_RUNTIME_PREP_FIELDS = (
+    "cpu_prewarm_future",
+    "cpu_prewarm_s",
+    "cpu_prewarm_submit_t0",
+    "cpu_prep_s",
+    "fg_chart_scorer_prewarmed",
+)
+
+_RUNTIME_GA_FIELDS = (
     "ga_future",
+    "ga_submit_t0",
+    "ga_initial_populations",
+    "outer_engine",
+)
+
+_RUNTIME_DECODE_FIELDS = (
     "decode_future",
+    "decode_submit_t0",
     "ga_candidates",
     "ga_persistence_candidates",
     "best_data",
     "best_gear",
     "best_minis",
-    "record_info",
-    "db_loadouts_future",
-    "db_loadouts_full",
-    "cpu_prewarm_future",
-    "loadout_entries",
+    "cpu_decode_s",
+)
+
+_RUNTIME_FG_FIELDS = (
     "fg_variants",
     "fg_candidate_limit",
     "fg_search_radius",
@@ -176,18 +281,78 @@ _RUNTIME_FIELDS = (
     "fg_prep_future",
     "fg_queued_t0",
     "fg_direct_ga_candidates",
-    "prev_record",
-    "db_best_score",
-    "attempt_lifetime",
-    "prev_attempts_first",
-    "db_best_fg_score",
-    "db_baseline_valid",
+    "fg_static_prep_future",
+    "fg_static_prep_done",
+    "fg_dynamic_prep_done",
+    "fg_static_prep_submit_t0",
+    "fg_prep_submit_t0",
+    "fg_build_details",
+    "loadout_entries",
+    "cpu_fg_static_prep_s",
+    "cpu_fg_prep_s",
+    "cpu_fg_run_s",
 )
 
-_FIELD_GROUP_BY_NAME = {
-    **{field_name: "config" for field_name in _CONFIG_FIELDS},
-    **{field_name: "gpu_inputs" for field_name in _GPU_INPUT_FIELDS},
-    **{field_name: "runtime" for field_name in _RUNTIME_FIELDS},
+_RUNTIME_DB_FIELDS = (
+    "prev_record",
+    "db_best_score",
+    "db_best_fg_score",
+    "db_baseline_valid",
+    "attempt_lifetime",
+    "prev_attempts_first",
+    "record_info",
+    "db_loadouts_future",
+    "db_loadouts_full",
+)
+
+_RUNTIME_BUNDLE_FIELDS = (
+    "bundle_parent_task",
+    "bundle_task_key",
+    "bundle_repeat_index",
+    "bundle_repeat_total",
+    "bundle_wait_for_fg",
+)
+
+_RUNTIME_POST_FIELDS = (
+    "deferred_post_emitted",
+    "await_fg_completion_progress",
+)
+
+_FIELD_PATH_BY_NAME = {
+    **{field_name: ("config",) for field_name in _CONFIG_FIELDS},
+    **{field_name: ("gpu_inputs",) for field_name in _GPU_INPUT_FIELDS},
+    **{field_name: ("runtime",) for field_name in _RUNTIME_TOP_LEVEL_FIELDS},
+    **{field_name: ("runtime", "prep") for field_name in _RUNTIME_PREP_FIELDS},
+    **{field_name: ("runtime", "ga") for field_name in _RUNTIME_GA_FIELDS},
+    **{field_name: ("runtime", "decode") for field_name in _RUNTIME_DECODE_FIELDS},
+    **{field_name: ("runtime", "fg") for field_name in _RUNTIME_FG_FIELDS},
+    **{field_name: ("runtime", "db") for field_name in _RUNTIME_DB_FIELDS},
+    **{field_name: ("runtime", "bundle") for field_name in _RUNTIME_BUNDLE_FIELDS},
+    **{field_name: ("runtime", "post") for field_name in _RUNTIME_POST_FIELDS},
+}
+
+_RUNTIME_COMPAT_FIELD_PATH_BY_NAME = {
+    name: path[1:]
+    for name, path in _FIELD_PATH_BY_NAME.items()
+    if path and path[0] == "runtime" and len(path) > 1
+}
+
+_RUNTIME_SUBSTATE_CLASS_BY_FIELD = {
+    "prep": _NativeSongPrepState,
+    "ga": _NativeSongGAState,
+    "decode": _NativeSongDecodeState,
+    "fg": _NativeSongFGState,
+    "db": _NativeSongDBState,
+    "bundle": _NativeSongBundleState,
+    "post": _NativeSongPostState,
+}
+
+_SONG_PRIVATE_COMPAT_FIELD_PATH_BY_NAME = {
+    f"_{name}": path for name, path in _RUNTIME_COMPAT_FIELD_PATH_BY_NAME.items()
+}
+
+_SONG_PUBLIC_COMPAT_FIELD_PATH_BY_NAME = {
+    "fg_static_prep_future": ("fg",),
 }
 
 
@@ -197,27 +362,71 @@ class _NativeSong:
     gpu_inputs: _NativeSongGPUInputs
     runtime: _NativeSongRuntimeState
 
+    def __getattr__(self, name: str):
+        name_s = str(name)
+        if name_s.startswith("_"):
+            path = _SONG_PRIVATE_COMPAT_FIELD_PATH_BY_NAME.get(name_s)
+            if path:
+                owner = _resolve_owner(self, ("runtime",) + path)
+                if owner is not None:
+                    return getattr(owner, name_s[1:])
+        path = _SONG_PUBLIC_COMPAT_FIELD_PATH_BY_NAME.get(name_s)
+        if path:
+            owner = _resolve_owner(self, ("runtime",) + path)
+            if owner is not None:
+                return getattr(owner, name_s)
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in self.__dataclass_fields__:
+            object.__setattr__(self, name, value)
+            return
+        name_s = str(name)
+        if name_s.startswith("_"):
+            path = _SONG_PRIVATE_COMPAT_FIELD_PATH_BY_NAME.get(name_s)
+            if path:
+                owner = _resolve_owner(self, ("runtime",) + path)
+                if owner is not None:
+                    setattr(owner, name_s[1:], value)
+                    return
+        path = _SONG_PUBLIC_COMPAT_FIELD_PATH_BY_NAME.get(name_s)
+        if path:
+            owner = _resolve_owner(self, ("runtime",) + path)
+            if owner is not None:
+                setattr(owner, name_s, value)
+                return
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+
+
+def _resolve_owner(root: object | None, path: tuple[str, ...]) -> object | None:
+    current = root
+    for segment in path:
+        if current is None:
+            return None
+        current = getattr(current, str(segment), None)
+    return current
+
 
 def native_song_get(song: object, field_name: str, default=None):
-    group_name = _FIELD_GROUP_BY_NAME.get(str(field_name))
-    if group_name:
-        group = getattr(song, group_name, None)
-        if group is not None:
-            return getattr(group, str(field_name), default)
+    path = _FIELD_PATH_BY_NAME.get(str(field_name))
+    if path:
+        owner = _resolve_owner(song, path)
+        if owner is not None:
+            return getattr(owner, str(field_name), default)
     return getattr(song, str(field_name), default)
 
 
 def native_song_group(song: object, group_name: str):
-    group = getattr(song, str(group_name), None)
+    group = _resolve_owner(song, tuple(str(group_name).split(".")))
     return group if group is not None else song
 
 
 def native_song_set(song: object, field_name: str, value) -> None:
-    group_name = _FIELD_GROUP_BY_NAME.get(str(field_name))
-    if group_name:
-        group = getattr(song, group_name, None)
-        if group is not None:
-            setattr(group, str(field_name), value)
+    path = _FIELD_PATH_BY_NAME.get(str(field_name))
+    if path:
+        owner = _resolve_owner(song, path)
+        if owner is not None:
+            setattr(owner, str(field_name), value)
             return
     setattr(song, str(field_name), value)
 
@@ -227,11 +436,24 @@ def make_native_song(**kwargs) -> _NativeSong:
     config = _NativeSongConfig()
     gpu_inputs = _NativeSongGPUInputs()
     runtime = _NativeSongRuntimeState()
+    roots = {
+        "config": config,
+        "gpu_inputs": gpu_inputs,
+        "runtime": runtime,
+    }
     for k, v in kwargs.items():
         if hasattr(config, k):
             setattr(config, k, v)
-        elif hasattr(gpu_inputs, k):
+            continue
+        if hasattr(gpu_inputs, k):
             setattr(gpu_inputs, k, v)
-        elif hasattr(runtime, k):
+            continue
+        path = _FIELD_PATH_BY_NAME.get(str(k))
+        if path:
+            owner = _resolve_owner(roots.get(path[0]), path[1:])
+            if owner is not None:
+                setattr(owner, str(k), v)
+                continue
+        if hasattr(runtime, k):
             setattr(runtime, k, v)
     return _NativeSong(config=config, gpu_inputs=gpu_inputs, runtime=runtime)

@@ -33,6 +33,7 @@ from gear_optimizer.solver.native_inflight_types import (
     _NativeSong,
     _NativeSongConfig,
     _NativeSongGPUInputs,
+    _NativeSongDBState,
     _NativeSongRuntimeState,
 )
 
@@ -569,16 +570,18 @@ def _prepare_song(task: tuple) -> _NativeSong:
             db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         ),
         runtime=_NativeSongRuntimeState(
-            prev_record=prev_record,
-            db_best_score=int(db_best_score),
-            attempt_lifetime=int(attempt_lifetime),
-            prev_attempts_first=int(prev_attempts_first),
-            db_best_fg_score=int(db_best_fg_score),
-            db_baseline_valid=bool(db_baseline_valid),
+            db=_NativeSongDBState(
+                prev_record=prev_record,
+                db_best_score=int(db_best_score),
+                attempt_lifetime=int(attempt_lifetime),
+                prev_attempts_first=int(prev_attempts_first),
+                db_best_fg_score=int(db_best_fg_score),
+                db_baseline_valid=bool(db_baseline_valid),
+            ),
         ),
     )
     try:
-        setattr(song, "_cpu_prep_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
+        song.runtime.prep.cpu_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
     except Exception:
         pass
     return song

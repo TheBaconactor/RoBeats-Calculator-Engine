@@ -33,8 +33,8 @@ class InflightGAPipeline:
 
     @staticmethod
     def prepare_submit(song: _NativeSong) -> None:
-        setattr(song, "_outer_engine", "ga")
-        setattr(song, "_ga_submit_t0", time.perf_counter())
+        song.runtime.ga.outer_engine = "ga"
+        song.runtime.ga.ga_submit_t0 = time.perf_counter()
 
     @staticmethod
     def build_payload(song: _NativeSong) -> dict[str, Any]:
@@ -46,7 +46,7 @@ class InflightGAPipeline:
             "slot_start": song.gpu_inputs.slot_start,
             "slot_count": song.gpu_inputs.slot_count,
             "base_fixed_stats_arr": song.gpu_inputs.base_fixed_stats_arr,
-            "initial_populations": getattr(song, "ga_initial_populations", None),
+            "initial_populations": song.runtime.ga.ga_initial_populations,
             "num_runs": int(song.gpu_inputs.num_runs),
             "n_genomes": int(song.gpu_inputs.n_genomes),
             "init_heuristic_topk": song.gpu_inputs.init_heuristic_topk,
@@ -68,17 +68,14 @@ class InflightGAPipeline:
 
     @staticmethod
     def mark_submitted(song: _NativeSong, future: Any) -> None:
-        song.runtime.ga_future = future
-        try:
-            song.ga_initial_populations = None
-        except Exception:
-            pass
+        song.runtime.ga.ga_future = future
+        song.runtime.ga.ga_initial_populations = None
 
     @staticmethod
     def store_decode_result(song: _NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:
         best_data, best_gear, best_minis, ga_candidates = decode_result
-        song.runtime.best_data = best_data
-        song.runtime.best_gear = best_gear
-        song.runtime.best_minis = best_minis
-        song.runtime.ga_candidates = list(ga_candidates or [])
-        song.runtime.ga_persistence_candidates = list(ga_candidates or [])
+        song.runtime.decode.best_data = best_data
+        song.runtime.decode.best_gear = best_gear
+        song.runtime.decode.best_minis = best_minis
+        song.runtime.decode.ga_candidates = list(ga_candidates or [])
+        song.runtime.decode.ga_persistence_candidates = list(ga_candidates or [])

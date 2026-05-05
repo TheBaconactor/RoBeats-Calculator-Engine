@@ -29,7 +29,7 @@ class InflightDBPersistence:
             return False
         if not song.config.use_evo_db:
             return False
-        if song.runtime.db_loadouts_future is not None or song.runtime.db_loadouts_full is not None:
+        if song.runtime.db.db_loadouts_future is not None or song.runtime.db.db_loadouts_full is not None:
             return False
 
         try:
@@ -47,7 +47,7 @@ class InflightDBPersistence:
             except Exception:
                 baseline_team_buff = "T5"
 
-            song.runtime.db_loadouts_future = executor.submit(
+            song.runtime.db.db_loadouts_future = executor.submit(
                 prefetch_fn,
                 song.config.db_key,
                 limit=int(prefetch_limit),
@@ -55,27 +55,24 @@ class InflightDBPersistence:
                 minis_by_name=song.gpu_inputs.minis_by_name,
                 team_buff=str(baseline_team_buff or "T5"),
             )
-            register_future(song.runtime.db_loadouts_future)
+            register_future(song.runtime.db.db_loadouts_future)
             return True
         except Exception:
-            song.runtime.db_loadouts_future = None
+            song.runtime.db.db_loadouts_future = None
             return False
 
 
 def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
     entries: list[dict] = []
-    build_details = getattr(song, "fg_build_details", None)
+    build_details = song.runtime.fg.fg_build_details
     if not callable(build_details):
         build_details = make_build_details_fn(
             getattr(song.gpu_inputs, "meta_primary_color", ""),
             getattr(song.gpu_inputs, "meta_secondary_color", ""),
             getattr(song.config, "effective_difficulty", ""),
         )
-        try:
-            song.fg_build_details = build_details
-        except Exception:
-            pass
-    raw_loadout_entries = getattr(song.runtime, "loadout_entries", None)
+        song.runtime.fg.fg_build_details = build_details
+    raw_loadout_entries = song.runtime.fg.loadout_entries
     loadout_entries = raw_loadout_entries if isinstance(raw_loadout_entries, dict) else {}
     loadout_hash_index: dict[str, dict] = {}
     if loadout_entries:
@@ -90,7 +87,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 continue
             loadout_hash_index.setdefault(str(loadout_hash), entry)
 
-    for v in getattr(song.runtime, "fg_variants", None) or []:
+    for v in song.runtime.fg.fg_variants or []:
         if not isinstance(v, dict):
             continue
         is_ga = bool(v.get("_is_ga"))
