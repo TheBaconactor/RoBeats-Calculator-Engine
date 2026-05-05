@@ -974,7 +974,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         song.runtime.fg.fg_build_details = build_details
     runtime.fg.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
-    # only the retained GA subset is merged back into `runtime.loadout_entries` after FG.
+    # only the retained GA subset is merged back into `runtime.fg.loadout_entries` after FG.
     loadout_ga_candidates = [] if bool(runtime.fg.fg_direct_ga_candidates) else list(ga_candidates or [])
     if getattr(song.runtime.fg, "loadout_entries", None) is None or not bool(runtime.fg.fg_direct_ga_candidates):
         runtime.fg.loadout_entries = build_loadout_entries(
