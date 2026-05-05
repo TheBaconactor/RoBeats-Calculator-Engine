@@ -113,8 +113,8 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert seen["ga_n"] == 0
-    assert song.runtime.fg_direct_ga_candidates is True
-    assert len(song.runtime.ga_candidates or []) == 1
+    assert song.runtime.fg.fg_direct_ga_candidates is True
+    assert len(song.runtime.decode.ga_candidates or []) == 1
 
 
 def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
