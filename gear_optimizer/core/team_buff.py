@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import configparser
 
+from .config import read_iteration_engine_settings
 from .parsing import truthy
 
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
@@ -150,8 +151,8 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     """
     auto = False
     try:
-        auto = bool(cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False))
-    except (AttributeError, TypeError, ValueError, configparser.Error):
+        auto = bool(read_iteration_engine_settings(cfg).auto_select_buff_and_color)
+    except Exception:
         auto = False
     if auto:
         return "T5"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import configparser
 
 import gear_optimizer.app as app_mod
+import gear_optimizer.ui.runtime_ui as runtime_ui
 
 
 def test_hotkey_db_best_uses_resolved_baseline_team_buff(monkeypatch) -> None:
@@ -25,8 +26,8 @@ def test_hotkey_db_best_uses_resolved_baseline_team_buff(monkeypatch) -> None:
     cfg.add_section("TeamContributionBuffConstant")
     cfg.set("TeamContributionBuffConstant", "TeamBuff", "T10")
 
-    monkeypatch.setattr(app_mod, "get_best_loadouts", fake_get_best_loadouts)
-    monkeypatch.setattr(app_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(runtime_ui, "get_best_loadouts", fake_get_best_loadouts)
+    monkeypatch.setattr(runtime_ui, "load_config", lambda: cfg)
 
     app = app_mod.GearOptimizerApp.__new__(app_mod.GearOptimizerApp)
     app._run_current_song_label = "Song T10 (Run 1/1)"

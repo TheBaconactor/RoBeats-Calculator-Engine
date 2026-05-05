@@ -7,7 +7,7 @@ def test_compute_ga_combo_chunk_returns_full_when_within_budget() -> None:
     chunk = compute_ga_combo_chunk(
         n_genomes=100,
         n_combos=10,
-        max_work_items=1000,
+        max_evals=1000,
         chunk_min=64,
         chunk_max=4096,
     )
@@ -20,7 +20,7 @@ def test_compute_ga_combo_chunk_respects_budget_even_if_chunk_min_is_high() -> N
     chunk = compute_ga_combo_chunk(
         n_genomes=100,
         n_combos=1000,
-        max_work_items=10_000,
+        max_evals=10_000,
         chunk_min=1024,
         chunk_max=4096,
     )
@@ -29,11 +29,11 @@ def test_compute_ga_combo_chunk_respects_budget_even_if_chunk_min_is_high() -> N
 
 
 def test_compute_ga_combo_chunk_handles_extreme_low_budget() -> None:
-    # If max_work_items is below n_genomes, the best we can do is 1 combo per dispatch.
+    # If max_evals is below n_genomes, the best we can do is 1 combo per dispatch.
     chunk = compute_ga_combo_chunk(
         n_genomes=1000,
         n_combos=1000,
-        max_work_items=100,
+        max_evals=100,
         chunk_min=1024,
         chunk_max=4096,
     )
@@ -44,7 +44,7 @@ def test_compute_ga_combo_chunk_returns_zero_when_no_combos() -> None:
     chunk = compute_ga_combo_chunk(
         n_genomes=10,
         n_combos=0,
-        max_work_items=100,
+        max_evals=100,
         chunk_min=1,
         chunk_max=1,
     )

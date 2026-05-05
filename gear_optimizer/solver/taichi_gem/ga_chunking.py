@@ -5,9 +5,7 @@ def compute_ga_combo_chunk(
     n_genomes: int,
     n_combos: int,
     *,
-    max_evals: int | None = None,
-    # Back-compat alias (older callers/tests).
-    max_work_items: int | None = None,
+    max_evals: int,
     chunk_min: int,
     chunk_max: int,
 ) -> int:
@@ -31,11 +29,6 @@ def compute_ga_combo_chunk(
     n_combos_i = max(0, int(n_combos_i))
     if n_combos_i <= 0:
         return 0
-
-    if max_evals is None:
-        max_evals = max_work_items
-    if max_evals is None:
-        raise TypeError("compute_ga_combo_chunk() missing required keyword argument: 'max_evals'")
 
     try:
         max_evals_i = int(max_evals)

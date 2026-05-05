@@ -14,6 +14,7 @@ from ...core.constants import (
     GEM_SCALE_NORMAL,
     GEM_STAT_TO_ELEMENT_SCALE,
 )
+from ...core.gem_defs import ELEMENT_STAT_KEYS, GemKey
 
 
 def apply_gems_to_base_stats(
@@ -49,17 +50,17 @@ def apply_gems_to_base_stats(
         A new stats dictionary with gem effects applied.
     """
     out = dict(base or {})
-    out["Perfect Points"] = out.get("Perfect Points", 0) + int(g_pp) * GEM_SCALE_NORMAL
-    out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + int(g_cm) * GEM_SCALE_NORMAL
-    out["Fever Multiplier"] = out.get("Fever Multiplier", 0) + int(g_fm) * GEM_SCALE_FEVER
-    out["Fever Time"] = out.get("Fever Time", 0) + int(ft) * GEM_SCALE_FEVER
-    out["Fever Fill Rate"] = out.get("Fever Fill Rate", 0) + int(ff) * GEM_SCALE_FEVER
+    out[GemKey.PP.value] = out.get(GemKey.PP.value, 0) + int(g_pp) * GEM_SCALE_NORMAL
+    out[GemKey.CM.value] = out.get(GemKey.CM.value, 0) + int(g_cm) * GEM_SCALE_NORMAL
+    out[GemKey.FM.value] = out.get(GemKey.FM.value, 0) + int(g_fm) * GEM_SCALE_FEVER
+    out[GemKey.FT.value] = out.get(GemKey.FT.value, 0) + int(ft) * GEM_SCALE_FEVER
+    out[GemKey.FF.value] = out.get(GemKey.FF.value, 0) + int(ff) * GEM_SCALE_FEVER
 
-    out["Chill"] = out.get("Chill", 0) + int(g_pp) * GEM_STAT_TO_ELEMENT_SCALE
-    out["Flow"] = out.get("Flow", 0) + int(g_cm) * GEM_STAT_TO_ELEMENT_SCALE
-    out["Rush"] = out.get("Rush", 0) + int(g_fm) * GEM_STAT_TO_ELEMENT_SCALE
-    out["Beat"] = out.get("Beat", 0) + int(ft) * GEM_STAT_TO_ELEMENT_SCALE
-    out["Vibe"] = out.get("Vibe", 0) + int(ff) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[0]] = out.get(ELEMENT_STAT_KEYS[0], 0) + int(g_pp) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[1]] = out.get(ELEMENT_STAT_KEYS[1], 0) + int(g_cm) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[2]] = out.get(ELEMENT_STAT_KEYS[2], 0) + int(g_fm) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[3]] = out.get(ELEMENT_STAT_KEYS[3], 0) + int(ft) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[4]] = out.get(ELEMENT_STAT_KEYS[4], 0) + int(ff) * GEM_STAT_TO_ELEMENT_SCALE
 
     if sel_color:
         if add_missing_element_key or sel_color in out:

@@ -48,10 +48,10 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
-from ..core.config import read_fg_candidate_limit
+from ..core.config import GASettings as GARuntimeSettings, GPUExecutionSettings, read_fg_candidate_limit
+from ..core.gem_defs import UserGemsSettings, build_gem_counts, build_gem_details
 from ..core.color_flags import build_color_flags
 from ..core.profile_events import emit_profile_event
-from ..core.utils import safe_int, safe_float
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
     STAT_NAMES,
@@ -128,26 +128,6 @@ def _selected_color_stat_index(color: str) -> int:
     return int(COLOR_TO_STAT_INDEX.get(str(color or ""), -1))
 
 
-def _build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
-    return {
-        "Perfect Points": int(g_pp),
-        "Combo Multiplier": int(g_cm),
-        "Fever Multiplier": int(g_fm),
-        "Element": int(g_ov),
-    }
-
-
-def _build_gem_details(g_ft: int, g_ff: int, g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
-    return {
-        "FeverGems": int(g_ft),
-        "FeverFillGems": int(g_ff),
-        "PP": int(g_pp),
-        "CM": int(g_cm),
-        "FM": int(g_fm),
-        "OV": int(g_ov),
-    }
-
-
 def _add_genome_item_stats(base_stats: dict, genome: list[dict]) -> dict:
     merged = dict(base_stats or {})
     for item in genome or []:
@@ -184,10 +164,10 @@ def _build_best_result_payload(
         "MiniNames": [m.get("Name", "None") for m in minis],
         "FT": int(g_ft),
         "FF": int(g_ff),
-        "GemCounts": _build_gem_counts(g_pp, g_cm, g_fm, g_ov),
+        "GemCounts": build_gem_counts(g_pp, g_cm, g_fm, g_ov),
         "Stats": dict(stats or {}),
         "Selected Element": str(selected_color or ""),
-        "Details": _build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
+        "Details": build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
     }
 
 
@@ -210,7 +190,7 @@ def _build_candidate_data_obj(
         "Score": int(score),
         "FT": int(g_ft),
         "FF": int(g_ff),
-        "GemCounts": _build_gem_counts(g_pp, g_cm, g_fm, g_ov),
+        "GemCounts": build_gem_counts(g_pp, g_cm, g_fm, g_ov),
         "Selected Element": str(selected_color or ""),
         "BaseScore": int(score),
     }
@@ -547,7 +527,7 @@ def _extract_fg_candidates_from_ga_snapshot(
             "GearNames": [g.get("Name", "None") for g in genome[:6]],
             "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
             "Data": data_obj,
-            "Details": _build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
+            "Details": build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
         }
         all_evaluated.append(cand_data)
 
@@ -2276,30 +2256,9 @@ def solve_coevolution_genetic(
         whitelisted_minis = []
 
     # Build configuration data
-    # GPU-only policy: ignore any attempt to disable GPU via config.
-    use_gpu_mode_requested = True
-    try:
-        use_gpu_mode_requested = (
-            cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True) if hasattr(cfg, "getboolean") else True
-        )
-    except Exception:
-        use_gpu_mode_requested = True
-    if not use_gpu_mode_requested:
-        logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-    use_gpu_mode = True
-
-    use_gpu_native_requested = True
-    try:
-        use_gpu_native_requested = (
-            cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, "getboolean") else True
-        )
-    except Exception:
-        use_gpu_native_requested = True
-    if not use_gpu_native_requested:
-        logger.warning(
-            "[GPU] IterationEngine.GPU_Native_GA=false ignored (GPU-only policy); forcing GPU_Native_GA=true."
-        )
-    use_gpu_native = True
+    gpu_settings = GPUExecutionSettings.from_config(cfg)
+    use_gpu_mode = bool(gpu_settings.gpu_mode)
+    use_gpu_native = bool(gpu_settings.gpu_native_ga)
 
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA is required (GPU-only policy) but taichi_gem dependencies are unavailable.")
@@ -2321,6 +2280,10 @@ def solve_coevolution_genetic(
     if use_gpu_mode:
         logger.info(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
 
+    ga_runtime_settings = GARuntimeSettings.from_config(cfg)
+    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
+    user_gems_cfg = user_gems.to_solver_cfg()
+
     cfg_data = (
         dict(solver_ctx.cfg_data)
         if solver_ctx is not None
@@ -2335,14 +2298,15 @@ def solve_coevolution_genetic(
                 default=FG_CANDIDATE_LIMIT,
                 min_limit=LOADOUTS_PER_SONG_LIMIT,
             ),
-            "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
-            "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
-            "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
-            "user_cm": safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)),
-            "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
-            "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
+            "user_ft": int(user_gems_cfg["user_ft"]),
+            "user_ff": int(user_gems_cfg["user_ff"]),
+            "user_pp": int(user_gems_cfg["user_pp"]),
+            "user_cm": int(user_gems_cfg["user_cm"]),
+            "user_fm": int(user_gems_cfg["user_fm"]),
+            "static_elem_input": int(user_gems_cfg["static_elem_input"]),
         }
     )
+    cfg_data.update(user_gems_cfg)
     cfg_data["selected_color"] = selected_color
     cfg_data["primary_color"] = str(p_color or "")
     cfg_data["secondary_color"] = str(s_color or "")
@@ -2360,42 +2324,11 @@ def solve_coevolution_genetic(
         or FG_CANDIDATE_LIMIT
     )
     cfg_data["ga_payload_candidate_limit"] = _resolve_ga_payload_candidate_limit(int(cfg_data["fg_candidate_limit"]))
-    # DEV / DEBUG: convergence trace flags
-    # (GAConvergenceTrace, GAConvergenceTraceEvery, GAConvergenceTraceOutDir,
-    #  GAConvergenceTraceSongFilter).
-    try:
-        cfg_data["ga_convergence_trace_enabled"] = bool(
-            cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_enabled"] = False
-    try:
-        cfg_data["ga_convergence_trace_every"] = max(
-            1,
-            safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_every"] = 1
-    try:
-        cfg_data["ga_convergence_trace_out_dir"] = str(
-            cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace")
-            or "artifacts/ga_trace"
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_out_dir"] = "artifacts/ga_trace"
-    try:
-        cfg_data["ga_convergence_trace_song_filter"] = str(
-            cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or ""
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_song_filter"] = ""
-    try:
-        cfg_data["ga_novelty_repair_attempts"] = max(
-            0,
-            min(4, safe_int(cfg.get("IterationEngine", "GPU_GA_NoveltyRepairAttempts", fallback="2"), 2)),
-        )
-    except Exception:
-        cfg_data["ga_novelty_repair_attempts"] = 2
+    cfg_data["ga_convergence_trace_enabled"] = bool(ga_runtime_settings.convergence_trace)
+    cfg_data["ga_convergence_trace_every"] = int(ga_runtime_settings.convergence_trace_every)
+    cfg_data["ga_convergence_trace_out_dir"] = str(ga_runtime_settings.convergence_trace_out_dir)
+    cfg_data["ga_convergence_trace_song_filter"] = str(ga_runtime_settings.convergence_trace_song_filter)
+    cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
     # ForceGreatsFinder runs after GA and requires BaseStats for downstream FG batching.
     # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
@@ -2433,16 +2366,9 @@ def solve_coevolution_genetic(
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
         logger.info(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
-        gpu_tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
-        gpu_tournament_k = max(1, min(8, int(gpu_tournament_k)))
-
-        gpu_mutation_rate = safe_float(
-            cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE
-        )
-        gpu_mutation_rate = max(0.0, min(1.0, float(gpu_mutation_rate)))
-
-        gpu_immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
-        gpu_immigrant_rate = max(0.0, min(1.0, float(gpu_immigrant_rate)))
+        gpu_tournament_k = int(ga_runtime_settings.tournament_k)
+        gpu_mutation_rate = float(ga_runtime_settings.mutation_rate)
+        gpu_immigrant_rate = float(ga_runtime_settings.immigrant_rate)
 
         try:
             from .taichi_gem import fields as gpu_fields
@@ -2486,7 +2412,7 @@ def solve_coevolution_genetic(
             db_seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
             db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if have_seed else 0,
             db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
-            elite_count=int(GA_ELITISM),
+            elite_count=int(ga_runtime_settings.elite_count),
             mutation_rate=float(gpu_mutation_rate),
             immigrant_rate=float(gpu_immigrant_rate),
             tournament_k=int(gpu_tournament_k),

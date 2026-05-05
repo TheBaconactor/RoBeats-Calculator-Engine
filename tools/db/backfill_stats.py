@@ -15,6 +15,7 @@ from gear_optimizer.data.database import (
     _pack_stats_for_storage,
     _unpack_id_groups,
     _unpack_id_list,
+    _unpack_stats_after_load,
     get_evolution_db_path,
 )
 from gear_optimizer.core.config import load_config, load_paths_cache
@@ -89,7 +90,7 @@ def main():
             if i % 10000 == 0:
                 print(f"[{table}] Processed {i}/{len(rows)}...")
 
-            details = json.loads(row["details_json"]) if row["details_json"] else {}
+            details = _unpack_stats_after_load(json.loads(row["details_json"])) if row["details_json"] else {}
             gear_ids = _unpack_id_list(row["gear_ids_blob"])
             gear_names = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
             gear_names = [g for g in gear_names if g]

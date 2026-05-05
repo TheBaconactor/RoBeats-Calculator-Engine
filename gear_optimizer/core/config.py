@@ -15,11 +15,14 @@ from typing import Any
 from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
+    GA_ELITISM,
+    GA_MUTATION_RATE,
+    GA_MULTI_RUNS_DEFAULT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
     SCRIPT_DIR,
 )
 from .parsing import env_str
-from .utils import safe_int
+from .utils import safe_float, safe_int
 
 def get_config_path(default: str = "config.ini") -> str:
     """
@@ -231,6 +234,315 @@ class IterationEngineSettings:
     manual_force_greats: bool
 
 
+@dataclass(frozen=True, slots=True)
+class GPUExecutionSettings:
+    gpu_mode: bool = True
+    gpu_native_ga: bool = True
+    gpu_song_slots: int = 0
+    ga_queue_mult: int = 0
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "GPUExecutionSettings":
+        if cfg is None:
+            return cls()
+        try:
+            cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
+        except Exception:
+            pass
+        try:
+            cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True)
+        except Exception:
+            pass
+        try:
+            gpu_song_slots = max(0, safe_int(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0"), 0))
+        except Exception:
+            gpu_song_slots = 0
+        try:
+            ga_queue_mult = max(0, safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0))
+        except Exception:
+            ga_queue_mult = 0
+        # GPU-first policy: runtime executes with GPU enabled.
+        return cls(
+            gpu_mode=True,
+            gpu_native_ga=True,
+            gpu_song_slots=int(gpu_song_slots),
+            ga_queue_mult=int(ga_queue_mult),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GASettings:
+    tournament_k: int = 3
+    mutation_rate: float = GA_MUTATION_RATE
+    immigrant_rate: float = 0.0
+    elite_count: int = GA_ELITISM
+    novelty_repair_attempts: int = 2
+    convergence_trace: bool = False
+    convergence_trace_every: int = 1
+    convergence_trace_out_dir: str = "artifacts/ga_trace"
+    convergence_trace_song_filter: str = ""
+    search_depth: int = 50
+    multi_start: int = GA_MULTI_RUNS_DEFAULT
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "GASettings":
+        if cfg is None:
+            return cls()
+        try:
+            tournament_k = max(1, min(8, safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback="3"), 3)))
+        except Exception:
+            tournament_k = 3
+        try:
+            mutation_rate = max(
+                0.0,
+                min(
+                    1.0,
+                    safe_float(cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=str(GA_MUTATION_RATE)), GA_MUTATION_RATE),
+                ),
+            )
+        except Exception:
+            mutation_rate = float(GA_MUTATION_RATE)
+        try:
+            immigrant_rate = max(
+                0.0,
+                min(1.0, safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback="0.0"), 0.0)),
+            )
+        except Exception:
+            immigrant_rate = 0.0
+        try:
+            elite_count = max(0, safe_int(cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=str(GA_ELITISM)), GA_ELITISM))
+        except Exception:
+            elite_count = int(GA_ELITISM)
+        try:
+            novelty_repair_attempts = max(
+                0,
+                min(4, safe_int(cfg.get("IterationEngine", "GPU_GA_NoveltyRepairAttempts", fallback="2"), 2)),
+            )
+        except Exception:
+            novelty_repair_attempts = 2
+        try:
+            convergence_trace = bool(cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False))
+        except Exception:
+            convergence_trace = False
+        try:
+            convergence_trace_every = max(
+                1,
+                safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
+            )
+        except Exception:
+            convergence_trace_every = 1
+        try:
+            convergence_trace_out_dir = str(
+                cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace") or "artifacts/ga_trace"
+            )
+        except Exception:
+            convergence_trace_out_dir = "artifacts/ga_trace"
+        try:
+            convergence_trace_song_filter = str(cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or "")
+        except Exception:
+            convergence_trace_song_filter = ""
+        try:
+            search_depth = max(1, safe_int(cfg.get("IterationEngine", "GA_Depth", fallback="50"), 50))
+        except Exception:
+            search_depth = 50
+        try:
+            multi_start = max(
+                1,
+                safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=str(GA_MULTI_RUNS_DEFAULT)), GA_MULTI_RUNS_DEFAULT),
+            )
+        except Exception:
+            multi_start = int(GA_MULTI_RUNS_DEFAULT)
+
+        return cls(
+            tournament_k=int(tournament_k),
+            mutation_rate=float(mutation_rate),
+            immigrant_rate=float(immigrant_rate),
+            elite_count=int(elite_count),
+            novelty_repair_attempts=int(novelty_repair_attempts),
+            convergence_trace=bool(convergence_trace),
+            convergence_trace_every=int(convergence_trace_every),
+            convergence_trace_out_dir=str(convergence_trace_out_dir),
+            convergence_trace_song_filter=str(convergence_trace_song_filter),
+            search_depth=int(search_depth),
+            multi_start=int(multi_start),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InflightSettings:
+    songs: int = 0
+    instances: int = 1
+    ram_mode: bool = False
+    song_file_cache_max: int = 0
+    team_buff_calc_cache_max: int = 0
+    ga_queue_mult: int = 0
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "InflightSettings":
+        if cfg is None:
+            return cls()
+        try:
+            songs = max(0, safe_int(cfg.get("IterationEngine", "InFlightSongs", fallback="0"), 0))
+        except Exception:
+            songs = 0
+        try:
+            instances = max(1, safe_int(cfg.get("IterationEngine", "InFlightInstances", fallback="1"), 1))
+        except Exception:
+            instances = 1
+        try:
+            ram_mode = bool(cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False))
+        except Exception:
+            ram_mode = False
+        try:
+            song_file_cache_max = max(
+                0,
+                safe_int(cfg.get("IterationEngine", "InFlight_SongFileCacheMax", fallback="0"), 0),
+            )
+        except Exception:
+            song_file_cache_max = 0
+        try:
+            team_buff_calc_cache_max = max(
+                0,
+                safe_int(cfg.get("IterationEngine", "TeamBuff_BaseCalcSongCacheMax", fallback="0"), 0),
+            )
+        except Exception:
+            team_buff_calc_cache_max = 0
+        try:
+            ga_queue_mult = max(
+                0,
+                safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0),
+            )
+        except Exception:
+            ga_queue_mult = 0
+        return cls(
+            songs=int(songs),
+            instances=int(instances),
+            ram_mode=bool(ram_mode),
+            song_file_cache_max=int(song_file_cache_max),
+            team_buff_calc_cache_max=int(team_buff_calc_cache_max),
+            ga_queue_mult=int(ga_queue_mult),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CalculateSongSettings:
+    difficulty: str = "Hard"
+    song_name: str = ""
+    target_primary: str = ""
+    target_secondary: str = ""
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "CalculateSongSettings":
+        if cfg is None:
+            return cls()
+        try:
+            difficulty = str(cfg.get("CalculateSong", "Difficulty", fallback="Hard") or "Hard")
+        except Exception:
+            difficulty = "Hard"
+        try:
+            song_name = str(cfg.get("CalculateSong", "Song_Name", fallback="") or "")
+        except Exception:
+            song_name = ""
+        try:
+            target_primary = str(cfg.get("CalculateSong", "TargetPrimary", fallback="") or "")
+        except Exception:
+            target_primary = ""
+        try:
+            target_secondary = str(cfg.get("CalculateSong", "TargetSecondary", fallback="") or "")
+        except Exception:
+            target_secondary = ""
+        return cls(
+            difficulty=str(difficulty or "Hard"),
+            song_name=str(song_name or ""),
+            target_primary=str(target_primary or ""),
+            target_secondary=str(target_secondary or ""),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AppRuntimeSettings:
+    iteration_engine: IterationEngineSettings
+    calculate_song: CalculateSongSettings
+    gpu: GPUExecutionSettings
+    ga: GASettings
+    inflight: InflightSettings
+    use_evolution_db: bool = True
+    loop_forever: bool = False
+    eval_cpu_cores: int = 0
+    song_queue_limit: int = 0
+    ignore_resume_queue: bool = False
+    song_repeats: int = 1
+    bundle_song_repeats: bool = False
+    loop_restart_wait_sec: float = 0.0
+
+    @classmethod
+    def from_config(cls, cfg: Any) -> "AppRuntimeSettings":
+        if cfg is None:
+            return cls(
+                iteration_engine=read_iteration_engine_settings(None),
+                calculate_song=CalculateSongSettings(),
+                gpu=GPUExecutionSettings(),
+                ga=GASettings(),
+                inflight=InflightSettings(),
+            )
+
+        iteration_engine = read_iteration_engine_settings(cfg)
+        calculate_song = CalculateSongSettings.from_config(cfg)
+        gpu = GPUExecutionSettings.from_config(cfg)
+        ga = GASettings.from_config(cfg)
+        inflight = InflightSettings.from_config(cfg)
+
+        try:
+            use_evolution_db = bool(cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True))
+        except Exception:
+            use_evolution_db = True
+        try:
+            loop_forever = bool(cfg.getboolean("IterationEngine", "LoopForever", fallback=False))
+        except Exception:
+            loop_forever = False
+        try:
+            eval_cpu_cores = max(0, safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback="0"), 0))
+        except Exception:
+            eval_cpu_cores = 0
+        try:
+            song_queue_limit = max(0, safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0))
+        except Exception:
+            song_queue_limit = 0
+        try:
+            ignore_resume_queue = bool(cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False))
+        except Exception:
+            ignore_resume_queue = False
+        try:
+            song_repeats = max(1, safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1))
+        except Exception:
+            song_repeats = 1
+        try:
+            bundle_song_repeats = bool(cfg.getboolean("IterationEngine", "BundleSongRepeats", fallback=False))
+        except Exception:
+            bundle_song_repeats = False
+        try:
+            loop_restart_wait_sec = float(cfg.get("IterationEngine", "LoopRestartWaitSec", fallback="0.0"))
+        except Exception:
+            loop_restart_wait_sec = 0.0
+        loop_restart_wait_sec = max(0.0, min(float(loop_restart_wait_sec), 60.0))
+
+        return cls(
+            iteration_engine=iteration_engine,
+            calculate_song=calculate_song,
+            gpu=gpu,
+            ga=ga,
+            inflight=inflight,
+            use_evolution_db=bool(use_evolution_db),
+            loop_forever=bool(loop_forever),
+            eval_cpu_cores=int(eval_cpu_cores),
+            song_queue_limit=int(song_queue_limit),
+            ignore_resume_queue=bool(ignore_resume_queue),
+            song_repeats=int(song_repeats),
+            bundle_song_repeats=bool(bundle_song_repeats),
+            loop_restart_wait_sec=float(loop_restart_wait_sec),
+        )
+
+
 def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     """
     Read and normalize `[IterationEngine]` behavior flags.
@@ -412,21 +724,15 @@ def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
 
 
 def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
-    """Read `[IterationEngine].FG_SolverMode` with legacy alias fallback."""
+    """Read the canonical `[IterationEngine].FG_SolverMode` value."""
 
     def _canon(raw: Any) -> str:
         value = str(raw or "").strip().lower().replace("-", "_")
         value = "_".join(part for part in value.split("_") if part)
         if not value:
             return ""
-        if value in {"finder", "auto_finder"}:
-            return "finder"
-        if value in {"manual", "enumeration", "legacy"}:
-            return "manual"
-        if value in {"exact_dp", "dp", "exact"}:
-            return "finder"
-        if value in {"off", "disabled", "none"}:
-            return "off"
+        if value in {"finder", "manual", "off"}:
+            return value
         return value
 
     default_c = _canon(default) or "finder"

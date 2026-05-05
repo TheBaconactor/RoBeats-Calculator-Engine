@@ -405,7 +405,13 @@ class AsyncDbSaver:
                     target_db_path = overlay_db_path if overlay_enabled else canonical_db_path
                     if entries and target_db_path:
                         base_team_buff = _resolve_base_team_buff_for_persistence(cfg_dict or {})
-                        save_loadouts_batch(db_key, entries, db_path=target_db_path, team_buff=base_team_buff)
+                        save_loadouts_batch(
+                            db_key,
+                            entries,
+                            db_path=target_db_path,
+                            team_buff=base_team_buff,
+                            preserve_attempt_meta=bool(overlay_enabled),
+                        )
 
                     # Update per-song counters (even if there were no entries to persist).
                     # NOTE: For deferred FG-only updates, `processed_run=False` is still meaningful:

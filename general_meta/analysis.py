@@ -6,6 +6,7 @@ import math
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
+from gear_optimizer.core.gem_defs import extract_gem_totals
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.core.utils import safe_int as _safe_int
 
@@ -282,13 +283,13 @@ def find_most_common_loadout(
                 details = json.loads(row.get("details_json") or "{}")
             except Exception:
                 details = {}
-            gems = details.get("GemCounts") or {}
-            gem_sums["PP"] += int(gems.get("Perfect Points", 0) or 0)
-            gem_sums["CM"] += int(gems.get("Combo Multiplier", 0) or 0)
-            gem_sums["FM"] += int(gems.get("Fever Multiplier", 0) or 0)
-            gem_sums["FT"] += int(details.get("FT", 0) or 0)
-            gem_sums["FF"] += int(details.get("FF", 0) or 0)
-            gem_sums["Element"] += int(gems.get("Element", 0) or 0)
+            totals = extract_gem_totals(details)
+            gem_sums["PP"] += int(totals.pp)
+            gem_sums["CM"] += int(totals.cm)
+            gem_sums["FM"] += int(totals.fm)
+            gem_sums["FT"] += int(totals.ft)
+            gem_sums["FF"] += int(totals.ff)
+            gem_sums["Element"] += int(totals.element)
 
         denom = max(1, len(rows))
         avg_score = int(avg_score / denom)

@@ -12,6 +12,7 @@ from .constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     SKIP_ITEM_KEYS,
 )
+from .gem_defs import ELEMENT_STAT_KEYS, GemKey
 from .team_buff import team_buff_effect
 
 
@@ -62,8 +63,7 @@ def build_base_stats_from_config(cfg_dict):
     }
 
     # Elemental gems (overflow gems) for each element.
-    elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-    for el in elements:
+    for el in ELEMENT_STAT_KEYS:
         raw = elem.get(el, elem.get(el.lower(), 0))
         gem_val = _to_int(raw)
         if gem_val > 0:
@@ -117,26 +117,26 @@ def compute_full_stats(gear_names, mini_names, gem_counts, selected_element, gea
                 stats[k] = stats.get(k, 0) + v
 
     # Add gem contributions
-    g_pp = gem_counts.get("Perfect Points", 0) or 0
-    g_cm = gem_counts.get("Combo Multiplier", 0) or 0
-    g_fm = gem_counts.get("Fever Multiplier", 0) or 0
-    g_ft = gem_counts.get("Fever Time", 0) or 0
-    g_ff = gem_counts.get("Fever Fill Rate", 0) or 0
-    g_ov = gem_counts.get("Element", 0) or gem_counts.get("Element Overflow", 0) or 0
+    g_pp = gem_counts.get(GemKey.PP.value, 0) or 0
+    g_cm = gem_counts.get(GemKey.CM.value, 0) or 0
+    g_fm = gem_counts.get(GemKey.FM.value, 0) or 0
+    g_ft = gem_counts.get(GemKey.FT.value, 0) or 0
+    g_ff = gem_counts.get(GemKey.FF.value, 0) or 0
+    g_ov = gem_counts.get(GemKey.ELEMENT.value, 0) or gem_counts.get("Element Overflow", 0) or 0
 
     # Stat gem scaling
-    stats["Perfect Points"] = stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-    stats["Combo Multiplier"] = stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-    stats["Fever Multiplier"] = stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-    stats["Fever Time"] = stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
-    stats["Fever Fill Rate"] = stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
+    stats[GemKey.PP.value] = stats.get(GemKey.PP.value, 0) + g_pp * GEM_SCALE_NORMAL
+    stats[GemKey.CM.value] = stats.get(GemKey.CM.value, 0) + g_cm * GEM_SCALE_NORMAL
+    stats[GemKey.FM.value] = stats.get(GemKey.FM.value, 0) + g_fm * GEM_SCALE_FEVER
+    stats[GemKey.FT.value] = stats.get(GemKey.FT.value, 0) + g_ft * GEM_SCALE_FEVER
+    stats[GemKey.FF.value] = stats.get(GemKey.FF.value, 0) + g_ff * GEM_SCALE_FEVER
 
     # Stat-to-element conversion
-    stats["Chill"] = stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Flow"] = stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Rush"] = stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Beat"] = stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Vibe"] = stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[0]] = stats.get(ELEMENT_STAT_KEYS[0], 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[1]] = stats.get(ELEMENT_STAT_KEYS[1], 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[2]] = stats.get(ELEMENT_STAT_KEYS[2], 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[3]] = stats.get(ELEMENT_STAT_KEYS[3], 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[4]] = stats.get(ELEMENT_STAT_KEYS[4], 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
 
     # Elemental overflow
     if selected_element:

@@ -18,21 +18,11 @@ from ..core.constants import (
     GEM_SCALE_NORMAL,
     GEM_STAT_TO_ELEMENT_SCALE,
 )
+from ..core.gem_defs import BASE_STAT_KEYS
 from ..core.utils import safe_int
 
 
-STAT_NAMES: tuple[str, ...] = (
-    "Perfect Points",
-    "Combo Multiplier",
-    "Fever Multiplier",
-    "Fever Time",
-    "Fever Fill Rate",
-    "Beat",
-    "Vibe",
-    "Rush",
-    "Flow",
-    "Chill",
-)
+STAT_NAMES: tuple[str, ...] = BASE_STAT_KEYS
 
 COLOR_TO_STAT_INDEX: dict[str, int] = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
 

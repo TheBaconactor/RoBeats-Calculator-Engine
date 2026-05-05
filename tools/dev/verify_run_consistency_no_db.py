@@ -19,31 +19,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.gem_defs import fg_score_from_force as _fg_score_from_force
 from gear_optimizer.core.utils import safe_int as _safe_int
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
-
-def _fg_score_from_force(force: Any) -> int:
-    if not isinstance(force, dict) or not force:
-        return 0
-    # Wrapper score
-    s = _safe_int(force.get("score", 0), 0)
-    if s <= 0:
-        s = _safe_int(force.get("Score", 0), 0)
-    if s > 0:
-        return s
-
-    # Nested score
-    det = force.get("details") if isinstance(force.get("details"), dict) else force
-    fg = det.get("ForceGreats") if isinstance(det, dict) else None
-    if isinstance(fg, dict):
-        s2 = _safe_int(fg.get("final_score", 0), 0)
-        if s2 > 0:
-            return s2
-        return max(_safe_int(fg.get("finalScore", 0), 0), _safe_int(fg.get("score", 0), 0))
-    return 0
-
 
 def _score_from_stats_grid(stats: dict, calc_song: dict, ref_arrays: dict) -> int:
     """

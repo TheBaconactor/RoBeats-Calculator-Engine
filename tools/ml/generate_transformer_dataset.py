@@ -17,8 +17,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from gear_optimizer.data.database import get_db_connection
 from inventory_optimizer.coverage import _build_gpu_full_inputs, _build_song_specs, _pack_part_vids_dense, _select_one_peak_candidate_per_song
 from inventory_optimizer.db import fetch_peak_candidates_allow_missing
-from inventory_optimizer.gpu_full_solver import solve_coverage_gpu_full
-from inventory_optimizer.gpu_witness_pool import build_witness_offsets_gpu
+from inventory_optimizer.gpu_kernels.api.coverage_solver import solve_coverage_gpu_full
+from inventory_optimizer.gpu_kernels.witness_kernels import build_witness_offsets_gpu
 from inventory_optimizer.seed_inventory import normalize_for_lookup
 
 

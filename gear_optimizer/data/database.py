@@ -14,12 +14,12 @@ import atexit
 import weakref
 import warnings
 from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.fallback_monitor import warn_fallback
+from ..core.gem_defs import GEM_KEYS, STAT_KEYS, fg_score_from_force
 from ..core.parsing import env_flag
 from ..core.utils import safe_int as _safe_int_for_db
 from ..core.team_buff import (
@@ -30,6 +30,7 @@ from ..core.team_buff import (
 )
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
+from .encoding_maps import EncodingMaps
 from .loadout_equivalence import (
     effective_loadout_hash_from_names,
     effective_mini_signature_for_name,
@@ -187,18 +188,8 @@ def _unpack_id_groups(blob: Any) -> list[list[int]]:
     return out
 
 
-@dataclass(slots=True)
-class _PieceNameEncodingMaps:
-    gear_name_to_id: dict[str, int]
-    gear_id_to_name: dict[int, str]
-    mini_name_to_id: dict[str, int]
-    mini_id_to_name: dict[int, str]
-    gear_count: int
-    mini_count: int
-
-
 _PIECE_ENCODING_CACHE_LOCK = threading.Lock()
-_PIECE_ENCODING_CACHE: dict[str, _PieceNameEncodingMaps] = {}
+_PIECE_ENCODING_CACHE: dict[str, EncodingMaps] = {}
 
 
 def _encoding_table_count(conn: sqlite3.Connection, table: str) -> int:
@@ -209,7 +200,7 @@ def _encoding_table_count(conn: sqlite3.Connection, table: str) -> int:
         return 0
 
 
-def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) -> _PieceNameEncodingMaps:
+def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) -> EncodingMaps:
     """
     Load (and cache) piece name <-> id maps for a DB path.
 
@@ -261,7 +252,7 @@ def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) ->
     except sqlite3.Error:
         pass
 
-    maps = _PieceNameEncodingMaps(
+    maps = EncodingMaps(
         gear_name_to_id=gear_name_to_id,
         gear_id_to_name=gear_id_to_name,
         mini_name_to_id=mini_name_to_id,
@@ -343,27 +334,6 @@ def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) 
 # Compact details payload helpers (Stats packing, computed fields stripping)
 # ---------------------------------------------------------------------------
 
-_STATS_PACK_KEYS: tuple[str, ...] = (
-    "Perfect Points",
-    "Combo Multiplier",
-    "Fever Multiplier",
-    "Fever Fill Rate",
-    "Fever Time",
-    "Chill",
-    "Flow",
-    "Rush",
-    "Beat",
-    "Vibe",
-)
-
-_GEM_PACK_KEYS: tuple[str, ...] = (
-    "Perfect Points",
-    "Combo Multiplier",
-    "Fever Multiplier",
-    "Element",
-)
-
-
 def _pack_stats_for_storage(details: Any) -> Any:
     """
     Reduce JSON size by storing Stats as a short array under `details["st"]`.
@@ -377,7 +347,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
     stats = details.get("Stats")
     if isinstance(stats, dict) and stats and out.get("st") is None:
         arr: list[int] = []
-        for k in _STATS_PACK_KEYS:
+        for k in STAT_KEYS:
             try:
                 arr.append(int(stats.get(k, 0) or 0))
             except Exception:
@@ -389,7 +359,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
     if isinstance(gems, dict) and gems and out.get("gc") is None:
         packed_gems: list[int] = []
         gem_key_mask = 0
-        for i, k in enumerate(_GEM_PACK_KEYS):
+        for i, k in enumerate(GEM_KEYS):
             if k in gems:
                 gem_key_mask |= 1 << i
             try:
@@ -398,7 +368,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
                 packed_gems.append(0)
         out.pop("GemCounts", None)
         out["gc"] = packed_gems
-        if gem_key_mask != (1 << len(_GEM_PACK_KEYS)) - 1:
+        if gem_key_mask != (1 << len(GEM_KEYS)) - 1:
             out["gk"] = int(gem_key_mask)
 
     selected = out.pop("Selected Element", None)
@@ -418,8 +388,6 @@ def _pack_stats_for_storage(details: Any) -> Any:
 
     if not out.get("ForceGreats"):
         out.pop("ForceGreats", None)
-    out.pop("attempt_lifetime", None)
-    out.pop("attempts_first", None)
     out.pop("Difficulty", None)
     return out
 
@@ -431,9 +399,9 @@ def _unpack_stats_after_load(details: Any) -> Any:
     out = dict(details)
     stats = details.get("Stats")
     st = details.get("st")
-    if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(_STATS_PACK_KEYS):
+    if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(STAT_KEYS):
         out_stats: dict[str, int] = {}
-        for i, k in enumerate(_STATS_PACK_KEYS):
+        for i, k in enumerate(STAT_KEYS):
             try:
                 out_stats[k] = int(st[i] or 0)
             except Exception:
@@ -442,13 +410,13 @@ def _unpack_stats_after_load(details: Any) -> Any:
 
     gems = details.get("GemCounts")
     gc = details.get("gc")
-    if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(_GEM_PACK_KEYS):
+    if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(GEM_KEYS):
         try:
-            gem_key_mask = int(details.get("gk", (1 << len(_GEM_PACK_KEYS)) - 1) or 0)
+            gem_key_mask = int(details.get("gk", (1 << len(GEM_KEYS)) - 1) or 0)
         except Exception:
-            gem_key_mask = (1 << len(_GEM_PACK_KEYS)) - 1
+            gem_key_mask = (1 << len(GEM_KEYS)) - 1
         out_gems: dict[str, int] = {}
-        for i, k in enumerate(_GEM_PACK_KEYS):
+        for i, k in enumerate(GEM_KEYS):
             if (gem_key_mask & (1 << i)) == 0:
                 continue
             try:
@@ -1165,18 +1133,30 @@ def _ensure_stats_in_details(
     return details
 
 
-def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: int, force_data: Any) -> dict:
+def _normalize_details_for_persistence(
+    details: Any,
+    *,
+    score: int,
+    fg_score: int,
+    force_data: Any,
+    preserve_attempt_meta: bool = False,
+) -> dict:
     """
     Normalize details payload before persistence.
 
     Goals:
     - Keep `details["ForceGreats"]["final_score"]` consistent with the persisted `fg_score` when FG ran.
       (Some downstream consumers read this field and will otherwise treat FG as missing/zero.)
+    - Strip transient attempt counters from the stored payload unless the caller
+      explicitly asks to preserve them for a mirror write.
     """
     if not isinstance(details, dict):
         return {}
 
     out = dict(details)
+    if not preserve_attempt_meta:
+        out.pop("attempt_lifetime", None)
+        out.pop("attempts_first", None)
 
     if force_data is None or int(fg_score or 0) <= 0:
         return out
@@ -1299,6 +1279,7 @@ def save_loadouts_batch(
     *,
     db_path: Optional[str] = None,
     team_buff: str = "T5",
+    preserve_attempt_meta: bool = False,
 ) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
@@ -1322,31 +1303,6 @@ def save_loadouts_batch(
         except Exception:
             return 0
 
-    def _fg_score_from_force(force_data: Any) -> int:
-        if not isinstance(force_data, dict):
-            return 0
-        s = _coerce_int(force_data.get("score", 0))
-        if s <= 0:
-            s = _coerce_int(force_data.get("Score", 0))
-        if s > 0:
-            return s
-
-        det = force_data.get("details")
-        if not isinstance(det, dict):
-            det = force_data
-
-        fg = det.get("ForceGreats") or {}
-        if not isinstance(fg, dict):
-            return 0
-
-        s2 = _coerce_int(fg.get("final_score", 0))
-        if s2 > 0:
-            return s2
-        return max(
-            _coerce_int(fg.get("finalScore", 0)),
-            _coerce_int(fg.get("score", 0)),
-        )
-
     best_score_max = None
     best_fg_max = None
     for entry in entries:
@@ -1365,7 +1321,7 @@ def save_loadouts_batch(
                 fg_base_score = score
         force_data = entry.get("force")
         if fg_score <= 0 and force_data is not None:
-            fg_score = _fg_score_from_force(force_data)
+            fg_score = fg_score_from_force(force_data)
         if force_data is not None:
             force_base_score = _force_payload_base_score(force_data)
             if force_base_score > 0:
@@ -1401,6 +1357,7 @@ def save_loadouts_batch(
                     conn=conn,
                     commit=False,
                     db_path=resolved_db_path,
+                    preserve_attempt_meta=bool(preserve_attempt_meta),
                 )
 
                 if best_score_max is not None:
@@ -1455,6 +1412,7 @@ def save_team_buff_loadouts_batch(
     conn: Optional[sqlite3.Connection] = None,
     commit: bool = True,
     db_path: Optional[str] = None,
+    preserve_attempt_meta: bool = False,
 ) -> None:
     """
     Batch insert/update tiered leaderboards for a song in a single transaction.
@@ -1493,30 +1451,6 @@ def save_team_buff_loadouts_batch(
             return int(v or 0)
         except Exception:
             return 0
-
-    def _fg_score_from_force(force_data: Any) -> int:
-        if not isinstance(force_data, dict):
-            return 0
-        s = _coerce_int(force_data.get("score", 0))
-        if s <= 0:
-            s = _coerce_int(force_data.get("Score", 0))
-        if s > 0:
-            return s
-
-        det = force_data.get("details")
-        if not isinstance(det, dict):
-            det = force_data
-
-        fg = det.get("ForceGreats") or {}
-        if not isinstance(fg, dict):
-            return 0
-        s2 = _coerce_int(fg.get("final_score", 0))
-        if s2 > 0:
-            return s2
-        return max(
-            _coerce_int(fg.get("finalScore", 0)),
-            _coerce_int(fg.get("score", 0)),
-        )
 
     def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
         if not isinstance(force_data, dict):
@@ -1904,13 +1838,19 @@ def save_team_buff_loadouts_batch(
                     details = details_out
 
             if fg_score <= 0 and force_data is not None:
-                fg_score = _fg_score_from_force(force_data)
+                fg_score = fg_score_from_force(force_data)
 
             force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
             force_base_score = _force_payload_base_score(force_data)
             if force_base_score > 0:
                 fg_base_score = force_base_score
-            details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
+            details = _normalize_details_for_persistence(
+                details,
+                score=score,
+                fg_score=fg_score,
+                force_data=force_data,
+                preserve_attempt_meta=bool(preserve_attempt_meta),
+            )
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)

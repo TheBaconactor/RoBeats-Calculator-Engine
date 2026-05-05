@@ -72,14 +72,14 @@ def test_fg_owner_default_pair_cap_matches_full_tile_window(monkeypatch):
     assert client._fg_owner_max_pairs == _DEFAULT_FG_OWNER_MAX_PAIRS
 
 
-def test_fg_owner_pair_cap_accepts_legacy_alias(monkeypatch):
+def test_fg_owner_pair_cap_ignores_legacy_alias(monkeypatch):
     executor = _DummyExecutor()
     monkeypatch.delenv("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", raising=False)
     monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAIRS", "6")
 
     client = GpuServiceClient(executor=executor)
 
-    assert client._fg_owner_max_pairs == 6
+    assert client._fg_owner_max_pairs == _DEFAULT_FG_OWNER_MAX_PAIRS
 
 
 def test_fg_submit_splits_oversized_payload_list_before_submit(monkeypatch):

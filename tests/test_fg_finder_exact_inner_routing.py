@@ -23,6 +23,7 @@ def test_base_and_fg_share_exact_inner_after_timeline_selection() -> None:
     assert "optimize_core_device_exact_bound_preloaded_bits" in fg_src
 
     assert "grid_frontier_count" in scoring_src
-    assert "grid_frontier_masks_bits" in scoring_src
+    assert "read_timeline_frontier_variant" in scoring_src
+    assert "grid_frontier_masks_bits" not in scoring_src
     assert "solve_timeline_signature_exact_scoremax_from_grouped_windows" not in timeline_src
     assert "_upload_exact_timeline_overrides_kernel" not in timeline_src

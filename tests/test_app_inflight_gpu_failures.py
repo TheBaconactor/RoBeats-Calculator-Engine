@@ -71,7 +71,7 @@ def test_calculate_only_skips_native_inflight_pipeline(monkeypatch):
 
     app._consume_results = _consume
 
-    monkeypatch.setattr("gear_optimizer.app.safe_process_song_task", _fake_safe_process)
+    monkeypatch.setattr("gear_optimizer.task_execution.safe_process_song_task", _fake_safe_process)
     monkeypatch.setitem(
         sys.modules,
         "gear_optimizer.solver.native_inflight_orchestrator",
@@ -97,7 +97,7 @@ def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
         types.SimpleNamespace(run_native_inflight_song_pipeline=_raise_runtime),
     )
 
-    with pytest.raises(RuntimeError, match="legacy sequential fallback has been removed"):
+    with pytest.raises(RuntimeError, match="Native in-flight pipeline failed; no sequential path remains."):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
 

@@ -6,6 +6,36 @@ from gear_optimizer.data.database import (
 )
 
 
+def _fg_force_payload(*, fg_score: int, base_score: int) -> dict:
+    return {
+        "Score": int(fg_score),
+        "BaseScore": int(base_score),
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+        },
+        "BaseStats": {
+            "Perfect Points": 25,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 100,
+            "Beat": 0,
+            "Vibe": 0,
+        },
+        "Selected Element": "Rush",
+        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": int(fg_score)},
+    }
+
+
 def test_retention_keeps_top_scores_and_best_fg(tmp_path, monkeypatch):
     db_path = tmp_path / "test_double_retention.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -33,7 +63,7 @@ def test_retention_keeps_top_scores_and_best_fg(tmp_path, monkeypatch):
         "gear": ["FGGear0"],
         "minis": ["FGMini"],
         "details": {},
-        "force": {"score": 5000},
+        "force": _fg_force_payload(fg_score=5000, base_score=500),
     }
     save_loadouts_batch(song_name, [fg_entry])
 

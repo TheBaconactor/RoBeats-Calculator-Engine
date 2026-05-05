@@ -19,9 +19,9 @@ from gear_optimizer.data.database import get_evolution_db_path
 from .coverage_candidates import apply_element_filter, load_candidates_by_song, normalize_element_filter
 from .cpsat_hypergraph import refine_with_cpsat_hypergraph
 from .export import export_inventory_meta_json, hydrate_force_details
-from .gpu_full_solver import solve_coverage_gpu_full
-from .gpu_inventory_repair import repair_uncovered_with_inventory_gpu
-from .gpu_witness_pool import build_witness_offsets_gpu
+from .gpu_kernels.api.coverage_solver import solve_coverage_gpu_full
+from .gpu_kernels.repair_kernels import repair_uncovered_with_inventory_gpu
+from .gpu_kernels.witness_kernels import build_witness_offsets_gpu
 from .keys import ELEMENT_TO_ID, ID_TO_ELEMENT, OV_INDEX, STAT_KEYS
 from .models import CandidateSpec, SongCandidate, SongSpec
 from .seed_inventory import ALLOWED_UPGRADE_IDS, UPGRADE_ID_TO_ELEMENT, UPGRADE_ID_TO_STAT, normalize_for_lookup
@@ -464,7 +464,7 @@ def _candidate_rank_key(
             src_rank,
             cand.candidate.rowid,
         )
-    # Multi-candidate/default path keeps the original ordering for compatibility.
+    # Multi-candidate/default path keeps the original ordering for ranking stability.
     return (score_gap, -freq_sum, req_ov_slots, ov_total, src_rank, cand.candidate.rowid)
 
 

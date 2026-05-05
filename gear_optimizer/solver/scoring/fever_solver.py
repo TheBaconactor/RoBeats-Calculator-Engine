@@ -24,7 +24,8 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
 )
 from ...core.color_flags import build_color_flags
-from ...core.utils import safe_int
+from ...core.config import GPUExecutionSettings
+from ...core.gem_defs import UserGemsSettings, build_gem_counts
 
 from ..fever_timeline import (
     get_song_timeline_grid,
@@ -438,14 +439,15 @@ def solve_best_fever_combination(
     else:
         if not silent:
             print("\n=== STARTING FEVER ITERATION ENGINE (GEM SOLVER) ===")
-        user_ft = safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0))
-        user_ff = safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0))
-        user_pp = safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0))
-        user_cm = safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0))
-        user_fm = safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0))
         selected_color = calc_song["metadata"].get("Primary Color", "Rush")
-        static_elem_input = safe_int(cfg.get("ElementalGems", selected_color, fallback=0))
-        use_gpu = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, "getboolean") else False
+        user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
+        user_ft = int(user_gems.fever_time)
+        user_ff = int(user_gems.fever_fill)
+        user_pp = int(user_gems.perfect_points)
+        user_cm = int(user_gems.combo_multiplier)
+        user_fm = int(user_gems.fever_multiplier)
+        static_elem_input = int(user_gems.static_element)
+        use_gpu = bool(GPUExecutionSettings.from_config(cfg).gpu_mode)
 
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")
@@ -510,12 +512,7 @@ def solve_best_fever_combination(
             "Score": score,
             "FT": user_ft,
             "FF": user_ff,
-            "GemCounts": {
-                "Perfect Points": user_pp,
-                "Combo Multiplier": user_cm,
-                "Fever Multiplier": user_fm,
-                "Element": static_elem_input,
-            },
+            "GemCounts": build_gem_counts(user_pp, user_cm, user_fm, static_elem_input),
             "Stats": base_stats,
             "Selected Element": selected_color,
         }
@@ -769,12 +766,7 @@ def solve_best_fever_combination(
             add_missing_element_key=False,
         )
 
-        gem_counts = {
-            "Perfect Points": g_pp,
-            "Combo Multiplier": g_cm,
-            "Fever Multiplier": g_fm,
-            "Element": g_ov,
-        }
+        gem_counts = build_gem_counts(g_pp, g_cm, g_fm, g_ov)
         return {
             "Score": score,
             "FT": ft,

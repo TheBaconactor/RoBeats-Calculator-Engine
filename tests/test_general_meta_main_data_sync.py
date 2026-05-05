@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import general_meta_main as gm_main
+import gear_optimizer.cli as optimizer_cli
 
 
 def test_sync_optimizer_csvs_from_exported_data_invokes_exporter(monkeypatch, tmp_path: Path) -> None:
@@ -25,9 +25,9 @@ def test_sync_optimizer_csvs_from_exported_data_invokes_exporter(monkeypatch, tm
         captured["cwd"] = cwd
         return None
 
-    monkeypatch.setattr(gm_main.subprocess, "run", _fake_run)
+    monkeypatch.setattr(optimizer_cli.subprocess, "run", _fake_run)
 
-    gm_main.sync_optimizer_csvs_from_exported_data(repo_root)
+    optimizer_cli._sync_optimizer_csvs_from_exported_data(repo_root)
 
     cmd = captured["cmd"]
     assert isinstance(cmd, list)

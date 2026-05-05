@@ -1336,7 +1336,7 @@ def ga_next_generation_full_kernel(
 
     for g in range(n_genomes):
         state = kernels_helpers.ga_rng_state[g]
-        pa = 0  # Initialize parent A index for diagnostics / compatibility
+        pa = 0  # Initialize parent A index for diagnostics.
 
         # For elites (g < n_elites): copy from original population
         # For non-elites (g >= n_elites): do tournament + crossover + mutation

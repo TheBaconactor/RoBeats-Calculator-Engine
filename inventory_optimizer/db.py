@@ -5,6 +5,8 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
+from gear_optimizer.core.gem_defs import extract_gem_totals
+from gear_optimizer.data.encoding_maps import EncodingMaps
 from gear_optimizer.data.database import _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
 from gear_optimizer.data.loadout_equivalence import extract_song_colors
 
@@ -92,15 +94,7 @@ def _resolve_baseline_team_buff(conn: sqlite3.Connection) -> str:
     return str(baseline)
 
 
-class _EncodingMaps:
-    __slots__ = ("gear_id_to_name", "mini_id_to_name")
-
-    def __init__(self, *, gear_id_to_name: Dict[int, str], mini_id_to_name: Dict[int, str]):
-        self.gear_id_to_name = gear_id_to_name
-        self.mini_id_to_name = mini_id_to_name
-
-
-def _load_encoding_maps(conn: sqlite3.Connection) -> _EncodingMaps:
+def _load_encoding_maps(conn: sqlite3.Connection) -> EncodingMaps:
     gear_id_to_name: Dict[int, str] = {}
     mini_id_to_name: Dict[int, str] = {}
 
@@ -130,17 +124,24 @@ def _load_encoding_maps(conn: sqlite3.Connection) -> _EncodingMaps:
     except sqlite3.Error:
         pass
 
-    return _EncodingMaps(gear_id_to_name=gear_id_to_name, mini_id_to_name=mini_id_to_name)
+    return EncodingMaps(
+        gear_name_to_id={name: i for i, name in gear_id_to_name.items()},
+        gear_id_to_name=gear_id_to_name,
+        mini_name_to_id={name: i for i, name in mini_id_to_name.items()},
+        mini_id_to_name=mini_id_to_name,
+        gear_count=len(gear_id_to_name),
+        mini_count=len(mini_id_to_name),
+    )
 
 
-def _decode_gear_names_blob(payload: object, maps: _EncodingMaps) -> Tuple[str, ...]:
+def _decode_gear_names_blob(payload: object, maps: EncodingMaps) -> Tuple[str, ...]:
     ids = _unpack_id_list(payload)
     names = [str(maps.gear_id_to_name.get(int(i), "") or "").strip() for i in ids if int(i) > 0]
     names = [n for n in names if n]
     return tuple(names)
 
 
-def _decode_mini_groups_blob(payload: object, maps: _EncodingMaps) -> Tuple[Tuple[str, ...], ...]:
+def _decode_mini_groups_blob(payload: object, maps: EncodingMaps) -> Tuple[Tuple[str, ...], ...]:
     id_groups = _unpack_id_groups(payload)
     out: List[Tuple[str, ...]] = []
     for g in id_groups or []:
@@ -639,7 +640,7 @@ def fetch_candidates_within_delta_allow_missing(
 
 
 def parse_candidate_row(
-    song_name: str, source_table: str, row: sqlite3.Row, maps: _EncodingMaps
+    song_name: str, source_table: str, row: sqlite3.Row, maps: EncodingMaps
 ) -> Optional[SongCandidate]:
     try:
         try:
@@ -655,7 +656,7 @@ def parse_candidate_row(
             return None
 
         details = _unpack_stats_after_load(_parse_json(row["details_json"]))
-        gem_totals = _extract_gem_totals(details)
+        gem_totals = extract_gem_totals(details).as_tuple()
         if sum(gem_totals) != TOTAL_GEM_BUDGET:
             return None
 
@@ -690,38 +691,6 @@ def _parse_json(payload: Optional[str]) -> Dict[str, Any]:
         return {}
     unpacked = _unpack_stats_after_load(value)
     return unpacked if isinstance(unpacked, dict) else value
-
-
-def _extract_gem_totals(details: Dict[str, Any]) -> Tuple[int, ...]:
-    gem_counts = details.get("GemCounts", {}) if isinstance(details, dict) else {}
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-
-    def _get_gc(label: str, *alts: str) -> int:
-        for key in (label,) + alts:
-            if key in gem_counts:
-                try:
-                    return int(gem_counts.get(key) or 0)
-                except Exception:
-                    return 0
-        return 0
-
-    pp = _get_gc("Perfect Points", "PP")
-    cm = _get_gc("Combo Multiplier", "CM")
-    fm = _get_gc("Fever Multiplier", "FM")
-    ov = _get_gc("Element", "OV", "Overflow")
-
-    try:
-        ft = int(details.get("FT") or gem_counts.get("Fever Time") or gem_counts.get("FT") or 0)
-    except Exception:
-        ft = 0
-    try:
-        ff = int(details.get("FF") or gem_counts.get("Fever Fill Rate") or gem_counts.get("FF") or 0)
-    except Exception:
-        ff = 0
-
-    return (pp, cm, fm, ft, ff, ov)
-
 
 __all__ = [
     "fetch_candidates_for_peak",

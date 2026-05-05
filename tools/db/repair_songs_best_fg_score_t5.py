@@ -23,11 +23,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from gear_optimizer.core.utils import safe_int as _safe_int
 from gear_optimizer.data.migrations import _table_exists
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import get_evolution_db_path
 

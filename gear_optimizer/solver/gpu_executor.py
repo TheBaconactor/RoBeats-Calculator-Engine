@@ -2170,6 +2170,8 @@ class GpuExecutor:
                     if queue_depth_hint >= 0 and int(batch_max) > 0
                     else 0.0
                 )
+                if pressure_hint >= 1.0:
+                    batch_wait_ms = 0
                 planner_mode = (
                     "fg_burst"
                     if (int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until))

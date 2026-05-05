@@ -103,30 +103,20 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG owner-quantum shaping. Pair/work splitting is part of the exact
-        # partition-and-merge contract; timed service-level coalescing was removed
-        # because dispatch and the GPU owner already batch FG work.
+        # partition-and-merge contract.
         try:
-            raw_max_payloads = env_get("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST")
-            if raw_max_payloads is None or str(raw_max_payloads).strip() == "":
-                raw_max_payloads = env_get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "8")
+            raw_max_payloads = env_get("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST", "8")
             self._fg_owner_max_payloads = int(str(raw_max_payloads or "8").strip() or "8")
         except Exception:
             self._fg_owner_max_payloads = 8
         try:
-            raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS")
-            if raw_payload_hard_cap is None or str(raw_payload_hard_cap).strip() == "":
-                raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64")
+            raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS", "64")
             executor_max_payloads = int(str(raw_payload_hard_cap or "64").strip() or "64")
         except Exception:
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
         try:
-            raw_pair_cap = env_get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST")
-            if raw_pair_cap is None or str(raw_pair_cap).strip() == "":
-                raw_pair_cap = env_get(
-                    "FG_COALESCE_BREAKPOINTS_MAX_PAIRS",
-                    str(_DEFAULT_FG_OWNER_MAX_PAIRS),
-                )
+            raw_pair_cap = env_get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", str(_DEFAULT_FG_OWNER_MAX_PAIRS))
             self._fg_owner_max_pairs = int(
                 str(raw_pair_cap or str(_DEFAULT_FG_OWNER_MAX_PAIRS)).strip() or str(_DEFAULT_FG_OWNER_MAX_PAIRS)
             )
@@ -134,9 +124,7 @@ class GpuServiceClient:
             self._fg_owner_max_pairs = _DEFAULT_FG_OWNER_MAX_PAIRS
         self._fg_owner_max_pairs = max(0, min(int(self._fg_owner_max_pairs), 4096))
         try:
-            raw_work_cap = env_get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST")
-            if raw_work_cap is None or str(raw_work_cap).strip() == "":
-                raw_work_cap = env_get("FG_FUSED_MAX_WORK_PER_REQUEST", "25000000")
+            raw_work_cap = env_get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "25000000")
             self._fg_owner_max_work = int(str(raw_work_cap or "25000000").strip() or "25000000")
         except Exception:
             self._fg_owner_max_work = 25_000_000

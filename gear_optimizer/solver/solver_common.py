@@ -9,7 +9,7 @@ import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
-from gear_optimizer.core.utils import safe_int
+from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -49,13 +49,7 @@ class SolverContext:
 
 
 def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_color: str) -> dict[str, Any]:
-    def _cfg_get(section: str, key: str, fallback: int = 0) -> int:
-        if cfg is None:
-            return int(fallback)
-        try:
-            return safe_int(cfg.get(section, key, fallback=fallback), fallback)
-        except Exception:
-            return int(fallback)
+    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
 
     return {
         "selected_color": str(selected_color or ""),
@@ -64,12 +58,12 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         "use_gpu": True,
         "use_gpu_native": True,
         "fg_candidate_limit": int(FG_CANDIDATE_LIMIT),
-        "user_ft": _cfg_get("UserInputStatsGems", "fever_time", 0),
-        "user_ff": _cfg_get("UserInputStatsGems", "fever_fill", 0),
-        "user_pp": _cfg_get("UserInputStatsGems", "perfect_points", 0),
-        "user_cm": _cfg_get("UserInputStatsGems", "combo_multiplier", 0),
-        "user_fm": _cfg_get("UserInputStatsGems", "fever_multiplier", 0),
-        "static_elem_input": _cfg_get("ElementalGems", selected_color, 0),
+        "user_ft": int(user_gems.fever_time),
+        "user_ff": int(user_gems.fever_fill),
+        "user_pp": int(user_gems.perfect_points),
+        "user_cm": int(user_gems.combo_multiplier),
+        "user_fm": int(user_gems.fever_multiplier),
+        "static_elem_input": int(user_gems.static_element),
     }
 
 

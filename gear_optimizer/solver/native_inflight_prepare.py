@@ -8,10 +8,16 @@ from typing import Optional
 
 import numpy as np
 
-from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_solver_mode
+from gear_optimizer.core.config import (
+    GASettings as GARuntimeSettings,
+    GPUExecutionSettings,
+    read_fg_candidate_limit,
+    read_fg_solver_mode,
+)
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
+from gear_optimizer.core.gem_defs import UserGemsSettings
+from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.helpers.song_helpers.database_context import load_database_progress_baseline
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -227,7 +233,6 @@ def _fixed_registry_cache_key(
 
 def _prepare_song(task: tuple) -> _NativeSong:
     cpu_t0 = _thread_cpu_time_s()
-    from gear_optimizer.core.constants import GA_ELITISM, GA_MUTATION_RATE
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
@@ -255,17 +260,12 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     cfg = cfg_from_dict(cfg_dict)
 
-    try:
-        gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
-    except Exception:
-        gpu_mode = False
+    gpu_settings = GPUExecutionSettings.from_config(cfg)
+    gpu_mode = bool(gpu_settings.gpu_mode)
     if not gpu_mode:
         raise RuntimeError("GPU-native in-flight requires IterationEngine.GPU_Mode=true")
 
-    try:
-        gpu_native = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
-    except Exception:
-        gpu_native = False
+    gpu_native = bool(gpu_settings.gpu_native_ga)
     if not gpu_native:
         raise RuntimeError("GPU-native in-flight requires IterationEngine.GPU_Native_GA=true")
 
@@ -405,6 +405,8 @@ def _prepare_song(task: tuple) -> _NativeSong:
     )
     fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
 
+    ga_runtime_settings = GARuntimeSettings.from_config(cfg)
+    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
     cfg_data = {
         "selected_color": selected_color,
         "primary_color": str(p_color or ""),
@@ -413,46 +415,18 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "use_gpu_native": True,
         "fg_candidate_limit": int(fg_candidate_limit),
         "fg_solver_mode": str(fg_solver_mode or "finder"),
-        "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0), 0),
-        "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0), 0),
-        "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0), 0),
-        "user_cm": safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0), 0),
-        "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0), 0),
-        "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0), 0),
+        "user_ft": int(user_gems.fever_time),
+        "user_ff": int(user_gems.fever_fill),
+        "user_pp": int(user_gems.perfect_points),
+        "user_cm": int(user_gems.combo_multiplier),
+        "user_fm": int(user_gems.fever_multiplier),
+        "static_elem_input": int(user_gems.static_element),
     }
-    try:
-        cfg_data["ga_convergence_trace_enabled"] = bool(
-            cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_enabled"] = False
-    try:
-        cfg_data["ga_convergence_trace_every"] = max(
-            1,
-            safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_every"] = 1
-    try:
-        cfg_data["ga_convergence_trace_out_dir"] = str(
-            cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace")
-            or "artifacts/ga_trace"
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_out_dir"] = "artifacts/ga_trace"
-    try:
-        cfg_data["ga_convergence_trace_song_filter"] = str(
-            cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or ""
-        )
-    except Exception:
-        cfg_data["ga_convergence_trace_song_filter"] = ""
-    try:
-        cfg_data["ga_novelty_repair_attempts"] = max(
-            0,
-            min(4, safe_int(cfg.get("IterationEngine", "GPU_GA_NoveltyRepairAttempts", fallback="2"), 2)),
-        )
-    except Exception:
-        cfg_data["ga_novelty_repair_attempts"] = 2
+    cfg_data["ga_convergence_trace_enabled"] = bool(ga_runtime_settings.convergence_trace)
+    cfg_data["ga_convergence_trace_every"] = int(ga_runtime_settings.convergence_trace_every)
+    cfg_data["ga_convergence_trace_out_dir"] = str(ga_runtime_settings.convergence_trace_out_dir)
+    cfg_data["ga_convergence_trace_song_filter"] = str(ga_runtime_settings.convergence_trace_song_filter)
+    cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
 
     # ForceGreatsFinder runs after GA and needs per-candidate BaseStats for signature grouping.
     # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
@@ -461,16 +435,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
 
-    tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
-    tournament_k = max(1, min(8, int(tournament_k)))
-
-    mutation_rate = safe_float(
-        cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE
-    )
-    mutation_rate = max(0.0, min(1.0, float(mutation_rate)))
-
-    immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
-    immigrant_rate = max(0.0, min(1.0, float(immigrant_rate)))
+    tournament_k = int(ga_runtime_settings.tournament_k)
+    mutation_rate = float(ga_runtime_settings.mutation_rate)
+    immigrant_rate = float(ga_runtime_settings.immigrant_rate)
 
     db_seed = prev_record if (allow_db_seed and prev_record) else None
     num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
@@ -539,14 +506,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     color_flags = build_color_flags(p_color, s_color, selected_color)
 
-    elite_count_raw = GA_ELITISM
-    try:
-        if hasattr(cfg, "has_option") and cfg.has_option("IterationEngine", "GPU_GA_EliteCount"):
-            elite_count_raw = cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=GA_ELITISM)
-    except Exception:
-        elite_count_raw = GA_ELITISM
-    elite_count = safe_int(elite_count_raw, GA_ELITISM)
-    elite_count = max(0, int(elite_count))
+    elite_count = max(0, int(ga_runtime_settings.elite_count))
 
     song = _NativeSong(
         fp=str(fp),

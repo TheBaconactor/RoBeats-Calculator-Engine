@@ -1,34 +1,19 @@
 from __future__ import annotations
 
-import configparser
+from gear_optimizer.data.dal import ReadOnlyEvolutionDbDAL
 
-import general_meta.app as gm_app
+import general_meta.db as gm_db
 
 
-def test_run_general_meta_queries_db_using_resolved_baseline_team_buff(monkeypatch) -> None:
-    # Avoid filesystem/Data dependencies by stubbing song scan + stats + gear/minis loaders.
-    monkeypatch.setattr(
-        gm_app,
-        "get_songs_by_elemental_combo",
-        lambda _paths: {("Chill", "Flow"): [{"song_name": "Song A", "primary": "Chill", "secondary": "Flow"}]},
-    )
-    monkeypatch.setattr(gm_app, "read_table", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(gm_app, "load_all_gears_list", lambda _paths: [])
-    monkeypatch.setattr(gm_app, "load_all_minis_list", lambda _paths: [])
-
+def test_get_all_loadouts_from_db_passes_through_requested_team_buff(monkeypatch) -> None:
     called: dict[str, str] = {}
 
-    def _fake_get_all_loadouts_from_db(*, team_buff: str = "T5"):
+    def _fake_get_all_loadouts(self, *, team_buff: str = "T5"):
         called["team_buff"] = str(team_buff)
         return []
 
-    monkeypatch.setattr(gm_app, "get_all_loadouts_from_db", _fake_get_all_loadouts_from_db)
+    monkeypatch.setattr(ReadOnlyEvolutionDbDAL, "get_all_loadouts", _fake_get_all_loadouts)
 
-    cfg = configparser.ConfigParser()
-    cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "AutoSelectBuffAndColor", "false")
-    cfg.add_section("TeamContributionBuffConstant")
-    cfg.set("TeamContributionBuffConstant", "TeamBuff", "T10")
-
-    gm_app.run_general_meta(cfg, {})
+    rows = gm_db.get_all_loadouts_from_db(team_buff="T10")
+    assert rows == []
     assert called.get("team_buff") == "T10"

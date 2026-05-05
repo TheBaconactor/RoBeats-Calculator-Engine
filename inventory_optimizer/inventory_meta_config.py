@@ -353,7 +353,7 @@ class InventoryMetaCoverageSettings:
 
 
 QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
-    # Fast sanity checks / debugging
+    # Fast sanity checks
     "low": {
         "restarts": 1,
         "partitions_per_song": 16,
