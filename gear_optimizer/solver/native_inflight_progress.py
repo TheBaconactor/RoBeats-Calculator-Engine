@@ -58,8 +58,11 @@ class ProgressTracker:
     ) -> None:
         if progress_cb is None:
             return
-        progress_cb(
-            completed_delta=completed_delta,
-            failed_delta=failed_delta,
-            record_info=record_info,
-        )
+        try:
+            progress_cb(
+                completed_delta=completed_delta,
+                failed_delta=failed_delta,
+                record_info=record_info,
+            )
+        except Exception:
+            return
