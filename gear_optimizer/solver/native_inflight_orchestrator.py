@@ -18,7 +18,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from typing import Any, Optional
+from typing import Optional
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
@@ -30,6 +30,11 @@ from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_re
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
+from gear_optimizer.solver.native_inflight_config import (
+    _default_worker_threads,
+    _read_cpu_prewarm_lookahead,
+    _read_fg_static_prep_max_inflight,
+)
 from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_gpu_cap_s,
     read_inflight_event_wait_short_spin_s,
@@ -87,37 +92,6 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candi
 logger = logging.getLogger(__name__)
 
 
-def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
-    """
-    Choose conservative default worker counts for low-end CPUs.
-
-    Goal: avoid oversubscription that can *increase* wall time (thread contention)
-    and starve the GPU queue, especially on 4–8 core machines.
-    """
-    ncpu = os.cpu_count() or 1
-    try:
-        ncpu = int(ncpu)
-    except Exception:
-        ncpu = 1
-    ncpu = max(1, ncpu)
-    inflight_limit = max(1, int(inflight_limit))
-    kind = str(kind or "").strip().lower()
-
-    # Keep at most half the cores for background prep/decode work by default.
-    # (The main thread + GPU owner thread + other overhead still need room.)
-    base = max(1, ncpu // 2)
-    # On very small machines, don't exceed 2–3 threads per pool.
-    if ncpu <= 4:
-        base = min(base, 2)
-    elif ncpu <= 8:
-        base = min(base, 3)
-
-    # FG prep can be more expensive; keep it a bit lower by default.
-    if kind in {"fg_prep", "fgprep"}:
-        base = max(1, min(base, 2 if ncpu <= 8 else base))
-    return max(1, min(inflight_limit, int(base)))
-
-
 def _read_inflight_event_wait_timeout_s() -> float:
     """
     Base scheduler wait timeout when waiting for in-flight futures to complete.
@@ -162,81 +136,6 @@ def _wait_for_completion_event(
             sleep=time.sleep,
         )
     )
-
-
-def _read_fg_static_prep_max_inflight(
-    cfg0: Any,
-    *,
-    fg_prep_workers: int,
-    inflight_limit: int,
-    cpu_prewarm_lookahead: int | None = None,
-) -> int:
-    """
-    Budget for speculative FG static prep.
-
-    The unified CPU prewarm lookahead owns the default. The legacy explicit
-    FG static setting is still honored as a narrower override when present.
-    """
-    if cpu_prewarm_lookahead is None:
-        limit = 0
-    else:
-        try:
-            limit = int(cpu_prewarm_lookahead)
-        except Exception:
-            limit = 0
-    if cfg0 is not None:
-        try:
-            raw_cfg = cfg0.get("IterationEngine", "InFlight_FGStaticPrepMaxInflight", fallback="")
-        except Exception:
-            raw_cfg = ""
-        if str(raw_cfg).strip() != "":
-            try:
-                limit = int(raw_cfg)
-            except Exception:
-                limit = 0
-    raw_env = env_get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
-    if raw_env is not None and str(raw_env).strip() != "":
-        try:
-            limit = int(raw_env)
-        except Exception:
-            limit = 0
-    if limit <= 0:
-        return 0
-    return max(0, min(int(limit), int(fg_prep_workers), int(inflight_limit), 8))
-
-
-def _read_cpu_prewarm_lookahead(
-    cfg0: Any,
-    *,
-    prep_limit: int,
-    default: int = 5,
-) -> int:
-    """
-    Unified lookahead for CPU-only prework on prepared future songs.
-
-    This controls host-side timeline frontier payload prewarm, FG baseline
-    point prewarm, and speculative FG static prep admission. It intentionally
-    does not change the prep buffer size; it only decides how many prepared
-    songs get expensive extra work ahead of GPU dispatch.
-    """
-    lookahead = int(default)
-    if cfg0 is not None:
-        try:
-            raw_cfg = cfg0.get("IterationEngine", "InFlight_CPUPrewarmLookahead", fallback="")
-        except Exception:
-            raw_cfg = ""
-        if str(raw_cfg).strip() != "":
-            try:
-                lookahead = int(raw_cfg)
-            except Exception:
-                lookahead = int(default)
-    raw_env = env_get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
-    if raw_env is not None and str(raw_env).strip() != "":
-        try:
-            lookahead = int(raw_env)
-        except Exception:
-            pass
-    return max(0, min(int(lookahead), int(prep_limit), 32))
 
 
 def run_native_inflight_song_pipeline(
