@@ -32,11 +32,11 @@ class ProgressTracker:
             return
         try:
             score_new = int(best_score) if best_score is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             score_new = None
         try:
             fg_new = int(best_fg) if best_fg is not None else None
-        except Exception:
+        except (TypeError, ValueError):
             fg_new = None
         with self.lock:
             score0, fg0 = self.best.get(key, (0, 0))
@@ -58,11 +58,8 @@ class ProgressTracker:
     ) -> None:
         if progress_cb is None:
             return
-        try:
-            progress_cb(
-                completed_delta=completed_delta,
-                failed_delta=failed_delta,
-                record_info=record_info,
-            )
-        except Exception:
-            pass
+        progress_cb(
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+            record_info=record_info,
+        )

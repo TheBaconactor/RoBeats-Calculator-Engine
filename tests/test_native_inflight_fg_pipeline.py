@@ -68,7 +68,7 @@ def test_native_fg_pipeline_queue_pop_credit_and_submit():
             fg_prep_future=None,
             fg_queued_t0=None,
         )
-        setattr(song, "_fg_dynamic_prep_done", True)
+        song.runtime.fg.fg_dynamic_prep_done = True
 
         pipeline.queue(song, now_s=10.0)
 
@@ -134,7 +134,7 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
             for idx in range(4)
         ]
         for song in songs:
-            setattr(song, "_fg_dynamic_prep_done", False)
+            song.runtime.fg.fg_dynamic_prep_done = False
         for song in songs:
             pipeline.queue(song, now_s=1.0)
 
@@ -165,8 +165,8 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
 
         release.set()
         for song in songs[:2]:
-            song.runtime.fg_prep_future.result(timeout=2)
-            setattr(song, "_fg_dynamic_prep_done", True)
+            song.runtime.fg.fg_prep_future.result(timeout=2)
+            song.runtime.fg.fg_dynamic_prep_done = True
 
         assert pipeline.pop_next(allow_not_ready=False) is songs[0]
         assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 2

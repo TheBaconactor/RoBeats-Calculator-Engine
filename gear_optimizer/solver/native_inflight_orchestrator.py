@@ -208,17 +208,9 @@ def run_native_inflight_song_pipeline(
     # Progress UI "New" counter should reflect *session-best* improvements, not the stale DB snapshot
     # that in-flight tasks can start with (DB persistence is async, and many repeats can overlap).
     progress_tracker = ProgressTracker()
-    progress_best_lock = progress_tracker.lock
-    progress_best: dict[str, tuple[int, int]] = progress_tracker.best
-    progress_best_valid: set[str] = progress_tracker.valid
 
     def _progress_best_snapshot(db_key: str) -> tuple[int, int, bool]:
-        key = str(db_key or "").strip()
-        if not key:
-            return (0, 0, False)
-        with progress_best_lock:
-            score0, fg0 = progress_best.get(key, (0, 0))
-            return (int(score0), int(fg0), key in progress_best_valid)
+        return progress_tracker.snapshot(db_key)
 
     def _progress_best_update(
         db_key: str,
@@ -227,34 +219,20 @@ def run_native_inflight_song_pipeline(
         best_fg: int | None = None,
         mark_valid: bool = False,
     ) -> None:
-        key = str(db_key or "").strip()
-        if not key:
-            return
-        try:
-            score_new = int(best_score) if best_score is not None else None
-        except Exception:
-            score_new = None
-        try:
-            fg_new = int(best_fg) if best_fg is not None else None
-        except Exception:
-            fg_new = None
-        with progress_best_lock:
-            score0, fg0 = progress_best.get(key, (0, 0))
-            if score_new is not None and score_new > int(score0):
-                score0 = int(score_new)
-            if fg_new is not None and fg_new > int(fg0):
-                fg0 = int(fg_new)
-            progress_best[key] = (int(score0), int(fg0))
-            if mark_valid:
-                progress_best_valid.add(key)
+        progress_tracker.update(
+            db_key,
+            best_score=best_score,
+            best_fg=best_fg,
+            mark_valid=mark_valid,
+        )
 
     def _emit_progress(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
-        if progress_cb is None:
-            return
-        try:
-            progress_cb(completed_delta=completed_delta, failed_delta=failed_delta, record_info=record_info)
-        except Exception:
-            pass
+        progress_tracker.emit_progress(
+            progress_cb,
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+            record_info=record_info,
+        )
 
     def _post(item: dict) -> None:
         if post_sender is not None:
@@ -530,10 +508,6 @@ def run_native_inflight_song_pipeline(
     ga_queue_debug = _truthy(env_get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
     last_ga_queue_limit_effective: int | None = None
     completion_tracker = CompletionTracker()
-    completion_event = completion_tracker.event
-    completion_future_ids: set[int] = completion_tracker.ids
-    completion_lock = completion_tracker.lock
-    completion_registered_attr = completion_tracker.registered_attr
     ga_queue_limit_cache_key: tuple[bool, int, int, int, int] | None = None
     ga_queue_limit_cache_value = int(ga_queue_limit_base)
     stop_poll_interval_s = 0.05
@@ -612,60 +586,7 @@ def run_native_inflight_song_pipeline(
         return max(0, min(int(fg_static_prep_max_inflight), int(spare_workers)))
 
     def _register_completion_future(fut: concurrent.futures.Future | None) -> None:
-        if fut is None:
-            return
-        marked_registered = False
-        try:
-            if bool(getattr(fut, completion_registered_attr, False)):
-                return
-            setattr(fut, completion_registered_attr, True)
-            marked_registered = True
-        except Exception:
-            pass
-        try:
-            fut_id = int(id(fut))
-        except Exception:
-            if marked_registered:
-                try:
-                    setattr(fut, completion_registered_attr, False)
-                except Exception:
-                    pass
-            return
-        try:
-            with completion_lock:
-                if fut_id in completion_future_ids:
-                    return
-                completion_future_ids.add(fut_id)
-        except Exception:
-            if marked_registered:
-                try:
-                    setattr(fut, completion_registered_attr, False)
-                except Exception:
-                    pass
-            return
-
-        def _on_done(_fut: concurrent.futures.Future, *, _fut_id: int = fut_id) -> None:
-            try:
-                completion_event.set()
-            except Exception:
-                pass
-            try:
-                with completion_lock:
-                    completion_future_ids.discard(_fut_id)
-            except Exception:
-                pass
-
-        try:
-            fut.add_done_callback(_on_done)
-        except Exception:
-            try:
-                setattr(fut, completion_registered_attr, False)
-            except Exception:
-                pass
-            try:
-                completion_event.set()
-            except Exception:
-                pass
+        completion_tracker.register(fut)
 
     def _run_cpu_prewarm_sync(song: _NativeSong) -> None:
         run_cpu_prewarm_for_song(song)
@@ -682,7 +603,7 @@ def run_native_inflight_song_pipeline(
         task_key = _task_label_for_prewarm(song)
         if task_key in cpu_prewarm_submitted:
             return False
-        if getattr(song.runtime, "cpu_prewarm_future", None) is not None:
+        if getattr(song.runtime.prep, "cpu_prewarm_future", None) is not None:
             return False
         cpu_prewarm_submitted.add(task_key)
         try:
@@ -1963,7 +1884,7 @@ def run_native_inflight_song_pipeline(
                     try:
                         for s in list(fg_prep_inflight):
                             try:
-                                s.runtime.fg_prep_future = None
+                                s.runtime.fg.fg_prep_future = None
                             except Exception:
                                 pass
                         fg_prep_inflight.clear()
@@ -2113,9 +2034,7 @@ def run_native_inflight_song_pipeline(
                             gpu_client=gpu_client,
                             post_sender=post_sender,
                             progress_cb=progress_cb,
-                            progress_best=progress_best,
-                            progress_best_valid=progress_best_valid,
-                            progress_best_lock=progress_best_lock,
+                            progress_tracker=progress_tracker,
                             register_future=_register_completion_future,
                         )
                         did_work = True
@@ -2282,27 +2201,19 @@ def run_native_inflight_song_pipeline(
                         or bool(decode_inflight)
                         or bool(fg_prep_inflight)
                     )
-                    signaled = False
-                    try:
-                        signaled = bool(completion_event.is_set())
-                        if signaled:
-                            completion_event.clear()
-                    except Exception:
-                        signaled = False
+                    signaled = bool(completion_tracker.is_set())
+                    if signaled:
+                        completion_tracker.clear()
                     if not signaled:
                         wait_timeout_s = float(event_wait_timeout_s)
                         if has_gpu and float(event_wait_gpu_cap_s) > 0.0:
                             wait_timeout_s = min(float(wait_timeout_s), float(event_wait_gpu_cap_s))
-                        signaled = wait_for_completion_event(
-                            completion_event,
+                        signaled = completion_tracker.wait(
                             timeout_s=float(wait_timeout_s),
                             short_spin_s=float(event_wait_short_spin_s),
                         )
                         if signaled:
-                            try:
-                                completion_event.clear()
-                            except Exception:
-                                pass
+                            completion_tracker.clear()
                     dt_wait = time.perf_counter() - t_wait
                     stage_profiler.record("main_wait", dt_wait)
                     if (not has_gpu) and has_cpu:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadout
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update, make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.native_inflight_progress import ProgressTracker
 from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
@@ -352,18 +352,14 @@ class NativeFGPipeline:
         gpu_client: GpuServiceClient,
         post_sender: _PostSender | None = None,
         progress_cb=None,
-        progress_best: dict[str, tuple[int, int]] | None = None,
-        progress_best_valid: set[str] | None = None,
-        progress_best_lock: threading.Lock | None = None,
+        progress_tracker: ProgressTracker | None = None,
     ) -> None:
         run_fg_job_sync(
             song,
             gpu_client=gpu_client,
             post_sender=post_sender,
             progress_cb=progress_cb,
-            progress_best=progress_best,
-            progress_best_valid=progress_best_valid,
-            progress_best_lock=progress_best_lock,
+            progress_tracker=progress_tracker,
         )
 
     def replace_futures(self, futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]]) -> None:
@@ -419,9 +415,7 @@ def run_fg_job_sync(
     gpu_client: GpuServiceClient,
     post_sender: _PostSender | None = None,
     progress_cb=None,
-    progress_best: dict[str, tuple[int, int]] | None = None,
-    progress_best_valid: set[str] | None = None,
-    progress_best_lock: threading.Lock | None = None,
+    progress_tracker: ProgressTracker | None = None,
 ) -> None:
     cpu_t0 = _thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
@@ -505,16 +499,16 @@ def run_fg_job_sync(
     # Late non-blocking DB prefetch consume:
     # - If FG prep skipped DB rows because prefetch was still in-flight, harvest now if ready.
     # - Never block FG worker threads on SQLite here.
-    if getattr(song.runtime, "db_loadouts_full", None) is None and getattr(song.runtime, "db_loadouts_future", None) is not None:
-        fut = getattr(song.runtime, "db_loadouts_future", None)
+    if getattr(song.runtime.db, "db_loadouts_full", None) is None and getattr(song.runtime.db, "db_loadouts_future", None) is not None:
+        fut = getattr(song.runtime.db, "db_loadouts_future", None)
         try:
             if fut.done():
                 try:
                     db_rows = fut.result(timeout=0)
                     if isinstance(db_rows, list):
-                        setattr(song.runtime, "db_loadouts_full", db_rows)
+                        song.runtime.db.db_loadouts_full = db_rows
                 except Exception:
-                    setattr(song.runtime, "db_loadouts_full", None)
+                    song.runtime.db.db_loadouts_full = None
             else:
                 # Best effort: avoid keeping stale prefetch work around if FG is already running.
                 try:
@@ -524,7 +518,7 @@ def run_fg_job_sync(
         except Exception:
             pass
         finally:
-            setattr(song.runtime, "db_loadouts_future", None)
+            song.runtime.db.db_loadouts_future = None
 
     build_details = song.runtime.fg.fg_build_details
     if not callable(build_details):
@@ -540,7 +534,7 @@ def run_fg_job_sync(
 
     # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
     # without rebuilding the full GA union.
-    db_loadouts_full = getattr(song.runtime, "db_loadouts_full", None)
+    db_loadouts_full = getattr(song.runtime.db, "db_loadouts_full", None)
     loadout_entries = getattr(song.runtime.fg, "loadout_entries", None)
     if db_loadouts_full is not None and not _loadout_entries_have_db_source(loadout_entries):
         if not isinstance(loadout_entries, dict):
@@ -618,21 +612,12 @@ def run_fg_job_sync(
     if progress_cb is not None:
         fg_record_info = None
         try:
+            key = str(getattr(song.config, "db_key", "") or "").strip()
             prev_best_score = safe_int(getattr(song.runtime.db, "db_best_score", 0), 0)
             prev_best_fg = safe_int(getattr(song.runtime.db, "db_best_fg_score", 0), 0)
             baseline_valid = bool(getattr(song.runtime.db, "db_baseline_valid", True))
-
-            key = str(getattr(song.config, "db_key", "") or "").strip()
-            if progress_best is not None and progress_best_lock is not None and key:
-                try:
-                    with progress_best_lock:
-                        best_pair = progress_best.get(key)
-                        if isinstance(best_pair, tuple) and len(best_pair) == 2:
-                            prev_best_score = safe_int(best_pair[0], prev_best_score)
-                            prev_best_fg = safe_int(best_pair[1], prev_best_fg)
-                        baseline_valid = key in (progress_best_valid or set())
-                except (KeyError, TypeError, ValueError):
-                    pass
+            if progress_tracker is not None and key:
+                prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
 
             fg_record_info = evaluate_progress_record_update(
                 getattr(song.runtime.decode, "best_data", None) or {},
@@ -646,7 +631,7 @@ def run_fg_job_sync(
             fg_record_info = None
         if isinstance(fg_record_info, dict):
             fg_record_info = dict(fg_record_info)
-            if fg_record_info.get("is_fg_better") and progress_best is not None and progress_best_lock is not None:
+            if fg_record_info.get("is_fg_better") and progress_tracker is not None:
                 try:
                     best_fg_new = safe_int(fg_record_info.get("best_fg_score_run", 0), 0)
                 except (ValueError, TypeError):
@@ -654,15 +639,11 @@ def run_fg_job_sync(
                 if best_fg_new > 0:
                     key = str(getattr(song.config, "db_key", "") or "").strip()
                     if key:
-                        try:
-                            with progress_best_lock:
-                                score0, fg0 = progress_best.get(key, (int(prev_best_score), int(prev_best_fg)))
-                                if int(best_fg_new) > int(fg0):
-                                    progress_best[key] = (int(score0), int(best_fg_new))
-                                if bool(baseline_valid) and progress_best_valid is not None:
-                                    progress_best_valid.add(key)
-                        except (KeyError, TypeError, ValueError):
-                            pass
+                        progress_tracker.update(
+                            key,
+                            best_fg=best_fg_new,
+                            mark_valid=bool(baseline_valid),
+                        )
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
             except Exception:

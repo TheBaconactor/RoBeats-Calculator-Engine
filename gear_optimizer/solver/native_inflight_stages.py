@@ -136,7 +136,8 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
         return None
 
     runtime = getattr(song, 'runtime', song)
-    fg_calc_song = getattr(song.runtime, "fg_calc_song", None)
+    fg_state = getattr(runtime, "fg", None)
+    fg_calc_song = getattr(fg_state, "fg_calc_song", None)
     if not isinstance(fg_calc_song, dict):
         try:
             fg_calc_song = clone_calc_song(calc_song)
@@ -154,7 +155,8 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
 
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
     try:
-        runtime.fg_calc_song = fg_calc_song
+        if fg_state is not None:
+            fg_state.fg_calc_song = fg_calc_song
     except AttributeError:
         pass
     return fg_calc_song
@@ -435,7 +437,7 @@ def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Non
 
 
 def run_cpu_prewarm_for_song(song: _NativeSong) -> None:
-    calc_song = getattr(song.runtime, "fg_calc_song", None) or getattr(song.gpu_inputs, "calc_song", None)
+    calc_song = getattr(song.runtime.fg, "fg_calc_song", None) or getattr(song.gpu_inputs, "calc_song", None)
     ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
         return
@@ -517,7 +519,7 @@ def _default_fg_group_meta_prime_limit(max_candidates: int) -> int:
 
 
 def collect_fg_group_meta_payload(song: _NativeSong, *, limit: int, start_index: int = 0) -> dict[int, dict]:
-    ga_candidates = getattr(song.runtime, "ga_candidates", None)
+    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
         return {}
     calc_song = _resolve_active_fg_calc_song(song)
@@ -577,7 +579,7 @@ def collect_fg_group_meta_payload(song: _NativeSong, *, limit: int, start_index:
 def apply_fg_group_meta_payload(song: _NativeSong, payload: dict[int, dict] | None) -> int:
     if not isinstance(payload, dict) or not payload:
         return 0
-    ga_candidates = getattr(song.runtime, "ga_candidates", None)
+    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
         return 0
 
@@ -613,7 +615,7 @@ def _resolve_fg_group_meta_prime_limit(
 ) -> int:
     if not bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
         return 0
-    ga_candidates = getattr(song.runtime, "ga_candidates", None)
+    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
         return 0
     max_candidates = max(0, min(int(len(ga_candidates)), 512))
@@ -1052,7 +1054,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                 "gpu_selected_payload": int(bool(is_gpu_selected_payload)),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
-                "direct_ga_candidates": int(bool(getattr(song.runtime, "fg_direct_ga_candidates", False))),
+        "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),
                 "db_prefetch_pending": int(bool(prefetch_pending)),
                 "db_rows": int(len(db_loadouts_full or [])) if isinstance(db_loadouts_full, list) else -1,
             },

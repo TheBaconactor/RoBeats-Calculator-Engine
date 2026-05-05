@@ -149,7 +149,7 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
 
     assert seen["allow_db_query"] is False
     # Keep the future attached so FG run can consume it later if it completes.
-    assert song.runtime.db_loadouts_future is pending
+    assert song.runtime.db.db_loadouts_future is pending
 
 
 def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monkeypatch):
@@ -193,9 +193,9 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
     stages._prepare_fg_static_sync(song)
 
     assert seen["ga_candidates"] == []
-    assert song.runtime.loadout_entries == {"db": {"score": 100}}
-    assert song.runtime.fg_direct_ga_candidates is True
-    assert getattr(song, "_fg_static_prep_done", False) is True
+    assert song.runtime.fg.loadout_entries == {"db": {"score": 100}}
+    assert song.runtime.fg.fg_direct_ga_candidates is True
+    assert song.runtime.fg.fg_static_prep_done is True
 
 
 def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating_base_calc_song(monkeypatch):
@@ -231,10 +231,10 @@ def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating
 
     stages._prepare_fg_static_sync(song)
 
-    assert song.runtime.fg_calc_song is not None
-    assert song.runtime.fg_calc_song is not base_calc_song
-    assert song.runtime.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert song.runtime.fg_calc_song["_gpu_song_slot"] == 7
+    assert song.runtime.fg.fg_calc_song is not None
+    assert song.runtime.fg.fg_calc_song is not base_calc_song
+    assert song.runtime.fg.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
+    assert song.runtime.fg.fg_calc_song["_gpu_song_slot"] == 7
     assert "TimingEnvelopeApplied" not in base_calc_song["metadata"]
     assert "fg_timestamps" not in base_calc_song["song_data"]
 
@@ -282,13 +282,13 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
         loadout_entries={"static": {"score": 100}},
         fg_prep_future=None,
     )
-    setattr(song, "_fg_static_prep_done", True)
+    song.runtime.fg.fg_static_prep_done = True
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["build"] == 0
-    assert song.runtime.loadout_entries == {"static": {"score": 100}}
-    assert song.runtime.ga_candidates
+    assert song.runtime.fg.loadout_entries == {"static": {"score": 100}}
+    assert song.runtime.decode.ga_candidates
 
 
 def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch):
@@ -347,13 +347,13 @@ def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch
         fg_calc_song=None,
         fg_prep_future=None,
     )
-    setattr(song, "_fg_static_prep_done", False)
+    song.runtime.fg.fg_static_prep_done = False
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
-    assert song.runtime.fg_calc_song is not None
-    assert song.runtime.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert seen["runtime_calc_song"] is song.runtime.fg_calc_song
+    assert song.runtime.fg.fg_calc_song is not None
+    assert song.runtime.fg.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
+    assert seen["runtime_calc_song"] is song.runtime.fg.fg_calc_song
     assert seen["runtime_ref_arrays"] is ref_arrays
     assert seen["runtime_gpu_client"] is None
 
@@ -475,14 +475,14 @@ def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeyp
         loadout_entries=None,
         fg_prep_future=None,
     )
-    setattr(song, "_fg_static_prep_done", False)
+    song.runtime.fg.fg_static_prep_done = False
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 8
-    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert song.runtime.ga_candidates[7]["Data"]["_fg_group_meta"]["signature"] == "sig-8"
-    assert "_fg_group_meta" not in song.runtime.ga_candidates[8]["Data"]
+    assert song.runtime.decode.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert song.runtime.decode.ga_candidates[7]["Data"]["_fg_group_meta"]["signature"] == "sig-8"
+    assert "_fg_group_meta" not in song.runtime.decode.ga_candidates[8]["Data"]
 
 
 def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
@@ -552,13 +552,13 @@ def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
         loadout_entries=None,
         fg_prep_future=None,
     )
-    setattr(song, "_fg_static_prep_done", False)
+    song.runtime.fg.fg_static_prep_done = False
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 1
-    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert "_fg_group_meta" not in song.runtime.ga_candidates[1]["Data"]
+    assert song.runtime.decode.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert "_fg_group_meta" not in song.runtime.decode.ga_candidates[1]["Data"]
 
 
 def test_collect_fg_group_meta_payload_and_apply(monkeypatch):
@@ -603,8 +603,8 @@ def test_collect_fg_group_meta_payload_and_apply(monkeypatch):
     assert calls["n"] == 1
     assert calls["prefer_grid"] == [False]
     assert stages.apply_fg_group_meta_payload(song, payload) == 1
-    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"] == {"signature": "sig-1"}
-    assert song.runtime.ga_candidates[1]["Data"]["_fg_group_meta"] == {"signature": "cached"}
+    assert song.runtime.decode.ga_candidates[0]["Data"]["_fg_group_meta"] == {"signature": "sig-1"}
+    assert song.runtime.decode.ga_candidates[1]["Data"]["_fg_group_meta"] == {"signature": "cached"}
 
 
 def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch):
@@ -664,14 +664,14 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
         loadout_entries=None,
         fg_prep_future=None,
     )
-    setattr(song, "fg_static_prep_future", pending_static)
-    setattr(song, "_fg_static_prep_done", False)
+    song.runtime.fg.fg_static_prep_future = pending_static
+    song.runtime.fg.fg_static_prep_done = False
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["static"] == 0
     assert calls["build"] == 1
-    assert getattr(song, "fg_static_prep_future", None) is pending_static
+    assert song.runtime.fg.fg_static_prep_future is pending_static
 
 
 def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):

@@ -80,9 +80,9 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     orchestrator._run_fg_job_sync(song, gpu_client=SimpleNamespace())
 
-    assert calls["ga_candidates"] is song.runtime.ga_candidates
+    assert calls["ga_candidates"] is song.runtime.decode.ga_candidates
     assert calls["ga_registry"] is registry
-    assert int(song.runtime.fg_variants[0]["fg_score"]) == 130
+    assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
@@ -150,4 +150,4 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     assert calls["args"][2] is True
     assert calls["args"][5] == {"Perfect Points": []}
     assert calls["args"][6] == "Rush"
-    assert int(song.runtime.fg_variants[0]["fg_score"]) == 140
+    assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140
