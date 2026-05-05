@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
-from gear_optimizer.solver.native_inflight_support import _loadout_entries_have_db_source
+from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 @dataclass(frozen=True)
@@ -145,7 +146,7 @@ class NativeFGPipeline:
         song: _NativeSong,
         prep_fn: Callable[..., Any],
         *,
-        gpu_client: Any,
+        gpu_client: GpuServiceClient | None,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
         runtime = getattr(song, 'runtime', song)
@@ -203,7 +204,7 @@ class NativeFGPipeline:
         self,
         prep_fn: Callable[..., Any],
         *,
-        gpu_client: Any,
+        gpu_client: GpuServiceClient | None,
         max_new: int | None = None,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> int:
@@ -349,11 +350,11 @@ class NativeFGPipeline:
         song: _NativeSong,
         *,
         gpu_client: GpuServiceClient,
-        post_sender: Any | None = None,
+        post_sender: _PostSender | None = None,
         progress_cb=None,
         progress_best: dict[str, tuple[int, int]] | None = None,
         progress_best_valid: set[str] | None = None,
-        progress_best_lock: Any | None = None,
+        progress_best_lock: threading.Lock | None = None,
     ) -> None:
         run_fg_job_sync(
             song,
@@ -416,11 +417,11 @@ def run_fg_job_sync(
     song: _NativeSong,
     *,
     gpu_client: GpuServiceClient,
-    post_sender: Any | None = None,
+    post_sender: _PostSender | None = None,
     progress_cb=None,
     progress_best: dict[str, tuple[int, int]] | None = None,
     progress_best_valid: set[str] | None = None,
-    progress_best_lock: Any | None = None,
+    progress_best_lock: threading.Lock | None = None,
 ) -> None:
     cpu_t0 = _thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")

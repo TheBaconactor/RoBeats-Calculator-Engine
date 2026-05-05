@@ -26,6 +26,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
@@ -129,7 +130,7 @@ def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any
             target_calc_song.pop(key, None)
 
 
-def _resolve_active_fg_calc_song(song: Any) -> dict | None:
+def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
     calc_song = getattr(song.gpu_inputs, "calc_song", None)
     if not isinstance(calc_song, dict):
         return None
@@ -159,7 +160,7 @@ def _resolve_active_fg_calc_song(song: Any) -> dict | None:
     return fg_calc_song
 
 
-def _maybe_prewarm_fg_chart_scorer(song: Any) -> None:
+def _maybe_prewarm_fg_chart_scorer(song: _NativeSong) -> None:
     """
     Precompute the expensive per-song AnalyticalFGScorer during FG prep.
 
@@ -433,7 +434,7 @@ def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Non
         pass
 
 
-def run_cpu_prewarm_for_song(song: Any) -> None:
+def run_cpu_prewarm_for_song(song: _NativeSong) -> None:
     calc_song = getattr(song.runtime, "fg_calc_song", None) or getattr(song.gpu_inputs, "calc_song", None)
     ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
@@ -515,7 +516,7 @@ def _default_fg_group_meta_prime_limit(max_candidates: int) -> int:
     return max(0, min(8, int(max_candidates), 512))
 
 
-def collect_fg_group_meta_payload(song: Any, *, limit: int, start_index: int = 0) -> dict[int, dict]:
+def collect_fg_group_meta_payload(song: _NativeSong, *, limit: int, start_index: int = 0) -> dict[int, dict]:
     ga_candidates = getattr(song.runtime, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
         return {}
@@ -573,7 +574,7 @@ def collect_fg_group_meta_payload(song: Any, *, limit: int, start_index: int = 0
     return payload
 
 
-def apply_fg_group_meta_payload(song: Any, payload: dict[int, dict] | None) -> int:
+def apply_fg_group_meta_payload(song: _NativeSong, payload: dict[int, dict] | None) -> int:
     if not isinstance(payload, dict) or not payload:
         return 0
     ga_candidates = getattr(song.runtime, "ga_candidates", None)
@@ -623,7 +624,7 @@ def _resolve_fg_group_meta_prime_limit(
     return _default_fg_group_meta_prime_limit(max_candidates)
 
 
-def prime_fg_group_meta_for_song(song: Any, *, limit: int) -> int:
+def prime_fg_group_meta_for_song(song: _NativeSong, *, limit: int) -> int:
     limit_i = max(0, min(int(limit), 512))
     if limit_i <= 0:
         return 0
@@ -635,7 +636,7 @@ def prime_fg_group_meta_for_song(song: Any, *, limit: int) -> int:
     )
 
 
-def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
+def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = _thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
@@ -720,7 +721,7 @@ def _prefetch_db_loadouts_sync(
         return []
 
 
-def _prepare_fg_static_sync(song: Any) -> None:
+def _prepare_fg_static_sync(song: _NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
 
@@ -814,7 +815,7 @@ def _prepare_fg_static_sync(song: Any) -> None:
         pass
 
 
-def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = None) -> None:
+def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = _thread_cpu_time_s()
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
