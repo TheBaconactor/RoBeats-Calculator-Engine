@@ -3,13 +3,13 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future
-from types import SimpleNamespace
 
 from gear_optimizer.solver.native_inflight_fg_pipeline import (
     NativeFGPipeline,
     NativeFGPipelineSettings,
     read_native_fg_pipeline_settings,
 )
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
@@ -62,13 +62,13 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
 def test_native_fg_pipeline_queue_pop_credit_and_submit():
     pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1, ga_credit_budget=2))
     try:
-        song = SimpleNamespace(
+        song = make_native_song(
             task_key="song-a",
             song_name="Song A",
             fg_prep_future=None,
             fg_queued_t0=None,
-            _fg_dynamic_prep_done=True,
         )
+        setattr(song, "_fg_dynamic_prep_done", True)
 
         pipeline.queue(song, now_s=10.0)
 
@@ -85,7 +85,7 @@ def test_native_fg_pipeline_queue_pop_credit_and_submit():
         assert popped is song
         assert len(pipeline.pending) == 0
 
-        future = pipeline.submit_job(lambda queued_song, value: (queued_song.task_key, value), song, value=7)
+        future = pipeline.submit_job(lambda queued_song, value: (queued_song.config.task_key, value), song, value=7)
 
         assert future.result(timeout=2) == ("song-a", 7)
         assert len(pipeline.futures) == 1
@@ -99,7 +99,7 @@ def test_native_fg_pipeline_does_not_pop_unready_without_slot_pressure():
     pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1, ga_credit_budget=1))
     try:
         prep_future = Future()
-        song = SimpleNamespace(task_key="song-b", song_name="Song B", fg_prep_future=prep_future, fg_queued_t0=None)
+        song = make_native_song(task_key="song-b", song_name="Song B", fg_prep_future=prep_future, fg_queued_t0=None)
 
         pipeline.queue(song, now_s=20.0)
 
@@ -125,21 +125,22 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
     lock = threading.Lock()
     try:
         songs = [
-            SimpleNamespace(
+            make_native_song(
                 task_key=f"song-{idx}",
                 song_name=f"Song {idx}",
                 fg_prep_future=None,
                 fg_queued_t0=None,
-                _fg_dynamic_prep_done=False,
             )
             for idx in range(4)
         ]
+        for song in songs:
+            setattr(song, "_fg_dynamic_prep_done", False)
         for song in songs:
             pipeline.queue(song, now_s=1.0)
 
         def _prep(song, gpu_client=None):
             with lock:
-                started_keys.append(song.task_key)
+                started_keys.append(song.config.task_key)
             release.wait(timeout=2)
 
         registered = []
@@ -164,8 +165,8 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
 
         release.set()
         for song in songs[:2]:
-            song.fg_prep_future.result(timeout=2)
-            song._fg_dynamic_prep_done = True
+            song.runtime.fg_prep_future.result(timeout=2)
+            setattr(song, "_fg_dynamic_prep_done", True)
 
         assert pipeline.pop_next(allow_not_ready=False) is songs[0]
         assert pipeline.start_pending_prep(_prep, gpu_client=None, max_new=4) == 2

@@ -1,7 +1,8 @@
 import json
-from types import SimpleNamespace
 
 import numpy as np
+
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def _stats(perfect_points: int) -> dict:
@@ -60,7 +61,7 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     )
 
     loadout_hash = get_loadout_hash(gear, minis)
-    fake_song = SimpleNamespace(
+    fake_song = make_native_song(
         fg_variants=[
             {
                 "_is_ga": True,
@@ -179,7 +180,7 @@ def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tm
         "Stats": base_stats,
         "Selected Element": "Rush",
     }
-    fake_song = SimpleNamespace(
+    fake_song = make_native_song(
         fg_variants=[
             {
                 "_is_ga": True,
@@ -353,7 +354,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
         "Selected Element": "Rush",
     }
     fg_stats = _stats(999)
-    fake_song = SimpleNamespace(
+    fake_song = make_native_song(
         fg_variants=[
             {
                 "_is_ga": True,
@@ -429,7 +430,7 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
 
     base_stats = _stats(100)
     fg_stats = _stats(999)
-    fake_song = SimpleNamespace(
+    fake_song = make_native_song(
         fg_variants=[
             {
                 "_is_ga": True,
@@ -486,7 +487,7 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
         0,
     )
 
-    fake_song = SimpleNamespace(
+    fake_song = make_native_song(
         fg_variants=[
             {
                 "_is_ga": True,

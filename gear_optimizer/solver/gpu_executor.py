@@ -172,14 +172,14 @@ def _worker_response_router_loop() -> None:
             response = q.get(timeout=0.1)
         except queue.Empty:
             continue
-        except Exception:
+        except (OSError, ValueError):
             time.sleep(0.05)
             continue
         if response is None:
             continue
         try:
             response_id = int(getattr(response, "request_id", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             response_id = 0
         with _PENDING_RESPONSES_COND:
             _store_pending_response_locked(response)
@@ -235,7 +235,7 @@ def _registry_base_fixed_stats_sig(arr: Any) -> tuple[Any, ...]:
         h = hashlib.blake2b(digest_size=8)
         h.update(memoryview(np.ascontiguousarray(a)).cast("B"))
         return ("arr", tuple(int(x) for x in a.shape), str(a.dtype), h.digest())
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return ("obj", id(arr))
 
 
@@ -255,24 +255,24 @@ def _fg_selection_array_sig(
         import numpy as np
 
         a = np.asarray(arr, dtype=np.int32)
-    except Exception:
+    except (ValueError, TypeError):
         return ("obj", id(arr))
 
     if a.ndim == 0:
         try:
             return ("scalar", int(a))
-        except Exception:
+        except (ValueError, TypeError):
             return ("scalar", repr(a))
 
     if a.ndim != 1:
         try:
             a = np.ravel(a)
-        except Exception:
+        except (ValueError, TypeError):
             return ("obj", id(arr))
 
     try:
         n_total = int(a.shape[0])
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return ("obj", id(arr))
 
     n = max(0, min(int(n_active), int(n_total)))
@@ -282,11 +282,11 @@ def _fg_selection_array_sig(
     view = a[:n]
     try:
         ptr = int(view.__array_interface__["data"][0])
-    except Exception:
+    except (ValueError, TypeError, KeyError, AttributeError):
         ptr = int(id(view))
     try:
         strides = tuple(int(x) for x in (view.strides or ()))
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         strides = ()
     cache_key = (int(id(a)), int(ptr), int(n), strides, str(view.dtype))
 
@@ -385,7 +385,7 @@ def _registry_static_handle_entry(
                 out = np.asarray(value, dtype=dtype)
                 if not out.flags["C_CONTIGUOUS"]:
                     out = np.ascontiguousarray(out)
-            except Exception:
+            except (ValueError, TypeError):
                 out = value
             return out
 
@@ -448,31 +448,6 @@ def _registry_static_handle_entry(
     return entry
 
 
-def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
-    """Configure this process as a GPU worker (called after fork/spawn)."""
-    global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE
-    global _PENDING_RESPONSES, _REGISTRY_STATIC_HANDLE_CACHE, _WORKER_RESPONSE_ROUTER_THREAD
-
-    _WORKER_RESPONSE_ROUTER_STOP.set()
-    t = _WORKER_RESPONSE_ROUTER_THREAD
-    if t is not None:
-        try:
-            t.join(timeout=0.25)
-        except Exception:
-            pass
-    _WORKER_RESPONSE_ROUTER_THREAD = None
-    _WORKER_RESPONSE_ROUTER_STOP.clear()
-
-    with _PENDING_RESPONSES_COND:
-        _PENDING_RESPONSES = OrderedDict()
-        _PENDING_RESPONSES_COND.notify_all()
-    _WORKER_MODE = True
-    _WORKER_ID = worker_id
-    _REQUEST_QUEUE = request_queue
-    _RESPONSE_QUEUE = response_queue
-    _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
-
-
 def is_gpu_worker_mode() -> bool:
     """Check if running in worker mode (should use IPC for GPU)."""
     return _WORKER_MODE
@@ -499,6 +474,31 @@ def clear_gpu_worker_mode():
     _RESPONSE_QUEUE = None
     with _PENDING_RESPONSES_COND:
         _PENDING_RESPONSES = OrderedDict()
+    _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
+
+
+def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
+    """Configure this process as a GPU worker (called after fork/spawn)."""
+    global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE
+    global _PENDING_RESPONSES, _REGISTRY_STATIC_HANDLE_CACHE, _WORKER_RESPONSE_ROUTER_THREAD
+
+    _WORKER_RESPONSE_ROUTER_STOP.set()
+    t = _WORKER_RESPONSE_ROUTER_THREAD
+    if t is not None:
+        try:
+            t.join(timeout=0.25)
+        except (OSError, RuntimeError):
+            pass
+    _WORKER_RESPONSE_ROUTER_THREAD = None
+    _WORKER_RESPONSE_ROUTER_STOP.clear()
+
+    with _PENDING_RESPONSES_COND:
+        _PENDING_RESPONSES = OrderedDict()
+        _PENDING_RESPONSES_COND.notify_all()
+    _WORKER_MODE = True
+    _WORKER_ID = worker_id
+    _REQUEST_QUEUE = request_queue
+    _RESPONSE_QUEUE = response_queue
     _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
 
 
@@ -550,7 +550,7 @@ class GpuExecutor:
             return True
         try:
             value = str(getattr(request_type, "value", request_type))
-        except Exception:
+        except (AttributeError, TypeError):
             value = ""
         return value in cls._NO_BATCH_REQUEST_TYPE_VALUES
 
@@ -560,7 +560,7 @@ class GpuExecutor:
             return True
         try:
             value = str(getattr(request_type, "value", request_type))
-        except Exception:
+        except (AttributeError, TypeError):
             value = ""
         return value in cls._GA_RECOVERY_REQUEST_TYPE_VALUES
 
@@ -587,7 +587,7 @@ class GpuExecutor:
             ):
                 try:
                     self.__dict__.pop(patched_name, None)
-                except Exception:
+                except (KeyError, AttributeError):
                     pass
             return
 
@@ -692,7 +692,7 @@ class GpuExecutor:
         self._workload_profile_enabled = bool(self._profile_enabled or env_flag("GPU_EXECUTOR_WORKLOAD_PROFILE", "0"))
         try:
             interval_raw = float(str(_ENV_GET("GPU_EXECUTOR_WORKLOAD_PROFILE_INTERVAL_SEC", "2.0") or "2.0").strip())
-        except Exception:
+        except (ValueError, TypeError):
             interval_raw = 2.0
         self._workload_profile_interval_sec = max(0.2, float(interval_raw))
         self._workload_profile_last_emit_ts: Optional[float] = None
@@ -710,12 +710,12 @@ class GpuExecutor:
         self._high_res_timer_enabled = False
         try:
             short_wait_spin_ms = float(str(_ENV_GET("GPU_EXECUTOR_SHORT_WAIT_SPIN_MS", "3.0") or "3.0").strip())
-        except Exception:
+        except (ValueError, TypeError):
             short_wait_spin_ms = 3.0
         self._short_wait_spin_sec = max(0.0, float(short_wait_spin_ms) / 1000.0)
         try:
             short_wait_spin_yields = int(str(_ENV_GET("GPU_EXECUTOR_SHORT_WAIT_SPIN_YIELD_ROUNDS", "8") or "8").strip())
-        except Exception:
+        except (ValueError, TypeError):
             short_wait_spin_yields = 8
         self._short_wait_spin_yield_rounds = max(0, min(int(short_wait_spin_yields), 100_000))
 
@@ -738,7 +738,7 @@ class GpuExecutor:
     def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
         try:
             dt = float(dt_sec)
-        except Exception:
+        except (ValueError, TypeError):
             return
         if dt <= 0.0:
             return
@@ -782,7 +782,7 @@ class GpuExecutor:
         """
         try:
             wall = max(0.0, float(exec_wall_sec))
-        except Exception:
+        except (ValueError, TypeError):
             return
         if wall <= 0.0:
             return
@@ -796,7 +796,7 @@ class GpuExecutor:
                 kernel = max(0.0, float(prof_after[0]) - float(prof_before[0]))
                 upload = max(0.0, float(prof_after[1]) - float(prof_before[1]))
                 download = max(0.0, float(prof_after[2]) - float(prof_before[2]))
-            except Exception:
+            except (ValueError, TypeError, IndexError):
                 kernel = 0.0
                 upload = 0.0
                 download = 0.0
@@ -809,7 +809,7 @@ class GpuExecutor:
             self._req_type_gpu_kernel_sec[request_type] += float(kernel)
             self._req_type_gpu_upload_sec[request_type] += float(upload)
             self._req_type_gpu_download_sec[request_type] += float(download)
-        except Exception:
+        except (ValueError, TypeError, KeyError):
             return
 
     def _record_latency(
@@ -823,14 +823,14 @@ class GpuExecutor:
             return
         try:
             req_type = request.request_type
-        except Exception:
+        except AttributeError:
             return
         try:
             submit_ns = int(getattr(request, "submit_perf_ns", 0) or 0)
             dequeue_ns = int(getattr(request, "dequeue_perf_ns", 0) or 0)
             exec_start_ns = int(exec_start_ns or 0)
             exec_end_ns = int(exec_end_ns or 0)
-        except Exception:
+        except (ValueError, TypeError):
             return
         if submit_ns <= 0 or exec_end_ns <= 0:
             return
@@ -857,12 +857,12 @@ class GpuExecutor:
             self._lat_in_exec_total_sec[req_type] += float(in_exec_sec)
             if in_exec_sec > float(self._lat_in_exec_max_sec[req_type]):
                 self._lat_in_exec_max_sec[req_type] = float(in_exec_sec)
-        except Exception:
+        except (ValueError, TypeError, KeyError):
             return
 
         try:
             cap = int(self._lat_sample_cap)
-        except Exception:
+        except (ValueError, TypeError):
             cap = 0
         if cap <= 0:
             return
@@ -882,7 +882,7 @@ class GpuExecutor:
                         total_samples[j] = float(total_sec)
                         queue_samples[j] = float(queue_sec)
                         in_exec_samples[j] = float(in_exec_sec)
-        except Exception:
+        except (ValueError, TypeError, IndexError, KeyError):
             return
 
     @staticmethod
@@ -893,11 +893,11 @@ class GpuExecutor:
             shape = getattr(value, "shape", None)
             if shape is not None and len(shape) > 0:
                 return max(0, int(shape[0]))
-        except Exception:
+        except (AttributeError, TypeError):
             pass
         try:
             return max(0, int(len(value)))
-        except Exception:
+        except (ValueError, TypeError):
             return 0
 
     def _safe_qsize(self) -> int:
@@ -908,11 +908,11 @@ class GpuExecutor:
             size = q.qsize()
         except (NotImplementedError, AttributeError):
             return -1
-        except Exception:
+        except (OSError, ValueError):
             return -1
         try:
             return max(0, int(size))
-        except Exception:
+        except (ValueError, TypeError):
             return -1
 
     def _estimate_request_work_units(self, request: "GpuRequest") -> float:
@@ -998,7 +998,7 @@ class GpuExecutor:
                 dequeue_ns = int(getattr(req, "dequeue_perf_ns", 0) or 0)
                 if submit_ns > 0 and dequeue_ns > submit_ns:
                     age_ms.append(max(0.0, float(dequeue_ns - submit_ns) / 1e6))
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 continue
 
         total = int(len(non_shutdown))
@@ -1175,7 +1175,7 @@ class GpuExecutor:
         payload = request.payload or {}
         try:
             song_slot = int(payload.get("song_slot", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             song_slot = 0
         return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
 
@@ -1189,7 +1189,7 @@ class GpuExecutor:
         except Exception:
             try:
                 max_slots = int(env_get("GPU_SONG_SLOTS", "24") or "24")
-            except Exception:
+            except (ValueError, TypeError):
                 max_slots = 24
         max_slots = max(1, int(max_slots))
         if max_slots <= 1:
@@ -1257,7 +1257,7 @@ class GpuExecutor:
         self._idle_gaps = []
         try:
             idle_ms = float(env_get("GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS", "1.0"))
-        except Exception:
+        except (ValueError, TypeError):
             idle_ms = 1.0
         self._idle_sample_threshold_sec = max(0.0, float(idle_ms) / 1000.0)
         self._profile_loop_start_ts = None
@@ -1302,7 +1302,7 @@ class GpuExecutor:
         self._live_enabled = env_flag("GPU_EXECUTOR_LIVE")
         try:
             self._live_interval_sec = float(env_get("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
-        except Exception:
+        except (ValueError, TypeError):
             self._live_interval_sec = 1.0
         self._live_interval_sec = max(0.1, float(self._live_interval_sec))
         self._live_last_report_ts = None
@@ -1324,7 +1324,7 @@ class GpuExecutor:
                         "planner_mode,queue_depth_hint,pressure_hint,work_units,dominant_type,"
                         "dominant_share_pct,diversity_pct,avg_submit_age_ms\n"
                     )
-            except Exception:
+            except (OSError, ValueError):
                 self._trace_fp = None
 
         self._in_process_queues = bool(in_process)
@@ -1336,7 +1336,7 @@ class GpuExecutor:
                 0.1,
                 float(env_get("GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC", "2.0") or "2.0"),
             )
-        except Exception:
+        except (ValueError, TypeError):
             self._heartbeat_interval_sec = 2.0
         self._heartbeat_last_write_monotonic = 0.0
         self._heartbeat_last_phase = ""
@@ -1350,11 +1350,11 @@ class GpuExecutor:
                     batch_wait_ms = min(int(base_wait_ms), 6)
                 else:
                     batch_wait_ms = int(str(raw_wait).strip())
-            except Exception:
+            except (ValueError, TypeError):
                 batch_wait_ms = 6
             try:
                 after_first_ms = int(env_get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
-            except Exception:
+            except (ValueError, TypeError):
                 after_first_ms = 2
             if (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4):
                 self._high_res_timer_enabled = bool(_acquire_windows_timer_period_1ms())
@@ -1403,7 +1403,7 @@ class GpuExecutor:
         if self._trace_fp is not None:
             try:
                 self._trace_fp.close()
-            except Exception:
+            except OSError:
                 pass
             self._trace_fp = None
         if self._profile_enabled:
@@ -1471,7 +1471,7 @@ class GpuExecutor:
                     def _p95(d: dict, k: Any) -> float:
                         try:
                             samples = list(d.get(k) or [])
-                        except Exception:
+                        except (ValueError, TypeError, KeyError, AttributeError):
                             samples = []
                         if not samples:
                             return 0.0
@@ -1535,7 +1535,7 @@ class GpuExecutor:
                         cnt = int(self._idle_transitions_count.get((prev_t, next_t), 0))
                         parts.append(f"{prev_s}->{next_s}:{sec:.2f}s({cnt})")
                     logger.debug("[GpuExecutor][IDLE] transitions=[%s]", ", ".join(parts))
-            except Exception:
+            except (ValueError, TypeError, KeyError):
                 pass
             try:
                 self._maybe_emit_workload_profile(force=True)
@@ -1580,7 +1580,7 @@ class GpuExecutor:
                             "last_mode": str(self._last_batch_plan_mode),
                         },
                     )
-            except Exception:
+            except (ValueError, TypeError, KeyError, AttributeError):
                 pass
 
         if self._workload_profile_enabled and (not self._profile_enabled):
@@ -1657,7 +1657,7 @@ class GpuExecutor:
                     f"{float(pressure_hint):.3f},{float(work_units):.3f},{str(dominant_type)},"
                     f"{float(dominant_share_pct):.2f},{float(diversity_pct):.2f},{float(avg_submit_age_ms):.3f}\n"
                 )
-        except Exception:
+        except (OSError, ValueError):
             pass
         emit_profile_event(
             component="gpu_executor",
@@ -1758,7 +1758,7 @@ class GpuExecutor:
             os.replace(tmp_path, path)
             self._heartbeat_last_write_monotonic = now_monotonic
             self._heartbeat_last_phase = str(phase or "")
-        except Exception:
+        except (OSError, ValueError, TypeError):
             return
 
     def _executor_loop(self):
@@ -1783,7 +1783,7 @@ class GpuExecutor:
                 trace_path = self._heartbeat_path.with_name(self._heartbeat_path.stem + "_taichi_init_error.log")
                 trace_path.parent.mkdir(parents=True, exist_ok=True)
                 trace_path.write_text(tb, encoding="utf-8", errors="replace")
-            except Exception:
+            except OSError:
                 trace_path = None
             if trace_path is not None:
                 err = f"{err} (trace: {trace_path})"
@@ -1912,7 +1912,7 @@ class GpuExecutor:
                                         encoding="utf-8",
                                     )
                                     os.replace(tmp_path, sentinel_path)
-                                except Exception:
+                                except (OSError, ValueError, TypeError):
                                     pass
             except Exception:
                 # If anything about cross-process coordination fails, fall back to best-effort warmup.
@@ -1938,7 +1938,7 @@ class GpuExecutor:
         # warmup enabled in that mode so the first real GA request doesn't pay that spike.
         try:
             warmup_ga_light = bool(warmup_ga) and bool(env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0"))
-        except Exception:
+        except (ValueError, TypeError):
             warmup_ga_light = False
         if warmup_ga_light:
             try:
@@ -2045,14 +2045,14 @@ class GpuExecutor:
                         if raw is not None and str(raw).strip() != "":
                             cached_batch_wait_ms = int(str(raw).strip())
                             cached_batch_wait_overridden = True
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
                     try:
                         raw = _ENV_GET("GPU_EXECUTOR_MAX_BATCH")
                         if raw is not None and str(raw).strip() != "":
                             cached_batch_max = int(str(raw).strip())
                             cached_batch_max_overridden = True
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
                     try:
                         raw = _ENV_GET("GPU_EXECUTOR_FG_BURST_WINDOW_MS")
@@ -2060,7 +2060,7 @@ class GpuExecutor:
                             cached_fg_burst_window_ms = int(str(raw).strip())
                         else:
                             cached_fg_burst_window_ms = 6
-                    except Exception:
+                    except (ValueError, TypeError):
                         cached_fg_burst_window_ms = 6
                     cached_fg_burst_window_ms = max(0, int(cached_fg_burst_window_ms))
                     try:
@@ -2069,7 +2069,7 @@ class GpuExecutor:
                             cached_fg_burst_batch_wait_ms = int(str(raw).strip())
                         else:
                             cached_fg_burst_batch_wait_ms = 2
-                    except Exception:
+                    except (ValueError, TypeError):
                         cached_fg_burst_batch_wait_ms = 2
                     cached_fg_burst_batch_wait_ms = max(0, min(int(cached_fg_burst_batch_wait_ms), 10))
                 env_refresh_counter = (env_refresh_counter + 1) % 64
@@ -2357,7 +2357,7 @@ class GpuExecutor:
                             continue
                         resp = GpuResponse(request_id=req.request_id, success=False, error=f"GpuExecutor error: {err}")
                         _try_put_response(req, resp)
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError):
                         continue
                 try:
                     logger.debug("[GpuExecutor] Error: %s", e)
@@ -2376,7 +2376,7 @@ class GpuExecutor:
                         batch_metrics["exec_sec"] = 0.0
                         batch_metrics["error"] = str(err)
                         self._record_workload_batch(batch_metrics)
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     pass
                 self._write_heartbeat(phase="error", batch=batch, note=str(err), force=True)
 
@@ -2424,7 +2424,7 @@ class GpuExecutor:
         try:
             if int(getattr(request, "dequeue_perf_ns", 0) or 0) <= 0:
                 request.dequeue_perf_ns = time.perf_counter_ns()
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             pass
         return request
 
@@ -2448,7 +2448,7 @@ class GpuExecutor:
     def _ga_recovery_streak_cap(self) -> int:
         try:
             raw = int(str(_ENV_GET("GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX", "1") or "1").strip())
-        except Exception:
+        except (ValueError, TypeError):
             raw = 1
         return max(1, min(int(raw), 128))
 
@@ -2464,7 +2464,7 @@ class GpuExecutor:
                     or str(default_limit)
                 ).strip()
             )
-        except Exception:
+        except (ValueError, TypeError):
             raw = default_limit
         return max(1, min(int(raw), 256))
 
@@ -2481,7 +2481,7 @@ class GpuExecutor:
             return
         try:
             first_request = self._staged_requests[0]
-        except Exception:
+        except (IndexError, AttributeError):
             return
         if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
             return
@@ -2556,19 +2556,19 @@ class GpuExecutor:
             try:
                 raw_idle_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
                 inproc_idle_wait_s = float(str(raw_idle_ms).strip()) / 1000.0
-            except Exception:
+            except (ValueError, TypeError):
                 inproc_idle_wait_s = 0.1
             inproc_idle_wait_s = max(0.0, min(float(inproc_idle_wait_s), 1.0))
             try:
                 raw_idle_recent_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS", "10")
                 recent_idle_wait_s = float(str(raw_idle_recent_ms).strip()) / 1000.0
-            except Exception:
+            except (ValueError, TypeError):
                 recent_idle_wait_s = 0.01
             recent_idle_wait_s = max(0.0, min(float(recent_idle_wait_s), float(inproc_idle_wait_s)))
             try:
                 raw_grace_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS", "250")
                 recent_idle_grace_s = float(str(raw_grace_ms).strip()) / 1000.0
-            except Exception:
+            except (ValueError, TypeError):
                 recent_idle_grace_s = 0.25
             recent_idle_grace_s = max(0.0, min(float(recent_idle_grace_s), 5.0))
             try:
@@ -2577,12 +2577,12 @@ class GpuExecutor:
                     inproc_yields_left = max(0, min(64, int(max_wait_ms)))
                 else:
                     inproc_yields_left = int(str(raw_yields).strip())
-            except Exception:
+            except (ValueError, TypeError):
                 inproc_yields_left = max(0, min(64, int(max_wait_ms)))
             inproc_yields_left = max(0, min(int(inproc_yields_left), 256))
         try:
             inproc_after_first_ms = int(_ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
-        except Exception:
+        except (ValueError, TypeError):
             inproc_after_first_ms = 0
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
         if int(max_wait_ms) <= 0:
@@ -2717,7 +2717,7 @@ class GpuExecutor:
 
         try:
             handle = int(handle_raw)
-        except Exception:
+        except (ValueError, TypeError):
             return payload, f"Invalid registry payload handle: {handle_raw!r}"
 
         worker_id = int(getattr(request, "worker_id", 0) or 0)
@@ -2771,7 +2771,7 @@ class GpuExecutor:
             raw_budget = env_get("FG_TASK_BUDGET")
             if raw_budget is not None and str(raw_budget).strip() != "":
                 task_budget = int(str(raw_budget).strip())
-        except Exception:
+        except (ValueError, TypeError):
             task_budget = None
         if task_budget is None:
             inflight_v3 = env_flag("INFLIGHT_V3")
@@ -2798,7 +2798,7 @@ class GpuExecutor:
         def _key_for_task_only(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, ...] | None:
             try:
                 genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args
-            except Exception:
+            except (ValueError, TypeError, IndexError):
                 return None
             return (
                 id(genome_stats_list),
@@ -2877,7 +2877,7 @@ class GpuExecutor:
                     if self._profile_enabled:
                         try:
                             task_count = int(len(_fg_tasks))
-                        except Exception:
+                        except (ValueError, TypeError, AttributeError):
                             task_count = 0
                         self._fg_tasks_batches += 1
                         self._fg_tasks_total += task_count
@@ -2994,12 +2994,12 @@ class GpuExecutor:
 
         try:
             max_payloads = int(env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
-        except Exception:
+        except (ValueError, TypeError):
             max_payloads = 64
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
             max_pairs = int(env_get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
-        except Exception:
+        except (ValueError, TypeError):
             max_pairs = 256
         max_pairs = max(0, int(max_pairs))
         if max_pairs > 0:
@@ -3018,7 +3018,7 @@ class GpuExecutor:
                         total += int(ftff_pairs.shape[0])
                     else:
                         total += int(len(ftff_pairs))
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
                     continue
             return total
 
@@ -3325,13 +3325,13 @@ class GpuExecutor:
                     return ("scalar", str(arr.dtype), repr(arr))
             try:
                 arr_ptr = int(arr.__array_interface__["data"][0])
-            except Exception:
+            except (ValueError, TypeError, KeyError, AttributeError):
                 arr_ptr = int(id(arr))
             # Include strides so distinct views sharing the same pointer/shape/dtype
             # (e.g. square transpose) cannot collide.
             try:
                 strides = tuple(int(x) for x in (arr.strides or ()))
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 strides = ()
             key = (int(id(arr)), int(arr_ptr), tuple(int(x) for x in arr.shape), strides, str(arr.dtype))
             digest = array_sig_cache.get(key)
@@ -3442,7 +3442,7 @@ class GpuExecutor:
                     )
                 else:
                     sig = _registry_payload_sig(p)
-            except Exception:
+            except (ValueError, TypeError, KeyError, AttributeError):
                 groups.append([req])
                 continue
             groups_by_sig.setdefault(sig, []).append(req)
@@ -3718,7 +3718,7 @@ class GpuExecutor:
             ref_arrays0 = kwargs.get("ref_arrays")
             try:
                 song_slot0 = int(kwargs.get("song_slot", 0) or 0)
-            except Exception:
+            except (ValueError, TypeError):
                 song_slot0 = 0
             if not isinstance(calc_song, dict) or not isinstance(ref_arrays0, dict):
                 return GpuResponse(
@@ -3751,7 +3751,7 @@ class GpuExecutor:
             if self._profile_enabled:
                 try:
                     task_count = int(len(fg_tasks))
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
                     task_count = 0
                 self._fg_tasks_batches += 1
                 self._fg_tasks_total += task_count
@@ -3781,7 +3781,7 @@ class GpuExecutor:
                     n_genomes = int(kwargs.get("n_genomes_override", 0) or 0)
                 else:
                     n_genomes = int(len(genome_stats_list))
-            except Exception:
+            except (ValueError, TypeError):
                 n_genomes = 0
             if n_genomes <= 0:
                 return GpuResponse(
@@ -3804,7 +3804,7 @@ class GpuExecutor:
             kwargs_local["upload_genome_stats"] = bool(kwargs_local.get("upload_genome_stats", True))
             try:
                 fg_session_slot = int(kwargs_local.get("song_slot", 0) or 0)
-            except Exception:
+            except (ValueError, TypeError):
                 fg_session_slot = 0
 
             if reset_before:
@@ -3902,13 +3902,13 @@ class GpuExecutor:
 
         try:
             max_reqs = int(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
-        except Exception:
+        except (ValueError, TypeError):
             max_reqs = 1
         max_reqs = max(1, min(int(max_reqs), 128))
 
         try:
             max_work_units = float(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
-        except Exception:
+        except (ValueError, TypeError):
             max_work_units = 720000.0
         if max_work_units <= 0.0:
             max_work_units = float("inf")
@@ -4073,11 +4073,11 @@ class GpuExecutor:
         payload = request.payload or {}
         try:
             n_genomes = int(payload.get("n_genomes", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             n_genomes = 0
         try:
             song_slot = int(payload.get("song_slot", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             song_slot = 0
 
         from .taichi_gem.force_greats.api import fg_reset_global_best
@@ -4101,11 +4101,11 @@ class GpuExecutor:
         payload = request.payload or {}
         try:
             n_genomes = int(payload.get("n_genomes", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             n_genomes = 0
         try:
             song_slot = int(payload.get("song_slot", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             song_slot = 0
 
         from .taichi_gem.force_greats.api import fg_download_global_best
@@ -4285,7 +4285,7 @@ class GpuExecutor:
             try:
                 pair_ft = np.asarray([int(p[0]) for p in pairs_list], dtype=np.int32)
                 pair_ff = np.asarray([int(p[1]) for p in pairs_list], dtype=np.int32)
-            except Exception:
+            except (ValueError, TypeError):
                 return GpuResponse(
                     request_id=request.request_id,
                     success=False,
@@ -4304,7 +4304,7 @@ class GpuExecutor:
             try:
                 base_ft = np.asarray([int(p[0]) for p in base_list], dtype=np.int32)
                 base_ff = np.asarray([int(p[1]) for p in base_list], dtype=np.int32)
-            except Exception:
+            except (ValueError, TypeError):
                 return GpuResponse(
                     request_id=request.request_id,
                     success=False,
@@ -4416,7 +4416,7 @@ class GpuExecutor:
             return None
         try:
             n_sections_i = int(n_sections)
-        except Exception:
+        except (ValueError, TypeError):
             return None
         if n_sections_i <= 0:
             return None
@@ -4451,7 +4451,7 @@ class GpuExecutor:
                 ft_i = int(pairs_arr[i, 0])
                 ff_i = int(pairs_arr[i, 1])
                 pair_index[(ft_i, ff_i)] = int(i)
-        except Exception:
+        except (ValueError, TypeError, KeyError, AttributeError):
             return None
 
         n_out = int(cfg_idx_np.shape[0])
@@ -4470,7 +4470,7 @@ class GpuExecutor:
             for s in range(int(n_sections_i) - 1, -1, -1):
                 try:
                     basev = int(max(0, int(max_fp_row[s] if s < len(max_fp_row) else 0))) + 1
-                except Exception:
+                except (ValueError, TypeError, IndexError):
                     basev = 1
                 if basev <= 0:
                     basev = 1
@@ -4543,7 +4543,7 @@ class GpuExecutor:
         debug_batch_pack = env_flag("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0")
         try:
             min_pack_payloads = int(env_get("FG_BREAKPOINTS_BATCH_PACK_MIN_PAYLOADS", "2") or "2")
-        except Exception:
+        except (ValueError, TypeError):
             min_pack_payloads = 2
         min_pack_payloads = max(1, min(int(min_pack_payloads), 128))
         if debug_batch_pack:
@@ -4616,7 +4616,7 @@ class GpuExecutor:
                                 payload_for_run["fg_selection_inputs_preuploaded"] = True
                             else:
                                 last_selection_upload_key = selection_upload_key
-                        except Exception:
+                        except (ValueError, TypeError, AttributeError, KeyError):
                             payload_for_run = p
 
                         ctx = self._run_fg_solve_with_breakpoints_payload(payload_for_run, batch_pack_idx=int(i))
@@ -4665,7 +4665,7 @@ class GpuExecutor:
                                             result_pairs,
                                             int(n_sections),
                                         )
-                                except Exception:
+                                except (ValueError, TypeError):
                                     cfg_counts = None
                             elif cfg_windows:
                                 try:
@@ -4736,7 +4736,7 @@ class GpuExecutor:
 
         try:
             n_sections = int(payload.get("n_sections", 0) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             n_sections = 0
         if n_sections <= 0:
             return None
@@ -4776,7 +4776,7 @@ class GpuExecutor:
                 raise ValueError("ftff_pairs must be shape (n,2)")
             if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
                 raise ValueError("base_stats_pairs must be shape (n,2)")
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             raise ValueError(str(e)) from e
 
         if int(pairs_arr.shape[0]) <= 0:
@@ -4942,7 +4942,7 @@ class GpuExecutor:
                 group_pairs = pairs_arr[mask]
                 try:
                     max_fp_norm = [max(0, int(v)) for v in uniq[int(i_group)].tolist()[: int(n_sections)]]
-                except Exception:
+                except (ValueError, TypeError):
                     max_fp_norm = [0] * int(n_sections)
                 if not max_fp_norm:
                     max_fp_norm = [0] * int(n_sections)
@@ -5002,7 +5002,7 @@ class GpuExecutor:
                 n_genomes = int(kwargs_local.get("n_genomes_override", 0) or 0)
             else:
                 n_genomes = int(len(genome_stats_list))
-        except Exception:
+        except (ValueError, TypeError):
             n_genomes = 0
         if n_genomes <= 0:
             raise ValueError("FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0")
@@ -5100,7 +5100,7 @@ class GpuExecutor:
                                 result_pairs,
                                 int(n_sections),
                             )
-                    except Exception:
+                    except (ValueError, TypeError, KeyError):
                         cfg_counts = None
                 elif cfg_windows:
                     cfg_counts = self._decode_cfg_counts_from_windows(
@@ -5156,7 +5156,7 @@ class GpuExecutor:
     def request_abort(self, reason: str = "abort requested") -> None:
         try:
             reason_text = str(reason or "").strip()
-        except Exception:
+        except (ValueError, TypeError):
             reason_text = ""
         self._abort_reason = reason_text or "abort requested"
         self._abort_requested.set()
@@ -5469,7 +5469,7 @@ def submit_gpu_solve_genomes_from_registry(
     result = response.result
     try:
         n_expected = int(getattr(population_indices, "shape", [len(population_indices)])[0])
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         n_expected = 0
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")

@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 import pytest
 
@@ -81,7 +81,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {}},
         cfg_dict={},
@@ -113,8 +113,8 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert seen["ga_n"] == 0
-    assert song.fg_direct_ga_candidates is True
-    assert len(song.ga_candidates or []) == 1
+    assert song.runtime.fg_direct_ga_candidates is True
+    assert len(song.runtime.ga_candidates or []) == 1
 
 
 def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):

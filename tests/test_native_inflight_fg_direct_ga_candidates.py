@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from gear_optimizer.solver.native_inflight_types import make_native_song
+
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
@@ -41,7 +43,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
-    song = SimpleNamespace(
+    song = make_native_song(
         fg_prep_future=None,
         loadout_entries={},
         db_loadouts_full=[],
@@ -78,9 +80,9 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     orchestrator._run_fg_job_sync(song, gpu_client=SimpleNamespace())
 
-    assert calls["ga_candidates"] is song.ga_candidates
+    assert calls["ga_candidates"] is song.runtime.ga_candidates
     assert calls["ga_registry"] is registry
-    assert int(song.fg_variants[0]["fg_score"]) == 130
+    assert int(song.runtime.fg_variants[0]["fg_score"]) == 130
 
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
@@ -105,7 +107,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
 
     monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
-    song = SimpleNamespace(
+    song = make_native_song(
         fg_prep_future=None,
         loadout_entries={},
         db_loadouts_full=[],
@@ -148,4 +150,4 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     assert calls["args"][2] is True
     assert calls["args"][5] == {"Perfect Points": []}
     assert calls["args"][6] == "Rush"
-    assert int(song.fg_variants[0]["fg_score"]) == 140
+    assert int(song.runtime.fg_variants[0]["fg_score"]) == 140

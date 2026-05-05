@@ -123,7 +123,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         if isinstance(calc_song, dict):
             pre_song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
             pre_song_key = str(calc_song.get("_queue_key") or calc_song.get("_queue_label") or "").strip()
-    except Exception:
+    except (KeyError, TypeError, ValueError, AttributeError):
         pre_song_slot = 0
         pre_song_key = ""
 
@@ -220,7 +220,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     topk_retry_on_empty = env_flag("FG_DOWNLOAD_TOPK_RETRY_ON_EMPTY", "1")
     try:
         download_topk_k = int(env_get("FG_DOWNLOAD_TOPK_K", str(LOADOUTS_PER_SONG_LIMIT)))
-    except Exception:
+    except (ValueError, TypeError):
         download_topk_k = int(LOADOUTS_PER_SONG_LIMIT)
     download_topk_k = max(0, int(download_topk_k))
 
@@ -231,7 +231,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
         else:
             song_slot = 0
-    except Exception:
+    except (KeyError, TypeError, ValueError, AttributeError):
         song_slot = 0
     if song_slot < 0:
         song_slot = 0
@@ -240,7 +240,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     try:
         if isinstance(calc_song, dict):
             finder_song_key = str(calc_song.get("_queue_key") or calc_song.get("_queue_label") or "").strip()
-    except Exception:
+    except (KeyError, TypeError, ValueError, AttributeError):
         finder_song_key = ""
 
     def _emit_finder_phase(event: str, **metrics: Any) -> None:
@@ -268,18 +268,18 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             shape = getattr(items, "shape", None)
             if shape is not None and len(shape) > 0:
                 return max(0, int(shape[0]))
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError):
             pass
         try:
             return max(0, int(len(items)))
-        except Exception:
+        except (ValueError, TypeError):
             return 0
 
     sig_frontier_enabled = env_flag("FG_SIGNATURE_FRONTIER_ENABLED", "1")
     sig_frontier_limit = _resolve_signature_frontier_limit_impl(loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT)) if sig_frontier_enabled else 0
     try:
         sig_frontier_center_bin = max(1, int(env_get("FG_SIGNATURE_FRONTIER_CENTER_BIN", "2") or 2))
-    except Exception:
+    except (ValueError, TypeError):
         sig_frontier_center_bin = 2
 
     def _submit_fg_reset_global_best(n_genomes: int, *, blocking: bool = True):
@@ -449,7 +449,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         first_gpu_submit_emitted = True
         try:
             fg_first_submit_delay_sec = time.perf_counter() - float(fg_submit_clock_start)
-        except Exception:
+        except (ValueError, TypeError):
             fg_first_submit_delay_sec = None
         _emit_finder_phase(
             "first_gpu_submit",
@@ -514,11 +514,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             return
         try:
             fg_surface_pair_drops += max(0, int(gpu_results.get("surface_pair_drops", 0) or 0))
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError):
             pass
         try:
             fg_surface_pair_reduce_sec += max(0.0, float(gpu_results.get("surface_pair_reduce_ms", 0) or 0)) / 1000.0
-        except Exception:
+        except (ValueError, TypeError, KeyError, AttributeError):
             pass
 
     def _iter_ftff_chunks(pairs):
@@ -551,7 +551,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if not arr.flags["C_CONTIGUOUS"]:
                 arr = np.ascontiguousarray(arr)
             return arr
-        except Exception:
+        except (ValueError, TypeError, KeyError):
             return None
 
     need_reset = False
@@ -657,7 +657,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if "base_cfg_offset" in first:
                 try:
                     submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
-                except Exception:
+                except (ValueError, TypeError):
                     submit_kwargs["base_cfg_offset"] = 0
 
             if need_reset:
@@ -724,24 +724,24 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         breakpoint_group_cache_max_pairs = max(
             0, int(env_get("FG_BREAKPOINT_GROUP_CACHE_MAX_PAIRS", "256") or "256")
         )
-    except Exception:
+    except (ValueError, TypeError):
         breakpoint_group_cache_max_pairs = 256
     try:
         breakpoint_group_cache_max_base_pairs = max(
             0, int(env_get("FG_BREAKPOINT_GROUP_CACHE_MAX_BASE_PAIRS", "64") or "64")
         )
-    except Exception:
+    except (ValueError, TypeError):
         breakpoint_group_cache_max_base_pairs = 64
     max_fp_matrix_cache_enabled = env_flag("FG_MAX_FP_MATRIX_CACHE", "1")
     try:
         max_fp_matrix_cache_max_pairs = max(0, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX_PAIRS", "256") or "256"))
-    except Exception:
+    except (ValueError, TypeError):
         max_fp_matrix_cache_max_pairs = 256
     try:
         max_fp_matrix_cache_max_base_pairs = max(
             0, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX_BASE_PAIRS", "64") or "64")
         )
-    except Exception:
+    except (ValueError, TypeError):
         max_fp_matrix_cache_max_base_pairs = 64
     try:
         fg_task_tile_max_threads = int(
@@ -751,7 +751,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             )
             or ("125000000" if in_process else "50000000")
         )
-    except Exception:
+    except (ValueError, TypeError):
         fg_task_tile_max_threads = 125000000 if in_process else 50000000
     fg_task_tile_max_threads = max(0, int(fg_task_tile_max_threads))
 
@@ -763,7 +763,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             )
             or ("125000000" if in_process else "50000000")
         )
-    except Exception:
+    except (ValueError, TypeError):
         fg_fused_tile_max_threads = 125000000 if in_process else 50000000
     fg_fused_tile_max_threads = max(0, int(fg_fused_tile_max_threads))
     if per_pair_breakpoints and not hasattr(process_force_greats_gpu_finder, "_fg_pair_breakpoint_log"):
@@ -773,14 +773,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     direct_ga_items = _build_direct_ga_entry_items(ga_candidates, ga_registry=ga_registry)
     try:
         base_items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
-    except Exception:
+    except (TypeError, AttributeError):
         base_items = []
     if direct_ga_items:
         base_items = [(k, v) for k, v in base_items if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))]
     entry_items = list(base_items) + list(direct_ga_items)
     try:
         group_meta_grid_threshold = int(env_get("FG_GROUP_META_GRID_ENTRY_THRESHOLD", "512") or "512")
-    except Exception:
+    except (ValueError, TypeError):
         group_meta_grid_threshold = 512
     group_meta_grid_threshold = max(0, min(int(group_meta_grid_threshold), 512))
     prefer_group_meta_grid = bool(
@@ -852,7 +852,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         had_reusable_fg_group_meta = False
         try:
             had_reusable_fg_group_meta = bool(_fg_group_meta_is_reusable(eval_data.get("_fg_group_meta")))
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError):
             had_reusable_fg_group_meta = False
         fg_group_meta = fg_group_meta_from_eval_data(
             eval_data,
@@ -895,14 +895,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             proxy_i = 0
         try:
             entry_sig[int(id(entry))] = str(sig)
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
         groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data))
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
         try:
             base_score_i = int(entry_base_score(entry) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             base_score_i = 0
         try:
             sig_rows = group_signature_rows.setdefault(key, {})
@@ -933,11 +933,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     row["proxy"] = int(proxy_i)
                 try:
                     row["priority"] = max(int(row.get("priority", 0) or 0), int(entry.get("_fg_priority", 0) or 0))
-                except Exception:
+                except (ValueError, TypeError):
                     pass
                 if row.get("ga_coord") is None and ga_run_idx is not None and ga_row_idx is not None:
                     row["ga_coord"] = (int(ga_run_idx), int(ga_row_idx))
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError):
             pass
         computed += 1
 
@@ -964,18 +964,18 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         base_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
         try:
             fg_proxy_keep_n = int(env_get("FG_DOWNLOAD_KEEP_PROXY_SIGS", str(LOADOUTS_PER_SONG_LIMIT)) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             fg_proxy_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
         fg_proxy_keep_n = max(0, int(fg_proxy_keep_n))
 
         try:
             topk_cap = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             topk_cap = 256
         default_keep_cap = max(0, int(topk_cap) - min(int(topk_cap), int(download_topk_k)))
         try:
             max_keep_total = int(env_get("FG_DOWNLOAD_KEEP_SIGS_MAX", str(default_keep_cap)) or 0)
-        except Exception:
+        except (ValueError, TypeError):
             max_keep_total = int(default_keep_cap)
         max_keep_total = max(0, int(max_keep_total))
 
@@ -1016,7 +1016,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
             try:
                 top_base_keep = min(int(sig_frontier_limit), int(LOADOUTS_PER_SONG_LIMIT))
-            except Exception:
+            except (ValueError, TypeError):
                 top_base_keep = int(sig_frontier_limit)
 
             timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}
@@ -1207,7 +1207,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             try:
                 cached_pair_caps = song_data_cache.get("fg_pair_caps_grid")
                 cached_max_per_section = int(song_data_cache.get("fg_pair_caps_grid_max_per_section", 0) or 0)
-            except Exception:
+            except (KeyError, TypeError, ValueError, AttributeError):
                 cached_pair_caps = None
                 cached_max_per_section = 0
 
@@ -1226,7 +1226,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 try:
                     song_data_cache["fg_pair_caps_grid"] = pair_caps_grid
                     song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
-                except Exception:
+                except (KeyError, TypeError, ValueError, AttributeError):
                     pass
         except Exception as e:
             warn_fallback(
@@ -1281,7 +1281,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             for i, arr in enumerate(free):
                 try:
                     cap = int(arr.shape[0])
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     cap = 0
                 if cap >= int(n_rows) and (best_cap is None or cap < best_cap):
                     best_idx = int(i)
@@ -1290,7 +1290,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 backing = free.pop(int(best_idx))
                 try:
                     free_ids.discard(int(id(backing)))
-                except Exception:
+                except (ValueError, TypeError):
                     pass
             else:
                 backing = np.empty((max(1024, int(n_rows)), 7), dtype=np.int32)
@@ -1324,7 +1324,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if callable(add_cb):
                 add_cb(_cb)
                 return
-        except Exception:
+        except (AttributeError, TypeError):
             pass
 
     deferred_gpu_applies: list[dict] = []
@@ -1349,7 +1349,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     or str(_default_fused_payloads_per_request())
                 ),
             )
-        except Exception:
+        except (ValueError, TypeError):
             fused_payloads_per_request = _default_fused_payloads_per_request()
         fused_payloads_per_request = max(1, int(fused_payloads_per_request))
         if in_process and int(fused_payloads_per_request) > 8:
@@ -1390,7 +1390,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         max_pairs_total = 256
         try:
             max_pairs_total = int(env_get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", "256") or "256")
-        except Exception:
+        except (ValueError, TypeError):
             max_pairs_total = 256
         # Hard cap: keep batch-level work bounded even if adaptive budgets raise the per-payload cap.
         max_pairs_total = max(0, min(int(max_pairs_total), 256))
@@ -1405,11 +1405,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 shape = getattr(pairs, "shape", None)
                 if shape is not None and len(shape) > 0:
                     return max(0, int(shape[0]))
-            except Exception:
+            except (ValueError, TypeError, KeyError, AttributeError):
                 pass
             try:
                 return max(0, int(len(pairs)))
-            except Exception:
+            except (ValueError, TypeError):
                 return 0
 
         def _submit_chunk(payloads: list[dict], ctxs: list[dict]) -> None:
@@ -1495,7 +1495,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         search_radius = fg_search_radius if fg_search_radius is not None else FG_SEARCH_RADIUS
         try:
             search_radius = int(search_radius)
-        except Exception:
+        except (ValueError, TypeError):
             search_radius = int(FG_SEARCH_RADIUS)
 
         # Collect all centers from this group.
@@ -1544,7 +1544,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     for bs in reps
                     if isinstance(bs, dict)
                 }
-            except Exception:
+            except (KeyError, TypeError, ValueError, AttributeError):
                 rep_pairs = None
 
             variant_key = ()
@@ -1628,7 +1628,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             try:
                 fg_breakpoints_non_fever_base_by_ff = song_data_cache.get("fg_breakpoints_non_fever_base_by_ff")
                 fg_breakpoints_fp_cap_table = song_data_cache.get("fg_breakpoints_fp_cap_table")
-            except Exception:
+            except (KeyError, TypeError, ValueError, AttributeError):
                 fg_breakpoints_non_fever_base_by_ff = None
                 fg_breakpoints_fp_cap_table = None
             if fg_breakpoints_non_fever_base_by_ff is None or fg_breakpoints_fp_cap_table is None:
@@ -1641,17 +1641,17 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if ts0 is None:
                             ts0 = song_data_cache.get("fg_timestamps")
                         total_notes0 = int(len(ts0)) if ts0 is not None else 0
-                    except Exception:
+                    except (ValueError, TypeError, KeyError, AttributeError):
                         total_notes0 = 0
                     try:
                         long_notes0 = int(meta0.get("Long Notes", 0) or 0)
-                    except Exception:
+                    except (ValueError, TypeError):
                         long_notes0 = 0
                     try:
                         from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
 
                         non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * float(FEVER_FILL_BASE_RATE))
-                    except Exception:
+                    except (ValueError, TypeError):
                         non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
 
                     ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float32)
@@ -1670,7 +1670,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     try:
                         song_data_cache["fg_breakpoints_non_fever_base_by_ff"] = fg_breakpoints_non_fever_base_by_ff
                         song_data_cache["fg_breakpoints_fp_cap_table"] = fg_breakpoints_fp_cap_table
-                    except Exception:
+                    except (KeyError, TypeError, ValueError, AttributeError):
                         pass
                 except Exception as _bp_tab_err:
                     warn_fallback(
@@ -1705,7 +1705,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 # chunks configs (cfg_chunk/n_chunks) to stay within kernel limits.
                 threads_default = "200000000" if in_process else "50000000"
                 merge_threads_limit = int(env_get("FG_MERGE_MAX_THREADS", threads_default))
-            except Exception:
+            except (ValueError, TypeError):
                 merge_cfg_limit = 5000
                 merge_threads_limit = 50_000_000
 
@@ -1795,9 +1795,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     download_keep_mask = keep_buf
                     try:
                         download_keep_count = int(int(keep_buf.sum()) if keep_buf is not None else 0)
-                    except Exception:
+                    except (ValueError, TypeError):
                         download_keep_count = None
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     download_base_scores = None
                     download_keep_mask = None
                     download_keep_count = None
@@ -1862,7 +1862,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         song_data["fg_timestamps"] = timestamps
                     else:
                         song_data["timestamps"] = timestamps
-            except Exception:
+            except (ValueError, TypeError, KeyError):
                 pass
 
             try:
@@ -1875,7 +1875,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 elif isinstance(great_candidates, np.ndarray) and not great_candidates.flags["C_CONTIGUOUS"]:
                     great_candidates = np.ascontiguousarray(great_candidates, dtype=np.float32)
                     song_data["fg_great_candidate_timestamps"] = great_candidates
-            except Exception:
+            except (ValueError, TypeError, KeyError):
                 pass
             long_notes = int(calc_song.get("metadata", {}).get("Long Notes", 0) or 0)
             last_note_time = float(calc_song.get("metadata", {}).get("Last Note Time", 0) or 0.0)
@@ -1919,7 +1919,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     max_union_cfg = int(env_get("FG_MERGE_MAX_CONFIGS", "5000"))
                     threads_default = "200000000" if in_process else "50000000"
                     max_union_threads = int(env_get("FG_MERGE_MAX_THREADS", threads_default))
-                except Exception:
+                except (ValueError, TypeError):
                     max_union_cfg = 5000
                     max_union_threads = 20000000
 
@@ -1929,7 +1929,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         n_ftff_pairs = int(active_ftff_pairs_packed.shape[0])
                     else:
                         n_ftff_pairs = int(len(active_ftff_pairs))
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     n_ftff_pairs = 0
                 if n_ftff_pairs >= 200:
                     breakpoint_batch_size = 80
@@ -2245,7 +2245,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             ):
                                 if g and g.get("ftff_pairs") is not None:
                                     yield g
-                        except Exception:
+                        except (ValueError, TypeError, KeyError, AttributeError):
                             all_groups = {}
                             for i_pair, (ft_g, ff_g) in enumerate(active_ftff_pairs):
                                 row = max_fp_matrix[i_pair]
@@ -2383,7 +2383,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         for v in list(counts_max_fp)[: int(n_sections)]:
                             try:
                                 max_fp_norm.append(max(0, int(v or 0)))
-                            except Exception:
+                            except (ValueError, TypeError):
                                 max_fp_norm.append(0)
                         if not max_fp_norm:
                             max_fp_norm = [0] * int(n_sections)
@@ -2409,7 +2409,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 max_fp0 = list(group.get("counts_max_fp") or [])
                                 if max_fp0:
                                     bps = [range(0, int(v) + 1) for v in max_fp0]
-                            except Exception:
+                            except (ValueError, TypeError, KeyError, AttributeError):
                                 bps = ()
                         if bps and (env_flag("METAFINDER_DEBUG_PROFILE", "0") or env_flag("DEBUG_PROFILE", "0")):
                             logger.debug(
@@ -2435,14 +2435,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
                                 if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
                                     counts_list_packed = arr_cfg
-                            except Exception:
+                            except (ValueError, TypeError, KeyError):
                                 counts_list_packed = counts_list
 
                         pairs_packed = group_pairs
                         try:
                             if group_pairs is not None and not isinstance(group_pairs, _np.ndarray):
                                 pairs_packed = _np.asarray(group_pairs, dtype=_np.int32)
-                        except Exception:
+                        except (ValueError, TypeError, KeyError):
                             pairs_packed = group_pairs
 
                         for ftff_chunk in _iter_ftff_chunks(pairs_packed):
@@ -2489,7 +2489,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 max_fp_key = tuple(
                                     max(0, int(v or 0)) for v in list(counts_max_fp)[: int(n_sections)]
                                 ) or tuple([0] * int(n_sections))
-                            except Exception:
+                            except (ValueError, TypeError):
                                 max_fp_key = None
                             if max_fp_key is not None:
                                 cached = max_fp_counts_cache.get(max_fp_key)
@@ -2615,14 +2615,12 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     if perf:
                         try:
                             t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
                     # If the download was queued after the solve batches, waiting on it
                     # implies earlier futures are complete (FIFO executor). Avoid extra
                     # blocking waits, but still surface completed errors.
-                    for fut in group_futures:
-                        if fut is download_future:
-                            continue
+                    for fut in fg_async_futures:
                         if hasattr(fut, "done") and fut.done():
                             _ = fut.exception()
                 else:
@@ -2633,7 +2631,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if perf:
                             try:
                                 t_gpu_wait_sec += time.perf_counter() - _t_wait0
-                            except Exception:
+                            except (ValueError, TypeError):
                                 pass
                 if global_results is None:
                     global_results = _submit_fg_download_global_best(
@@ -2677,14 +2675,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
                                 if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
                                     counts_list_packed = arr_cfg
-                            except Exception:
+                            except (ValueError, TypeError, KeyError):
                                 counts_list_packed = counts_list
 
                         pairs_packed = ftff_pairs
                         try:
                             if ftff_pairs is not None and not isinstance(ftff_pairs, _np.ndarray):
                                 pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
-                        except Exception:
+                        except (ValueError, TypeError, KeyError):
                             pairs_packed = ftff_pairs
 
                         for ftff_chunk in _iter_ftff_chunks(pairs_packed):
@@ -2760,7 +2758,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if perf:
                             try:
                                 t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
-                            except Exception:
+                            except (ValueError, TypeError):
                                 pass
                         for fut in fg_async_futures:
                             if hasattr(fut, "done") and fut.done():
@@ -2773,9 +2771,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             if perf:
                                 try:
                                     t_gpu_wait_sec += time.perf_counter() - _t_wait0
-                                except Exception:
+                                except (ValueError, TypeError):
                                     pass
-                    fg_async_futures.clear()
+                        fg_async_futures.clear()
                     if gpu_results is None:
                         gpu_results = _submit_fg_download_global_best(
                             n_pending,
@@ -2849,9 +2847,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 row = counts_list[ci]
                                 for s in range(int(n_sections)):
                                     cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
-                            except Exception:
+                            except (ValueError, TypeError, KeyError, IndexError):
                                 continue
-                except Exception:
+                except (ValueError, TypeError, KeyError):
                     cfg_counts_arr = None
 
             # Defensive: older revisions had paths where `cfg_counts_arr` was never assigned.
@@ -2871,7 +2869,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         idx_list = [int(x) for x in idx_arr.tolist()]
                         apply_sigs = [pending_sigs[i] for i in idx_list]
                         apply_pending = [pending[i] for i in idx_list]
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     apply_sigs = pending_sigs
                     apply_pending = pending
 
@@ -2957,7 +2955,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     if perf:
                         try:
                             t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
                 for fut in futs:
                     if fut is download_future:
@@ -2971,7 +2969,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 if isinstance(gpu_results_raw, list):
                     try:
                         download_index = int(ctx.get("download_index") or 0)
-                    except Exception:
+                    except (ValueError, TypeError):
                         download_index = 0
                     if download_index < 0 or download_index >= int(len(gpu_results_raw)):
                         raise RuntimeError("Deferred FG download index out of range")
@@ -2989,7 +2987,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     if perf:
                         try:
                             t_gpu_wait_sec += time.perf_counter() - _t_wait0
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
                 download_topk = ctx.get("download_topk")
                 download_base_scores = ctx.get("download_base_scores")
@@ -3041,7 +3039,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         base_pending = ctx.get("pending") or []
                         apply_sigs = [base_sigs[i] for i in idx_list]
                         apply_pending = [base_pending[i] for i in idx_list]
-                except Exception:
+                except (ValueError, TypeError, KeyError, AttributeError):
                     apply_sigs = ctx.get("pending_sigs") or []
                     apply_pending = ctx.get("pending") or []
 
@@ -3084,7 +3082,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 selected_n = int(_selected_count(selected_indices))
                 try:
                     download_topk_val = int(ctx.get("download_topk") or 0)
-                except Exception:
+                except (ValueError, TypeError):
                     download_topk_val = 0
                 keep_n = ctx.get("download_keep_count")
                 if keep_n is None:
@@ -3094,13 +3092,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             import numpy as _np
 
                             keep_n = int(_np.count_nonzero(_np.asarray(keep_mask, dtype=_np.int32)))
-                        except Exception:
+                        except (ValueError, TypeError, KeyError):
                             keep_n = None
                 # Safety: if K is 0 (or keep-mask saturates the fixed output capacity), we cannot infer that no
                 # improving candidates exist. In those cases, keep the full download fallback.
                 try:
                     max_sel = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 0) or 0)
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
                     max_sel = 0
                 if _should_skip_full_download_no_candidates(
                     selected_n=int(selected_n),
@@ -3161,7 +3159,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     unique_sig_count = 0
     try:
         unique_sig_count = sum(len(sig_map) for sig_map in (groups or {}).values())
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         unique_sig_count = 0
     logger.debug(
         "[ForceGreats] %s unique stat signatures, %s FG variants generated (computed %s)",
@@ -3225,7 +3223,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
     try:
         _record_fg_streaming_meta()
-    except Exception:
+    except (KeyError, TypeError, ValueError, AttributeError):
         pass
 
     if frontier_total_before > 0:
@@ -3243,7 +3241,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
             meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
             _record_fg_streaming_meta()
-        except Exception:
+        except (KeyError, TypeError, ValueError, AttributeError):
             pass
 
     # Compact workload summary (debug only; keep stdout clean for progress/TUI)

@@ -10,7 +10,7 @@ from gear_optimizer.helpers.song_helpers.force_greats.result_application import 
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items
-from gear_optimizer.solver.native_inflight_types import _NativeSong, native_song_get
+from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
 @dataclass(frozen=True)
@@ -67,15 +67,15 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
     build_details = getattr(song, "fg_build_details", None)
     if not callable(build_details):
         build_details = make_build_details_fn(
-            native_song_get(song, "meta_primary_color", ""),
-            native_song_get(song, "meta_secondary_color", ""),
-            native_song_get(song, "effective_difficulty", ""),
+            getattr(song.gpu_inputs, "meta_primary_color", ""),
+            getattr(song.gpu_inputs, "meta_secondary_color", ""),
+            getattr(song.config, "effective_difficulty", ""),
         )
         try:
             song.fg_build_details = build_details
         except Exception:
             pass
-    raw_loadout_entries = native_song_get(song, "loadout_entries", None)
+    raw_loadout_entries = getattr(song.runtime, "loadout_entries", None)
     loadout_entries = raw_loadout_entries if isinstance(raw_loadout_entries, dict) else {}
     loadout_hash_index: dict[str, dict] = {}
     if loadout_entries:
@@ -90,7 +90,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 continue
             loadout_hash_index.setdefault(str(loadout_hash), entry)
 
-    for v in native_song_get(song, "fg_variants", None) or []:
+    for v in getattr(song.runtime, "fg_variants", None) or []:
         if not isinstance(v, dict):
             continue
         is_ga = bool(v.get("_is_ga"))

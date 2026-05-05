@@ -220,3 +220,18 @@ def native_song_set(song: object, field_name: str, value) -> None:
             setattr(group, str(field_name), value)
             return
     setattr(song, str(field_name), value)
+
+
+def make_native_song(**kwargs) -> _NativeSong:
+    """Build a _NativeSong from flat keyword args, distributing to the correct sub-struct."""
+    config = _NativeSongConfig()
+    gpu_inputs = _NativeSongGPUInputs()
+    runtime = _NativeSongRuntimeState()
+    for k, v in kwargs.items():
+        if hasattr(config, k):
+            setattr(config, k, v)
+        elif hasattr(gpu_inputs, k):
+            setattr(gpu_inputs, k, v)
+        elif hasattr(runtime, k):
+            setattr(runtime, k, v)
+    return _NativeSong(config=config, gpu_inputs=gpu_inputs, runtime=runtime)

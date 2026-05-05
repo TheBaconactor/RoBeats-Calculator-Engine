@@ -617,7 +617,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info(done_msg)
             try:
                 elapsed_h = float(elapsed) / 3600.0 if elapsed and elapsed > 0 else 0.0
-            except Exception:
+            except (ValueError, TypeError):
                 elapsed_h = 0.0
             if elapsed_h > 0:
                 try:
@@ -636,11 +636,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     try:
                         if int(queued_songs) > 0 and int(queued_tasks) > 0:
                             repeats_est = max(1, int(round(float(queued_tasks) / float(queued_songs))))
-                    except Exception:
+                    except (ValueError, TypeError):
                         repeats_est = 1
                     try:
                         completed_songs_est = int(round(float(completed_tasks) / float(repeats_est)))
-                    except Exception:
+                    except (ValueError, TypeError):
                         completed_songs_est = int(completed_tasks)
                     completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
 
@@ -738,7 +738,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 lookup_index = TOTAL_ROWS - v
                 try:
                     val = stats_table[lookup_index][i] if stats_table else 0
-                except Exception:
+                except (KeyError, TypeError, IndexError, ValueError):
                     val = 0
                 temp_list.append(val)
             ref_arrays[name] = np.array(temp_list, dtype=np.float32)
@@ -850,7 +850,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     continue
                 try:
                     env_val = safe_int(raw, 0)
-                except Exception:
+                except (ValueError, TypeError):
                     env_val = 0
                 if env_val and env_val > 0:
                     limit = int(env_val)
@@ -1067,18 +1067,18 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         try:
                             missing = sorted(missing, key=_queue_sort_key)
                             existing = sorted(existing, key=_queue_sort_key)
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
                         song_queue = missing + existing
                     else:
                         try:
                             song_queue = sorted(song_queue, key=_queue_sort_key)
-                        except Exception:
+                        except (ValueError, TypeError):
                             pass
                 else:
                     try:
                         song_queue = sorted(song_queue, key=_queue_sort_key)
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
                 song_queue = song_queue[: int(song_queue_limit)]
                 logger.info(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
@@ -1095,7 +1095,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     try:
                         if os.path.abspath(str(item[0] or "")).casefold() in resume_paths:
                             continue
-                    except Exception:
+                    except (ValueError, TypeError, AttributeError):
                         pass
                     if item[1] not in present:
                         new_missing.append(item)
@@ -1192,7 +1192,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return s
         try:
             return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", s).strip()
-        except Exception:
+        except (ValueError, TypeError, re.error):
             return s
 
     def _hotkey_help(self, *args, **kwargs):
@@ -1247,7 +1247,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
             try:
                 ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
-            except Exception:
+            except (ValueError, TypeError):
                 ga_seed_base = None
 
         # PRODUCTION: repeat flags.
@@ -1257,7 +1257,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             song_repeats_env = safe_int(env_get("SONG_REPEATS", 0), 0)
             if song_repeats_env > 0:
                 song_repeats = song_repeats_env
-        except Exception:
+        except (ValueError, TypeError):
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
         bundle_song_repeats = bool(runtime_settings.bundle_song_repeats)
@@ -1265,7 +1265,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             raw_bundle = env_get("BUNDLE_SONG_REPEATS")
             if raw_bundle is not None and str(raw_bundle).strip() != "":
                 bundle_song_repeats = truthy(raw_bundle)
-        except Exception:
+        except (ValueError, TypeError):
             pass
         used_ga_seeds: set[int] = set()
         backend_service_mode = bool(
@@ -1462,7 +1462,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                             continue
                         try:
                             repeats = int(extra.get("repeat_total") or 0)
-                        except Exception:
+                        except (ValueError, TypeError):
                             repeats = 0
                         if repeats <= 0:
                             runs = extra.get("runs")
@@ -1483,7 +1483,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             try:
                 idx = int(repeat_ctx.get("repeat_index") or 0)
                 total = int(repeat_ctx.get("repeat_total") or 0)
-            except Exception:
+            except (ValueError, TypeError):
                 idx = 0
                 total = 0
             if idx > 0 and total > 1:
@@ -1500,7 +1500,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             api = getattr(self, "_robeatsmeta_api", None)
             if api is not None and callable(getattr(api, "service_mode_enabled", None)):
                 return bool(api.service_mode_enabled())
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             pass
         return False
 
@@ -1610,7 +1610,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         wait_s = float(default_seconds)
         try:
             wait_s = float(self._current_runtime_settings(cfg).loop_restart_wait_sec)
-        except Exception:
+        except (ValueError, TypeError):
             pass
 
         for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC", "LOOP_RESTART_WAIT_SEC"):
@@ -1619,7 +1619,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 continue
             try:
                 wait_s = float(raw)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
 
         return max(0.0, min(float(wait_s), 60.0))
@@ -1634,7 +1634,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if os.path.exists(MEMORY_GUARD_RESUME_FILE):
                 os.remove(MEMORY_GUARD_RESUME_FILE)
                 logger.info("[LoopForever] Cleared resume file")
-        except Exception as e:
+        except (OSError, IOError) as e:
             logging.warning(f"Failed to delete resume file: {e}")
         if wait_s > 0.0:
             time.sleep(wait_s)

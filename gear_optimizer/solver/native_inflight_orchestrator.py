@@ -67,7 +67,7 @@ from gear_optimizer.solver.native_inflight_support import (
     _materialize_repeat_task,
     _task_key,
 )
-from gear_optimizer.solver.native_inflight_types import _NativeSong, native_song_get
+from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.inflight_utils import (
     _compact_items,
     _compact_prev_record,
@@ -910,19 +910,19 @@ def run_native_inflight_song_pipeline(
         try:
             if ga_inflight:
                 song = ga_inflight[0]
-                return str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
+                return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
         except Exception:
             pass
         try:
             if decode_inflight:
                 song = decode_inflight[0]
-                return str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
+                return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
         except Exception:
             pass
         try:
             if fg_futures:
                 song = fg_futures[0][0]
-                return str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
+                return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
         except Exception:
             pass
         return ""
@@ -1007,14 +1007,14 @@ def run_native_inflight_song_pipeline(
         keys: set[str] = set()
         for song in ga_inflight:
             try:
-                key = str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
+                key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
             except Exception:
                 key = ""
             if key:
                 keys.add(key)
         for song in decode_inflight:
             try:
-                key = str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "")).strip()
+                key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
             except Exception:
                 key = ""
             if key:
@@ -1130,7 +1130,7 @@ def run_native_inflight_song_pipeline(
 
     def _task_label_for_prewarm(song: _NativeSong) -> str:
         try:
-            return str(native_song_get(song, "task_key", "") or native_song_get(song, "song_name", "") or id(song))
+            return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or id(song))
         except Exception:
             return str(id(song))
 
@@ -1140,7 +1140,7 @@ def run_native_inflight_song_pipeline(
         task_key = _task_label_for_prewarm(song)
         if task_key in cpu_prewarm_submitted:
             return False
-        if native_song_get(song, "cpu_prewarm_future", None) is not None:
+        if getattr(song.runtime, "cpu_prewarm_future", None) is not None:
             return False
         cpu_prewarm_submitted.add(task_key)
         try:
@@ -1164,7 +1164,7 @@ def run_native_inflight_song_pipeline(
     def _submit_fg_static_prewarm(song: _NativeSong) -> bool:
         if int(fg_static_prep_max_inflight) <= 0:
             return False
-        if not bool(native_song_get(song, "manual_force_greats", False) or native_song_get(song, "force_greats_finder", False)):
+        if not bool(getattr(song.gpu_inputs, "manual_force_greats", False) or getattr(song.gpu_inputs, "force_greats_finder", False)):
             return False
         if getattr(song, "fg_static_prep_future", None) is not None or bool(getattr(song, "_fg_static_prep_done", False)):
             return False
@@ -1438,8 +1438,8 @@ def run_native_inflight_song_pipeline(
         best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
         candidates_for_post = (
             song.runtime.ga_persistence_candidates
-            if isinstance(native_song_get(song, "ga_persistence_candidates", None), list)
-            and native_song_get(song, "ga_persistence_candidates", None)
+            if isinstance(getattr(song.runtime, "ga_persistence_candidates", None), list)
+            and getattr(song.runtime, "ga_persistence_candidates", None)
             else song.runtime.ga_candidates
         )
         candidates_for_post = select_effective_unique_ga_candidates(
@@ -1525,7 +1525,7 @@ def run_native_inflight_song_pipeline(
             _advance_bundle(
                 bundle_parent,
                 song_name=str(song.config.song_name),
-                record_info=native_song_get(song, "record_info", None),
+                record_info=getattr(song.runtime, "record_info", None),
                 failed=False,
             )
         elif needs_fg_stage and bool(fg_drain_at_end):
@@ -1543,7 +1543,7 @@ def run_native_inflight_song_pipeline(
                 except Exception:
                     pass
             try:
-                record_info = dict(native_song_get(song, "record_info", None) or {})
+                record_info = dict(getattr(song.runtime, "record_info", None) or {})
                 record_info.setdefault("song", song.config.task_key or song.config.song_name)
                 record_info.setdefault("status", "DONE")
             except Exception:
@@ -1806,11 +1806,11 @@ def run_native_inflight_song_pipeline(
                         song=task_key,
                     )
                     prepared.append(prepared_song)
-                    if bool(native_song_get(prepared_song, "db_baseline_valid", True)):
+                    if bool(getattr(prepared_song.runtime, "db_baseline_valid", True)):
                         _progress_best_update(
                             prepared_song.config.db_key,
-                            best_score=int(native_song_get(prepared_song, "db_best_score", 0) or 0),
-                            best_fg=int(native_song_get(prepared_song, "db_best_fg_score", 0) or 0),
+                            best_score=int(getattr(prepared_song.runtime, "db_best_score", 0) or 0),
+                            best_fg=int(getattr(prepared_song.runtime, "db_best_fg_score", 0) or 0),
                             mark_valid=True,
                     )
                     _submit_cpu_prewarm_backlog()
@@ -2123,23 +2123,23 @@ def run_native_inflight_song_pipeline(
                     held_slots = 0
                     try:
                         for s in decode_inflight:
-                            if int(native_song_get(s, "song_slot", 0) or 0) <= 0:
+                            if int(getattr(s.runtime, "song_slot", 0) or 0) <= 0:
                                 continue
-                            if bool(native_song_get(s, "manual_force_greats", False)) or bool(
-                                native_song_get(s, "force_greats_finder", False)
+                            if bool(getattr(s.gpu_inputs, "manual_force_greats", False)) or bool(
+                                getattr(s.gpu_inputs, "force_greats_finder", False)
                             ):
                                 held_slots += 1
                     except Exception:
                         pass
                     try:
                         for s in pending_fg:
-                            if int(native_song_get(s, "song_slot", 0) or 0) > 0:
+                            if int(getattr(s.runtime, "song_slot", 0) or 0) > 0:
                                 held_slots += 1
                     except Exception:
                         pass
                     try:
                         for fg_song, _fut, _t_submit in fg_futures:
-                            if int(native_song_get(fg_song, "song_slot", 0) or 0) > 0:
+                            if int(getattr(fg_song.runtime, "song_slot", 0) or 0) > 0:
                                 held_slots += 1
                     except Exception:
                         pass
@@ -2164,7 +2164,7 @@ def run_native_inflight_song_pipeline(
                         component="inflight_decode",
                         event="submit",
                         song_key=str(song.config.task_key),
-                        metrics={"song_slot": int(native_song_get(song, "song_slot", 0) or 0)},
+                        metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
                     )
                 except Exception:
                     pass
@@ -2225,7 +2225,7 @@ def run_native_inflight_song_pipeline(
                         event="consume",
                         song_key=str(song.config.task_key),
                         metrics={
-                            "song_slot": int(native_song_get(song, "song_slot", 0) or 0),
+                            "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
                             "ga_candidates": int(len(song.runtime.ga_candidates or [])),
                         },
                     )
@@ -2302,8 +2302,8 @@ def run_native_inflight_song_pipeline(
                                         component="inflight_fg_worker",
                                         event="dispatch_error",
                                         song_key=str(
-                                            native_song_get(fg_song, "task_key", "")
-                                            or native_song_get(fg_song, "song_name", "")
+                                            getattr(fg_song.config, "task_key", "")
+                                            or getattr(fg_song.config, "song_name", "")
                                             or ""
                                         ),
                                         metrics={
@@ -2353,7 +2353,7 @@ def run_native_inflight_song_pipeline(
                             _advance_bundle(
                                 bundle_parent,
                                 song_name=str(fg_song.config.song_name),
-                                record_info=native_song_get(fg_song, "record_info", None),
+                                record_info=getattr(fg_song.runtime, "record_info", None),
                                 failed=bool(fg_failed),
                             )
                             try:
@@ -2370,7 +2370,7 @@ def run_native_inflight_song_pipeline(
                                 except Exception:
                                     pass
                             try:
-                                record_info = dict(native_song_get(fg_song, "record_info", None) or {})
+                                record_info = dict(getattr(fg_song.runtime, "record_info", None) or {})
                                 record_info.setdefault("song", fg_song.config.task_key or fg_song.config.song_name)
                                 record_info.setdefault("status", "DONE")
                             except Exception:
@@ -2550,7 +2550,7 @@ def run_native_inflight_song_pipeline(
                         fg_song = _pop_next_fg(allow_not_ready=allow_not_ready)
                         if fg_song is None:
                             break
-                        if int(native_song_get(fg_song, "song_slot", 0) or 0) <= 0:
+                        if int(getattr(fg_song.runtime, "song_slot", 0) or 0) <= 0:
                             try:
                                 ga_pipeline.reserve_slot(fg_song, slot_pool)
                             except Exception:

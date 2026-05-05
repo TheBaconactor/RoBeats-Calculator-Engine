@@ -1,9 +1,9 @@
 import concurrent.futures
 import configparser
 import time
-from types import SimpleNamespace
 
 import gear_optimizer.solver.native_inflight_stages as stages
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def _clear_fg_db_prefetch_cache() -> None:
@@ -53,7 +53,7 @@ def test_run_cpu_prewarm_for_song_always_warms_timeline_and_fg_is_conditional(mo
         lambda *_args, **_kwargs: calls.__setitem__("fg", calls["fg"] + 1),
     )
 
-    song_no_fg = SimpleNamespace(
+    song_no_fg = make_native_song(
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         force_greats_finder=False,
@@ -62,7 +62,7 @@ def test_run_cpu_prewarm_for_song_always_warms_timeline_and_fg_is_conditional(mo
     assert calls["timeline"] == 1
     assert calls["fg"] == 0
 
-    song_fg = SimpleNamespace(
+    song_fg = make_native_song(
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         force_greats_finder=True,
@@ -80,10 +80,10 @@ def test_run_cpu_prewarm_for_song_ignores_invalid_payload_shapes(monkeypatch):
         lambda *_args, **_kwargs: calls.__setitem__("timeline", calls["timeline"] + 1),
     )
 
-    invalid_song = SimpleNamespace(calc_song=None, ref_arrays={"Fever Time": [0.0]})
+    invalid_song = make_native_song(calc_song=None, ref_arrays={"Fever Time": [0.0]})
     stages.run_cpu_prewarm_for_song(invalid_song)
 
-    invalid_ref = SimpleNamespace(calc_song={"metadata": {}, "song_data": {}}, ref_arrays=None)
+    invalid_ref = make_native_song(calc_song={"metadata": {}, "song_data": {}}, ref_arrays=None)
     stages.run_cpu_prewarm_for_song(invalid_ref)
 
     assert calls["timeline"] == 0
@@ -115,7 +115,7 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {}},
         cfg_dict={},
@@ -149,7 +149,7 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
 
     assert seen["allow_db_query"] is False
     # Keep the future attached so FG run can consume it later if it completes.
-    assert song.db_loadouts_future is pending
+    assert song.runtime.db_loadouts_future is pending
 
 
 def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monkeypatch):
@@ -173,7 +173,7 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         cfg_dict={},
         meta_primary_color="Rush",
@@ -193,9 +193,9 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
     stages._prepare_fg_static_sync(song)
 
     assert seen["ga_candidates"] == []
-    assert song.loadout_entries == {"db": {"score": 100}}
-    assert song.fg_direct_ga_candidates is True
-    assert song._fg_static_prep_done is True
+    assert song.runtime.loadout_entries == {"db": {"score": 100}}
+    assert song.runtime.fg_direct_ga_candidates is True
+    assert getattr(song, "_fg_static_prep_done", False) is True
 
 
 def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating_base_calc_song(monkeypatch):
@@ -209,7 +209,7 @@ def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating
         "song_data": {"timestamps": [0.0], "chart_timestamps": [0.0]},
         "_gpu_song_slot": 7,
     }
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         cfg_dict={},
         calc_song=base_calc_song,
@@ -231,10 +231,10 @@ def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating
 
     stages._prepare_fg_static_sync(song)
 
-    assert song.fg_calc_song is not None
-    assert song.fg_calc_song is not base_calc_song
-    assert song.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert song.fg_calc_song["_gpu_song_slot"] == 7
+    assert song.runtime.fg_calc_song is not None
+    assert song.runtime.fg_calc_song is not base_calc_song
+    assert song.runtime.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
+    assert song.runtime.fg_calc_song["_gpu_song_slot"] == 7
     assert "TimingEnvelopeApplied" not in base_calc_song["metadata"]
     assert "fg_timestamps" not in base_calc_song["song_data"]
 
@@ -251,7 +251,7 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {}},
         cfg_dict={},
@@ -280,15 +280,15 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
         ref_arrays={},
         song_slot=1,
         loadout_entries={"static": {"score": 100}},
-        fg_static_prep_future=None,
-        _fg_static_prep_done=True,
+        fg_prep_future=None,
     )
+    setattr(song, "_fg_static_prep_done", True)
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["build"] == 0
-    assert song.loadout_entries == {"static": {"score": 100}}
-    assert song.ga_candidates
+    assert song.runtime.loadout_entries == {"static": {"score": 100}}
+    assert song.runtime.ga_candidates
 
 
 def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch):
@@ -315,7 +315,7 @@ def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch
 
     calc_song = {"metadata": {}, "song_data": {"timestamps": [0.0], "chart_timestamps": [0.0]}}
     ref_arrays = {"Fever Time": [0.0], "Fever Fill Rate": [0.0]}
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song=calc_song,
         cfg_dict={},
@@ -345,15 +345,15 @@ def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch
         song_slot=1,
         loadout_entries=None,
         fg_calc_song=None,
-        fg_static_prep_future=None,
-        _fg_static_prep_done=False,
+        fg_prep_future=None,
     )
+    setattr(song, "_fg_static_prep_done", False)
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
-    assert song.fg_calc_song is not None
-    assert song.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert seen["runtime_calc_song"] is song.fg_calc_song
+    assert song.runtime.fg_calc_song is not None
+    assert song.runtime.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
+    assert seen["runtime_calc_song"] is song.runtime.fg_calc_song
     assert seen["runtime_ref_arrays"] is ref_arrays
     assert seen["runtime_gpu_client"] is None
 
@@ -438,7 +438,7 @@ def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeyp
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}, "name": "song-a"},
         cfg_dict={},
@@ -473,16 +473,16 @@ def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeyp
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         song_slot=1,
         loadout_entries=None,
-        fg_static_prep_future=None,
-        _fg_static_prep_done=False,
+        fg_prep_future=None,
     )
+    setattr(song, "_fg_static_prep_done", False)
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 8
-    assert song.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert song.ga_candidates[7]["Data"]["_fg_group_meta"]["signature"] == "sig-8"
-    assert "_fg_group_meta" not in song.ga_candidates[8]["Data"]
+    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert song.runtime.ga_candidates[7]["Data"]["_fg_group_meta"]["signature"] == "sig-8"
+    assert "_fg_group_meta" not in song.runtime.ga_candidates[8]["Data"]
 
 
 def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
@@ -504,7 +504,7 @@ def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}, "name": "song-a"},
         cfg_dict={},
@@ -550,15 +550,15 @@ def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         song_slot=1,
         loadout_entries=None,
-        fg_static_prep_future=None,
-        _fg_static_prep_done=False,
+        fg_prep_future=None,
     )
+    setattr(song, "_fg_static_prep_done", False)
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 1
-    assert song.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert "_fg_group_meta" not in song.ga_candidates[1]["Data"]
+    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert "_fg_group_meta" not in song.runtime.ga_candidates[1]["Data"]
 
 
 def test_collect_fg_group_meta_payload_and_apply(monkeypatch):
@@ -571,7 +571,7 @@ def test_collect_fg_group_meta_payload_and_apply(monkeypatch):
 
     monkeypatch.setattr(stages, "build_fg_group_meta", _fake_build_fg_group_meta)
 
-    song = SimpleNamespace(
+    song = make_native_song(
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         meta_primary_color="Rush",
@@ -603,8 +603,8 @@ def test_collect_fg_group_meta_payload_and_apply(monkeypatch):
     assert calls["n"] == 1
     assert calls["prefer_grid"] == [False]
     assert stages.apply_fg_group_meta_payload(song, payload) == 1
-    assert song.ga_candidates[0]["Data"]["_fg_group_meta"] == {"signature": "sig-1"}
-    assert song.ga_candidates[1]["Data"]["_fg_group_meta"] == {"signature": "cached"}
+    assert song.runtime.ga_candidates[0]["Data"]["_fg_group_meta"] == {"signature": "sig-1"}
+    assert song.runtime.ga_candidates[1]["Data"]["_fg_group_meta"] == {"signature": "cached"}
 
 
 def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch):
@@ -633,7 +633,7 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
     pending_static = _PendingFuture()
-    song = SimpleNamespace(
+    song = make_native_song(
         cfg=cfg,
         calc_song={"metadata": {}, "song_data": {}},
         cfg_dict={},
@@ -662,15 +662,16 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
         ref_arrays={},
         song_slot=1,
         loadout_entries=None,
-        fg_static_prep_future=pending_static,
-        _fg_static_prep_done=False,
+        fg_prep_future=None,
     )
+    setattr(song, "fg_static_prep_future", pending_static)
+    setattr(song, "_fg_static_prep_done", False)
 
     stages._prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["static"] == 0
     assert calls["build"] == 1
-    assert song.fg_static_prep_future is pending_static
+    assert getattr(song, "fg_static_prep_future", None) is pending_static
 
 
 def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
@@ -682,7 +683,7 @@ def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
 
     monkeypatch.setattr(stages, "decode_gpu_native_ga_runs_payload", _fake_decode_gpu_native_ga_runs_payload)
 
-    song = SimpleNamespace(
+    song = make_native_song(
         registry=None,
         cfg_data={},
         fixed_stats={},
