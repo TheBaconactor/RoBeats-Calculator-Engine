@@ -10,19 +10,21 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     _continuous_fg_should_start,
     _continuous_ga_warm_queue_limit,
     _default_prime_target,
-    _read_continuous_fg_adaptive_submit,
-    _read_continuous_ga_dispatch_burst,
-    _read_fg_ga_credit_budget,
     _read_fg_static_prep_max_inflight,
-    _read_fg_scheduler_mode,
-    _read_fg_slot_reserve,
-    _read_cpu_prewarm_lookahead,
-    _read_inflight_target_song_lanes,
     _read_inflight_event_wait_gpu_cap_s,
     _read_inflight_event_wait_short_spin_s,
     _read_inflight_event_wait_timeout_s,
     _wait_for_completion_event,
 )
+from gear_optimizer.solver.native_inflight_scheduler import (
+    _read_continuous_fg_adaptive_submit,
+    _read_continuous_ga_dispatch_burst,
+    _read_fg_ga_credit_budget,
+    _read_fg_scheduler_mode,
+    _read_fg_slot_reserve,
+    _read_inflight_target_song_lanes,
+)
+from gear_optimizer.solver.native_inflight_config import _read_cpu_prewarm_lookahead
 
 
 def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
