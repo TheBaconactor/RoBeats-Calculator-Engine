@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from .fg_config import has_valid_fg_config
 from .item_utils import names_list
 
 
@@ -41,10 +42,16 @@ def merge_persist_entry(
     if callable(normalize_force_payload_fn) and isinstance(force_obj, dict):
         force_out = normalize_force_payload_fn(force_obj)
 
+    fg_force_valid = isinstance(force_out, dict) and bool(force_out) and has_valid_fg_config(force_out)
+    fg_score_i = int(fg_score_val or 0)
+    if fg_score_i > 0 and not fg_force_valid:
+        fg_score_i = 0
+        force_out = None
+
     new_entry = {
         "loadout_hash": h,
         "score": score_val or 0,
-        "fg_score": fg_score_val or 0,
+        "fg_score": fg_score_i,
         "gear": names_list(gear_items),
         "minis": names_list(mini_items),
         "details": details_with_meta,
@@ -55,7 +62,7 @@ def merge_persist_entry(
             new_entry["fg_base_score"] = int(fg_base_score_val or 0)
         except Exception:
             new_entry["fg_base_score"] = 0
-    elif force_out is not None and int(fg_score_val or 0) > 0:
+    elif force_out is not None and fg_score_i > 0:
         try:
             new_entry["fg_base_score"] = int(score_val or 0)
         except Exception:

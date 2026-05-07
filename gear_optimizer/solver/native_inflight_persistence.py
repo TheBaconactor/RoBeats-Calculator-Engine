@@ -95,7 +95,13 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         fg_score = safe_int(v.get("fg_score", 0), 0)
         gear_names = _compact_items(v.get("gear") or [])
         mini_names = _compact_items(v.get("minis") or [])
-        data = v.get("data") or {}
+        data = v.get("data")
+        if not (isinstance(data, dict) and has_valid_fg_config(data)):
+            data = v.get("force")
+        if not (isinstance(data, dict) and has_valid_fg_config(data)) and isinstance(v.get("_entry_ref"), dict):
+            data = v["_entry_ref"].get("force")
+        if not isinstance(data, dict):
+            data = {}
         base_entry = None
         if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
             try:
@@ -141,6 +147,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 materialize_stats_from_payload(force_obj, mutate_payload=True)
         except Exception:
             force_obj = None
+        if force_obj is None:
+            continue
         entries.append(
             {
                 "score": int(base_score),

@@ -93,6 +93,76 @@ def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
     assert (matches[0].get("details") or {}).get("marker") == "ga"
 
 
+def test_build_persistence_entries_retained_fg_without_force_drops_fg_score():
+    """
+    Retained rows must not carry an FG score unless they also carry a valid replayable FG payload.
+    """
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+
+    out = build_persistence_entries(
+        {
+            "score": 999,
+            "gear": ["TOP_GEAR"],
+            "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
+            "details": {"marker": "top1"},
+            "fg_score": 0,
+            "force": None,
+        },
+        ga_candidates=[],
+        loadout_entries={
+            "retained_hash": {
+                "score": 120,
+                "base_score": 120,
+                "gear": list(gear),
+                "minis": list(minis),
+                "details": {"marker": "retained"},
+                "fg_score": 145,
+                "force": None,
+            }
+        },
+        build_details_fn=lambda data: dict(data or {}),
+        calc_song=None,
+        ref_arrays=None,
+    )
+
+    entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
+    assert int(entry.get("score", 0) or 0) == 120
+    assert int(entry.get("fg_score", 0) or 0) == 0
+    assert entry.get("force") is None
+
+
+def test_build_persistence_entries_top1_fg_without_force_drops_fg_score():
+    """
+    The top1 payload must not keep an FG score unless it also carries a valid replayable FG payload.
+    """
+
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+
+    out = build_persistence_entries(
+        {
+            "score": 120,
+            "gear": list(gear),
+            "minis": list(minis),
+            "details": {"marker": "top1"},
+            "fg_score": 200,
+            "force": None,
+        },
+        ga_candidates=[],
+        loadout_entries=None,
+        build_details_fn=lambda data: dict(data or {}),
+        calc_song=None,
+        ref_arrays=None,
+    )
+
+    assert len(out) == 1
+    entry = out[0]
+    assert int(entry.get("score", 0) or 0) == 120
+    assert int(entry.get("fg_score", 0) or 0) == 0
+    assert entry.get("force") is None
+
+
 def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monkeypatch):
     """
     Baseline persistence must store the replay-canonical score/details for the retained loadout.

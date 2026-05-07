@@ -485,7 +485,7 @@ class InflightSettings:
 
 @dataclass(frozen=True, slots=True)
 class CalculateSongSettings:
-    difficulty: str = "Hard"
+    difficulty: str = "All"
     song_name: str = ""
     target_primary: str = ""
     target_secondary: str = ""
@@ -494,12 +494,12 @@ class CalculateSongSettings:
     def from_config(cls, cfg: Any) -> "CalculateSongSettings":
         if cfg is None:
             return cls()
-        difficulty = cfg_get(cfg, "CalculateSong", "Difficulty", str, "Hard")
+        difficulty = cfg_get(cfg, "CalculateSong", "Difficulty", str, "All")
         song_name = cfg_get(cfg, "CalculateSong", "Song_Name", str, "")
         target_primary = cfg_get(cfg, "CalculateSong", "TargetPrimary", str, "")
         target_secondary = cfg_get(cfg, "CalculateSong", "TargetSecondary", str, "")
         return cls(
-            difficulty=str(difficulty or "Hard"),
+            difficulty=str(difficulty or "All"),
             song_name=str(song_name or ""),
             target_primary=str(target_primary or ""),
             target_secondary=str(target_secondary or ""),

@@ -381,6 +381,48 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
         conn.close()
 
 
+def test_fg_loadouts_compare_against_paired_base_score_not_best_base_score(db_path):
+    song = "FG Paired Base Comparator Song"
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                # Deferred/native FG saves can carry the current best base score
+                # while the force payload owns the lower paired base allocation.
+                "score": 10_000,
+                "fg_score": 5_500,
+                "fg_base_score": 5_000,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"tag": "fg_different_base"},
+                "force": _force_payload(5_500, base_score=5_000),
+                "_deferred_fg_update": True,
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        fg_row = conn.execute(
+            """
+            SELECT score, fg_score
+            FROM team_buff_fg_loadouts
+            WHERE song_name=? AND team_buff='T5'
+            """,
+            (song,),
+        ).fetchone()
+        assert fg_row["score"] == 5_000
+        assert fg_row["fg_score"] == 5_500
+
+        best_fg_score = conn.execute("SELECT best_fg_score FROM songs WHERE name=?", (song,)).fetchone()[
+            "best_fg_score"
+        ]
+        assert best_fg_score == 5_500
+    finally:
+        conn.close()
+
+
 def test_team_buff_fg_loadouts_does_not_update_song_best_fg_score_for_non_t5_tiers(db_path):
     from gear_optimizer.data.database import save_team_buff_loadouts_batch
 
@@ -540,6 +582,45 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
         assert details["BaseScore"] == 100
         assert details["Stats"]["Rush"] == 100
         assert json.loads(row["force_details_json"])["Score"] == 1000
+    finally:
+        conn.close()
+
+
+def test_team_buff_loadouts_downgrade_unmaterializable_fg_score(db_path):
+    from gear_optimizer.data.database import get_db_connection, save_team_buff_loadouts_batch
+
+    song = "FG Phantom Score Song"
+
+    save_team_buff_loadouts_batch(
+        song,
+        "T5",
+        [
+            {
+                "score": 1000,
+                "fg_score": 1500,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"tag": "phantom"},
+                "force": None,
+            }
+        ],
+        db_path=db_path,
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT score, fg_score FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert row["score"] == 1000
+        assert row["fg_score"] == 1000
+
+        fg_row = conn.execute(
+            "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert fg_row is None
     finally:
         conn.close()
 
@@ -755,6 +836,63 @@ def test_team_buff_fg_loadouts_force_gems_stay_in_force_payload(db_path, monkeyp
         assert stored_details["GemCounts"]["Element"] == 62
         assert stored_details["Stats"]["Fever Time"] == 23
         assert "tag" not in stored_details
+    finally:
+        conn.close()
+
+
+def test_team_buff_loadouts_reconciles_phantom_fg_without_companion(db_path):
+    from gear_optimizer.data.database import get_loadout_hash
+
+    song = "Phantom FG Reconcile Song"
+    gear = ["G1"]
+    minis = ["M1"]
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 200,
+                "gear": gear,
+                "minis": minis,
+                "details": {"tag": "fg"},
+                "force": _force_payload(200, base_score=100),
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 50,
+                "fg_score": 0,
+                "gear": ["G2"],
+                "minis": ["M2"],
+                "details": {"tag": "base_only"},
+                "force": None,
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT score, fg_score FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash=?",
+            (song, get_loadout_hash(gear, minis)),
+        ).fetchone()
+        assert row["score"] == 100
+        assert row["fg_score"] == 100
     finally:
         conn.close()
 

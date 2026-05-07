@@ -2077,6 +2077,24 @@ def save_team_buff_loadouts_batch(
             """,
             (song_name, team_buff),
         )
+
+        conn.execute(
+            """
+            UPDATE team_buff_loadouts
+            SET fg_score = score
+            WHERE song_name = ?
+            AND team_buff = ?
+            AND fg_score > score
+            AND NOT EXISTS (
+                SELECT 1
+                FROM team_buff_fg_loadouts fg
+                WHERE fg.song_name = team_buff_loadouts.song_name
+                AND fg.team_buff = team_buff_loadouts.team_buff
+                AND fg.loadout_hash = team_buff_loadouts.loadout_hash
+            )
+            """,
+            (song_name, team_buff),
+        )
         _log_timing("delete_team_buff_fg_invariant", time.perf_counter() - _t_inv0)
 
         # Base coverage rows own score/loadout identity only. The replayable FG

@@ -168,6 +168,8 @@ def build_db_payload(
         if fg_score_i <= base_score_i:
             continue
         force_payload = normalize_force_payload(fg_data)
+        if not isinstance(force_payload, dict) or not force_payload or not has_valid_fg_config(force_payload):
+            continue
         current_run_fg_candidates.append(
             {
                 # "score" is intentionally the FG score in this list (historical naming).

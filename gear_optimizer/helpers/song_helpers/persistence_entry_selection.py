@@ -103,7 +103,7 @@ def build_retained_loadout_entries(
 
         fg_score_to_save = entry.get("fg_score", 0)
         force_obj = entry.get("force")
-        if force_obj and not has_valid_fg_config(force_obj):
+        if not (isinstance(force_obj, dict) and has_valid_fg_config(force_obj)):
             fg_score_to_save = 0
             force_obj = None
 

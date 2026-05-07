@@ -746,7 +746,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _get_filter_params(self, cfg):
         song_settings = self._current_runtime_settings(cfg).calculate_song
-        diff = song_settings.difficulty or "Hard"
+        diff = song_settings.difficulty or "All"
         diff_lower = diff.strip().lower()
         filter_search = song_settings.song_name.strip().lower()
 
@@ -916,7 +916,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         pending_only_mode = bool(
             backend_service_mode and truthy(env_get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
         )
-        diff = self._current_runtime_settings(cfg).calculate_song.difficulty or "Hard"
+        diff = self._current_runtime_settings(cfg).calculate_song.difficulty or "All"
         search_dir = paths.get(diff, SCRIPT_DIR)
         unresolved_song_ids: list[str] = []
         song_queue: list[tuple[str, str, str]] = []

@@ -516,18 +516,18 @@ def compute_team_buff_tier_leaderboards(
             minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
             # Base multipliers/indices for GPU fixed scoring (tier changes do not affect CM/FM/FT/FF).
-            ft_idx = _safe_int(stats_base, "Fever Time", 0)
-            ff_idx = _safe_int(stats_base, "Fever Fill Rate", 0)
+            ft_idx = _safe_int(stats_base.get("Fever Time", 0), 0)
+            ff_idx = _safe_int(stats_base.get("Fever Fill Rate", 0), 0)
             cm_factor = lookup_reference_py(
-                _safe_int(stats_base, "Combo Multiplier", 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
+                _safe_int(stats_base.get("Combo Multiplier", 0), 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
             )
             fm_factor = lookup_reference_py(
-                _safe_int(stats_base, "Fever Multiplier", 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
+                _safe_int(stats_base.get("Fever Multiplier", 0), 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
             )
 
-            base_pp_stat = _safe_int(stats_base, "Perfect Points", 0)
-            base_primary_val = _safe_int(stats_base, primary_color, 0) if primary_color else 0
-            base_secondary_val = _safe_int(stats_base, secondary_color, 0) if secondary_color else 0
+            base_pp_stat = _safe_int(stats_base.get("Perfect Points", 0), 0)
+            base_primary_val = _safe_int(stats_base.get(primary_color, 0), 0) if primary_color else 0
+            base_secondary_val = _safe_int(stats_base.get(secondary_color, 0), 0) if secondary_color else 0
 
             # Optional FG stats snapshot (may have a different gem allocation than base).
             force_obj = entry.get("force")
@@ -537,8 +537,8 @@ def compute_team_buff_tier_leaderboards(
             fg_secondary_val = int(base_secondary_val)
             fg_ft_stat = int(ft_idx)
             fg_ff_stat = int(ff_idx)
-            fg_cm_stat = _safe_int(stats_base, "Combo Multiplier", 0)
-            fg_fm_stat = _safe_int(stats_base, "Fever Multiplier", 0)
+            fg_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
+            fg_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
             fg_fp_targets = []
             if fg_counts:
                 fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
@@ -548,13 +548,13 @@ def compute_team_buff_tier_leaderboards(
                 if not isinstance(fg_stats, dict) or not fg_stats:
                     fg_stats = stats_base
 
-                fg_pp_stat = _safe_int(fg_stats, "Perfect Points", 0)
-                fg_primary_val = _safe_int(fg_stats, primary_color, 0) if primary_color else 0
-                fg_secondary_val = _safe_int(fg_stats, secondary_color, 0) if secondary_color else 0
-                fg_ft_stat = _safe_int(fg_stats, "Fever Time", 0)
-                fg_ff_stat = _safe_int(fg_stats, "Fever Fill Rate", 0)
-                fg_cm_stat = _safe_int(fg_stats, "Combo Multiplier", 0)
-                fg_fm_stat = _safe_int(fg_stats, "Fever Multiplier", 0)
+                fg_pp_stat = _safe_int(fg_stats.get("Perfect Points", 0), 0)
+                fg_primary_val = _safe_int(fg_stats.get(primary_color, 0), 0) if primary_color else 0
+                fg_secondary_val = _safe_int(fg_stats.get(secondary_color, 0), 0) if secondary_color else 0
+                fg_ft_stat = _safe_int(fg_stats.get("Fever Time", 0), 0)
+                fg_ff_stat = _safe_int(fg_stats.get("Fever Fill Rate", 0), 0)
+                fg_cm_stat = _safe_int(fg_stats.get("Combo Multiplier", 0), 0)
+                fg_fm_stat = _safe_int(fg_stats.get("Fever Multiplier", 0), 0)
                 fg_fp_targets = _force_counts_to_fp_targets(
                     fg_counts,
                     calc_song=group_song,

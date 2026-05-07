@@ -130,6 +130,105 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     assert (fg_force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
 
 
+def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, monkeypatch):
+    from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
+    from gear_optimizer.data.database import _unpack_stats_after_load
+    from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
+
+    db_path = tmp_path / "native_fg_no_force.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+
+    song_name = "pytest_native_inflight_fg_no_force"
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+
+    base_stats = _stats(100)
+    fg_stats = _stats(999)
+    base_details = {
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {},
+        "Stats": base_stats,
+        "SelectedElement": "Rush",
+        "PrimaryColor": "Rush",
+        "SecondaryColor": "Flow",
+        "Difficulty": "Hard",
+    }
+
+    save_loadouts_batch(
+        song_name,
+        [
+            {
+                "score": 1000,
+                "fg_score": 0,
+                "gear": gear,
+                "minis": minis,
+                "details": base_details,
+                "force": None,
+            }
+        ],
+    )
+
+    loadout_hash = get_loadout_hash(gear, minis)
+    fake_song = make_native_song(
+        fg_variants=[
+            {
+                "_is_ga": True,
+                "score": 1000,
+                "base_score": 1000,
+                "fg_score": 1200,
+                "gear": gear,
+                "minis": minis,
+                "data": {
+                    "BaseScore": 1000,
+                    "Score": 1200,
+                    "FT": 9,
+                    "FF": 18,
+                    "GemCounts": {"Perfect Points": 1},
+                    "BaseStats": base_stats,
+                    "Stats": fg_stats,
+                    "Selected Element": "Rush",
+                    "ForceGreats": {"config": {}},
+                },
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        loadout_entries={loadout_hash: {"score": 1000, "base_score": 1000, "details": base_details}},
+    )
+
+    fg_entries = _build_fg_persist_entries(fake_song)
+    assert fg_entries == []
+
+    save_loadouts_batch(song_name, fg_entries)
+
+    with get_db_connection(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT score, fg_score, details_json "
+            "FROM team_buff_loadouts "
+            "WHERE song_name = ? AND team_buff = 'T5' "
+            "ORDER BY score DESC LIMIT 1",
+            (song_name,),
+        ).fetchone()
+        fg_row = conn.execute(
+            "SELECT score, fg_score, details_json, force_details_json "
+            "FROM team_buff_fg_loadouts "
+            "WHERE song_name = ? AND team_buff = 'T5' "
+            "ORDER BY fg_score DESC LIMIT 1",
+            (song_name,),
+        ).fetchone()
+
+    assert row is not None
+    assert int(row["score"]) == 1000
+    assert int(row["fg_score"]) == 0
+
+    stored_details = _unpack_stats_after_load(json.loads(row["details_json"])) or {}
+    assert stored_details.get("Stats") == base_stats
+    assert fg_row is None
+
+
 def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
@@ -518,6 +617,146 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
     assert fg_entries
     assert fg_entries[0]["details"]["Stats"] == expected_stats
     assert fg_entries[0]["force"]["Stats"] == expected_stats
+
+
+def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
+    from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
+
+    base_stats = _stats(100)
+    force_payload = {
+        "BaseScore": 1000,
+        "Score": 1200,
+        "FT": 9,
+        "FF": 18,
+        "GemCounts": {"Perfect Points": 1},
+        "BaseStats": base_stats,
+        "Selected Element": "Rush",
+        "ForceGreats": {"config": {"NonFever1": 1}},
+    }
+    fake_song = make_native_song(
+        fg_variants=[
+            {
+                "_is_ga": True,
+                "score": 1000,
+                "base_score": 1000,
+                "fg_score": 1200,
+                "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+                "minis": ["M1", "M2", "M3"],
+                # Some refactored producers carry the replay payload on the
+                # variant/entry force surface instead of `data`.
+                "data": {"Stats": base_stats},
+                "force": force_payload,
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        loadout_entries={},
+    )
+
+    fg_entries = _build_fg_persist_entries(fake_song)
+    assert fg_entries
+    assert fg_entries[0]["fg_score"] == 1200
+    assert (fg_entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+
+
+def test_retained_fg_variant_force_base_score_matches_paired_entry_score():
+    from gear_optimizer.helpers.song_helpers.force_greats.retained_variants import retain_and_build_fg_variants
+
+    entry = {
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "score": 1000,
+        "base_score": 1000,
+        "fg_score": 1200,
+        "force": {
+            "BaseScore": 9999,
+            "Score": 1200,
+            "BaseStats": _stats(100),
+            "ForceGreats": {"config": {"NonFever1": 1}},
+        },
+    }
+
+    variants = retain_and_build_fg_variants(
+        entry_items=[("h1", entry)],
+        sig_results={},
+        entry_sig={},
+        loadout_entries={},
+        direct_ga_items=[],
+        loadouts_per_song_limit=1,
+        entry_base_score_fn=lambda _entry: 1000,
+    )
+
+    assert variants
+    assert variants[0]["base_score"] == 1000
+    assert variants[0]["data"]["BaseScore"] == 1000
+    assert variants[0]["data"]["Score"] == 1200
+
+
+def test_native_inflight_fg_persist_entries_preserves_paired_base_score_in_fg_table(tmp_path, monkeypatch):
+    from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
+    from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
+
+    db_path = tmp_path / "native_fg_paired_base.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+
+    song_name = "pytest_native_inflight_fg_paired_base"
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+    loadout_hash = get_loadout_hash(gear, minis)
+    base_stats = _stats(100)
+    force_payload = {
+        "BaseScore": 1000,
+        "Score": 1200,
+        "FT": 9,
+        "FF": 18,
+        "GemCounts": {"Perfect Points": 1},
+        "BaseStats": base_stats,
+        "Selected Element": "Rush",
+        "ForceGreats": {"config": {"NonFever1": 1}},
+    }
+    fake_song = make_native_song(
+        fg_variants=[
+            {
+                "_is_ga": True,
+                "score": 1000,
+                "base_score": 1000,
+                "fg_score": 1200,
+                "gear": gear,
+                "minis": minis,
+                "data": force_payload,
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        loadout_entries={
+            loadout_hash: {
+                "score": 1500,
+                "base_score": 1500,
+                "gear": gear,
+                "minis": minis,
+                "details": {"Stats": base_stats, "SelectedElement": "Rush"},
+            }
+        },
+    )
+
+    fg_entries = _build_fg_persist_entries(fake_song)
+    assert fg_entries
+    assert fg_entries[0]["score"] == 1500
+    assert fg_entries[0]["fg_score"] == 1200
+
+    save_loadouts_batch(song_name, fg_entries)
+    with get_db_connection(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song_name,),
+        ).fetchone()
+
+    assert row is not None
+    assert int(row["score"]) == 1000
+    assert int(row["fg_score"]) == 1200
 
 
 def test_native_inflight_base_only_save_keeps_best_fg_score_zero(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+from .fg_config import has_valid_fg_config
 from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
@@ -69,14 +70,16 @@ def canonicalize_baseline_persist_entries(
 
         merged = dict(entry)
         merged["score"] = int(row.get("score", merged.get("score", 0)) or 0)
-        merged["fg_score"] = int(row.get("fg_score", merged.get("fg_score", 0)) or 0)
-        if "fg_base_score" in row:
-            try:
-                merged["fg_base_score"] = int(row.get("fg_base_score", 0) or 0)
-            except Exception:
-                merged["fg_base_score"] = 0
+        row_force = row.get("force")
+        if isinstance(row_force, dict) and has_valid_fg_config(row_force):
+            merged["fg_score"] = int(row.get("fg_score", merged.get("fg_score", 0)) or 0)
+            if "fg_base_score" in row:
+                try:
+                    merged["fg_base_score"] = int(row.get("fg_base_score", 0) or 0)
+                except Exception:
+                    merged["fg_base_score"] = 0
+            merged["force"] = row_force
         merged["details"] = row.get("details", merged.get("details"))
-        merged["force"] = row.get("force", merged.get("force"))
         merged_entries.append(merged)
 
     return merged_entries

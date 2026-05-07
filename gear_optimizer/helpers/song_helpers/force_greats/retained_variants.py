@@ -98,6 +98,8 @@ def retain_and_build_fg_variants(
         cfg = entry_fg_config_dict(entry)
         if not is_valid_fg_config(cfg):
             continue
+        force_obj = dict(force_obj)
+        force_obj["BaseScore"] = int(fg_base_score_i)
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         loadout_hash = str(entry_loadout_hash(entry) or h)
         if loadout_hash in seen_variant_hashes:

@@ -78,6 +78,58 @@ def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_un
     assert entries[0]["score"] == 10
 
 
+def test_canonicalize_baseline_persist_entries_does_not_attach_fg_score_without_force(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
+
+    def fake_build_team_buff_tier_db_batches(
+        *,
+        entries,
+        calc_song,
+        ref_arrays,
+        cfg_dict,
+        limit,
+        tiers,
+        **_kwargs,
+    ):
+        return {
+            "T10": [
+                {
+                    "gear": ["G1", "G2"],
+                    "minis": ["M1"],
+                    "score": 99,
+                    "fg_score": 123,
+                    "fg_base_score": 77,
+                    "details": {"tag": "canonical"},
+                    "force": None,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.baseline_replay.build_team_buff_tier_db_batches",
+        fake_build_team_buff_tier_db_batches,
+    )
+
+    entries = [
+        _make_entry(gear=["G1", "G2"], minis=["M1"], score=10, fg_score=0, tag="stale"),
+    ]
+    out = canonicalize_baseline_persist_entries(
+        entries,
+        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+        ref_arrays={"Perfect Points": [0]},
+        cfg_dict={
+            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "TeamContributionBuffConstant": {"TeamBuff": "T10"},
+        },
+    )
+
+    assert out[0]["score"] == 99
+    assert out[0]["fg_score"] == 0
+    assert out[0].get("fg_base_score") is None
+    assert out[0]["details"]["tag"] == "canonical"
+    assert out[0]["force"] is None
+
+
 def test_build_persistence_entries_routes_retained_surface_through_shared_canonicalizer(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
 

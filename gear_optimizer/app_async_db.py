@@ -8,7 +8,7 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
-from gear_optimizer.core.parsing import env_flag, truthy
+from gear_optimizer.core.parsing import env_flag, env_get, truthy
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
     get_evolution_db_path,
@@ -18,7 +18,6 @@ from gear_optimizer.data.database import (
     update_song_counters,
 )
 
-from gear_optimizer.core.parsing import env_get
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
 _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
