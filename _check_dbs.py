@@ -1,4 +1,5 @@
-import os, datetime, sqlite3
+import datetime
+import sqlite3
 from pathlib import Path
 dbs = sorted(Path('.').glob('evolution*.db'), key=lambda p: p.stat().st_size, reverse=True)
 for f in dbs[:10]:
