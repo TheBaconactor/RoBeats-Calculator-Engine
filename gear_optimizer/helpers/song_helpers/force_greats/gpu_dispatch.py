@@ -959,23 +959,24 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     #   lower-base/high-FG candidates from materialization.
     keep_sigs: set[str] = set()
     if download_topk_enabled:
-        base_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
+        entry_count_guard = max(int(LOADOUTS_PER_SONG_LIMIT), int(len(entry_items)))
+        base_keep_n = int(entry_count_guard)
         try:
-            fg_proxy_keep_n = int(env_get("FG_DOWNLOAD_KEEP_PROXY_SIGS", str(LOADOUTS_PER_SONG_LIMIT)) or 0)
+            fg_proxy_keep_n = int(env_get("FG_DOWNLOAD_KEEP_PROXY_SIGS", str(entry_count_guard)) or 0)
         except (ValueError, TypeError):
-            fg_proxy_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
+            fg_proxy_keep_n = int(entry_count_guard)
         fg_proxy_keep_n = max(0, int(fg_proxy_keep_n))
 
         try:
             topk_cap = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
         except (ValueError, TypeError, AttributeError):
             topk_cap = 256
-        default_keep_cap = max(0, int(topk_cap) - min(int(topk_cap), int(download_topk_k)))
+        default_keep_cap = max(int(entry_count_guard), int(topk_cap) - min(int(topk_cap), int(download_topk_k)))
         try:
             max_keep_total = int(env_get("FG_DOWNLOAD_KEEP_SIGS_MAX", str(default_keep_cap)) or 0)
         except (ValueError, TypeError):
             max_keep_total = int(default_keep_cap)
-        max_keep_total = max(0, int(max_keep_total))
+        max_keep_total = max(int(entry_count_guard), int(max_keep_total))
 
         keep_sigs = _build_topk_keep_signature_set(
             items=entry_items,
@@ -2898,7 +2899,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 and bool(topk_retry_on_empty)
                 and selected_indices is not None
                 and int(_selected_count(selected_indices)) < int(n_pending)
-                and not _sig_results_has_fg_improvement(sig_results=sig_results, sigs=apply_sigs)
             ):
                 full_results = _submit_fg_download_global_best(n_pending, blocking=True)
                 _record_gpu_results(
