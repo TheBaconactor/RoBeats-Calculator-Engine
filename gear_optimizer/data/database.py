@@ -1997,9 +1997,9 @@ def save_team_buff_loadouts_batch(
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_ids_blob = CASE WHEN excluded.score >= score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
-                    minis_ids_blob = CASE WHEN excluded.score >= score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
-                    details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
+                    gear_ids_blob = CASE WHEN excluded.score > score THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
+                    minis_ids_blob = CASE WHEN excluded.score > score THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
+                    details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
                     force_details_json = NULL,
                     timestamp = strftime('%s', 'now')
             """,

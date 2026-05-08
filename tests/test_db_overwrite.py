@@ -5,6 +5,7 @@ from gear_optimizer.data.database import (
     get_db_connection,
     init_db,
     save_loadouts_batch,
+    _unpack_stats_after_load,
 )
 
 
@@ -153,6 +154,51 @@ def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connec
     ).fetchone()
     assert fg_row is not None
     assert fg_row["force_details_json"] is not None
+
+
+def test_save_loadouts_batch_equal_score_preserves_base_payload(db_connection):
+    """
+    Equal-score base upserts must not swap in a different details payload.
+
+    The score and details_json columns describe one replay surface; updating details
+    on a tie can pair an old score with newly canonicalized Stats.
+    """
+    song = "Test Song Equal Score Payload"
+    gear = ["G1", "G2"]
+    minis = ["M1"]
+
+    entry_original = {
+        "score": 1000,
+        "fg_score": 0,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "original", "Stats": {"Rush": 100, "Perfect Points": 25}},
+        "force": None,
+    }
+    save_loadouts_batch(song, [entry_original])
+
+    entry_tie_new_payload = {
+        "score": 1000,
+        "fg_score": 0,
+        "gear": gear,
+        "minis": minis,
+        "details": {"test": "tie_new_payload", "Stats": {"Rush": 200, "Perfect Points": 25}},
+        "force": None,
+    }
+    save_loadouts_batch(song, [entry_tie_new_payload])
+
+    row = db_connection.execute(
+        """
+        SELECT score, details_json
+        FROM team_buff_loadouts
+        WHERE song_name=? AND team_buff='T5'
+        """,
+        (song,),
+    ).fetchone()
+    details = _unpack_stats_after_load(json.loads(row["details_json"]))
+    assert row["score"] == 1000
+    assert details["test"] == "original"
+    assert details["Stats"]["Rush"] == 100
 
 
 def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
