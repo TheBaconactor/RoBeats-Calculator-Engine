@@ -13,7 +13,7 @@ import typing
 import numpy as np
 
 # Import from refactored modules
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import config_bool, env_flag, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
@@ -76,7 +76,6 @@ from gear_optimizer.ui.progress import (
 )
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
-from gear_optimizer.app_gpu_lifecycle import GPULifecycleManager
 from gear_optimizer.app_inflight_runner import InflightRunner
 
 from gear_optimizer.core.parsing import env_get
@@ -109,7 +108,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._async_db_saver = AsyncDbSaver()
         self._stop_control = StopController(bin_dir=BIN_DIR)
         self._inflight_runner = InflightRunner(self)
-        self._gpu_lifecycle = GPULifecycleManager(self, self._inflight_runner)
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = bool(getattr(ENV, "output_enabled", False))
@@ -238,6 +236,60 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.debug(f"app:_current_runtime_settings: {e}")
             return AppRuntimeSettings.from_config(None)
+
+    def _configure_execution_and_prewarm(self, cfg) -> None:
+        runtime_settings = self._current_runtime_settings(cfg)
+        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
+        if not gpu_mode_requested:
+            logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+            try:
+                if not cfg.has_section("IterationEngine"):
+                    cfg.add_section("IterationEngine")
+                cfg.set("IterationEngine", "GPU_Mode", "true")
+            except Exception as e:
+                logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+
+        if bool(runtime_settings.gpu.gpu_native_ga):
+            ga_multistart = max(1, int(runtime_settings.ga.multi_start))
+            os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
+            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
+            try:
+                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+                gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+            except Exception as e:
+                logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+
+        try:
+            inflight_req = int(runtime_settings.inflight.songs or 0)
+        except Exception as e:
+            logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+            inflight_req = 0
+        if inflight_req <= 1:
+            return
+
+        inflight_instances = self._inflight_runner.get_effective_inflight_instances(cfg)
+        if int(inflight_instances) > 1:
+            return
+
+        try:
+            logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
+            emit_profile_event(
+                component="app",
+                event="taichi_init_start",
+                metrics={"in_process": 1},
+            )
+            from gear_optimizer.solver.gpu_executor import get_gpu_executor
+
+            get_gpu_executor().start(in_process=True)
+            logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
+            emit_profile_event(
+                component="app",
+                event="taichi_init_done",
+                metrics={"in_process": 1},
+            )
+        except Exception as e:
+            logger.debug(f"app:_configure_execution_and_prewarm: {e}")
 
     def _profiling_mode_enabled(self, cfg=None) -> bool:
         # Fast path from centralized env snapshot.
@@ -539,7 +591,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 ref_arrays=ref_arrays,
                 data_root=PATHS.data_dir,
             )
-            self._gpu_lifecycle.configure_execution_and_prewarm(cfg)
+            self._configure_execution_and_prewarm(cfg)
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
@@ -1129,63 +1181,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         logger.info(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
-    def _start_progress(self, *args, **kwargs):
-        return super()._start_progress(*args, **kwargs)
-
-    def _stop_progress(self, *args, **kwargs):
-        return super()._stop_progress(*args, **kwargs)
-
-    def _tui_active(self, *args, **kwargs):
-        return super()._tui_active(*args, **kwargs)
-
-    def _start_tui(self, *args, **kwargs):
-        return super()._start_tui(*args, **kwargs)
-
-    def _disable_console_logging_for_tui(self, *args, **kwargs):
-        return super()._disable_console_logging_for_tui(*args, **kwargs)
-
-    def _stop_tui(self, *args, **kwargs):
-        return super()._stop_tui(*args, **kwargs)
-
-    def _tui_publish(self, *args, **kwargs):
-        return super()._tui_publish(*args, **kwargs)
-
-    def _record_info_song_key(self, *args, **kwargs):
-        return super()._record_info_song_key(*args, **kwargs)
-
-    def _is_authoritative_new_record(self, *args, **kwargs):
-        return super()._is_authoritative_new_record(*args, **kwargs)
-
-    def _apply_authoritative_new_record(self, *args, **kwargs):
-        return super()._apply_authoritative_new_record(*args, **kwargs)
-
-    def _progress_event(self, *args, **kwargs):
-        return super()._progress_event(*args, **kwargs)
-
-    def _handle_status_message(self, *args, **kwargs):
-        return super()._handle_status_message(*args, **kwargs)
-
-    def _start_hotkeys(self, *args, **kwargs):
-        return super()._start_hotkeys(*args, **kwargs)
-
-    def _stop_hotkeys(self, *args, **kwargs):
-        return super()._stop_hotkeys(*args, **kwargs)
-
-    def _start_tui_command_thread(self, *args, **kwargs):
-        return super()._start_tui_command_thread(*args, **kwargs)
-
-    def _stop_tui_command_thread(self, *args, **kwargs):
-        return super()._stop_tui_command_thread(*args, **kwargs)
-
-    def _tui_emit_block(self, *args, **kwargs):
-        return super()._tui_emit_block(*args, **kwargs)
-
-    def _tui_up_next_lines(self, *args, **kwargs):
-        return super()._tui_up_next_lines(*args, **kwargs)
-
-    def _emit_block(self, *args, **kwargs):
-        return super()._emit_block(*args, **kwargs)
-
     def _normalize_song_label(self, label: str) -> str:
         # Strip "(Run x/y)" suffix so DB queries map to the base song key.
         s = str(label or "").strip()
@@ -1195,30 +1190,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", s).strip()
         except (ValueError, TypeError, re.error):
             return s
-
-    def _hotkey_help(self, *args, **kwargs):
-        return super()._hotkey_help(*args, **kwargs)
-
-    def _hotkey_next_songs(self, *args, **kwargs):
-        return super()._hotkey_next_songs(*args, **kwargs)
-
-    def _hotkey_db_counters(self, *args, **kwargs):
-        return super()._hotkey_db_counters(*args, **kwargs)
-
-    def _hotkey_db_best(self, *args, **kwargs):
-        return super()._hotkey_db_best(*args, **kwargs)
-
-    def _print_banner(self, *args, **kwargs):
-        return super()._print_banner(*args, **kwargs)
-
-    def _extract_record_info(self, *args, **kwargs):
-        return super()._extract_record_info(*args, **kwargs)
-
-    def _progress_on_result(self, *args, **kwargs):
-        return super()._progress_on_result(*args, **kwargs)
-
-    def _status_listener(self, *args, **kwargs):
-        return super()._status_listener(*args, **kwargs)
 
     def _prepare_tasks(
         self,
