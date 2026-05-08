@@ -1,0 +1,121 @@
+{
+  "correctness": {
+    "n_cases": 12,
+    "mismatches": 0,
+    "max_abs_err": 0.0,
+    "exhaustive_ms_mean": 0.09783758334454735,
+    "naive_ms_mean": 0.011386750012813232,
+    "reduced_ms_mean": 0.00987058331247681
+  },
+  "fg": {
+    "n_total": 42,
+    "deltas_match": true,
+    "naive_ms": {
+      "mean": 32.59243297619768,
+      "median": 29.715389500097444
+    },
+    "reduced_ms": {
+      "mean": 13.965184095241057,
+      "median": 14.021554000009928
+    },
+    "speedup": {
+      "mean": 2.4555281179211135,
+      "median": 2.315933329855941
+    },
+    "states_naive_mean": 181.5952380952381,
+    "states_reduced_mean": 181.54761904761904,
+    "activation_checks_naive_mean": 14912.119047619048,
+    "activation_checks_reduced_mean": 13679.285714285714,
+    "activation_check_cut_mean": 0.09711837631395247,
+    "per_seed": {
+      "11": {
+        "naive_ms_mean": 32.4375640714639,
+        "reduced_ms_mean": 14.366277285733174,
+        "speedup_mean": 2.3515590725131177,
+        "activation_check_cut_mean": 0.09340990107008058
+      },
+      "17": {
+        "naive_ms_mean": 32.616097071435696,
+        "reduced_ms_mean": 13.608658714279695,
+        "speedup_mean": 2.488465435855577,
+        "activation_check_cut_mean": 0.10750096099666363
+      },
+      "23": {
+        "naive_ms_mean": 32.72363778569343,
+        "reduced_ms_mean": 13.9206162857103,
+        "speedup_mean": 2.526559845394645,
+        "activation_check_cut_mean": 0.0904442668751132
+      }
+    }
+  },
+  "ga": {
+    "n_total": 90,
+    "baseline_exact_evals_mean": 9216,
+    "raw_cache_exact_evals_mean": 9143.977777777778,
+    "signature_cache_exact_evals_mean": 3708.1444444444446,
+    "raw_eval_cut_mean": 0.007814911265432095,
+    "signature_eval_cut_mean": 0.5976405767746914,
+    "best_score_delta_mean": 0.14180442439436625,
+    "best_score_delta_median": 0.0,
+    "unique_genomes_mean": 10101.055555555555,
+    "unique_signatures_mean": 9040.68888888889,
+    "per_seed": {
+      "11": {
+        "baseline_exact_evals_mean": 9216,
+        "raw_cache_exact_evals_mean": 9145.333333333334,
+        "signature_cache_exact_evals_mean": 3569.1666666666665,
+        "raw_eval_cut_mean": 0.007667824074074062,
+        "signature_eval_cut_mean": 0.612720630787037,
+        "best_score_delta_mean": 0.14704192919305967
+      },
+      "17": {
+        "baseline_exact_evals_mean": 9216,
+        "raw_cache_exact_evals_mean": 9142.366666666667,
+        "signature_cache_exact_evals_mean": 3728.633333333333,
+        "raw_eval_cut_mean": 0.007989728009259263,
+        "signature_eval_cut_mean": 0.5954173900462963,
+        "best_score_delta_mean": 0.1839304243935653
+      },
+      "23": {
+        "baseline_exact_evals_mean": 9216,
+        "raw_cache_exact_evals_mean": 9144.233333333334,
+        "signature_cache_exact_evals_mean": 3826.633333333333,
+        "raw_eval_cut_mean": 0.007787181712962961,
+        "signature_eval_cut_mean": 0.5847837094907408,
+        "best_score_delta_mean": 0.0944409195964738
+      }
+    }
+  },
+  "projection": {
+    "per_seed": {
+      "11": {
+        "ga_cut": 0.612720630787037,
+        "fg_solve_cut": 0.6144727514920372,
+        "host_cut": 0.45,
+        "normalized_time": 0.47476734755351857,
+        "speedup": 2.1062948097694822,
+        "songs_per_hour": 11941.638423988079
+      },
+      "17": {
+        "ga_cut": 0.5954173900462963,
+        "fg_solve_cut": 0.6413456155976385,
+        "host_cut": 0.45,
+        "normalized_time": 0.4770433719076893,
+        "speedup": 2.096245454582075,
+        "songs_per_hour": 11884.663604753074
+      },
+      "23": {
+        "ga_cut": 0.5847837094907408,
+        "fg_solve_cut": 0.6400023000512718,
+        "host_cut": 0.45,
+        "normalized_time": 0.4824204534984939,
+        "speedup": 2.0728806018651156,
+        "songs_per_hour": 11752.196572274273
+      }
+    },
+    "speedup_mean": 2.0918069554055574,
+    "speedup_ci95": 0.019399793419468056,
+    "songs_per_hour_mean": 11859.49953367181,
+    "songs_per_hour_ci95": 109.98712879167357
+  }
+}
