@@ -13,7 +13,7 @@ This package splits the monolithic song_helpers.py (1,327 lines) into focused mo
 from .database_context import load_database_context, load_database_progress_baseline
 from .force_greats import process_force_greats
 from .loadout_builder import build_loadout_entries
-from .persistence import build_db_payload, build_persistence_entries
+from .persistence import ReplayContext, build_db_payload, build_persistence_entries, canonicalize_and_assemble
 from .results_printer import print_results
 from .song_config import setup_song_config
 
@@ -25,5 +25,7 @@ __all__ = [
     "process_force_greats",
     "build_db_payload",
     "build_persistence_entries",
+    "canonicalize_and_assemble",
+    "ReplayContext",
     "print_results",
 ]

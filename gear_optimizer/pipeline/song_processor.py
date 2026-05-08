@@ -66,8 +66,9 @@ from ..helpers.song_helpers import (
     # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
     # without increasing FG_CandidateLimit.
     process_force_greats,
+    ReplayContext,
     build_db_payload,
-    build_persistence_entries,
+    canonicalize_and_assemble,
     print_results,
 )
 from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
@@ -1030,14 +1031,16 @@ def _build_and_persist(
         ctx.stage_timing["_db_payload_sec"] = time.perf_counter() - t_db0
 
         t_persist0 = time.perf_counter()
-        persist_entries = build_persistence_entries(
-            db_payload,
-            outer.ga_candidates,
-            fg.loadout_entries,
-            build_details,
-            calc_song=ctx.calc_song,
-            ref_arrays=ctx.ref_arrays,
-            cfg_dict=ctx.cfg_dict,
+        persist_entries = canonicalize_and_assemble(
+            db_payload=db_payload,
+            ga_candidates=outer.ga_candidates,
+            loadout_entries=fg.loadout_entries,
+            build_details_fn=build_details,
+            replay_ctx=ReplayContext(
+                calc_song=ctx.calc_song,
+                ref_arrays=ctx.ref_arrays,
+                cfg_dict=ctx.cfg_dict,
+            ),
         )
         ctx.stage_timing["_persist_build_sec"] = time.perf_counter() - t_persist0
 

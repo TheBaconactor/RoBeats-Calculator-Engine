@@ -16,7 +16,7 @@ def _make_entry(*, gear: list[str], minis: list[str], score: int, fg_score: int 
 def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_unmatched_rows(monkeypatch):
     from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
 
-    requested: dict[str, object] = {}
+    requested: dict[str, object] = {"limits": []}
 
     def fake_build_team_buff_tier_db_batches(
         *,
@@ -29,10 +29,14 @@ def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_un
         **_kwargs,
     ):
         requested["limit"] = int(limit)
+        requested["limits"].append(int(limit))
         requested["tiers"] = tuple(tiers)
         requested["calc_song"] = calc_song
         requested["ref_arrays"] = ref_arrays
         requested["cfg_dict"] = cfg_dict
+        entries_list = list(entries or [])
+        if len(entries_list) == 1 and list(entries_list[0].get("gear") or []) == ["Other"]:
+            return {"T10": []}
         return {
             "T10": [
                 {
@@ -66,7 +70,7 @@ def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_un
         },
     )
 
-    assert requested["limit"] == 2
+    assert requested["limits"][0] == 2
     assert requested["tiers"] == ("T10",)
     assert out[0]["score"] == 99
     assert out[0]["fg_score"] == 123
@@ -135,36 +139,50 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
 
     captured: dict[str, object] = {}
 
-    def fake_canonicalize_baseline_persist_entries(entries, *, calc_song, ref_arrays, cfg_dict):
+    def fake_build_team_buff_tier_db_batches(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, **_kwargs):
         captured["entries"] = [dict(entry) for entry in entries]
         captured["calc_song"] = calc_song
         captured["ref_arrays"] = ref_arrays
         captured["cfg_dict"] = cfg_dict
-        return [
-            {
-                "gear": ["G1"],
-                "minis": ["M1"],
-                "score": 321,
-                "fg_score": 654,
-                "details": {"tag": "sentinel"},
-                "force": None,
-            }
-        ]
+        return {
+            "T5": [
+                {
+                    "gear": ["TopGear"],
+                    "minis": ["TopMini"],
+                    "score": 500,
+                    "fg_score": 0,
+                    "details": {"tag": "top1", "Stats": {"Rush": 1}},
+                    "force": None,
+                },
+                {
+                    "gear": ["G1"],
+                    "minis": ["M1"],
+                    "score": 321,
+                    "fg_score": 654,
+                    "fg_base_score": 300,
+                    "details": {"tag": "sentinel", "Stats": {"Rush": 2}},
+                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                },
+            ]
+        }
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
-        fake_canonicalize_baseline_persist_entries,
+        "gear_optimizer.helpers.song_helpers.persistence_canon.build_team_buff_tier_db_batches",
+        fake_build_team_buff_tier_db_batches,
     )
 
     db_payload = {
         "score": 500,
         "gear": ["TopGear"],
         "minis": ["TopMini"],
-        "details": {"tag": "top1"},
+        "details": {"tag": "top1", "Stats": {"Rush": 1}},
         "force": None,
     }
     loadout_entries = {
-        "retained-hash": _make_entry(gear=["G1"], minis=["M1"], score=11, tag="retained")
+        "retained-hash": {
+            **_make_entry(gear=["G1"], minis=["M1"], score=11, tag="retained"),
+            "details": {"tag": "retained", "Stats": {"Rush": 2}},
+        }
     }
 
     out = build_persistence_entries(
@@ -180,16 +198,12 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
         },
     )
 
-    assert out == [
-        {
-            "gear": ["G1"],
-            "minis": ["M1"],
-            "score": 321,
-            "fg_score": 654,
-            "details": {"tag": "sentinel"},
-            "force": None,
-        }
-    ]
+    row = next(e for e in out if e.get("gear") == ["G1"] and e.get("minis") == ["M1"])
+    assert int(row.get("score", 0) or 0) == 321
+    assert int(row.get("fg_score", 0) or 0) == 654
+    assert int(row.get("fg_base_score", 0) or 0) == 300
+    assert (row.get("details") or {}).get("tag") == "sentinel"
+    assert isinstance(row.get("force"), dict)
     assert captured["calc_song"]["metadata"]["Primary Color"] == "Rush"
     assert captured["ref_arrays"] == {"Perfect Points": [0]}
     assert captured["cfg_dict"]["TeamContributionBuffConstant"]["TeamBuff"] == "T5"

@@ -14,6 +14,13 @@ from .retention import select_retained_hashes
 AppendEntryFn = Callable[..., None]
 
 
+def _details_missing_stats(details_obj: Any) -> bool:
+    if not isinstance(details_obj, dict) or not details_obj:
+        return True
+    stats = details_obj.get("Stats")
+    return not (isinstance(stats, dict) and bool(stats))
+
+
 def add_db_payload_priority_entries(
     db_payload: dict,
     loadout_entries: dict | None,
@@ -108,7 +115,7 @@ def build_retained_loadout_entries(
             force_obj = None
 
         details_obj = entry.get("details", {}) or {}
-        if not details_obj and entry.get("eval_data") and build_details_fn is not None:
+        if _details_missing_stats(details_obj) and entry.get("eval_data") and build_details_fn is not None:
             details_obj = build_details_fn(entry.get("eval_data") or {})
 
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
@@ -123,6 +130,9 @@ def build_retained_loadout_entries(
         }
         if entry.get("fg_base_score") is not None:
             retained_entry["fg_base_score"] = entry.get("fg_base_score")
+        eval_data_obj = entry.get("eval_data")
+        if isinstance(eval_data_obj, dict) and eval_data_obj:
+            retained_entry["eval_data"] = eval_data_obj
         retained_entries.append(retained_entry)
 
     return retained_entries

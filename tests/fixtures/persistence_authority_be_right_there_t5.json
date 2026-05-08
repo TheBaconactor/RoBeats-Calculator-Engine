@@ -1,0 +1,71 @@
+{
+  "song_name": "Be Right There (Game Edit) (Hard) by Reku Mochizuki",
+  "difficulty": "Hard",
+  "team_buff": "T5",
+  "song_file_rel": "Data/Hard/Be Right There (Game Edit) (Hard) by Reku Mochizuki.txt",
+  "primary_color": "Rush",
+  "secondary_color": "Rush",
+  "base_entry": {
+    "loadout_hash": "8765cac99b15f1f714916f558c138098",
+    "expected_score": 45366044,
+    "gear": [
+      "Autumnal Adept's Bloom",
+      "Legendary Rush Chieftan's Beads",
+      "Lester's Muzzle",
+      "Legendary Rush Chieftan's Garb",
+      "Legendary Rush Chieftan's Aura Band",
+      "Legendary Rush Chieftan's Pants"
+    ],
+    "minis": [
+      "Juggernaut",
+      "Lappy",
+      "Kurante Metal Dimensions"
+    ],
+    "details": {
+      "FT": 0,
+      "FF": 13,
+      "st": [
+        47,
+        65,
+        74,
+        54,
+        36,
+        5,
+        3,
+        750,
+        15,
+        93
+      ],
+      "gc": [
+        0,
+        0,
+        13,
+        64
+      ],
+      "se": "Rush",
+      "pc": "Rush",
+      "sc": "Rush",
+      "Stats": {
+        "Perfect Points": 47,
+        "Combo Multiplier": 65,
+        "Fever Multiplier": 74,
+        "Fever Fill Rate": 54,
+        "Fever Time": 36,
+        "Chill": 5,
+        "Flow": 3,
+        "Rush": 750,
+        "Beat": 15,
+        "Vibe": 93
+      },
+      "GemCounts": {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 13,
+        "Element": 64
+      },
+      "SelectedElement": "Rush",
+      "PrimaryColor": "Rush",
+      "SecondaryColor": "Rush"
+    }
+  }
+}

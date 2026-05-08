@@ -17,8 +17,9 @@ from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.persistence import (
+    ReplayContext,
     build_db_payload,
-    build_persistence_entries,
+    canonicalize_and_assemble,
     make_build_details_fn,
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
@@ -223,6 +224,63 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             )
         return variants
 
+    def _canonicalize_fg_update_entries(
+        entries: list[dict],
+        *,
+        file_path: str,
+        cfg_dict_local: dict[str, Any],
+        ref_arrays_local: Any,
+        song_name: str,
+    ) -> list[dict]:
+        if not entries:
+            return []
+        fp = str(file_path or "").strip()
+        if not fp:
+            logger.warning("[POST][FG] Skipping FG deferred save for %s: missing file_path", song_name)
+            return []
+
+        cfg_local = dict(cfg_dict_local) if isinstance(cfg_dict_local, dict) else {}
+        try:
+            from gear_optimizer.pipeline.song_processor import get_base_calc_song
+
+            calc_song = get_base_calc_song(fp, cfg_local)
+        except Exception:
+            logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song load failed", song_name)
+            return []
+        if not isinstance(calc_song, dict) or not calc_song:
+            logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song unavailable", song_name)
+            return []
+
+        resolved_ref_arrays = ref_arrays_local
+        if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
+            try:
+                from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+
+                resolved_ref_arrays = _get_team_buff_ref_arrays_cached()
+            except Exception:
+                resolved_ref_arrays = None
+        if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
+            logger.warning("[POST][FG] Skipping FG deferred save for %s: ref_arrays unavailable", song_name)
+            return []
+
+        try:
+            from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
+
+            return canonicalize_baseline_persist_entries(
+                list(entries),
+                calc_song=calc_song,
+                ref_arrays=resolved_ref_arrays,
+                cfg_dict=cfg_local,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[POST][FG] Skipping FG deferred save for %s: canonicalization failed (%s: %s)",
+                song_name,
+                type(exc).__name__,
+                exc,
+            )
+            return []
+
     def _print_pending_final(song: str) -> None:
         payload = pending_final_print.get(song)
         if not payload:
@@ -313,6 +371,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 if item.get("use_evo_db", True):
                     persisted = item.get("persist_entries") or []
+                    persisted = _canonicalize_fg_update_entries(
+                        persisted,
+                        file_path=str(item.get("file_path") or ""),
+                        cfg_dict_local=item.get("cfg_dict") or {},
+                        ref_arrays_local=item.get("ref_arrays"),
+                        song_name=str(song_name),
+                    )
                     valid_entries = [
                         e for e in (persisted or []) if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                     ]
@@ -527,14 +592,16 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 _t_persist0 = time.perf_counter()
                 cpu_t0 = time.process_time()
-                persist_entries = build_persistence_entries(
-                    db_payload,
-                    item.get("ga_candidates") or [],
-                    item.get("loadout_entries"),
-                    build_details,
-                    calc_song=item.get("calc_song"),
-                    ref_arrays=item.get("ref_arrays"),
-                    cfg_dict=item.get("cfg_dict") or {},
+                persist_entries = canonicalize_and_assemble(
+                    db_payload=db_payload,
+                    ga_candidates=item.get("ga_candidates") or [],
+                    loadout_entries=item.get("loadout_entries"),
+                    build_details_fn=build_details,
+                    replay_ctx=ReplayContext(
+                        calc_song=item.get("calc_song"),
+                        ref_arrays=item.get("ref_arrays"),
+                        cfg_dict=item.get("cfg_dict") or {},
+                    ),
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)

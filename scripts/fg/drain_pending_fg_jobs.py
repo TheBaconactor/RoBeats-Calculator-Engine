@@ -31,9 +31,14 @@ from gear_optimizer.data.database import (
     update_song_counters,
 )
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-from gear_optimizer.helpers.song_helpers import build_loadout_entries, process_force_greats
+from gear_optimizer.helpers.song_helpers import (
+    ReplayContext,
+    build_loadout_entries,
+    canonicalize_and_assemble,
+    process_force_greats,
+)
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
-from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence import build_db_payload
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song, scan_song_header
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -318,12 +323,16 @@ def main() -> int:
             db_best_fg_score=best_fg_prev,
         )
 
-        persist_entries = build_persistence_entries(
-            db_payload,
-            ga_candidates,
-            loadout_entries,
-            build_details_fn,
-            cfg_dict=item.get("cfg_dict") if isinstance(item, dict) else None,
+        persist_entries = canonicalize_and_assemble(
+            db_payload=db_payload,
+            ga_candidates=ga_candidates,
+            loadout_entries=loadout_entries,
+            build_details_fn=build_details_fn,
+            replay_ctx=ReplayContext(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                cfg_dict=cfg_dict,
+            ),
         )
 
         best_fg_improving = _best_fg_improving(persist_entries)

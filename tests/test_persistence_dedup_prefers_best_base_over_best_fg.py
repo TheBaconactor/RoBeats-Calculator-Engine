@@ -177,7 +177,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
         "score": 10,
         "gear": ["TOP_GEAR"],
         "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
-        "details": {"marker": "top1"},
+        "details": {"marker": "top1", "Stats": {"Rush": 1}},
         "fg_score": 0,
         "force": None,
     }
@@ -188,7 +188,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
             "base_score": 77477622,
             "gear": list(gear),
             "minis": list(minis),
-            "details": {"marker": "stale"},
+            "details": {"marker": "stale", "Stats": {"Rush": 2}},
             "fg_score": 0,
             "force": None,
             "_deferred_fg_update": True,
@@ -200,21 +200,34 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
     def _fake_batches(**kwargs):
         captured["tiers"] = tuple(kwargs.get("tiers") or ())
         captured["limit"] = kwargs.get("limit")
-        return {
-            "T5": [
-                {
-                    "score": 64849540,
-                    "fg_score": 0,
-                    "gear": list(gear),
-                    "minis": list(minis),
-                    "details": {"marker": "canonical"},
-                    "force": None,
-                }
-            ]
-        }
+        rows = []
+        for row in list(kwargs.get("entries") or []):
+            if row.get("gear") == list(gear) and row.get("minis") == list(minis):
+                rows.append(
+                    {
+                        "score": 64849540,
+                        "fg_score": 0,
+                        "gear": list(gear),
+                        "minis": list(minis),
+                        "details": {"marker": "canonical", "Stats": {"Rush": 9}},
+                        "force": None,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "score": int(row.get("score", 0) or 0),
+                        "fg_score": 0,
+                        "gear": list(row.get("gear") or []),
+                        "minis": list(row.get("minis") or []),
+                        "details": dict(row.get("details") or {}),
+                        "force": None,
+                    }
+                )
+        return {"T5": rows}
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.build_team_buff_tier_db_batches",
+        "gear_optimizer.helpers.song_helpers.persistence_canon.build_team_buff_tier_db_batches",
         _fake_batches,
     )
 
@@ -250,7 +263,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
         "score": 999,
         "gear": ["TOP_GEAR"],
         "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
-        "details": {"marker": "top1"},
+        "details": {"marker": "top1", "Stats": {"Rush": 1}},
         "fg_score": 0,
         "force": None,
     }
@@ -261,7 +274,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
             "base_score": 100,
             "gear": list(gear),
             "minis": list(minis),
-            "details": {"marker": "stale"},
+            "details": {"marker": "stale", "Stats": {"Rush": 2}},
             "fg_score": 130,
             "force": {"ForceGreats": {"config": {"NonFever1": 1, "NonFever2": 0}}},
         }
@@ -269,20 +282,38 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
 
     calls = {"count": 0}
 
-    def _fake_canonicalize(entries, **kwargs):
+    def _fake_batches(**kwargs):
         calls["count"] += 1
-        if calls["count"] == 1:
-            assert len(entries) == 1
-            row = dict(entries[0])
-            row["score"] = 120
-            row["details"] = {"marker": "precanonical"}
-            row["fg_base_score"] = 110
-            return [row]
-        return entries
+        rows = []
+        for row in list(kwargs.get("entries") or []):
+            if row.get("gear") == list(gear) and row.get("minis") == list(minis):
+                rows.append(
+                    {
+                        "score": 120,
+                        "fg_score": int(row.get("fg_score", 0) or 0),
+                        "fg_base_score": 110,
+                        "gear": list(gear),
+                        "minis": list(minis),
+                        "details": {"marker": "precanonical", "Stats": {"Rush": 7}},
+                        "force": row.get("force"),
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "score": int(row.get("score", 0) or 0),
+                        "fg_score": int(row.get("fg_score", 0) or 0),
+                        "gear": list(row.get("gear") or []),
+                        "minis": list(row.get("minis") or []),
+                        "details": dict(row.get("details") or {}),
+                        "force": row.get("force"),
+                    }
+                )
+        return {"T5": rows}
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
-        _fake_canonicalize,
+        "gear_optimizer.helpers.song_helpers.persistence_canon.build_team_buff_tier_db_batches",
+        _fake_batches,
     )
 
     out = build_persistence_entries(
@@ -296,7 +327,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
-    assert calls["count"] == 2
+    assert calls["count"] == 1
     assert int(entry.get("score", 0) or 0) == 120
     assert int(entry.get("fg_base_score", 0) or 0) == 110
     assert (entry.get("details") or {}).get("marker") == "precanonical"
