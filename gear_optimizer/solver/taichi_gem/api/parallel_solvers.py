@@ -441,14 +441,3 @@ def solve_genomes_from_registry(
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     return _results_from_stats(results_np, n_genomes)
-
-
-# ============================================================================
-# GPU-NATIVE GA OPERATORS (UNUSED - Future infrastructure)
-# ============================================================================
-# These functions implement GPU-side GA operators (selection, crossover, mutation)
-# but are NOT currently wired into genetic.py. They exist as prep work for a
-# future GPU-native GA where the entire population lives on GPU.
-#
-# To complete: need encoder (genome -> item_ids) and integration in genetic.py.
-# ============================================================================

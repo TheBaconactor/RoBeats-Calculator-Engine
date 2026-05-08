@@ -12,8 +12,8 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 - ga_next_generation: Tournament selection + crossover + mutation + elitism
 - ga_download_*: Download results from GPU
 
-These functions are prep work for future GPU-native GA where the entire
-population lives on GPU, avoiding CPU-GPU transfers during evolution.
+These functions are called from gpu_executor.py, parallel_solvers.py, warmup paths,
+and tests.
 """
 
 from __future__ import annotations
@@ -221,13 +221,11 @@ def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
 
 
 # ============================================================================
-# GPU-NATIVE GA OPERATORS (UNUSED - Future infrastructure)
+# GPU-NATIVE GA OPERATORS
 # ============================================================================
-# These functions implement GPU-side GA operators (selection, crossover, mutation)
-# but are NOT currently wired into genetic.py. They exist as prep work for a
-# future GPU-native GA where the entire population lives on GPU.
-#
-# To complete: need encoder (genome -> item_ids) and integration in genetic.py.
+# These functions implement GPU-side GA operators (selection, crossover, mutation,
+# evaluation, download). They are called from gpu_executor.py, parallel_solvers.py,
+# warmup paths, and tests.
 # ============================================================================
 
 

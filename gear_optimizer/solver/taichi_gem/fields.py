@@ -149,9 +149,9 @@ bp_result_mask: ti.Field = None  # (16, 64) i32
 # Per-genome base stats: [pp, cm, fm, p, s, ft, ff]
 genome_base_stats: ti.Field = None
 
-# GPU-native GA fields (UNUSED - Future infrastructure)
-# These fields support GPU-side GA operators but are NOT currently wired into genetic.py.
-# They exist as prep work for a future GPU-native GA where the entire population lives on GPU.
+# GPU-native GA fields
+# These fields support GPU-side GA operators. They are wired into the GA kernels
+# via bind_fields() and used by ga_operations.py API calls.
 population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (genome,slot)
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
 # Initial populations staged on GPU for multi-start runs (uploaded once per segment, then copied run-by-run).
