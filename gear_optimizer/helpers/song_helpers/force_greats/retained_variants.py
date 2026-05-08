@@ -99,7 +99,12 @@ def retain_and_build_fg_variants(
         if not is_valid_fg_config(cfg):
             continue
         force_obj = dict(force_obj)
-        force_obj["BaseScore"] = int(fg_base_score_i)
+        existing_force_base = int(force_obj.get("BaseScore", 0) or 0)
+        if 0 < existing_force_base <= int(base_score_best):
+            effective_fg_base = existing_force_base
+        else:
+            effective_fg_base = int(fg_base_score_i)
+        force_obj["BaseScore"] = int(effective_fg_base)
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         loadout_hash = str(entry_loadout_hash(entry) or h)
         if loadout_hash in seen_variant_hashes:
@@ -110,9 +115,9 @@ def retain_and_build_fg_variants(
                 "data": force_obj,
                 "gear": gear_names,
                 "minis": mini_names,
-                "score": fg_base_score_i,
+                "score": effective_fg_base,
                 "fg_score": fg_score,
-                "base_score": fg_base_score_i,
+                "base_score": effective_fg_base,
                 "_entry_ref": entry,
                 "_is_ga": str(entry.get("_source") or "") == "ga",
             }
