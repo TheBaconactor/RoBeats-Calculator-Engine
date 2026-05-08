@@ -6,11 +6,12 @@ from gear_optimizer.core.config import (
     GASettings,
     GPUExecutionSettings,
     InflightSettings,
+    load_config,
     read_fg_candidate_limit,
     read_fg_search_radius,
     read_fg_solver_mode,
-    read_iteration_engine_settings,
     read_outer_search_engine,
+    read_iteration_engine_settings,
 )
 
 
@@ -149,3 +150,105 @@ def test_read_iteration_engine_settings_warns_on_invalid_boolean(monkeypatch, ca
 
     assert settings.meta_finder is False
     assert "[FALLBACK][config.getboolean.invalid]" in captured
+
+
+class TestExtendsChain:
+    def test_extends_layering_child_overrides_parent(self, tmp_path):
+        parent = tmp_path / "base.ini"
+        parent.write_text(
+            "[IterationEngine]\n"
+            "MetaFinder = true\n"
+            "SongQueueLimit = 10\n"
+            "GA_SearchDepth = 500\n",
+            encoding="utf-8",
+        )
+        child = tmp_path / "child.ini"
+        child.write_text(
+            "[IterationEngine]\n"
+            "_extends = base.ini\n"
+            "SongQueueLimit = 3\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(child))
+        assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+        assert cfg.getint("IterationEngine", "SongQueueLimit") == 3
+        assert cfg.getint("IterationEngine", "GA_SearchDepth") == 500
+
+    def test_extends_grandparent_layered(self, tmp_path):
+        grandparent = tmp_path / "root.ini"
+        grandparent.write_text(
+            "[IterationEngine]\n"
+            "MetaFinder = true\n"
+            "GA_SearchDepth = 100\n"
+            "SongQueueLimit = 50\n",
+            encoding="utf-8",
+        )
+        parent = tmp_path / "mid.ini"
+        parent.write_text(
+            "[IterationEngine]\n"
+            "_extends = root.ini\n"
+            "GA_SearchDepth = 200\n",
+            encoding="utf-8",
+        )
+        child = tmp_path / "leaf.ini"
+        child.write_text(
+            "[IterationEngine]\n"
+            "_extends = mid.ini\n"
+            "SongQueueLimit = 5\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(child))
+        assert cfg.getint("IterationEngine", "GA_SearchDepth") == 200
+        assert cfg.getint("IterationEngine", "SongQueueLimit") == 5
+        assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+
+    def test_extends_cycle_stops(self, tmp_path):
+        a = tmp_path / "a.ini"
+        b = tmp_path / "b.ini"
+        a.write_text("[IterationEngine]\n_extends = b.ini\nX=1\n", encoding="utf-8")
+        b.write_text("[IterationEngine]\n_extends = a.ini\nY=2\n", encoding="utf-8")
+        cfg = load_config(str(a))
+        assert cfg.getint("IterationEngine", "X") == 1
+        assert cfg.getint("IterationEngine", "Y") == 2
+
+    def test_extends_key_removed_from_result(self, tmp_path):
+        parent = tmp_path / "base.ini"
+        parent.write_text("[IterationEngine]\nMetaFinder=true\n", encoding="utf-8")
+        child = tmp_path / "child.ini"
+        child.write_text("[IterationEngine]\n_extends = base.ini\nSongQueueLimit=3\n", encoding="utf-8")
+        cfg = load_config(str(child))
+        assert not cfg.has_option("IterationEngine", "_extends")
+
+    def test_extends_sections_merged_across_files(self, tmp_path):
+        parent = tmp_path / "base.ini"
+        parent.write_text(
+            "[IterationEngine]\n"
+            "MetaFinder = true\n"
+            "SongQueueLimit = 10\n\n"
+            "[TeamContributionBuffConstant]\n"
+            "TeamBuff = T5\n"
+            "TeamColor = Rush\n",
+            encoding="utf-8",
+        )
+        child = tmp_path / "child.ini"
+        child.write_text(
+            "[IterationEngine]\n"
+            "_extends = base.ini\n"
+            "SongQueueLimit = 3\n\n"
+            "[UserInputStatsGems]\n"
+            "perfect_points = 0\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(child))
+        assert cfg.get("TeamContributionBuffConstant", "TeamBuff") == "T5"
+        assert cfg.getint("IterationEngine", "SongQueueLimit") == 3
+        assert cfg.getint("UserInputStatsGems", "perfect_points") == 0
+
+    def test_no_extends_loads_normally(self, tmp_path):
+        single = tmp_path / "standalone.ini"
+        single.write_text(
+            "[IterationEngine]\nMetaFinder = true\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(single))
+        assert cfg.getboolean("IterationEngine", "MetaFinder") is True

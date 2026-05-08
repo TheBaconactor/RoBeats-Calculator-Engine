@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
@@ -23,6 +24,8 @@ from .constants import (
 )
 from .parsing import env_str
 from .utils import safe_float, safe_int
+
+_EXTENDS_KEY = "_extends"
 
 def get_config_path(default: str = "config.ini") -> str:
     """
@@ -38,20 +41,69 @@ def get_config_path(default: str = "config.ini") -> str:
     return str(default)
 
 
+def _resolve_extends_chain(cfg_path: str, seen: set[str] | None = None) -> list[str]:
+    """
+    Walk the ``_extends`` chain starting from *cfg_path* and return an
+    ordered list of paths to load (base-first, leaf-last).
+
+    ``_extends`` is a special key that may appear in *any* section of a
+    config file; its value is a relative or absolute path to a parent
+    config. The chain is resolved recursively with cycle detection.
+    """
+
+    if seen is None:
+        seen = set()
+
+    abs_path = str(Path(cfg_path).resolve())
+    if abs_path in seen:
+        return []
+    seen.add(abs_path)
+
+    cfg_dir = str(Path(cfg_path).resolve().parent)
+
+    tmp = configparser.ConfigParser()
+    try:
+        tmp.read(cfg_path, encoding="utf-8-sig")
+    except (AttributeError, TypeError, ValueError, configparser.Error):
+        return [cfg_path]
+
+    extends_path = None
+    for section in tmp.sections():
+        if tmp.has_option(section, _EXTENDS_KEY):
+            extends_path = tmp.get(section, _EXTENDS_KEY).strip()
+            break
+
+    base_paths: list[str] = []
+    if extends_path:
+        if not os.path.isabs(extends_path):
+            extends_path = os.path.normpath(os.path.join(cfg_dir, extends_path))
+        base_paths = _resolve_extends_chain(extends_path, seen)
+
+    return base_paths + [cfg_path]
+
+
 def load_config(path: str | None = None) -> configparser.ConfigParser:
     """
     Load config.ini (or an override path) into a ConfigParser.
+
+    Supports ``_extends``: if any section in the config file contains a
+    ``_extends`` key, its value is resolved as a path to a base config.
+    Base configs are loaded first; the leaf config overrides them.
 
     This intentionally does not raise on missing files to preserve existing behavior in entrypoints
     that historically used `ConfigParser().read(...)` without checking the return value.
     """
     cfg = FallbackAwareConfigParser()
     cfg_path = str(path or get_config_path())
+    chain = _resolve_extends_chain(cfg_path)
     try:
-        cfg.read(cfg_path, encoding="utf-8-sig")
+        cfg.read(chain, encoding="utf-8-sig")
     except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
         warn_fallback("config.load.read_error", "failed to read config file", context={"path": cfg_path}, exc=exc)
         logging.debug(f"[Config] Failed to read {cfg_path}: {type(exc).__name__}: {exc}")
+    for section in cfg.sections():
+        if cfg.has_option(section, _EXTENDS_KEY):
+            cfg.remove_option(section, _EXTENDS_KEY)
     return cfg
 
 
