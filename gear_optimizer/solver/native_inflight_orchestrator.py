@@ -17,7 +17,7 @@ import threading
 import time
 import traceback
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
@@ -132,6 +132,86 @@ def _wait_for_completion_event(
             sleep=time.sleep,
         )
     )
+
+
+def _build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
+    best_data_for_post = song.runtime.decode.best_data or {}
+    best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
+    candidates_for_post = (
+        song.runtime.decode.ga_persistence_candidates
+        if isinstance(getattr(song.runtime.decode, "ga_persistence_candidates", None), list)
+        and getattr(song.runtime.decode, "ga_persistence_candidates", None)
+        else song.runtime.decode.ga_candidates
+    )
+    candidates_for_post = select_effective_unique_ga_candidates(
+        list(candidates_for_post or []),
+        limit=int(LOADOUTS_PER_SONG_LIMIT),
+        registry=song.gpu_inputs.registry,
+        minis_by_name=song.gpu_inputs.minis_by_name,
+        primary_color=str(song.gpu_inputs.meta_primary_color or ""),
+        secondary_color=str(song.gpu_inputs.meta_secondary_color or ""),
+        selected_color=str((song.gpu_inputs.cfg_data or {}).get("selected_color", "") or ""),
+    )
+    ga_candidates_post: list[dict[str, Any]] = []
+    for cand in candidates_for_post or []:
+        if not isinstance(cand, dict):
+            continue
+        data0 = cand.get("Data") or {}
+        candidate_for_post = dict(cand)
+        candidate_for_post["Data"] = dict(data0) if isinstance(data0, dict) else {}
+        gear_names, mini_names = materialize_candidate_names(
+            candidate_for_post,
+            registry=song.gpu_inputs.registry,
+            mutate=False,
+        )
+        ga_candidates_post.append(
+            {
+                "Score": candidate_for_post.get("Score", 0),
+                "BaseScore": candidate_for_post.get("BaseScore", candidate_for_post.get("Score", 0)),
+                "Gear": list(gear_names),
+                "Minis": list(mini_names),
+                "Data": candidate_for_post.get("Data") or {},
+                "_fg_priority": candidate_for_post.get("_fg_priority", 0),
+                "loadout_hash": candidate_for_post.get("loadout_hash"),
+            }
+        )
+
+    # Deferred post must always carry replay context so persistence can
+    # canonicalize retained rows to the same score authority used by replay/repair.
+    return {
+        "_deferred_post": True,
+        "_pending_fg_job": bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder),
+        "song": song.config.song_name,
+        "_queue_key": song.config.task_key,
+        "_queue_label": song.config.task_key,
+        "_ga_seed": song.config.ga_seed,
+        "db_key": song.config.db_key,
+        "file_path": song.config.fp,
+        "difficulty": song.config.effective_difficulty,
+        "use_evo_db": bool(song.config.use_evo_db),
+        "cfg_dict": song.config.cfg_dict,
+        "ref_arrays": song.gpu_inputs.ref_arrays,
+        "calc_song": song.gpu_inputs.calc_song,
+        "best_data": best_data_post,
+        "best_gear": _compact_items(song.runtime.decode.best_gear),
+        "best_minis": _compact_items(song.runtime.decode.best_minis),
+        "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
+        "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
+        "enable_gear": bool(song.gpu_inputs.enable_gear),
+        "enable_mini": bool(song.gpu_inputs.enable_mini),
+        "fg_variants": [],
+        "ga_candidates": ga_candidates_post,
+        "loadout_entries": None,
+        "_persist_pending_fg_job": bool(persist_pending_fg_job),
+        "prev_record": _compact_prev_record(song.runtime.db.prev_record),
+        "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
+        "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
+        "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
+        "meta_primary_color": song.gpu_inputs.meta_primary_color,
+        "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
+        "fg_debug": bool(song.config.fg_debug),
+        "log": "",
+    }
 
 
 def run_native_inflight_song_pipeline(
@@ -896,84 +976,7 @@ def run_native_inflight_song_pipeline(
     def _emit_deferred_post_payload(song: _NativeSong) -> None:
         if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
             return
-
-        best_data_for_post = song.runtime.decode.best_data or {}
-        best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
-        candidates_for_post = (
-            song.runtime.decode.ga_persistence_candidates
-            if isinstance(getattr(song.runtime.decode, "ga_persistence_candidates", None), list)
-            and getattr(song.runtime.decode, "ga_persistence_candidates", None)
-            else song.runtime.decode.ga_candidates
-        )
-        candidates_for_post = select_effective_unique_ga_candidates(
-            list(candidates_for_post or []),
-            limit=int(LOADOUTS_PER_SONG_LIMIT),
-            registry=song.gpu_inputs.registry,
-            minis_by_name=song.gpu_inputs.minis_by_name,
-            primary_color=str(song.gpu_inputs.meta_primary_color or ""),
-            secondary_color=str(song.gpu_inputs.meta_secondary_color or ""),
-            selected_color=str((song.gpu_inputs.cfg_data or {}).get("selected_color", "") or ""),
-        )
-        ga_candidates_post: list[dict] = []
-        for cand in candidates_for_post or []:
-            if not isinstance(cand, dict):
-                continue
-            data0 = cand.get("Data") or {}
-            candidate_for_post = dict(cand)
-            candidate_for_post["Data"] = dict(data0) if isinstance(data0, dict) else {}
-            gear_names, mini_names = materialize_candidate_names(
-                candidate_for_post,
-                registry=song.gpu_inputs.registry,
-                mutate=False,
-            )
-            ga_candidates_post.append(
-                {
-                    "Score": candidate_for_post.get("Score", 0),
-                    "BaseScore": candidate_for_post.get("BaseScore", candidate_for_post.get("Score", 0)),
-                    "Gear": list(gear_names),
-                    "Minis": list(mini_names),
-                    "Data": candidate_for_post.get("Data") or {},
-                    "_fg_priority": candidate_for_post.get("_fg_priority", 0),
-                    "loadout_hash": candidate_for_post.get("loadout_hash"),
-                }
-            )
-
-        _post(
-            {
-                "_deferred_post": True,
-                "_pending_fg_job": bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder),
-                "song": song.config.song_name,
-                "_queue_key": song.config.task_key,
-                "_queue_label": song.config.task_key,
-                "_ga_seed": song.config.ga_seed,
-                "db_key": song.config.db_key,
-                "file_path": song.config.fp,
-                "difficulty": song.config.effective_difficulty,
-                "use_evo_db": bool(song.config.use_evo_db),
-                "cfg_dict": song.config.cfg_dict,
-                "ref_arrays": song.gpu_inputs.ref_arrays if song.config.fg_debug else None,
-                "calc_song": song.gpu_inputs.calc_song if song.config.fg_debug else None,
-                "best_data": best_data_post,
-                "best_gear": _compact_items(song.runtime.decode.best_gear),
-                "best_minis": _compact_items(song.runtime.decode.best_minis),
-                "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
-                "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
-                "enable_gear": bool(song.gpu_inputs.enable_gear),
-                "enable_mini": bool(song.gpu_inputs.enable_mini),
-                "fg_variants": [],
-                "ga_candidates": ga_candidates_post,
-                "loadout_entries": None,
-                "_persist_pending_fg_job": bool(not icfg.fg_drain_at_end),
-                "prev_record": _compact_prev_record(song.runtime.db.prev_record),
-                "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
-                "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
-                "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
-                "meta_primary_color": song.gpu_inputs.meta_primary_color,
-                "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
-                "fg_debug": bool(song.config.fg_debug),
-                "log": "",
-            }
-        )
+        _post(_build_deferred_post_payload(song, persist_pending_fg_job=bool(not icfg.fg_drain_at_end)))
 
         try:
             song.runtime.post.deferred_post_emitted = True
