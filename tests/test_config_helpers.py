@@ -1,5 +1,7 @@
 import configparser
 
+import pytest
+
 from gear_optimizer.core.config import (
     AppRuntimeSettings,
     CalculateSongSettings,
@@ -252,3 +254,38 @@ class TestExtendsChain:
         )
         cfg = load_config(str(single))
         assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+
+    def test_extends_missing_parent_raises(self, tmp_path):
+        child = tmp_path / "child.ini"
+        child.write_text(
+            "[IterationEngine]\n"
+            "_extends = missing_base.ini\n"
+            "SongQueueLimit = 3\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(FileNotFoundError, match=r"Config _extends chain broken"):
+            load_config(str(child))
+
+    def test_extends_chain_missing_mid_parent_raises(self, tmp_path):
+        parent = tmp_path / "base.ini"
+        parent.write_text(
+            "[IterationEngine]\n"
+            "MetaFinder = true\n",
+            encoding="utf-8",
+        )
+        mid = tmp_path / "mid.ini"
+        mid.write_text(
+            "[IterationEngine]\n"
+            "_extends = missing.ini\n"
+            "SongQueueLimit = 5\n",
+            encoding="utf-8",
+        )
+        child = tmp_path / "child.ini"
+        child.write_text(
+            "[IterationEngine]\n"
+            "_extends = mid.ini\n"
+            "SongQueueLimit = 3\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(FileNotFoundError, match=r"Config _extends chain broken"):
+            load_config(str(child))

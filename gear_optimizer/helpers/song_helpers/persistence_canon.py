@@ -33,7 +33,7 @@ def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(value or 0)
     except Exception as e:
-        logger.debug(f"persistence_canon:_to_int: {e}")
+        logger.warning(f"persistence_canon:_to_int: {e}")
         return int(default)
 
 

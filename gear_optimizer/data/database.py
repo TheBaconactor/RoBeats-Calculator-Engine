@@ -138,7 +138,7 @@ def _unpack_id_list(blob: Any) -> list[int]:
     try:
         return [int(v) for v in _decode_uvarints(bytes(blob)) if int(v) > 0]
     except Exception as e:
-        logger.debug(f"database:_unpack_id_list: {e}")
+        logger.warning(f"database:_unpack_id_list: {e}")
         return []
 
 
@@ -174,7 +174,7 @@ def _unpack_id_groups(blob: Any) -> list[list[int]]:
     try:
         values = _decode_uvarints(bytes(blob))
     except Exception as e:
-        logger.debug(f"database:_unpack_id_groups: {e}")
+        logger.warning(f"database:_unpack_id_groups: {e}")
         return []
     out: list[list[int]] = []
     cur: list[int] = []
@@ -235,7 +235,7 @@ def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) ->
                 i = int(r[0] or 0)
                 n = str(r[1] or "")
             except Exception as e:
-                logger.debug(f"database:_load_piece_name_encoding_maps: {e}")
+                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
                 continue
             if i > 0 and n:
                 gear_name_to_id[n] = i
@@ -250,7 +250,7 @@ def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) ->
                 i = int(r[0] or 0)
                 n = str(r[1] or "")
             except Exception as e:
-                logger.debug(f"database:_load_piece_name_encoding_maps: {e}")
+                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
                 continue
             if i > 0 and n:
                 mini_name_to_id[n] = i
@@ -321,7 +321,7 @@ def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) 
         gears_by_name = get_gears_by_name_cached()
         minis_by_name = get_minis_by_name_cached()
     except Exception as e:
-        logger.debug(f"database:_initialize_piece_name_encodings: {e}")
+        logger.warning(f"database:_initialize_piece_name_encodings: {e}")
         return
 
     gear_names = sorted([str(k).strip() for k in (gears_by_name or {}).keys() if str(k).strip()])
@@ -358,7 +358,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
             try:
                 arr.append(int(stats.get(k, 0) or 0))
             except Exception as e:
-                logger.debug(f"database:_pack_stats_for_storage: {e}")
+                logger.warning(f"database:_pack_stats_for_storage: {e}")
                 arr.append(0)
         out.pop("Stats", None)
         out["st"] = arr
@@ -373,7 +373,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
             try:
                 packed_gems.append(int(gems.get(k, 0) or 0))
             except Exception as e:
-                logger.debug(f"database:_pack_stats_for_storage: {e}")
+                logger.warning(f"database:_pack_stats_for_storage: {e}")
                 packed_gems.append(0)
         out.pop("GemCounts", None)
         out["gc"] = packed_gems
@@ -414,7 +414,7 @@ def _unpack_stats_after_load(details: Any) -> Any:
             try:
                 out_stats[k] = int(st[i] or 0)
             except Exception as e:
-                logger.debug(f"database:_unpack_stats_after_load: {e}")
+                logger.warning(f"database:_unpack_stats_after_load: {e}")
                 out_stats[k] = 0
         out["Stats"] = out_stats
 
@@ -424,7 +424,7 @@ def _unpack_stats_after_load(details: Any) -> Any:
         try:
             gem_key_mask = int(details.get("gk", (1 << len(GEM_KEYS)) - 1) or 0)
         except Exception as e:
-            logger.debug(f"database:_unpack_stats_after_load: {e}")
+            logger.warning(f"database:_unpack_stats_after_load: {e}")
             gem_key_mask = (1 << len(GEM_KEYS)) - 1
         out_gems: dict[str, int] = {}
         for i, k in enumerate(GEM_KEYS):
@@ -433,7 +433,7 @@ def _unpack_stats_after_load(details: Any) -> Any:
             try:
                 out_gems[k] = int(gc[i] or 0)
             except Exception as e:
-                logger.debug(f"database:_unpack_stats_after_load: {e}")
+                logger.warning(f"database:_unpack_stats_after_load: {e}")
                 out_gems[k] = 0
         out["GemCounts"] = out_gems
 
@@ -472,7 +472,7 @@ def get_evolution_db_path() -> str:
         if os.path.exists(external_db):
             return external_db
     except Exception as e:
-        logger.debug(f"database:get_evolution_db_path: {e}")
+        logger.warning(f"database:get_evolution_db_path: {e}")
 
     return PATHS.evolution_db_default
 
@@ -498,7 +498,7 @@ def get_evolution_overlay_db_path() -> str:
             return external_db
         return external_db
     except Exception as e:
-        logger.debug(f"database:get_evolution_overlay_db_path: {e}")
+        logger.warning(f"database:get_evolution_overlay_db_path: {e}")
         return os.path.abspath(os.path.join(PATHS.script_dir, "evolution_overlay.db"))
 
 
@@ -529,7 +529,7 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
         if parent and not os.path.exists(parent):
             os.makedirs(parent, exist_ok=True)
     except Exception as e:
-        logger.debug(f"database:get_db_connection_with_timeout: {e}")
+        logger.warning(f"database:get_db_connection_with_timeout: {e}")
     conn = sqlite3.connect(db_path, timeout=float(timeout))
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
@@ -539,7 +539,7 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
         busy_ms = int(max(100.0, min(float(timeout) * 1000.0, 30_000.0)))
         conn.execute(f"PRAGMA busy_timeout={busy_ms};")
     except Exception as e:
-        logger.debug(f"database:get_db_connection_with_timeout: {e}")
+        logger.warning(f"database:get_db_connection_with_timeout: {e}")
     ensure_schema(conn)
     return conn
 
@@ -572,7 +572,7 @@ def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float 
     try:
         conn.execute("PRAGMA query_only=1;")
     except Exception as e:
-        logger.debug(f"database:get_db_connection_readonly: {e}")
+        logger.warning(f"database:get_db_connection_readonly: {e}")
     return conn
 
 
@@ -589,7 +589,7 @@ def _register_db_conn(conn: sqlite3.Connection) -> None:
         with _DB_CONN_REGISTRY_LOCK:
             _DB_CONN_REGISTRY.add(conn)
     except Exception as e:
-        logger.debug(f"database:_register_db_conn: {e}")
+        logger.warning(f"database:_register_db_conn: {e}")
 
 
 def _close_all_registered_db_conns() -> None:
@@ -597,13 +597,13 @@ def _close_all_registered_db_conns() -> None:
         with _DB_CONN_REGISTRY_LOCK:
             conns = list(_DB_CONN_REGISTRY)
     except Exception as e:
-        logger.debug(f"database:_close_all_registered_db_conns: {e}")
+        logger.warning(f"database:_close_all_registered_db_conns: {e}")
         conns = []
     for c in conns:
         try:
             c.close()
         except Exception as e:
-            logger.debug(f"database:_close_all_registered_db_conns: {e}")
+            logger.warning(f"database:_close_all_registered_db_conns: {e}")
 
 
 atexit.register(_close_all_registered_db_conns)
@@ -624,7 +624,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
             conns = {}
             setattr(_DB_TLS, "conns", conns)
     except Exception as e:
-        logger.debug(f"database:get_db_connection_cached: {e}")
+        logger.warning(f"database:get_db_connection_cached: {e}")
         conns = {}
 
     db_path = str(db_path)
@@ -637,12 +637,12 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     try:
         now_monotonic = float(time.monotonic())
     except Exception as e:
-        logger.debug(f"database:get_db_connection_cached: {e}")
+        logger.warning(f"database:get_db_connection_cached: {e}")
         now_monotonic = 0.0
     try:
         next_retry_ts = float(getattr(_DB_TLS, "ro_next_retry_ts", 0.0) or 0.0)
     except Exception as e:
-        logger.debug(f"database:get_db_connection_cached: {e}")
+        logger.warning(f"database:get_db_connection_cached: {e}")
         next_retry_ts = 0.0
     if now_monotonic and (now_monotonic < next_retry_ts):
         fallback = getattr(_DB_TLS, "fallback_conn", None)
@@ -657,7 +657,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     try:
         read_timeout = float(env_get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception as e:
-        logger.debug(f"database:get_db_connection_cached: {e}")
+        logger.warning(f"database:get_db_connection_cached: {e}")
         read_timeout = 0.2
 
     try:
@@ -670,24 +670,24 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
         try:
             fail_count = int(getattr(_DB_TLS, "ro_fail_count", 0) or 0) + 1
         except Exception as e:
-            logger.debug(f"database:get_db_connection_cached: {e}")
+            logger.warning(f"database:get_db_connection_cached: {e}")
             fail_count = 1
         try:
             setattr(_DB_TLS, "ro_fail_count", int(fail_count))
         except Exception as e:
-            logger.debug(f"database:get_db_connection_cached: {e}")
+            logger.warning(f"database:get_db_connection_cached: {e}")
         # Exponential backoff, capped, to avoid thrashing on persistent failures.
         try:
             exp = min(7, max(0, int(fail_count) - 1))
         except Exception as e:
-            logger.debug(f"database:get_db_connection_cached: {e}")
+            logger.warning(f"database:get_db_connection_cached: {e}")
             exp = 0
         cooldown_sec = min(5.0, 0.05 * (2**exp))
         try:
             next_retry_ts = float(now_monotonic) + float(cooldown_sec)
             setattr(_DB_TLS, "ro_next_retry_ts", float(next_retry_ts))
         except Exception as e:
-            logger.debug(f"database:get_db_connection_cached: {e}")
+            logger.warning(f"database:get_db_connection_cached: {e}")
         site = "db.readonly_connection"
         message = "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)"
         if not allow_fallback:
@@ -717,16 +717,16 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
                 try:
                     ensure_schema(fallback)
                 except Exception as e:
-                    logger.debug(f"database:get_db_connection_cached: {e}")
+                    logger.warning(f"database:get_db_connection_cached: {e}")
                 try:
                     fallback.execute("PRAGMA query_only=1;")
                 except Exception as e:
-                    logger.debug(f"database:get_db_connection_cached: {e}")
+                    logger.warning(f"database:get_db_connection_cached: {e}")
                 setattr(_DB_TLS, "fallback_conn", fallback)
                 _register_db_conn(fallback)
             except Exception as e:
                 # Last resort: re-raise so callers can handle it.
-                logger.debug(f"database:get_db_connection_cached: {e}")
+                logger.warning(f"database:get_db_connection_cached: {e}")
                 raise
         return fallback
 
@@ -735,7 +735,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
         setattr(_DB_TLS, "ro_fail_count", 0)
         setattr(_DB_TLS, "ro_next_retry_ts", 0.0)
     except Exception as e:
-        logger.debug(f"database:get_db_connection_cached: {e}")
+        logger.warning(f"database:get_db_connection_cached: {e}")
     _register_db_conn(conn)
     return conn
 
@@ -759,7 +759,7 @@ def init_db():
         try:
             _initialize_piece_name_encodings(conn, db_path=str(db_path))
         except Exception as e:
-            logger.debug(f"database:init_db: {e}")
+            logger.warning(f"database:init_db: {e}")
         conn.commit()
     finally:
         conn.close()
@@ -805,22 +805,22 @@ def get_song_counters(
         try:
             attempt_lifetime = int(row["attempt_lifetime"] or 0)
         except Exception as e:
-            logger.debug(f"database:get_song_counters: {e}")
+            logger.warning(f"database:get_song_counters: {e}")
             attempt_lifetime = 0
         try:
             attempts_first = int(row["attempts_first"] or 0)
         except Exception as e:
-            logger.debug(f"database:get_song_counters: {e}")
+            logger.warning(f"database:get_song_counters: {e}")
             attempts_first = 0
         try:
             best_score = int(row["best_score"] or 0)
         except Exception as e:
-            logger.debug(f"database:get_song_counters: {e}")
+            logger.warning(f"database:get_song_counters: {e}")
             best_score = 0
         try:
             best_fg_score = int(row["best_fg_score"] or 0)
         except Exception as e:
-            logger.debug(f"database:get_song_counters: {e}")
+            logger.warning(f"database:get_song_counters: {e}")
             best_fg_score = 0
         return (attempt_lifetime, attempts_first, best_score, best_fg_score)
     except sqlite3.Error:
@@ -895,7 +895,7 @@ def update_song_counters(
             try:
                 conn.close()
             except Exception as e:
-                logger.debug(f"database:update_song_counters: {e}")
+                logger.warning(f"database:update_song_counters: {e}")
 
 
 def _compact_gear_for_db(gear_list):
@@ -1137,7 +1137,7 @@ def _ensure_stats_in_details(
         details["Stats"] = computed
 
     except Exception as e:
-        logger.debug(f"database:_ensure_stats_in_details: {e}")
+        logger.warning(f"database:_ensure_stats_in_details: {e}")
 
     return details
 
@@ -1277,7 +1277,7 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
             if int(out.get("Score") or 0) == int(out.get("score") or 0):
                 out.pop("score", None)
         except Exception as e:
-            logger.debug(f"database:_compact_force_details_for_storage: {e}")
+            logger.warning(f"database:_compact_force_details_for_storage: {e}")
 
     return out
 
@@ -1310,7 +1310,7 @@ def save_loadouts_batch(
         try:
             return int(v or 0)
         except Exception as e:
-            logger.debug(f"database:_coerce_int: {e}")
+            logger.warning(f"database:_coerce_int: {e}")
             return 0
 
     best_score_max = None
@@ -1324,7 +1324,7 @@ def save_loadouts_batch(
         try:
             raw_fg_base = entry.get("fg_base_score")
         except Exception as e:
-            logger.debug(f"database:_coerce_int: {e}")
+            logger.warning(f"database:_coerce_int: {e}")
             raw_fg_base = None
         if raw_fg_base is not None:
             fg_base_score = _coerce_int(raw_fg_base)
@@ -1442,7 +1442,7 @@ def save_team_buff_loadouts_batch(
     try:
         timing_threshold_ms = float(env_get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
     except Exception as e:
-        logger.debug(f"database:save_team_buff_loadouts_batch: {e}")
+        logger.warning(f"database:save_team_buff_loadouts_batch: {e}")
         timing_threshold_ms = 50.0
 
     def _log_timing(label: str, dt_sec: float) -> None:
@@ -1462,7 +1462,7 @@ def save_team_buff_loadouts_batch(
         try:
             return int(v or 0)
         except Exception as e:
-            logger.debug(f"database:_coerce_int: {e}")
+            logger.warning(f"database:_coerce_int: {e}")
             return 0
 
     def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
@@ -1553,7 +1553,7 @@ def save_team_buff_loadouts_batch(
                     details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
                     details_row = _unpack_stats_after_load(details_row)
                 except Exception as e:
-                    logger.debug(f"database:_extract_entry_colors: {e}")
+                    logger.warning(f"database:_extract_entry_colors: {e}")
                     continue
                 p_color, s_color, sel_color = extract_song_colors(details_row)
                 if p_color or s_color:
@@ -1643,7 +1643,7 @@ def save_team_buff_loadouts_batch(
             )
             deduplicated_entries.append(best_entry)
         except Exception as e:
-            logger.debug(f"database:_effective_hash_for_entry: {e}")
+            logger.warning(f"database:_effective_hash_for_entry: {e}")
             deduplicated_entries.append(group[0])
 
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
@@ -1684,7 +1684,7 @@ def save_team_buff_loadouts_batch(
         try:
             from gear_optimizer.core.stats_calculator import compute_full_stats
         except Exception as e:
-            logger.debug(f"database:_recompute_stats_in_details_for_persistence: {e}")
+            logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
             return details_obj
 
         # Base stats for persistence: TeamBuff only (no user-config gems).
@@ -1754,7 +1754,7 @@ def save_team_buff_loadouts_batch(
         try:
             conn.execute("PRAGMA synchronous=NORMAL;")
         except Exception as e:
-            logger.debug(f"database:_recompute_stats_in_details_for_persistence: {e}")
+            logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
 
         _t_params0 = time.perf_counter()
         loadouts_params = []
@@ -1824,7 +1824,7 @@ def save_team_buff_loadouts_batch(
             try:
                 raw_fg_base = entry.get("fg_base_score")
             except Exception as e:
-                logger.debug(f"database:_encode_mini_groups_to_blob: {e}")
+                logger.warning(f"database:_encode_mini_groups_to_blob: {e}")
                 raw_fg_base = None
             if raw_fg_base is not None:
                 fg_base_score = _coerce_int(raw_fg_base)
@@ -2251,7 +2251,7 @@ def save_team_buff_loadouts_batch(
                             f"song={song_name!r} team_buff={team_buff!r} stored={loadout_hash} expected={expected_hash}"
                         )
                 except Exception as e:
-                    logger.debug(f"database:_verify_table_row: {e}")
+                    logger.warning(f"database:_verify_table_row: {e}")
 
             try:
                 if loadouts_params:
@@ -2354,7 +2354,7 @@ def get_best_loadouts(
             try:
                 gear_ids_blob = row["gear_ids_blob"]
             except Exception as e:
-                logger.debug(f"database:_materialize_common: {e}")
+                logger.warning(f"database:_materialize_common: {e}")
                 gear_ids_blob = None
             if gear_ids_blob:
                 ids = _unpack_id_list(gear_ids_blob)
@@ -2366,7 +2366,7 @@ def get_best_loadouts(
             try:
                 minis_ids_blob = row["minis_ids_blob"]
             except Exception as e:
-                logger.debug(f"database:_materialize_common: {e}")
+                logger.warning(f"database:_materialize_common: {e}")
                 minis_ids_blob = None
             if minis_ids_blob:
                 id_groups = _unpack_id_groups(minis_ids_blob)
@@ -2404,7 +2404,7 @@ def get_best_loadouts(
                         )
                 except Exception as e:
                     # Best-effort only; never break seeding on verifier errors.
-                    logger.debug(f"database:_materialize_common: {e}")
+                    logger.warning(f"database:_materialize_common: {e}")
 
             force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
             force_obj = force_block if isinstance(force_block, dict) else None
@@ -2499,12 +2499,12 @@ def get_best_loadouts(
             try:
                 existing_fg = int(entry.get("fg_score", 0) or 0)
             except Exception as e:
-                logger.debug(f"database:_expand_items: {e}")
+                logger.warning(f"database:_expand_items: {e}")
                 existing_fg = 0
             try:
                 fg_i = int(fg_score or 0)
             except Exception as e:
-                logger.debug(f"database:_expand_items: {e}")
+                logger.warning(f"database:_expand_items: {e}")
                 fg_i = 0
 
             if fg_i > existing_fg:
@@ -2690,13 +2690,13 @@ def list_pending_fg_jobs(limit: int = 0) -> List[Dict[str, Any]]:
                 created_ts = r["created_ts"] if isinstance(r, sqlite3.Row) else r[2]
                 updated_ts = r["updated_ts"] if isinstance(r, sqlite3.Row) else r[3]
             except Exception as e:
-                logger.debug(f"database:list_pending_fg_jobs: {e}")
+                logger.warning(f"database:list_pending_fg_jobs: {e}")
                 continue
 
             try:
                 candidates = _json_loads(cand_json) if cand_json else []
             except Exception as e:
-                logger.debug(f"database:list_pending_fg_jobs: {e}")
+                logger.warning(f"database:list_pending_fg_jobs: {e}")
                 candidates = []
 
             out.append(

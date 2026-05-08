@@ -159,12 +159,12 @@ def build_db_payload(
         try:
             base_score_i = int(base_score or 0)
         except Exception as e:
-            logger.debug(f"persistence_payload:attach_attempt_meta: {e}")
+            logger.warning(f"persistence_payload:attach_attempt_meta: {e}")
             base_score_i = 0
         try:
             fg_score_i = int(fg_entry.get("fg_score", 0) or 0)
         except Exception as e:
-            logger.debug(f"persistence_payload:attach_attempt_meta: {e}")
+            logger.warning(f"persistence_payload:attach_attempt_meta: {e}")
             fg_score_i = 0
 
         # ForceGreats is only a "useful" variant when it actually improves the score

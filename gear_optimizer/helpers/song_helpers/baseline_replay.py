@@ -107,7 +107,7 @@ def canonicalize_baseline_persist_entries(
                 try:
                     merged["fg_base_score"] = int(row.get("fg_base_score", 0) or 0)
                 except Exception as e:
-                    logger.debug(f"baseline_replay:canonicalize_baseline_persist_entries: {e}")
+                    logger.warning(f"baseline_replay:canonicalize_baseline_persist_entries: {e}")
                     merged["fg_base_score"] = 0
             merged["force"] = row_force
         else:

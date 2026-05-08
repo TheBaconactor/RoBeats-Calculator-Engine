@@ -26,7 +26,7 @@ def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool
     try:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     except Exception as e:
-        logger.debug(f"persistence_audit:_table_has_column: {e}")
+        logger.warning(f"persistence_audit:_table_has_column: {e}")
         return False
     return any(str(r[1]) == str(column) for r in rows)
 
@@ -35,7 +35,7 @@ def _scalar(conn: sqlite3.Connection, sql: str) -> Any:
     try:
         row = conn.execute(sql).fetchone()
     except Exception as e:
-        logger.debug(f"persistence_audit:_scalar: {e}")
+        logger.warning(f"persistence_audit:_scalar: {e}")
         return None
     if not row:
         return None

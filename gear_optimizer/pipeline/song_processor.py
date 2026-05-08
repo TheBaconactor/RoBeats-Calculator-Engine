@@ -191,7 +191,7 @@ class _NullLogBuffer:
         try:
             return len(data)
         except Exception as e:
-            logger.debug(f"song_processor:write: {e}")
+            logger.warning(f"song_processor:write: {e}")
             return 0
 
     def flush(self):
@@ -229,7 +229,7 @@ def _stable_cfg_hash(cfg_dict: dict | None) -> str:
     try:
         payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     except Exception as e:
-        logger.debug(f"song_processor:_stable_cfg_hash: {e}")
+        logger.warning(f"song_processor:_stable_cfg_hash: {e}")
         payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
     h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
     out = h[:16]
@@ -318,7 +318,7 @@ def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
         st = os.stat(abs_fp)
         mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
     except Exception as e:
-        logger.debug(f"song_processor:get_base_calc_song: {e}")
+        logger.warning(f"song_processor:get_base_calc_song: {e}")
         mtime_ns = -1
 
     with _BASE_CALC_SONG_CACHE_LOCK:
@@ -348,7 +348,7 @@ def _load_song_header_cache_locked() -> None:
         with open(_SONG_HEADER_CACHE_PATH, "r", encoding="utf-8") as f:
             payload = json.load(f)
     except Exception as e:
-        logger.debug(f"song_processor:_load_song_header_cache_locked: {e}")
+        logger.warning(f"song_processor:_load_song_header_cache_locked: {e}")
         return
     if not isinstance(payload, dict):
         return
@@ -359,7 +359,7 @@ def _load_song_header_cache_locked() -> None:
             mtime_ns = int(entry.get("mtime_ns", -1))
             file_size = int(entry.get("size", -1))
         except Exception as e:
-            logger.debug(f"song_processor:_load_song_header_cache_locked: {e}")
+            logger.warning(f"song_processor:_load_song_header_cache_locked: {e}")
             continue
         meta = entry.get("meta")
         if meta is not None and not isinstance(meta, dict):
@@ -389,7 +389,7 @@ def _flush_song_header_cache() -> None:
             json.dump(payload, f, ensure_ascii=True, separators=(",", ":"))
         os.replace(tmp_path, _SONG_HEADER_CACHE_PATH)
     except Exception as e:
-        logger.debug(f"song_processor:_flush_song_header_cache: {e}")
+        logger.warning(f"song_processor:_flush_song_header_cache: {e}")
         with _SONG_HEADER_CACHE_LOCK:
             _SONG_HEADER_CACHE_DIRTY = True
 
@@ -422,7 +422,7 @@ def scan_song_header(fp):
         mtime_ns = int(mtime_ns_raw) if isinstance(mtime_ns_raw, int) else int(st.st_mtime * 1e9)
         file_size = int(st.st_size)
     except Exception as e:
-        logger.debug(f"song_processor:scan_song_header: {e}")
+        logger.warning(f"song_processor:scan_song_header: {e}")
         mtime_ns = -1
         file_size = -1
 
@@ -438,7 +438,7 @@ def scan_song_header(fp):
                     meta_cached = cached.get("meta")
                     return dict(meta_cached) if isinstance(meta_cached, dict) else None
             except Exception as e:
-                logger.debug(f"song_processor:scan_song_header: {e}")
+                logger.warning(f"song_processor:scan_song_header: {e}")
 
     meta = {"Song Name": "", "Primary Color": "", "Secondary Color": "", "Difficulty": ""}
     try:
@@ -472,7 +472,7 @@ def scan_song_header(fp):
             _SONG_HEADER_CACHE_DIRTY = True
         return dict(result) if isinstance(result, dict) else None
     except Exception as e:
-        logger.debug(f"song_processor:scan_song_header: {e}")
+        logger.warning(f"song_processor:scan_song_header: {e}")
         return None
 
 
@@ -486,12 +486,12 @@ def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
         try:
             idx = int(key.replace("NonFever", "").strip()) - 1
         except Exception as e:
-            logger.debug(f"song_processor:_nonfever_counts_from_config: {e}")
+            logger.warning(f"song_processor:_nonfever_counts_from_config: {e}")
             continue
         try:
             cnt = int(val or 0)
         except Exception as e:
-            logger.debug(f"song_processor:_nonfever_counts_from_config: {e}")
+            logger.warning(f"song_processor:_nonfever_counts_from_config: {e}")
             cnt = 0
         pairs.append((idx, max(0, cnt)))
     if not pairs:
@@ -610,7 +610,7 @@ def _setup_song_context(
     try:
         gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
     except Exception as e:
-        logger.debug(f"song_processor:_setup_song_context: {e}")
+        logger.warning(f"song_processor:_setup_song_context: {e}")
         gpu_mode_requested = True
     if not gpu_mode_requested:
         print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
@@ -630,7 +630,7 @@ def _setup_song_context(
         if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
             song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
     except Exception as e:
-        logger.debug(f"song_processor:_setup_song_context: {e}")
+        logger.warning(f"song_processor:_setup_song_context: {e}")
 
     try:
         from ..solver.timing_envelope import apply_timing_envelope
@@ -645,9 +645,9 @@ def _setup_song_context(
                     f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
                 )
             except Exception as e:
-                logger.debug(f"song_processor:_setup_song_context: {e}")
+                logger.warning(f"song_processor:_setup_song_context: {e}")
     except Exception as e:
-        logger.debug(f"song_processor:_setup_song_context: {e}")
+        logger.warning(f"song_processor:_setup_song_context: {e}")
 
     meta_primary_color = calc_song["metadata"].get("Primary Color", "")
     meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
@@ -676,7 +676,7 @@ def _setup_song_context(
 
         baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
     except Exception as e:
-        logger.debug(f"song_processor:_setup_song_context: {e}")
+        logger.warning(f"song_processor:_setup_song_context: {e}")
         baseline_team_buff = "T5"
 
     from gear_optimizer.helpers.song_helpers.database_context import build_db_key
@@ -782,12 +782,12 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             try:
                 ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
             except Exception as e:
-                logger.debug(f"song_processor:_run_outer_search: {e}")
+                logger.warning(f"song_processor:_run_outer_search: {e}")
                 ctx.gpu_song_slot = 0
             try:
                 ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
             except Exception as e:
-                logger.debug(f"song_processor:_run_outer_search: {e}")
+                logger.warning(f"song_processor:_run_outer_search: {e}")
             try:
                 from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -796,7 +796,7 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
                     max_genomes=GA_POPULATION_SIZE,
                 )
             except Exception as e:
-                logger.debug(f"song_processor:_run_outer_search: {e}")
+                logger.warning(f"song_processor:_run_outer_search: {e}")
 
         ctx.solver_ctx = prepare_solver_context(
             ctx.cfg,
@@ -987,7 +987,7 @@ def _build_and_persist(
                 baseline_valid=bool(ctx.db_baseline_valid),
             )
         except Exception as e:
-            logger.debug(f"song_processor:_build_and_persist: {e}")
+            logger.warning(f"song_processor:_build_and_persist: {e}")
             record_info = None
 
         return cast(
@@ -1212,14 +1212,14 @@ def process_song_task(args) -> SongResultPayload:
             repeat_index = int(str(repeat_ctx.get("repeat_index") or 0))
             repeat_total = int(str(repeat_ctx.get("repeat_total") or 0))
         except Exception as e:
-            logger.debug(f"song_processor:process_song_task: {e}")
+            logger.warning(f"song_processor:process_song_task: {e}")
             repeat_index = 0
             repeat_total = 0
         try:
             raw_seed = repeat_ctx.get("ga_seed")
             ga_seed = int(str(raw_seed)) if raw_seed is not None else None
         except Exception as e:
-            logger.debug(f"song_processor:process_song_task: {e}")
+            logger.warning(f"song_processor:process_song_task: {e}")
             ga_seed = None
         if repeat_index > 0 and repeat_total > 1:
             queue_label = f"{found_song_name} (Run {repeat_index}/{repeat_total})"
@@ -1263,7 +1263,7 @@ def process_song_task(args) -> SongResultPayload:
             try:
                 payload = f"[{queue_label or found_song_name}] {msg}"
             except Exception as e:
-                logger.debug(f"song_processor:emit: {e}")
+                logger.warning(f"song_processor:emit: {e}")
                 payload = str(msg)
             try:
                 put_nowait = getattr(status_queue, "put_nowait", None)
@@ -1272,7 +1272,7 @@ def process_song_task(args) -> SongResultPayload:
                 else:
                     status_queue.put(payload, block=False)
             except Exception as e:
-                logger.debug(f"song_processor:emit: {e}")
+                logger.warning(f"song_processor:emit: {e}")
 
         song_ctx = _setup_song_context(
             fp=fp,
@@ -1410,7 +1410,7 @@ def safe_process_song_task(args) -> SongResultPayload:
                                 queue_label = f"{song_name} (Run {idx}/{total})"
                             break
             except Exception as e:
-                logger.debug(f"song_processor:safe_process_song_task: {e}")
+                logger.warning(f"song_processor:safe_process_song_task: {e}")
                 queue_label = str(song_name)
         return process_song_task(args)
     except Exception as exc:
@@ -1420,7 +1420,7 @@ def safe_process_song_task(args) -> SongResultPayload:
             logging.error(msg + "\n" + tb)
             print(msg, file=sys.stderr)
         except Exception as e:
-            logger.debug(f"song_processor:safe_process_song_task: {e}")
+            logger.warning(f"song_processor:safe_process_song_task: {e}")
         return build_error_payload(
             song_name=str(song_name),
             queue_key=str(queue_label or song_name),

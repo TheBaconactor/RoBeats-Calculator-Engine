@@ -13,7 +13,7 @@ import typing
 import numpy as np
 
 # Import from refactored modules
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, GA_POPULATION_SIZE
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import config_bool, env_flag, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
@@ -190,7 +190,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
             configure_logging(log_file_path=log_file_path, console_level=console_level, file_level=logging.WARNING)
         except Exception as e:
-            logger.debug(f"app:setup_logging: {e}")
+            logger.warning(f"app:setup_logging: {e}")
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         try:
@@ -205,7 +205,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 if gpu_executor.is_running:
                     gpu_executor.request_abort(f"stop requested ({reason})")
             except Exception as e:
-                logger.debug(f"app:request_stop: {e}")
+                logger.warning(f"app:request_stop: {e}")
 
     def _stop_requested_now(self) -> bool:
         if self._stop_cached_result:
@@ -234,7 +234,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         try:
             return AppRuntimeSettings.from_config(cfg)
         except Exception as e:
-            logger.debug(f"app:_current_runtime_settings: {e}")
+            logger.warning(f"app:_current_runtime_settings: {e}")
             return AppRuntimeSettings.from_config(None)
 
     def _configure_execution_and_prewarm(self, cfg) -> None:
@@ -247,7 +247,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     cfg.add_section("IterationEngine")
                 cfg.set("IterationEngine", "GPU_Mode", "true")
             except Exception as e:
-                logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
 
         if bool(runtime_settings.gpu.gpu_native_ga):
             ga_multistart = max(1, int(runtime_settings.ga.multi_start))
@@ -258,12 +258,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
                 gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
             except Exception as e:
-                logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
 
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)
         except Exception as e:
-            logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
             inflight_req = 0
         if inflight_req <= 1:
             return
@@ -289,7 +289,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 metrics={"in_process": 1},
             )
         except Exception as e:
-            logger.debug(f"app:_configure_execution_and_prewarm: {e}")
+            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
 
     def _profiling_mode_enabled(self, cfg=None) -> bool:
         # Fast path from centralized env snapshot.
@@ -405,7 +405,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if hasattr(sys.stderr, "reconfigure"):
                 sys.stderr.reconfigure(line_buffering=True)
         except Exception as e:
-            logger.debug(f"app:run: {e}")
+            logger.warning(f"app:run: {e}")
 
         try:
             if not self._output_enabled:
@@ -578,7 +578,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             try:
                 logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             except Exception as e:
-                logger.debug(f"app:_run_single_iteration: {e}")
+                logger.warning(f"app:_run_single_iteration: {e}")
             emit_profile_event(
                 component="app",
                 event="queue_built",
@@ -704,7 +704,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
                     )
                 except Exception as e:
-                    logger.debug(f"app:_run_single_iteration: {e}")
+                    logger.warning(f"app:_run_single_iteration: {e}")
             emit_profile_event(
                 component="app",
                 event="run_end",
@@ -721,7 +721,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             try:
                 logger.info("[Shutdown] Exiting by user request.")
             except Exception as e:
-                logger.debug(f"app:_run_single_iteration: {e}")
+                logger.warning(f"app:_run_single_iteration: {e}")
             return False
 
         if memory_guard_restart:
@@ -1049,7 +1049,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 try:
                     logger.info("[Queue] No pending song-id visits; backend service is idle.")
                 except Exception as e:
-                    logger.debug(f"app:_lookup_song_presence: {e}")
+                    logger.warning(f"app:_lookup_song_presence: {e}")
 
         if not song_queue and not resume_seed_queue:
             if backend_service_mode:
@@ -1060,7 +1060,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         try:
             logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
         except Exception as e:
-            logger.debug(f"app:_lookup_song_presence: {e}")
+            logger.warning(f"app:_lookup_song_presence: {e}")
 
         song_names_present_in_db: set[str] = set()
         song_names_present_loaded = False
@@ -1145,7 +1145,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 try:
                     logger.info(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
                 except Exception as e:
-                    logger.debug(f"app:_queue_sort_key: {e}")
+                    logger.warning(f"app:_queue_sort_key: {e}")
                 if backend_service_mode:
                     self._backend_priority_song_names.update(str(item[1] or "").strip() for item in new_missing)
 
@@ -1428,7 +1428,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         repeats = max(1, int(repeats))
                         break
             except Exception as e:
-                logger.debug(f"app:_effective_total_tasks: {e}")
+                logger.warning(f"app:_effective_total_tasks: {e}")
                 repeats = 1
             total += max(1, int(repeats))
         return max(0, int(total))
@@ -1479,11 +1479,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             try:
                 pending.append(getattr(current, "__cause__", None))
             except Exception as e:
-                logger.debug(f"app:_iter_exception_chain: {e}")
+                logger.warning(f"app:_iter_exception_chain: {e}")
             try:
                 pending.append(getattr(current, "__context__", None))
             except Exception as e:
-                logger.debug(f"app:_iter_exception_chain: {e}")
+                logger.warning(f"app:_iter_exception_chain: {e}")
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         if not self._fatal_gpu_errors_enabled():
@@ -1492,7 +1492,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         try:
             from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
         except Exception as e:
-            logger.debug(f"app:_is_fatal_inflight_exception: {e}")
+            logger.warning(f"app:_is_fatal_inflight_exception: {e}")
             GpuServiceTimeoutError = ()
 
         fatal_markers = (
@@ -1519,7 +1519,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             try:
                 message = f"{type(current).__name__}: {current}".lower()
             except Exception as e:
-                logger.debug(f"app:_is_fatal_inflight_exception: {e}")
+                logger.warning(f"app:_is_fatal_inflight_exception: {e}")
                 message = ""
             if any(marker in message for marker in fatal_markers):
                 return True
@@ -1533,39 +1533,39 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 try:
                     api.flush_runtime_status(timeout=1.0)
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
                 try:
                     api.stop_runtime_status_loop(timeout=1.0)
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
             if status_queue:
                 try:
                     status_queue.put(None)
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
             if status_thread:
                 try:
                     status_thread.join(timeout=2)
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
             if manager:
                 try:
                     manager.shutdown()
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
             # Flush pending DB writes (best-effort)
             if hasattr(self, "_async_db_saver"):
                 try:
                     self._async_db_saver.shutdown(timeout=30.0)
                 except Exception as e:
-                    logger.debug(f"app:_cleanup_resources: {e}")
+                    logger.warning(f"app:_cleanup_resources: {e}")
             # Force GC on manager
             old_manager = manager
             del old_manager
             gc.collect(generation=0)
 
         except Exception as e:
-            logger.debug(f"app:_cleanup_resources: {e}")
+            logger.warning(f"app:_cleanup_resources: {e}")
 
     def _loop_restart_wait_seconds(self, cfg=None, *, default_seconds: float = 0.0) -> float:
         wait_s = float(default_seconds)

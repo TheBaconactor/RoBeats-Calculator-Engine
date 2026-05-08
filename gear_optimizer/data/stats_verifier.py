@@ -47,7 +47,7 @@ def _decode_names_from_row(row: sqlite3.Row, maps) -> tuple[list[str], list[str]
     try:
         ids = _unpack_id_list(row["gear_ids_blob"])
     except Exception as e:
-        logger.debug(f"stats_verifier:_decode_names_from_row: {e}")
+        logger.warning(f"stats_verifier:_decode_names_from_row: {e}")
         ids = []
     if ids:
         gear_names = [str(maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
@@ -57,7 +57,7 @@ def _decode_names_from_row(row: sqlite3.Row, maps) -> tuple[list[str], list[str]
     try:
         id_groups = _unpack_id_groups(row["minis_ids_blob"])
     except Exception as e:
-        logger.debug(f"stats_verifier:_decode_names_from_row: {e}")
+        logger.warning(f"stats_verifier:_decode_names_from_row: {e}")
         id_groups = []
     for g in id_groups or []:
         if not g:
@@ -405,7 +405,7 @@ def _verify_fg_table(
                     try:
                         base_details = _unpack_stats_after_load(json.loads(base_row["details_json"])) or {}
                     except Exception as e:
-                        logger.debug(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
+                        logger.warning(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
                         base_details = None
 
                 force_payload = {}
@@ -413,7 +413,7 @@ def _verify_fg_table(
                     try:
                         force_payload = json.loads(row["force_details_json"]) or {}
                     except Exception as e:
-                        logger.debug(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
+                        logger.warning(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
                         force_payload = {}
 
                 fg_base_details = _base_details_from_force_payload(base_details or details, force_payload)

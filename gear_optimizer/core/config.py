@@ -77,6 +77,11 @@ def _resolve_extends_chain(cfg_path: str, seen: set[str] | None = None) -> list[
     if extends_path:
         if not os.path.isabs(extends_path):
             extends_path = os.path.normpath(os.path.join(cfg_dir, extends_path))
+        if not os.path.isfile(extends_path):
+            raise FileNotFoundError(
+                f"Config _extends chain broken: {cfg_path!r} references "
+                f"{extends_path!r} which does not exist or is not a file."
+            )
         base_paths = _resolve_extends_chain(extends_path, seen)
 
     return base_paths + [cfg_path]
