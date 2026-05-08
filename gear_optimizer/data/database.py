@@ -1909,15 +1909,6 @@ def save_team_buff_loadouts_batch(
                             details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
                         ).strip(),
                     )
-            elif can_recompute:
-                details = _recompute_stats_in_details_for_persistence(
-                    details_unpacked,
-                    gear_names_local=gear_names,
-                    mini_names_local=mini_names,
-                    team_color=str(
-                        details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
-                    ).strip(),
-                )
             else:
                 details = details_unpacked
 
