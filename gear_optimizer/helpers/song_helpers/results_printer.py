@@ -1,7 +1,10 @@
+import logging
 from ...core.utils import get_selected_element
 from .fg_config import has_valid_fg_config
 
 
+
+logger = logging.getLogger(__name__)
 def print_results(
     found_song_name,
     best_data,
@@ -33,33 +36,39 @@ def print_results(
     def _coerce_int_score(v) -> int:
         try:
             return int(v or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"results_printer:_coerce_int_score: {e}")
             try:
                 return int(float(v or 0))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"results_printer:_coerce_int_score: {e}")
                 return 0
 
     def _extract_final_score(entry: dict) -> int:
         # Prefer wrapper-level `fg_score` for cached FG reuse entries; fall back to inner `data`.
         try:
             data = entry.get("data", {}) or {}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"results_printer:_extract_final_score: {e}")
             data = {}
 
         score_val = None
         try:
             score_val = entry.get("fg_score")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"results_printer:_extract_final_score: {e}")
             score_val = None
         if not score_val:
             try:
                 score_val = data.get("fg_score") or data.get("Score")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"results_printer:_extract_final_score: {e}")
                 score_val = None
         if not score_val:
             try:
                 score_val = entry.get("score")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"results_printer:_extract_final_score: {e}")
                 score_val = None
         if (not score_val) and isinstance(data.get("ForceGreats"), dict):
             score_val = data.get("ForceGreats", {}).get("final_score")
@@ -265,7 +274,8 @@ def _print_loadout_section(title, variant):
             for v in config.values():
                 try:
                     forced_total += int(v)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"results_printer:_print_loadout_section: {e}")
                     continue
 
         if forced_total > 0:
@@ -306,10 +316,12 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
 
     try:
         final_score_int = int(final_score)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"results_printer:_print_detailed_debug: {e}")
         try:
             final_score_int = int(float(final_score))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"results_printer:_print_detailed_debug: {e}")
             final_score_int = 0
 
     print(f"\nTotal Score: {final_score_int}")

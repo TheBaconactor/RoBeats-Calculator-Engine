@@ -8,6 +8,7 @@ This module provides initialization and setup functions:
 """
 
 from __future__ import annotations
+import logging
 
 import taichi as ti
 import numpy as np
@@ -27,6 +28,8 @@ from ..fields import (
 )
 
 
+
+logger = logging.getLogger(__name__)
 # ============================================================================
 # REFERENCE LOADING STATE
 # ============================================================================
@@ -109,15 +112,15 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         from ..fields import reset_fields_state as _reset_fields_state
 
         _reset_fields_state()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     try:
         from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
 
         _reset_fg_fields_state()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
@@ -129,22 +132,22 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         from .timeline import reset_timeline_state as _reset_timeline_state
 
         _reset_timeline_state()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     try:
         from ..force_greats.api import reset_force_greats_api_state as _reset_fg_api_state
 
         _reset_fg_api_state()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     try:
         from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
 
         _reset_ga_caches()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
 
 
 def _ensure_ftff_combo_tables(

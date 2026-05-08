@@ -140,8 +140,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 song_key=pre_song_key or None,
                 metrics=payload,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_dispatch:_emit_pre_finder_phase: {e}")
 
     _emit_pre_finder_phase(
         "enter",
@@ -256,8 +256,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 song_key=finder_song_key or None,
                 metrics=payload,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_dispatch:_emit_finder_phase: {e}")
 
     def _safe_metric_count(items: Any) -> int:
         if items is None:
@@ -354,8 +354,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
                 slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
                 precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(slot0))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_dispatch:_submit_solve_force_greats_finder: {e}")
             timeline_precompute_queued = True
 
         return solve_force_greats_finder_gpu(*args, **kwargs)
@@ -1148,8 +1148,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 getattr(fg_scorer, "total_notes", "?"),
                 getattr(fg_scorer, "head_len", "?"),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_dispatch:_flush_fg_tasks_batch: {e}")
 
     # Pair-caps (161x161x16):
     # Prefer a GPU-resident derivation from the already-computed timeline grid to avoid
@@ -1550,7 +1550,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             if rep_pairs:
                 try:
                     variant_key = tuple(_sample_stat_pairs(rep_pairs, max_pairs=16))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch:_submit_chunk: {e}")
                     variant_key = ()
             group_counts_list = _dispatch_caches.get_cached_analytical_breakpoints(
                 chart_key=chart_key,
@@ -1983,8 +1984,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if not timeline_precompute_queued:
                             try:
                                 precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"gpu_dispatch:_submit_compute_breakpoints_max_fp: {e}")
                             timeline_precompute_queued = True
 
                         pair_arr = ftff_pairs_packed if ftff_pairs_packed is not None else _pack_pairs_int32(ftff_pairs)
@@ -2014,7 +2015,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             out0,
                         )
                         return out0
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"gpu_dispatch:_submit_compute_breakpoints_max_fp: {e}")
                         return None
 
                 max_fp_matrix = None
@@ -3160,8 +3162,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             )
             if gpu_call_shapes:
                 logger.debug("[PERF] FG GPU call shapes (n_genomes,n_cfg,n_ftff,n_sections): %s", gpu_call_shapes)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_dispatch:_iter_groups_from_max_fp: {e}")
 
     def _record_fg_streaming_meta() -> None:
         meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)

@@ -16,6 +16,8 @@ from gear_optimizer.data.database import (
     update_song_counters,
 )
 
+
+logger = logging.getLogger(__name__)
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
 _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
@@ -46,7 +48,8 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
             stats_path = str((paths or {}).get("Stats", "") or PATHS.stats_csv)
             stats_table = read_table(stats_path)
             _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"app_async_db:_get_team_buff_ref_arrays_cached: {e}")
             _TEAM_BUFF_REF_ARRAYS_CACHE = None
         return _TEAM_BUFF_REF_ARRAYS_CACHE
 
@@ -74,7 +77,8 @@ def _overlay_backend_mode_enabled() -> bool:
         from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
         return bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"app_async_db:_overlay_backend_mode_enabled: {e}")
         return env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
 
 
@@ -88,7 +92,8 @@ def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
     """
     try:
         return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"app_async_db:_resolve_base_team_buff_for_persistence: {e}")
         return "T5"
 
 
@@ -166,17 +171,18 @@ class AsyncDbSaver:
         if getattr(self._queue, "unfinished_tasks", 0) > 0:
             try:
                 pending = int(getattr(self._queue, "unfinished_tasks", 0))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"app_async_db:flush: {e}")
                 pending = -1
             msg = f"[DB] Warning: async DB flush timed out; pending_tasks={pending}"
             try:
                 print(msg)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_async_db:flush: {e}")
             try:
                 logging.warning(msg)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_async_db:flush: {e}")
             if _async_db_strict():
                 raise RuntimeError(msg)
         self.raise_if_failed()
@@ -195,14 +201,14 @@ class AsyncDbSaver:
 
         try:
             self._queue.put(None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_async_db:shutdown: {e}")
 
         try:
             if self._thread is not None:
                 self._thread.join(timeout=timeout)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_async_db:shutdown: {e}")
 
         with self._lock:
             self._running = False
@@ -238,7 +244,8 @@ class AsyncDbSaver:
         msg = f"{type(exc).__name__}: {exc}"
         try:
             now = float(time.monotonic())
-        except Exception:
+        except Exception as e:
+            logger.debug(f"app_async_db:_record_error: {e}")
             now = 0.0
         with self._error_lock:
             self._last_error = exc
@@ -261,7 +268,8 @@ class AsyncDbSaver:
                 if kind == "delete_pending_fg_job":
                     try:
                         _, song_name = item
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"app_async_db:_loop: {e}")
                         continue
                     try:
                         from gear_optimizer.data.database import delete_pending_fg_job
@@ -274,7 +282,8 @@ class AsyncDbSaver:
                 if kind == "upsert_pending_fg_job":
                     try:
                         _, song_name, candidates = item
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"app_async_db:_loop: {e}")
                         continue
                     try:
                         from gear_optimizer.data.database import upsert_pending_fg_job
@@ -289,7 +298,8 @@ class AsyncDbSaver:
 
                 try:
                     _, song_name, entries, meta = item
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"app_async_db:_loop: {e}")
                     continue
                 if not isinstance(meta, dict):
                     meta = {}
@@ -306,7 +316,8 @@ class AsyncDbSaver:
                         if overlay_enabled:
                             overlay_db_path = str(get_evolution_overlay_db_path() or "").strip()
                             overlay_enabled = bool(overlay_db_path) and overlay_db_path != canonical_db_path
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"app_async_db:_loop: {e}")
                         overlay_db_path = ""
                         overlay_enabled = False
 
@@ -322,8 +333,8 @@ class AsyncDbSaver:
                             )
                             prev_best_score = max(int(prev_best_score or 0), int(_ov_best_score or 0))
                             prev_best_fg = max(int(prev_best_fg or 0), int(_ov_best_fg or 0))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"app_async_db:_loop: {e}")
 
                     run_score = 0
                     run_best_fg = 0
@@ -332,30 +343,33 @@ class AsyncDbSaver:
                             continue
                         try:
                             s = int(e.get("score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"app_async_db:_loop: {e}")
                             s = 0
                         try:
                             fg = int(e.get("fg_score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"app_async_db:_loop: {e}")
                             fg = 0
                         if fg <= 0:
                             try:
                                 force_obj = e.get("force")
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"app_async_db:_loop: {e}")
                                 force_obj = None
                             if isinstance(force_obj, dict):
                                 try:
                                     fg = max(fg, int(force_obj.get("score", 0) or 0))
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"app_async_db:_loop: {e}")
                                 det = force_obj.get("details") or {}
                                 if isinstance(det, dict):
                                     fg_meta = det.get("ForceGreats") or {}
                                     if isinstance(fg_meta, dict):
                                         try:
                                             fg = max(fg, int(fg_meta.get("final_score", 0) or 0))
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"app_async_db:_loop: {e}")
                         if s > run_score:
                             run_score = s
                         if e.get("force") is not None and fg > s and fg > run_best_fg:
@@ -410,14 +424,14 @@ class AsyncDbSaver:
                     msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
                     try:
                         print(msg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"app_async_db:_loop: {e}")
                     try:
                         logging.error(msg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"app_async_db:_loop: {e}")
             finally:
                 try:
                     self._queue.task_done()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"app_async_db:_loop: {e}")

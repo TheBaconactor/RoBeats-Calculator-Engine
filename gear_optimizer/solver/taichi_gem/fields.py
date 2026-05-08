@@ -44,8 +44,8 @@ def _clamp_song_slots(n: int) -> int:
     if n > 256:
         try:
             logger.warning("[GPU] GPU_SONG_SLOTS=%s too large; clamping to 256 to avoid VRAM OOM.", int(n))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"fields:_clamp_song_slots: {e}")
         return 256
     return n
 
@@ -505,12 +505,14 @@ def _maybe_configure_ga_run_buffers_from_env() -> None:
     if raw_runs:
         try:
             max_runs = int(raw_runs)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
             max_runs = None
     if raw_genomes:
         try:
             max_genomes = int(raw_genomes)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
             max_genomes = None
 
     if max_runs is None and max_genomes is None:
@@ -944,9 +946,9 @@ def bind_fields(kernels_module):
         kernels_breakpoints.bp_pair_ft = bp_pair_ft
         kernels_breakpoints.bp_pair_ff = bp_pair_ff
         kernels_breakpoints.bp_result_mask = bp_result_mask
-    except Exception:
+    except Exception as e:
         # Keep binding best-effort; breakpoint kernels aren't always imported.
-        pass
+        logger.debug(f"fields:bind_fields: {e}")
 
 
 def ensure_fields_allocated():

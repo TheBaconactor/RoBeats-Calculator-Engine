@@ -6,6 +6,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from typing import Any
+import logging
 
 import numpy as np
 
@@ -15,6 +16,8 @@ from ...solver.base_stats import build_stats_dict
 from ..song_helpers.ga_entry_utils import canonicalize_genome_ids
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _DEFAULT_AUDIT_PATH = os.path.join(PATHS.script_dir, "artifacts", "ga_redundancy_audit.jsonl")
 _CONFIG_SIG_KEYS = (
     "user_ft",
@@ -58,7 +61,8 @@ def _stat_signature_for_genome(
         stats = build_stats_dict(stats_values)
         selected_color = str((cfg_data or {}).get("selected_color", "") or "")
         sig = tuple(stats_signature(stats, calc_song, selected_color)) + _config_signature(cfg_data)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"redundancy_audit:_stat_signature_for_genome: {e}")
         sig = None
 
     cache[genome_key] = sig

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from math import ceil
+import logging
 
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.team_buff import (
@@ -18,6 +19,8 @@ from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
 
+
+logger = logging.getLogger(__name__)
 _ELEMENTS = TEAM_BUFF_ELEMENTS
 
 
@@ -177,11 +180,13 @@ def _dict_cfg_to_counts(cfg: dict) -> list[int]:
             continue
         try:
             idx = int(k.replace("NonFever", "")) - 1
-        except Exception:
+        except Exception as e:
+            logger.debug(f"team_buff_tiers:_dict_cfg_to_counts: {e}")
             continue
         try:
             val = int(v)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"team_buff_tiers:_dict_cfg_to_counts: {e}")
             val = 0
         pairs.append((idx, val))
     if not pairs:
@@ -236,7 +241,8 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
         g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
         g_ov = int(gem_counts.get("Element", 0) or 0)
         return apply_gems_to_base_fast(base_stats, str(sel), ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"team_buff_tiers:_force_payload_stats: {e}")
         return fallback_stats if isinstance(fallback_stats, dict) else {}
 
 
@@ -262,25 +268,29 @@ def _force_counts_to_fp_targets(
         song_data = calc_song.get("song_data", {}) or {}
         timestamps = song_data.get("timestamps")
         total_notes = int(len(timestamps)) if timestamps is not None else 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
         total_notes = 0
 
     if total_notes <= 0:
         try:
             total_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Total Notes"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
             total_notes = 0
 
     try:
         long_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Long Notes"), 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
         long_notes = 0
 
     try:
         ff_factor = float(lookup_reference_py(int(ff_stat), ref_arrays["Fever Fill Rate"], TOTAL_ROWS))
         raw_fill = max(0.0, float(total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)) * float(ff_factor)
         base_notes = int(ceil(raw_fill))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
         return counts
 
     fp_targets: list[int] = []
@@ -449,8 +459,8 @@ def compute_team_buff_tier_leaderboards(
         from ...solver.timing_envelope import apply_timing_envelope
 
         apply_timing_envelope(calc_song)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"team_buff_tiers:compute_team_buff_tier_leaderboards: {e}")
 
     entry_groups: dict[object, list[dict]] = {None: [entry for entry in entries if isinstance(entry, dict)]}
     per_entry: list[dict] = []
@@ -917,7 +927,8 @@ def build_team_buff_tier_db_batches(
                 if src_key in orig:
                     try:
                         out_row[src_key] = int(orig.get(src_key, 0) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"team_buff_tiers:_stable_key_from_payload: {e}")
                         out_row[src_key] = 0
 
             out_entries.append(out_row)

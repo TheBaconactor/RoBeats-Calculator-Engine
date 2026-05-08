@@ -4,9 +4,12 @@ import os
 import signal
 import threading
 import time
+import logging
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 class StopController:
     """
     Centralized stop/shutdown control for long-running optimizer runs.
@@ -55,8 +58,8 @@ class StopController:
             )
             try:
                 print(msg, flush=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_stop_control:request_stop: {e}")
 
         if force:
             raise KeyboardInterrupt
@@ -70,7 +73,8 @@ class StopController:
             self._stop_after_raw = stop_after_raw
             try:
                 stop_after_sec = float(stop_after_raw or "0")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"app_stop_control:_refresh_runtime_settings: {e}")
                 stop_after_sec = 0.0
             self._stop_after_sec = max(0.0, float(stop_after_sec))
             if self._stop_after_sec > 0.0:
@@ -90,7 +94,8 @@ class StopController:
             self._stop_file_poll_raw = stop_file_poll_raw
             try:
                 stop_file_poll_sec = float(stop_file_poll_raw or "0.1")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"app_stop_control:_refresh_runtime_settings: {e}")
                 stop_file_poll_sec = 0.1
             self._stop_file_poll_sec = max(0.01, float(stop_file_poll_sec))
 
@@ -105,8 +110,8 @@ class StopController:
             if self._stop_after_deadline_monotonic is not None and now >= float(self._stop_after_deadline_monotonic):
                 self.request_stop(f"stop-after timer reached: {self._stop_after_sec:.0f}s")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_stop_control:stop_requested_now: {e}")
         try:
             if now >= float(self._stop_file_next_check_monotonic):
                 stop_file = self._stop_file_path()
@@ -115,8 +120,8 @@ class StopController:
             if self._stop_file_present_cache:
                 self.request_stop(f"stop file detected: {self._stop_file_path()!r}")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_stop_control:stop_requested_now: {e}")
         return self.stop_requested_event.is_set()
 
     def install_signal_handlers(self) -> None:
@@ -142,7 +147,7 @@ class StopController:
             try:
                 self._signal_prev_handlers[int(sig)] = signal.getsignal(sig)
                 signal.signal(sig, _handler)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_stop_control:_handler: {e}")
 
         self._signal_handlers_installed = True

@@ -15,6 +15,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
+import logging
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +30,8 @@ from inventory_optimizer.inventory_meta_config import (
 from inventory_optimizer.macos_gpu_util import MacosGpuUtilSampler
 
 
+
+logger = logging.getLogger(__name__)
 def _maybe_print_taichi_kernel_profile(*, requested: bool) -> None:
     if not requested:
         return
@@ -39,8 +42,8 @@ def _maybe_print_taichi_kernel_profile(*, requested: bool) -> None:
 
         ti.sync()
         ti.profiler.print_kernel_profiler_info()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"inventory_cli:_maybe_print_taichi_kernel_profile: {e}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -182,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 gpu_sampler = MacosGpuUtilSampler(interval_sec=0.25)
                 gpu_sampler.start()
-            except Exception:
+            except Exception as e:
+                logger.warning(f"inventory_cli:main: {e}")
                 gpu_sampler = None
 
         init_db()
@@ -210,8 +214,8 @@ def main(argv: list[str] | None = None) -> int:
             if gpu_sampler is not None:
                 try:
                     gpu_sampler.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"inventory_cli:main: {e}")
             return
 
         if args.cmd == "cluster":
@@ -227,8 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"inventory_cli:main: {e}")
 
             # Apply element filter here (mirrors run_inventory_meta_coverage behavior).
             element = (args.element or "").strip() or None
@@ -302,8 +306,8 @@ def main(argv: list[str] | None = None) -> int:
             if gpu_sampler is not None:
                 try:
                     gpu_sampler.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"inventory_cli:main: {e}")
             return
 
         results = run_inventory_meta_coverage(
@@ -338,8 +342,8 @@ def main(argv: list[str] | None = None) -> int:
                     if summary.proc_gpu_time_util_est is None
                     else round(float(summary.proc_gpu_time_util_est), 2),
                 }
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"inventory_cli:main: {e}")
 
         out = getattr(args, "output", "") or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)

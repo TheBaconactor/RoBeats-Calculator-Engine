@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 def _coerce_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -44,7 +47,8 @@ def is_nonzero_fg_config(config: Mapping[str, Any] | None) -> bool:
     for value in cfg.values():
         try:
             total += int(value or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_config:is_nonzero_fg_config: {e}")
             continue
     return bool(total > 0)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any
+import logging
 
 import numpy as np
 from cachetools import LRUCache
@@ -10,6 +11,8 @@ from ....core.utils import timing_envelope_timing_context
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _FG_CHART_SCORER_CACHE_MAX = max(1, int(env_get("FG_CHART_SCORER_CACHE_MAX", "64") or "64"))
 _FG_CHART_SCORER_CACHE: LRUCache = LRUCache(maxsize=_FG_CHART_SCORER_CACHE_MAX)
 _FG_CHART_SCORER_LOCK = threading.Lock()
@@ -35,11 +38,13 @@ def chart_signature_key(calc_song: dict) -> tuple:
     if n > 0:
         try:
             first_ms = int(float(ts[0]) * 1000.0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_caches:chart_signature_key: {e}")
             first_ms = 0
         try:
             last_ms = int(float(ts[-1]) * 1000.0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_caches:chart_signature_key: {e}")
             last_ms = 0
     else:
         first_ms = 0
@@ -47,18 +52,21 @@ def chart_signature_key(calc_song: dict) -> tuple:
 
     try:
         lnt = float(meta.get("Last Note Time", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_caches:chart_signature_key: {e}")
         lnt = 0.0
     if lnt <= 0.0 and n > 0:
         try:
             lnt = float(ts[-1])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_caches:chart_signature_key: {e}")
             lnt = 0.0
     last_note_ms = int(lnt * 1000.0) if lnt > 0 else 0
 
     try:
         long_notes = int(meta.get("Long Notes", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_caches:chart_signature_key: {e}")
         long_notes = 0
 
     return (
@@ -108,7 +116,8 @@ def get_cached_analytical_breakpoints(
 def normalize_pair_signature(pairs: Any) -> tuple[tuple[int, int], ...]:
     try:
         return tuple((int(str(a or 0)), int(str(b or 0))) for a, b in list(pairs or []))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_caches:normalize_pair_signature: {e}")
         return ()
 
 

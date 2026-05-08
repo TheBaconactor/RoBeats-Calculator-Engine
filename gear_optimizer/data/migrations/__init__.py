@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from typing import Callable, Dict
+import logging
 
+
+logger = logging.getLogger(__name__)
 Migration = Callable[[sqlite3.Connection], None]
 
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
@@ -41,7 +44,8 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     for row in rows or []:
         try:
             name = str(row[1] or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"__init__:_table_columns: {e}")
             name = ""
         if name:
             out.add(name)
@@ -67,7 +71,8 @@ def _load_json(payload: object, *, default: object) -> object:
         return default
     try:
         return json.loads(text)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"__init__:_load_json: {e}")
         return default
 
 
@@ -191,7 +196,8 @@ def _encoding_name_to_id(conn: sqlite3.Connection, table: str) -> dict[str, int]
         try:
             idx = int(row[0] or 0)
             name = str(row[1] or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"__init__:_encoding_name_to_id: {e}")
             continue
         if idx > 0 and name:
             out[name] = idx
@@ -229,7 +235,8 @@ def _backfill_legacy_piece_blobs(conn: sqlite3.Connection, *, table: str) -> Non
     for row in rows:
         try:
             rowid = int(row[0] or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"__init__:_backfill_legacy_piece_blobs: {e}")
             rowid = 0
         if rowid <= 0:
             continue

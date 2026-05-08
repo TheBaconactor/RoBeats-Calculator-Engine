@@ -168,16 +168,16 @@ class TaskExecutionMixin:
                 inflight_runner = InflightRunner(self)
                 try:
                     self._inflight_runner = inflight_runner
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_sequential: {e}")
             inflight_instances = inflight_runner.get_effective_inflight_instances(cfg_dict0)
 
             if inflight_songs <= 0:
                 inflight_songs = min(12, max(1, song_task_count))
                 try:
                     logger.debug(f"[InFlight] Sequential pipeline removed; defaulting InFlightSongs={int(inflight_songs)}.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_sequential: {e}")
             elif song_task_count > 1 and int(inflight_songs) < 2:
                 inflight_songs = min(12, max(2, song_task_count))
                 try:
@@ -185,8 +185,8 @@ class TaskExecutionMixin:
                         "[InFlight] Sequential pipeline removed; "
                         f"raising InFlightSongs to {int(inflight_songs)} for multi-song queue."
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_sequential: {e}")
 
             inflight_songs = max(1, min(int(inflight_songs), int(song_task_count)))
 
@@ -247,23 +247,23 @@ class TaskExecutionMixin:
                     tb = traceback.format_exc()
                     try:
                         logging.error("[InFlight] Traceback:\\n" + tb)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_run_sequential: {e}")
                     try:
                         trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
                         ts = time.strftime("%Y-%m-%d %H:%M:%S")
                         with open(trace_path, "a", encoding="utf-8") as fh:
                             fh.write(f"\n[{ts}] {type(inflight_err).__name__}: {inflight_err}\n")
                             fh.write(tb)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_run_sequential: {e}")
                     if truthy(env_get("INFLIGHT_PRINT_TRACE", "0")):
                         try:
                             logger.error(tb)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_run_sequential: {e}")
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_sequential: {e}")
                 if inflight_fatal_gpu_err:
                     raise
                 raise RuntimeError(
@@ -291,7 +291,8 @@ class TaskExecutionMixin:
 
             try:
                 instances = max(2, int(inflight_instances or 2))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
                 instances = 2
             instances = max(2, min(instances, 8))
 
@@ -364,7 +365,8 @@ class TaskExecutionMixin:
             for t in tasks:
                 try:
                     task_key_to_song_name[_task_key(t)] = str(t[1] or "").strip()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
                     continue
 
             try:
@@ -384,7 +386,8 @@ class TaskExecutionMixin:
                         fp = t[0]
                         song_name = t[1]
                         diff = t[2]
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
                         continue
                     extras = list(t[16:]) if isinstance(t, (tuple, list)) and len(t) > 16 else []
                     work_items.append((fp, song_name, diff, extras))
@@ -424,8 +427,8 @@ class TaskExecutionMixin:
                         int(fg_prep_workers),
                         int(db_prefetch_workers),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
 
                 p = mp_ctx.Process(
                     target=dual_process_inflight_worker_main,
@@ -458,8 +461,8 @@ class TaskExecutionMixin:
                 fatal_trace = str(trace or "").strip() or None
                 try:
                     stop_event.set()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_set_fatal: {e}")
 
             def _handle_msg(msg: dict) -> None:
                 nonlocal fatal_err, fatal_trace
@@ -471,29 +474,30 @@ class TaskExecutionMixin:
                             failed_delta=int(msg.get("failed_delta", 0) or 0),
                             record_info=msg.get("record_info") if isinstance(msg.get("record_info"), dict) else None,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                     return
                 if kind == "completed":
                     try:
                         task_key = str(msg.get("task_key") or "").strip()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                         task_key = ""
                     if task_key:
                         try:
                             completed_songs.add(task_key)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_handle_msg: {e}")
                         song_name = task_key_to_song_name.get(task_key)
                         if memory_resume_tracker and song_name:
                             try:
                                 memory_resume_tracker.mark_completed(str(song_name))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"task_execution:_handle_msg: {e}")
                         try:
                             self._maybe_mark_robeatsmeta_song_batch_computed(str(task_key), completed_songs)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_handle_msg: {e}")
                     return
                 if kind == "fatal":
                     err = str(msg.get("error") or "worker fatal").strip()
@@ -526,7 +530,8 @@ class TaskExecutionMixin:
                         msg = control_queue.get(timeout=0.1)
                     except queue.Empty:
                         msg = None
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                         msg = None
                     if isinstance(msg, dict):
                         _handle_msg(msg)
@@ -537,7 +542,8 @@ class TaskExecutionMixin:
                 while True:
                     try:
                         msg = control_queue.get_nowait()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                         break
                     if isinstance(msg, dict):
                         _handle_msg(msg)
@@ -546,19 +552,19 @@ class TaskExecutionMixin:
                 for p in processes:
                     try:
                         p.join(timeout=10.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                 for p in processes:
                     if not p.is_alive():
                         continue
                     try:
                         p.terminate()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
                     try:
                         p.join(timeout=5.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_handle_msg: {e}")
 
             if fatal_err is not None:
                 if fatal_trace:
@@ -571,14 +577,15 @@ class TaskExecutionMixin:
                 processed = 0
                 try:
                     processed = len(completed_songs) if isinstance(completed_songs, set) else 0
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"task_execution:_handle_msg: {e}")
                     processed = 0
                 per_h = float(processed) * 3600.0 / float(elapsed_s) if processed > 0 else 0.0
                 logger.debug(
                     "[InFlight][Dual] Completed %s tasks in %.2fs (%.1f tasks/hour)", int(processed), elapsed_s, per_h
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"task_execution:_handle_msg: {e}")
 
     def _start_post_processor(self, total_tasks: int):
             from gear_optimizer.pipeline.post_processor import run_post_processor
@@ -607,17 +614,19 @@ class TaskExecutionMixin:
                             post_queue.put(None, block=True, timeout=0.5)
                             sentinel_sent = True
                             break
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_stop_post_processor: {e}")
                             try:
                                 if post_proc is None or not post_proc.is_alive():
                                     break
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"task_execution:_stop_post_processor: {e}")
                                 break
                             if (time.perf_counter() - t0) >= 15.0:
                                 break
                             continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"task_execution:_stop_post_processor: {e}")
             try:
                 if post_proc is not None:
                     if not sentinel_sent:
@@ -625,17 +634,17 @@ class TaskExecutionMixin:
                             logger.warning(
                                 "[POST] Failed to enqueue shutdown sentinel in time; forcing post-processor shutdown."
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_stop_post_processor: {e}")
                     post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"task_execution:_stop_post_processor: {e}")
             try:
                 if post_proc is not None and post_proc.is_alive():
                     post_proc.terminate()
                     post_proc.join(timeout=5.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"task_execution:_stop_post_processor: {e}")
 
     def _run_parallel(
             self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread
@@ -643,7 +652,8 @@ class TaskExecutionMixin:
             ref_arrays = None
             try:
                 ref_arrays = tasks[0][5] if tasks and len(tasks[0]) > 5 else None
-            except Exception:
+            except Exception as e:
+                logger.debug(f"task_execution:_run_parallel: {e}")
                 ref_arrays = None
             remaining_tasks = list(tasks)
             max_pool_retries = 3
@@ -659,7 +669,8 @@ class TaskExecutionMixin:
                 gpu_executor.start()
                 try:
                     init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_parallel: {e}")
                     init_timeout = 30.0
                 if not gpu_executor.wait_until_ready(timeout=init_timeout):
                     err = getattr(gpu_executor, "last_init_error", None)
@@ -669,8 +680,8 @@ class TaskExecutionMixin:
                     warn_fallback("app.gpu_executor.single_process", msg, fatal=False)
                     try:
                         gpu_executor.stop()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_run_parallel: {e}")
                     gpu_executor = None
                 if gpu_executor is not None and gpu_executor.is_running:
                     logger.debug("[GPU Executor] Started for parallel song processing")
@@ -712,7 +723,8 @@ class TaskExecutionMixin:
                         secondary_workers = 0
                         try:
                             secondary_workers = int(env_get("GPU_EXECUTOR_SECONDARY_WORKERS", "0") or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_run_parallel: {e}")
                             secondary_workers = 0
                         secondary_workers = max(0, min(int(secondary_workers), int(effective_workers)))
                         primary_workers = int(effective_workers) - int(secondary_workers)
@@ -756,7 +768,8 @@ class TaskExecutionMixin:
 
                                 try:
                                     init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
-                                except Exception:
+                                except Exception as e:
+                                    logger.debug(f"task_execution:_run_parallel: {e}")
                                     init_timeout = 30.0
                                 if not secondary_ready.wait(timeout=max(0.0, float(init_timeout))):
                                     logger.warning(
@@ -764,8 +777,8 @@ class TaskExecutionMixin:
                                     )
                                     try:
                                         secondary_gpu_proc.terminate()
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug(f"task_execution:_run_parallel: {e}")
                                     secondary_gpu_proc = None
                                     secondary_gpu_req_q = None
                                 else:
@@ -775,7 +788,8 @@ class TaskExecutionMixin:
                                         status = secondary_status_q.get(timeout=1.0)
                                         ok = bool(status.get("ok", False)) if isinstance(status, dict) else True
                                         err = status.get("error") if isinstance(status, dict) else None
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.debug(f"task_execution:_run_parallel: {e}")
                                         ok = True
                                         err = None
 
@@ -786,8 +800,8 @@ class TaskExecutionMixin:
                                         logger.warning(msg)
                                         try:
                                             secondary_gpu_proc.terminate()
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"task_execution:_run_parallel: {e}")
                                         secondary_gpu_proc = None
                                         secondary_gpu_req_q = None
                                     else:
@@ -837,25 +851,25 @@ class TaskExecutionMixin:
                         finally:
                             try:
                                 executor.shutdown(wait=True, cancel_futures=bool(self._stop_requested.is_set()))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"task_execution:_run_parallel: {e}")
 
                             if secondary_gpu_req_q is not None and secondary_gpu_proc is not None:
                                 try:
                                     from gear_optimizer.solver.gpu_executor import send_gpu_executor_shutdown
 
                                     send_gpu_executor_shutdown(secondary_gpu_req_q)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"task_execution:_run_parallel: {e}")
                                 try:
                                     secondary_gpu_proc.join(timeout=10.0)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"task_execution:_run_parallel: {e}")
                                 if secondary_gpu_proc.is_alive():
                                     try:
                                         secondary_gpu_proc.terminate()
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.debug(f"task_execution:_run_parallel: {e}")
                     else:
                         # Fallback: no GPU executor, workers use direct GPU (may conflict)
                         executor = concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx)
@@ -884,8 +898,8 @@ class TaskExecutionMixin:
                         finally:
                             try:
                                 executor.shutdown(wait=True, cancel_futures=bool(self._stop_requested.is_set()))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"task_execution:_run_parallel: {e}")
 
                 except BrokenProcessPool as bpp:
                     broken_pool_failures += 1
@@ -922,8 +936,8 @@ class TaskExecutionMixin:
             if gpu_executor and gpu_executor.is_running:
                 try:
                     gpu_executor.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"task_execution:_run_parallel: {e}")
 
     def _consume_results(
             self,
@@ -963,8 +977,8 @@ class TaskExecutionMixin:
                         for f in list(future_map.keys()):
                             try:
                                 f.cancel()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"task_execution:_consume_results: {e}")
                     break
                 completed += 1
                 if future_map:
@@ -1058,8 +1072,8 @@ class TaskExecutionMixin:
                                 "eta_sec": float(eta_s),
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"task_execution:_consume_results: {e}")
                 logger.info("=" * 60)
                 logger.info(f"PROCESSING SONG: {task_label}")
                 logger.info("=" * 60)
@@ -1071,13 +1085,15 @@ class TaskExecutionMixin:
                     def _force_score_hint(entry: dict) -> int:
                         try:
                             force_obj = entry.get("force")
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                             force_obj = None
                         if not isinstance(force_obj, dict):
                             return 0
                         try:
                             s = int(force_obj.get("score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                             s = 0
                         if s > 0:
                             return s
@@ -1089,7 +1105,8 @@ class TaskExecutionMixin:
                             return 0
                         try:
                             return int(fg.get("final_score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                             return 0
 
                     valid_entries = []
@@ -1100,11 +1117,13 @@ class TaskExecutionMixin:
                             continue
                         try:
                             score_i = int(e.get("score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                             score_i = 0
                         try:
                             fg_i = int(e.get("fg_score", 0) or 0)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                             fg_i = 0
                         if max(score_i, fg_i, _force_score_hint(e)) <= 0:
                             continue
@@ -1135,8 +1154,8 @@ class TaskExecutionMixin:
                                     "ref_arrays": ref_arrays,
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
                 elif res.get("db_payload"):
                     pl = res["db_payload"]
                     # Only save if score > 0 and has gear/minis (prevents tainting on errors)
@@ -1175,8 +1194,8 @@ class TaskExecutionMixin:
                                     "ref_arrays": ref_arrays,
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"task_execution:_force_score_hint: {e}")
 
                 log_content = (res.get("log") or "").strip()
                 if log_content:

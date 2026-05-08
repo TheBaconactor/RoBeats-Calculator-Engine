@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import logging
 
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from .fg_config import has_valid_fg_config
@@ -9,6 +10,8 @@ from .persistence_keys import stable_loadout_key
 from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
+
+logger = logging.getLogger(__name__)
 def _replay_single_entry(
     entry: dict,
     *,
@@ -103,7 +106,8 @@ def canonicalize_baseline_persist_entries(
             if "fg_base_score" in row:
                 try:
                     merged["fg_base_score"] = int(row.get("fg_base_score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"baseline_replay:canonicalize_baseline_persist_entries: {e}")
                     merged["fg_base_score"] = 0
             merged["force"] = row_force
         else:

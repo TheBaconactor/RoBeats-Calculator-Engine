@@ -10,10 +10,13 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+import logging
 
 from gear_optimizer.data.database import get_db_connection, get_db_connection_readonly
 
 
+
+logger = logging.getLogger(__name__)
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     return {str(r[0]) for r in rows}
@@ -22,7 +25,8 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     try:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_audit:_table_has_column: {e}")
         return False
     return any(str(r[1]) == str(column) for r in rows)
 
@@ -30,7 +34,8 @@ def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool
 def _scalar(conn: sqlite3.Connection, sql: str) -> Any:
     try:
         row = conn.execute(sql).fetchone()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_audit:_scalar: {e}")
         return None
     if not row:
         return None

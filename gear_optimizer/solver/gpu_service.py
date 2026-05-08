@@ -23,6 +23,7 @@ from concurrent.futures import Future
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
+import logging
 
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import env_flag, truthy
@@ -42,6 +43,8 @@ from .gpu_executor import (
 )
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _DEFAULT_FG_OWNER_MAX_PAIRS = 1024
 
 
@@ -107,12 +110,14 @@ class GpuServiceClient:
         try:
             raw_max_payloads = env_get("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST", "8")
             self._fg_owner_max_payloads = int(str(raw_max_payloads or "8").strip() or "8")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             self._fg_owner_max_payloads = 8
         try:
             raw_payload_hard_cap = env_get("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS", "64")
             executor_max_payloads = int(str(raw_payload_hard_cap or "64").strip() or "64")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             executor_max_payloads = 16
         executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
         try:
@@ -120,13 +125,15 @@ class GpuServiceClient:
             self._fg_owner_max_pairs = int(
                 str(raw_pair_cap or str(_DEFAULT_FG_OWNER_MAX_PAIRS)).strip() or str(_DEFAULT_FG_OWNER_MAX_PAIRS)
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             self._fg_owner_max_pairs = _DEFAULT_FG_OWNER_MAX_PAIRS
         self._fg_owner_max_pairs = max(0, min(int(self._fg_owner_max_pairs), 4096))
         try:
             raw_work_cap = env_get("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "25000000")
             self._fg_owner_max_work = int(str(raw_work_cap or "25000000").strip() or "25000000")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             self._fg_owner_max_work = 25_000_000
         self._fg_owner_max_work = max(0, min(int(self._fg_owner_max_work), 2_000_000_000))
         self._fg_owner_max_payloads = max(1, int(self._fg_owner_max_payloads))
@@ -138,7 +145,8 @@ class GpuServiceClient:
             self._registry_static_handle_cache_max = int(
                 env_get("GPU_SERVICE_REGISTRY_STATIC_CACHE_MAX", "512") or "512"
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             self._registry_static_handle_cache_max = 512
         self._registry_static_handle_cache_max = max(32, int(self._registry_static_handle_cache_max))
 
@@ -152,7 +160,8 @@ class GpuServiceClient:
         self._request_timeout_default_enabled = bool(timeout_default_enabled)
         try:
             self._timeout_poll_sec = max(0.05, float(env_get("GPU_SERVICE_TIMEOUT_POLL_SEC", "0.25") or "0.25"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:__init__: {e}")
             self._timeout_poll_sec = 0.25
 
     @property
@@ -209,14 +218,14 @@ class GpuServiceClient:
         if self._profile_enabled and self._profile_print:
             try:
                 self.report_profile()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_service:close: {e}")
 
         if self._worker_id is not None:
             try:
                 self._executor.unregister_worker(int(self._worker_id))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_service:close: {e}")
         self._worker_id = None
         self._request_queue = None
         self._response_queue = None
@@ -266,7 +275,8 @@ class GpuServiceClient:
     ) -> None:
         try:
             latency = float(latency_sec)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_record_latency_sample: {e}")
             return
         if latency < 0.0:
             latency = 0.0
@@ -275,7 +285,8 @@ class GpuServiceClient:
             totals[key] += float(latency)
             if latency > float(maxes[key]):
                 maxes[key] = float(latency)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_record_latency_sample: {e}")
             return
 
         try:
@@ -288,7 +299,8 @@ class GpuServiceClient:
                     j = random.randint(0, n - 1)
                     if j < int(self._profile_sample_cap):
                         sample_list[j] = float(latency)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_record_latency_sample: {e}")
             return
         key_label = ""
         try:
@@ -296,7 +308,8 @@ class GpuServiceClient:
                 key_label = str(key.value)
             else:
                 key_label = str(key)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_record_latency_sample: {e}")
             key_label = ""
         emit_profile_event(
             component="gpu_service",
@@ -359,13 +372,14 @@ class GpuServiceClient:
         def _on_done(f: Future) -> None:
             try:
                 _ = f.result()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_on_done: {e}")
                 entry["registered"] = False
 
         try:
             fut.add_done_callback(_on_done)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_service:_on_done: {e}")
 
     def submit_solve_genomes_from_registry(self, payload: dict[str, Any]) -> GpuJobHandle:
         request_payload = dict(payload or {})
@@ -476,11 +490,12 @@ class GpuServiceClient:
             shape = getattr(pairs, "shape", None)
             if shape is not None and len(shape) > 0:
                 return max(0, int(shape[0]))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_service:_fg_payload_pair_count: {e}")
         try:
             return max(0, int(len(pairs)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_fg_payload_pair_count: {e}")
             return int(self._fg_owner_max_pairs)
 
     def _fg_payload_work_count(self, payload: dict[str, Any]) -> int:
@@ -488,7 +503,8 @@ class GpuServiceClient:
             return 0
         try:
             return max(1, int(estimate_fused_payload_threads(payload)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_fg_payload_work_count: {e}")
             return 1
 
     def _split_fg_payloads_for_owner_quantum(
@@ -596,7 +612,8 @@ class GpuServiceClient:
                 arr0 = first.get(key)
                 try:
                     arr0_np = np.asarray(arr0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_service:_merge_fg_tile_results: {e}")
                     merged[key] = arr0
                     continue
                 if arr0_np.ndim < 1 or int(arr0_np.shape[0]) != n:
@@ -625,7 +642,8 @@ class GpuServiceClient:
                 for key, value in result.items():
                     try:
                         arr = np.asarray(value)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"gpu_service:_merge_fg_tile_results: {e}")
                         continue
                     if arr.ndim < 1 or int(arr.shape[0]) <= int(row_idx):
                         continue
@@ -645,7 +663,8 @@ class GpuServiceClient:
 
         try:
             topk = int(original_payload.get("fg_download_topk"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_service:_merge_fg_tile_results: {e}")
             topk = 0
         keep_mask_raw = original_payload.get("fg_download_keep_mask")
         base_scores_raw = original_payload.get("fg_download_base_scores")
@@ -654,13 +673,15 @@ class GpuServiceClient:
             try:
                 keep_np = np.asarray(keep_mask_raw, dtype=np.int32).reshape(-1)
                 keep_indices = {int(i) for i in np.nonzero(keep_np != 0)[0].tolist()}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_merge_fg_tile_results: {e}")
                 keep_indices = set()
         base_scores = None
         if base_scores_raw is not None:
             try:
                 base_scores = np.asarray(base_scores_raw, dtype=np.int64).reshape(-1)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_merge_fg_tile_results: {e}")
                 base_scores = None
 
         kept_rows = [row for idx, row in best_by_index.items() if idx in keep_indices]
@@ -809,7 +830,8 @@ class GpuServiceClient:
                 resp: GpuResponse = self._response_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_rx_loop: {e}")
                 continue
 
             pending = None
@@ -832,8 +854,8 @@ class GpuServiceClient:
                         maxes=self._profile_max_sec,
                         samples=self._profile_samples,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_service:_rx_loop: {e}")
 
             if resp.success:
                 fut.set_result(resp.result)
@@ -853,7 +875,8 @@ class GpuServiceClient:
         if raw:
             try:
                 return max(0.0, float(raw))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_request_timeout_sec_for: {e}")
                 return 0.0
 
         if not self._request_timeout_default_enabled:
@@ -878,15 +901,16 @@ class GpuServiceClient:
         def _abort() -> None:
             try:
                 print(f"[GpuService] Fatal request timeout: {message}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_service:_abort: {e}")
             try:
                 time.sleep(0.1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_service:_abort: {e}")
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_abort: {e}")
                 os._exit(124)
 
         threading.Thread(target=_abort, name="GpuServiceTimeoutAbort", daemon=True).start()
@@ -929,7 +953,8 @@ class GpuServiceClient:
 
             try:
                 time.sleep(float(self._timeout_poll_sec))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:_timeout_loop: {e}")
                 time.sleep(0.25)
 
     def profile_summary(self) -> dict[str, Any]:
@@ -949,7 +974,8 @@ class GpuServiceClient:
                     idx = int(round(0.95 * (len(samples_sorted) - 1)))
                     idx = max(0, min(idx, len(samples_sorted) - 1))
                     p95 = float(samples_sorted[idx])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_service:profile_summary: {e}")
                     p95 = None
             out["by_type"][req_type.value] = {
                 "count": int(count),
@@ -969,7 +995,8 @@ class GpuServiceClient:
                     idx = int(round(0.95 * (len(samples_sorted) - 1)))
                     idx = max(0, min(idx, len(samples_sorted) - 1))
                     p95 = float(samples_sorted[idx])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_service:profile_summary: {e}")
                     p95 = None
             out["client_jobs"][name] = {
                 "count": int(count),
@@ -990,7 +1017,8 @@ class GpuServiceClient:
         for k, v in by_type.items():
             try:
                 items.append((k, float(v.get("avg_sec", 0.0) or 0.0), v))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:report_profile: {e}")
                 continue
         items.sort(key=lambda t: t[1], reverse=True)
         items = items[:8]
@@ -1002,20 +1030,22 @@ class GpuServiceClient:
                     f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
                     f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_service:report_profile: {e}")
                 continue
         line = "[GpuServiceClient][PROFILE] " + "; ".join(parts)
         try:
             print(line)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_service:report_profile: {e}")
         client_jobs = summary.get("client_jobs") or {}
         if client_jobs:
             items2 = []
             for k, v in client_jobs.items():
                 try:
                     items2.append((str(k), float(v.get("avg_sec", 0.0) or 0.0), v))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_service:report_profile: {e}")
                     continue
             items2.sort(key=lambda t: t[1], reverse=True)
             items2 = items2[:8]
@@ -1026,11 +1056,12 @@ class GpuServiceClient:
                         f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
                         f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
                     )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_service:report_profile: {e}")
                     continue
             line2 = "[GpuServiceClient][CLIENT_PROFILE] " + "; ".join(parts2)
             try:
                 print(line2)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_service:report_profile: {e}")
         return line

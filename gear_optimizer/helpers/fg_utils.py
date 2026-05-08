@@ -1,7 +1,10 @@
 from typing import Any
+import logging
 
 from gear_optimizer.core.parsing import env_flag
 
+
+logger = logging.getLogger(__name__)
 # Hard cap fallbacks to prevent config explosion
 # Section 1 can have more FG than section 2, etc. (diminishing returns)
 MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
@@ -146,7 +149,8 @@ def generate_dynamic_fg_configs(num_sections, non_fever_base, *, gap=None, fever
 def _clamp_stat_idx(x: Any) -> int:
     try:
         v = int(x)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"fg_utils:_clamp_stat_idx: {e}")
         v = 0
     return max(0, min(160, v))
 
@@ -200,7 +204,8 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
         try:
             for ft, ff in analysis_pairs:
                 pairs_in.add((_clamp_stat_idx(ft), _clamp_stat_idx(ff)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
             pairs_in = set()
     sampled_pairs = _sample_stat_pairs(pairs_in, max_pairs=16)
     if not sampled_pairs:
@@ -210,7 +215,8 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
     for ft_stat, ff_stat in sampled_pairs:
         try:
             analyses.append(scorer.get_section_analysis(int(ft_stat), int(ff_stat)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
             continue
     if not analyses:
         analyses = [scorer.get_section_analysis(80, 80)]
@@ -219,7 +225,8 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
     for a in analyses:
         try:
             useful_sections = max(int(useful_sections), int(a.get("useful_sections", 0) or 0))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
             continue
 
     analyzed_caps: list[int] = []
@@ -230,14 +237,16 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
                 caps0 = a.get("section_caps") or []
                 if sec < len(caps0):
                     best = max(int(best), int(caps0[sec] or 0))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
                 continue
         analyzed_caps.append(int(best))
 
     gap = 0
     try:
         gap = max(int(a.get("gap", 0) or 0) for a in analyses)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
         gap = 0
 
     # Limit to useful sections (sections beyond fever_activations have no benefit)
@@ -381,7 +390,8 @@ def iter_analytical_breakpoint_groups(
                 continue
             try:
                 cfg_set = set(cfg_list)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"fg_utils:_pack_groups_for_yield: {e}")
                 cfg_set = {tuple(x) for x in cfg_list}
             items.append((g, list(pairs), list(cfg_list), cfg_set))
 

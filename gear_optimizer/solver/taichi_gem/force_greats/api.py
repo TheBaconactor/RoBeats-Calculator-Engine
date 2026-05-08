@@ -77,7 +77,8 @@ def _get_gpu_profiler():
 
         p = get_gpu_profiler()
         _GPU_PROFILER_CACHE = p if getattr(p, "enabled", False) else None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_get_gpu_profiler: {e}")
         _GPU_PROFILER_CACHE = None
     _GPU_PROFILER_READY = True
     return _GPU_PROFILER_CACHE
@@ -86,7 +87,8 @@ def _get_gpu_profiler():
 def _bytes_of_array(arr: Any) -> int:
     try:
         return int(getattr(arr, "nbytes", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_bytes_of_array: {e}")
         return 0
 
 
@@ -98,7 +100,8 @@ def _record_upload(name: str, dt_sec: float, bytes_count: int) -> None:
         p.record_upload(float(dt_sec), bytes_count=int(bytes_count or 0))
         # Add a named measurement so `GpuProfiler.report(verbose=True)` shows a breakdown.
         p._record(f"fg_upload::{name}", float(dt_sec))  # type: ignore[attr-defined]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_record_upload: {e}")
         return
 
 
@@ -109,7 +112,8 @@ def _record_download(name: str, dt_sec: float, bytes_count: int) -> None:
     try:
         p.record_download(float(dt_sec), bytes_count=int(bytes_count or 0))
         p._record(f"fg_download::{name}", float(dt_sec))  # type: ignore[attr-defined]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_record_download: {e}")
         return
 
 
@@ -121,7 +125,8 @@ def _record_kernel_wall(name: str, dt_sec: float, *, genome_count: int = 0) -> N
         # "Kernel wall time" measured at sync boundaries (can include some dispatch/packing).
         p.record_kernel(float(dt_sec), genome_count=int(genome_count or 0))
         p._record(f"fg_kernel::{name}", float(dt_sec))  # type: ignore[attr-defined]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_record_kernel_wall: {e}")
         return
 
 
@@ -129,7 +134,8 @@ def _record_kernel_wall(name: str, dt_sec: float, *, genome_count: int = 0) -> N
 # device lost, or internal assertion failures). Retry with a hard Taichi reset.
 try:
     _FG_VULKAN_RETRIES = int(_ENV_GET("FG_VULKAN_RETRIES", "1"))
-except Exception:
+except Exception as e:
+    logger.debug(f"api:_record_kernel_wall: {e}")
     _FG_VULKAN_RETRIES = 1
 
 
@@ -193,14 +199,16 @@ def _ensure_cfg_mode_defaults() -> None:
         fg_fields.fg_cfg_mode_list.from_numpy(_fg_cfg_defaults_buf["mode"])
         fg_fields.fg_cfg_base_list.from_numpy(_fg_cfg_defaults_buf["base"])
         _fg_cfg_defaults_uploaded = True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_ensure_cfg_mode_defaults: {e}")
         return
 
 
 def _get_stage1_block_dim() -> int:
     try:
         stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_get_stage1_block_dim: {e}")
         stage1_block_dim = 64
     if stage1_block_dim <= 0:
         stage1_block_dim = 64
@@ -232,7 +240,8 @@ def _maybe_log_single_band(plan, *, n_work_items: int, max_cfg_len: int, label: 
             f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
             f"cfg_chunk={int(getattr(plan, 'cfg_chunk', max_cfg_len))}"
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_maybe_log_single_band: {e}")
         return
 
 
@@ -277,7 +286,8 @@ def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
     """
     try:
         n_total = int(len(fg_configs))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_forced_configs_sig: {e}")
         return (0, 0, ())
 
     if n_total <= 0:
@@ -291,7 +301,8 @@ def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
         try:
             seq = cfg  # tuple/list
             k = len(seq)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_norm: {e}")
             return (0,) * n_sections
         out = []
         for i in range(n_sections):
@@ -367,7 +378,8 @@ def _get_forced_counts_staging_tiers() -> tuple[int, ...]:
                 continue
             try:
                 tiers.append(int(tok))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_get_forced_counts_staging_tiers: {e}")
                 continue
 
     if not tiers:
@@ -518,7 +530,8 @@ def fg_download_global_best(
         global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
         try:
             max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_download_global_best: {e}")
             max_g = 0
         if max_g <= 0:
             max_g = int(n)
@@ -536,7 +549,8 @@ def fg_download_global_best(
         fg_kernels.fg_select_global_best_topk_kernel(int(slot), n, int(k))
         try:
             n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_download_global_best: {e}")
             n_pack = 0
         if n_pack <= 0:
             n_pack = 256
@@ -555,15 +569,16 @@ def fg_download_global_best(
                     f"[FG][XFER] global_best_topk: sync={_sync_sec * 1000:.2f}ms "
                     f"download={_dl_sec * 1000:.2f}ms rows={int(n_pack)} bytes={int(_bytes_sel)}"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"api:fg_download_global_best: {e}")
 
         # Derive actual selected length from the packed idx column (-1 sentinel).
         idx_all = sel_packed_all[:, 0]
         try:
             neg = np.nonzero(np.asarray(idx_all) < 0)[0]
             n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(n_pack)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_download_global_best: {e}")
             n_sel = int(n_pack)
 
         sel_packed = sel_packed_all[: int(n_sel), :]
@@ -597,8 +612,8 @@ def fg_download_global_best(
             print(
                 f"[FG][XFER] global_best({dl_mode}): sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms bytes={int(transfer_bytes)}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:fg_download_global_best: {e}")
     cfg_counts = packed[:, 11 : 11 + int(fg_fields.FG_MAX_SECTIONS)]
     return {
         "final_score": packed[:, 0],
@@ -663,7 +678,8 @@ def fg_pack_global_best_topk_to_batch(
         global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
         try:
             max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_pack_global_best_topk_to_batch: {e}")
             max_g = 0
         if max_g <= 0:
             max_g = int(n)
@@ -762,7 +778,8 @@ def fg_select_signature_frontier_indices(
     try:
         neg = np.nonzero(np.asarray(selected_all) < 0)[0]
         n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else min(int(limit), int(n))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:fg_select_signature_frontier_indices: {e}")
         n_sel = min(int(limit), int(n))
     return np.asarray(selected_all[: int(n_sel)], dtype=np.int32)
 
@@ -892,7 +909,8 @@ def fg_select_signature_frontier_batch(payloads: list[dict[str, np.ndarray | int
         total_n = 0
         try:
             total_n = sum(int(np.asarray(payload["base_scores"]).shape[0]) for payload in chunk)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_select_signature_frontier_batch: {e}")
             total_n = 0
         _record_kernel_wall("signature_frontier_batch_sync", _sync_sec, genome_count=total_n)
         _record_download(
@@ -905,11 +923,13 @@ def fg_select_signature_frontier_batch(payloads: list[dict[str, np.ndarray | int
             row = np.asarray(selected_batch_all[int(batch_idx)], dtype=np.int32)
             try:
                 n_sel = max(0, min(int(count_batch_all[int(batch_idx)]), int(payload["limit"])))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:fg_select_signature_frontier_batch: {e}")
                 try:
                     neg = np.nonzero(row < 0)[0]
                     n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(payload["limit"])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"api:fg_select_signature_frontier_batch: {e}")
                     n_sel = int(payload["limit"])
             results.append(np.asarray(row[: int(n_sel)], dtype=np.int32))
 
@@ -926,7 +946,8 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
         return []
     try:
         max_batch = int(getattr(fg_fields, "FG_DOWNLOAD_BATCH_MAX", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:fg_download_packed_topk_batch: {e}")
         max_batch = 0
     if max_batch <= 0:
         max_batch = 1
@@ -963,7 +984,8 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
                 continue
             try:
                 cap = int(getattr(fld, "shape", (0,))[0] or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:fg_download_packed_topk_batch: {e}")
                 cap = 0
             if cap > 0 and int(n_payloads) <= int(cap):
                 best = (name, fld)
@@ -979,7 +1001,8 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
             sel_packed_full = fg_fields.fg_selected_packed_batch.to_numpy()
             sel_packed_transfer_bytes = int(getattr(sel_packed_full, "nbytes", 0) or 0)
             sel_packed_all = sel_packed_full[: int(n_payloads), :, :]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:fg_download_packed_topk_batch: {e}")
         sel_packed_full = fg_fields.fg_selected_packed_batch.to_numpy()
         sel_packed_transfer_bytes = int(getattr(sel_packed_full, "nbytes", 0) or 0)
         sel_packed_all = sel_packed_full[: int(n_payloads), :, :]
@@ -993,8 +1016,8 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
                 f"[FG][XFER] packed_topk_batch: sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms "
                 f"payloads={n_payloads} bytes={int(sel_packed_transfer_bytes)} staging={used_staging}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:fg_download_packed_topk_batch: {e}")
 
     n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
     out: list[dict[str, np.ndarray]] = []
@@ -1004,7 +1027,8 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
         try:
             neg = np.nonzero(np.asarray(idx_all) < 0)[0]
             n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(n_pack)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:fg_download_packed_topk_batch: {e}")
             n_sel = int(n_pack)
         n_sel = max(0, min(int(n_sel), int(n_pack)))
         sel_packed = view_all[: int(n_sel), :]
@@ -1064,7 +1088,8 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
         arr = np.ascontiguousarray(arr, dtype=np.int32)
     try:
         ptr = int(arr.__array_interface__["data"][0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_ensure_pair_caps_uploaded: {e}")
         ptr = 0
     ptr_key = (ptr, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2]))
     prev = _fg_pair_caps_custom_key if _fg_pair_caps_state == "custom" else None
@@ -1077,15 +1102,16 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
                 and int(prev[3]) == int(ptr_key[3])
             ):
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:_ensure_pair_caps_uploaded: {e}")
 
     # Stable content key: avoid redundant re-uploads when pair_caps_grid is rebuilt (new pointer) with identical values.
     digest = None
     if prev is not None and len(prev) >= 5:
         try:
             prev_digest = prev[4]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_ensure_pair_caps_uploaded: {e}")
             prev_digest = None
         if prev_digest is not None:
             try:
@@ -1095,7 +1121,8 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
                 if digest == prev_digest:
                     _fg_pair_caps_custom_key = (ptr_key[0], ptr_key[1], ptr_key[2], ptr_key[3], digest)
                     return
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_ensure_pair_caps_uploaded: {e}")
                 digest = None
     _t0 = time.perf_counter()
     fg_fields.fg_pair_caps.from_numpy(arr)
@@ -1107,7 +1134,8 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
             h = hashlib.blake2b(digest_size=12)
             h.update(memoryview(arr).cast("B"))
             digest = h.digest()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_ensure_pair_caps_uploaded: {e}")
             digest = None
     _fg_pair_caps_custom_key = (ptr_key[0], ptr_key[1], ptr_key[2], ptr_key[3], digest)
 
@@ -1123,7 +1151,8 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
     """
     try:
         n = int(n)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_ftff_pairs_sig: {e}")
         n = 0
     if n <= 0:
         return (0,)
@@ -1139,8 +1168,8 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
                 h = hashlib.blake2b(digest_size=12)
                 h.update(memoryview(view).cast("B"))
                 return ("np_hash", int(n), h.digest())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"api:_ftff_pairs_sig: {e}")
 
     # Generic sequence path: sample first/mid/last.
     try:
@@ -1154,8 +1183,9 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
             (int(mid_ft), int(mid_ff)),
             (int(last_ft), int(last_ff)),
         )
-    except Exception:
+    except Exception as e:
         # Fallback: only length.
+        logger.debug(f"api:_ftff_pairs_sig: {e}")
         return ("seq", n)
 
 
@@ -1185,7 +1215,8 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
     # Fast path: cache by backing pointer + sampled points (O(1)).
     try:
         ptr = int(ts.__array_interface__["data"][0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_upload_song_timestamps: {e}")
         ptr = 0
     first = float(ts[0])
     last = float(ts[-1])
@@ -1202,7 +1233,8 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
         # for large buffers (timestamps can be 100k-200k floats).
         digest = hashlib.sha1(memoryview(ts).cast("B")).digest()[:12]
         content_key = (int(n), digest)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_upload_song_timestamps: {e}")
         content_key = None
 
     if content_key is not None and _fg_last_song_key == content_key:
@@ -1264,7 +1296,8 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
 
     try:
         ptr = int(candidate.__array_interface__["data"][0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_upload_great_candidate_timestamps: {e}")
         ptr = 0
     first = float(candidate[0])
     last = float(candidate[-1])
@@ -1279,7 +1312,8 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     try:
         digest = hashlib.sha1(memoryview(candidate).cast("B")).digest()[:12]
         content_key = (int(n), digest)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_upload_great_candidate_timestamps: {e}")
         content_key = None
 
     if content_key is not None and _fg_last_great_key == content_key:
@@ -1332,7 +1366,8 @@ def _fg_download_packed_prefix(
             mode = str(name)
             copy_kernel(fld, int(n))
             out = fld.to_numpy()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_download_packed_prefix: {e}")
         out = None
 
     if out is None:
@@ -1340,7 +1375,8 @@ def _fg_download_packed_prefix(
 
     try:
         transfer_bytes = int(getattr(out, "nbytes", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_fg_download_packed_prefix: {e}")
         transfer_bytes = 0
 
     view = out[:n, :]
@@ -1491,7 +1527,8 @@ def _solve_force_greats_finder_gpu_impl(
         # If caller passed the same array (or a view), alias and skip upload.
         try:
             same_buf = np.shares_memory(great_candidate_timestamps_np, timestamps_np)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_solve_force_greats_finder_gpu_impl: {e}")
             same_buf = False
         if same_buf:
             _fg_last_great_key = _fg_last_song_key
@@ -1550,13 +1587,15 @@ def _solve_force_greats_finder_gpu_impl(
                 ptr = int(genome_stats_list.__array_interface__["data"][0])
             else:
                 ptr = int(id(genome_stats_list))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_solve_force_greats_finder_gpu_impl: {e}")
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
         try:
             ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_solve_force_greats_finder_gpu_impl: {e}")
             ok = False
         if not ok:
             raise RuntimeError(
@@ -1599,7 +1638,8 @@ def _solve_force_greats_finder_gpu_impl(
                 for i, (ftg, ffg) in enumerate(ftff_pairs):
                     ft_buf[i] = int(ftg)
                     ff_buf[i] = int(ffg)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_solve_force_greats_finder_gpu_impl: {e}")
             for i, (ftg, ffg) in enumerate(ftff_pairs):
                 ft_buf[i] = int(ftg)
                 ff_buf[i] = int(ffg)
@@ -1727,7 +1767,8 @@ def _solve_force_greats_finder_gpu_impl(
             if arr_full.ndim == 2 and int(arr_full.shape[0]) == int(n_cfg_total):
                 packed_configs = arr_full
                 packed_cols = int(arr_full.shape[1])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_maybe_pack_configs: {e}")
             packed_configs = None
             packed_cols = 0
 
@@ -1743,7 +1784,8 @@ def _solve_force_greats_finder_gpu_impl(
     cfg_sig = None
     try:
         cfg_sig = _forced_configs_sig(fg_configs, int(n_sections))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:_maybe_pack_configs: {e}")
         cfg_sig = None
 
     resident_ok = (
@@ -1785,7 +1827,8 @@ def _solve_force_greats_finder_gpu_impl(
                         for i, cfg in enumerate(chunk):
                             limit = min(n_sections, len(cfg))
                             buf[i, :limit] = cfg[:limit]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_maybe_pack_configs: {e}")
                 for i, cfg in enumerate(chunk):
                     limit = min(n_sections, len(cfg))
                     buf[i, :limit] = cfg[:limit]
@@ -1837,7 +1880,8 @@ def _solve_force_greats_finder_gpu_impl(
                         for i, cfg in enumerate(chunk):
                             limit = min(n_sections, len(cfg))
                             buf[i, :limit] = cfg[:limit]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_maybe_pack_configs: {e}")
                 for i, cfg in enumerate(chunk):
                     limit = min(n_sections, len(cfg))
                     buf[i, :limit] = cfg[:limit]
@@ -1942,8 +1986,8 @@ def _solve_force_greats_finder_gpu_impl(
                     f"[FG][KERNEL] stage1_sync_wall={stage1_wall * 1000:.2f}ms "
                     f"(genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"api:_maybe_pack_configs: {e}")
 
     # Stage 2: Reduce across ftff to find best per genome.
     # Recompute aux outputs from the packed winner to avoid races on flat-kernel atomics.
@@ -2033,8 +2077,8 @@ def _solve_force_greats_finder_gpu_impl(
     if _FG_TRANSFER_TRACE:
         try:
             print(f"[FG][XFER] best_packed: download={_dt * 1000:.2f}ms bytes={int(transfer_bytes)} staging={dl_mode}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:_maybe_pack_configs: {e}")
 
     # Unpack on CPU (trivial cost compared to 11 GPU waits)
     out_final = packed_results[:, 0]
@@ -2305,7 +2349,8 @@ def solve_force_greats_finder_gpu_tasks(
 
     try:
         max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
         max_ftff = 0
     if max_ftff <= 0:
         max_ftff = 1024
@@ -2325,7 +2370,8 @@ def solve_force_greats_finder_gpu_tasks(
         great_candidate_timestamps_np = np.asarray(great_candidate_timestamps_np, dtype=np.float32)
         try:
             same_buf = np.shares_memory(great_candidate_timestamps_np, timestamps_np)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             same_buf = False
         if same_buf:
             _fg_last_great_key = _fg_last_song_key
@@ -2387,7 +2433,8 @@ def solve_force_greats_finder_gpu_tasks(
                 ptr = int(genome_stats_list.__array_interface__["data"][0])
             else:
                 ptr = int(id(genome_stats_list))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
@@ -2396,13 +2443,15 @@ def solve_force_greats_finder_gpu_tasks(
         ok = False
         try:
             ok = prev is not None and int(prev[0]) == int(n_genomes)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             ok = False
         if isinstance(genome_stats_list, np.ndarray) and prev is not None:
             try:
                 ptr = int(genome_stats_list.__array_interface__["data"][0])
                 ok = ok and int(prev[1]) == int(ptr)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 ok = False
         if not ok:
             raise RuntimeError(
@@ -2443,7 +2492,8 @@ def solve_force_greats_finder_gpu_tasks(
             ftff_empty = not ftff_pairs
         try:
             n_pairs = int(ftff_pairs.shape[0]) if isinstance(ftff_pairs, np.ndarray) else int(len(ftff_pairs))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             n_pairs = 0
         if fg_configs is None:
             cfg_empty = True
@@ -2460,7 +2510,8 @@ def solve_force_greats_finder_gpu_tasks(
         else:
             try:
                 counts_max_fp_arr = np.asarray(counts_max_fp, dtype=np.int32)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 counts_max_fp_arr = None
             if isinstance(counts_max_fp_arr, np.ndarray) and int(getattr(counts_max_fp_arr, "ndim", 0) or 0) == 2:
                 if n_pairs > 0 and int(counts_max_fp_arr.shape[0]) == int(n_pairs):
@@ -2516,7 +2567,8 @@ def solve_force_greats_finder_gpu_tasks(
                 compute_gem_scale = int(
                     counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 continue
             if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
                 continue
@@ -2551,24 +2603,27 @@ def solve_force_greats_finder_gpu_tasks(
             # Per-pair max-FP caps: avoid CPU grouping and keep implicit configs per FT/FF pair.
             try:
                 max_fp_matrix = np.asarray(counts_max_fp_arr[:, : int(n_sections)], dtype=np.int32)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 continue
             if int(max_fp_matrix.shape[0]) <= 0:
                 continue
             try:
                 cfg_len_matrix = np.prod(np.maximum(max_fp_matrix, 0) + 1, axis=1, dtype=np.int64)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 cfg_len_matrix = None
             if cfg_len_matrix is None:
                 continue
             try:
                 cfg_len_matrix = np.clip(cfg_len_matrix, 1, np.iinfo(np.int32).max).astype(np.int32, copy=False)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 cfg_len_matrix = np.asarray(cfg_len_matrix, dtype=np.int32)
             try:
                 max_cfg_len = max(int(max_cfg_len), int(np.max(cfg_len_matrix)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             total_pairs += int(n_pairs)
             prepared_tasks.append(
                 {
@@ -2585,13 +2640,15 @@ def solve_force_greats_finder_gpu_tasks(
 
         try:
             cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             cfg_base = int(base_cfg_offset)
         use_implicit = bool(counts_max_fp and implicit_cfgs)
         if counts_max_fp:
             try:
                 max_fp_list = [max(0, int(x or 0)) for x in list(counts_max_fp)[: int(n_sections)]]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 max_fp_list = []
             if not max_fp_list:
                 cfg_len = 1
@@ -2607,13 +2664,14 @@ def solve_force_greats_finder_gpu_tasks(
             max_cfg_len = cfg_len
         try:
             total_pairs += int(len(ftff_pairs))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
 
         if counts_max_fp:
             try:
                 key = (tuple(max_fp_list), int(cfg_base))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 key = (int(id(counts_max_fp)), int(cfg_base))
         else:
             key = (int(id(fg_configs)), int(cfg_base))
@@ -2665,7 +2723,8 @@ def solve_force_greats_finder_gpu_tasks(
                 arr_cfg = None
                 try:
                     arr_cfg = np.asarray(fg_configs, dtype=np.int32)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                     arr_cfg = None
                 arr_cfg_is_packed = bool(
                     arr_cfg is not None and getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(cfg_len)
@@ -2687,7 +2746,8 @@ def solve_force_greats_finder_gpu_tasks(
                             for i, cfg in enumerate(chunk):
                                 limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
                                 buf[i, :limit] = cfg[:limit]
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                         chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
                         for i, cfg in enumerate(chunk):
                             limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
@@ -2713,7 +2773,8 @@ def solve_force_greats_finder_gpu_tasks(
                 max_fp_arr = np.zeros((int(fg_fields.FG_MAX_SECTIONS),), dtype=np.int32)
                 for i, v in enumerate(max_fp_list[: int(fg_fields.FG_MAX_SECTIONS)]):
                     max_fp_arr[i] = int(v)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 max_fp_arr = None
 
         prepared_tasks.append(
@@ -2742,8 +2803,8 @@ def solve_force_greats_finder_gpu_tasks(
             print(
                 f"[PERF] FG packed tasks: cfg_upload_total={dt * 1000:.1f}ms unique_cfg_windows={len(uploaded_cfg_keys)}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
 
     # Build flat work items ON GPU (cached by (n_genomes, n_ftff)).
     global _fg_flat_work_key
@@ -2908,8 +2969,8 @@ def solve_force_greats_finder_gpu_tasks(
                     # CPU needs per-ftff lengths to build cfg_start/cfg_len per band.
                     try:
                         cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"api:_flush_chunk: {e}")
                 else:
                     # Avoid downloading the full len list (1024 ints) just to compute max().
                     fg_kernels.fg_reduce_cfg_total_len_max_kernel(int(n_ftff))
@@ -2939,12 +3000,14 @@ def solve_force_greats_finder_gpu_tasks(
         if use_gpu_max_fp and use_gpu_cfg_ranges and max_fp_compute_ctx is not None:
             try:
                 max_cfg_len_chunk = int(fg_fields.fg_cfg_total_len_max[None])
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_flush_chunk: {e}")
                 max_cfg_len_chunk = 0
         else:
             try:
                 max_cfg_len_chunk = int(np.max(cfg_total_len_buf[: int(n_ftff)]))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"api:_flush_chunk: {e}")
                 max_cfg_len_chunk = 0
         cfg_chunk_run = int(cfg_chunk)
         if use_gpu_max_fp and int(max_cfg_len_chunk) > 0:
@@ -3142,8 +3205,8 @@ def solve_force_greats_finder_gpu_tasks(
                         f"[PERF] FG packed tasks: stage1_sync_wall={stage1_wall * 1000:.1f}ms "
                         f"(genomes={n_genomes} ftff={n_ftff} cfg_max={max_cfg_len_chunk} bands={n_bands})"
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"api:_flush_chunk: {e}")
         t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
         fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
             int(n_genomes),
@@ -3176,14 +3239,14 @@ def solve_force_greats_finder_gpu_tasks(
             if _PERF_TIMING:
                 try:
                     print(f"[PERF] FG packed tasks: stage2_sync_wall={stage2_wall * 1000:.1f}ms (ftff={n_ftff})")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"api:_flush_chunk: {e}")
         if t_chunk0 and _PERF_TIMING:
             try:
                 dt = time.perf_counter() - float(t_chunk0)
                 print(f"[PERF] FG packed tasks: chunk_total={dt * 1000:.1f}ms (ftff={n_ftff})")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"api:_flush_chunk: {e}")
 
     max_fp_compute_ctx = None
     for task in prepared_tasks:
@@ -3209,7 +3272,8 @@ def solve_force_greats_finder_gpu_tasks(
             cfg_base = int(task.get("cfg_base", 0) or 0)
             cfg_len = int(task.get("cfg_len", 0) or 0)
             cfg_mode = int(task.get("cfg_mode", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_flush_chunk: {e}")
             continue
         max_fp_arr = task.get("max_fp_arr")
         max_fp_matrix = task.get("max_fp_matrix")
@@ -3222,7 +3286,8 @@ def solve_force_greats_finder_gpu_tasks(
                 pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
             else:
                 pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api:_flush_chunk: {e}")
             continue
         if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
             continue
@@ -3257,7 +3322,8 @@ def solve_force_greats_finder_gpu_tasks(
                     cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_matrix[
                         int(idx) : int(idx) + int(take), : int(n_sections)
                     ]
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"api:_flush_chunk: {e}")
                     cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(
                         max_fp_matrix[int(idx) : int(idx) + int(take)], dtype=np.int32
                     )[:, : int(n_sections)]
@@ -3268,7 +3334,8 @@ def solve_force_greats_finder_gpu_tasks(
                 if int(cfg_mode) != 0 and max_fp_arr is not None:
                     try:
                         cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"api:_flush_chunk: {e}")
                         cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[
                             : int(n_sections)
                         ]

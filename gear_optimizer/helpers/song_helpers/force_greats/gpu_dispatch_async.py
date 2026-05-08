@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
+import logging
 
 from ....core.fallback_monitor import warn_fallback
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
@@ -95,7 +98,8 @@ def resolve_fg_async_batching_settings(
         try:
             ex = getattr(gpu_client, "executor", None)
             in_process = bool(getattr(ex, "_in_process_queues", False))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_async:resolve_fg_async_batching_settings: {e}")
             in_process = False
 
     fg_async_max_inflight_default = 8
@@ -105,7 +109,8 @@ def resolve_fg_async_batching_settings(
 
     try:
         fg_async_max_inflight = int(env_get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_async:resolve_fg_async_batching_settings: {e}")
         fg_async_max_inflight = fg_async_max_inflight_default
     fg_async_max_inflight = max(1, int(fg_async_max_inflight))
 
@@ -119,7 +124,8 @@ def resolve_fg_async_batching_settings(
             else:
                 # IPC mode: batch aggressively enough to reduce per-request overhead.
                 fg_async_tasks_per_request_default = 256
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_async:resolve_fg_async_batching_settings: {e}")
             fg_async_tasks_per_request_default = 8
 
     fg_async_tasks_per_request = fg_async_tasks_per_request_default
@@ -127,7 +133,8 @@ def resolve_fg_async_batching_settings(
         fg_async_tasks_per_request = int(
             env_get("FG_ASYNC_TASKS_PER_REQUEST", str(fg_async_tasks_per_request_default))
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_async:resolve_fg_async_batching_settings: {e}")
         fg_async_tasks_per_request = fg_async_tasks_per_request_default
     fg_async_tasks_per_request = max(1, int(fg_async_tasks_per_request))
 
@@ -149,7 +156,8 @@ def resolve_fg_async_batching_settings(
     unsafe_multi_request_slot = False
     try:
         unsafe_multi_request_slot = int(song_slot) <= 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_async:resolve_fg_async_batching_settings: {e}")
         unsafe_multi_request_slot = True
 
     enforce_single_request = False

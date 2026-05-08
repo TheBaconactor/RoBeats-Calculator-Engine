@@ -16,6 +16,7 @@ fill penalties at the cost of score penalties from great notes.
 import numpy as np
 import threading
 from math import floor, ceil
+import logging
 from cachetools import LRUCache
 
 from ...core.constants import (
@@ -46,6 +47,8 @@ from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_di
 from .stats_ops import apply_gems_to_base_stats
 
 
+
+logger = logging.getLogger(__name__)
 # Constants
 MAX_FT_FF_GEMS = TOTAL_GEM_BUDGET
 FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
@@ -979,8 +982,8 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
             cur = gs(k, 0)
             if (int(cur) - int(d)) < -50:  # small tolerance for rounding
                 return {kk: gs(kk, 0) for kk in keys}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"force_greats:_extract_base_stats: {e}")
 
     # Stats has gem contributions baked in - reverse them.
     base = {k: gs(k, 0) for k in keys}
@@ -1138,6 +1141,6 @@ def apply_force_greats_to_result(
             fg_variant["FF"] = fg_ff
             fg_variant["GemCounts"] = fg_gem_counts
             fg_variant["Stats"] = final_stats
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"force_greats:apply_force_greats_to_result: {e}")
     return fg_variant

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from gear_optimizer.core.utils import safe_float, safe_int
 from gear_optimizer.solver.inflight_utils import _truthy
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
     """
     Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
@@ -17,15 +20,18 @@ def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count
     """
     try:
         inflight_limit = int(inflight_limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
         inflight_limit = 1
     try:
         prep_limit = int(prep_limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
         prep_limit = 1
     try:
         pending_count = int(pending_count)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
         pending_count = 0
 
     inflight_limit = max(1, inflight_limit)
@@ -67,16 +73,16 @@ def _read_fg_ga_credit_budget(cfg0: Any, *, default_budget: int) -> tuple[int, b
                     budget,
                 )
                 explicit = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_fg_ga_credit_budget: {e}")
 
     raw = env_get("INFLIGHT_FG_GA_CREDIT_BUDGET")
     if raw is not None and str(raw).strip() != "":
         try:
             budget = int(raw)
             explicit = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_fg_ga_credit_budget: {e}")
 
     return max(1, int(budget)), bool(explicit)
 
@@ -95,15 +101,15 @@ def _read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> 
                 cfg0.get("IterationEngine", "InFlight_ContinuousGABurst", fallback=str(burst)),
                 burst,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_continuous_ga_dispatch_burst: {e}")
 
     raw = env_get("INFLIGHT_CONTINUOUS_GA_BURST")
     if raw is not None and str(raw).strip() != "":
         try:
             burst = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_continuous_ga_dispatch_burst: {e}")
 
     return max(1, min(int(burst), 32))
 
@@ -128,8 +134,8 @@ def _read_continuous_fg_adaptive_submit(cfg0: Any) -> tuple[bool, int]:
                     cfg0.get("IterationEngine", "InFlight_FGAdaptiveMaxBurst", fallback=str(max_burst)),
                     max_burst,
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_continuous_fg_adaptive_submit: {e}")
 
     raw = env_get("INFLIGHT_FG_ADAPTIVE_SUBMIT")
     if raw is not None and str(raw).strip() != "":
@@ -139,8 +145,8 @@ def _read_continuous_fg_adaptive_submit(cfg0: Any) -> tuple[bool, int]:
     if raw is not None and str(raw).strip() != "":
         try:
             max_burst = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_continuous_fg_adaptive_submit: {e}")
 
     return bool(enabled), max(1, min(int(max_burst), 16))
 
@@ -175,23 +181,23 @@ def _read_fg_slot_reserve(
                     cfg0.get("IterationEngine", "InFlight_FGSlotReserveRatio", fallback=str(reserve_ratio)),
                     reserve_ratio,
                 )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_fg_slot_reserve: {e}")
 
     raw = env_get("INFLIGHT_FG_SLOT_RESERVE")
     if raw is not None and str(raw).strip() != "":
         try:
             reserve = int(raw)
             absolute_explicit = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_fg_slot_reserve: {e}")
 
     raw = env_get("INFLIGHT_FG_SLOT_RESERVE_RATIO")
     if raw is not None and str(raw).strip() != "":
         try:
             reserve_ratio = float(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_fg_slot_reserve: {e}")
 
     reserve_cap = max(1, min(max(1, int(song_slot_limit) - 1), max(1, int(inflight_limit))))
     if absolute_explicit:
@@ -214,7 +220,8 @@ def _read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
     """
     try:
         inflight_limit_i = int(inflight_limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_inflight_target_song_lanes: {e}")
         inflight_limit_i = 1
     inflight_limit_i = max(1, int(inflight_limit_i))
 
@@ -225,15 +232,15 @@ def _read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
                 cfg0.get("IterationEngine", "InFlight_TargetSongLanes", fallback=str(target)),
                 target,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_inflight_target_song_lanes: {e}")
 
     raw = env_get("INFLIGHT_TARGET_SONG_LANES")
     if raw is not None and str(raw).strip() != "":
         try:
             target = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_inflight_target_song_lanes: {e}")
 
     return max(1, min(int(target), int(inflight_limit_i)))
 

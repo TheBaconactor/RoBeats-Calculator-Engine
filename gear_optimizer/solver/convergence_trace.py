@@ -13,10 +13,13 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+import logging
 
 from gear_optimizer.core.parsing import truthy
 from gear_optimizer.core.utils import safe_int as _safe_int
 
+
+logger = logging.getLogger(__name__)
 def _sanitize_name(value: str, *, fallback: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -98,7 +101,8 @@ class ConvergenceTraceWriter:
             pid = int(os.getpid())
             filename = f"{song_slug}__{diff_slug}__ga{int(self.ga_seed)}__{ts_ms}__p{pid}.jsonl"
             return os.path.join(out_dir_norm, filename)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"convergence_trace:_build_path: {e}")
             return None
 
     @property
@@ -130,7 +134,8 @@ class ConvergenceTraceWriter:
         if best_results is not None:
             try:
                 vals = [int(x) for x in list(best_results)]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"convergence_trace:append: {e}")
                 vals = []
             if len(vals) >= 7:
                 row["best_score"] = int(vals[0])
@@ -149,7 +154,8 @@ class ConvergenceTraceWriter:
                 with open(path, "a", encoding="utf-8") as fh:
                     fh.write(payload)
                     fh.write("\n")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"convergence_trace:append: {e}")
             return
 
 

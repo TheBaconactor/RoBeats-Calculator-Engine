@@ -3,8 +3,11 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass
 class ProgressTracker:
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -64,5 +67,6 @@ class ProgressTracker:
                 failed_delta=failed_delta,
                 record_info=record_info,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_progress:emit_progress: {e}")
             return

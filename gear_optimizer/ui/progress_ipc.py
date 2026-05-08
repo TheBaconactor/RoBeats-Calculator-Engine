@@ -4,8 +4,11 @@ import struct
 import time
 from dataclasses import dataclass
 from multiprocessing.shared_memory import SharedMemory
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ProgressSnapshot:
     epoch: int
@@ -51,16 +54,16 @@ class SharedProgress:
     def close(self) -> None:
         try:
             self._shm.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress_ipc:close: {e}")
 
     def unlink(self) -> None:
         if not self._owner:
             return
         try:
             self._shm.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress_ipc:unlink: {e}")
 
     @classmethod
     def create(cls) -> "SharedProgress":
@@ -78,7 +81,8 @@ class SharedProgress:
     def _encode_text(value: str, *, max_bytes: int) -> bytes:
         try:
             raw = (value or "").encode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress_ipc:_encode_text: {e}")
             raw = b""
         if len(raw) >= max_bytes:
             raw = raw[: max(0, int(max_bytes) - 1)]
@@ -88,12 +92,14 @@ class SharedProgress:
     def _decode_text(buf: memoryview) -> str:
         try:
             raw = bytes(buf)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress_ipc:_decode_text: {e}")
             return ""
         raw = raw.split(b"\x00", 1)[0]
         try:
             return raw.decode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress_ipc:_decode_text: {e}")
             return ""
 
     def update(
@@ -112,7 +118,8 @@ class SharedProgress:
         seq1 = (int(self._seq) + 1) & 0xFFFFFFFF
         try:
             self._SEQ_STRUCT.pack_into(buf, self._SEQ_OFF, int(seq1))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress_ipc:update: {e}")
             return
 
         if ts_ms is None:
@@ -129,8 +136,8 @@ class SharedProgress:
                 max(0, int(new_records)),
                 int(self._FLAGS_DEFAULT),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress_ipc:update: {e}")
 
         try:
             buf[self._SONG_OFF : self._SONG_OFF + self.SONG_MAX_BYTES] = self._encode_text(
@@ -139,14 +146,15 @@ class SharedProgress:
             buf[self._STATUS_OFF : self._STATUS_OFF + self.STATUS_MAX_BYTES] = self._encode_text(
                 str(status or ""), max_bytes=self.STATUS_MAX_BYTES
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress_ipc:update: {e}")
 
         seq2 = (int(seq1) + 1) & 0xFFFFFFFF
         try:
             self._SEQ_STRUCT.pack_into(buf, self._SEQ_OFF, int(seq2))
             self._seq = int(seq2)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress_ipc:update: {e}")
             return
 
     def read(self) -> ProgressSnapshot:
@@ -154,7 +162,8 @@ class SharedProgress:
         for _ in range(6):
             try:
                 seq1 = int(self._SEQ_STRUCT.unpack_from(buf, self._SEQ_OFF)[0])
-            except Exception:
+            except Exception as e:
+                logger.debug(f"progress_ipc:read: {e}")
                 break
             if seq1 & 1:
                 continue
@@ -162,13 +171,15 @@ class SharedProgress:
                 epoch, ts_ms, completed, total, failed, new_records, _flags = self._META_STRUCT.unpack_from(
                     buf, self._META_OFF
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"progress_ipc:read: {e}")
                 continue
             song = self._decode_text(buf[self._SONG_OFF : self._SONG_OFF + self.SONG_MAX_BYTES])
             status = self._decode_text(buf[self._STATUS_OFF : self._STATUS_OFF + self.STATUS_MAX_BYTES])
             try:
                 seq2 = int(self._SEQ_STRUCT.unpack_from(buf, self._SEQ_OFF)[0])
-            except Exception:
+            except Exception as e:
+                logger.debug(f"progress_ipc:read: {e}")
                 continue
             if seq1 != seq2 or (seq2 & 1):
                 continue

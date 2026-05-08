@@ -25,8 +25,8 @@ class InflightRunner:
             inflight_songs_env = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
             if inflight_songs_env > 0:
                 inflight_songs = inflight_songs_env
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_inflight_runner:get_inflight_songs_requested: {e}")
 
         return inflight_songs
 
@@ -43,7 +43,8 @@ class InflightRunner:
                 )
             else:
                 inflight_instances = int(self._app._current_runtime_settings(cfg_or_dict).inflight.instances)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"app_inflight_runner:get_inflight_instances_requested: {e}")
             inflight_instances = 1
 
         raw_env_instances = env_get("INFLIGHT_INSTANCES")
@@ -69,20 +70,20 @@ class InflightRunner:
                     "[InFlight] Dual-process mode is quarantined on main; forcing single-process GPU ownership. "
                     "Set INFLIGHT_ALLOW_DUAL_PROCESS=1 to re-enable the experimental path."
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
             try:
                 emit_profile_event(
                     component="app",
                     event="inflight_dual_process_quarantined",
                     metrics={"requested_instances": int(requested_instances)},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
             try:
                 self._app._logged_dual_process_quarantine = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
 
         return 1
 
@@ -105,8 +106,8 @@ class InflightRunner:
             )
             try:
                 cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:apply_overrides: {e}")
 
     def maybe_apply_ram_mode(self, cfg) -> None:
         runtime_settings = self._app._current_runtime_settings(cfg)
@@ -142,8 +143,8 @@ class InflightRunner:
                     env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_inflight_runner:maybe_apply_ram_mode: {e}")
 
     def maybe_autoset_gpu_song_slots(self, cfg) -> None:
         raw = env_get("GPU_SONG_SLOTS")
@@ -160,8 +161,8 @@ class InflightRunner:
                         int(cfg_slots)
                     )
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:maybe_autoset_gpu_song_slots: {e}")
             return
 
         inflight_songs = self.get_inflight_songs_requested(cfg)
@@ -172,16 +173,16 @@ class InflightRunner:
             if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
                 logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_inflight_runner:maybe_autoset_gpu_song_slots: {e}")
 
         ga_queue_mult = int(runtime_settings.gpu.ga_queue_mult)
         raw = env_get("INFLIGHT_GA_QUEUE_MULT")
         if raw is not None and str(raw).strip() != "":
             try:
                 ga_queue_mult = int(raw)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_inflight_runner:maybe_autoset_gpu_song_slots: {e}")
         if ga_queue_mult <= 0:
             raw_env = env_get("INFLIGHT_RAM_MODE")
             if raw_env is not None and str(raw_env).strip() != "":
@@ -203,5 +204,5 @@ class InflightRunner:
                     int(ga_queue_mult),
                 )
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_inflight_runner:maybe_autoset_gpu_song_slots: {e}")

@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from ..fg_config import extract_fg_config, has_valid_fg_config, is_nonzero_fg_config
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key
 
 
+
+logger = logging.getLogger(__name__)
 def entry_fg_score(entry: dict) -> int:
     try:
         return int(entry.get("fg_score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_resolution:entry_fg_score: {e}")
         return 0
 
 
 def entry_base_score(entry: dict) -> int:
     try:
         return int(entry.get("base_score") or entry.get("score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_resolution:entry_base_score: {e}")
         return 0
 
 
@@ -61,7 +66,8 @@ def build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tupl
         }
         try:
             entry["selected_element"] = str(eval_data.get("Selected Element", "") or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"entry_resolution:build_direct_ga_entry_items: {e}")
             entry["selected_element"] = ""
         if genome_ids is not None:
             entry["ga_genome_ids"] = list(genome_ids)
@@ -72,7 +78,8 @@ def build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tupl
         if entry.get("gear") or entry.get("minis"):
             try:
                 key = str(entry_loadout_hash(entry) or "")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"entry_resolution:build_direct_ga_entry_items: {e}")
                 key = None
         if not key and genome_ids is not None:
             key = ga_candidate_key(genome_ids)
@@ -115,7 +122,8 @@ def sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> boo
             try:
                 if int(row.get("fg_score", 0) or 0) > int(row.get("base_score", 0) or 0):
                     return True
-            except Exception:
+            except Exception as e:
+                logger.debug(f"entry_resolution:sig_results_has_fg_improvement: {e}")
                 continue
     return False
 
@@ -125,8 +133,10 @@ def selected_count(selected_indices: Any) -> int:
         return 0
     try:
         return int(len(selected_indices))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_resolution:selected_count: {e}")
         try:
             return int(getattr(selected_indices, "shape", (0,))[0] or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"entry_resolution:selected_count: {e}")
             return 0

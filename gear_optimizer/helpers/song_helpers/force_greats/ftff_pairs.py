@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import logging
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class FTFFSurfaceReductionResult:
     """Lossless FT/FF pair reduction result for an exact FG max-FP surface."""
@@ -57,13 +60,13 @@ def _hashable_surface_key(key: Any) -> object:
     if hasattr(key, "tobytes"):
         try:
             return key.tobytes()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ftff_pairs:_hashable_surface_key: {e}")
     if hasattr(key, "tolist"):
         try:
             key = key.tolist()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ftff_pairs:_hashable_surface_key: {e}")
     if isinstance(key, list):
         return tuple(_hashable_surface_key(item) for item in key)
     if isinstance(key, dict):
@@ -93,7 +96,8 @@ def reduce_ftff_pairs_by_surface_keys(
 
     try:
         pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:reduce_ftff_pairs_by_surface_keys: {e}")
         pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
     if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
         return FTFFKeyReductionResult(ftff_pairs, np.asarray([], dtype=np.int64), 0)
@@ -103,7 +107,8 @@ def reduce_ftff_pairs_by_surface_keys(
 
     try:
         keys_list = list(surface_keys)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:reduce_ftff_pairs_by_surface_keys: {e}")
         keys_list = []
     if len(keys_list) < n_pairs:
         return FTFFKeyReductionResult(pairs_arr[:, :2], np.arange(n_pairs, dtype=np.int64), 0)
@@ -165,11 +170,13 @@ def reduce_ftff_pairs_by_max_fp_surface(
 
     try:
         n_sections_i = max(0, int(n_sections))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:reduce_ftff_pairs_by_max_fp_surface: {e}")
         n_sections_i = 0
     try:
         pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:reduce_ftff_pairs_by_max_fp_surface: {e}")
         pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
     if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
         return FTFFSurfaceReductionResult(ftff_pairs, max_fp_matrix, 0)
@@ -225,14 +232,16 @@ def _group_ftff_pairs_by_max_fp_matrix(
 
     try:
         n_sections_i = max(0, int(n_sections))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:_group_ftff_pairs_by_max_fp_matrix: {e}")
         n_sections_i = 0
     if n_sections_i <= 0:
         return []
 
     try:
         pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_pairs:_group_ftff_pairs_by_max_fp_matrix: {e}")
         pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
     if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
         return []

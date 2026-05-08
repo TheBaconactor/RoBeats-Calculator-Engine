@@ -24,6 +24,8 @@ from ...data.models import WarnOnce
 
 # Global warn-once instance
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 WARN_ONCE = WarnOnce()
 
 _WAL_MAINT_LOCK = threading.Lock()
@@ -62,8 +64,8 @@ class _LazyJsonDict(dict):
         except Exception as exc:
             try:
                 WARN_ONCE.warn(self._warn_key, f"{self._warn_msg}: {exc}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"database_context:_ensure: {e}")
 
     def __getitem__(self, key):
         self._ensure()
@@ -119,7 +121,8 @@ def _maybe_wal_maintenance(conn) -> None:
     """
     try:
         interval_sec = float(env_get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
         interval_sec = 30.0
 
     if interval_sec <= 0:
@@ -136,7 +139,8 @@ def _maybe_wal_maintenance(conn) -> None:
         # PASSIVE is non-blocking; it won't force truncation, but it helps keep WAL
         # growth in check without taking disruptive locks.
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
         logging.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
 
     optimize_enabled = env_flag("DB_OPTIMIZE", "0")
@@ -145,7 +149,8 @@ def _maybe_wal_maintenance(conn) -> None:
 
     try:
         conn.execute("PRAGMA optimize")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
         logging.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
@@ -178,7 +183,8 @@ def load_database_context(
         pid = None
         try:
             pid = os.getpid()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_context: {e}")
             pid = None
 
         if _db_context_verbose():
@@ -189,7 +195,8 @@ def load_database_context(
                     print(f"[DB pid={pid}] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
                 else:
                     print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"database_context:load_database_context: {e}")
                 if pid is not None:
                     print(f"[DB pid={pid}] Using DB: (unknown) | lookup key: {found_song_name!r}")
                 else:
@@ -210,7 +217,8 @@ def load_database_context(
         if prev_record:
             try:
                 prev_base = int(prev_record.get("score", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"database_context:load_database_context: {e}")
                 prev_base = 0
             # `get_best_loadouts(..., limit=1)` may include both:
             # - top base loadout from team_buff_loadouts
@@ -219,7 +227,8 @@ def load_database_context(
             prev_best_fg = 0
             try:
                 prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in (best_loadouts or []) if isinstance(r, dict))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"database_context:load_database_context: {e}")
                 prev_best_fg = 0
 
             if _db_context_verbose():
@@ -247,8 +256,8 @@ def load_database_context(
                         for r in rows:
                             # sqlite3.Row supports index access in this connection setup
                             print(f"  - {str(r[0])!r}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"database_context:load_database_context: {e}")
 
         if load_known_loadouts:
             # Fetch known loadouts for persistent caching
@@ -366,7 +375,8 @@ def load_database_progress_baseline(
                 if row is not None:
                     try:
                         db_best_fg_score = int(row[0] or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"database_context:load_database_progress_baseline: {e}")
                         db_best_fg_score = 0
         except sqlite3.Error:
             if not allow_fallback:
@@ -376,31 +386,36 @@ def load_database_progress_baseline(
     if not db_best_score and isinstance(prev_record, dict):
         try:
             db_best_score = int(prev_record.get("score", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_progress_baseline: {e}")
             db_best_score = 0
 
     if not db_best_fg_score and isinstance(prev_record, dict):
         try:
             db_best_fg_score = int(prev_record.get("fg_score", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_progress_baseline: {e}")
             db_best_fg_score = 0
 
     if (not db_best_fg_score) and known_loadouts:
         try:
             db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_progress_baseline: {e}")
             db_best_fg_score = 0
 
     if isinstance(prev_record, dict) and "details" in prev_record:
         try:
             if int(attempt_lifetime_prev or 0) <= 0:
                 attempt_lifetime_prev = int(prev_record["details"].get("attempt_lifetime", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_progress_baseline: {e}")
             attempt_lifetime_prev = int(attempt_lifetime_prev or 0)
         try:
             if int(prev_attempts_first or 0) <= 0:
                 prev_attempts_first = int(prev_record["details"].get("attempts_first", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"database_context:load_database_progress_baseline: {e}")
             prev_attempts_first = int(prev_attempts_first or 0)
 
     attempt_lifetime = int(attempt_lifetime_prev) + 1

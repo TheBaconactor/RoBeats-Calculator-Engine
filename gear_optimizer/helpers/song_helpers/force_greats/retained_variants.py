@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 
 from ..ga_entry_utils import entry_loadout_hash, materialize_entry_names
 from ..retention import select_retained_hashes
@@ -14,10 +15,13 @@ from .entry_resolution import (
 )
 
 
+
+logger = logging.getLogger(__name__)
 def _resolved_sig_result(entry: dict, *, sig_results: dict, entry_sig: dict[int, str]) -> dict | None:
     try:
         return sig_results.get(str(entry_sig.get(int(id(entry)), "") or ""))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"retained_variants:_resolved_sig_result: {e}")
         return None
 
 
@@ -30,7 +34,8 @@ def _resolved_fg_score(entry: dict, *, sig_results: dict, entry_sig: dict[int, s
         return 0
     try:
         return int(sig_row.get("fg_score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"retained_variants:_resolved_fg_score: {e}")
         return 0
 
 
@@ -87,7 +92,8 @@ def retain_and_build_fg_variants(
 
         try:
             fg_base_score_i = int((entry.get("fg_base_score") if isinstance(entry, dict) else 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"retained_variants:retain_and_build_fg_variants: {e}")
             fg_base_score_i = 0
         if fg_base_score_i <= 0:
             fg_base_score_i = int(base_score_best or 0)
@@ -125,7 +131,7 @@ def retain_and_build_fg_variants(
 
     try:
         fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"retained_variants:retain_and_build_fg_variants: {e}")
 
     return fg_variants

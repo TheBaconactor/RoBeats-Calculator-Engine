@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 
 
+
+logger = logging.getLogger(__name__)
 class Tee:
     """Writes to multiple targets (e.g., stdout + buffer) for live logging."""
 
@@ -23,9 +25,9 @@ class Tee:
             try:
                 t.write(data)
                 still_ok.append(t)
-            except Exception:
+            except Exception as e:
                 # Best-effort: drop broken targets so logging doesn't crash the run.
-                pass
+                logger.debug(f"models:write: {e}")
         self.targets = still_ok
         return len(data)
 
@@ -38,8 +40,8 @@ class Tee:
             try:
                 t.flush()
                 still_ok.append(t)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"models:flush: {e}")
         self.targets = still_ok
 
 
@@ -55,12 +57,12 @@ class WarnOnce:
         self._issued.add(key)
         try:
             logging.warning(message)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"models:warn: {e}")
         try:
             print(message)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"models:warn: {e}")
 
 
 @dataclass
@@ -107,16 +109,16 @@ class GASettings:
             try:
                 if hasattr(cfg, "has_option") and cfg.has_option(section, option):
                     return cfg.get(section, option, fallback=fallback)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"models:get_option: {e}")
             return fallback
 
         def get_bool_option(option, fallback):
             try:
                 if hasattr(cfg, "has_option") and cfg.has_option(section, option):
                     return bool(cfg.getboolean(section, option, fallback=bool(fallback)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"models:get_bool_option: {e}")
             return bool(fallback)
 
         db_seed_prob = safe_float(get_option("GA_DBSeedProbability", "0.5"), default=0.5)

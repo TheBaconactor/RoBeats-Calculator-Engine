@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
+import logging
 
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from .fg_config import has_valid_fg_config
@@ -19,6 +20,8 @@ from .stats_gateway import details_have_stats, ensure_stats
 from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ReplayContext:
     calc_song: dict
@@ -29,7 +32,8 @@ class ReplayContext:
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(value or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_canon:_to_int: {e}")
         return int(default)
 
 

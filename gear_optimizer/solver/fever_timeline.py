@@ -9,6 +9,7 @@ on CPU and is NOT ported to GPU.
 import numpy as np
 from math import ceil
 from collections import OrderedDict
+import logging
 
 from ..core.jit_setup import jit
 from .scoring_core import lookup_reference_py
@@ -24,9 +25,12 @@ from ..core.utils import parse_float as _safe_float, safe_int as _safe_int, timi
 # Global cache for SongTimelineGrid instances (one per song).
 # NOTE: Keep bounded to avoid runaway RAM growth on long runs over large song sets.
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 try:
     _SONG_TIMELINE_GRID_CACHE_MAX = int(env_get("SONG_TIMELINE_GRID_CACHE_MAX", "128") or "128")
-except Exception:
+except Exception as e:
+    logger.debug(f"fever_timeline: {e}")
     _SONG_TIMELINE_GRID_CACHE_MAX = 128
 _SONG_TIMELINE_GRID_CACHE_MAX = max(0, int(_SONG_TIMELINE_GRID_CACHE_MAX))
 SONG_TIMELINE_GRIDS: "OrderedDict[tuple, SongTimelineGrid]" = OrderedDict()
@@ -37,8 +41,8 @@ def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
             first_ms = int(float(timestamps[0]) * 1000.0)  # type: ignore[index]
             last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)  # type: ignore[index]
             return first_ms, last_ms
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"fever_timeline:_song_first_last_ms: {e}")
     return 0, 0
 
 
@@ -55,7 +59,8 @@ def _timeline_grid_cache_key(calc_song: dict) -> tuple:
 
     try:
         n = int(len(timestamps))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"fever_timeline:_timeline_grid_cache_key: {e}")
         n = 0
 
     first_ms, last_ms = _song_first_last_ms(timestamps)
@@ -568,8 +573,9 @@ class SongTimelineGrid:
                         last_fever_end_idx,
                     )
                     self._bucket_sig[sig] = result
-            except Exception:
+            except Exception as e:
                 # Never fail due to signature issues; fall back to per-index caching.
+                logger.debug(f"fever_timeline:get_timeline: {e}")
                 result = (
                     fever_mask_head.copy(),
                     count_body_fever,

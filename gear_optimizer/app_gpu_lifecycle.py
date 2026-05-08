@@ -26,8 +26,8 @@ class GPULifecycleManager:
                 if not cfg.has_section("IterationEngine"):
                     cfg.add_section("IterationEngine")
                 cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_gpu_lifecycle:configure_execution_and_prewarm: {e}")
 
         if bool(runtime_settings.gpu.gpu_native_ga):
             ga_multistart = max(1, int(runtime_settings.ga.multi_start))
@@ -37,12 +37,13 @@ class GPULifecycleManager:
                 from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
                 gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"app_gpu_lifecycle:configure_execution_and_prewarm: {e}")
 
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"app_gpu_lifecycle:configure_execution_and_prewarm: {e}")
             inflight_req = 0
         if inflight_req <= 1:
             return
@@ -67,5 +68,5 @@ class GPULifecycleManager:
                 event="taichi_init_done",
                 metrics={"in_process": 1},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"app_gpu_lifecycle:configure_execution_and_prewarm: {e}")

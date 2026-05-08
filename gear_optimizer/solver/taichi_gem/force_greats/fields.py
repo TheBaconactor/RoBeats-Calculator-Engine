@@ -7,6 +7,7 @@ reference tables + base genome stats fields for scoring.
 """
 
 from __future__ import annotations
+import logging
 
 import numpy as np
 import taichi as ti
@@ -19,13 +20,16 @@ from ..fields import IS_METAL, MAX_GENOMES, MAX_SONG_SLOTS
 # ============================================================================
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 FG_MAX_SECTIONS = 16
 FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
 _FG_MAX_FTFF_DEFAULT = 1024
 try:
     _fg_max_ftff_env = int(env_get("FG_MAX_FTFF", _FG_MAX_FTFF_DEFAULT) or _FG_MAX_FTFF_DEFAULT)
-except Exception:
+except Exception as e:
+    logger.debug(f"fields: {e}")
     _fg_max_ftff_env = _FG_MAX_FTFF_DEFAULT
 # Clamp to a conservative range to avoid pathological allocations on low-memory GPUs.
 _fg_max_ftff_env = max(256, min(int(_fg_max_ftff_env), 4096))
@@ -36,7 +40,8 @@ FG_SIGNATURE_FRONTIER_MAX = MAX_GENOMES  # Max signatures per FG frontier-select
 _FG_EXACT_DP_MAX_NOTES_DEFAULT = 128
 try:
     _fg_exact_dp_max_notes_env = int(env_get("FG_EXACT_DP_MAX_NOTES", _FG_EXACT_DP_MAX_NOTES_DEFAULT) or 0)
-except Exception:
+except Exception as e:
+    logger.debug(f"fields: {e}")
     _fg_exact_dp_max_notes_env = _FG_EXACT_DP_MAX_NOTES_DEFAULT
 # Keep this small by default: exact DP state scales ~O(n^2) in the timing-aware carry model.
 _fg_exact_dp_max_notes_env = max(32, min(int(_fg_exact_dp_max_notes_env), 512))
@@ -56,14 +61,16 @@ try:
         env_get("FG_EXACT_DP_SPARSE_MAX_STATES", _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT)
         or _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT
     )
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_exact_dp_sparse_states_env = _FG_EXACT_DP_SPARSE_MAX_STATES_DEFAULT
 _fg_exact_dp_sparse_states_env = max(256, min(int(_fg_exact_dp_sparse_states_env), 65536))
 FG_EXACT_DP_SPARSE_MAX_STATES = int(_fg_exact_dp_sparse_states_env)
 
 try:
     _fg_exact_dp_sparse_hash_env = int(env_get("FG_EXACT_DP_SPARSE_HASH_SIZE", "0") or "0")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_exact_dp_sparse_hash_env = 0
 if int(_fg_exact_dp_sparse_hash_env) <= 0:
     _fg_exact_dp_sparse_hash_env = _next_pow2(int(FG_EXACT_DP_SPARSE_MAX_STATES) * 4)
@@ -74,7 +81,8 @@ FG_EXACT_DP_SPARSE_HASH_SIZE = int(_fg_exact_dp_sparse_hash_env)
 
 try:
     _fg_exact_dp_batch_rows_env = int(env_get("FG_EXACT_DP_BATCH_MAX_ROWS", "128") or "128")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_exact_dp_batch_rows_env = 128
 FG_EXACT_DP_BATCH_MAX_ROWS = max(1, min(int(_fg_exact_dp_batch_rows_env), 256))
 FG_EXACT_DP_PREFIX_HEAD_LEN = 101
@@ -82,12 +90,14 @@ FG_EXACT_DP_PREFIX_HEAD_LEN = 101
 FG_EXACT_DP_FULL_PREFIX_LEN = FG_MAX_SONG_NOTES + 1
 try:
     _fg_signature_frontier_batch_env = int(env_get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_signature_frontier_batch_env = 64
 FG_SIGNATURE_FRONTIER_BATCH_MAX = max(1, min(int(_fg_signature_frontier_batch_env), 128))
 try:
     _fg_download_batch_env = int(env_get("FG_DOWNLOAD_BATCH_MAX", "128") or "128")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_download_batch_env = 128
 FG_DOWNLOAD_BATCH_MAX = max(1, min(int(_fg_download_batch_env), 256))
 FG_PACKED_COLS = 11 + FG_MAX_SECTIONS
@@ -100,12 +110,14 @@ FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # MAX_GENOMES * FG_MAX_FTFF
 FG_STAGE1_WAVE_SLOTS_MAX = 8  # max waves for FG_STAGE1_BLOCK_DIM<=256 (used by wave-staging kernels)
 try:
     _fg_cfg_dedupe_work_items_env = int(env_get("FG_CFG_DEDUPE_WORK_ITEMS", "512") or "512")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_cfg_dedupe_work_items_env = 512
 FG_CFG_DEDUPE_WORK_ITEMS = max(128, min(int(_fg_cfg_dedupe_work_items_env), 2048))
 try:
     _fg_cfg_dedupe_max_reps_env = int(env_get("FG_CFG_DEDUPE_MAX_REPS", "512") or "512")
-except Exception:
+except Exception as e:
+    logger.debug(f"fields:_next_pow2: {e}")
     _fg_cfg_dedupe_max_reps_env = 512
 FG_CFG_DEDUPE_MAX_REPS = max(512, min(int(_fg_cfg_dedupe_max_reps_env), 8192))
 FG_CFG_DEDUPE_SIG_WORDS = 11
@@ -1195,22 +1207,22 @@ def warmup_kernels() -> None:
             fg_selected_packed_batch_download_staging_1,
             1,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"fields:warmup_kernels: {e}")
     try:
         fg_kernels.fg_copy_best_packed_to_download_staging_kernel(
             fg_best_packed_download_staging_256,
             1,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"fields:warmup_kernels: {e}")
     try:
         fg_kernels.fg_copy_global_best_packed_to_download_staging_kernel(
             fg_global_best_packed_download_staging_256,
             1,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"fields:warmup_kernels: {e}")
 
     # Sync to ensure JIT is complete
     ti.sync()
@@ -1231,7 +1243,7 @@ def ensure_ready_with_warmup() -> None:
         from .. import api as gem_api
 
         gem_api.ensure_ready()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"fields:ensure_ready_with_warmup: {e}")
     ensure_fields_allocated()
     warmup_kernels()

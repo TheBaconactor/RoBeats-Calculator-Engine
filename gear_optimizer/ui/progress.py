@@ -5,9 +5,12 @@ import shutil
 import sys
 import threading
 import time
+import logging
 
 from gear_optimizer.core.parsing import truthy
 
+
+logger = logging.getLogger(__name__)
 __all__ = [
     "ProgressUI",
     "_banner_enabled_default",
@@ -61,8 +64,8 @@ class ProgressUI:
         if self._thread is not None:
             try:
                 self._thread.join(timeout=2.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"progress:stop: {e}")
         self._render(final=True)
 
     def update_counts(
@@ -121,8 +124,8 @@ class ProgressUI:
                 for line in lines:
                     self._stream.write(str(line) + "\n")
                 self._stream.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress:emit_block: {e}")
         self._render()
 
     def _run(self) -> None:
@@ -183,8 +186,8 @@ class ProgressUI:
                 f"| ETA {eta_str} | Elapsed {elapsed_str} | New: {new_s} | Failed: {failed_s}{tail}"
             )
             self._write(line, final=final)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress:c: {e}")
 
     def _write(self, line: str, *, final: bool = False) -> None:
         if not self._enabled or self._stream is None:
@@ -193,7 +196,8 @@ class ProgressUI:
             term_width = 0
             try:
                 term_width = int(shutil.get_terminal_size(fallback=(0, 0)).columns or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"progress:_write: {e}")
                 term_width = 0
             if term_width > 0:
                 line = self._truncate_ansi(line, max_len=max(1, term_width - 1))
@@ -201,8 +205,8 @@ class ProgressUI:
             if final:
                 self._stream.write("\n")
             self._stream.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"progress:_write: {e}")
 
     @staticmethod
     def _truncate_ansi(text: str, *, max_len: int) -> str:
@@ -232,7 +236,8 @@ class ProgressUI:
             return "--:--"
         try:
             total = int(max(0.0, float(seconds)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"progress:_format_duration: {e}")
             total = 0
         h, rem = divmod(total, 3600)
         m, s = divmod(rem, 60)
@@ -246,7 +251,8 @@ def _stream_is_tty(stream) -> bool:
         isatty = getattr(stream, "isatty", None)
         if callable(isatty):
             return bool(isatty())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"progress:_stream_is_tty: {e}")
         return False
     return False
 

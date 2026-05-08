@@ -10,14 +10,18 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Any
+import logging
 
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 def _normalize_budget(total_budget: int) -> int:
     try:
         budget = int(total_budget)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_combos:_normalize_budget: {e}")
         budget = 0
     return max(0, budget)
 
@@ -27,7 +31,8 @@ def _normalize_cap(value: int | None, total_budget: int) -> int:
         return int(total_budget)
     try:
         cap = int(value)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_combos:_normalize_cap: {e}")
         cap = int(total_budget)
     return max(0, min(int(total_budget), int(cap)))
 
@@ -142,7 +147,8 @@ def collect_ftff_pairs_from_centers(
     budget = _normalize_budget(total_budget)
     try:
         radius = int(search_radius)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ftff_combos:collect_ftff_pairs_from_centers: {e}")
         radius = -1
 
     if radius < 0 or radius >= budget:
@@ -151,8 +157,8 @@ def collect_ftff_pairs_from_centers(
     try:
         if not centers:
             return []
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ftff_combos:collect_ftff_pairs_from_centers: {e}")
 
     if not use_fast:
         needed_pairs_set: set[tuple[int, int]] = set()
@@ -176,7 +182,8 @@ def collect_ftff_pairs_from_centers(
         try:
             cft = int(center_ft)
             cff = int(center_ff)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"ftff_combos:collect_ftff_pairs_from_centers: {e}")
             continue
         cft = max(0, min(b, cft))
         cff = max(0, min(b, cff))

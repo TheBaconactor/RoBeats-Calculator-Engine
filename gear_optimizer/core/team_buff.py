@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
@@ -20,6 +21,8 @@ import configparser
 from .config import read_iteration_engine_settings
 from .parsing import truthy
 
+
+logger = logging.getLogger(__name__)
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
     "NONE": {"PP": 0, "Elem": 0},
     "T1": {"PP": 25, "Elem": 35},
@@ -175,7 +178,8 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     auto = False
     try:
         auto = bool(read_iteration_engine_settings(cfg).auto_select_buff_and_color)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"team_buff:resolve_baseline_team_buff_from_cfg: {e}")
         auto = False
     if auto:
         return "T5"

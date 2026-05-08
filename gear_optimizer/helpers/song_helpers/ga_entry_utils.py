@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from typing import Any, cast
+import logging
 
 import numpy as np
 
 from .item_utils import names_list
 
 
+
+logger = logging.getLogger(__name__)
 def canonicalize_genome_ids(genome_ids: Any) -> tuple[int, ...] | None:
     if genome_ids is None:
         return None
     try:
         ids = [int(x) for x in list(genome_ids)[:9]]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_entry_utils:canonicalize_genome_ids: {e}")
         return None
     if len(ids) < 9:
         return None
@@ -54,14 +58,14 @@ def _decode_names_from_registry(registry: Any, genome_ids: tuple[int, ...]) -> l
         try:
             decoded = cast(Any, decode_names)(ids_arr)
             return [str(x if x is not None else "None") for x in list(decoded)]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ga_entry_utils:_decode_names_from_registry: {e}")
     decode_genome = getattr(registry, "decode_genome", None)
     if callable(decode_genome):
         try:
             return names_list(decode_genome(ids_arr))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ga_entry_utils:_decode_names_from_registry: {e}")
     return []
 
 
@@ -146,14 +150,15 @@ def candidate_loadout_hash(
                 for name in mini_names
             ]
             return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"ga_entry_utils:_remember: {e}")
 
     try:
         from ...data.database import get_loadout_hash
 
         return _remember(get_loadout_hash(gear_names, mini_names))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_entry_utils:_remember: {e}")
         return str((tuple(gear_names or []), tuple(mini_names or [])))
 
 
@@ -204,7 +209,8 @@ def entry_loadout_hash(entry: Any) -> str | None:
         from ...data.database import get_loadout_hash
 
         loadout_hash = str(get_loadout_hash(gear_names, mini_names))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_entry_utils:entry_loadout_hash: {e}")
         return None
 
     entry["_resolved_loadout_hash"] = str(loadout_hash)

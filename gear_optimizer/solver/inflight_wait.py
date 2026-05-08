@@ -3,9 +3,12 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+import logging
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def read_inflight_event_wait_gpu_cap_s() -> float:
     """
     Optional tighter cap for completion-event waits while GPU work is active.
@@ -18,8 +21,8 @@ def read_inflight_event_wait_gpu_cap_s() -> float:
     if raw is not None and str(raw).strip() != "":
         try:
             timeout_s = float(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"inflight_wait:read_inflight_event_wait_gpu_cap_s: {e}")
     return max(0.0, min(float(timeout_s), 1.0))
 
 
@@ -35,8 +38,8 @@ def read_inflight_event_wait_short_spin_s() -> float:
     if raw is not None and str(raw).strip() != "":
         try:
             short_spin_ms = float(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"inflight_wait:read_inflight_event_wait_short_spin_s: {e}")
     return max(0.0, min(float(short_spin_ms) / 1000.0, 0.050))
 
 
@@ -52,8 +55,8 @@ def read_inflight_event_wait_spin_yield_rounds() -> int:
     if raw is not None and str(raw).strip() != "":
         try:
             rounds = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"inflight_wait:read_inflight_event_wait_spin_yield_rounds: {e}")
     return max(0, min(int(rounds), 100_000))
 
 

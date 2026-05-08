@@ -5,11 +5,14 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Any
+import logging
 
 from gear_optimizer.core.parsing import env_flag
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def _is_repeat_ctx_dict(extra: Any) -> bool:
     return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
 
@@ -61,7 +64,8 @@ def _task_key(task: tuple) -> str:
         try:
             idx = int(repeat_ctx.get("repeat_index") or 0)
             total = int(repeat_ctx.get("repeat_total") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_support:_task_key: {e}")
             idx = 0
             total = 0
         if idx > 0 and total > 1:
@@ -76,20 +80,22 @@ def _task_ga_seed(task: tuple) -> int | None:
     try:
         seed = repeat_ctx.get("ga_seed")
         return int(seed) if seed is not None else None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_support:_task_ga_seed: {e}")
         return None
 
 
 def _lru_get(cache: OrderedDict, key: tuple) -> Any:
     try:
         value = cache.get(key)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_support:_lru_get: {e}")
         return None
     if value is not None:
         try:
             cache.move_to_end(key)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_support:_lru_get: {e}")
     return value
 
 
@@ -97,13 +103,14 @@ def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> Non
     try:
         cache[key] = value
         cache.move_to_end(key)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_support:_lru_put: {e}")
         return
     try:
         while len(cache) > int(maxsize):
             cache.popitem(last=False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_support:_lru_put: {e}")
 
 
 def _loadout_entries_have_db_source(loadout_entries: dict | None) -> bool:
@@ -125,7 +132,8 @@ class _PostSender:
         backlog = 0
         try:
             backlog = int(env_get("POST_LOCAL_BACKLOG", backlog))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_support:__init__: {e}")
             backlog = 0
         backlog = int(backlog)
         if backlog < 0:
@@ -148,19 +156,21 @@ class _PostSender:
             return
         try:
             self._q.put(self._sentinel, block=True, timeout=max(0.0, float(timeout)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_support:close: {e}")
             return
         try:
             self._thread.join(timeout=timeout)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_support:close: {e}")
 
     def _run(self) -> None:
         timing = env_flag("POST_TIMING")
         threshold_ms = 50.0
         try:
             threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_support:_run: {e}")
             threshold_ms = 50.0
         while True:
             item = self._q.get()
@@ -174,7 +184,8 @@ class _PostSender:
                     try:
                         self._post_queue.put(item, block=True, timeout=0.5)
                         break
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_support:_run: {e}")
                         continue
                 if timing:
                     ms = (time.perf_counter() - t0) * 1000.0
@@ -182,9 +193,10 @@ class _PostSender:
                         kind = None
                         try:
                             kind = item.get("song") if isinstance(item, dict) else None
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"native_inflight_support:_run: {e}")
                             kind = None
                         prefix = f"[PostSender][TIMING] {kind} " if kind else "[PostSender][TIMING] "
                         print(f"{prefix}post_queue_put={ms:.1f}ms")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_support:_run: {e}")

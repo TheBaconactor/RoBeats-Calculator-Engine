@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+import logging
 
 from .team_buff import (
     normalize_team_buff,
@@ -11,6 +12,8 @@ from .team_buff import (
 )
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class TeamContributionBuffSettings:
     team_buff: str = "T5"
@@ -35,7 +38,8 @@ class TeamContributionBuffSettings:
         from .config import read_iteration_engine_settings
         try:
             ie = read_iteration_engine_settings(cfg)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"config_adapter:from_cfg: {e}")
             ie = None
         auto = bool(getattr(ie, "auto_select_buff_and_color", False))
         if auto:
@@ -44,11 +48,13 @@ class TeamContributionBuffSettings:
         raw_color = ""
         try:
             raw_buff = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback="T5")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"config_adapter:from_cfg: {e}")
             raw_buff = "T5"
         try:
             raw_color = cfg.get("TeamContributionBuffConstant", "TeamColor", fallback="")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"config_adapter:from_cfg: {e}")
             raw_color = ""
         team_buff = normalize_team_buff(raw_buff, default="T5")
         team_color = str(raw_color or "").strip()

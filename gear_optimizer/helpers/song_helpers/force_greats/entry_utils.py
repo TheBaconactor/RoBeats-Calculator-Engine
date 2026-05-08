@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from ....core.utils import get_selected_element, stats_signature
 from ....core.utils import safe_int
 from ....solver.scoring.stats_scoring import fg_baseline_params
 
 
+
+logger = logging.getLogger(__name__)
 def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) -> str:
     """
     Best-effort "selected element" for cache validation.
@@ -20,12 +23,13 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
         v = entry.get("selected_element")
         if v:
             return str(v)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"entry_utils:expected_selected_element: {e}")
     try:
         det0 = entry.get("details") or {}
         return get_selected_element(det0, meta_primary_color)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:expected_selected_element: {e}")
         return str(meta_primary_color or "")
 
 def fg_proxy_from_base_stats(stats: dict[str, Any] | None, primary_color: str, secondary_color: str) -> int:
@@ -57,7 +61,8 @@ def _normalize_fg_group_key(value: Any) -> tuple[str, int, int] | None:
             int(parts[1]),
             int(parts[2]),
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:_normalize_fg_group_key: {e}")
         return None
 
 
@@ -72,12 +77,14 @@ def _cached_fg_group_meta_is_reusable(meta: dict[str, Any] | None) -> bool:
     try:
         if int(meta.get("n_sections", 0) or 0) <= 0:
             return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:_cached_fg_group_meta_is_reusable: {e}")
         return False
     try:
         if int(meta.get("max_per_section", 0) or 0) < 0:
             return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:_cached_fg_group_meta_is_reusable: {e}")
         return False
     signature = meta.get("signature")
     return signature is not None
@@ -136,7 +143,8 @@ def build_fg_group_meta(
             str(secondary_color or ""),
         )
         return meta
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:build_fg_group_meta: {e}")
         return None
 
 
@@ -193,7 +201,8 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
     """
     try:
         eval_data = entry.get("eval_data")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:eval_data_from_entry: {e}")
         eval_data = None
     if isinstance(eval_data, dict):
         # Prefer full Stats when present (most complete signal).
@@ -218,5 +227,6 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
             "FF": det.get("FF", 0),
             "GemCounts": det.get("GemCounts", {}),
         }
-    except Exception:
+    except Exception as e:
+        logger.debug(f"entry_utils:eval_data_from_entry: {e}")
         return None

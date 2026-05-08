@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
+import logging
 
 from .utils import safe_int
 
 
+
+logger = logging.getLogger(__name__)
 class GemKey(str, Enum):
     PP = "Perfect Points"
     CM = "Combo Multiplier"
@@ -96,12 +99,14 @@ class UserGemsSettings:
         def _cfg_get(option: str, fallback: int = 0) -> int:
             try:
                 return safe_int(cfg.get(section, option, fallback=fallback), fallback)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gem_defs:_cfg_get: {e}")
                 return int(fallback)
 
         try:
             static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gem_defs:_cfg_get: {e}")
             static_element = 0
 
         return cls(
@@ -132,7 +137,8 @@ def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
             continue
         try:
             return int(mapping.get(key) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gem_defs:_read_first_int: {e}")
             return 0
     return 0
 

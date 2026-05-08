@@ -80,8 +80,8 @@ def _db_context_cache_max() -> int:
         raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_MAX")
         if raw is not None and str(raw).strip() != "":
             return max(0, int(raw))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_db_context_cache_max: {e}")
     return 1024
 
 
@@ -90,8 +90,8 @@ def _db_context_cache_ttl_s() -> float:
         raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_TTL_SEC")
         if raw is not None and str(raw).strip() != "":
             return max(0.0, float(raw))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_db_context_cache_ttl_s: {e}")
     return 1.0
 
 
@@ -106,7 +106,8 @@ def _resolve_baseline_team_buff_for_db(cfg) -> str:
         from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
         return resolve_baseline_team_buff_from_cfg(cfg)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_resolve_baseline_team_buff_for_db: {e}")
         return "T5"
 
 
@@ -127,7 +128,8 @@ def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict]
             _DB_CONTEXT_CACHE.move_to_end(key)
             rec = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
             return rec, int(db_best_score), int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_db_context_cache_get: {e}")
         return None
 
 
@@ -161,7 +163,8 @@ def _db_context_cache_put(
                 return
             while len(_DB_CONTEXT_CACHE) > max_n:
                 _DB_CONTEXT_CACHE.popitem(last=False)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_db_context_cache_put: {e}")
         return
 
 
@@ -172,7 +175,8 @@ def _cache_stats_enabled() -> bool:
 def _cache_stats_emit_interval_s() -> float:
     try:
         return float(env_get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_cache_stats_emit_interval_s: {e}")
         return 30.0
 
 
@@ -180,7 +184,8 @@ def _cache_stats_inc(key: str) -> None:
     try:
         with _CACHE_STATS_LOCK:
             _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_cache_stats_inc: {e}")
         return
 
 
@@ -198,7 +203,8 @@ def _cache_stats_maybe_emit() -> None:
                 return
             _CACHE_STATS_LAST_EMIT = now
             snap = dict(_CACHE_STATS)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_cache_stats_maybe_emit: {e}")
         return
     try:
         pools_h = int(snap.get("pools_hit", 0) or 0)
@@ -216,8 +222,8 @@ def _cache_stats_maybe_emit() -> None:
             heur_h,
             heur_m,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_cache_stats_maybe_emit: {e}")
 
 
 def _fixed_registry_cache_key(
@@ -229,7 +235,8 @@ def _fixed_registry_cache_key(
     def _n(it: dict | None) -> str:
         try:
             return str((it or {}).get("Name", "") or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_prepare:_n: {e}")
             return ""
 
     fg = tuple(_n(it) for it in (fixed_gear or [])[:6])
@@ -460,7 +467,8 @@ def _prepare_song(task: tuple) -> _NativeSong:
     init_heuristic_k = 0
     try:
         init_heuristic_k = int(str(env_get("GPU_GA_INIT_HEURISTIC_K", "64") or "64"))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
         init_heuristic_k = 64
     init_heuristic_k = max(0, int(init_heuristic_k))
     init_heuristic_copies = 25
@@ -501,7 +509,8 @@ def _prepare_song(task: tuple) -> _NativeSong:
                         )
 
         db_seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
         init_heuristic_topk = None
         db_seed_ids = None
 
@@ -582,6 +591,6 @@ def _prepare_song(task: tuple) -> _NativeSong:
     )
     try:
         song.runtime.prep.cpu_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
     return song

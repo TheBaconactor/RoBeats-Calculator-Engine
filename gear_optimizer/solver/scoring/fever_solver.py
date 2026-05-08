@@ -13,6 +13,7 @@ This module provides the main gem solver pipeline:
 
 import numpy as np
 from math import floor
+import logging
 
 from ...core.constants import (
     TOTAL_ROWS,
@@ -43,6 +44,8 @@ from .stats_scoring import evaluate_stats_score
 from .stats_ops import apply_gems_to_base_stats
 
 
+
+logger = logging.getLogger(__name__)
 def precompute_fever_timelines(
     base_stats,
     calc_song,
@@ -475,7 +478,8 @@ def solve_best_fever_combination(
             if np.asarray(_arr).dtype != np.float32:
                 need_ref_cast = True
                 break
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fever_solver:solve_best_fever_combination: {e}")
             need_ref_cast = True
             break
 
@@ -580,7 +584,8 @@ def solve_best_fever_combination(
 
         try:
             song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fever_solver:get_val_inline: {e}")
             song_slot = 0
 
         # Single-genome registry payload:

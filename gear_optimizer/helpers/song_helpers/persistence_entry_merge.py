@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from typing import Callable
+import logging
 
 from .fg_config import has_valid_fg_config
 from .item_utils import names_list
 
 
+
+logger = logging.getLogger(__name__)
 def resolve_loadout_hash(gear_items, mini_items) -> str:
     from .loadout_hashing import resolve_loadout_hash as _impl
 
@@ -57,12 +60,14 @@ def merge_persist_entry(
     if fg_base_score_val is not None:
         try:
             new_entry["fg_base_score"] = int(fg_base_score_val or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
             new_entry["fg_base_score"] = 0
     elif force_out is not None and fg_score_i > 0:
         try:
             new_entry["fg_base_score"] = int(score_val or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
             new_entry["fg_base_score"] = 0
 
     idx = entry_index_by_hash.get(h)
@@ -78,11 +83,13 @@ def merge_persist_entry(
 
     try:
         existing_score = int(existing.get("score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
         existing_score = 0
     try:
         new_score_i = int(new_entry.get("score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
         new_score_i = 0
 
     if new_score_i > existing_score:
@@ -96,11 +103,13 @@ def merge_persist_entry(
 
     try:
         existing_fg = int(existing.get("fg_score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
         existing_fg = 0
     try:
         new_fg_i = int(new_entry.get("fg_score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_entry_merge:merge_persist_entry: {e}")
         new_fg_i = 0
 
     if new_fg_i > existing_fg:
@@ -138,5 +147,6 @@ def canonicalize_retained_entries(
             ref_arrays=ref_arrays,
             cfg_dict=cfg_dict,
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"persistence_entry_merge:canonicalize_retained_entries: {e}")
         return entries_to_normalize

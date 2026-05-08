@@ -465,8 +465,8 @@ def clear_gpu_worker_mode():
     if t is not None:
         try:
             t.join(timeout=0.25)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_executor:clear_gpu_worker_mode: {e}")
     _WORKER_RESPONSE_ROUTER_THREAD = None
     _WORKER_MODE = False
     _WORKER_ID = None
@@ -764,7 +764,8 @@ class GpuExecutor:
                 float(summary.get("total_upload_sec", 0.0) or 0.0),
                 float(summary.get("total_download_sec", 0.0) or 0.0),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_gpu_prof_snapshot: {e}")
             return (0.0, 0.0, 0.0)
 
     def _record_exec_breakdown(
@@ -1186,7 +1187,8 @@ class GpuExecutor:
             from .taichi_gem import fields as gem_fields
 
             max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_default_song_slot_for_worker: {e}")
             try:
                 max_slots = int(env_get("GPU_SONG_SLOTS", "24") or "24")
             except (ValueError, TypeError):
@@ -1226,7 +1228,8 @@ class GpuExecutor:
             if (not bool(in_process)) and bool(getattr(self, "_in_process_queues", False)):
                 try:
                     self.stop()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_executor:start: {e}")
                     return
             else:
                 return
@@ -1237,7 +1240,8 @@ class GpuExecutor:
         self._response_put_failures_total = 0
         try:
             self._response_put_failures_by_worker.clear()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:start: {e}")
             self._response_put_failures_by_worker = defaultdict(int)
         self._response_put_last_warn_monotonic = 0.0
         self._wait_sec = 0.0
@@ -1250,8 +1254,8 @@ class GpuExecutor:
             self._req_type_gpu_upload_sec.clear()
             self._req_type_gpu_download_sec.clear()
             self._batch_size_counts.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_executor:start: {e}")
         self._batches_observed = 0
         self._batch_size_sum = 0
         self._idle_gaps = []
@@ -1283,8 +1287,8 @@ class GpuExecutor:
             self._lat_in_exec_total_sec.clear()
             self._lat_in_exec_max_sec.clear()
             self._lat_in_exec_samples.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gpu_executor:start: {e}")
         self._response_queues = {}
         self._next_worker_id = 0
         self._taichi_ready = False
@@ -1393,8 +1397,8 @@ class GpuExecutor:
                 if self._executor_thread.is_alive():
                     logger.warning("[GpuExecutor] Stop timed out; executor thread is still alive.")
                     self._write_heartbeat(phase="error", note="stop_timeout_thread_alive", force=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:stop: {e}")
 
         self._running = False
         if self._high_res_timer_enabled:
@@ -1440,7 +1444,8 @@ class GpuExecutor:
                 try:
                     top_fg = sorted(self._fg_tasks_batch_hist.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
                     fg_tasks_hist = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_fg if cnt)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_executor:stop: {e}")
                     fg_tasks_hist = ""
             logger.debug(
                 "[GpuExecutor][PROFILE] "
@@ -1462,8 +1467,8 @@ class GpuExecutor:
                         fg_tasks_per_s,
                         fg_exec,
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:stop: {e}")
             try:
                 if self._lat_counts:
                     items = []
@@ -1506,8 +1511,8 @@ class GpuExecutor:
                                 f"in_exec_avg={in_exec_avg * 1000:.1f}ms p95={in_exec_p95 * 1000:.1f}ms"
                             )
                         logger.debug("[GpuExecutor][LATENCY] %s", "; ".join(parts))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
             try:
                 if self._req_type_exec_sec:
                     breakdown_parts = []
@@ -1523,8 +1528,8 @@ class GpuExecutor:
                         )
                     if breakdown_parts:
                         logger.debug("[GpuExecutor][BREAKDOWN] %s", "; ".join(breakdown_parts))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
             try:
                 top_transitions = sorted(self._idle_transitions_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
                 if top_transitions:
@@ -1539,8 +1544,8 @@ class GpuExecutor:
                 pass
             try:
                 self._maybe_emit_workload_profile(force=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
             try:
                 if self._workload_recent_batches:
                     window = list(self._workload_recent_batches)
@@ -1586,8 +1591,8 @@ class GpuExecutor:
         if self._workload_profile_enabled and (not self._profile_enabled):
             try:
                 self._maybe_emit_workload_profile(force=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
 
         if env_flag("TAICHI_KERNEL_PROFILER_PRINT"):
             try:
@@ -1595,8 +1600,8 @@ class GpuExecutor:
 
                 ti.sync()
                 ti.profiler.print_kernel_profiler_info()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
 
         # Surface transfer/throughput counters from the in-process GPU profiler.
         # (Especially useful in in-flight mode where Windows GPU Engine counters
@@ -1606,8 +1611,8 @@ class GpuExecutor:
                 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
                 get_gpu_profiler().report(verbose=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_p95: {e}")
         logger.debug("[GpuExecutor] Stopped. Processed %s requests.", self._requests_processed)
 
     def register_worker(self) -> tuple:
@@ -1776,7 +1781,8 @@ class GpuExecutor:
             # are diagnosable from user logs without enabling verbose tracing.
             try:
                 tb = traceback.format_exc()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_executor_loop: {e}")
                 tb = ""
             trace_path = None
             try:
@@ -1810,7 +1816,8 @@ class GpuExecutor:
                 from .taichi_gem import runtime as ti_runtime
 
                 lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_executor_loop: {e}")
                 lock_cm = nullcontext("")
 
             self._write_heartbeat(phase="warmup_wait", force=True)
@@ -1847,8 +1854,8 @@ class GpuExecutor:
                         except Exception as e:
                             try:
                                 logger.debug("[GpuExecutor] Cached warmup refresh failed: %s: %s", type(e).__name__, e)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"gpu_executor:_executor_loop: {e}")
                     else:
                         sentinel_error = ""
                         try:
@@ -1857,8 +1864,8 @@ class GpuExecutor:
                             if warmup_fg:
                                 try:
                                     self._write_heartbeat(phase="warmup_fg", force=True)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
                                 t0 = perf_counter()
                                 from .taichi_gem.force_greats import fields as fg_fields
                                 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
@@ -1877,8 +1884,8 @@ class GpuExecutor:
                             if warmup_ga:
                                 try:
                                     self._write_heartbeat(phase="warmup_ga", force=True)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
                                 t0 = perf_counter()
                                 from .taichi_gem.api import ga_operations as ga_ops
 
@@ -1890,8 +1897,8 @@ class GpuExecutor:
                             sentinel_error = f"{type(e).__name__}: {e}"
                             try:
                                 logger.debug("[GpuExecutor] Warmup failed: %s", sentinel_error)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"gpu_executor:_executor_loop: {e}")
                         finally:
                             if sentinel_path is not None:
                                 try:
@@ -1914,8 +1921,9 @@ class GpuExecutor:
                                     os.replace(tmp_path, sentinel_path)
                                 except (OSError, ValueError, TypeError):
                                     pass
-            except Exception:
+            except Exception as e:
                 # If anything about cross-process coordination fails, fall back to best-effort warmup.
+                logger.debug(f"gpu_executor:_executor_loop: {e}")
                 try:
                     if warmup_fg:
                         from .taichi_gem.force_greats import fields as fg_fields
@@ -1929,8 +1937,8 @@ class GpuExecutor:
                         from .taichi_gem.api import ga_operations as ga_ops
 
                         ga_ops.warmup_ga_kernels()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_executor_loop: {e}")
 
         # When GA phase timing is enabled, callers usually care about stable per-phase measurements.
         # Even with offline caches, the first-hit JIT/load cost for template-specialized kernels can
@@ -1945,8 +1953,8 @@ class GpuExecutor:
                 from .taichi_gem.api import ga_operations as ga_ops
 
                 ga_ops.warmup_ga_kernels_light()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_executor_loop: {e}")
 
         self._taichi_ready = True
         self._ready_event.set()
@@ -1978,10 +1986,11 @@ class GpuExecutor:
                             str(getattr(getattr(req, "request_type", None), "value", "") or ""),
                             int(self._response_put_failures_total),
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_try_put_response: {e}")
                 return False
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_try_put_response: {e}")
                 try:
                     self._response_put_failures_total += 1
                     self._response_put_failures_by_worker[int(req.worker_id)] += 1
@@ -1996,8 +2005,8 @@ class GpuExecutor:
                             str(getattr(getattr(req, "request_type", None), "value", "") or ""),
                             int(self._response_put_failures_total),
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_try_put_response: {e}")
                 return False
 
         # After observing bursty workload, briefly switch to zero-wait dequeue so local
@@ -2361,12 +2370,12 @@ class GpuExecutor:
                         continue
                 try:
                     logger.debug("[GpuExecutor] Error: %s", e)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
                 try:
                     traceback.print_exc()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
                 try:
                     if (
                         self._workload_profile_enabled
@@ -3316,12 +3325,14 @@ class GpuExecutor:
                 return ("none",)
             try:
                 arr = np.asarray(v)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_array_sig: {e}")
                 return ("repr", type(v).__name__, repr(v))
             if arr.ndim == 0:
                 try:
                     return ("scalar", str(arr.dtype), repr(arr.item()))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_array_sig: {e}")
                     return ("scalar", str(arr.dtype), repr(arr))
             try:
                 arr_ptr = int(arr.__array_interface__["data"][0])
@@ -3341,7 +3352,8 @@ class GpuExecutor:
                     h = hashlib.blake2b(digest_size=16)
                     h.update(memoryview(arr_c).cast("B"))
                     digest = h.digest()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_array_sig: {e}")
                     digest = bytes(str(id(arr)), "utf-8")
                 array_sig_cache[key] = digest
             return ("arr", key[2], key[3], key[4], digest)
@@ -3385,7 +3397,8 @@ class GpuExecutor:
                 return _object_sig(v)
             try:
                 from gear_optimizer.core.array_signature import array_sig16 as _array_sig16_fast
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_timeline_sig: {e}")
                 _array_sig16_fast = None  # type: ignore[assignment]
 
             def _sig16(key_name: str, arr: Any) -> Any:
@@ -3395,8 +3408,8 @@ class GpuExecutor:
                 if _array_sig16_fast is not None:
                     try:
                         return ("sig16", _array_sig16_fast(arr))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"gpu_executor:_sig16: {e}")
                 return _array_sig(arr)
 
             return (
@@ -3834,8 +3847,9 @@ class GpuExecutor:
                         )
                     else:
                         result = fg_download_global_best(int(n_genomes), session_slot=int(fg_session_slot))
-                except Exception:
+                except Exception as e:
                     # Fall back to full download for robustness.
+                    logger.debug(f"gpu_executor:_execute_solve_force_greats_finder: {e}")
                     result = fg_download_global_best(int(n_genomes), session_slot=int(fg_session_slot))
 
             return GpuResponse(request_id=request.request_id, success=True, result=result)
@@ -4225,7 +4239,8 @@ class GpuExecutor:
                 base_arr = np.asarray(base_stats_pairs, dtype=np.int32)
                 if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
                     base_arr = None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_execute_fg_compute_breakpoints: {e}")
             pairs_arr = None
             base_arr = None
 
@@ -4246,7 +4261,8 @@ class GpuExecutor:
         if pairs_arr is None:
             try:
                 pairs_list = list(ftff_pairs)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_execute_fg_compute_breakpoints: {e}")
                 pairs_list = []
             if not pairs_list:
                 return GpuResponse(
@@ -4260,7 +4276,8 @@ class GpuExecutor:
         if base_arr is None:
             try:
                 base_list = list(base_stats_pairs)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_execute_fg_compute_breakpoints: {e}")
                 base_list = []
             if not base_list:
                 # No base FT/FF stats to consider -> max FP is 0 everywhere.
@@ -4278,7 +4295,8 @@ class GpuExecutor:
             try:
                 pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
                 pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_execute_fg_compute_breakpoints: {e}")
                 pair_ft = np.asarray([], dtype=np.int32)
                 pair_ff = np.asarray([], dtype=np.int32)
         else:
@@ -4297,7 +4315,8 @@ class GpuExecutor:
             try:
                 base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
                 base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_execute_fg_compute_breakpoints: {e}")
                 base_ft = np.asarray([], dtype=np.int32)
                 base_ff = np.asarray([], dtype=np.int32)
         else:
@@ -4425,21 +4444,24 @@ class GpuExecutor:
             cfg_idx_np = np.asarray(cfg_idx, dtype=np.int64)
             ft_np = np.asarray(ft_vals, dtype=np.int32)
             ff_np = np.asarray(ff_vals, dtype=np.int32)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_decode_cfg_counts_from_max_fp_matrix: {e}")
             return None
         if cfg_idx_np.shape[0] != ft_np.shape[0] or cfg_idx_np.shape[0] != ff_np.shape[0]:
             return None
 
         try:
             pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_decode_cfg_counts_from_max_fp_matrix: {e}")
             return None
         if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
             return None
 
         try:
             max_fp_arr = np.asarray(max_fp_matrix, dtype=np.int32)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_decode_cfg_counts_from_max_fp_matrix: {e}")
             return None
         if max_fp_arr.ndim != 2 or int(max_fp_arr.shape[0]) != int(pairs_arr.shape[0]):
             return None
@@ -4465,7 +4487,8 @@ class GpuExecutor:
                 continue
             try:
                 max_fp_row = max_fp_arr[row]
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_decode_cfg_counts_from_max_fp_matrix: {e}")
                 continue
             for s in range(int(n_sections_i) - 1, -1, -1):
                 try:
@@ -4549,8 +4572,8 @@ class GpuExecutor:
         if debug_batch_pack:
             try:
                 logger.debug("[FG][BatchPack] request payloads=%s", len(payloads))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gpu_executor:_execute_fg_solve_with_breakpoints_batch: {e}")
 
         # Fast path: batch-pack top-K results into a staging field, then download once.
         try:
@@ -4571,7 +4594,8 @@ class GpuExecutor:
                     from .taichi_gem.force_greats import fields as fg_fields
 
                     max_batch = int(getattr(fg_fields, "FG_DOWNLOAD_BATCH_MAX", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_execute_fg_solve_with_breakpoints_batch: {e}")
                     max_batch = 0
                 if max_batch <= 0:
                     max_batch = 1
@@ -4674,7 +4698,8 @@ class GpuExecutor:
                                         cfg_windows,
                                         int(n_sections),
                                     )
-                                except Exception:
+                                except Exception as e:
+                                    logger.debug(f"gpu_executor:_execute_fg_solve_with_breakpoints_batch: {e}")
                                     cfg_counts = None
                             if cfg_counts is not None:
                                 result = dict(result)
@@ -4698,8 +4723,8 @@ class GpuExecutor:
                                 reason = f"payload[{idx}] fg_download_base_scores=None"
                                 break
                     logger.debug("[FG][BatchPack] skipped: %s (payloads=%s)", reason, len(payloads))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_execute_fg_solve_with_breakpoints_batch: {e}")
         except Exception as exc:
             if debug_batch_pack:
                 try:
@@ -4707,8 +4732,8 @@ class GpuExecutor:
 
                     logger.debug("[FG][BatchPack] disabled: %s: %s", type(exc).__name__, exc)
                     logger.debug("%s", traceback.format_exc())
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_execute_fg_solve_with_breakpoints_batch: {e}")
             # Fall through to per-payload download path.
             pass
 
@@ -4755,9 +4780,9 @@ class GpuExecutor:
                     from .taichi_gem.api.timeline import precompute_timeline_gpu
 
                     precompute_timeline_gpu(calc_song, ref_arrays0, song_slot=int(payload.get("song_slot", 0) or 0))
-            except Exception:
+            except Exception as e:
                 # Keep fused FG robust; caps can still come from an explicit grid upload.
-                pass
+                logger.debug(f"gpu_executor:_run_fg_solve_with_breakpoints_payload: {e}")
 
         ftff_pairs = payload.get("ftff_pairs")
         base_stats_pairs = payload.get("base_stats_pairs")
@@ -4930,7 +4955,8 @@ class GpuExecutor:
                 from .taichi_gem.force_greats import fg_fields
 
                 chunk_size = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_executor:_run_fg_solve_with_breakpoints_payload: {e}")
                 chunk_size = 0
             if chunk_size <= 0:
                 chunk_size = 1024
@@ -5138,11 +5164,13 @@ class GpuExecutor:
         """
         try:
             from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_ref_arrays_sig: {e}")
             return None
         try:
             return _taichi_ref_arrays_sig(ref_arrays)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_executor:_ref_arrays_sig: {e}")
             return None
 
     @property
@@ -5252,8 +5280,8 @@ def _auto_stop_gpu_executor_at_exit() -> None:
     try:
         if ex.is_running:
             ex.stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"gpu_executor:_auto_stop_gpu_executor_at_exit: {e}")
 
 
 atexit.register(_auto_stop_gpu_executor_at_exit)
@@ -5274,8 +5302,8 @@ def send_gpu_executor_shutdown(request_queue) -> None:
             payload={},
         )
         request_queue.put(req)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"gpu_executor:send_gpu_executor_shutdown: {e}")
 
 
 def run_gpu_executor_server(
@@ -5316,8 +5344,8 @@ def run_gpu_executor_server(
     ex._last_init_error = None
     try:
         ex._ready_event.clear()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"gpu_executor:run_gpu_executor_server: {e}")
 
     if ready_event is not None:
         # Bridge the executor's thread Event into a multiprocessing.Event for the parent.
@@ -5327,8 +5355,8 @@ def run_gpu_executor_server(
             finally:
                 try:
                     ready_event.set()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"gpu_executor:_signal_ready: {e}")
                 if ready_queue is not None:
                     try:
                         ready_queue.put(
@@ -5337,8 +5365,8 @@ def run_gpu_executor_server(
                                 "error": getattr(ex, "_last_init_error", None),
                             }
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"gpu_executor:_signal_ready: {e}")
 
         threading.Thread(target=_signal_ready, name=f"GpuExecutorReady[{label}]", daemon=True).start()
 
@@ -5347,8 +5375,8 @@ def run_gpu_executor_server(
             f"[GpuExecutor][{label}] Starting server loop "
             f"(TAICHI_VULKAN_VISIBLE_DEVICE={env_get('TAICHI_VULKAN_VISIBLE_DEVICE', '') or 'default'})"
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"gpu_executor:_signal_ready: {e}")
 
     ex._executor_loop()
 

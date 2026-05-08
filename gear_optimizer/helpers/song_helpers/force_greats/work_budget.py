@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import logging
 
 import numpy as np
 
 from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
 
 
+
+logger = logging.getLogger(__name__)
 _WORK_ESTIMATE_LIMIT = 1_000_000_000_000
 
 
@@ -17,11 +20,12 @@ def sequence_len(value: Any) -> int:
         shape = getattr(value, "shape", None)
         if shape is not None and len(shape) > 0:
             return max(0, int(shape[0] or 0))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"work_budget:sequence_len: {e}")
     try:
         return max(0, int(len(value)))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:sequence_len: {e}")
         return 0
 
 
@@ -38,7 +42,8 @@ def fg_task_cfg_count(task: dict, *, n_sections: int) -> int:
     for v in counts_max_fp[: max(0, int(n_sections))]:
         try:
             total *= max(1, int(v or 0) + 1)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"work_budget:fg_task_cfg_count: {e}")
             total *= 1
         if total >= _WORK_ESTIMATE_LIMIT:
             return _WORK_ESTIMATE_LIMIT
@@ -57,7 +62,8 @@ def _payload_n_genomes(payload: dict) -> int:
     n_genomes = 0
     try:
         n_genomes = int(solve_kwargs.get("n_genomes_override", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:_payload_n_genomes: {e}")
         n_genomes = 0
     if n_genomes <= 0:
         n_genomes = max(1, int(sequence_len(payload.get("genome_stats_list"))))
@@ -67,7 +73,8 @@ def _payload_n_genomes(payload: dict) -> int:
 def _fallback_cfg_len_per_pair(payload: dict, *, pair_count: int) -> np.ndarray | None:
     try:
         n_sections = int(payload.get("n_sections", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:_fallback_cfg_len_per_pair: {e}")
         n_sections = 0
     if n_sections <= 0:
         return None
@@ -95,7 +102,8 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
 
     try:
         n_sections = int(payload.get("n_sections", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
         n_sections = 0
     if n_sections <= 0:
         return None
@@ -111,7 +119,8 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
         base_pairs = np.asarray(base_raw, dtype=np.int32)
         non_fever_base_by_ff = np.asarray(payload.get("non_fever_base_by_ff"), dtype=np.int16)
         fp_cap_table = np.asarray(payload.get("fp_cap_table"), dtype=np.int16)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
 
     if pairs.ndim != 2 or int(pairs.shape[1]) < 2:
@@ -125,7 +134,8 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
 
     try:
         gem_scale = int(payload.get("gem_scale_fever", 3) or 3)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
         gem_scale = 3
 
     pairs = np.asarray(pairs[:, :2], dtype=np.int32)
@@ -208,7 +218,8 @@ def split_fused_payload_by_budget(
 
     try:
         pairs = np.asarray(pairs_raw, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:split_fused_payload_by_budget: {e}")
         return [payload]
     if pairs.ndim != 2 or int(pairs.shape[0]) <= 0:
         return [payload]
@@ -256,7 +267,8 @@ def split_items_by_work_budget(
         return []
     try:
         max_work_i = int(max_work)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"work_budget:split_items_by_work_budget: {e}")
         max_work_i = 0
     if max_work_i <= 0:
         return [list(items)]
@@ -267,7 +279,8 @@ def split_items_by_work_budget(
     for item in items:
         try:
             work_i = max(1, int(estimate_fn(item)))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"work_budget:split_items_by_work_budget: {e}")
             work_i = 1
         if cur and (int(cur_work) + int(work_i)) > int(max_work_i):
             out.append(cur)

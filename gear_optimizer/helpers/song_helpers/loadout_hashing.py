@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import hashlib
 from typing import Any, List
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 def loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
     g = sorted([n for n in (gear_names or []) if n])
     m = sorted([n for n in (mini_names or []) if n])
@@ -32,5 +35,6 @@ def resolve_loadout_hash(gear_items, mini_items) -> str:
         from ...data.database import get_loadout_hash
 
         return str(get_loadout_hash(gear_items, mini_items))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"loadout_hashing:resolve_loadout_hash: {e}")
         return str((tuple(gear_items or []), tuple(mini_items or [])))

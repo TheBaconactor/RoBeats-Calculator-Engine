@@ -4,11 +4,14 @@ CSV parsing functions for loading gear, minis, and stats data.
 
 import csv
 import os
+import logging
 from ..core.constants import SCRIPT_DIR
 from ..core.stats_calculator import build_base_stats_from_config
 from ..core.utils import cfg_to_dict, safe_int, empty_stats
 from .models import WarnOnce
 
+
+logger = logging.getLogger(__name__)
 # Global warning instance
 WARN_ONCE = WarnOnce()
 
@@ -291,7 +294,8 @@ def get_config_gear_stats(cfg, paths, gears_db=None):
                 item_name_raw = cfg.get("Gear", slot, fallback="")
             else:
                 item_name_raw = cfg.get("Gear", key, fallback=cfg.get("Gear", slot, fallback=""))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"csv_parser:get_config_gear_stats: {e}")
             item_name_raw = ""
         item_name = str(item_name_raw or "").strip().strip(" .")
         if item_name in gears_db:

@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Any
+import logging
 
 from gear_optimizer.core.config import load_config
 from gear_optimizer.core.parsing import truthy
@@ -17,6 +18,8 @@ from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def _truthy(value: Any) -> bool:
     return truthy(value)
 
@@ -26,7 +29,8 @@ def _format_duration(seconds: float | None) -> str:
         return "--:--"
     try:
         total = int(max(0.0, float(seconds)))
-    except Exception:
+    except Exception as e:
+        logger.warning(f"tui_process:_format_duration: {e}")
         total = 0
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
@@ -63,7 +67,8 @@ def _normalize_song_label(label: str) -> str:
         return ""
     try:
         return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", text).strip()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"tui_process:_normalize_song_label: {e}")
         return text
 
 
@@ -85,8 +90,8 @@ def _emit_block(stream, lines: list[str]) -> None:
         for line in lines:
             stream.write(str(line) + "\n")
         stream.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"tui_process:_emit_block: {e}")
 
 
 def _render_progress_line(
@@ -143,15 +148,16 @@ def _render_progress_line(
 
     try:
         term_width = int(shutil.get_terminal_size(fallback=(0, 0)).columns or 0)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"tui_process:_render_progress_line: {e}")
         term_width = 0
     if term_width > 0:
         line = _truncate_ansi(line, max_len=max(1, int(term_width) - 1))
     try:
         stream.write("\r" + line + "\x1b[K")
         stream.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"tui_process:_render_progress_line: {e}")
 
 
 def _hotkey_help() -> list[str]:
@@ -238,7 +244,8 @@ def run_tui_process(
             import msvcrt as _msvcrt
 
             msvcrt = _msvcrt
-        except Exception:
+        except Exception as e:
+            logger.warning(f"tui_process:run_tui_process: {e}")
             msvcrt = None
 
     _emit_block(stream, ["\x1b[90m[Hotkeys]\x1b[0m n=next 10  d=db best  c=db counters  ?=help  q=stop"])
@@ -256,8 +263,8 @@ def run_tui_process(
                         _emit_block(stream, [str(x) for x in msg.get("lines")])
             except queue.Empty:
                 pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"tui_process:run_tui_process: {e}")
 
             # Hotkeys.
             if msvcrt is not None:
@@ -268,23 +275,23 @@ def run_tui_process(
                         if key == "q":
                             try:
                                 cmd_queue.put_nowait({"cmd": "stop", "reason": "hotkey"})
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"tui_process:run_tui_process: {e}")
                         elif key in {"?", "h"}:
                             _emit_block(stream, _hotkey_help())
                         elif key == "n":
                             try:
                                 cmd_queue.put_nowait({"cmd": "next", "n": 10})
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"tui_process:run_tui_process: {e}")
                         elif key == "d":
                             snap = progress.read()
                             _emit_block(stream, _db_best_block(snap.song))
                         elif key == "c":
                             snap = progress.read()
                             _emit_block(stream, _db_counters_block(snap.song))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"tui_process:run_tui_process: {e}")
 
             # Progress render (cadence-limited).
             now = time.monotonic()
@@ -311,5 +318,5 @@ def run_tui_process(
     finally:
         try:
             progress.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"tui_process:run_tui_process: {e}")

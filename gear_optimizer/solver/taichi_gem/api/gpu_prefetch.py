@@ -34,10 +34,13 @@ import time
 import threading
 from typing import Any, Optional
 from collections import deque
+import logging
 
 from .initialization import _ref_arrays_sig
 from .timeline import _song_timing_cache_key, precompute_timeline_gpu
 
+
+logger = logging.getLogger(__name__)
 # Use 5 slots by default (slots 1-5, leaving slot 0 as fallback)
 DEFAULT_NUM_SLOTS = 5
 
@@ -51,7 +54,8 @@ def _assert_gpu_owner_thread() -> None:
     """
     try:
         from gear_optimizer.solver.gpu_executor import get_gpu_executor, is_gpu_worker_mode
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_prefetch:_assert_gpu_owner_thread: {e}")
         return
 
     if is_gpu_worker_mode():
@@ -59,18 +63,21 @@ def _assert_gpu_owner_thread() -> None:
 
     try:
         ex = get_gpu_executor()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_prefetch:_assert_gpu_owner_thread: {e}")
         return
 
     try:
         if not bool(getattr(ex, "is_running", False)):
             return
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_prefetch:_assert_gpu_owner_thread: {e}")
         return
 
     try:
         executor_thread = getattr(ex, "_executor_thread", None)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_prefetch:_assert_gpu_owner_thread: {e}")
         executor_thread = None
 
     if executor_thread is not None and getattr(executor_thread, "is_alive", lambda: False)():
@@ -125,7 +132,8 @@ class GPUPrefetchManager:
         """
         try:
             ref_sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else b""
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_prefetch:_make_song_key: {e}")
             ref_sig = b""
         return _song_timing_cache_key(calc_song) + (bytes(ref_sig),)
 
@@ -258,7 +266,8 @@ def get_gpu_prefetch_manager(num_slots: int = DEFAULT_NUM_SLOTS, *, keep_slots: 
 
         max_slots = max(1, int(MAX_SONG_SLOTS) - 1)
         num_slots = max(1, min(int(num_slots), max_slots))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_prefetch:get_gpu_prefetch_manager: {e}")
         num_slots = max(1, int(num_slots))
 
     if _prefetch_manager is None:

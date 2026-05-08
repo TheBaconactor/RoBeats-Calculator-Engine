@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import itertools
 from typing import Any
+import logging
 
 from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 from gear_optimizer.core.parsing import env_get
 from .entry_resolution import entry_base_score
 
 
+
+logger = logging.getLogger(__name__)
 def _has_valid_k1_rep(
     raw_fill: float,
     base_ceil: int,
@@ -49,7 +52,8 @@ def _uses_timing_envelope_fg(calc_song: dict) -> bool:
                 and song_data.get("fg_great_candidate_timestamps") is not None
             )
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_uses_timing_envelope_fg: {e}")
         return False
 
 
@@ -74,7 +78,8 @@ def _default_fused_payloads_per_request() -> int:
     workers = 0
     try:
         workers = int(env_get("INFLIGHT_FG_WORKERS", "0") or "0")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_default_fused_payloads_per_request: {e}")
         workers = 0
 
     # Keep the upper bound low even as worker count grows.
@@ -103,7 +108,8 @@ def _expand_plateau_rep_counts_list(
     """
     try:
         n_sections_i = int(n_sections)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_list: {e}")
         n_sections_i = 0
     if n_sections_i <= 0 or n_sections_i > 4:
         return list(counts_list or [])
@@ -123,14 +129,16 @@ def _expand_plateau_rep_counts_list(
     for row in rows:
         try:
             vals = list(row[:n_sections_i]) if hasattr(row, "__getitem__") else []
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_list: {e}")
             vals = []
         for v in vals:
             try:
                 if int(v) >= int(FG_PLATEAU_REP_STRIDE):
                     already_encoded = True
                     break
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_list: {e}")
                 continue
         if already_encoded:
             break
@@ -142,12 +150,14 @@ def _expand_plateau_rep_counts_list(
         base: list[int] = []
         try:
             vals = list(row)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_list: {e}")
             vals = []
         for s in range(n_sections_i):
             try:
                 fp = int(vals[s]) if s < len(vals) else 0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_list: {e}")
                 fp = 0
             if fp < 0:
                 fp = 0
@@ -177,7 +187,8 @@ def _expand_plateau_rep_counts_from_max_fp(
 ) -> list[tuple[int, ...]]:
     try:
         n_sections_i = int(n_sections)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_from_max_fp: {e}")
         n_sections_i = 0
     if n_sections_i <= 0:
         return [()]
@@ -187,7 +198,8 @@ def _expand_plateau_rep_counts_from_max_fp(
     for s in range(n_sections_i):
         try:
             v = int(src_max_fp[s]) if s < len(src_max_fp) else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_batching:_expand_plateau_rep_counts_from_max_fp: {e}")
             v = 0
         if v < 0:
             v = 0
@@ -226,7 +238,8 @@ def _build_section_k1_valid_fps(
             non_fever_base, _, _, raw_fill = fg_scorer.get_fever_params(
                 int(ft_stat), int(ff_stat)
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"gpu_dispatch_batching:_build_section_k1_valid_fps: {e}")
             continue
         base_ceil = int(non_fever_base)
         nfb = int(non_fever_base)
@@ -239,7 +252,8 @@ def _build_section_k1_valid_fps(
                 try:
                     if _has_valid_k1_rep(float(raw_fill), base_ceil, int(fp), nfb):
                         valid_sets[s].add(int(fp))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch_batching:_build_section_k1_valid_fps: {e}")
                     continue
 
     return valid_sets
@@ -253,11 +267,12 @@ def _is_empty_pairs(pairs) -> bool:
 
         if isinstance(pairs, _np.ndarray):
             return int(getattr(pairs, "size", 0) or 0) <= 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_is_empty_pairs: {e}")
     try:
         return len(pairs) == 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"gpu_dispatch_batching:_is_empty_pairs: {e}")
         return False
 
 
@@ -317,11 +332,13 @@ def _build_topk_keep_signature_set(
                     continue
                 try:
                     proxy_i = int(row.get("proxy", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch_batching:_add: {e}")
                     proxy_i = 0
                 try:
                     base_i = int(row.get("base", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch_batching:_add: {e}")
                     base_i = 0
                 proxy_rows.append((str(sig or ""), proxy_i, base_i))
 
@@ -342,11 +359,13 @@ def _build_topk_keep_signature_set(
             for sig, proxy_val in sig_map.items():
                 try:
                     proxy_i = int(proxy_val or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch_batching:_add: {e}")
                     proxy_i = 0
                 try:
                     base_i = int(base_map.get(sig, 0) or 0) if isinstance(base_map, dict) else 0
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gpu_dispatch_batching:_add: {e}")
                     base_i = 0
                 proxy_rows.append((str(sig or ""), proxy_i, base_i))
 

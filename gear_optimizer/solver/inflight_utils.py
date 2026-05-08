@@ -11,6 +11,7 @@ import copy
 from collections import deque
 from collections import OrderedDict
 from typing import Any, Optional
+import logging
 
 import numpy as np
 
@@ -19,6 +20,8 @@ from gear_optimizer.helpers.song_helpers.payload_compaction import compact_item_
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def _truthy(v: Any) -> bool:
     return truthy(v)
 
@@ -35,20 +38,22 @@ def _song_file_cache_max() -> int:
             return max(0, int(raw))
         default = 2048 if _truthy(env_get("INFLIGHT_RAM_MODE", "0")) else 128
         return max(0, int(default))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"inflight_utils:_song_file_cache_max: {e}")
         return 128
 
 
 def _song_file_cache_get(fp: str) -> tuple[dict, np.ndarray, np.ndarray] | None:
     try:
         v = _SONG_FILE_CACHE.get(fp)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"inflight_utils:_song_file_cache_get: {e}")
         return None
     if v is not None:
         try:
             _SONG_FILE_CACHE.move_to_end(fp)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"inflight_utils:_song_file_cache_get: {e}")
     return v
 
 
@@ -56,20 +61,21 @@ def _song_file_cache_put(fp: str, meta: dict, ts: np.ndarray, note_types: np.nda
     try:
         _SONG_FILE_CACHE[fp] = (meta, ts, note_types)
         _SONG_FILE_CACHE.move_to_end(fp)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"inflight_utils:_song_file_cache_put: {e}")
         return
     max_n = int(_song_file_cache_max())
     if max_n <= 0:
         try:
             _SONG_FILE_CACHE.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"inflight_utils:_song_file_cache_put: {e}")
         return
     try:
         while len(_SONG_FILE_CACHE) > max_n:
             _SONG_FILE_CACHE.popitem(last=False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"inflight_utils:_song_file_cache_put: {e}")
 
 
 class SongSlotPool:
@@ -132,8 +138,8 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
         from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
         apply_timing_envelope(calc_song)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"inflight_utils:_build_calc_song_from_file: {e}")
 
     return calc_song
 
@@ -172,16 +178,19 @@ def _summarize_db_context(
             if row is not None:
                 try:
                     db_best_fg_score = int(row[0] or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"inflight_utils:_summarize_db_context: {e}")
                     db_best_fg_score = 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"inflight_utils:_summarize_db_context: {e}")
             db_best_fg_score = 0
 
     # Fallback: for brand-new songs not yet in `songs`, approximate from cached loadouts.
     if (not db_best_fg_score) and known_loadouts:
         try:
             db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"inflight_utils:_summarize_db_context: {e}")
             db_best_fg_score = 0
 
     attempt_lifetime_prev = 0

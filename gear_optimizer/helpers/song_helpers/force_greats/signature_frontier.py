@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 
 import numpy as np
@@ -7,17 +8,21 @@ from gear_optimizer.core.fallback_monitor import warn_fallback
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def resolve_signature_frontier_limit(*, loadouts_per_song_limit: int) -> int:
     raw = str(env_get("FG_SIGNATURE_FRONTIER_LIMIT", "") or "").strip()
     if raw:
         try:
             return max(0, int(raw))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:resolve_signature_frontier_limit: {e}")
             return 0
 
     try:
         mult = int(env_get("FG_SIGNATURE_FRONTIER_MULT", "2") or 2)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:resolve_signature_frontier_limit: {e}")
         mult = 2
     mult = max(1, int(mult))
     return max(int(loadouts_per_song_limit), int(loadouts_per_song_limit) * int(mult))
@@ -32,7 +37,8 @@ def signature_timing_bucket(sig: object) -> tuple[str, str, str, int]:
         distribution = str(sig[-3] or "")
         great_mode = str(sig[-2] or "")
         seed = int(sig[-1] or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:signature_timing_bucket: {e}")
         return ("", "", "", 0)
 
     if not apply_to:
@@ -48,7 +54,8 @@ def build_signature_frontier_metas_from_rows(
 ) -> list[dict]:
     try:
         center_bin_i = max(1, int(center_bin))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:build_signature_frontier_metas_from_rows: {e}")
         center_bin_i = 2
 
     force_keep = keep_sigs or set()
@@ -64,11 +71,13 @@ def build_signature_frontier_metas_from_rows(
             center = (0, 0)
         try:
             center_ft = int(center[0] or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas_from_rows: {e}")
             center_ft = 0
         try:
             center_ff = int(center[1] or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas_from_rows: {e}")
             center_ff = 0
 
         timing_bucket = row.get("timing_bucket")
@@ -104,7 +113,8 @@ def build_signature_frontier_metas(
 ) -> list[dict]:
     try:
         center_bin_i = max(1, int(center_bin))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
         center_bin_i = 2
 
     force_keep = keep_sigs or set()
@@ -115,17 +125,20 @@ def build_signature_frontier_metas(
             continue
         try:
             base_i = int(base_score_map.get(sig, 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
             base_i = 0
         try:
             proxy_i = int(fg_proxy_map.get(sig, 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
             proxy_i = 0
 
         priority_i = 0
         try:
             rows = sig_map.get(sig) or []
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
             rows = []
         for item in rows:
             entry = None
@@ -137,16 +150,19 @@ def build_signature_frontier_metas(
                 continue
             try:
                 priority_i = max(priority_i, int(entry.get("_fg_priority", 0) or 0))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
                 continue
 
         try:
             center_ft = int(rep.get("Fever Time", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
             center_ft = 0
         try:
             center_ff = int(rep.get("Fever Fill Rate", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"signature_frontier:build_signature_frontier_metas: {e}")
             center_ff = 0
 
         metas.append(
@@ -174,7 +190,8 @@ def select_signature_frontier_cpu_from_metas(
 ) -> list:
     try:
         limit_i = int(limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:select_signature_frontier_cpu_from_metas: {e}")
         limit_i = 0
     if limit_i <= 0 or len(metas) <= limit_i:
         return [m["sig"] for m in metas]
@@ -301,7 +318,8 @@ def select_signature_frontier(
 ) -> list:
     try:
         limit_i = int(limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:select_signature_frontier: {e}")
         limit_i = 0
     if limit_i <= 0 or len(sigs) <= limit_i:
         return list(sigs)
@@ -321,7 +339,8 @@ def select_signature_frontier(
 
     try:
         top_base_keep = min(int(limit_i), int(loadouts_per_song_limit))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"signature_frontier:select_signature_frontier: {e}")
         top_base_keep = int(limit_i)
 
     timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}

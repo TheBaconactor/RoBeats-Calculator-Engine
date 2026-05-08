@@ -5,6 +5,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
+import logging
 
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.core.parsing import env_get
@@ -20,6 +21,8 @@ from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _
 from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class NativeFGPipelineSettings:
     workers: int
@@ -172,7 +175,8 @@ class NativeFGPipeline:
                 continue
             try:
                 fut_id = int(id(fut))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:active_prep_count: {e}")
                 fut_id = 0
             if fut_id and fut_id in seen:
                 continue
@@ -181,7 +185,8 @@ class NativeFGPipeline:
             try:
                 if fut.done():
                     continue
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:active_prep_count: {e}")
                 continue
             active += 1
         return int(active)
@@ -196,7 +201,8 @@ class NativeFGPipeline:
             try:
                 if not fut.done():
                     return True
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:has_active_prep: {e}")
                 continue
         return False
 
@@ -285,7 +291,8 @@ class NativeFGPipeline:
                 if fut.done():
                     self.pending.remove(candidate)
                     return candidate
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:pop_next: {e}")
                 continue
         return None
 
@@ -321,7 +328,8 @@ class NativeFGPipeline:
             try:
                 if fut.done():
                     ready += 1
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:ready_count: {e}")
                 continue
         return int(ready)
 
@@ -446,8 +454,8 @@ def run_fg_job_sync(
                 "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
     fg_prep_future = getattr(song.runtime.fg, "fg_prep_future", None)
     if fg_prep_future is not None:
         prep_wait_t0 = time.perf_counter()
@@ -457,8 +465,8 @@ def run_fg_job_sync(
                 song.runtime.fg.fg_dynamic_prep_done = True
             except AttributeError:
                 pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
         finally:
             try:
                 emit_profile_event(
@@ -469,8 +477,8 @@ def run_fg_job_sync(
                         "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
                     },
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
             song.runtime.fg.fg_prep_future = None
 
     if getattr(song.runtime.fg, "loadout_entries", None) is None:
@@ -493,8 +501,8 @@ def run_fg_job_sync(
                 "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     # Late non-blocking DB prefetch consume:
     # - If FG prep skipped DB rows because prefetch was still in-flight, harvest now if ready.
@@ -507,16 +515,17 @@ def run_fg_job_sync(
                     db_rows = fut.result(timeout=0)
                     if isinstance(db_rows, list):
                         song.runtime.db.db_loadouts_full = db_rows
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
                     song.runtime.db.db_loadouts_full = None
             else:
                 # Best effort: avoid keeping stale prefetch work around if FG is already running.
                 try:
                     fut.cancel()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
+        except Exception as e:
+            logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
         finally:
             song.runtime.db.db_loadouts_future = None
 
@@ -555,8 +564,8 @@ def run_fg_job_sync(
                 "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     fg_solver_mode = str((getattr(song.gpu_inputs, "cfg_data", None) or {}).get("fg_solver_mode") or "finder").strip().lower()
     try:
@@ -569,8 +578,8 @@ def run_fg_job_sync(
                 "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
     if fg_solver_mode == "off":
         fg_variants = []
     else:
@@ -606,8 +615,8 @@ def run_fg_job_sync(
                 "solver_mode": str(fg_solver_mode),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     if progress_cb is not None:
         fg_record_info = None
@@ -646,8 +655,8 @@ def run_fg_job_sync(
                         )
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     if post_sender is not None:
         post_sender.send(

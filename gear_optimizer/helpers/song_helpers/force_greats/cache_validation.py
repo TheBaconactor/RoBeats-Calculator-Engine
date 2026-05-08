@@ -1,10 +1,13 @@
 from __future__ import annotations
+import logging
 
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....core.env_config import ENV
 from ....core.utils import get_selected_element
 
 
+
+logger = logging.getLogger(__name__)
 def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff) -> bool:
     if not isinstance(cached_force_obj, dict):
         return False
@@ -22,7 +25,8 @@ def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element
         sr = fg_meta.get("search_radius")
         if sr is not None and int(sr) != int(getattr(ENV, "fg_search_radius", 5) or 5):
             return False
-    except Exception:
+    except Exception as e:
+        logger.debug(f"cache_validation:is_cached_force_valid_for_finder: {e}")
         return False
     cached_sel = get_selected_element(cached_force_obj, "")
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:

@@ -11,6 +11,7 @@ This module provides functions for evaluating fixed stats without gem optimizati
 import threading
 import numpy as np
 from math import floor
+import logging
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...core.utils import timing_envelope_full_context, timing_envelope_timing_context, safe_int, safe_float
@@ -25,6 +26,8 @@ from ..scoring_core import fast_calculate_score, lookup_reference_py
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
 _FG_BASELINE_CACHE_MAX = 8192
 _FG_BASELINE_GRID_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -37,7 +40,8 @@ _FG_BASELINE_CACHE_LOCK = threading.Lock()
 def _fg_baseline_grid_auto_threshold() -> int:
     try:
         threshold = int(env_get("FG_BASELINE_GRID_AUTO_THRESHOLD", "16") or "16")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_scoring:_fg_baseline_grid_auto_threshold: {e}")
         threshold = 16
     return max(0, min(int(threshold), 512))
 
@@ -287,7 +291,8 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
         cached = _fg_baseline_cache_get(cache_key)
         if cached is not None:
             return cached
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_scoring:fg_baseline_params: {e}")
         cache_key = None
 
     song_data = calc_song.get("song_data", {}) or {}
@@ -344,9 +349,9 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
             result = (int(non_fever_section), int(non_fever_base))
             _fg_baseline_cache_put(cache_key, result)
             return result
-        except Exception:
+        except Exception as e:
             # Fall back to the per-point baseline computation.
-            pass
+            logger.debug(f"stats_scoring:fg_baseline_params: {e}")
 
     result = _fg_baseline_params_point(
         stats=stats,
@@ -397,7 +402,8 @@ def _song_cache_key_for_fg_timeline(calc_song):
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
     try:
         n = int(len(timestamps))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_scoring:_song_cache_key_for_fg_timeline: {e}")
         n = 0
 
     first_ms = 0
@@ -406,7 +412,8 @@ def _song_cache_key_for_fg_timeline(calc_song):
         if n:
             first_ms = int(float(timestamps[0]) * 1000.0)
             last_ms = int(float(timestamps[n - 1]) * 1000.0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_scoring:_song_cache_key_for_fg_timeline: {e}")
         first_ms = 0
         last_ms = 0
 
@@ -414,7 +421,8 @@ def _song_cache_key_for_fg_timeline(calc_song):
     has_great_candidates = 0
     try:
         has_great_candidates = 1 if great_candidates is not None and int(len(great_candidates)) == int(n) else 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_scoring:_song_cache_key_for_fg_timeline: {e}")
         has_great_candidates = 0
 
     return (

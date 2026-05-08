@@ -7,12 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
+import logging
 
 from gear_optimizer.core.config import find_and_cache_paths, get_config_path, load_config, load_paths_cache
 from gear_optimizer.core.parsing import config_bool, env_flag
 from gear_optimizer.data.database import init_db
 
 
+
+logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,8 +36,8 @@ def _debug_profile_enabled(cfg_path: str) -> bool:
             return True
         if config_bool(cfg, "IterationEngine", "DebugProfile", default=False):
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"cli:_debug_profile_enabled: {e}")
     return False
 
 
@@ -85,7 +88,8 @@ def _apply_gpu_song_slots_default() -> None:
     try:
         cfg = load_config(cfg_path)
         cfg_slots = int(str(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0") or "0"))
-    except Exception:
+    except Exception as e:
+        logger.warning(f"cli:_apply_gpu_song_slots_default: {e}")
         cfg_slots = 0
     if int(cfg_slots) > 0:
         os.environ.setdefault("GPU_SONG_SLOTS", str(int(cfg_slots)))

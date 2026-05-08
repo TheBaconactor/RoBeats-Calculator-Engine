@@ -44,7 +44,8 @@ def _is_inprocess_gpu_client(gpu_client: Optional["GpuServiceClient"]) -> bool:
     try:
         ex = getattr(gpu_client, "executor", None)
         return bool(getattr(ex, "_in_process_queues", False))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"core:_is_inprocess_gpu_client: {e}")
         return False
 
 
@@ -55,14 +56,16 @@ def _get_fg_session_slot_pool():
     try:
         raw = env_get("GPU_SONG_SLOTS")
         max_slots = int(raw) if raw is not None and str(raw).strip() != "" else 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"core:_get_fg_session_slot_pool: {e}")
         max_slots = 0
     if max_slots <= 0:
         try:
             from ....solver.taichi_gem import fields as gem_fields
 
             max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 8) or 8)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"core:_get_fg_session_slot_pool: {e}")
             max_slots = 8
     from ....solver.inflight_utils import SongSlotPool
 
@@ -85,7 +88,8 @@ def _get_inprocess_gpu_client():
 
         try:
             from ....solver.gpu_executor import get_gpu_executor, is_gpu_worker_mode
-        except Exception:
+        except Exception as e:
+            logger.debug(f"core:_get_inprocess_gpu_client: {e}")
             _FG_INPROCESS_GPU_CLIENT_DISABLED = True
             return None
 
@@ -93,7 +97,8 @@ def _get_inprocess_gpu_client():
             if is_gpu_worker_mode():
                 _FG_INPROCESS_GPU_CLIENT_DISABLED = True
                 return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"core:_get_inprocess_gpu_client: {e}")
             _FG_INPROCESS_GPU_CLIENT_DISABLED = True
             return None
 
@@ -239,7 +244,8 @@ def process_force_greats(
     manual_counts = force_greats_config if (manual_force_greats and not force_greats_finder) else []
     try:
         total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"core:_ensure_ga_entries_for_cpu: {e}")
         total_entries = len(loadout_entries or {})
     logger.debug("[ForceGreats] Processing %s candidate loadouts (DB + GA)...", total_entries)
 
@@ -296,16 +302,16 @@ def process_force_greats(
                     with _FG_SESSION_SLOT_LOCK:
                         slot_pool = _get_fg_session_slot_pool()
                         slot_pool.release(int(auto_slot_id or 0))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"core:_ensure_ga_entries_for_cpu: {e}")
                 try:
                     if had_gpu_slot:
                         calc_song["_gpu_song_slot"] = prev_gpu_slot
                     else:
                         calc_song.pop("_gpu_song_slot", None)
                     calc_song.pop("_fg_auto_assigned_slot", None)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"core:_ensure_ga_entries_for_cpu: {e}")
 
     loadout_entries = _ensure_ga_entries_for_cpu(loadout_entries)
     return _process_force_greats_cpu(

@@ -136,8 +136,8 @@ class TimelineFrontierCachePrebuilder:
                 executor.shutdown(wait=wait, cancel_futures=True)
             except TypeError:
                 executor.shutdown(wait=wait)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"timeline_frontier_cache_prebuild:shutdown: {e}")
         thread = self._thread
         if wait and thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
@@ -280,25 +280,30 @@ def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCache
     if cfg is not None:
         try:
             enabled = cfg.getboolean("IterationEngine", "TimelineFrontierCachePrebuild", fallback=True)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             enabled = True
         try:
             scope = str(cfg.get("IterationEngine", "TimelineFrontierCachePrebuildScope", fallback="pool") or "pool")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             scope = "pool"
         try:
             workers = safe_int(cfg.get("IterationEngine", "TimelineFrontierCachePrebuildWorkers", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             workers = 0
         try:
             max_songs = safe_int(cfg.get("IterationEngine", "TimelineFrontierCachePrebuildMaxSongs", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             max_songs = 0
         try:
             executor = str(
                 cfg.get("IterationEngine", "TimelineFrontierCachePrebuildExecutor", fallback="process") or "process"
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             executor = "process"
 
     raw_enabled = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD")
@@ -341,7 +346,8 @@ def _resolve_prebuild_worker_count(raw_workers: int) -> int:
     # `<= 0` means "auto": use all logical cores for startup prebuild throughput.
     try:
         workers = int(raw_workers)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline_frontier_cache_prebuild:_resolve_prebuild_worker_count: {e}")
         workers = 0
     if workers <= 0:
         workers = int(os.cpu_count() or 1)
@@ -375,7 +381,8 @@ def cleanup_timeline_frontier_cache_temp_files(
         try:
             path.unlink(missing_ok=True)
             removed += 1
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_prebuild:cleanup_timeline_frontier_cache_temp_files: {e}")
             continue
     return int(removed)
 

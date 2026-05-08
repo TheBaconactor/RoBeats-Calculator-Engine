@@ -5,12 +5,15 @@ that previously lived independently in each module.
 """
 
 from __future__ import annotations
+import logging
 
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 
 
+
+logger = logging.getLogger(__name__)
 _STAT_NAMES = [
     "Perfect Points",
     "Combo Multiplier",
@@ -28,7 +31,8 @@ def build_ref_arrays_from_stats(stats_table) -> dict:
             lookup_index = TOTAL_ROWS - v
             try:
                 val = stats_table[lookup_index][i] if stats_table else 0
-            except Exception:
+            except Exception as e:
+                logger.debug(f"ref_array_builder:build_ref_arrays_from_stats: {e}")
                 val = 0
             values.append(val)
         ref_arrays[name] = np.array(values, dtype=np.float64)

@@ -48,7 +48,8 @@ def _taichi_verbose_enabled() -> bool:
             return True
         if env_flag("METAFINDER_VERBOSE"):
             return True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"runtime:_taichi_verbose_enabled: {e}")
         return False
     return False
 
@@ -108,8 +109,8 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                     handle.write("0")
                     handle.flush()
                 handle.seek(0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime:_file_lock: {e}")
             while True:
                 try:
                     # `msvcrt.locking(..., LK_LOCK, ...)` is not reliably blocking on Windows and can raise
@@ -147,12 +148,12 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"runtime:_file_lock: {e}")
         try:
             handle.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"runtime:_file_lock: {e}")
 
 
 @contextmanager
@@ -221,7 +222,8 @@ def _maybe_set_vulkan_visible_device() -> None:
                 lib = ctypes.WinDLL("vulkan-1.dll")  # noqa: S404
             else:
                 lib = ctypes.CDLL("libvulkan.so.1")  # noqa: S404
-        except Exception:
+        except Exception as e:
+            logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
             return []
 
         VK_SUCCESS = 0
@@ -274,7 +276,8 @@ def _maybe_set_vulkan_visible_device() -> None:
             vkGetPhysicalDeviceProperties = lib.vkGetPhysicalDeviceProperties
             vkGetPhysicalDeviceProperties.restype = None
             vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
             return []
 
         app = VkApplicationInfo(
@@ -318,14 +321,16 @@ def _maybe_set_vulkan_visible_device() -> None:
                 buf = ctypes.create_string_buffer(4096)
                 try:
                     vkGetPhysicalDeviceProperties(arr[i], ctypes.cast(buf, ctypes.c_void_p))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
                     continue
 
                 try:
                     # VkPhysicalDeviceProperties starts with:
                     # apiVersion, driverVersion, vendorID, deviceID, deviceType, ...
                     api_v, drv_v, vendor_id, device_id, device_type = struct.unpack_from("<IIIII", buf.raw, 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
                     continue
 
                 name_raw = bytes(buf.raw[20 : 20 + 256])
@@ -345,8 +350,8 @@ def _maybe_set_vulkan_visible_device() -> None:
         finally:
             try:
                 vkDestroyInstance(inst, None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
 
     def _pick_first_discrete_index(devs: list[dict[str, object]]) -> int | None:
         # VkPhysicalDeviceType: 2 = DISCRETE_GPU
@@ -354,7 +359,8 @@ def _maybe_set_vulkan_visible_device() -> None:
             try:
                 if int(d.get("device_type", -1) or -1) == 2:
                     return int(d.get("index", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime:_pick_first_discrete_index: {e}")
                 continue
         return None
 
@@ -401,8 +407,8 @@ def _maybe_set_vulkan_visible_device() -> None:
         if auto_discrete:
             try:
                 print(f"[Taichi] Using TAICHI_VULKAN_VISIBLE_DEVICE={target}", flush=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime:_pick_first_discrete_index: {e}")
     except Exception as exc:
         warn_fallback(
             "taichi_runtime.vulkan_visible_device",
@@ -493,7 +499,8 @@ def _get_offline_cache_dir() -> str:
                     for chunk in iter(lambda: fp.read(64 * 1024), b""):
                         h.update(chunk)
             return h.hexdigest()[:12]
-        except Exception:
+        except Exception as e:
+            logger.debug(f"runtime:_read_taichi_gem_signature_short: {e}")
             return "nogit"
 
     try:
@@ -510,8 +517,9 @@ def _get_offline_cache_dir() -> str:
         cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
-    except Exception:
+    except Exception as e:
         # Fallback: let Taichi pick a default location.
+        logger.debug(f"runtime:_read_taichi_gem_signature_short: {e}")
         return "taichi_cache"
 
 
@@ -568,7 +576,8 @@ def init_taichi():
         )
         try:
             _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"runtime:init_taichi: {e}")
             _offline_cache_dir = None
 
         # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
@@ -577,7 +586,8 @@ def init_taichi():
         def _taichi_init_lock():
             try:
                 return offline_cache_lock(timeout_sec=None)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime:_taichi_init_lock: {e}")
                 return nullcontext("")
 
         def _init_with_winerror_retry(kwargs: dict) -> None:
@@ -619,8 +629,8 @@ def init_taichi():
         if kernel_profiler:
             try:
                 ti.profiler.clear_kernel_profiler_info()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime:_init_with_winerror_retry: {e}")
 
 
 def reset_taichi(*, reason: str | None = None) -> None:
@@ -641,14 +651,14 @@ def reset_taichi(*, reason: str | None = None) -> None:
 
         try:
             ti.sync()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"runtime:reset_taichi: {e}")
 
         try:
             ti.reset()
-        except Exception:
+        except Exception as e:
             # If reset fails, we'll still mark as uninitialized and let callers try
             # to re-init; worst case they crash again but with a clearer log path.
-            pass
+            logger.debug(f"runtime:reset_taichi: {e}")
 
         _ti_initialized = False

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Literal
 import threading
+import logging
 
 import numpy as np
 
@@ -32,6 +33,8 @@ from ..core.utils import safe_float, safe_int
 from .scoring_core import lookup_reference_py
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class TimelineAnalysisInputs:
     """Fixed-stat timeline inputs shared by base analysis and FG exact DP."""
@@ -511,7 +514,8 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
         from ..core.array_signature import array_sig16
 
         song_data["_chart_timestamps_sig"] = array_sig16(chart_ts)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:apply_timing_envelope: {e}")
         song_data.pop("_chart_timestamps_sig", None)
     if not attach_fg:
         calc_song["song_data"] = song_data
@@ -526,7 +530,8 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
         from ..core.array_signature import array_sig16
 
         song_data["_note_types_sig"] = array_sig16(note_types)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:apply_timing_envelope: {e}")
         song_data.pop("_note_types_sig", None)
 
     song_data["fg_timestamps"] = chart_ts
@@ -598,7 +603,8 @@ def prepare_timeline_analysis_inputs(
     base_ts = song_data.get("chart_timestamps", song_data.get("timestamps", timestamps))
     try:
         default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:prepare_timeline_analysis_inputs: {e}")
         default_last_note = 0.0
     last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
 
@@ -608,7 +614,8 @@ def prepare_timeline_analysis_inputs(
         ref_fm = ref_arrays["Fever Multiplier"]
         ref_ff = ref_arrays["Fever Fill Rate"]
         ref_ft = ref_arrays["Fever Time"]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:prepare_timeline_analysis_inputs: {e}")
         return None
 
     pp_factor = float(lookup_reference_py(stats.get("Perfect Points", 0), ref_pp, TOTAL_ROWS))
@@ -675,14 +682,16 @@ def prepare_timeline_window_counter(
     base_ts = song_data.get("chart_timestamps", song_data.get("timestamps", timestamps))
     try:
         default_last_note = float(np.asarray(base_ts, dtype=np.float32)[-1]) if len(base_ts) else 0.0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:prepare_timeline_window_counter: {e}")
         default_last_note = 0.0
     last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
 
     try:
         ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32)
         ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timing_envelope:prepare_timeline_window_counter: {e}")
         return None
     if int(ref_ff.shape[0]) <= TOTAL_ROWS or int(ref_ft.shape[0]) <= TOTAL_ROWS:
         return None

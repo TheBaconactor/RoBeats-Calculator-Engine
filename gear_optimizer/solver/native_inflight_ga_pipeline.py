@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import time
 from typing import Any
+import logging
 
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
+
+logger = logging.getLogger(__name__)
 class InflightGAPipeline:
     """Owns GA request payload assembly and per-song GPU slot bookkeeping."""
 
@@ -15,8 +18,8 @@ class InflightGAPipeline:
             song.runtime.song_slot = int(slot_pool.acquire())
         try:
             song.gpu_inputs.calc_song["_gpu_song_slot"] = int(song.runtime.song_slot)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_ga_pipeline:reserve_slot: {e}")
         return int(song.runtime.song_slot)
 
     @staticmethod
@@ -28,8 +31,8 @@ class InflightGAPipeline:
         try:
             if isinstance(song.gpu_inputs.calc_song, dict):
                 song.gpu_inputs.calc_song.pop("_gpu_song_slot", None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_ga_pipeline:release_slot: {e}")
 
     @staticmethod
     def prepare_submit(song: _NativeSong) -> None:

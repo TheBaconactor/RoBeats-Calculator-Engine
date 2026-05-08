@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable
+import logging
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT
 from gear_optimizer.core.utils import safe_int
@@ -13,6 +14,8 @@ from gear_optimizer.solver.inflight_utils import _compact_items
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class InflightDBPersistence:
     candidate_limit_default: int = FG_CANDIDATE_LIMIT
@@ -44,7 +47,8 @@ class InflightDBPersistence:
                 baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(
                     song.config.cfg_dict or {}, default="T5"
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_persistence:maybe_submit_prefetch: {e}")
                 baseline_team_buff = "T5"
 
             song.runtime.db.db_loadouts_future = executor.submit(
@@ -57,7 +61,8 @@ class InflightDBPersistence:
             )
             register_future(song.runtime.db.db_loadouts_future)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_persistence:maybe_submit_prefetch: {e}")
             song.runtime.db.db_loadouts_future = None
             return False
 
@@ -81,7 +86,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 loadout_hash_index.setdefault(str(loadout_key), entry)
             try:
                 loadout_hash = entry_loadout_hash(entry)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
                 loadout_hash = None
             if not loadout_hash or not isinstance(entry, dict):
                 continue
@@ -106,7 +112,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
             try:
                 gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
                 gear_names, mini_names = [], []
         if gear_names or mini_names:
             try:
@@ -115,7 +122,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 candidate = loadout_hash_index.get(str(_get_loadout_hash(gear_names, mini_names)))
                 if isinstance(candidate, dict):
                     base_entry = candidate
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
                 base_entry = None
 
         if isinstance(base_entry, dict):
@@ -145,7 +153,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             if isinstance(data, dict) and has_valid_fg_config(data):
                 force_obj = dict(data)
                 materialize_stats_from_payload(force_obj, mutate_payload=True)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
             force_obj = None
         if force_obj is None:
             continue

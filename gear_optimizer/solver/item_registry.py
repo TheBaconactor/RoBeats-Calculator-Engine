@@ -10,8 +10,11 @@ This module provides the ItemRegistry class which:
 import numpy as np
 from typing import Optional
 import json
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 # Stat dimension indices (matching fields.ITEM_STAT_DIM = 10)
 STAT_INDICES = {
     "Perfect Points": 0,
@@ -73,10 +76,12 @@ def _stable_item_sort_key(item: object) -> tuple:
     # Tie-breaker: stable, content-based signature (handles any rare duplicate names safely).
     try:
         sig = json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"item_registry:_stable_item_sort_key: {e}")
         try:
             sig = str(sorted((str(k), str(v)) for k, v in item.items()))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"item_registry:_stable_item_sort_key: {e}")
             sig = repr(item)
     return (0, name, sig)
 
@@ -245,7 +250,8 @@ class ItemRegistry:
         for item_id, item in id_to_item.items():
             try:
                 idx = int(item_id)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"item_registry:_maybe_build_decode_lists: {e}")
                 continue
             if 0 <= idx < n_items:
                 items[idx] = item or {}
@@ -297,7 +303,8 @@ class ItemRegistry:
             for item_id in ids[:9]:
                 try:
                     idx = int(item_id)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"item_registry:decode_genome: {e}")
                     out_append({})
                     continue
                 if 0 <= idx < n:
@@ -322,7 +329,8 @@ class ItemRegistry:
             for item_id in ids[:9]:
                 try:
                     idx = int(item_id)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"item_registry:decode_names: {e}")
                     out_append("None")
                     continue
                 if 0 <= idx < n:

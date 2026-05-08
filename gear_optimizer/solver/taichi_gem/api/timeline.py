@@ -11,6 +11,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 import numpy as np
 import taichi as ti
 
@@ -32,6 +33,8 @@ from ..kernel_loader import get_kernels
 from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _profiler = get_gpu_profiler()
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -300,7 +303,8 @@ def _group_payload_from_cache_arrays(
     try:
         n = int(group_n)
         gcount = int(group_count)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_group_payload_from_cache_arrays: {e}")
         return None
     if n < 0 or gcount < 0:
         return None
@@ -363,7 +367,8 @@ def _group_payload_from_npz(data: object, *, expected_n: int | None = None) -> d
             group_count=int(np.asarray(data["group_count"]).item()),
             expected_n=expected_n,
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_group_payload_from_npz: {e}")
         return None
 
 
@@ -377,7 +382,8 @@ def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
                 return None
             if int(cached.get("group_count", 0) or 0) <= 0 and int(expected_n) > 0:
                 return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline:_group_cache_get: {e}")
             return None
         _ceiling_group_payload_cache.move_to_end(base_song_key)
         return cached
@@ -403,7 +409,8 @@ def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int)
             if version != _FRONTIER_DISK_CACHE_VERSION:
                 return None
             return _group_payload_from_npz(data, expected_n=expected_n)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_load_group_payload_from_frontier_disk: {e}")
         return None
 
 
@@ -491,11 +498,12 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
                 grid_fever_activations=grid_fever_activations,
                 frontier_pool_used=int(data["frontier_pool_used"].item()),
             )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         try:
             path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         return None
 
 
@@ -570,12 +578,13 @@ def _save_frontier_payload_to_disk(
             **save_kwargs,
         )
         tmp.replace(path)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
         if tmp is not None:
             try:
                 tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
 
 
 def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
@@ -586,7 +595,8 @@ def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
             return None
         diff = str(meta.get("Difficulty") or "").strip()
         return f"{song_name} ({diff})" if diff else song_name
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline:_timeline_song_profile_key: {e}")
         return None
 
 
@@ -691,7 +701,8 @@ def _get_or_build_ceiling_group_payload(
             if int(group_starts[0]) == 0 and int(group_ends[-1]) == int(n):
                 if group_count == 1 or bool(np.all(group_starts[1:] == group_ends[:-1])):
                     is_partition = True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline:_get_or_build_ceiling_group_payload: {e}")
             is_partition = False
 
         if is_partition:

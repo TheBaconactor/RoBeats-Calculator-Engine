@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import logging
 
 import numpy as np
 
@@ -22,6 +23,8 @@ from ..core.gem_defs import BASE_STAT_KEYS
 from ..core.utils import safe_int
 
 
+
+logger = logging.getLogger(__name__)
 STAT_NAMES: tuple[str, ...] = BASE_STAT_KEYS
 
 COLOR_TO_STAT_INDEX: dict[str, int] = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
@@ -41,7 +44,8 @@ def build_stats_dict(values: Any) -> dict[str, int]:
     for idx, name in enumerate(STAT_NAMES):
         try:
             out[name] = int(values[idx])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"base_stats:build_stats_dict: {e}")
             out[name] = 0
     return out
 

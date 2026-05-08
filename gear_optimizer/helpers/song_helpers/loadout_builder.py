@@ -6,6 +6,7 @@ This module provides loadout building operations:
 """
 
 from typing import Any
+import logging
 
 from ...data.database import (
     get_best_loadouts,
@@ -14,6 +15,8 @@ from ...data.database import (
 from .ga_entry_utils import candidate_genome_ids, ga_candidate_key
 
 
+
+logger = logging.getLogger(__name__)
 def _upsert_entry(
     loadout_entries: dict,
     *,
@@ -91,15 +94,16 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
         # Preserve the paired base-score context for the best-FG payload (if present).
         try:
             fg_base = rec.get("fg_base_score")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"loadout_builder:merge_db_loadouts_into_entries: {e}")
             fg_base = None
         if fg_base is not None:
             try:
                 entry = loadout_entries.get(str(h))
                 if isinstance(entry, dict):
                     entry["fg_base_score"] = int(fg_base or 0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"loadout_builder:merge_db_loadouts_into_entries: {e}")
     return loadout_entries
 
 
@@ -138,7 +142,8 @@ def refresh_ga_candidate_entries(
             continue
         try:
             selected_element = str((eval_data or {}).get("Selected Element", "") or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"loadout_builder:refresh_ga_candidate_entries: {e}")
             selected_element = ""
 
         new_entry = {
@@ -248,7 +253,8 @@ def build_loadout_entries(
                     minis_by_name=minis_by_name,
                     team_buff=str(team_buff or "T5"),
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"loadout_builder:build_loadout_entries: {e}")
                 db_loadouts = []
     merge_db_loadouts_into_entries(loadout_entries, db_loadouts)
 

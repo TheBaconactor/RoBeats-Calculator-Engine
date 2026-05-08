@@ -8,12 +8,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+import logging
 
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 
 
+
+logger = logging.getLogger(__name__)
 _MANIFEST_SCHEMA = 1
 _MANIFEST_FILE_NAME = "manifest_v1.json"
 _TIMING_ENVELOPE_MODE = "perfect_window"
@@ -61,7 +64,8 @@ def _song_identity(path_text: str) -> tuple[str, int, int] | None:
     try:
         abs_path = os.path.abspath(str(path_text))
         st = os.stat(abs_path)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"timeline_frontier_cache_manifest:_song_identity: {e}")
         return None
     mtime_ns_raw = getattr(st, "st_mtime_ns", None)
     if isinstance(mtime_ns_raw, int):
@@ -102,13 +106,15 @@ def _load_manifest(path: Path, *, frontier_version: str) -> dict[str, dict]:
     with _MANIFEST_LOCK:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_manifest:_load_manifest: {e}")
             return {}
         if not isinstance(payload, dict):
             return {}
         try:
             schema = int(payload.get("schema", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"timeline_frontier_cache_manifest:_load_manifest: {e}")
             schema = 0
         if schema != int(_MANIFEST_SCHEMA):
             return {}

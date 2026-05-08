@@ -66,7 +66,8 @@ class RuntimeUiMixin:
                 return False
             try:
                 return bool(proc.is_alive())
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_tui_active: {e}")
                 return True
 
     def _start_tui(self, *, total_tasks: int, completed: int = 0) -> None:
@@ -74,7 +75,8 @@ class RuntimeUiMixin:
                 # New run/iteration: bump epoch so the UI resets its elapsed/ETA.
                 try:
                     self._tui_epoch = int(self._tui_epoch) + 1
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_start_tui: {e}")
                     self._tui_epoch = 1
                 self._tui_publish(song="", status=str(self._runtime_status_name or "queued"))
                 return
@@ -104,16 +106,17 @@ class RuntimeUiMixin:
                 )
                 self._tui_process.start()
                 self._disable_console_logging_for_tui()
-            except Exception:
+            except Exception as e:
                 # Best-effort: if we can't start UI, keep compute safe by disabling progress (no fallback to in-proc prints).
+                logger.debug(f"runtime_ui:_start_tui: {e}")
                 self._tui_enabled = False
                 self._progress_enabled = False
                 try:
                     if self._tui_progress is not None:
                         self._tui_progress.close()
                         self._tui_progress.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_start_tui: {e}")
                 self._tui_progress = None
                 self._tui_process = None
                 self._tui_stop_event = None
@@ -135,11 +138,13 @@ class RuntimeUiMixin:
             root = logging.getLogger()
             try:
                 stderr = sys.stderr
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                 stderr = None
             try:
                 real_stderr = getattr(sys, "__stderr__", None)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                 real_stderr = None
 
             for handler in list(getattr(root, "handlers", []) or []):
@@ -149,22 +154,22 @@ class RuntimeUiMixin:
                 if stderr is not None and stream is stderr:
                     try:
                         root.removeHandler(handler)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                     try:
                         handler.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                     continue
                 if real_stderr is not None and stream is real_stderr:
                     try:
                         root.removeHandler(handler)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                     try:
                         handler.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_disable_console_logging_for_tui: {e}")
                     continue
 
     def _stop_tui(self) -> None:
@@ -174,39 +179,39 @@ class RuntimeUiMixin:
             try:
                 if self._tui_stop_event is not None:
                     self._tui_stop_event.set()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             try:
                 proc.join(timeout=2.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             try:
                 if proc.is_alive():
                     proc.terminate()
                     proc.join(timeout=2.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             self._tui_process = None
             self._tui_stop_event = None
             self._stop_tui_command_thread()
             try:
                 if self._tui_cmd_queue is not None:
                     self._tui_cmd_queue.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             try:
                 if self._tui_resp_queue is not None:
                     self._tui_resp_queue.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             self._tui_cmd_queue = None
             self._tui_resp_queue = None
             try:
                 if self._tui_progress is not None:
                     self._tui_progress.close()
                     self._tui_progress.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui: {e}")
             self._tui_progress = None
 
     def _tui_publish(
@@ -227,7 +232,8 @@ class RuntimeUiMixin:
                 t = int(self._runtime_total_count or 0) if total is None else int(total or 0)
                 f = int(self._runtime_failed_count or 0) if failed is None else int(failed or 0)
                 n = int(self._session_new_records or 0) if new_records is None else int(new_records or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_tui_publish: {e}")
                 c = int(completed or 0)
                 t = int(total or 0)
                 f = int(failed or 0)
@@ -242,7 +248,8 @@ class RuntimeUiMixin:
                     song=str(song or ""),
                     status=str(status or ""),
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_tui_publish: {e}")
                 return
 
     def _record_info_song_key(self, record_info: dict | None) -> str:
@@ -269,11 +276,13 @@ class RuntimeUiMixin:
 
             try:
                 best_overall_score = int(record_info.get("best_overall_score_run", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_is_authoritative_new_record: {e}")
                 best_overall_score = 0
             try:
                 prev_overall_score = int(record_info.get("prev_overall_score", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_is_authoritative_new_record: {e}")
                 prev_overall_score = 0
 
             if best_overall_score <= 0:
@@ -296,7 +305,8 @@ class RuntimeUiMixin:
             seen_keys.add(song_key)
             try:
                 self._session_new_records = int(self._session_new_records) + 1
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_apply_authoritative_new_record: {e}")
                 self._session_new_records = 1
             if self._progress is not None:
                 self._progress.add_new_record(1)
@@ -332,8 +342,8 @@ class RuntimeUiMixin:
                         self._run_current_song_label = str(song_label)
                         if not status_label:
                             status_label = "running"
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_event: {e}")
             if not status_label:
                 if failed_delta:
                     status_label = "failed"
@@ -349,16 +359,16 @@ class RuntimeUiMixin:
                 try:
                     if status_lower.startswith("running"):
                         self._mark_robeatsmeta_song_started(str(song_label))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_event: {e}")
             if self._progress is not None:
                 try:
                     if song_label:
                         self._progress.set_status(str(song_label), str(status_label))
                     elif self._run_current_song_label:
                         self._progress.set_status(str(self._run_current_song_label), str(status_label))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_event: {e}")
                 if completed_delta:
                     self._progress.add_completed(int(completed_delta))
                 if failed_delta:
@@ -366,7 +376,8 @@ class RuntimeUiMixin:
             else:
                 try:
                     current_song = str(song_label or self._run_current_song_label or "").strip()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_event: {e}")
                     current_song = ""
                 self._tui_publish(song=current_song, status=str(status_label or self._runtime_status_name or ""))
             self._update_robeatsmeta_runtime_status(
@@ -387,7 +398,8 @@ class RuntimeUiMixin:
                     end = status.index("]")
                     song = status[1:end]
                     status = status[end + 1 :].strip()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_handle_status_message: {e}")
                     song = None
             if not self._progress_counts_driven and status.upper().startswith("DONE"):
                 self._runtime_completed_count = max(0, int(self._runtime_completed_count or 0) + 1)
@@ -428,7 +440,8 @@ class RuntimeUiMixin:
             # Windows-only hotkeys (best-effort; no-op on other platforms).
             try:
                 import msvcrt  # noqa: F401
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_start_hotkeys: {e}")
                 return
 
             def _runner() -> None:
@@ -449,7 +462,8 @@ class RuntimeUiMixin:
                             time.sleep(0.05)
                             continue
                         ch = msvcrt.getwch()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_runner: {e}")
                         time.sleep(0.05)
                         continue
                     if not ch:
@@ -458,8 +472,8 @@ class RuntimeUiMixin:
                     if key == "q":
                         try:
                             self.request_stop("hotkey stop")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"runtime_ui:_runner: {e}")
                         return
                     if key in {"?", "h"}:
                         self._hotkey_help()
@@ -491,7 +505,8 @@ class RuntimeUiMixin:
                         cmd = self._tui_cmd_queue.get(timeout=0.1)
                     except queue.Empty:
                         continue
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"runtime_ui:_runner: {e}")
                         continue
                     if not isinstance(cmd, dict):
                         continue
@@ -500,13 +515,14 @@ class RuntimeUiMixin:
                         reason = str(cmd.get("reason") or "ui stop")
                         try:
                             self.request_stop(reason)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"runtime_ui:_runner: {e}")
                         continue
                     if op == "next":
                         try:
                             n = int(cmd.get("n") or 10)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"runtime_ui:_runner: {e}")
                             n = 10
                         lines = self._tui_up_next_lines(n)
                         self._tui_emit_block(lines)
@@ -522,12 +538,12 @@ class RuntimeUiMixin:
                 return
             try:
                 self._tui_cmd_stop.set()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui_command_thread: {e}")
             try:
                 t.join(timeout=1.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_stop_tui_command_thread: {e}")
             self._tui_cmd_thread = None
 
     def _tui_emit_block(self, lines: list[str]) -> None:
@@ -536,7 +552,8 @@ class RuntimeUiMixin:
                 return
             try:
                 payload = {"lines": list(lines or [])}
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_tui_emit_block: {e}")
                 payload = {"lines": []}
             try:
                 put_nowait = getattr(q, "put_nowait", None)
@@ -544,7 +561,8 @@ class RuntimeUiMixin:
                     put_nowait(payload)
                 else:
                     q.put(payload, block=False)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_tui_emit_block: {e}")
                 return
 
     def _tui_up_next_lines(self, n: int) -> list[str]:
@@ -560,7 +578,8 @@ class RuntimeUiMixin:
                     continue
                 try:
                     diff = str(t[2] or "")
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_tui_up_next_lines: {e}")
                     diff = ""
                 out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
                 shown += 1
@@ -582,8 +601,8 @@ class RuntimeUiMixin:
                 for line in lines:
                     stream.write(str(line) + "\n")
                 stream.flush()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_emit_block: {e}")
 
     def _hotkey_help(self) -> None:
             self._emit_block(
@@ -610,7 +629,8 @@ class RuntimeUiMixin:
                     continue
                 try:
                     diff = str(t[2] or "")
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_hotkey_next_songs: {e}")
                     diff = ""
                 out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
                 shown += 1
@@ -707,8 +727,8 @@ class RuntimeUiMixin:
                 for line in banner:
                     stream.write(line + "\n")
                 stream.flush()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"runtime_ui:_print_banner: {e}")
 
     def _extract_record_info(self, res: dict | None) -> dict | None:
             if not isinstance(res, dict):
@@ -733,7 +753,8 @@ class RuntimeUiMixin:
                         db_best_fg_score=db_best_fg_score,
                         baseline_valid=bool(res.get("db_baseline_valid", True)),
                     )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_extract_record_info: {e}")
                     return None
             return None
 
@@ -752,7 +773,8 @@ class RuntimeUiMixin:
                     )
                 else:
                     song_label = None
-            except Exception:
+            except Exception as e:
+                logger.debug(f"runtime_ui:_progress_on_result: {e}")
                 song_label = None
             record_info = None if failed_delta else self._extract_record_info(res)
             self._apply_authoritative_new_record(record_info)
@@ -761,8 +783,8 @@ class RuntimeUiMixin:
                     self._run_current_song_label = str(song_label)
                     if self._progress is not None:
                         self._progress.set_status(str(song_label), "FAILED" if failed_delta else "DONE")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_on_result: {e}")
             if failed_delta:
                 self._runtime_failed_count = int(self._runtime_failed_count or 0) + int(failed_delta or 0)
                 if self._progress is not None:
@@ -778,7 +800,8 @@ class RuntimeUiMixin:
             else:
                 try:
                     current_song = str(song_label or self._run_current_song_label or "").strip()
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_progress_on_result: {e}")
                     current_song = ""
                 self._tui_publish(
                     song=current_song,

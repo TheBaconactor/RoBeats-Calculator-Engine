@@ -4,13 +4,16 @@ import logging
 from typing import Any
 
 
+
+logger = logging.getLogger(__name__)
 def optimizer_priority_api_enabled(app: Any) -> bool:
     api = getattr(app, "_robeatsmeta_api", None)
     if api is None:
         return False
     try:
         return bool(api.priority_queue_enabled())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api_integration:optimizer_priority_api_enabled: {e}")
         return bool(api.backend_mode_enabled())
 
 
@@ -61,12 +64,14 @@ def filter_robeatsmeta_recently_computed_song_queue(
     for item in song_queue:
         try:
             song_name = str(item[1] or "").strip()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api_integration:filter_robeatsmeta_recently_computed_song_queue: {e}")
             filtered.append(item)
             continue
         try:
             bundle_key = api._bundle_key_for_song_id(song_name)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api_integration:filter_robeatsmeta_recently_computed_song_queue: {e}")
             filtered.append(item)
             continue
         if str(bundle_key or "").strip() in recent_bundle_keys:
@@ -94,7 +99,8 @@ def maybe_mark_robeatsmeta_song_batch_computed(
 
     try:
         target_bundle_key = api._bundle_key_for_song_id(str(song_name))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"api_integration:maybe_mark_robeatsmeta_song_batch_computed: {e}")
         return False
     if not str(target_bundle_key or "").strip():
         return False
@@ -102,13 +108,15 @@ def maybe_mark_robeatsmeta_song_batch_computed(
     for task in tasks:
         try:
             task_label = app._task_queue_label(task)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api_integration:maybe_mark_robeatsmeta_song_batch_computed: {e}")
             continue
         if not task_label or task_label in completed:
             continue
         try:
             task_bundle_key = api._bundle_key_for_song_id(str(task_label))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"api_integration:maybe_mark_robeatsmeta_song_batch_computed: {e}")
             continue
         if str(task_bundle_key or "").strip() == str(target_bundle_key or "").strip():
             return False

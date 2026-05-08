@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 """
 DB Manager (Centralized DB API)
@@ -51,6 +52,8 @@ from .database import (
     update_song_counters,
 )
 
+
+logger = logging.getLogger(__name__)
 _DB_MANAGER_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, env_int("DB_MANAGER_MAX_WORKERS", 1)))
 
 
@@ -72,11 +75,13 @@ def _force_config_sections(config: object) -> list[dict[str, int | str]]:
             continue
         try:
             idx = int(key.replace("NonFever", "").strip())
-        except Exception:
+        except Exception as e:
+            logger.debug(f"db_manager:_force_config_sections: {e}")
             continue
         try:
             forced = int(value or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"db_manager:_force_config_sections: {e}")
             forced = 0
         out.append({"section": int(idx), "key": str(key), "forced_greats": int(forced)})
     out.sort(key=lambda row: int(row.get("section", 0) or 0))
@@ -104,7 +109,8 @@ def _hitsim_deltas_from_payload(payload: object) -> list[int]:
     for value in values:
         try:
             out.append(int(value))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"db_manager:_hitsim_deltas_from_payload: {e}")
             continue
     return out
 
@@ -195,7 +201,8 @@ def _build_song_index_for_difficulty(difficulty: str) -> dict[str, str]:
             fp = str(Path(dirpath) / filename)
             try:
                 meta = scan_song_header(fp)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"db_manager:_build_song_index_for_difficulty: {e}")
                 meta = None
             if not isinstance(meta, dict):
                 continue
@@ -435,7 +442,8 @@ class EvolutionDbManager:
                 ref_arrays=ref_arrays_local,
                 cfg_dict=cfg_dict_local,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"db_manager:_prepare_team_buff_tier_replay: {e}")
             entries = list(entries)
 
         target_team_color_override = None
@@ -512,13 +520,15 @@ class EvolutionDbManager:
             def _fg_compare_score(row: dict) -> int:
                 try:
                     fg_base_score = int(row.get("fg_base_score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"db_manager:_fg_compare_score: {e}")
                     fg_base_score = 0
                 if fg_base_score > 0:
                     return fg_base_score
                 try:
                     return int(row.get("score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"db_manager:_fg_compare_score: {e}")
                     return 0
 
             rows = [r for r in rows if int(r.get("fg_score", 0) or 0) > int(_fg_compare_score(r))]

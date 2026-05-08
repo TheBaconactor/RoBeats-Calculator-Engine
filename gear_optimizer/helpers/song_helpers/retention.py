@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 def select_retained_hashes(
     items: list[tuple[Any, dict]],
     *,
@@ -28,7 +31,8 @@ def select_retained_hashes(
             if not fg_valid_fn(e):
                 continue
             fg_candidates.append((h, e))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"retention:select_retained_hashes: {e}")
             continue
 
     top_fg = sorted(fg_candidates, key=lambda kv: int(fg_score_fn(kv[1]) or 0), reverse=True)[:n]

@@ -5,12 +5,15 @@ import time
 import zlib
 from pathlib import Path
 from typing import Any
+import logging
 
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.utils import ceil_div, safe_int
 
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 def _env_override_present(name: str) -> bool:
     raw = env_get(name)
     return raw is not None and str(raw).strip() != ""
@@ -47,7 +50,8 @@ def recommend_dual_process_inflight_thread_overrides(
     """
     try:
         n_instances = max(1, int(instances or 1))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:recommend_dual_process_inflight_thread_overrides: {e}")
         n_instances = 1
     if n_instances <= 1:
         return {}
@@ -57,7 +61,8 @@ def recommend_dual_process_inflight_thread_overrides(
     ncpu = logical_cpus if logical_cpus is not None else (os.cpu_count() or 1)
     try:
         ncpu = int(ncpu)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:recommend_dual_process_inflight_thread_overrides: {e}")
         ncpu = 1
     ncpu = max(1, int(ncpu))
 
@@ -109,7 +114,8 @@ def _apply_thread_overrides(thread_overrides: dict[str, int] | None) -> None:
             continue
         try:
             os.environ[str(name).strip()] = str(value)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_apply_thread_overrides: {e}")
             continue
 
 
@@ -148,7 +154,8 @@ def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tup
         try:
             song_name = str(task[1] or "")
             difficulty = str(task[2] or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:shard_inflight_tasks: {e}")
             song_name = "Unknown"
             difficulty = "Unknown"
         grouped.setdefault((song_name, difficulty), []).append(task)
@@ -177,7 +184,8 @@ def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tup
         try:
             song_name = str(task[1] or "")
             difficulty = str(task[2] or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:shard_inflight_tasks: {e}")
             song_name = "Unknown"
             difficulty = "Unknown"
         idx = int(
@@ -258,19 +266,19 @@ def dual_process_inflight_worker_main(
     """
     try:
         _configure_worker_vulkan_device(int(worker_index), instances=int(instances))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:dual_process_inflight_worker_main: {e}")
     try:
         _configure_worker_disk_artifacts(int(worker_index))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:dual_process_inflight_worker_main: {e}")
 
     # In dual-process mode, each worker creates multiple ThreadPoolExecutors. Apply
     # conservative per-pool sizes by default to avoid CPU oversubscription.
     try:
         _apply_thread_overrides(thread_overrides)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:dual_process_inflight_worker_main: {e}")
 
     def _progress_cb(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
         try:
@@ -283,8 +291,8 @@ def dual_process_inflight_worker_main(
                     "record_info": record_info if isinstance(record_info, dict) else None,
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_progress_cb: {e}")
 
     def _bundle_completed_cb(task_key: str, _completed: set[str]) -> None:
         try:
@@ -295,13 +303,14 @@ def dual_process_inflight_worker_main(
                     "task_key": str(task_key or "").strip(),
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_bundle_completed_cb: {e}")
 
     def _stop_requested() -> bool:
         try:
             return bool(stop_event.is_set())
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")
             return False
 
     try:
@@ -319,7 +328,8 @@ def dual_process_inflight_worker_main(
             parallel_workers,
             fg_debug,
         ) = shared_ctx
-    except Exception:
+    except Exception as e:
+        logger.debug(f"dual_process_inflight:_stop_requested: {e}")
         cfg_dict = {}
         paths = None
         ref_arrays = None
@@ -337,7 +347,8 @@ def dual_process_inflight_worker_main(
     for item in work_items or []:
         try:
             fp, song_name, diff, extras = item
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")
             continue
         if extras is None:
             extras_list: list[Any] = []
@@ -388,7 +399,8 @@ def dual_process_inflight_worker_main(
     except Exception as exc:
         try:
             tb = __import__("traceback").format_exc()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")
             tb = ""
         try:
             control_queue.put(
@@ -399,16 +411,16 @@ def dual_process_inflight_worker_main(
                     "traceback": tb,
                 }
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")
         try:
             stop_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")
         raise
     finally:
         # Best-effort: signal we're exiting so the coordinator can stop waiting promptly.
         try:
             control_queue.put({"type": "exited", "worker": int(worker_index), "ts": time.time()})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"dual_process_inflight:_stop_requested: {e}")

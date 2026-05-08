@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+import logging
 
 import numpy as np
 
@@ -10,10 +11,13 @@ from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
+
+logger = logging.getLogger(__name__)
 def _int(v: Any, default: int = 0) -> int:
     try:
         return int(v or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"fg_candidate_stats:_int: {e}")
         return int(default)
 
 
@@ -46,8 +50,8 @@ def _candidate_genome(candidate: dict) -> list[dict]:
             if isinstance(genome, list) and genome:
                 candidate["Genome"] = genome
                 return _as_genome(candidate)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"fg_candidate_stats:_candidate_genome: {e}")
 
     return _as_genome(candidate)
 
@@ -97,11 +101,13 @@ def hydrate_fg_candidate_stats(
         ff = data.get("FF", cand.get("FF", 0) or 0) or 0
         try:
             ft = int(ft)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_candidate_stats:hydrate_fg_candidate_stats: {e}")
             ft = 0
         try:
             ff = int(ff)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"fg_candidate_stats:hydrate_fg_candidate_stats: {e}")
             ff = 0
 
         gem_counts = cand.get("GemCounts") or data.get("GemCounts") or {}
@@ -142,7 +148,8 @@ def hydrate_fg_candidate_stats(
                         continue
                     try:
                         stats[k] = stats.get(k, 0) + v
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"fg_candidate_stats:hydrate_fg_candidate_stats: {e}")
                         continue
 
             data["BaseStats"] = dict(stats)

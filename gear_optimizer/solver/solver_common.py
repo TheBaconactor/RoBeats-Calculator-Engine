@@ -165,7 +165,8 @@ def batched_registry_eval(
         for idx, result in enumerate(results):
             try:
                 score = int(result[0] or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"solver_common:batched_registry_eval: {e}")
                 score = 0
             gear_code = int(batch_gear_codes[idx])
             mini_code = int(batch_mini_codes[idx])

@@ -9,6 +9,7 @@ This module provides GPU genome solvers:
 from __future__ import annotations
 
 import time
+import logging
 
 import numpy as np
 
@@ -34,6 +35,8 @@ from .ga_operations import (
 )
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _profiler = get_gpu_profiler()
 
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
@@ -66,7 +69,8 @@ def _upload_work_items_chunk(arr: np.ndarray, n_items: int) -> None:
     n = max(0, int(n_items))
     try:
         src = np.asarray(arr, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"parallel_solvers:_upload_work_items_chunk: {e}")
         src = arr
     try:
         kernel = getattr(kernels, "copy_work_items_from_ndarray_kernel")
@@ -306,7 +310,8 @@ def solve_genomes_with_ftff(
             _elems, _name, fld = best
             kernels.copy_genome_result_stats_to_download_staging_kernel(fld, int(n_genomes))
             results_np = fld.to_numpy()[:n_genomes]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"parallel_solvers:solve_genomes_with_ftff: {e}")
         results_np = None
 
     if results_np is None:
@@ -315,7 +320,8 @@ def solve_genomes_with_ftff(
     if _profiler.enabled:
         try:
             download_bytes = int(results_np.nbytes)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"parallel_solvers:solve_genomes_with_ftff: {e}")
             download_bytes = 0
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
@@ -436,7 +442,8 @@ def solve_genomes_from_registry(
     if _profiler.enabled:
         try:
             download_bytes = int(results_np.nbytes)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"parallel_solvers:solve_genomes_from_registry: {e}")
             download_bytes = 0
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 

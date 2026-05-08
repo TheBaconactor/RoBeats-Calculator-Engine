@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 import numpy as np
 
 
+
+logger = logging.getLogger(__name__)
 def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sections: int):
     """
     Decode packed `cfg_idx` values into per-section FP targets using window metadata.
@@ -17,19 +20,22 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
 
     try:
         n_sections_i = int(n_sections)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"cfg_window_decode:decode_cfg_counts_from_windows: {e}")
         return None
     if n_sections_i <= 0:
         return None
 
     try:
         cfg_idx_np = np.asarray(cfg_idx, dtype=np.int32)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"cfg_window_decode:decode_cfg_counts_from_windows: {e}")
         return None
 
     try:
         n_out = int(cfg_idx_np.shape[0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"cfg_window_decode:decode_cfg_counts_from_windows: {e}")
         return None
     if n_out <= 0:
         return None
@@ -72,5 +78,6 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
                 cfg_counts[gi, s] = int(val)
 
         return cfg_counts
-    except Exception:
+    except Exception as e:
+        logger.debug(f"cfg_window_decode:decode_cfg_counts_from_windows: {e}")
         return None

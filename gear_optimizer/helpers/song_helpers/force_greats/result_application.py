@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+import logging
 
 from ....core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER
 from ....core.utils import get_selected_element
@@ -10,6 +11,8 @@ from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
+
+logger = logging.getLogger(__name__)
 def apply_gems_to_base_fast(
     base: dict[str, Any],
     sel_color: str,
@@ -38,10 +41,12 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         if value is None:
             return int(default)
         return int(value)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"result_application:_coerce_int: {e}")
         try:
             return int(float(value))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"result_application:_coerce_int: {e}")
             return int(default)
 
 
@@ -140,7 +145,8 @@ def fp_targets_to_forced_counts(
         try:
             if idx < len(rep_flags_list):
                 rep_flag = 1 if int(rep_flags_list[idx] or 0) > 0 else 0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"result_application:_min_forced_for_fp: {e}")
             rep_flag = 0
         if rep_flag:
             alt = int(forced + 1)
@@ -190,7 +196,8 @@ def _build_raw_gpu_result(
                 cfg_counts = list(row[: int(n_sections)])
             else:
                 cfg_counts = list(row)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"result_application:_build_raw_gpu_result: {e}")
             cfg_counts = []
     else:
         cfg_idx_i = int(cfg_idx) if cfg_idx is not None else -1
@@ -201,7 +208,8 @@ def _build_raw_gpu_result(
     for raw_val in list(cfg_counts or []):
         try:
             raw_i = int(raw_val)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"result_application:_build_raw_gpu_result: {e}")
             raw_i = 0
         if raw_i < 0:
             raw_i = 0
@@ -217,7 +225,8 @@ def _build_raw_gpu_result(
     if fp_counts and fg_scorer is not None:
         try:
             forced_counts = fp_targets_to_forced_counts(fp_counts, rep_flags, base_stats, ft_val, ff_val, fg_scorer)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"result_application:_build_raw_gpu_result: {e}")
             forced_counts = fp_counts
 
     gem_counts = {
@@ -327,7 +336,8 @@ def apply_signature_result_to_entry(*, entry: dict[str, Any], sig_result: dict[s
 
     try:
         entry["fg_score"] = int(sig_result.get("fg_score", 0) or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"result_application:apply_signature_result_to_entry: {e}")
         entry["fg_score"] = 0
 
     force_obj = sig_result.get("force")

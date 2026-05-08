@@ -57,7 +57,8 @@ class _PostCpuProfiler:
             return
         try:
             cpu_s = float(cpu_s)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"post_processor:record: {e}")
             return
         if cpu_s <= 0.0:
             return
@@ -88,14 +89,14 @@ class _PostCpuProfiler:
         if self.out_path:
             try:
                 os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"post_processor:emit: {e}")
             try:
                 payload = {"total_cpu_s": total_cpu, "total_wall_s": total_wall, "stages": self._stages}
                 with open(self.out_path, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, indent=2, sort_keys=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"post_processor:emit: {e}")
 
 
 def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
@@ -115,8 +116,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             cast(Any, sys.stdout).reconfigure(line_buffering=True)
         if hasattr(sys.stderr, "reconfigure"):
             cast(Any, sys.stderr).reconfigure(line_buffering=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"post_processor:run_post_processor: {e}")
     output_enabled = bool(getattr(ENV, "output_enabled", False))
     if not output_enabled:
         suppress_stdout(True)
@@ -124,8 +125,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
     try:
         init_db()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"post_processor:run_post_processor: {e}")
 
     async_db = AsyncDbSaver()
 
@@ -137,7 +138,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     timing_threshold_ms = 50.0
     try:
         timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"post_processor:run_post_processor: {e}")
         timing_threshold_ms = 50.0
 
     cpu_profile = env_flag("POST_CPU_PROFILE")
@@ -179,14 +181,16 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 continue
             try:
                 fg_score = int(v.get("fg_score", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"post_processor:_best_fg_improving_score_from_variants: {e}")
                 fg_score = 0
             base_score = v.get("base_score")
             if base_score is None:
                 base_score = v.get("score", 0)
             try:
                 base_score_i = int(base_score or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"post_processor:_best_fg_improving_score_from_variants: {e}")
                 base_score_i = 0
             if fg_score <= base_score_i:
                 continue
@@ -204,11 +208,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 details = {}
             try:
                 fg_score = int(e.get("fg_score", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"post_processor:_fg_variants_from_persist_entries: {e}")
                 fg_score = 0
             try:
                 base_score = int(e.get("score", 0) or 0)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"post_processor:_fg_variants_from_persist_entries: {e}")
                 base_score = 0
             data = dict(details)
             data["Score"] = fg_score or base_score
@@ -244,7 +250,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             from gear_optimizer.pipeline.song_processor import get_base_calc_song
 
             calc_song = get_base_calc_song(fp, cfg_local)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"post_processor:_canonicalize_fg_update_entries: {e}")
             logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song load failed", song_name)
             return []
         if not isinstance(calc_song, dict) or not calc_song:
@@ -257,7 +264,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
 
                 resolved_ref_arrays = _get_team_buff_ref_arrays_cached()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"post_processor:_canonicalize_fg_update_entries: {e}")
                 resolved_ref_arrays = None
         if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
             logger.warning("[POST][FG] Skipping FG deferred save for %s: ref_arrays unavailable", song_name)
@@ -291,11 +299,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         saw_fg_update = bool(fg_state.get("saw_fg_update"))
         try:
             saved = int(fg_state.get("saved_count") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"post_processor:_print_pending_final: {e}")
             saved = 0
         try:
             best_fg = int(fg_state.get("best_fg") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"post_processor:_print_pending_final: {e}")
             best_fg = 0
 
         # If FG work was deferred and no update arrived, `best_fg` will be 0.
@@ -303,7 +313,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         db_best_fg_floor = 0
         try:
             db_best_fg_floor = int(payload.get("db_best_fg_score") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"post_processor:_print_pending_final: {e}")
             db_best_fg_floor = 0
 
         if best_fg > db_best_fg_floor:
@@ -332,8 +343,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             )
             _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
             profiler.record("print_results_pending_final", time.process_time() - cpu_t0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"post_processor:_print_pending_final: {e}")
 
         if saw_fg_update and saved > 0:
             logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song, best_fg)
@@ -416,8 +427,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         async_db.delete_pending_fg_job(db_key)
                         _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
                         profiler.record("fg_delete_pending_job_enqueue", time.process_time() - cpu_t0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
 
                 fg_state["saved_count"] = len(valid_entries)
                 # `fg_score` can equal `score` when the optimal FG config is "no forced greats"
@@ -429,11 +440,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         continue
                     try:
                         score = int(e.get("score", 0) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         score = 0
                     try:
                         fg_score = int(e.get("fg_score", 0) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         fg_score = 0
                     if fg_score <= score:
                         continue
@@ -450,11 +463,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 elif not sync_output:
                     try:
                         saved = int(fg_state.get("saved_count") or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         saved = 0
                     try:
                         best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         best_fg = 0
                     if saved > 0:
                         logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
@@ -463,11 +478,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     # see that FG persistence happened.
                     try:
                         saved = int(fg_state.get("saved_count") or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         saved = 0
                     try:
                         best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         best_fg = 0
                     if saved > 0:
                         logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
@@ -476,8 +493,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 print(msg, file=sys.stderr)
                 try:
                     logging.error(msg + "\n" + traceback.format_exc())
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
             continue
 
         # Propagate compute failures
@@ -491,8 +508,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 logging.error(msg)
                 if item.get("_trace"):
                     logging.error(item.get("_trace"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"post_processor:_print_pending_final: {e}")
             continue
 
         completed += 1
@@ -519,26 +536,30 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 try:
                     run_score = int(best_data.get("BaseScore") or best_data.get("Score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
                     run_score = 0
                 run_best_fg = _best_fg_improving_score_from_variants(fg_variants)
 
                 prev_best_score = 0
                 try:
                     prev_best_score = int((prev_record or {}).get("score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
                     prev_best_score = 0
 
                 prev_best_fg = 0
                 try:
                     prev_best_fg = int(item.get("db_best_fg_score", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
                     prev_best_fg = 0
 
                 if prev_best_fg <= 0:
                     try:
                         prev_best_fg = int((prev_record or {}).get("fg_score", 0) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         prev_best_fg = 0
 
                 record_improved = (run_score > prev_best_score) or (run_best_fg > prev_best_fg)
@@ -546,12 +567,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 attempt_lifetime = 0
                 try:
                     attempt_lifetime = int(item.get("attempt_lifetime", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
                     attempt_lifetime = 0
                 if attempt_lifetime <= 0 and isinstance(prev_record, dict):
                     try:
                         attempt_lifetime = int((prev_record.get("details") or {}).get("attempt_lifetime", 0) or 0) + 1
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         attempt_lifetime = 0
                 if attempt_lifetime <= 0:
                     attempt_lifetime = 1
@@ -559,12 +582,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 prev_attempts_first = 0
                 try:
                     prev_attempts_first = int(item.get("prev_attempts_first", 0) or 0)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"post_processor:_print_pending_final: {e}")
                     prev_attempts_first = 0
                 if prev_attempts_first <= 0 and isinstance(prev_record, dict):
                     try:
                         prev_attempts_first = int((prev_record.get("details") or {}).get("attempts_first", 0) or 0)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
                         prev_attempts_first = 0
 
                 attempts_first = (
@@ -623,8 +648,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             song=item.get("song"),
                         )
                         profiler.record("upsert_pending_fg_job_enqueue", time.process_time() - cpu_t0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"post_processor:_print_pending_final: {e}")
 
                 # Print results (including optional FG debug) in post process so GPU can move on.
                 def _emit(_msg: str) -> None:
@@ -677,8 +702,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
                         profiler.record("print_results", time.process_time() - cpu_t0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"post_processor:_emit: {e}")
 
                 res = {
                     "song": item.get("song", "Unknown"),
@@ -731,8 +756,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                                     "ref_arrays": item.get("ref_arrays"),
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"post_processor:_emit: {e}")
 
             _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
             profiler.record("post_item_total", time.process_time() - cpu_item_t0)
@@ -743,8 +768,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             print(msg, file=sys.stderr)
             try:
                 logging.error(msg + "\n" + traceback.format_exc())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"post_processor:_emit: {e}")
         async_db.raise_if_failed()
 
     # Flush pending DB work before exiting so we don't leave the main pipeline
@@ -758,10 +783,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         if failed > 0:
             print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"post_processor:_emit: {e}")
 
     try:
         profiler.emit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"post_processor:_emit: {e}")

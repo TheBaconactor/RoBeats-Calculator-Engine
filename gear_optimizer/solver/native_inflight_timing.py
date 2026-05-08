@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import time
+import logging
 
 
+
+logger = logging.getLogger(__name__)
 def _thread_cpu_time_s() -> float:
     """
     Best-effort per-thread CPU timer for CPU-only profiling.
@@ -11,6 +14,7 @@ def _thread_cpu_time_s() -> float:
     """
     try:
         return float(time.thread_time())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_timing:_thread_cpu_time_s: {e}")
         return 0.0
 

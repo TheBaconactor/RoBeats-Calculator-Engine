@@ -208,7 +208,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
 
         max_song_slots = int(MAX_SONG_SLOTS)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
         max_song_slots = 8
     song_slot_limit = max(1, int(max_song_slots) - 1)
     inflight_limit = min(int(inflight_limit), int(song_slot_limit))
@@ -372,7 +373,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
         ie = read_iteration_engine_settings(cfg0)
         fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
         fg_enabled = False
 
     fg_slot_reserve = _read_fg_slot_reserve(
@@ -482,12 +484,13 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
             settings = GASettings.from_cfg(cfg0) if cfg0 is not None else GASettings.from_cfg(None)
             ga_runs = int(settings.multi_start)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
             ga_runs = 1
 
         gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
 
     try:
         if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
@@ -507,7 +510,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             from gear_optimizer.core.constants import PATHS
 
             stage_profile_path = PATHS.bin_path("inflight_stage_profile.json")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
             stage_profile_path = None
 
     fg_decision_debug = _truthy(env_get("INFLIGHT_FG_DECISION_DEBUG", "0"))

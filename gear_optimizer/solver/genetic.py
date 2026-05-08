@@ -80,7 +80,8 @@ from .gpu_tuning_policy import choose_ga_batch_runs
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
     _GPU_NATIVE_AVAILABLE = importlib.util.find_spec("taichi") is not None
-except Exception:
+except Exception as e:
+    logger.debug(f"genetic:_ga_redundancy_audit_enabled: {e}")
     _GPU_NATIVE_AVAILABLE = False
 
 
@@ -102,7 +103,8 @@ def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
     """
     try:
         fg_limit = int(fg_candidate_limit)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_resolve_ga_payload_candidate_limit: {e}")
         fg_limit = int(FG_CANDIDATE_LIMIT)
     fg_limit = max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(fg_limit or FG_CANDIDATE_LIMIT)))
 
@@ -119,7 +121,8 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
         raw = cfg.get("ga_novelty_repair_attempts", 2)
     try:
         attempts = int(raw)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_resolve_ga_novelty_repair_attempts: {e}")
         attempts = 2
     return max(0, min(4, int(attempts)))
 
@@ -245,7 +248,8 @@ def _compute_global_ftff_combo_caps(
         starts = np.asarray(slot_start, dtype=np.int32).reshape(-1)
         counts = np.asarray(slot_count, dtype=np.int32).reshape(-1)
         base = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_compute_global_ftff_combo_caps: {e}")
         return budget_i, budget_i
 
     if stats.ndim != 2 or int(stats.shape[1]) < 5 or int(base.size) < 5:
@@ -286,7 +290,8 @@ def _abort_requested_now(abort_requested) -> bool:
         return False
     try:
         return bool(abort_requested())
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_abort_requested_now: {e}")
         return False
 
 
@@ -373,7 +378,8 @@ if _GPU_NATIVE_AVAILABLE:
             return None
         try:
             n_slots = int(n_slots)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:extract_db_seed_ids: {e}")
             n_slots = 9
         if n_slots <= 0:
             n_slots = 9
@@ -396,7 +402,8 @@ if _GPU_NATIVE_AVAILABLE:
                     name = mi.get("Name", "") if isinstance(mi, dict) else str(mi or "")
                 if name:
                     seed_ids[si] = int(registry.item_to_id.get((si, name), 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:extract_db_seed_ids: {e}")
             return None
         if not bool(np.any(seed_ids[: min(9, n_slots)] != 0)):
             return None
@@ -478,7 +485,8 @@ def _extract_fg_candidates_from_ga_snapshot(
             gear_ids = tuple(int(x) for x in genome_ids[:6])
             mini_ids = tuple(sorted(int(x) for x in genome_ids[6:9]))
             id_hash = gear_ids + mini_ids
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:_extract_fg_candidates_from_ga_snapshot: {e}")
             id_hash = tuple(int(x) for x in genome_ids[:9])
 
         if id_hash not in seen_id_hashes:
@@ -547,16 +555,19 @@ def _promote_best_candidate_over_header(
     # being out-of-sync with the selected candidate table.
     try:
         best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_promote_best_candidate_over_header: {e}")
         best_score_run = 0
     try:
         cand_best = max(candidates, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_promote_best_candidate_over_header: {e}")
         cand_best = None
     if isinstance(cand_best, dict):
         try:
             cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:_promote_best_candidate_over_header: {e}")
             cand_score = 0
         if cand_score > best_score_run:
             data_obj = cand_best.get("Data") or {}
@@ -568,8 +579,8 @@ def _promote_best_candidate_over_header(
                     cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
                     best_gear = list(cand_genome[:6] or best_gear)
                     best_minis = list(cand_genome[6:9] or best_minis)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"genetic:_promote_best_candidate_over_header: {e}")
 
     return best_data, best_gear, best_minis
 
@@ -601,7 +612,8 @@ def decode_gpu_native_ga_runs_payload(
     fg_group_meta_limit_i: int | None
     try:
         fg_group_meta_limit_i = None if fg_group_meta_limit is None else max(0, int(fg_group_meta_limit))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
         fg_group_meta_limit_i = None
 
     def _should_build_fg_group_meta(index: int, *, enabled: bool) -> bool:
@@ -636,7 +648,8 @@ def decode_gpu_native_ga_runs_payload(
 
         try:
             selected_n = int(runs_payload[0, 0])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
             selected_n = 0
         if selected_n < 0:
             selected_n = 0
@@ -841,16 +854,16 @@ def decode_gpu_native_ga_runs_payload(
                         )
                         if isinstance(fg_group_meta, dict):
                             data_obj["_fg_group_meta"] = fg_group_meta
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
                 if include_full_stats and stat_names is not None:
                     try:
                         if final_stats_mat is not None:
                             row_stats = final_stats_mat[i]
                             current_stats = build_stats_dict(row_stats)
                             data_obj["Stats"] = current_stats
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
 
             cand_data = {
                 "Score": score_val,
@@ -969,7 +982,8 @@ def decode_gpu_native_ga_runs_payload(
             stub_scores = flat_scores[best_pos].astype(np.int32, copy=False)
             stub_run_idx = flat_run_idx[best_pos].astype(np.int32, copy=False)
             stub_pop_idx = flat_pop_idx[best_pos].astype(np.int32, copy=False)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
         stub_scores = np.empty((0,), dtype=np.int32)
         stub_run_idx = np.empty((0,), dtype=np.int32)
         stub_pop_idx = np.empty((0,), dtype=np.int32)
@@ -982,7 +996,8 @@ def decode_gpu_native_ga_runs_payload(
             best_global_genome = registry.decode_genome(fallback_ids)
             best_global_score = int(runs_payload[0, 0, 0])
             best_global_res_arr = np.asarray(runs_payload[0, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
             best_global_genome = []
             best_global_score = 0
             best_global_res_arr = np.zeros((7,), dtype=np.int32)
@@ -1042,7 +1057,8 @@ def decode_gpu_native_ga_runs_payload(
         flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
         flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
         stub_genome_ids = flat[flat_idx, 1 : 1 + n_slots]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
         stub_genome_ids = runs_payload[stub_run_idx, stub_rows, 1 : 1 + n_slots]
 
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
@@ -1069,7 +1085,8 @@ def decode_gpu_native_ga_runs_payload(
         flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
         flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
         stub_results = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
         stub_results = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
 
     centers_ft = stub_results[:, 1].astype(np.int32, copy=False)
@@ -1190,7 +1207,8 @@ def decode_gpu_native_ga_runs_payload(
         flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
         flat_idx = (sel_run_idx.astype(np.int64, copy=False) * row_stride) + sel_rows.astype(np.int64, copy=False)
         results_mat = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_add: {e}")
         results_mat = runs_payload[sel_run_idx, sel_rows, 1 + n_slots : 1 + n_slots + 7]
 
     g_ft = results_mat[:, 1]
@@ -1368,7 +1386,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     if ga_seed is not None:
         try:
             seed_base = int(ga_seed) & 0xFFFFFFFF
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
             seed_base = 42
 
     try:
@@ -1431,13 +1450,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
     try:
         reset_every_runs = int(reset_every_runs_env)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
         reset_every_runs = 0
 
     max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
     try:
         max_retries = int(max_retries_env)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
         max_retries = 1
 
     # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
@@ -1455,7 +1476,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         song_diff = str(meta.get("Difficulty") or "").strip()
         if song_name:
             song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
         song_profile_key = None
 
     def _emit_ga_setup_phase(*, phase: str, start: float, **extra_metrics) -> None:
@@ -1586,7 +1608,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 max_ff_gems=int(max_ff_gems_global),
             )
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:_restore_song_gpu_state: {e}")
         n_combos = 0
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
     batch_runs_default = choose_ga_batch_runs(
@@ -1663,7 +1686,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 f"phase={phase} runs={int(runs)} pop={int(pop)} gen={int(gen)} "
                 f"use_hints={int(use_hints)} combos={int(combos)} ms={float(ms):.3f}"
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:_log_phase: {e}")
             return
 
     def _stage_segment_initial_populations(*, run_start: int, seg_runs: int, segment_pop_arr) -> None:
@@ -1941,8 +1965,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                         "batch_runs": int(batch_len),
                                     },
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"genetic:_stage_segment_initial_populations: {e}")
 
                         # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
                         if is_migration_gen:
@@ -2088,7 +2112,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             segment_pop_arr=segment_pop,
                         )
                         gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"genetic:_stage_segment_initial_populations: {e}")
                         break
 
             if last_exc is not None:
@@ -2215,8 +2240,8 @@ def solve_coevolution_genetic(
     if ga_seed is not None:
         try:
             random.seed(int(ga_seed) & 0xFFFFFFFF)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"genetic:solve_coevolution_genetic: {e}")
 
     logger.info("=== STARTING GENETIC ALGORITHM SOLVER ===")
     logger.info(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
@@ -2340,7 +2365,8 @@ def solve_coevolution_genetic(
         fg_enabled = bool(fg_solver_mode == "exact_dp") or (
             bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"genetic:solve_coevolution_genetic: {e}")
         fg_enabled = False
     cfg_data["fg_require_stats"] = bool(fg_enabled)
     # PRODUCTION: modern optimizer runtime path is GPU-native.
@@ -2372,7 +2398,8 @@ def solve_coevolution_genetic(
 
         try:
             from .taichi_gem import fields as gpu_fields
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genetic:solve_coevolution_genetic: {e}")
             gpu_fields = None
 
         heuristic_k = int(getattr(gpu_fields, "GA_INIT_HEURISTIC_K", 0) or 0)
@@ -2533,9 +2560,9 @@ def solve_coevolution_genetic(
                                 refined_score,
                                 refined_score - best_score,
                             )
-            except Exception:
+            except Exception as e:
                 # Never fail the run for a winner refinement issue; fall back to the GA payload.
-                pass
+                logger.debug(f"genetic:solve_coevolution_genetic: {e}")
 
         logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
 

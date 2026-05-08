@@ -11,6 +11,7 @@ This module contains:
 IMPORTANT: Do NOT import fields directly at module load time.
 The field variables below are placeholders that get populated by bind_fields().
 """
+import logging
 
 
 import taichi as ti
@@ -20,13 +21,16 @@ from ..runtime import get_block_dim
 # Resolve once at import time so Taichi sees a plain constant in `ti.loop_config`.
 # (Calling Python functions inside kernels triggers Taichi AST warnings.)
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _KERNEL_BLOCK_DIM = get_block_dim()
 
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
 try:
     _ga_reduce_block_dim = int(env_get("GA_FTFF_REDUCE_BLOCK_DIM", "256") or "256")
-except Exception:
+except Exception as e:
+    logger.debug(f"kernels_helpers: {e}")
     _ga_reduce_block_dim = 256
 GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_ga_reduce_block_dim), 256))
 GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32

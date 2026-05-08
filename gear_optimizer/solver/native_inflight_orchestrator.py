@@ -100,8 +100,8 @@ def _read_inflight_event_wait_timeout_s() -> float:
     if raw is not None and str(raw).strip() != "":
         try:
             timeout_s = float(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_read_inflight_event_wait_timeout_s: {e}")
     return max(0.001, min(float(timeout_s), 5.0))
 
 
@@ -232,7 +232,8 @@ def run_native_inflight_song_pipeline(
     cfg0 = None
     try:
         cfg0 = cfg_from_dict(tasks[0][3] or {})
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
         cfg0 = None
 
     icfg = parse_inflight_config(tasks, in_flight_songs=in_flight_songs)
@@ -250,15 +251,16 @@ def run_native_inflight_song_pipeline(
         # Make startup visible in the TUI: Taichi/Vulkan init + warmup can take noticeable time on cold caches.
         try:
             progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU init (Taichi/Vulkan)"})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
     gpu_executor.start(in_process=True)
     try:
         # GPU readiness includes Taichi/Vulkan init plus the configured GA/FG warmups. On cold
         # Windows/Vulkan caches, that warmup can be minute-scale; do not let work queue behind an
         # owner that is not accepting requests yet.
         init_timeout = float(env_get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
         init_timeout = 180.0
     if not gpu_executor.wait_until_ready(timeout=init_timeout):
         err = getattr(gpu_executor, "last_init_error", None)
@@ -267,15 +269,15 @@ def run_native_inflight_song_pipeline(
             msg = f"{msg} ({err})"
         try:
             gpu_executor.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
         raise RuntimeError(msg)
     if progress_cb is not None:
         # Executor is initialized and warm; requests submitted after this point can be processed.
         try:
             progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU warmup (Taichi JIT)"})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
@@ -326,7 +328,8 @@ def run_native_inflight_song_pipeline(
                     or item.get("_queue_label")
                     or item.get("_queue_key")
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_post: {e}")
                 song_label = None
             _emit_progress(
                 completed_delta=1,
@@ -370,7 +373,8 @@ def run_native_inflight_song_pipeline(
         try:
             song.runtime.bundle.bundle_repeat_index = int(repeat_ctx.get("repeat_index") or 0)
             song.runtime.bundle.bundle_repeat_total = int(repeat_ctx.get("repeat_total") or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_bind_bundle_song: {e}")
             song.runtime.bundle.bundle_repeat_index = 0
             song.runtime.bundle.bundle_repeat_total = 0
 
@@ -390,7 +394,8 @@ def run_native_inflight_song_pipeline(
         if isinstance(record_info, dict):
             try:
                 info = dict(record_info)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
                 info = {}
 
         repeat_label = None
@@ -401,7 +406,8 @@ def run_native_inflight_song_pipeline(
                 rtotal = int(ctx.get("repeat_total") or len(runs))
                 if ridx > 0 and rtotal > 1:
                     repeat_label = f"{song_name} (Run {ridx}/{rtotal})"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
             repeat_label = None
 
         info.setdefault("song", repeat_label or song_name)
@@ -424,8 +430,8 @@ def run_native_inflight_song_pipeline(
         if bundle_completed_cb is not None:
             try:
                 bundle_completed_cb(bundle_key, completed_songs)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
         return True
 
     # GA jobs submitted to the GPU executor (in-order). We intentionally keep a
@@ -437,14 +443,15 @@ def run_native_inflight_song_pipeline(
     if cfg0 is not None:
         try:
             prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_PrepWorkers", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
             prep_workers = 0
     raw = env_get("INFLIGHT_PREP_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             prep_workers = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
     if prep_workers <= 0:
         if ga_seed:
             prep_workers = 1
@@ -462,14 +469,15 @@ def run_native_inflight_song_pipeline(
                     cfg0.get("IterationEngine", "InFlight_CPUPrewarmWorkers", fallback="0"),
                     0,
                 )
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
                 cpu_prewarm_workers = 0
         raw = env_get("INFLIGHT_CPU_PREWARM_WORKERS")
         if raw is not None and str(raw).strip() != "":
             try:
                 cpu_prewarm_workers = int(raw)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
         if cpu_prewarm_workers <= 0:
             cpu_prewarm_workers = min(2, max(1, _default_worker_threads(inflight_limit=icfg.inflight_limit, kind="prep")))
         cpu_prewarm_workers = max(1, min(int(cpu_prewarm_workers), int(icfg.cpu_prewarm_lookahead), 4))
@@ -487,14 +495,15 @@ def run_native_inflight_song_pipeline(
     if cfg0 is not None:
         try:
             decode_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DecodeWorkers", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
             decode_workers = 0
     raw = env_get("INFLIGHT_DECODE_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             decode_workers = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_advance_bundle: {e}")
     if decode_workers <= 0:
         decode_workers = _default_worker_threads(inflight_limit=icfg.inflight_limit, kind="decode")
     decode_executor = concurrent.futures.ThreadPoolExecutor(
@@ -510,20 +519,20 @@ def run_native_inflight_song_pipeline(
             if ga_inflight:
                 song = ga_inflight[0]
                 return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_active_runtime_song: {e}")
         try:
             if decode_inflight:
                 song = decode_inflight[0]
                 return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_active_runtime_song: {e}")
         try:
             if fg_futures:
                 song = fg_futures[0][0]
                 return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_active_runtime_song: {e}")
         return ""
 
     def _emit_active_runtime_song(*, force: bool = False) -> None:
@@ -567,14 +576,15 @@ def run_native_inflight_song_pipeline(
     if cfg0 is not None:
         try:
             db_prefetch_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DBPrefetchWorkers", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_emit_active_runtime_song: {e}")
             db_prefetch_workers = 0
     raw = env_get("INFLIGHT_DB_PREFETCH_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
             db_prefetch_workers = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_emit_active_runtime_song: {e}")
     if db_prefetch_workers <= 0:
         db_prefetch_workers = max(1, min(int(fg_prep_workers), 4))
     db_prefetch_executor = concurrent.futures.ThreadPoolExecutor(
@@ -604,14 +614,16 @@ def run_native_inflight_song_pipeline(
         for song in ga_inflight:
             try:
                 key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_active_song_lane_count: {e}")
                 key = ""
             if key:
                 keys.add(key)
         for song in decode_inflight:
             try:
                 key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_active_song_lane_count: {e}")
                 key = ""
             if key:
                 keys.add(key)
@@ -626,7 +638,8 @@ def run_native_inflight_song_pipeline(
             nonlocal count
             try:
                 sid = int(id(song))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_track: {e}")
                 return
             if sid in seen_ids:
                 return
@@ -637,7 +650,8 @@ def run_native_inflight_song_pipeline(
             try:
                 if fut.done():
                     return
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_track: {e}")
                 return
             count += 1
 
@@ -674,7 +688,8 @@ def run_native_inflight_song_pipeline(
     def _task_label_for_prewarm(song: _NativeSong) -> str:
         try:
             return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or id(song))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_task_label_for_prewarm: {e}")
             return str(id(song))
 
     def _submit_cpu_prewarm(song: _NativeSong) -> bool:
@@ -693,15 +708,16 @@ def run_native_inflight_song_pipeline(
             cpu_prewarm_inflight.append((song, fut, time.perf_counter()))
             _register_completion_future(fut)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_submit_cpu_prewarm: {e}")
             try:
                 cpu_prewarm_submitted.discard(task_key)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_submit_cpu_prewarm: {e}")
             try:
                 song.runtime.prep.cpu_prewarm_future = None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_submit_cpu_prewarm: {e}")
             return False
 
     def _submit_fg_static_prewarm(song: _NativeSong) -> bool:
@@ -719,11 +735,12 @@ def run_native_inflight_song_pipeline(
             song.runtime.fg.fg_static_prep_future = static_future
             _register_completion_future(static_future)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_submit_fg_static_prewarm: {e}")
             try:
                 song.runtime.fg.fg_static_prep_future = None
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_submit_fg_static_prewarm: {e}")
             return False
 
     def _submit_cpu_prewarm_backlog() -> int:
@@ -754,18 +771,19 @@ def run_native_inflight_song_pipeline(
                     cpu_seconds=None,
                     song=_task_label_for_prewarm(song),
                 )
-            except Exception:
+            except Exception as e:
                 # Prewarm is an accelerator only; the dispatch path will rebuild
                 # synchronously if the background attempt failed.
+                logger.debug(f"native_inflight_orchestrator:_finish_cpu_prewarm_jobs: {e}")
                 try:
                     cpu_prewarm_submitted.discard(_task_label_for_prewarm(song))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_finish_cpu_prewarm_jobs: {e}")
             finally:
                 try:
                     song.runtime.prep.cpu_prewarm_future = None
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_finish_cpu_prewarm_jobs: {e}")
         return int(finished)
 
     def _effective_ga_queue_limit() -> int:
@@ -781,8 +799,8 @@ def run_native_inflight_song_pipeline(
                 if (time.monotonic() - float(last_slot_block_t)) <= float(icfg.ga_queue_pressure_window_s):
                     slot_pressure_active = True
                     extra_free = max(int(extra_free), int(icfg.ga_queue_extra_free_on_slot_pressure))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_effective_ga_queue_limit: {e}")
 
         cache_key = (
             bool(slot_pressure_active),
@@ -861,7 +879,8 @@ def run_native_inflight_song_pipeline(
             from gear_optimizer.core.constants import PATHS
 
             path = PATHS.bin_path("inflight_native_abort.log")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_log_abort: {e}")
             path = None
         if not path:
             return
@@ -876,8 +895,8 @@ def run_native_inflight_song_pipeline(
                 fh.write(f"\n[{ts}] {type(exc).__name__}: {exc}\n")
                 fh.write(snapshot + "\n")
                 fh.write(traceback.format_exc() + "\n")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_log_abort: {e}")
 
     def _request_gpu_abort(reason: str) -> None:
         nonlocal gpu_abort_requested
@@ -886,15 +905,16 @@ def run_native_inflight_song_pipeline(
         gpu_abort_requested = True
         try:
             gpu_executor.request_abort(str(reason or "stop requested"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_request_gpu_abort: {e}")
 
     def _is_stop_abort_exception(exc: BaseException) -> bool:
         if isinstance(exc, concurrent.futures.CancelledError):
             return True
         try:
             msg = str(exc or "")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_is_stop_abort_exception: {e}")
             msg = ""
         return "GpuExecutor aborted:" in msg
 
@@ -909,14 +929,15 @@ def run_native_inflight_song_pipeline(
     if cfg0 is not None:
         try:
             prime_target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_is_stop_abort_exception: {e}")
             prime_target = 0
     raw = env_get("INFLIGHT_PRIME_TARGET")
     if raw is not None and str(raw).strip() != "":
         try:
             prime_target = int(raw)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_is_stop_abort_exception: {e}")
     if prime_target <= 0:
         prime_target = _default_prime_target(
             inflight_limit=icfg.inflight_limit,
@@ -980,8 +1001,8 @@ def run_native_inflight_song_pipeline(
 
         try:
             song.runtime.post.deferred_post_emitted = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
 
         bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
         needs_fg_stage = bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
@@ -997,8 +1018,8 @@ def run_native_inflight_song_pipeline(
         elif needs_fg_stage and bool(icfg.fg_drain_at_end):
             try:
                 song.runtime.post.await_fg_completion_progress = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
         else:
             completed_songs.add(song.config.task_key)
             if memory_resume_tracker:
@@ -1006,13 +1027,14 @@ def run_native_inflight_song_pipeline(
             if bundle_completed_cb is not None:
                 try:
                     bundle_completed_cb(song.config.task_key, completed_songs)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
             try:
                 record_info = dict(getattr(song.runtime.db, "record_info", None) or {})
                 record_info.setdefault("song", song.config.task_key or song.config.song_name)
                 record_info.setdefault("status", "DONE")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
                 record_info = None
             _emit_progress(completed_delta=1, record_info=record_info)
 
@@ -1028,19 +1050,22 @@ def run_native_inflight_song_pipeline(
         heartbeat_sec = 0.0
         try:
             heartbeat_sec = float(env_get("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_continuous_note_ga_submit: {e}")
             heartbeat_sec = 0.0
 
         throughput_sec = 0.0
         try:
             throughput_sec = float(env_get("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_continuous_note_ga_submit: {e}")
             throughput_sec = 0.0
 
         stage_emit_sec = 0.0
         try:
             stage_emit_sec = float(env_get("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_continuous_note_ga_submit: {e}")
             stage_emit_sec = 0.0
 
         event_wait_timeout_s = float(_read_inflight_event_wait_timeout_s())
@@ -1050,13 +1075,15 @@ def run_native_inflight_song_pipeline(
         profile_max_songs = 0
         try:
             profile_max_songs = int(env_get("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_continuous_note_ga_submit: {e}")
             profile_max_songs = 0
         profile_max_songs = max(0, int(profile_max_songs))
         completed_baseline = 0
         try:
             completed_baseline = int(len(completed_songs))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_continuous_note_ga_submit: {e}")
             completed_baseline = 0
         bubble_tracker = BubbleTracker()
 
@@ -1131,22 +1158,23 @@ def run_native_inflight_song_pipeline(
             if (not stopping) and profile_max_songs > 0:
                 try:
                     completed_now = int(len(completed_songs)) - int(completed_baseline)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     completed_now = 0
                 if completed_now >= int(profile_max_songs):
                     stopping = True
                     try:
                         pending_tasks.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         prepared.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         pending_fg.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
             if _stop_requested_cached(now):
                 if not stopping:
@@ -1154,55 +1182,58 @@ def run_native_inflight_song_pipeline(
                     _request_gpu_abort("native in-flight stop requested")
                     try:
                         pending_tasks.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         prepared.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         pending_fg.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     # Best-effort cancel of queued prep/decode work.
                     try:
                         for _task, fut, _t0 in list(prep_inflight):
                             try:
                                 fut.cancel()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         prep_inflight.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         for song in list(decode_inflight):
                             try:
                                 if song.runtime.decode.decode_future is not None:
                                     song.runtime.decode.decode_future.cancel()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         # Keep entries so we can still drain the deque safely.
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
             # Periodic throughput reporting (opt-in via env).
             if throughput_sec > 0 and (now - last_throughput) >= float(throughput_sec):
                 last_throughput = now
                 try:
                     completed_now = int(len(completed_songs)) - int(completed_baseline)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     completed_now = 0
                 if completed_now > 0:
                     wall_s = max(1e-9, float(time.perf_counter() - float(stage_profiler._t0)))
                     per_h = float(completed_now) * 3600.0 / wall_s
                     try:
                         pending_now = int(len(pending_tasks)) + int(len(prepared)) + int(len(pending_fg))
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         pending_now = 0
                     try:
                         avg_s = wall_s / float(completed_now)
                         eta_s = float(pending_now) * avg_s if pending_now > 0 else 0.0
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         avg_s = 0.0
                         eta_s = 0.0
                     try:
@@ -1214,8 +1245,8 @@ def run_native_inflight_song_pipeline(
                             avg_s,
                             eta_s / 60.0,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     emit_profile_event(
                         component="inflight_orchestrator",
                         event="throughput",
@@ -1233,8 +1264,8 @@ def run_native_inflight_song_pipeline(
                 last_stage_emit = now
                 try:
                     stage_profiler.emit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
             did_work = False
             blocked_on_slot_acquire = False
@@ -1318,8 +1349,8 @@ def run_native_inflight_song_pipeline(
                     song.runtime.fg.fg_prep_future.result()
                     try:
                         song.runtime.fg.fg_dynamic_prep_done = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 except Exception as exc:
                     if stopping and _is_stop_abort_exception(exc):
                         pass
@@ -1343,7 +1374,8 @@ def run_native_inflight_song_pipeline(
                         gpu_client=gpu_client,
                         register_future=_register_completion_future,
                     )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     started_fg_prep = 0
                 if int(started_fg_prep) > 0:
                     did_work = True
@@ -1358,7 +1390,8 @@ def run_native_inflight_song_pipeline(
             try:
                 if pending_fg:
                     fg_oldest_wait_s = _oldest_pending_fg_wait_s(float(now))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 fg_oldest_wait_s = 0.0
 
             while True:
@@ -1384,8 +1417,8 @@ def run_native_inflight_song_pipeline(
                             int(icfg.fg_slot_reserve),
                             fg_oldest_wait_s * 1000.0,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 ready_fg_for_ga_admission = _ready_pending_fg_count() if pending_fg else 0
                 if _continuous_ga_should_yield_to_fg(
@@ -1411,8 +1444,9 @@ def run_native_inflight_song_pipeline(
                     # even while other songs are in-flight (avoids clobbering slot 0).
                     try:
                         ga_pipeline.reserve_slot(song, slot_pool)
-                    except Exception:
+                    except Exception as e:
                         # No free slots: defer GA submission until FG drains.
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         blocked_on_slot_acquire = True
                         last_slot_block_t = time.monotonic()
                         stage_profiler.record("slot_block", 0.0)
@@ -1426,8 +1460,8 @@ def run_native_inflight_song_pipeline(
                         # Ensure we don't leak the reserved slot on submission failure.
                         try:
                             ga_pipeline.release_slot(song, slot_pool)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         payload = build_error_payload(
                             song_name=str(song.config.song_name),
                             queue_key=str(song.config.task_key),
@@ -1478,11 +1512,12 @@ def run_native_inflight_song_pipeline(
                                     static_future = fg_pipeline.prep_executor.submit(_prepare_fg_static_sync, song)
                                     song.runtime.fg.fg_static_prep_future = static_future
                                     _register_completion_future(static_future)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                             try:
                                 song.runtime.fg.fg_static_prep_future = None
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                     continue
 
@@ -1554,8 +1589,8 @@ def run_native_inflight_song_pipeline(
                     # GA failed: release the reserved timeline slot for this song.
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     if stopping and _is_stop_abort_exception(exc):
                         continue
                     if bundle_parent is not None:
@@ -1586,20 +1621,20 @@ def run_native_inflight_song_pipeline(
                                 getattr(s.gpu_inputs, "force_greats_finder", False)
                             ):
                                 held_slots += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         for s in pending_fg:
                             if int(getattr(s.runtime, "song_slot", 0) or 0) > 0:
                                 held_slots += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         for fg_song, _fut, _t_submit in fg_futures:
                             if int(getattr(fg_song.runtime, "song_slot", 0) or 0) > 0:
                                 held_slots += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     keep_slot_for_fg = int(held_slots) < int(hold_budget)
 
                 if not keep_slot_for_fg:
@@ -1609,8 +1644,8 @@ def run_native_inflight_song_pipeline(
                         stage_profiler.record("fg_hold_drop", 0.0)
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 song.runtime.decode.decode_submit_t0 = time.perf_counter()
                 song.runtime.decode.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, ga_result)
@@ -1623,8 +1658,8 @@ def run_native_inflight_song_pipeline(
                         song_key=str(song.config.task_key),
                         metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
             # Finalize decoded GA results (lightweight formatting + enqueue for post/FG).
             for song in list(decode_inflight):
@@ -1651,8 +1686,8 @@ def run_native_inflight_song_pipeline(
                     # Decode failed: release the reserved timeline slot for this song.
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     if stopping and _is_stop_abort_exception(exc):
                         continue
                     if bundle_parent is not None:
@@ -1686,8 +1721,8 @@ def run_native_inflight_song_pipeline(
                             "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 if song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder:
                     fg_pipeline.queue(song, now_s=time.monotonic())
@@ -1699,14 +1734,15 @@ def run_native_inflight_song_pipeline(
                                 gpu_client=gpu_client,
                                 register_future=_register_completion_future,
                             )
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                             song.runtime.fg.fg_prep_future = None
                 else:
                     # No FG stage for this song: release its reserved timeline slot immediately.
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 record_info = None
                 try:
@@ -1724,13 +1760,14 @@ def run_native_inflight_song_pipeline(
                             best_score=int(record_info.get("score", 0) or 0),
                             mark_valid=bool(baseline_valid),
                         )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     record_info = None
                 song.runtime.db.record_info = record_info
                 try:
                     song.runtime.post.deferred_post_emitted = False
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 post_emit_pending.append(song)
 
             # Reap completed FG workers (capture errors).
@@ -1739,7 +1776,8 @@ def run_native_inflight_song_pipeline(
                 for fg_song, fut, t_submit in list(fg_futures):
                     try:
                         done = fut.done()
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         done = False
                     if done:
                         did_work = True
@@ -1768,17 +1806,17 @@ def run_native_inflight_song_pipeline(
                                             "exc": str(exc),
                                         },
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                                 try:
                                     logger.exception("[NativeInflight][FG] worker failed for %s", fg_song.config.task_key)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         if not bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):
                             try:
                                 _emit_deferred_post_payload(fg_song)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         if fg_failed:
                             try:
                                 if post_sender is not None and bool(getattr(fg_song.runtime.bundle, "bundle_wait_for_fg", False)):
@@ -1793,13 +1831,13 @@ def run_native_inflight_song_pipeline(
                                             "cfg_dict": fg_song.config.cfg_dict,
                                         }
                                     )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         # Release this song's reserved timeline slot now that FG is complete.
                         try:
                             ga_pipeline.release_slot(fg_song, slot_pool)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         stage_profiler.record(
                             "fg_run",
                             time.perf_counter() - float(t_submit),
@@ -1815,8 +1853,8 @@ def run_native_inflight_song_pipeline(
                             )
                             try:
                                 fg_song.runtime.bundle.bundle_wait_for_fg = False
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         elif bool(getattr(fg_song.runtime.post, "await_fg_completion_progress", False)):
                             completed_songs.add(fg_song.config.task_key)
                             if memory_resume_tracker:
@@ -1824,19 +1862,20 @@ def run_native_inflight_song_pipeline(
                             if bundle_completed_cb is not None:
                                 try:
                                     bundle_completed_cb(fg_song.config.task_key, completed_songs)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                             try:
                                 record_info = dict(getattr(fg_song.runtime.db, "record_info", None) or {})
                                 record_info.setdefault("song", fg_song.config.task_key or fg_song.config.song_name)
                                 record_info.setdefault("status", "DONE")
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                                 record_info = None
                             _emit_progress(completed_delta=1, record_info=record_info)
                             try:
                                 fg_song.runtime.post.await_fg_completion_progress = False
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     else:
                         still_pending.append((fg_song, fut, t_submit))
                 fg_pipeline.replace_futures(still_pending)
@@ -1845,7 +1884,8 @@ def run_native_inflight_song_pipeline(
             try:
                 if pending_fg:
                     fg_oldest_wait_s = _oldest_pending_fg_wait_s(float(now))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 fg_oldest_wait_s = 0.0
             ready_fg_count = _ready_pending_fg_count()
             bubble_snapshot = _bubble_snapshot(float(now), oldest_fg_wait_s=float(fg_oldest_wait_s))
@@ -1879,8 +1919,8 @@ def run_native_inflight_song_pipeline(
                             "Candidates were persisted to DB for later processing.",
                             len(pending_fg),
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                     # Best-effort: stop tracking FG prep for deferred songs so we can exit
                     # without waiting on CPU prep threads.
@@ -1888,22 +1928,23 @@ def run_native_inflight_song_pipeline(
                         for s in list(fg_prep_inflight):
                             try:
                                 s.runtime.fg.fg_prep_future = None
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         fg_prep_inflight.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                     # Release any reserved timeline slots for deferred FG songs.
                     try:
                         for s in list(pending_fg):
                             try:
                                 ga_pipeline.release_slot(s, slot_pool)
-                            except Exception:
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                                 continue
                         pending_fg.clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     break
 
             ga_queue_limit_effective = _current_ga_queue_limit()
@@ -1973,8 +2014,8 @@ def run_native_inflight_song_pipeline(
                             len(fg_futures),
                             fg_oldest_wait_s * 1000.0,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 submit_budget = _continuous_fg_submit_budget(
                     pending_fg_count=len(pending_fg),
@@ -2010,11 +2051,12 @@ def run_native_inflight_song_pipeline(
                         if int(getattr(fg_song.runtime, "song_slot", 0) or 0) <= 0:
                             try:
                                 ga_pipeline.reserve_slot(fg_song, slot_pool)
-                            except Exception:
+                            except Exception as e:
                                 # No free slots: put the song back and defer FG submission
                                 # until GA releases slots. Without this, the song would be
                                 # dropped from FG processing entirely (it was removed from
                                 # pending_fg by _pop_next_fg but never submitted).
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                                 fg_pipeline.requeue_front(fg_song)
                                 break
                         if fg_submit_debug:
@@ -2025,12 +2067,12 @@ def run_native_inflight_song_pipeline(
                                     len(pending_fg),
                                     len(fg_futures),
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         try:
                             fg_song.runtime.fg.fg_queued_t0 = None
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         fg_pipeline.submit_job(
                             _run_fg_job_sync,
                             fg_song,
@@ -2081,7 +2123,8 @@ def run_native_inflight_song_pipeline(
                         t0s = [t for t in t0s if t is not None]
                         if t0s:
                             oldest_ga_s = max(0.0, now - float(min(t0s)))
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         oldest_ga_s = None
 
                     try:
@@ -2106,8 +2149,8 @@ def run_native_inflight_song_pipeline(
                                 f" ready_fg={int(heartbeat_bubble.get('ready_fg_count', 0) or 0)}"
                             )
                         logger.debug(msg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     emit_profile_event(
                         component="inflight_orchestrator",
                         event="heartbeat",
@@ -2153,7 +2196,8 @@ def run_native_inflight_song_pipeline(
                     try:
                         fg_done = sum(1 for _song, fut, _t0 in fg_futures if fut.done())
                         fg_inflight = len(fg_futures)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         fg_done = None
                         fg_inflight = None
                     logger.debug(
@@ -2250,70 +2294,70 @@ def run_native_inflight_song_pipeline(
                     "lane_fill_holds": int(lane_fill_hold_count),
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             stage_profiler.emit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         shutdown_debug = _truthy(env_get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] fg_executor.shutdown")
             fg_pipeline.shutdown_fg(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] decode_executor.shutdown")
             decode_executor.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] db_prefetch_executor.shutdown")
             db_prefetch_executor.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
             fg_pipeline.shutdown_prep(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] cpu_prewarm_executor.shutdown")
             if cpu_prewarm_executor is not None:
                 cpu_prewarm_executor.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] prep_executor.shutdown")
             prep_executor.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if post_sender is not None:
                 if shutdown_debug:
                     logger.debug("[InFlight][SHUTDOWN] post_sender.close")
                 post_sender.close(timeout=10.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if shutdown_debug:
                 logger.debug("[InFlight][SHUTDOWN] gpu_client.close")
             gpu_client.close(timeout=2.0)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
         try:
             if gpu_executor.is_running:
                 if shutdown_debug:
                     logger.debug("[InFlight][SHUTDOWN] gpu_executor.stop")
                 gpu_executor.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
 
 # NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, `_prepare_fg_job_sync`, `_run_fg_job_sync`,

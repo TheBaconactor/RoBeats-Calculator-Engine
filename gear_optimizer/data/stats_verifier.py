@@ -8,6 +8,7 @@ and warns if any issues are detected.
 import json
 import sqlite3
 from typing import Dict, Tuple, Iterable
+import logging
 
 from gear_optimizer.data.database import (
     _base_details_from_force_payload,
@@ -19,7 +20,6 @@ from gear_optimizer.data.database import (
     _unpack_id_list,
     _unpack_stats_after_load,
     get_db_connection,
-    get_db_connection_readonly,
     get_evolution_db_path,
 )
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
@@ -27,6 +27,8 @@ from gear_optimizer.data.csv_parser import parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
 
 
+
+logger = logging.getLogger(__name__)
 def _is_stats_empty(stats) -> bool:
     """Check if Stats is missing or empty."""
     if stats is None:
@@ -44,7 +46,8 @@ def _decode_names_from_row(row: sqlite3.Row, maps) -> tuple[list[str], list[str]
     gear_names: list[str] = []
     try:
         ids = _unpack_id_list(row["gear_ids_blob"])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_verifier:_decode_names_from_row: {e}")
         ids = []
     if ids:
         gear_names = [str(maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
@@ -53,7 +56,8 @@ def _decode_names_from_row(row: sqlite3.Row, maps) -> tuple[list[str], list[str]
     mini_groups: list[list[str]] = []
     try:
         id_groups = _unpack_id_groups(row["minis_ids_blob"])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"stats_verifier:_decode_names_from_row: {e}")
         id_groups = []
     for g in id_groups or []:
         if not g:
@@ -400,14 +404,16 @@ def _verify_fg_table(
                 if base_row is not None and base_row["details_json"]:
                     try:
                         base_details = _unpack_stats_after_load(json.loads(base_row["details_json"])) or {}
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
                         base_details = None
 
                 force_payload = {}
                 if row["force_details_json"]:
                     try:
                         force_payload = json.loads(row["force_details_json"]) or {}
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"stats_verifier:_iter_problem_fg_rows_sql: {e}")
                         force_payload = {}
 
                 fg_base_details = _base_details_from_force_payload(base_details or details, force_payload)

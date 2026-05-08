@@ -14,6 +14,7 @@ Key optimizations:
 
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
+import logging
 
 import numpy as np
 
@@ -33,6 +34,8 @@ from ..registry_solve_request import (
 )
 
 
+
+logger = logging.getLogger(__name__)
 @dataclass
 class GpuBatchEvalPlan:
     """Prepared (CPU-side) batch evaluation plan with a deferred GPU solve step."""
@@ -487,7 +490,8 @@ def batch_evaluate_genomes(
             raise RuntimeError("GPU registry solve is required for batch_evaluate_genomes; missing ItemRegistry.")
         try:
             song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"genome_evaluation:batch_evaluate_genomes: {e}")
             song_slot = 0
 
         try:

@@ -141,7 +141,8 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
     if not isinstance(fg_calc_song, dict):
         try:
             fg_calc_song = clone_calc_song(calc_song)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_resolve_active_fg_calc_song: {e}")
             fg_calc_song = {
                 "metadata": dict(calc_song.get("metadata", {}) or {}),
                 "song_data": dict(calc_song.get("song_data", {}) or {}),
@@ -150,7 +151,8 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
         from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
         apply_timing_envelope(fg_calc_song)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_resolve_active_fg_calc_song: {e}")
         return calc_song
 
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
@@ -189,7 +191,8 @@ def _maybe_prewarm_fg_chart_scorer(song: _NativeSong) -> None:
 
         get_cached_chart_scorer(calc_song, ref_arrays, create_chart_scorer_from_calc_song)
         song.runtime.prep.fg_chart_scorer_prewarmed = True
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_maybe_prewarm_fg_chart_scorer: {e}")
         return
 
 
@@ -227,7 +230,8 @@ def _resolve_baseline_team_buff_for_db(cfg_dict: dict | None) -> str:
         from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 
         return resolve_baseline_team_buff_from_cfg_dict(cfg_dict or {}, default="T5")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_resolve_baseline_team_buff_for_db: {e}")
         return "T5"
 
 
@@ -405,14 +409,14 @@ def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
             return
         try:
             fg_baseline_params({"Fever Time": 0, "Fever Fill Rate": 0}, calc_song, ref_arrays, prefer_grid=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_warmup_fg_jit: {e}")
         try:
             grid = get_song_timeline_grid(calc_song, ref_arrays)
             grid.get_timeline(0, int(TOTAL_ROWS))
             grid.to_gpu_arrays_minimal()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_warmup_fg_jit: {e}")
         _FG_JIT_WARMED = True
 
 
@@ -421,8 +425,8 @@ def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
         return
     try:
         fg_baseline_params({"Fever Time": 0, "Fever Fill Rate": 0}, calc_song, ref_arrays, prefer_grid=False)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_prewarm_fg_baseline_point: {e}")
 
 
 def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
@@ -432,8 +436,8 @@ def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Non
         from gear_optimizer.solver.taichi_gem.api.timeline import prewarm_timeline_frontier_payload
 
         prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_prewarm_timeline_frontier_payload: {e}")
 
 
 def run_cpu_prewarm_for_song(song: _NativeSong) -> None:
@@ -484,7 +488,8 @@ def _warmup_fg_finder_runtime(
                 song_slot=int(song_slot),
                 perf=False,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_warmup_fg_finder_runtime: {e}")
             return
         _FG_FINDER_RUNTIME_WARMED = True
 
@@ -568,7 +573,8 @@ def collect_fg_group_meta_payload(song: _NativeSong, *, limit: int, start_index:
                 row_idx=data.get("_ga_gpu_row_idx"),
                 prefer_grid=False,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:collect_fg_group_meta_payload: {e}")
             continue
         if isinstance(fg_group_meta, dict):
             payload[int(idx)] = fg_group_meta
@@ -649,8 +655,8 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
             song_key=song_key,
             metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_decode_ga_payload_sync: {e}")
     decode_cfg_data = dict(getattr(song.gpu_inputs, "cfg_data", {}) or {})
     best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
@@ -684,8 +690,8 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
                 "cpu_s": float(cpu_s or 0.0),
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_decode_ga_payload_sync: {e}")
     return out
 
 
@@ -719,7 +725,8 @@ def _prefetch_db_loadouts_sync(
             _fg_db_cache_put(song_name, limit=limit_i, rows=rows, team_buff=str(team_buff or "T5"))
             return rows
         return []
-    except Exception:
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_prefetch_db_loadouts_sync: {e}")
         return []
 
 
@@ -786,14 +793,16 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
                             rows=db_loadouts_full,
                             team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
                         )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_stages:_prepare_fg_static_sync: {e}")
                     db_loadouts_full = None
                 finally:
                     runtime.db.db_loadouts_future = None
             else:
                 prefetch_pending = True
                 db_loadouts_full = None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_prepare_fg_static_sync: {e}")
             db_loadouts_full = None
 
     runtime.fg.loadout_entries = build_loadout_entries(
@@ -831,13 +840,14 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         static_done = False
         try:
             static_done = bool(static_future.done())
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
             static_done = True
         if static_done:
             try:
                 static_future.result()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
             try:
                 song.runtime.fg.fg_static_prep_future = None
             except AttributeError:
@@ -869,8 +879,8 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             ref_arrays = gpu_inputs.ref_arrays if isinstance(gpu_inputs.ref_arrays, dict) else None
             if calc_song and ref_arrays:
                 _warmup_fg_finder_runtime(calc_song, ref_arrays, gpu_client=gpu_client)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
     t_finder_warmup = time.perf_counter()
 
     # Prime expensive per-song FG structures early so FG dispatch doesn't stall before the first GPU submit.
@@ -952,7 +962,8 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                             rows=db_loadouts_full,
                             team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
                         )
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
                     db_loadouts_full = None
                 finally:
                     runtime.db.db_loadouts_future = None
@@ -962,7 +973,8 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                     logger.debug("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
                 prefetch_pending = True
                 db_loadouts_full = None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
             db_loadouts_full = None
     t_db = time.perf_counter()
 
@@ -1059,5 +1071,5 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                 "db_rows": int(len(db_loadouts_full or [])) if isinstance(db_loadouts_full, list) else -1,
             },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")

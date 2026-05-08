@@ -19,6 +19,7 @@ and tests.
 from __future__ import annotations
 
 import time
+import logging
 
 import numpy as np
 
@@ -37,6 +38,8 @@ from .initialization import ensure_ready, _ensure_ftff_combo_tables
 # FT/FF combos that produce better top-1 results). Keep it OFF by default and
 # allow explicit opt-in for profiling/experimentation.
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _GA_PLATEAU_PRUNE_ENABLED: int = 0
 if env_flag("GPU_NATIVE_GA_PLATEAU_PRUNE"):
     _GA_PLATEAU_PRUNE_ENABLED = 1
@@ -80,7 +83,8 @@ def _ga_eval_budget() -> int:
 
     try:
         val = int(raw_norm)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:_ga_eval_budget: {e}")
         _GA_EVAL_BUDGET = int(MAX_EVALS_PER_DISPATCH)
         return int(_GA_EVAL_BUDGET)
 
@@ -246,7 +250,8 @@ def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: 
     src = np.ascontiguousarray(population_indices_np[:n_genomes, : int(n_slots)], dtype=np.int32)
     try:
         kernels.ga_copy_population_indices_from_ndarray_kernel(int(n_genomes), int(n_slots), src)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_upload_population_indices: {e}")
         pop_buf = np.zeros((fields.MAX_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
         pop_buf[:n_genomes, : int(n_slots)] = src
         fields.population_indices.from_numpy(pop_buf)
@@ -507,8 +512,8 @@ def ga_upload_item_stats(
             and _ITEM_STATS_CACHE.get("slot_count_id") == id(slot_count_np)
         ):
             return n_items
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_upload_item_stats: {e}")
 
     # Check cache - avoid redundant uploads (~2.6MB savings)
     sig = _compute_array_sig(
@@ -1562,7 +1567,8 @@ def ga_download_results(n_genomes: int) -> np.ndarray:
             _elems, staging_fld = best
             kernels.copy_genome_result_stats_to_download_staging_kernel(staging_fld, n_genomes)
             results_np = staging_fld.to_numpy()[:n_genomes]
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_download_results: {e}")
         results_np = None
 
     if results_np is None:
@@ -1595,16 +1601,19 @@ def ga_download_run_payload(
                 try:
                     full_shape = getattr(fields.ga_run_payload_packed, "shape", None)
                     full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"ga_operations:ga_download_run_payload: {e}")
                     full_elems = 0
                 try:
                     staging_elems = int(shape[0]) * int(shape[1])
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"ga_operations:ga_download_run_payload: {e}")
                     staging_elems = 0
                 if full_elems <= 0 or staging_elems <= 0 or full_elems > staging_elems:
                     kernels.ga_copy_run_payload_to_download_staging_kernel(staging, int(n_genomes), int(n_slots))
                     packed_full = staging.to_numpy()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_download_run_payload: {e}")
         packed_full = None
 
     if packed_full is None:
@@ -1791,7 +1800,8 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
             kernels.ga_copy_runs_payload_to_download_staging_kernel(fld, int(n_runs), int(n_genomes), int(n_slots))
             copy_ms = (time.perf_counter() - t_copy) * 1000.0 if perf else 0.0
             out = fld.to_numpy()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_download_runs_payload: {e}")
         out = None
 
     if out is None:
@@ -1804,13 +1814,15 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
             shape = getattr(view, "shape", None)
             elems = int(shape[0]) * int(shape[1]) * int(shape[2]) if shape is not None else 0
             view_bytes_i32 = elems * 4
-        except Exception:
+        except Exception as e:
+            logger.debug(f"ga_operations:ga_download_runs_payload: {e}")
             view_bytes_i32 = 0
         try:
             out_shape = getattr(out, "shape", None)
             out_elems = int(out_shape[0]) * int(out_shape[1]) * int(out_shape[2]) if out_shape is not None else 0
             transfer_bytes_i32 = out_elems * 4
-        except Exception:
+        except Exception as e:
+            logger.debug(f"ga_operations:ga_download_runs_payload: {e}")
             transfer_bytes_i32 = 0
         print(
             "[PERF][GADownloadRunsPayload] "
@@ -1957,7 +1969,8 @@ def ga_download_fg_selected_payload(
     selected_n = 0
     try:
         selected_n = int(out[0, 0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"ga_operations:ga_download_fg_selected_payload: {e}")
         selected_n = 0
     if selected_n < 0:
         selected_n = 0
@@ -1972,7 +1985,8 @@ def ga_download_fg_selected_payload(
         try:
             view_bytes = int(getattr(view, "nbytes", 0) or 0)
             out_bytes = int(getattr(out, "nbytes", 0) or 0)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"ga_operations:ga_download_fg_selected_payload: {e}")
             view_bytes = 0
             out_bytes = 0
         print(
@@ -2353,8 +2367,8 @@ def warmup_ga_kernels() -> None:
     try:
         # Best-effort: ensure the global-best pack/download kernels are JIT'd too.
         _ = ga_download_global_best()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ga_operations:warmup_ga_kernels: {e}")
     ga_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)
 
     # Warm migration + fused next-gen kernels (typical path in GPU-native GA).
@@ -2465,14 +2479,14 @@ def warmup_ga_kernels_light() -> None:
             run_idx_start=0, n_runs=1, n_genomes=int(n_genomes), n_slots=n_slots, seed=12345
         )
         ti.sync()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ga_operations:warmup_ga_kernels_light: {e}")
 
     # Warm fused next-gen path (single-run).
     try:
         warmup_ga_live_request_kernels()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ga_operations:warmup_ga_kernels_light: {e}")
 
     try:
         ga_next_generation_fused(
@@ -2485,7 +2499,7 @@ def warmup_ga_kernels_light() -> None:
             elites_per_island=1,
         )
         ti.sync()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ga_operations:warmup_ga_kernels_light: {e}")
 
     _GA_KERNELS_LIGHT_WARMED = True

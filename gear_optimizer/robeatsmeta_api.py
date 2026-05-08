@@ -20,6 +20,8 @@ from .core.utils import safe_int as _safe_int
 from .core.utils import parse_float as _safe_float
 
 from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 # Keep the 24/7 service default aligned with the checked-in config instead of the
@@ -34,7 +36,8 @@ def _runtime_timestamp(now: int | float | None = None) -> int:
         return int(time.time_ns() // 1_000_000)
     try:
         return int(now)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"robeatsmeta_api:_runtime_timestamp: {e}")
         return int(time.time_ns() // 1_000_000)
 
 
@@ -87,8 +90,8 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                     handle.write("0")
                     handle.flush()
                 handle.seek(0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"robeatsmeta_api:_file_lock: {e}")
             while True:
                 try:
                     mode = msvcrt.LK_NBLCK if deadline is not None else msvcrt.LK_LOCK
@@ -126,12 +129,12 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_file_lock: {e}")
         try:
             handle.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_file_lock: {e}")
 
 
 class RoBeatsMetaOptimizerApi:
@@ -196,7 +199,8 @@ class RoBeatsMetaOptimizerApi:
             self._backend_mode_enabled = bool(
                 self.service_mode_enabled(song_meta_index_path=self._song_meta_index_path)
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:__init__: {e}")
             self._backend_mode_enabled = False
         self._publish_runtime_status = bool(publish_runtime_status)
         self._runtime_status_push_url = self._resolve_runtime_status_push_url() if self._publish_runtime_status else ""
@@ -238,7 +242,8 @@ class RoBeatsMetaOptimizerApi:
                 # default was causing false self-timeouts on an otherwise healthy loopback path.
                 float(env_get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "3.0") or "3.0"),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:__init__: {e}")
             self._runtime_status_push_timeout_sec = 3.0
         if self._publish_runtime_status:
             # Advertise liveness immediately so the website can show the optimizer bar
@@ -253,8 +258,8 @@ class RoBeatsMetaOptimizerApi:
             )
             try:
                 self.flush_runtime_status(timeout=1.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"robeatsmeta_api:__init__: {e}")
 
     @classmethod
     def service_mode_enabled(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
@@ -355,7 +360,8 @@ class RoBeatsMetaOptimizerApi:
                 if self._visit_family_mode and last_computed_at <= 0:
                     try:
                         from .data.database import get_song_names_present_in_db
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"robeatsmeta_api:record_song_visit: {e}")
                         get_song_names_present_in_db = None
                     if get_song_names_present_in_db is not None:
                         try:
@@ -378,8 +384,8 @@ class RoBeatsMetaOptimizerApi:
                                     "last_computed_at": ts,
                                     "db_present": True,
                                 }
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"robeatsmeta_api:record_song_visit: {e}")
 
                 if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
                     if entries.get(bundle.bundle_key) != next_entry:
@@ -692,7 +698,8 @@ class RoBeatsMetaOptimizerApi:
         raw_artist = str(entry.get("artist") or "").strip()
         try:
             resolved = self._resolve_bundle(song_id=raw_song_id, title=raw_title, artist=raw_artist)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_bundle_key_from_entry: {e}")
             resolved = SongBundleRef(song_id=raw_song_id, title=raw_title, artist=raw_artist, bundle_key="")
         canonical_bundle_key = str(resolved.bundle_key or "").strip()
         if canonical_bundle_key:
@@ -864,8 +871,8 @@ class RoBeatsMetaOptimizerApi:
             finally:
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"robeatsmeta_api:_push_runtime_status_direct: {e}")
 
             self._runtime_status_push_failure_count = 0
             self._runtime_status_push_fail_until = 0.0
@@ -908,8 +915,8 @@ class RoBeatsMetaOptimizerApi:
                 try:
                     self._push_runtime_status_direct(state)
                     self._runtime_status_last_push_monotonic = time.monotonic()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"robeatsmeta_api:_runtime_status_loop: {e}")
                 continue
             while True:
                 with self._runtime_status_state_lock:
@@ -933,8 +940,8 @@ class RoBeatsMetaOptimizerApi:
                 try:
                     self._push_runtime_status_direct(state)
                     self._runtime_status_last_push_monotonic = time.monotonic()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"robeatsmeta_api:_runtime_status_loop: {e}")
                 with self._runtime_status_state_lock:
                     self._runtime_status_current = dict(state)
                     if self._runtime_status_pending is None:
@@ -993,7 +1000,8 @@ class RoBeatsMetaOptimizerApi:
         if mtime_ns >= 0:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as e:
+                logger.debug(f"robeatsmeta_api:_refresh_song_meta_cache: {e}")
                 payload = []
             if isinstance(payload, list):
                 for item in payload:
@@ -1022,7 +1030,8 @@ class RoBeatsMetaOptimizerApi:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raw = {}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_load_state_unlocked: {e}")
             raw = {}
         if not isinstance(raw, dict):
             raw = {}
@@ -1037,7 +1046,8 @@ class RoBeatsMetaOptimizerApi:
             raw = json.loads(self._status_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raw = {}
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_load_status_unlocked: {e}")
             raw = {}
         if not isinstance(raw, dict):
             raw = {}
@@ -1067,7 +1077,8 @@ class RoBeatsMetaOptimizerApi:
         os.replace(tmp_path, self._status_path)
         try:
             self._runtime_status_disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_write_status_unlocked: {e}")
             self._runtime_status_disk_mtime_ns = -1
 
     def _load_status(self) -> dict[str, Any]:
@@ -1195,31 +1206,31 @@ class RoBeatsMetaOptimizerApi:
                 self._runtime_status_pending = None
             self._persist_status(state)
             self._push_runtime_status_direct(state)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_publish_runtime_status_unavailable_at_exit: {e}")
         try:
             self._runtime_status_stop = True
             self._runtime_status_pending_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:_publish_runtime_status_unavailable_at_exit: {e}")
 
     def stop_runtime_status_loop(self, *, timeout: float = 1.0) -> None:
         try:
             self._runtime_status_stop = True
             self._runtime_status_pending_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
         try:
             if self._runtime_status_thread.is_alive():
                 self._runtime_status_thread.join(timeout=max(0.0, float(timeout)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
         try:
             conn = self._runtime_status_http_conn
             if conn is not None:
                 conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
         finally:
             self._runtime_status_http_conn = None
             self._runtime_status_http_conn_key = None
@@ -1227,8 +1238,8 @@ class RoBeatsMetaOptimizerApi:
             # If callers explicitly stop the status loop (tests, graceful shutdown),
             # we should not run the atexit handler again and attempt a final push.
             atexit.unregister(self._publish_runtime_status_unavailable_at_exit)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
 
     def read_runtime_status(self) -> dict[str, Any]:
         default_state = {
@@ -1245,7 +1256,8 @@ class RoBeatsMetaOptimizerApi:
         disk_mtime_ns = -1
         try:
             disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:read_runtime_status: {e}")
             disk_mtime_ns = -1
 
         with self._runtime_status_state_lock:
@@ -1263,13 +1275,15 @@ class RoBeatsMetaOptimizerApi:
 
         try:
             loaded = self._load_status()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"robeatsmeta_api:read_runtime_status: {e}")
             loaded = dict(cached or default_state)
 
         if disk_mtime_ns < 0:
             try:
                 disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"robeatsmeta_api:read_runtime_status: {e}")
                 disk_mtime_ns = -1
 
         with self._runtime_status_state_lock:
