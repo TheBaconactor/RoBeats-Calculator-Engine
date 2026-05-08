@@ -777,25 +777,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             cfg.set("ElementalGems", key, "0")
 
     def _preload_ref_arrays(self, stats_table):
-        stat_names = [
-            "Perfect Points",
-            "Combo Multiplier",
-            "Fever Multiplier",
-            "Fever Fill Rate",
-            "Fever Time",
-        ]
-        ref_arrays = {}
-        for i, name in enumerate(stat_names):
-            temp_list = []
-            for v in range(TOTAL_ROWS + 1):
-                lookup_index = TOTAL_ROWS - v
-                try:
-                    val = stats_table[lookup_index][i] if stats_table else 0
-                except (KeyError, TypeError, IndexError, ValueError):
-                    val = 0
-                temp_list.append(val)
-            ref_arrays[name] = np.array(temp_list, dtype=np.float32)
-        return ref_arrays
+        from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+
+        # Runtime/GPU search stays on float32. Exact replay paths resolve their own
+        # float64 authority refs so persistence/repair do not inherit search drift.
+        return build_ref_arrays_from_stats(stats_table, dtype=np.float32)
 
     def _get_filter_params(self, cfg):
         song_settings = self._current_runtime_settings(cfg).calculate_song

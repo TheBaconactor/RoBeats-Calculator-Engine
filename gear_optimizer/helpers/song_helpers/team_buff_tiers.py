@@ -18,6 +18,7 @@ from ...core.team_buff import (
 from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
+from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,7 @@ def compute_team_buff_tier_leaderboards(
     n = max(0, int(limit))
     if not entries or n <= 0:
         return {"tiers": {}, "meta": {"candidate_count": 0}}
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
 
     meta0 = calc_song.get("metadata", {}) or {}
     primary_color = _norm_text(meta0.get("Primary Color", ""))

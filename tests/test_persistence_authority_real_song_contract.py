@@ -57,6 +57,13 @@ def _details_runtime_agnostic_view(details: Any) -> dict[str, Any]:
     return out
 
 
+def _float32_ref_arrays(ref_arrays: dict[str, Any]) -> dict[str, np.ndarray]:
+    out: dict[str, np.ndarray] = {}
+    for name, values in dict(ref_arrays or {}).items():
+        out[str(name)] = np.asarray(values, dtype=np.float32)
+    return out
+
+
 def _calc_song_with_truncated_timeline(calc_song: dict[str, Any]) -> dict[str, Any]:
     """
     Build a deliberately wrong-timeline calc_song variant.
@@ -217,6 +224,128 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
         stats = details.get("Stats") if isinstance(details, dict) else {}
         assert isinstance(stats, dict) and stats
         assert int(row.get("score") or 0) == int(score_stats_exact(stats, calc_song, ref_arrays))
+
+
+def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs_still_use_exact_replay():
+    frozen = _fixture_payload("persistence_authority_ourovoros_t5.json")
+    song_file = Path(__file__).resolve().parents[1] / str(frozen["song_file_rel"])
+    assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
+
+    cfg_dict = {
+        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "TeamContributionBuffConstant": {
+            "TeamBuff": str(frozen["team_buff"]),
+            "TeamColor": str(frozen["primary_color"]),
+        },
+    }
+    calc_song = get_base_calc_song(str(song_file), cfg_dict)
+    authoritative_ref_arrays = _get_team_buff_ref_arrays_cached()
+    assert isinstance(authoritative_ref_arrays, dict) and authoritative_ref_arrays
+    runtime_ref_arrays = _float32_ref_arrays(authoritative_ref_arrays)
+    assert np.asarray(authoritative_ref_arrays["Perfect Points"]).dtype == np.float64
+    assert np.asarray(runtime_ref_arrays["Perfect Points"]).dtype == np.float32
+    build_details_fn = make_build_details_fn(
+        str(frozen["primary_color"]),
+        str(frozen["secondary_color"]),
+        str(frozen["difficulty"]),
+    )
+
+    base_entry = dict(frozen["base_entry"])
+    fg_entry = dict(frozen["fg_entry"])
+    missing_stats_entry = dict(frozen["missing_stats_retained_entry"])
+
+    db_payload = {
+        "score": int(base_entry["expected_score"]) + 11111,
+        "fg_score": 0,
+        "gear": list(base_entry["gear"]),
+        "minis": list(base_entry["minis"]),
+        "details": dict(base_entry["details"]),
+        "force": None,
+        "best_fg": {
+            "score": int(fg_entry["expected_fg_score"]) + 22222,
+            "base_score": int(fg_entry["expected_score"]) + 33333,
+            "gear": list(fg_entry["gear"]),
+            "minis": list(fg_entry["minis"]),
+            "details": dict(fg_entry["details"]),
+            "force": dict(fg_entry["force"]),
+        },
+    }
+
+    loadout_entries = {
+        str(missing_stats_entry["loadout_hash"]): {
+            "score": int(missing_stats_entry["expected_score"]) + 44444,
+            "fg_score": 0,
+            "gear": list(missing_stats_entry["gear"]),
+            "minis": list(missing_stats_entry["minis"]),
+            "details": dict(missing_stats_entry["details_without_stats"]),
+            "eval_data": dict(missing_stats_entry["eval_data"]),
+            "force": None,
+        }
+    }
+
+    authoritative_entries = build_persistence_entries(
+        db_payload,
+        ga_candidates=[],
+        loadout_entries=loadout_entries,
+        build_details_fn=build_details_fn,
+        calc_song=calc_song,
+        ref_arrays=authoritative_ref_arrays,
+        cfg_dict=cfg_dict,
+    )
+    runtime_entries = build_persistence_entries(
+        db_payload,
+        ga_candidates=[],
+        loadout_entries=loadout_entries,
+        build_details_fn=build_details_fn,
+        calc_song=calc_song,
+        ref_arrays=runtime_ref_arrays,
+        cfg_dict=cfg_dict,
+    )
+
+    authoritative_by_signature = {
+        _row_signature(row): row for row in authoritative_entries if isinstance(row, dict)
+    }
+    runtime_by_signature = {_row_signature(row): row for row in runtime_entries if isinstance(row, dict)}
+    assert runtime_by_signature.keys() == authoritative_by_signature.keys()
+
+    base_sig = (tuple(str(v) for v in base_entry["gear"]), tuple(str(v) for v in base_entry["minis"]))
+    fg_sig = (tuple(str(v) for v in fg_entry["gear"]), tuple(str(v) for v in fg_entry["minis"]))
+    missing_sig = (
+        tuple(str(v) for v in missing_stats_entry["gear"]),
+        tuple(str(v) for v in missing_stats_entry["minis"]),
+    )
+
+    assert int(runtime_by_signature[base_sig]["score"]) == int(base_entry["expected_score"])
+    assert int(runtime_by_signature[fg_sig]["score"]) == int(fg_entry["expected_score"])
+    assert int(runtime_by_signature[fg_sig]["fg_score"]) == int(fg_entry["expected_fg_score"])
+    assert int(runtime_by_signature[missing_sig]["score"]) == int(missing_stats_entry["expected_score"])
+
+    for signature, runtime_row in runtime_by_signature.items():
+        authoritative_row = authoritative_by_signature[signature]
+
+        runtime_details = _details_runtime_agnostic_view(runtime_row.get("details") or {})
+        authoritative_details = _details_runtime_agnostic_view(authoritative_row.get("details") or {})
+        assert runtime_details == authoritative_details
+
+        stats = dict(runtime_details.get("Stats") or {})
+        assert stats
+        assert int(runtime_row.get("score") or 0) == int(score_stats_exact(stats, calc_song, runtime_ref_arrays))
+        assert int(runtime_row.get("score") or 0) == int(authoritative_row.get("score") or 0)
+
+        force_norm = normalize_force_payload(runtime_row.get("force"))
+        if not force_norm:
+            assert int(runtime_row.get("fg_score") or 0) == 0
+            assert int(authoritative_row.get("fg_score") or 0) == 0
+            continue
+
+        force_stats = dict(force_norm.get("Stats") or {})
+        assert force_stats
+        force_cfg = ((force_norm.get("ForceGreats") or {}).get("config")) or {}
+        force_counts = _force_counts_from_config(force_cfg)
+        force_eval = evaluate_force_greats_exact(force_stats, calc_song, runtime_ref_arrays, force_counts)
+        assert isinstance(force_eval, dict)
+        assert int(runtime_row.get("fg_score") or 0) == int(force_eval.get("final_score") or 0)
+        assert int(runtime_row.get("fg_score") or 0) == int(authoritative_row.get("fg_score") or 0)
 
 
 def test_persistence_authority_contract_real_song_be_right_there_t5_base():

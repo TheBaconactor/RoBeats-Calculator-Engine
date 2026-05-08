@@ -15,6 +15,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from ...core.constants import TOTAL_ROWS
+from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices
 from ..scoring_core import lookup_reference_py
@@ -63,6 +64,7 @@ def score_fixed_value_exact(
     ref_arrays: Mapping[str, Any],
     fever_mask_buffer=None,
 ) -> int:
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("timestamps")
     if timestamps is None:
@@ -109,6 +111,7 @@ def score_stats_exact(
     *,
     fever_mask_buffer=None,
 ) -> int:
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     metadata = calc_song.get("metadata", {}) or {}
     primary = str(metadata.get("Primary Color", "") or "")
     secondary = str(metadata.get("Secondary Color", "") or "")
@@ -152,6 +155,7 @@ def evaluate_force_greats_exact(
     """
     if not stats or not calc_song:
         return None
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
 
     from .force_greats import _compute_force_greats_timeline
 
