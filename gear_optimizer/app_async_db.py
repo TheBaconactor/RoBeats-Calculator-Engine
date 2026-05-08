@@ -5,9 +5,7 @@ import threading
 import time
 from typing import Optional
 
-import numpy as np
-
-from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
+from gear_optimizer.core.constants import PATHS
 from gear_optimizer.core.parsing import env_flag, env_get, truthy
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
@@ -23,25 +21,9 @@ _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
 
 def _build_ref_arrays_from_stats_table(stats_table) -> dict:
-    stat_names = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Fill Rate",
-        "Fever Time",
-    ]
-    ref_arrays = {}
-    for i, name in enumerate(stat_names):
-        values = []
-        for v in range(TOTAL_ROWS + 1):
-            lookup_index = TOTAL_ROWS - v
-            try:
-                val = stats_table[lookup_index][i] if stats_table else 0
-            except Exception:
-                val = 0
-            values.append(val)
-        ref_arrays[name] = np.array(values, dtype=np.float32)
-    return ref_arrays
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+
+    return build_ref_arrays_from_stats(stats_table)
 
 
 def _get_team_buff_ref_arrays_cached() -> dict | None:

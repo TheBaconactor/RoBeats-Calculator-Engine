@@ -7,11 +7,13 @@ from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     TEAM_BUFF_ELEMENTS,
-    canonicalize_team_buff,
     normalize_team_buff_sequence,
+    resolve_baseline_team_buff_from_cfg_dict,
+    resolve_team_color_from_cfg_dict,
     team_buff_effect,
+    _is_auto_select_buff_and_color,
+    _get_team_section_from_cfg_dict,
 )
-from ...core.parsing import truthy
 from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
@@ -119,46 +121,20 @@ def _representative_mini_names_from_any(minis: object) -> list[str]:
 
 
 def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
-    if not isinstance(cfg_dict, dict):
-        return False
-    ie = cfg_dict.get("IterationEngine") or {}
-    if not isinstance(ie, dict):
-        return False
-    raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
-    return truthy(raw)
+    return _is_auto_select_buff_and_color(cfg_dict)
 
 
 def _resolve_team_section(cfg_dict: dict) -> dict:
-    if not isinstance(cfg_dict, dict):
-        return {}
-    sec = cfg_dict.get("TeamContributionBuffConstant") or {}
-    return sec if isinstance(sec, dict) else {}
+    return dict(_get_team_section_from_cfg_dict(cfg_dict))
 
 
 def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
-    # Match runtime: when auto mode is enabled, we always set TeamColor to the song's primary color.
-    if _auto_select_team_buff_and_color(cfg_dict):
-        try:
-            return _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
-        except Exception:
-            return ""
-    team_section = _resolve_team_section(cfg_dict)
-    team_color = _norm_text(team_section.get("TeamColor", team_section.get("teamcolor", "")))
-    if not team_color:
-        try:
-            team_color = _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
-        except Exception:
-            team_color = ""
-    return team_color
+    primary_color = _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
+    return resolve_team_color_from_cfg_dict(cfg_dict, primary_color=primary_color)
 
 
 def _resolve_base_team_buff(cfg_dict: dict) -> str:
-    # Match runtime: when auto mode is enabled, we always set TeamBuff to T5.
-    if _auto_select_team_buff_and_color(cfg_dict):
-        return "T5"
-    team_section = _resolve_team_section(cfg_dict)
-    base = canonicalize_team_buff(team_section.get("TeamBuff", team_section.get("teambuff", "T5")))
-    return base or "T5"
+    return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
 
 
 def _resolve_team_colors_for_tiering(
@@ -347,24 +323,9 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
 
 
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
-    """
-    Ensure `stats` includes the base TeamBuff effect when tiering is expressed as deltas vs base.
+    from .stats_gateway import ensure_stats_include_base_effect as _gateway
 
-    Some historical DB repairs/backfills computed `details["Stats"]` as loadout-only (no TeamBuff),
-    while tier recomputation assumes the saved stats represent the runtime base (auto mode => T5).
-
-    Heuristic: if Perfect Points is less than the base PP add, treat the stats as missing TeamBuff
-    and add the base effect.
-    """
-    if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
-        return stats if isinstance(stats, dict) else {}
-    base_pp = _safe_int(base_effect.get("Perfect Points", 0), 0)
-    if base_pp <= 0:
-        return dict(stats)
-    pp0 = _safe_int(stats.get("Perfect Points", 0), 0)
-    if pp0 < base_pp:
-        return _apply_stat_delta(stats, base_effect)
-    return dict(stats)
+    return _gateway(stats, base_effect)
 
 
 def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:

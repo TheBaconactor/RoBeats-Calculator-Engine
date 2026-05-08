@@ -13,7 +13,8 @@ from .constants import (
     SKIP_ITEM_KEYS,
 )
 from .gem_defs import ELEMENT_STAT_KEYS, GemKey
-from .team_buff import team_buff_effect
+from .team_buff import team_buff_effect, resolve_baseline_team_buff_from_cfg_dict, resolve_team_color_from_cfg_dict
+from .config_adapter import UserGemSettings
 
 
 def build_base_stats_from_config(cfg_dict):
@@ -26,35 +27,20 @@ def build_base_stats_from_config(cfg_dict):
     Returns:
         dict: Base stats with config contributions applied
     """
-    s = cfg_dict.get("UserInputStatsGems", {}) or {}
-    elem = cfg_dict.get("ElementalGems", {}) or {}
+    gems = UserGemSettings.from_cfg_dict(cfg_dict)
 
-    def _to_int(v) -> int:
-        try:
-            if v is None:
-                return 0
-            text = str(v).strip()
-            if not text:
-                return 0
-            return int(text)
-        except (TypeError, ValueError):
-            return 0
-
-    # UserInputStatsGems values are GEM COUNTS (not raw stats).
-    g_pp = _to_int(s.get("perfect_points", 0))
-    g_cm = _to_int(s.get("combo_multiplier", 0))
-    g_fm = _to_int(s.get("fever_multiplier", 0))
-    g_ff = _to_int(s.get("fever_fill", s.get("fever_fill_rate", 0)))
-    g_ft = _to_int(s.get("fever_time", 0))
+    g_pp = gems.perfect_points
+    g_cm = gems.combo_multiplier
+    g_fm = gems.fever_multiplier
+    g_ff = gems.fever_fill_rate
+    g_ft = gems.fever_time
 
     base_stats = {
-        # Stat gem scaling
         "Perfect Points": g_pp * GEM_SCALE_NORMAL,
         "Combo Multiplier": g_cm * GEM_SCALE_NORMAL,
         "Fever Multiplier": g_fm * GEM_SCALE_FEVER,
         "Fever Fill Rate": g_ff * GEM_SCALE_FEVER,
         "Fever Time": g_ft * GEM_SCALE_FEVER,
-        # Stat-to-element conversion
         "Chill": g_pp * GEM_STAT_TO_ELEMENT_SCALE,
         "Flow": g_cm * GEM_STAT_TO_ELEMENT_SCALE,
         "Rush": g_fm * GEM_STAT_TO_ELEMENT_SCALE,
@@ -62,17 +48,13 @@ def build_base_stats_from_config(cfg_dict):
         "Vibe": g_ff * GEM_STAT_TO_ELEMENT_SCALE,
     }
 
-    # Elemental gems (overflow gems) for each element.
-    for el in ELEMENT_STAT_KEYS:
-        raw = elem.get(el, elem.get(el.lower(), 0))
-        gem_val = _to_int(raw)
-        if gem_val > 0:
-            base_stats[el] = base_stats.get(el, 0) + gem_val * ELEMENTAL_GEM_SCALE
+    if gems.elemental_overflow:
+        for el, val in gems.elemental_overflow.items():
+            if val > 0:
+                base_stats[el] = base_stats.get(el, 0) + val * ELEMENTAL_GEM_SCALE
 
-    # Apply Team Buffs
-    team_section = cfg_dict.get("TeamContributionBuffConstant", {}) or {}
-    team_buff = str(team_section.get("teambuff", team_section.get("TeamBuff", ""))).strip().upper()
-    team_color = str(team_section.get("teamcolor", team_section.get("TeamColor", ""))).strip()
+    team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
+    team_color = resolve_team_color_from_cfg_dict(cfg_dict)
 
     for stat_name, delta in team_buff_effect(team_buff, team_color).items():
         base_stats[stat_name] = base_stats.get(stat_name, 0) + int(delta)

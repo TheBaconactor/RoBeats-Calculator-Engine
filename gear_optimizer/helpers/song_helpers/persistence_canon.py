@@ -15,6 +15,7 @@ from .persistence_entry_selection import (
     build_retained_loadout_entries,
 )
 from .persistence_payload import normalize_force_payload
+from .stats_gateway import details_have_stats, ensure_stats
 from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
@@ -32,11 +33,7 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
-def _details_have_stats(details_obj: Any) -> bool:
-    if not isinstance(details_obj, dict) or not details_obj:
-        return False
-    stats_obj = details_obj.get("Stats")
-    return isinstance(stats_obj, dict) and bool(stats_obj)
+_details_have_stats = details_have_stats
 
 
 def _normalize_entry_shape(
@@ -154,21 +151,22 @@ def _ensure_stats_or_fail(
             continue
         merged = dict(entry)
         details_obj = merged.get("details")
-        if _details_have_stats(details_obj):
-            out.append(merged)
-            continue
-
         eval_data_obj = merged.get("eval_data")
-        rebuilt = build_details_fn(eval_data_obj) if isinstance(eval_data_obj, dict) and eval_data_obj else {}
-        if _details_have_stats(rebuilt):
-            merged["details"] = dict(rebuilt)
-            out.append(merged)
-            continue
-
-        raise ValueError(
-            "Persistence canonicalization received an entry without replayable Stats "
-            f"(hash={merged.get('loadout_hash', '')}, gear={merged.get('gear', [])}, minis={merged.get('minis', [])})."
-        )
+        try:
+            result = ensure_stats(
+                details_obj,
+                build_details_fn=build_details_fn,
+                eval_data=eval_data_obj if isinstance(eval_data_obj, dict) and eval_data_obj else None,
+                force_fail=True,
+            )
+        except ValueError:
+            raise ValueError(
+                "Persistence canonicalization received an entry without replayable Stats "
+                f"(hash={merged.get('loadout_hash', '')}, gear={merged.get('gear', [])}, minis={merged.get('minis', [])})."
+            )
+        if isinstance(result, dict):
+            merged["details"] = result
+        out.append(merged)
     return out
 
 

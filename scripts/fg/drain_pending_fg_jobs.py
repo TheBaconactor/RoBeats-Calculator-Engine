@@ -45,27 +45,9 @@ from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
 def _preload_ref_arrays(stats_table: List[List[float]]) -> Dict[str, "numpy.ndarray"]:
-    import numpy as np
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
 
-    stat_names = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Fill Rate",
-        "Fever Time",
-    ]
-    ref_arrays: Dict[str, "numpy.ndarray"] = {}
-    for i, name in enumerate(stat_names):
-        temp_list: List[float] = []
-        for v in range(TOTAL_ROWS + 1):
-            lookup_index = TOTAL_ROWS - v
-            try:
-                val = stats_table[lookup_index][i] if stats_table else 0
-            except Exception:
-                val = 0
-            temp_list.append(val)
-        ref_arrays[name] = np.array(temp_list, dtype=np.float64)
-    return ref_arrays
+    return build_ref_arrays_from_stats(stats_table)
 
 
 def _build_song_map(data_root: str) -> Dict[str, Tuple[str, str]]:

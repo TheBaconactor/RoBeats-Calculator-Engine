@@ -9,7 +9,6 @@ This module centralizes logic for:
 
 from __future__ import annotations
 
-import hashlib
 import os
 from collections import Counter
 from typing import Any, Dict, List, Optional
@@ -360,15 +359,11 @@ def effective_loadout_hash_from_names(
     gear_names: List[str],
     mini_sigs: List[tuple[Any, ...]],
 ) -> str:
-    """
-    Stable hash for DB identity:
-    - Gear: order-invariant (names sorted)
-    - Minis: order-invariant multiset of effective signatures (duplicates preserved)
-    """
-    g = sorted([n for n in (gear_names or []) if n])
-    m = sorted("|".join(str(x) for x in sig) for sig in (mini_sigs or []))
-    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+    from ..helpers.song_helpers.loadout_hashing import (
+        effective_loadout_hash_from_names as _impl,
+    )
+
+    return _impl(gear_names, mini_sigs)
 
 
 def merge_minis_groups_for_entry(

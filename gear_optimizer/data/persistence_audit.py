@@ -11,6 +11,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.data.database import get_db_connection, get_db_connection_readonly
+
 
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -70,7 +72,7 @@ def audit_persistence_db(
         _append_issue(issues, "db_empty", "database file is empty", int(path.stat().st_size))
         return report
 
-    conn = sqlite3.connect(path)
+    conn = get_db_connection_readonly(str(path))
     try:
         tables = _table_names(conn)
         report["tables"] = sorted(tables)
@@ -258,7 +260,7 @@ def inject_synthetic_persistence_bug(db_path: str | Path) -> dict[str, Any]:
         result["error"] = "db_missing_or_empty"
         return result
 
-    conn = sqlite3.connect(path)
+    conn = get_db_connection(str(path))
     try:
         tables = _table_names(conn)
 

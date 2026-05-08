@@ -7,12 +7,9 @@ from .item_utils import names_list
 
 
 def resolve_loadout_hash(gear_items, mini_items) -> str:
-    try:
-        from ...data.database import get_loadout_hash
+    from .loadout_hashing import resolve_loadout_hash as _impl
 
-        return str(get_loadout_hash(gear_items, mini_items))
-    except Exception:
-        return str((tuple(gear_items or []), tuple(mini_items or [])))
+    return _impl(gear_items, mini_items)
 
 
 def merge_persist_entry(

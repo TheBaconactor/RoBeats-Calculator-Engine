@@ -121,6 +121,37 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     return out
 
 
+def _is_auto_select_buff_and_color(cfg_dict: Mapping[str, Any] | None) -> bool:
+    if not isinstance(cfg_dict, Mapping):
+        return False
+    ie = cfg_dict.get("IterationEngine") or cfg_dict.get("iterationengine") or {}
+    if not isinstance(ie, Mapping):
+        return False
+    raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
+    return truthy(raw)
+
+
+def _get_team_section_from_cfg_dict(cfg_dict: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(cfg_dict, Mapping):
+        return {}
+    sec = cfg_dict.get("TeamContributionBuffConstant") or cfg_dict.get("teamcontributionbuffconstant") or {}
+    return sec if isinstance(sec, Mapping) else {}
+
+
+def resolve_team_color_from_cfg_dict(
+    cfg_dict: Mapping[str, Any] | None,
+    *,
+    primary_color: str = "",
+) -> str:
+    if _is_auto_select_buff_and_color(cfg_dict):
+        return str(primary_color or "").strip()
+    sec = _get_team_section_from_cfg_dict(cfg_dict)
+    color = str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
+    if not color:
+        color = str(primary_color or "").strip()
+    return color
+
+
 def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
     Resolve the baseline TeamBuff tier for a run from cfg_dict.
@@ -128,20 +159,12 @@ def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None,
     - AutoSelectBuffAndColor => TeamBuff=T5 (runtime semantics)
     - Otherwise => TeamContributionBuffConstant.TeamBuff (fallback default)
     """
-    if not isinstance(cfg_dict, Mapping):
-        return normalize_team_buff(default)
-
-    ie = cfg_dict.get("IterationEngine") or cfg_dict.get("iterationengine") or {}
-    if isinstance(ie, Mapping):
-        raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
-        if truthy(raw):
-            return "T5"
-
-    sec = cfg_dict.get("TeamContributionBuffConstant") or cfg_dict.get("teamcontributionbuffconstant") or {}
-    if isinstance(sec, Mapping):
+    if _is_auto_select_buff_and_color(cfg_dict):
+        return "T5"
+    sec = _get_team_section_from_cfg_dict(cfg_dict)
+    if isinstance(sec, Mapping) and sec:
         raw = sec.get("TeamBuff", sec.get("teambuff", default))
         return normalize_team_buff(raw, default=default)
-
     return normalize_team_buff(default)
 
 

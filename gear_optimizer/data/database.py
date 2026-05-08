@@ -3,7 +3,6 @@ Database operations for the gear optimizer.
 Handles all SQLite interactions for loadout persistence and retrieval.
 """
 
-import hashlib
 import re
 import json
 import os
@@ -976,17 +975,9 @@ def _expand_minis_from_db(mini_names, minis_by_name):
 
 
 def _loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
-    """
-    Generate a stable loadout hash from pre-extracted item names.
+    from ..helpers.song_helpers.loadout_hashing import loadout_hash_from_names
 
-    Notes:
-    - Hashing is order-invariant: names are sorted before hashing.
-    - Inputs should already be filtered to non-empty strings.
-    """
-    g = sorted([n for n in (gear_names or []) if n])
-    m = sorted([n for n in (mini_names or []) if n])
-    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+    return loadout_hash_from_names(gear_names, mini_names)
 
 
 def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
@@ -1038,12 +1029,15 @@ def _ensure_stats_in_details(
     """
     Ensure Stats are populated in details dict.
 
-    If Stats is missing or empty, compute it from loadout components using
-    a lightweight approach that doesn't require full gear lookup.
-
-    This is a defensive fallback - the optimizer should populate Stats properly,
-    but this ensures we never persist entries with empty Stats.
+    Defers to the unified stats gateway first; falls back to heavy reconstruction
+    from gear/mini names only when the gateway returns without Stats.
     """
+    from ..helpers.song_helpers.stats_gateway import ensure_stats
+
+    gateway_result = ensure_stats(details)
+    if isinstance(gateway_result, dict) and gateway_result.get("Stats"):
+        return gateway_result
+
     if not isinstance(details, dict):
         details = {}
     warn_fallback(
@@ -1056,7 +1050,6 @@ def _ensure_stats_in_details(
     try:
         from gear_optimizer.core.stats_calculator import compute_full_stats
 
-        # Extract gear/mini names from potentially nested structures
         gear_names = []
         for g in gear or []:
             if isinstance(g, dict):
@@ -1071,19 +1064,14 @@ def _ensure_stats_in_details(
             elif isinstance(m, str):
                 mini_names.append(m)
             elif isinstance(m, list) and m:
-                # Variant group format
                 first = m[0]
                 if isinstance(first, dict):
                     mini_names.append(first.get("Name", ""))
                 elif isinstance(first, str):
                     mini_names.append(first)
 
-        # Get gear lookup (use cached version)
         gears_by_name = get_gears_by_name_cached()
 
-        # Base stats for fallback computation:
-        # - We intentionally avoid user config gems here (those should already be reflected in GemCounts).
-        # - But we DO want TeamBuff reflected for correct tier/base display (Perfect Points + element).
         base_stats = {
             "Perfect Points": 0,
             "Combo Multiplier": 0,
@@ -1097,8 +1085,6 @@ def _ensure_stats_in_details(
             "Vibe": 0,
         }
 
-        # Apply TeamBuff to the fallback base_stats when we have enough context.
-        # This prevents persisting tier/base rows with missing PP/element buffs when Stats is absent.
         buff_tier = str(team_buff or "").strip().upper()
         buff_color = str(team_color or "").strip()
         if not buff_color:
@@ -1113,13 +1099,11 @@ def _ensure_stats_in_details(
         for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
             base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
 
-        # Get gem counts and FT/FF from details
         gem_counts = dict(details.get("GemCounts", {}) or {})
         gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
         gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
         selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
 
-        # Compute Stats
         computed = compute_full_stats(
             gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
         )
@@ -1127,7 +1111,6 @@ def _ensure_stats_in_details(
         details["Stats"] = computed
 
     except Exception:
-        # If Stats computation fails, leave details as-is (will be caught by verifier)
         pass
 
     return details

@@ -18,6 +18,8 @@ from gear_optimizer.data.database import (
     _unpack_id_groups,
     _unpack_id_list,
     _unpack_stats_after_load,
+    get_db_connection,
+    get_db_connection_readonly,
     get_evolution_db_path,
 )
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
@@ -94,8 +96,7 @@ def verify_and_repair_stats(
         print(f"[StatsVerifier] Loaded {len(minis_by_name)} minis")
 
     db_path = get_evolution_db_path()
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection(str(db_path))
 
     def _sqlite_json_available(c: sqlite3.Connection) -> bool:
         # SQLite JSON functions are built-in on modern builds (sqlite >= 3.38).
