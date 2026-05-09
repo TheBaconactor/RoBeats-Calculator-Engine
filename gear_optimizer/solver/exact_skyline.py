@@ -1599,10 +1599,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             }
         )
 
-    all_evaluated.sort(
-        key=lambda d: int(d.get("Score", 0) or 0) + int(d.get("FGDelta", 0) or 0),
-        reverse=True,
-    )
+    all_evaluated.sort(key=lambda d: int(d.get("Score", 0) or 0), reverse=True)
     if fg_dp_calls:
         status_cb(
             f"exact_skyline: FG exact DP scored ({fg_dp_calls} calls, {fg_gains} gains)"
