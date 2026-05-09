@@ -188,25 +188,32 @@ def main() -> int:
     )
     skyline_time = time.perf_counter() - t0
     exact_score = int((exact_best_data or {}).get("BaseScore") or (exact_best_data or {}).get("Score") or 0)
+    exact_fg_score = int((exact_best_data or {}).get("FGScore") or 0)
 
-    print(f"\n  Skyline Score: {exact_score:,}  Time: {skyline_time:.2f}s")
+    print(f"\n  Skyline Base Score: {exact_score:,}  FG Score: {exact_fg_score:,}  Time: {skyline_time:.2f}s")
 
     # --- Results ---
+    best_effective = exact_fg_score if exact_fg_score > 0 else exact_score
     print("\n" + "=" * 72)
     print("Results")
     print("=" * 72)
     print(f"  GA:      {ga_score:>10,}  ({ga_time:.2f}s)")
-    print(f"  Skyline: {exact_score:>10,}  ({skyline_time:.2f}s)")
-    delta = exact_score - ga_score
+    print(f"  Skyline: {best_effective:>10,}  ({skyline_time:.2f}s)")
+    delta = best_effective - ga_score
     print(f"  Delta:   {delta:>+10,}")
-    print(f"  Skyline is {'authoritative' if exact_score >= ga_score else 'worse than GA'}")
+    print(f"  Skyline is {'authoritative' if best_effective >= ga_score else 'worse than GA'}")
 
     if all_evaluated:
         print(f"\n  Top-5 skyline candidates:")
         for i, entry in enumerate(all_evaluated[:5]):
             gear_names = [g.get("Name", "?") for g in entry.get("Gear", [])]
             mini_names = [m.get("Name", "?") for m in entry.get("Minis", [])]
-            print(f"    #{i+1}: Score={entry.get('Score',0):,}  Gear={gear_names}  Minis={mini_names}")
+            fgs = entry.get("FGScore", 0)
+            bs = entry.get("Score", 0)
+            if fgs and fgs > bs:
+                print(f"    #{i+1}: Base={bs:,} FG={fgs:,}  Gear={gear_names}  Minis={mini_names}")
+            else:
+                print(f"    #{i+1}: Score={bs:,}  Gear={gear_names}  Minis={mini_names}")
 
     out = {
         "song": args.song,
@@ -215,6 +222,7 @@ def main() -> int:
         "ga_score": int(ga_score),
         "ga_time_s": float(ga_time),
         "exact_score": int(exact_score),
+        "exact_fg_score": int(exact_fg_score),
         "skyline_time_s": float(skyline_time),
         "delta": int(delta),
         "authoritative": bool(exact_score >= ga_score),
