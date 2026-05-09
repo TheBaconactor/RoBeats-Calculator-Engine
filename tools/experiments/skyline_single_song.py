@@ -216,40 +216,58 @@ def main() -> int:
     print(f"\n  Skyline Base Score: {exact_score:,}  Time: {skyline_time:.2f}s")
 
     ga_fg_total = ga_score + ga_fg_delta
-    best_skyline_fg_delta = max((e.get("FGDelta", 0) for e in all_evaluated), default=0)
-    best_skyline_fg_total = exact_score + max((e.get("FGDelta", 0) for e in all_evaluated), default=0)
+    ranked_skyline = sorted(
+        all_evaluated,
+        key=lambda e: int(e.get("BaseScore") or e.get("Score", 0) or 0) + int(e.get("FGDelta", 0) or 0),
+        reverse=True,
+    )
+    best_skyline_entry = ranked_skyline[0] if ranked_skyline else {}
+    best_skyline_base = int(best_skyline_entry.get("BaseScore") or best_skyline_entry.get("Score", 0) or 0)
+    best_skyline_fg_delta = int(best_skyline_entry.get("FGDelta", 0) or 0)
+    best_skyline_fg_total = best_skyline_base + best_skyline_fg_delta
 
     print("\n" + "=" * 72)
     print("Results")
     print("=" * 72)
     print(f"  GA base:  {ga_score:>10,}  (FG+{ga_fg_delta:,} = {ga_fg_total:,})  {ga_time:.2f}s")
-    print(f"  Skyline:  {exact_score:>10,}  (FG+{best_skyline_fg_delta:,} = {best_skyline_fg_total:,})  {skyline_time:.2f}s")
+    print(
+        f"  Skyline:  {best_skyline_base:>10,}  "
+        f"(FG+{best_skyline_fg_delta:,} = {best_skyline_fg_total:,})  {skyline_time:.2f}s"
+    )
+    if best_skyline_base != exact_score:
+        print(f"  Note: base-only skyline winner was {exact_score:,}; best base+FG candidate has base {best_skyline_base:,}.")
     delta = best_skyline_fg_total - ga_fg_total
     print(f"  Delta:    {delta:>+10,}")
     print(f"  Skyline is {'authoritative' if best_skyline_fg_total >= ga_fg_total else 'worse than GA'}")
 
     if all_evaluated:
-        print(f"\n  Top-5 skyline candidates:")
-        for i, entry in enumerate(all_evaluated[:5]):
+        print(f"\n  Top-5 skyline candidates by base+FG:")
+        for i, entry in enumerate(ranked_skyline[:5]):
             gear_names = [g.get("Name", "?") for g in entry.get("Gear", [])]
             mini_names = [m.get("Name", "?") for m in entry.get("Minis", [])]
-            fgd = entry.get("FGDelta", 0)
-            bs = entry.get("Score", 0)
+            fgd = int(entry.get("FGDelta", 0) or 0)
+            bs = int(entry.get("BaseScore") or entry.get("Score", 0) or 0)
+            total = bs + fgd
             if fgd > 0:
-                print(f"    #{i+1}: Base={bs:,}  FG_delta={fgd:,}  Gear={gear_names}  Minis={mini_names}")
+                print(f"    #{i+1}: Total={total:,}  Base={bs:,}  FG_delta={fgd:,}  Gear={gear_names}  Minis={mini_names}")
             else:
-                print(f"    #{i+1}: Score={bs:,}  Gear={gear_names}  Minis={mini_names}")
+                print(f"    #{i+1}: Total={total:,}  Base={bs:,}  Gear={gear_names}  Minis={mini_names}")
 
     out = {
         "song": args.song,
         "ga_depth": int(args.ga_depth),
         "ga_seed": int(args.ga_seed),
         "ga_score": int(ga_score),
+        "ga_fg_delta": int(ga_fg_delta),
+        "ga_total_score": int(ga_fg_total),
         "ga_time_s": float(ga_time),
         "exact_score": int(exact_score),
+        "skyline_best_base_fg_base_score": int(best_skyline_base),
+        "skyline_best_fg_delta": int(best_skyline_fg_delta),
+        "skyline_best_total_score": int(best_skyline_fg_total),
         "skyline_time_s": float(skyline_time),
         "delta": int(delta),
-        "authoritative": bool(exact_score >= ga_score),
+        "authoritative": bool(best_skyline_fg_total >= ga_fg_total),
     }
 
     try:
@@ -260,7 +278,7 @@ def main() -> int:
     except Exception:
         pass
 
-    return 0 if exact_score >= ga_score else 1
+    return 0 if best_skyline_fg_total >= ga_fg_total else 1
 
 
 if __name__ == "__main__":

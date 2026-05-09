@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
@@ -17,13 +16,14 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
     TOTAL_GEM_BUDGET,
 )
-from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.combined_skyline_gpu import combined_global_skyline_pairs_6d_gpu
 from gear_optimizer.solver.fg_exact_dp import (
     prepare_force_greats_exact_dp_inputs,
     score_force_greats_exact_dp_bonus_from_prepared,
     solve_force_greats_exact_dp as _fg_exact_dp,
 )
+from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu
+from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
     mini_combo_skyline as _mini_combo_skyline_common,
@@ -495,7 +495,12 @@ def _collapse_mini_response_classes_with_codes(
     mini_codes: np.ndarray,
     mini_ids: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Collapse minis by lambda=(CM,FM,FT,FF), keeping max-base representative per class."""
+    """Collapse minis by lambda=(CM,FM,FT,FF), keeping max-base representative per class.
+
+    Then removes any lambda class Pareto-dominated by another class on
+    (CM, FM, FT, FF, max_base). A gear that beats the dominator on all classes
+    necessarily beats the dominated class — strictly lossless.
+    """
 
     if mini_points.size == 0 or mini_codes.size == 0 or mini_ids.size == 0:
         return (
@@ -523,19 +528,36 @@ def _collapse_mini_response_classes_with_codes(
             best_base_by_key[key] = int(base)
             best_idx_by_key[key] = int(idx)
 
-    chosen = sorted(int(v) for v in best_idx_by_key.values())
-    if not chosen:
-        return (
-            np.zeros((0, 5), dtype=np.int32),
-            np.zeros(0, dtype=np.uint64),
-            np.zeros((0, 3), dtype=np.int32),
-        )
+    all_keys = list(best_base_by_key.keys())
+    lambda_points = np.zeros((len(all_keys), 5), dtype=np.int32)
+    lambda_codes_vec = np.zeros(len(all_keys), dtype=np.uint64)
+    lambda_ids_mat = np.zeros((len(all_keys), 3), dtype=np.int32)
+    for ki, key in enumerate(all_keys):
+        oi = int(best_idx_by_key[key])
+        lambda_points[ki, :4] = np.asarray(key, dtype=np.int32)
+        lambda_points[ki, 4] = int(best_base_by_key[key])
+        lambda_codes_vec[ki] = codes[oi]
+        lambda_ids_mat[ki] = ids[oi]
 
-    idx_arr = np.asarray(chosen, dtype=np.int64)
+    m = int(lambda_points.shape[0])
+    keep = np.ones(m, dtype=np.bool_)
+    for i in range(m):
+        if not keep[i]:
+            continue
+        si = lambda_points[i]
+        ge = np.all(lambda_points >= si, axis=1)
+        strict = np.any(lambda_points > si, axis=1)
+        ge[i] = False
+        if np.any(ge & strict):
+            keep[i] = False
+
+    if not np.any(keep):
+        keep[:] = True
+    idxs = np.asarray([i for i in range(m) if keep[i]], dtype=np.int64)
     return (
-        pts[idx_arr].astype(np.int32, copy=False),
-        codes[idx_arr].astype(np.uint64, copy=False),
-        ids[idx_arr].astype(np.int32, copy=False),
+        lambda_points[idxs].astype(np.int32, copy=False),
+        lambda_codes_vec[idxs].astype(np.uint64, copy=False),
+        lambda_ids_mat[idxs].astype(np.int32, copy=False),
     )
 
 
@@ -745,7 +767,7 @@ def _unpack_pair_codes(pair_codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return g, m
 
 
-def _global_gear_skyline_points_6d_lane_base_with_codes(
+def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
     states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
 ) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
     t0 = time.perf_counter()
@@ -901,6 +923,18 @@ def _global_gear_skyline_points_6d_lane_base_with_codes(
         points_in=int(total_points),
         points_out=int(kept_total),
         seconds=float(time.perf_counter() - t0),
+    )
+    return stats, points, codes
+
+
+def _global_gear_skyline_points_6d_lane_base_with_codes(
+    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
+) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
+    points_in, points, codes, seconds = global_gear_skyline_points_6d_gpu(states)
+    stats = LaneAwareGlobalSkylineStats(
+        points_in=int(points_in),
+        points_out=int(points.shape[0]),
+        seconds=float(seconds),
     )
     return stats, points, codes
 

@@ -1,17 +1,14 @@
 import numpy as np
 
 from gear_optimizer.core.constants import MAX_STAT_INDEX
+from gear_optimizer.solver.skyline_grid_gpu import (
+    EMPTY_I32,
+    OWNER_SENTINEL,
+    fill_i32,
+    layer_offsets,
+    suffix_max_4d_gpu,
+)
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
-
-
-_EMPTY_I32 = np.zeros(0, dtype=np.int32)
-_OWNER_SENTINEL = np.int32(2_147_483_647)
-
-
-@ti.kernel
-def _fill_i32(a: ti.types.ndarray(dtype=ti.i32, ndim=1), n: ti.i32, value: ti.i32):
-    for i in range(n):
-        a[i] = value
 
 
 @ti.kernel
@@ -95,85 +92,6 @@ def _scatter_layer_owner(
 
 
 @ti.kernel
-def _suffix_cm(
-    grid: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    cm_size: ti.i32,
-    fm_size: ti.i32,
-    ft_size: ti.i32,
-    ff_size: ti.i32,
-):
-    for fm, ft, ff in ti.ndrange(fm_size, ft_size, ff_size):
-        for cm_rev in range(cm_size - 1):
-            cm = cm_size - 2 - cm_rev
-            flat = (((cm * fm_size) + fm) * ft_size + ft) * ff_size + ff
-            next_flat = ((((cm + 1) * fm_size) + fm) * ft_size + ft) * ff_size + ff
-            v = grid[next_flat]
-            if v > grid[flat]:
-                grid[flat] = v
-
-
-@ti.kernel
-def _suffix_fm(
-    grid: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    cm_size: ti.i32,
-    fm_size: ti.i32,
-    ft_size: ti.i32,
-    ff_size: ti.i32,
-):
-    for cm, ft, ff in ti.ndrange(cm_size, ft_size, ff_size):
-        for fm_rev in range(fm_size - 1):
-            fm = fm_size - 2 - fm_rev
-            flat = (((cm * fm_size) + fm) * ft_size + ft) * ff_size + ff
-            next_flat = (((cm * fm_size) + fm + 1) * ft_size + ft) * ff_size + ff
-            v = grid[next_flat]
-            if v > grid[flat]:
-                grid[flat] = v
-
-
-@ti.kernel
-def _suffix_ft(
-    grid: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    cm_size: ti.i32,
-    fm_size: ti.i32,
-    ft_size: ti.i32,
-    ff_size: ti.i32,
-):
-    for cm, fm, ff in ti.ndrange(cm_size, fm_size, ff_size):
-        for ft_rev in range(ft_size - 1):
-            ft = ft_size - 2 - ft_rev
-            flat = (((cm * fm_size) + fm) * ft_size + ft) * ff_size + ff
-            next_flat = (((cm * fm_size) + fm) * ft_size + ft + 1) * ff_size + ff
-            v = grid[next_flat]
-            if v > grid[flat]:
-                grid[flat] = v
-
-
-@ti.kernel
-def _suffix_ff(
-    grid: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    cm_size: ti.i32,
-    fm_size: ti.i32,
-    ft_size: ti.i32,
-    ff_size: ti.i32,
-):
-    for cm, fm, ft in ti.ndrange(cm_size, fm_size, ft_size):
-        for ff_rev in range(ff_size - 1):
-            ff = ff_size - 2 - ff_rev
-            flat = (((cm * fm_size) + fm) * ft_size + ft) * ff_size + ff
-            next_flat = flat + 1
-            v = grid[next_flat]
-            if v > grid[flat]:
-                grid[flat] = v
-
-
-def _suffix_max_4d_gpu(grid, *, cm_size: int, fm_size: int, ft_size: int, ff_size: int) -> None:
-    _suffix_cm(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
-    _suffix_fm(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
-    _suffix_ft(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
-    _suffix_ff(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
-
-
-@ti.kernel
 def _filter_layer(
     gear: ti.types.ndarray(dtype=ti.i32, ndim=2),
     mini: ti.types.ndarray(dtype=ti.i32, ndim=2),
@@ -247,19 +165,12 @@ def _filter_layer(
                 out_m[out_i] = m
 
 
-def _layer_offsets(sorted_pp: np.ndarray, max_pp: int) -> np.ndarray:
-    counts = np.bincount(sorted_pp, minlength=max_pp + 1).astype(np.int64, copy=False)
-    offsets = np.zeros(max_pp + 2, dtype=np.int64)
-    offsets[1:] = np.cumsum(counts)
-    return offsets
-
-
 def combined_global_skyline_pairs_6d_gpu(
     gear_points: np.ndarray,
     mini_points: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     if gear_points.size == 0 or mini_points.size == 0:
-        return _EMPTY_I32.copy(), _EMPTY_I32.copy()
+        return EMPTY_I32.copy(), EMPTY_I32.copy()
 
     init_taichi()
 
@@ -291,13 +202,13 @@ def combined_global_skyline_pairs_6d_gpu(
     pp_order = np.argsort(gear_points[:, 0], kind="stable").astype(np.int32, copy=False)
     g_sorted = np.ascontiguousarray(gear_points[pp_order])
     sorted_orig = np.ascontiguousarray(pp_order.astype(np.int32, copy=False))
-    pp_offsets = _layer_offsets(g_sorted[:, 0], max_pp)
+    pp_offsets = layer_offsets(g_sorted[:, 0], max_pp)
 
     mini_count = int(mini_points.shape[0])
     max_layer_count = int(np.max(np.diff(pp_offsets))) if pp_offsets.size > 1 else 0
     max_layer_products = int(max_layer_count) * int(mini_count)
     if max_layer_products <= 0:
-        return _EMPTY_I32.copy(), _EMPTY_I32.copy()
+        return EMPTY_I32.copy(), EMPTY_I32.copy()
 
     gear_dev = ti.ndarray(dtype=ti.i32, shape=g_sorted.shape)
     mini_dev = ti.ndarray(dtype=ti.i32, shape=mini_points.shape)
@@ -314,7 +225,7 @@ def combined_global_skyline_pairs_6d_gpu(
     out_m = ti.ndarray(dtype=ti.i32, shape=(max_layer_products,))
     out_count = ti.ndarray(dtype=ti.i32, shape=(1,))
 
-    _fill_i32(higher_grid, grid_elems, -1)
+    fill_i32(higher_grid, grid_elems, -1)
 
     kept_g: list[np.ndarray] = []
     kept_m: list[np.ndarray] = []
@@ -327,9 +238,9 @@ def combined_global_skyline_pairs_6d_gpu(
         if layer_count <= 0:
             continue
 
-        _fill_i32(layer_grid, grid_elems, -1)
-        _fill_i32(owner_grid, grid_elems, int(_OWNER_SENTINEL))
-        _fill_i32(out_count, 1, 0)
+        fill_i32(layer_grid, grid_elems, -1)
+        fill_i32(owner_grid, grid_elems, int(OWNER_SENTINEL))
+        fill_i32(out_count, 1, 0)
 
         _scatter_layer_base(
             gear_dev, mini_dev,
@@ -345,7 +256,7 @@ def combined_global_skyline_pairs_6d_gpu(
             max_cm, max_fm, max_ft, max_ff,
             layer_grid, owner_grid,
         )
-        _suffix_max_4d_gpu(layer_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
+        suffix_max_4d_gpu(layer_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
         _filter_layer(
             gear_dev, mini_dev, orig_dev,
             layer_start, layer_count, mini_count,
@@ -355,7 +266,7 @@ def combined_global_skyline_pairs_6d_gpu(
             layer_grid, owner_grid, higher_grid,
             out_g, out_m, out_count,
         )
-        _suffix_max_4d_gpu(higher_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
+        suffix_max_4d_gpu(higher_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
         higher_valid = 1
 
         count = int(out_count.to_numpy()[0])
@@ -366,6 +277,6 @@ def combined_global_skyline_pairs_6d_gpu(
         kept_m.append(out_m.to_numpy()[:count].astype(np.int32, copy=False))
 
     if not kept_g:
-        return _EMPTY_I32.copy(), _EMPTY_I32.copy()
+        return EMPTY_I32.copy(), EMPTY_I32.copy()
 
     return np.concatenate(kept_g, axis=0), np.concatenate(kept_m, axis=0)
