@@ -160,7 +160,6 @@ def _prepare_context(
         optimize_minis=bool(enable_mini),
         fixed_gear=current_gear_list,
         fixed_minis=current_mini_list,
-        pre_prune_mode="none",
         status_cb=lambda _message: None,
         song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
     )

@@ -1610,7 +1610,6 @@ def solve_exact_skyline(
     song_slot: int = 0,
     ga_seed: int | None = None,
     gpu_client: Any | None = None,
-    pre_prune_mode: str = "none",
     solver_ctx: SolverContext | None = None,
 ):
     del paths, gears_by_name, minis_by_name, ga_depth, db_seed, ga_settings, executor, known_loadouts, ga_seed
@@ -1634,7 +1633,6 @@ def solve_exact_skyline(
             optimize_minis=bool(optimize_minis),
             fixed_gear=fixed_gear,
             fixed_minis=fixed_minis,
-            pre_prune_mode=pre_prune_mode,
             status_cb=status_cb,
             song_slot=int(song_slot),
             gpu_client=gpu_client,

@@ -156,7 +156,6 @@ class SongContext:
     prev_attempts_first: int
     db_baseline_valid: bool
     outer_engine: str = "ga"
-    pre_prune_mode: str = "auto"
     fg_solver_mode: str = "finder"
     fg_search_radius: int | None = None
     gpu_mode: bool = True
@@ -710,7 +709,6 @@ def _setup_song_context(
     )
 
     outer_engine = "ga"
-    pre_prune_mode = "none"
     fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
     fg_search_radius = read_fg_search_radius(cfg)
     if enable_gear or enable_mini:
@@ -767,7 +765,6 @@ def _setup_song_context(
         prev_attempts_first=int(prev_attempts_first or 0),
         db_baseline_valid=bool(db_baseline_valid),
         outer_engine=outer_engine,
-        pre_prune_mode=pre_prune_mode,
         fg_solver_mode=fg_solver_mode,
         fg_search_radius=fg_search_radius,
         gpu_mode=bool(gpu_mode),
@@ -809,7 +806,6 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             optimize_minis=ctx.enable_mini,
             fixed_gear=ctx.current_gear_list,
             fixed_minis=ctx.current_mini_list,
-            pre_prune_mode="none",
             status_cb=lambda message: ctx.emit(message),
             song_slot=int(ctx.gpu_song_slot),
         )

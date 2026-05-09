@@ -306,8 +306,6 @@ def prepare_solver_context(
     optimize_minis: bool = True,
     fixed_gear: list[dict] | None = None,
     fixed_minis: list[dict] | None = None,
-    pre_prune_mode: str = "none",
-    auto_product_threshold: int = 250_000,
     status_cb: Callable[[str], None] | None = None,
     song_slot: int = 0,
     gpu_client: Any | None = None,
@@ -342,22 +340,6 @@ def prepare_solver_context(
         fixed_gear=fixed_gear,
         fixed_minis=fixed_minis,
     )
-
-    mode = str(pre_prune_mode or "none").strip().lower()
-    if mode == "auto":
-        raw_product = 1
-        for slot in GEAR_SLOTS:
-            raw_product *= max(1, len(gear_pool.get(slot, []) or []))
-        mode = "marginal" if raw_product > int(auto_product_threshold) else "none"
-
-    if mode == "marginal":
-        from gear_optimizer.solver.marginal_pruning import prune_gear_pool_marginal
-
-        gear_pool = prune_gear_pool_marginal(
-            gear_pool,
-            p_color=p_color,
-            s_color=s_color,
-        )
 
     if any(len(gear_pool.get(slot, []) or []) <= 0 for slot in GEAR_SLOTS):
         return None

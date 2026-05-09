@@ -58,7 +58,7 @@ def _common_args(cfg_dict: dict, *, song_name: str) -> tuple:
 
 
 def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
-    prepared = {"pre_prune_mode": None}
+    prepared: dict[str, object] = {}
 
     monkeypatch.delenv("METAFINDER_OUTER_SEARCH_ENGINE", raising=False)
     monkeypatch.delenv("OUTER_SEARCH_ENGINE", raising=False)
@@ -84,7 +84,6 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
         ),
     )
     def _fake_prepare_solver_context(*args, **kwargs):
-        prepared["pre_prune_mode"] = kwargs.get("pre_prune_mode")
         return SimpleNamespace(registry=None)
 
     monkeypatch.setattr(song_processor, "prepare_solver_context", _fake_prepare_solver_context)
@@ -103,10 +102,10 @@ def test_read_fg_solver_mode_maps_exact_dp_to_finder(legacy_mode):
     assert read_fg_solver_mode(cfg, default="finder") == "finder"
 
 
-def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkeypatch):
+def test_process_song_task_ignores_unsupported_outer_engine(monkeypatch):
     from gear_optimizer.pipeline import song_processor
 
-    prepared = _patch_common(monkeypatch, song_processor)
+    _patch_common(monkeypatch, song_processor)
     calls = {"ga": 0}
 
     def _fake_ga(*args, **kwargs):
@@ -116,11 +115,10 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
 
-    cfg = _common_cfg(OuterSearchEngine="unsupported", PrePruneMode="marginal")
+    cfg = _common_cfg(OuterSearchEngine="unsupported")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest main guard"))
 
     assert calls["ga"] == 1
-    assert prepared["pre_prune_mode"] == "none"
     assert result.get("_deferred_post") is True
     assert (result.get("best_data") or {}).get("BaseScore") == 123
 

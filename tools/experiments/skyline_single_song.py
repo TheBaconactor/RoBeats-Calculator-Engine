@@ -70,7 +70,6 @@ def main() -> int:
     parser.add_argument("--ga-seed", type=int, default=123)
     parser.add_argument("--fix-minis", action="store_true", default=True, help="Fix minis for faster skyline")
     parser.add_argument("--no-fix-minis", dest="fix_minis", action="store_false")
-    parser.add_argument("--pre-prune", default="auto", choices=["none", "marginal", "auto"])
     args = parser.parse_args()
 
     from gear_optimizer.core.config import load_config, load_paths_cache
@@ -139,7 +138,7 @@ def main() -> int:
     print(f"Skyline Single-Song Experiment")
     print(f"  Song: {args.song}")
     print(f"  GA Depth: {args.ga_depth}  GA Seed: {args.ga_seed}")
-    print(f"  Pre-prune: {args.pre_prune}  Fix Minis: {args.fix_minis}")
+    print(f"  Fix Minis: {args.fix_minis}")
     print(f"  Gear items: {len(all_gears)}  Mini items: {len(all_minis)}")
     print(f"  GPU Song Slot: {song_slot}")
     print("=" * 72)
@@ -208,7 +207,6 @@ def main() -> int:
         known_loadouts=None,
         song_slot=song_slot,
         ga_seed=int(args.ga_seed),
-        pre_prune_mode=args.pre_prune,
     )
     skyline_time = time.perf_counter() - t0
     exact_score = int((exact_best_data or {}).get("BaseScore") or (exact_best_data or {}).get("Score") or 0)
