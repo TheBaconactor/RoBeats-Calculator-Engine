@@ -19,7 +19,11 @@ from gear_optimizer.core.constants import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.combined_skyline_gpu import combined_global_skyline_pairs_6d_gpu
-from gear_optimizer.solver.fg_exact_dp import solve_force_greats_exact_dp as _fg_exact_dp
+from gear_optimizer.solver.fg_exact_dp import (
+    prepare_force_greats_exact_dp_inputs,
+    score_force_greats_exact_dp_bonus_from_prepared,
+    solve_force_greats_exact_dp as _fg_exact_dp,
+)
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
     mini_combo_skyline as _mini_combo_skyline_common,
@@ -1445,7 +1449,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         )
         base_score = int(data.get("BaseScore") or data.get("Score", 0) or 0)
 
-        fg_score = base_score
+        fg_delta = 0
         post_stats = data.get("Stats") or data.get("Details", {}).get("Stats", {}) or {}
         if post_stats:
             try:
@@ -1458,26 +1462,33 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 )
                 fg_dp_calls += 1
                 if dp.best_delta > 0:
-                    fg_score = base_score + int(dp.best_delta)
-                    fg_gains += 1
+                    prepared = prepare_force_greats_exact_dp_inputs(
+                        stats=post_stats,
+                        calc_song=ctx.calc_song,
+                        ref_arrays=ctx.ref_arrays,
+                    )
+                    if prepared is not None:
+                        baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
+                            prepared=prepared, section_counts=[]
+                        )
+                        fg_delta = max(0, int(dp.best_delta) - int(baseline_bonus))
+                        if fg_delta > 0:
+                            fg_gains += 1
             except Exception:
-                fg_score = base_score
+                fg_delta = 0
 
         all_evaluated.append(
             {
                 "Score": base_score,
                 "BaseScore": base_score,
-                "FGScore": fg_score,
+                "FGDelta": fg_delta,
                 "Gear": genome[:6],
                 "Minis": genome[6:9],
                 "Data": data,
             }
         )
 
-    all_evaluated.sort(key=lambda d: int(d.get("FGScore") or d.get("Score", 0) or 0), reverse=True)
-    best_fg_score = int(all_evaluated[0].get("FGScore") or all_evaluated[0].get("Score", 0) or 0)
-    if best_fg_score > int(best_data.get("BaseScore") or best_data.get("Score", 0) or 0):
-        best_data["FGScore"] = best_fg_score
+    all_evaluated.sort(key=lambda d: int(d.get("Score", 0) or 0), reverse=True)
     if fg_dp_calls:
         status_cb(
             f"exact_skyline: FG exact DP scored ({fg_dp_calls} calls, {fg_gains} gains)"
