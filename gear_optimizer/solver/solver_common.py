@@ -351,17 +351,12 @@ def prepare_solver_context(
         mode = "marginal" if raw_product > int(auto_product_threshold) else "none"
 
     if mode == "marginal":
-        from gear_optimizer.solver.marginal_pruning import prune_gear_pool_marginal, read_marginal_prune_settings
+        from gear_optimizer.solver.marginal_pruning import prune_gear_pool_marginal
 
-        prune_settings = read_marginal_prune_settings(cfg)
         gear_pool = prune_gear_pool_marginal(
             gear_pool,
-            calc_song,
-            ref_arrays,
             p_color=p_color,
             s_color=s_color,
-            k=int(prune_settings["k"]),
-            iterations=int(prune_settings["iterations"]),
         )
 
     if any(len(gear_pool.get(slot, []) or []) <= 0 for slot in GEAR_SLOTS):

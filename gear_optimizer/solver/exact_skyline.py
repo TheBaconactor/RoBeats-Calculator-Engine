@@ -540,24 +540,37 @@ def _collapse_mini_response_classes_with_codes(
 
 
 def _response_dominance_keep_mask(scores: np.ndarray) -> np.ndarray:
-    """Row-wise skyline mask over theorem-5 response vectors (maximize each lambda axis)."""
+    """Iterative skyline over response vectors (maximize each lambda axis).
 
+    Maintains a growing frontier of non-dominated rows. Each candidate row
+    is tested only against the current frontier, not against every other row.
+    The frontier stays small (tens to hundreds) because most rows are dominated.
+    """
     arr = np.asarray(scores, dtype=np.int32)
     if arr.ndim != 2:
         raise ValueError("scores must be 2D")
-
     rows = int(arr.shape[0])
     if rows == 0:
         return np.zeros(0, dtype=np.bool_)
 
+    frontier_idx: list[int] = []
     keep = np.ones(rows, dtype=np.bool_)
     for i in range(rows):
-        row_i = arr[i]
-        ge = np.all(arr >= row_i, axis=1)
-        strict = np.any(arr > row_i, axis=1)
-        ge[i] = False
-        if bool(np.any(ge & strict)):
-            keep[i] = False
+        si = arr[i]
+        dominated = False
+        new_frontier: list[int] = []
+        for fj in frontier_idx:
+            sfj = arr[fj]
+            if np.all(sfj >= si) and np.any(sfj > si):
+                dominated = True
+                break
+            if np.all(si >= sfj) and np.any(si > sfj):
+                keep[fj] = False
+                continue
+            new_frontier.append(fj)
+        if not dominated:
+            new_frontier.append(i)
+        frontier_idx = new_frontier
     return keep
 
 
