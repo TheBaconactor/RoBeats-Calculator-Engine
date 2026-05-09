@@ -1522,6 +1522,19 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     all_evaluated: list[dict[str, Any]] = []
     fg_dp_calls = 0
     fg_gains = 0
+    fg_cache: dict[tuple, int] = {}
+
+    def _fg_stat_key(stats: dict) -> tuple:
+        return (
+            int(stats.get("Fever Time", 0) or 0),
+            int(stats.get("Fever Fill Rate", 0) or 0),
+            int(stats.get("Perfect Points", 0) or 0),
+            int(stats.get("Combo Multiplier", 0) or 0),
+            int(stats.get("Fever Multiplier", 0) or 0),
+            int(stats.get(ctx.p_color, 0) or 0),
+            int(stats.get(ctx.s_color, 0) or 0) if ctx.s_color != ctx.p_color else 0,
+        )
+
     for score, gear_code, mini_code in top_codes:
         g_ids = _gear_ids_from_code(int(gear_code), pack=ctx.gear_pack, slot_item_ids=ctx.slot_item_ids)
         m_ids = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
@@ -1541,30 +1554,39 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         fg_delta = 0
         post_stats = data.get("Stats") or data.get("Details", {}).get("Stats", {}) or {}
         if post_stats:
-            try:
-                dp = _fg_exact_dp(
-                    stats=post_stats,
-                    calc_song=ctx.calc_song,
-                    ref_arrays=ctx.ref_arrays,
-                    mode="timing_aware",
-                    prune=True,
-                )
-                fg_dp_calls += 1
-                if dp.best_delta > 0:
-                    prepared = prepare_force_greats_exact_dp_inputs(
+            sk = _fg_stat_key(post_stats)
+            cached_delta = fg_cache.get(sk)
+            if cached_delta is not None:
+                fg_delta = cached_delta
+                if fg_delta > 0:
+                    fg_gains += 1
+            else:
+                try:
+                    dp = _fg_exact_dp(
                         stats=post_stats,
                         calc_song=ctx.calc_song,
                         ref_arrays=ctx.ref_arrays,
+                        mode="timing_aware",
+                        prune=True,
                     )
-                    if prepared is not None:
-                        baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
-                            prepared=prepared, section_counts=[]
+                    fg_dp_calls += 1
+                    if dp.best_delta > 0:
+                        prepared = prepare_force_greats_exact_dp_inputs(
+                            stats=post_stats,
+                            calc_song=ctx.calc_song,
+                            ref_arrays=ctx.ref_arrays,
                         )
-                        fg_delta = max(0, int(dp.best_delta) - int(baseline_bonus))
-                        if fg_delta > 0:
-                            fg_gains += 1
-            except Exception:
-                fg_delta = 0
+                        if prepared is not None:
+                            baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
+                                prepared=prepared, section_counts=[]
+                            )
+                            fg_delta = max(0, int(dp.best_delta) - int(baseline_bonus))
+                            if fg_delta > 0:
+                                fg_gains += 1
+                    fg_cache[sk] = fg_delta
+                except Exception:
+                    fg_delta = 0
+                    fg_cache[sk] = 0
 
         all_evaluated.append(
             {
