@@ -18,6 +18,7 @@ from gear_optimizer.core.constants import (
     TOTAL_GEM_BUDGET,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.combined_skyline_gpu import combined_global_skyline_pairs_6d_gpu
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
     mini_combo_skyline as _mini_combo_skyline_common,
@@ -81,8 +82,6 @@ class Theorem5ResponsePruneStats:
     gear_out: int
     lambda_classes: int
     eval_pairs: int
-    max_eval_pairs: int
-    max_gears: int
     seconds: float
     skipped_reason: str | None = None
 
@@ -96,19 +95,6 @@ class EnvelopeDominanceLUT:
 
 
 _ENVELOPE_DOMINANCE_TOL = np.float32(1.0e-6)
-
-
-def _read_env_int(name: str, *, default: int, minimum: int = 0) -> int:
-    raw = str(os.environ.get(name, "") or "").strip()
-    if not raw:
-        return int(default)
-    try:
-        value = int(raw)
-    except Exception:
-        return int(default)
-    if int(value) < int(minimum):
-        return int(minimum)
-    return int(value)
 
 
 def _item_vec_5(item: dict) -> tuple[int, int, int, int, int]:
@@ -664,8 +650,6 @@ def _theorem5_response_prune_gears_exact(
     flags: dict[str, int],
     song_slot: int,
     gpu_client: Any | None,
-    max_eval_pairs: int,
-    max_gears: int,
     status_cb: Callable[[str], None] | None,
 ) -> tuple[Theorem5ResponsePruneStats, np.ndarray, np.ndarray, np.ndarray]:
     t0 = time.perf_counter()
@@ -681,12 +665,8 @@ def _theorem5_response_prune_gears_exact(
 
     if g_n <= 1:
         stats = Theorem5ResponsePruneStats(
-            gear_in=int(g_n),
-            gear_out=int(g_n),
-            lambda_classes=int(lambda_n),
-            eval_pairs=int(eval_pairs),
-            max_eval_pairs=int(max_eval_pairs),
-            max_gears=int(max_gears),
+            gear_in=int(g_n), gear_out=int(g_n),
+            lambda_classes=int(lambda_n), eval_pairs=int(eval_pairs),
             seconds=float(time.perf_counter() - t0),
             skipped_reason="insufficient_gears",
         )
@@ -694,53 +674,10 @@ def _theorem5_response_prune_gears_exact(
 
     if lambda_n <= 0:
         stats = Theorem5ResponsePruneStats(
-            gear_in=int(g_n),
-            gear_out=int(g_n),
-            lambda_classes=0,
-            eval_pairs=0,
-            max_eval_pairs=int(max_eval_pairs),
-            max_gears=int(max_gears),
+            gear_in=int(g_n), gear_out=int(g_n),
+            lambda_classes=0, eval_pairs=0,
             seconds=float(time.perf_counter() - t0),
             skipped_reason="no_lambda_classes",
-        )
-        return stats, gear_points, gear_codes, gear_ids
-
-    if int(max_eval_pairs) <= 0:
-        stats = Theorem5ResponsePruneStats(
-            gear_in=int(g_n),
-            gear_out=int(g_n),
-            lambda_classes=int(lambda_n),
-            eval_pairs=int(eval_pairs),
-            max_eval_pairs=int(max_eval_pairs),
-            max_gears=int(max_gears),
-            seconds=float(time.perf_counter() - t0),
-            skipped_reason="disabled",
-        )
-        return stats, gear_points, gear_codes, gear_ids
-
-    if int(max_gears) > 0 and int(g_n) > int(max_gears):
-        stats = Theorem5ResponsePruneStats(
-            gear_in=int(g_n),
-            gear_out=int(g_n),
-            lambda_classes=int(lambda_n),
-            eval_pairs=int(eval_pairs),
-            max_eval_pairs=int(max_eval_pairs),
-            max_gears=int(max_gears),
-            seconds=float(time.perf_counter() - t0),
-            skipped_reason="gear_cap",
-        )
-        return stats, gear_points, gear_codes, gear_ids
-
-    if int(eval_pairs) > int(max_eval_pairs):
-        stats = Theorem5ResponsePruneStats(
-            gear_in=int(g_n),
-            gear_out=int(g_n),
-            lambda_classes=int(lambda_n),
-            eval_pairs=int(eval_pairs),
-            max_eval_pairs=int(max_eval_pairs),
-            max_gears=int(max_gears),
-            seconds=float(time.perf_counter() - t0),
-            skipped_reason="eval_budget",
         )
         return stats, gear_points, gear_codes, gear_ids
 
@@ -769,8 +706,6 @@ def _theorem5_response_prune_gears_exact(
         gear_out=int(out_points.shape[0]),
         lambda_classes=int(lambda_n),
         eval_pairs=int(eval_pairs),
-        max_eval_pairs=int(max_eval_pairs),
-        max_gears=int(max_gears),
         seconds=float(time.perf_counter() - t0),
         skipped_reason=None,
     )
@@ -1012,7 +947,7 @@ def _evaluate_product_exact(
     )
 
 
-def _combined_global_skyline_pairs_6d_lane_base_with_indices(
+def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
     gear_points: np.ndarray,
     mini_points: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1192,6 +1127,15 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     return np.concatenate(kept_g_idx, axis=0), np.concatenate(kept_m_idx, axis=0)
 
 
+def _combined_global_skyline_pairs_6d_lane_base_with_indices(
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """GPU-resident exact combined skyline over gear ⊕ mini stat products."""
+
+    return combined_global_skyline_pairs_6d_gpu(gear_points, mini_points)
+
+
 def _evaluate_pairs_exact(
     *,
     gpu_arrays: dict[str, np.ndarray],
@@ -1323,8 +1267,6 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     for idx, mini_code in enumerate(ctx.mini_codes.tolist()):
         mini_ids[idx] = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
 
-    theorem5_max_eval_pairs = _read_env_int("EXACT_SKYLINE_THEOREM5_MAX_EVALS", default=65_536, minimum=0)
-    theorem5_max_gears = _read_env_int("EXACT_SKYLINE_THEOREM5_MAX_GEARS", default=768, minimum=0)
     status_cb("exact_skyline: theorem5 response prune")
     theorem5_stats, gear_points, gear_codes, gear_ids = _theorem5_response_prune_gears_exact(
         gear_points=gear_points,
@@ -1340,8 +1282,6 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         flags=ctx.color_flags,
         song_slot=int(ctx.song_slot),
         gpu_client=ctx.gpu_client,
-        max_eval_pairs=int(theorem5_max_eval_pairs),
-        max_gears=int(theorem5_max_gears),
         status_cb=status_cb,
     )
     if theorem5_stats.skipped_reason is None:
@@ -1353,10 +1293,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         )
     else:
         status_cb(
-            "exact_skyline: theorem5 skipped "
-            f"({theorem5_stats.skipped_reason}; gear={int(theorem5_stats.gear_in):,}, "
-            f"lambda={int(theorem5_stats.lambda_classes):,}, eval_pairs={int(theorem5_stats.eval_pairs):,}, "
-            f"max_pairs={int(theorem5_stats.max_eval_pairs):,}, max_gears={int(theorem5_stats.max_gears):,})"
+            f"exact_skyline: theorem5 skipped ({theorem5_stats.skipped_reason})"
         )
     if gear_points.size == 0:
         return None, [], [], None, [], [], []
