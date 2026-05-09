@@ -411,6 +411,7 @@ def solve_best_fever_combination(
     silent=False,
     override_cfg=None,
     skip_optimizer=False,
+    gpu_client=None,
 ):
     """
     Main gem solver - optimizes gem allocation for maximum score.

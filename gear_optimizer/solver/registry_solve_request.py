@@ -35,7 +35,6 @@ class RegistrySolveRequest:
     total_budget: int = TOTAL_GEM_BUDGET
     gem_scale_fever: int = GEM_SCALE_FEVER
     song_slot: int = 0
-    use_exact_inner_solver: bool = True
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
@@ -49,7 +48,6 @@ class RegistrySolveRequest:
             "total_budget": int(self.total_budget),
             "gem_scale_fever": int(self.gem_scale_fever),
             "song_slot": int(self.song_slot),
-            "use_exact_inner_solver": int(bool(self.use_exact_inner_solver)),
         }
         for key in _REGISTRY_FLAG_KEYS:
             payload[key] = int(self.flags.get(key, 0))
@@ -139,7 +137,6 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             total_budget=int(request.total_budget),
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
-            use_exact_inner_solver=bool(request.use_exact_inner_solver),
         )
 
     from .scoring.gpu_solver import _GPU_LOCK
@@ -171,5 +168,4 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             total_budget=int(request.total_budget),
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
-            use_exact_inner_solver=bool(request.use_exact_inner_solver),
         )

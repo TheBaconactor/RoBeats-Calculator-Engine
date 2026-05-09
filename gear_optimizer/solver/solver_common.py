@@ -9,7 +9,7 @@ import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
-from gear_optimizer.core.gem_defs import UserGemsSettings
+from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -19,6 +19,16 @@ from gear_optimizer.solver.scoring import solve_best_fever_combination
 logger = logging.getLogger(__name__)
 
 GEAR_SLOTS: tuple[str, ...] = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
+
+
+@dataclass(frozen=True)
+class BitPack:
+    shifts: tuple[int, ...]
+    masks: tuple[int, ...]
+    total_bits: int
+
+    def unpack(self, code: int) -> tuple[int, ...]:
+        return tuple((int(code) >> shift) & mask for shift, mask in zip(self.shifts, self.masks, strict=True))
 
 
 @dataclass
@@ -37,6 +47,10 @@ class SolverContext:
     gpu_arrays: dict[str, np.ndarray]
     base_fixed_stats_arr: np.ndarray
     color_flags: dict[str, int]
+    mini_points: np.ndarray
+    mini_codes: np.ndarray
+    gear_pack: BitPack
+    mini_pack: BitPack
     slot_item_ids: list[np.ndarray]
     mini_item_ids: np.ndarray
     optimize_gear: bool = True
@@ -48,8 +62,57 @@ class SolverContext:
     status_cb: Callable[[str], None] | None = None
 
 
+def make_pack(sizes: Iterable[int]) -> BitPack:
+    shifts: list[int] = []
+    masks: list[int] = []
+    shift = 0
+    for size in sizes:
+        size = int(size)
+        if size <= 0:
+            raise ValueError("BitPack sizes must be positive")
+        bits = max(1, int(size - 1).bit_length())
+        shifts.append(shift)
+        masks.append((1 << bits) - 1)
+        shift += bits
+    if shift > 64:
+        raise ValueError(f"BitPack overflow: need {shift} bits > 64")
+    return BitPack(shifts=tuple(shifts), masks=tuple(masks), total_bits=int(shift))
+
+
+def gear_ids_from_code(
+    code: int,
+    *,
+    pack: BitPack,
+    slot_item_ids: list[np.ndarray],
+) -> np.ndarray:
+    idxs = pack.unpack(code)
+    out = np.zeros(len(GEAR_SLOTS), dtype=np.int32)
+    for idx, item_idx in enumerate(idxs):
+        out[idx] = int(slot_item_ids[idx][int(item_idx)])
+    return out
+
+
+def mini_ids_from_code(
+    code: int,
+    *,
+    pack: BitPack,
+    mini_item_ids: np.ndarray,
+) -> np.ndarray:
+    idxs = pack.unpack(code)
+    out = np.zeros(3, dtype=np.int32)
+    for idx, item_idx in enumerate(idxs):
+        out[idx] = int(mini_item_ids[int(item_idx)])
+    return out
+
+
 def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_color: str) -> dict[str, Any]:
-    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
+    def _cfg_get(section: str, key: str, fallback: int = 0) -> int:
+        if cfg is None:
+            return int(fallback)
+        try:
+            return safe_int(cfg.get(section, key, fallback=fallback), fallback)
+        except Exception:
+            return int(fallback)
 
     return {
         "selected_color": str(selected_color or ""),
@@ -58,12 +121,12 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         "use_gpu": True,
         "use_gpu_native": True,
         "fg_candidate_limit": int(FG_CANDIDATE_LIMIT),
-        "user_ft": int(user_gems.fever_time),
-        "user_ff": int(user_gems.fever_fill),
-        "user_pp": int(user_gems.perfect_points),
-        "user_cm": int(user_gems.combo_multiplier),
-        "user_fm": int(user_gems.fever_multiplier),
-        "static_elem_input": int(user_gems.static_element),
+        "user_ft": _cfg_get("UserInputStatsGems", "fever_time", 0),
+        "user_ff": _cfg_get("UserInputStatsGems", "fever_fill", 0),
+        "user_pp": _cfg_get("UserInputStatsGems", "perfect_points", 0),
+        "user_cm": _cfg_get("UserInputStatsGems", "combo_multiplier", 0),
+        "user_fm": _cfg_get("UserInputStatsGems", "fever_multiplier", 0),
+        "static_elem_input": _cfg_get("ElementalGems", selected_color, 0),
     }
 
 
@@ -159,14 +222,12 @@ def batched_registry_eval(
             total_budget=TOTAL_GEM_BUDGET,
             gem_scale_fever=GEM_SCALE_FEVER,
             song_slot=int(song_slot),
-            use_exact_inner_solver=True,
         )
         results = dispatch_registry_solve(req, gpu_client=gpu_client)
         for idx, result in enumerate(results):
             try:
                 score = int(result[0] or 0)
-            except Exception as e:
-                logger.debug(f"solver_common:batched_registry_eval: {e}")
+            except Exception:
                 score = 0
             gear_code = int(batch_gear_codes[idx])
             mini_code = int(batch_mini_codes[idx])
@@ -251,6 +312,8 @@ def prepare_solver_context(
     song_slot: int = 0,
     gpu_client: Any | None = None,
 ) -> SolverContext | None:
+    from gear_optimizer.solver.mini_skyline import mini_combo_skyline
+
     p_color = str((calc_song or {}).get("metadata", {}).get("Primary Color", "Rush") or "Rush")
     s_color = str((calc_song or {}).get("metadata", {}).get("Secondary Color", "") or "")
     selected_color = p_color
@@ -306,6 +369,16 @@ def prepare_solver_context(
     if len(mini_pool) <= 0:
         return None
 
+    gear_pack = make_pack([len(gear_pool.get(slot, []) or []) for slot in GEAR_SLOTS])
+    mini_pack = make_pack([len(mini_pool), len(mini_pool), len(mini_pool)])
+
+    _mini_stats, mini_points, mini_codes = mini_combo_skyline(
+        mini_pool,
+        p_color=p_color,
+        s_color=s_color,
+        pack=mini_pack,
+    )
+
     registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
     registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
     registry = ItemRegistry(
@@ -334,6 +407,10 @@ def prepare_solver_context(
         gpu_arrays=gpu_arrays,
         base_fixed_stats_arr=base_fixed_stats_arr,
         color_flags=color_flags,
+        mini_points=mini_points,
+        mini_codes=mini_codes,
+        gear_pack=gear_pack,
+        mini_pack=mini_pack,
         slot_item_ids=slot_item_ids,
         mini_item_ids=mini_item_ids,
         optimize_gear=bool(optimize_gear),
