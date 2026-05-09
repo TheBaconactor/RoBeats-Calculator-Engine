@@ -80,6 +80,11 @@ def main() -> int:
     from gear_optimizer.helpers.ga_helpers import initialize_pools
     from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.exact_skyline import solve_exact_skyline
+    from gear_optimizer.solver.fg_exact_dp import (
+        prepare_force_greats_exact_dp_inputs,
+        score_force_greats_exact_dp_bonus_from_prepared,
+        solve_force_greats_exact_dp,
+    )
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
 
     cfg = load_config("config.ini")
@@ -164,7 +169,26 @@ def main() -> int:
     ga_time = time.perf_counter() - t0
     ga_score = int((ga_best_data or {}).get("BaseScore") or (ga_best_data or {}).get("Score") or 0)
 
-    print(f"  GA Score: {ga_score:,}  Time: {ga_time:.2f}s")
+    ga_fg_delta = 0
+    ga_post_stats = (ga_best_data or {}).get("Stats") or (ga_best_data or {}).get("Details", {}).get("Stats", {}) or {}
+    if ga_post_stats:
+        try:
+            ga_dp = solve_force_greats_exact_dp(
+                stats=ga_post_stats, calc_song=calc_song, ref_arrays=ref_arrays, mode="timing_aware", prune=True,
+            )
+            if ga_dp.best_delta > 0:
+                prepared = prepare_force_greats_exact_dp_inputs(
+                    stats=ga_post_stats, calc_song=calc_song, ref_arrays=ref_arrays,
+                )
+                if prepared is not None:
+                    baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
+                        prepared=prepared, section_counts=[],
+                    )
+                    ga_fg_delta = max(0, int(ga_dp.best_delta) - int(baseline_bonus))
+        except Exception:
+            ga_fg_delta = 0
+
+    print(f"  GA Score: {ga_score:,}  FG Delta: {ga_fg_delta:,}  Time: {ga_time:.2f}s")
 
     # --- Exact Skyline ---
     print("\n--- Exact Skyline ---")
@@ -191,15 +215,18 @@ def main() -> int:
 
     print(f"\n  Skyline Base Score: {exact_score:,}  Time: {skyline_time:.2f}s")
 
-    # --- Results ---
+    ga_fg_total = ga_score + ga_fg_delta
+    best_skyline_fg_delta = max((e.get("FGDelta", 0) for e in all_evaluated), default=0)
+    best_skyline_fg_total = exact_score + max((e.get("FGDelta", 0) for e in all_evaluated), default=0)
+
     print("\n" + "=" * 72)
     print("Results")
     print("=" * 72)
-    print(f"  GA:      {ga_score:>10,}  ({ga_time:.2f}s)")
-    print(f"  Skyline: {exact_score:>10,}  ({skyline_time:.2f}s)")
-    delta = exact_score - ga_score
-    print(f"  Delta:   {delta:>+10,}")
-    print(f"  Skyline is {'authoritative' if exact_score >= ga_score else 'worse than GA'}")
+    print(f"  GA base:  {ga_score:>10,}  (FG+{ga_fg_delta:,} = {ga_fg_total:,})  {ga_time:.2f}s")
+    print(f"  Skyline:  {exact_score:>10,}  (FG+{best_skyline_fg_delta:,} = {best_skyline_fg_total:,})  {skyline_time:.2f}s")
+    delta = best_skyline_fg_total - ga_fg_total
+    print(f"  Delta:    {delta:>+10,}")
+    print(f"  Skyline is {'authoritative' if best_skyline_fg_total >= ga_fg_total else 'worse than GA'}")
 
     if all_evaluated:
         print(f"\n  Top-5 skyline candidates:")
