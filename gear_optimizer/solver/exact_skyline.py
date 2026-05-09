@@ -16,7 +16,7 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
     TOTAL_GEM_BUDGET,
 )
-from gear_optimizer.solver.combined_skyline_gpu import combined_global_skyline_pairs_6d_gpu
+from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 from gear_optimizer.solver.fg_exact_dp import (
     prepare_force_greats_exact_dp_inputs,
     score_force_greats_exact_dp_bonus_from_prepared,
@@ -1227,7 +1227,7 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
 ) -> tuple[np.ndarray, np.ndarray]:
     """GPU-resident exact combined skyline over gear ⊕ mini stat products."""
 
-    return combined_global_skyline_pairs_6d_gpu(gear_points, mini_points)
+    return combined_global_skyline_pairs_6d_sparse(gear_points, mini_points)
 
 
 def _evaluate_pairs_exact(
@@ -1403,89 +1403,62 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     best_ids: np.ndarray | None = None
     top_codes: list[tuple[int, int, int]] = []
 
-    try:
-        status_cb("exact_skyline: combined skyline prune")
-        pair_g_idx, pair_m_idx = _combined_global_skyline_pairs_6d_lane_base_with_indices(gear_points, ctx.mini_points)
-        if pair_g_idx.size > 0:
-            if ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
-                status_cb("exact_skyline: combined envelope prune")
-                g_pts = gear_points[pair_g_idx].astype(np.int32, copy=False)
-                m_pts = ctx.mini_points[pair_m_idx].astype(np.int32, copy=False)
+    status_cb("exact_skyline: combined skyline prune")
+    pair_g_idx, pair_m_idx = _combined_global_skyline_pairs_6d_lane_base_with_indices(gear_points, ctx.mini_points)
+    if pair_g_idx.size > 0:
+        if ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
+            status_cb("exact_skyline: combined envelope prune")
+            g_pts = gear_points[pair_g_idx].astype(np.int32, copy=False)
+            m_pts = ctx.mini_points[pair_m_idx].astype(np.int32, copy=False)
 
-                pair_points = np.empty((int(pair_g_idx.shape[0]), 6), dtype=np.int32)
-                pair_points[:, 0] = g_pts[:, 0]
+            pair_points = np.empty((int(pair_g_idx.shape[0]), 6), dtype=np.int32)
+            pair_points[:, 0] = g_pts[:, 0]
 
-                pair_points[:, 1] = g_pts[:, 1]
-                pair_points[:, 1] += m_pts[:, 0]
-                np.minimum(pair_points[:, 1], int(MAX_STAT_INDEX), out=pair_points[:, 1])
+            pair_points[:, 1] = g_pts[:, 1]
+            pair_points[:, 1] += m_pts[:, 0]
+            np.minimum(pair_points[:, 1], int(MAX_STAT_INDEX), out=pair_points[:, 1])
 
-                pair_points[:, 2] = g_pts[:, 2]
-                pair_points[:, 2] += m_pts[:, 1]
-                np.minimum(pair_points[:, 2], int(MAX_STAT_INDEX), out=pair_points[:, 2])
+            pair_points[:, 2] = g_pts[:, 2]
+            pair_points[:, 2] += m_pts[:, 1]
+            np.minimum(pair_points[:, 2], int(MAX_STAT_INDEX), out=pair_points[:, 2])
 
-                pair_points[:, 3] = g_pts[:, 3]
-                pair_points[:, 3] += m_pts[:, 2]
-                np.minimum(pair_points[:, 3], int(MAX_STAT_INDEX), out=pair_points[:, 3])
+            pair_points[:, 3] = g_pts[:, 3]
+            pair_points[:, 3] += m_pts[:, 2]
+            np.minimum(pair_points[:, 3], int(MAX_STAT_INDEX), out=pair_points[:, 3])
 
-                pair_points[:, 4] = g_pts[:, 4]
-                pair_points[:, 4] += m_pts[:, 3]
-                np.minimum(pair_points[:, 4], int(MAX_STAT_INDEX), out=pair_points[:, 4])
+            pair_points[:, 4] = g_pts[:, 4]
+            pair_points[:, 4] += m_pts[:, 3]
+            np.minimum(pair_points[:, 4], int(MAX_STAT_INDEX), out=pair_points[:, 4])
 
-                pair_points[:, 5] = g_pts[:, 5]
-                pair_points[:, 5] += m_pts[:, 4]
+            pair_points[:, 5] = g_pts[:, 5]
+            pair_points[:, 5] += m_pts[:, 4]
 
-                pair_codes = _pack_pair_indices(pair_g_idx, pair_m_idx)
-                pair_env_stats, _, reduced_codes = _reduce_same_stat_envelope_frontier_with_codes(
-                    pair_points,
-                    pair_codes,
-                    p_color=ctx.p_color,
-                    s_color=ctx.s_color,
-                    selected_color=ctx.selected_color,
-                    ref_pp=ref_pp,
-                    budget_max=int(TOTAL_GEM_BUDGET),
-                    dominance_lut=envelope_lut,
-                )
-                status_cb(
-                    "exact_skyline: combined envelope kept "
-                    f"{int(pair_env_stats.points_out):,}/{int(pair_env_stats.points_in):,} "
-                    f"(groups={int(pair_env_stats.groups_multi):,}, max_group={int(pair_env_stats.max_group_size)}, "
-                    f"time={float(pair_env_stats.seconds):.2f}s)"
-                )
-
-                # Safety: only replace the candidate list when the reduction kept at least one.
-                if reduced_codes.size > 0:
-                    pair_g_idx, pair_m_idx = _unpack_pair_codes(reduced_codes)
-
+            pair_codes = _pack_pair_indices(pair_g_idx, pair_m_idx)
+            pair_env_stats, _, reduced_codes = _reduce_same_stat_envelope_frontier_with_codes(
+                pair_points,
+                pair_codes,
+                p_color=ctx.p_color,
+                s_color=ctx.s_color,
+                selected_color=ctx.selected_color,
+                ref_pp=ref_pp,
+                budget_max=int(TOTAL_GEM_BUDGET),
+                dominance_lut=envelope_lut,
+            )
             status_cb(
-                "exact_skyline: evaluate combined skyline "
-                f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
+                "exact_skyline: combined envelope kept "
+                f"{int(pair_env_stats.points_out):,}/{int(pair_env_stats.points_in):,} "
+                f"(groups={int(pair_env_stats.groups_multi):,}, max_group={int(pair_env_stats.max_group_size)}, "
+                f"time={float(pair_env_stats.seconds):.2f}s)"
             )
-            best_ids, top_codes = _evaluate_pairs_exact(
-                gpu_arrays=ctx.gpu_arrays,
-                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-                calc_song=ctx.calc_song,
-                ref_arrays=ctx.ref_arrays,
-                flags=ctx.color_flags,
-                song_slot=int(ctx.song_slot),
-                gpu_client=ctx.gpu_client,
-                gear_ids=gear_ids,
-                mini_ids=mini_ids,
-                gear_codes=gear_codes,
-                mini_codes=ctx.mini_codes,
-                pair_gear_idx=pair_g_idx,
-                pair_mini_idx=pair_m_idx,
-                keep_top_k=int(keep_top_k),
-                status_cb=status_cb,
-            )
-    except MemoryError:
-        status_cb("exact_skyline: combined skyline too large; falling back to cartesian")
-    except Exception as exc:
-        status_cb(f"exact_skyline: combined skyline failed ({type(exc).__name__}); falling back to cartesian")
 
-    if best_ids is None:
-        status_cb(f"exact_skyline: evaluate product (candidates={product_total:,})")
-        best_ids, top_codes = _evaluate_product_exact(
-            registry=ctx.registry,
+            if reduced_codes.size > 0:
+                pair_g_idx, pair_m_idx = _unpack_pair_codes(reduced_codes)
+
+        status_cb(
+            "exact_skyline: evaluate combined skyline "
+            f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
+        )
+        best_ids, top_codes = _evaluate_pairs_exact(
             gpu_arrays=ctx.gpu_arrays,
             base_fixed_stats_arr=ctx.base_fixed_stats_arr,
             calc_song=ctx.calc_song,
@@ -1497,6 +1470,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             mini_ids=mini_ids,
             gear_codes=gear_codes,
             mini_codes=ctx.mini_codes,
+            pair_gear_idx=pair_g_idx,
+            pair_mini_idx=pair_m_idx,
             keep_top_k=int(keep_top_k),
             status_cb=status_cb,
         )
