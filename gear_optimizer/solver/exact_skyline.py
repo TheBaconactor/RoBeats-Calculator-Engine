@@ -618,6 +618,50 @@ def _evaluate_response_matrix_exact(
         return out
 
     max_batch = 4096
+    total = int(g_n) * int(m_n)
+
+    g_idx = np.repeat(np.arange(g_n, dtype=np.int32), m_n)
+    m_idx = np.tile(np.arange(m_n, dtype=np.int32), g_n)
+
+    done = 0
+    for offset in range(0, total, max_batch):
+        n = min(max_batch, int(total) - int(offset))
+        seg = slice(offset, offset + n)
+
+        batch = np.empty((n, 9), dtype=np.int32)
+        batch[:, :6] = gear_ids[g_idx[seg]]
+        batch[:, 6:] = mini_ids[m_idx[seg]]
+
+        req = RegistrySolveRequest(
+            population_indices=batch,
+            item_stats=gpu_arrays["item_stats"],
+            slot_start=gpu_arrays["slot_start"],
+            slot_count=gpu_arrays["slot_count"],
+            base_fixed_stats=base_fixed_stats_arr,
+            timeline_grid=calc_song,
+            ref_arrays=ref_arrays,
+            flags=flags,
+            total_budget=TOTAL_GEM_BUDGET,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=int(song_slot),
+        )
+        results = dispatch_registry_solve(req, gpu_client=gpu_client)
+        for local_idx, result in enumerate(results):
+            gi = int(g_idx[int(offset) + local_idx])
+            mi = int(m_idx[int(offset) + local_idx])
+            try:
+                score = int(result[0] or 0)
+            except Exception:
+                score = 0
+            out[gi, mi] = int(score)
+
+        done += int(n)
+        if status_cb is not None and (done == int(total) or done % int(status_every) == 0):
+            status_cb(f"{status_label}: scored {done}/{int(total)} response points")
+
+    return out
+
+    max_batch = 4096
     batch = np.zeros((max_batch, 9), dtype=np.int32)
     batch_g_idx = np.zeros(max_batch, dtype=np.int32)
     batch_m_idx = np.zeros(max_batch, dtype=np.int32)
@@ -961,26 +1005,24 @@ def _evaluate_product_exact(
 
     max_batch = 4096
     total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
+    g_n = int(gear_ids.shape[0])
+    m_n = int(mini_ids.shape[0])
+
+    g_idx = np.repeat(np.arange(g_n, dtype=np.int32), m_n)
+    m_idx = np.tile(np.arange(m_n, dtype=np.int32), g_n)
 
     def _candidate_batches() -> Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        batch = np.zeros((max_batch, 9), dtype=np.int32)
-        batch_gc = np.zeros(max_batch, dtype=np.uint64)
-        batch_mc = np.zeros(max_batch, dtype=np.uint64)
-        batch_len = 0
-        for gi in range(int(gear_ids.shape[0])):
-            g_row = gear_ids[gi]
-            g_code = int(gear_codes[gi])
-            for mi in range(int(mini_ids.shape[0])):
-                batch[batch_len, :6] = g_row
-                batch[batch_len, 6:] = mini_ids[mi]
-                batch_gc[batch_len] = np.uint64(g_code)
-                batch_mc[batch_len] = np.uint64(int(mini_codes[mi]))
-                batch_len += 1
-                if batch_len == max_batch:
-                    yield batch[:batch_len].copy(), batch_gc[:batch_len].copy(), batch_mc[:batch_len].copy()
-                    batch_len = 0
-        if batch_len:
-            yield batch[:batch_len].copy(), batch_gc[:batch_len].copy(), batch_mc[:batch_len].copy()
+        for offset in range(0, int(total), int(max_batch)):
+            n = min(int(max_batch), int(total) - int(offset))
+            seg = slice(offset, offset + n)
+
+            batch = np.empty((n, 9), dtype=np.int32)
+            batch[:, :6] = gear_ids[g_idx[seg]]
+            batch[:, 6:] = mini_ids[m_idx[seg]]
+
+            batch_gc = gear_codes[g_idx[seg]].astype(np.uint64, copy=False)
+            batch_mc = mini_codes[m_idx[seg]].astype(np.uint64, copy=False)
+            yield batch, batch_gc, batch_mc
 
     return batched_registry_eval(
         gpu_arrays=gpu_arrays,
