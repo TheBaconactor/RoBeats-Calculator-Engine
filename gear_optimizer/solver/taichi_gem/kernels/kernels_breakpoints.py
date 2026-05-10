@@ -52,7 +52,7 @@ def fg_compute_max_fp_by_pair_kernel(
     out_max_fp: ti.types.ndarray(dtype=ti.i16, ndim=2),  # (n_pairs, n_sections)
 ):
     """
-    GPU-accelerated breakpoint "range" computation for ForceGreatsFinder batching.
+    GPU-accelerated breakpoint "range" computation for native FG solver batching.
 
     Computes the per-(ftff_pair, section) maximum fill-penalty cap (FP cap) across
     all provided base (FT stat, FF stat) pairs.

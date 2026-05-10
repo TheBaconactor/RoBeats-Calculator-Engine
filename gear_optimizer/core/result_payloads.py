@@ -2,7 +2,7 @@
 Shared helpers for building/normalizing result payloads.
 
 Why this exists:
-- Several execution paths return dict payloads instead of raising (multiprocessing boundaries, inflight, GPU executor).
+- Several execution paths return dict payloads instead of raising (multiprocessing boundaries, queued, GPU executor).
 - A consistent error payload contract makes failures debuggable and reduces ad-hoc key drift.
 """
 

@@ -143,9 +143,9 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     try:
-        from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
+        from .skyline_operations import reset_skyline_upload_caches as _reset_skyline_caches
 
-        _reset_ga_caches()
+        _reset_skyline_caches()
     except Exception as e:
         logger.debug(f"initialization:hard_reset_taichi: {e}")
 
@@ -298,7 +298,7 @@ def load_ref_arrays(ref_arrays: dict):
     """
     Upload reference arrays to GPU fields.
 
-    Must be called once before using solve_genomes_*() or GA/FG kernels that depend on
+    Must be called once before using solve_genomes_*() or skyline/FG kernels that depend on
     the lookup tables (unless you call `ensure_ready(ref_arrays=...)`, which will
     upload them automatically).
     Typically called when switching songs or on first use.

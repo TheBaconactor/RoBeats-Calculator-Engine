@@ -28,9 +28,9 @@ chunk_best_idx = None  # (MAX_GENOMES,) i32 - work item index for best score
 # Shared fields (bound at runtime)
 genome_result_stats = None
 genome_base_stats = None
-ga_scores = None
+skyline_scores = None
 population_indices = None
-ga_exact_eval_rep_idx = None
+skyline_exact_eval_rep_idx = None
 ftff_combo_ft = None
 ftff_combo_ff = None
 grid_count_body_fever = None
@@ -44,16 +44,16 @@ grid_frontier_body_normal_pool = None
 grid_frontier_masks_bits_pool = None
 grid_sig0 = None
 grid_sig1 = None
-ga_global_best_score = None
-ga_global_best_genome = None
-ga_global_best_results = None
+skyline_global_best_score = None
+skyline_global_best_genome = None
+skyline_global_best_results = None
 
 # Kernel function references (populated by create_metal_kernels)
-ga_find_best_combo_key_kernel = None
-ga_write_best_results_from_key_kernel = None
-ga_find_best_combo_warmstart_kernel = None
-ga_update_global_best_kernel = None
-ga_write_best_and_update_global_kernel = None
+skyline_find_best_combo_key_kernel = None
+skyline_write_best_results_from_key_kernel = None
+skyline_find_best_combo_warmstart_kernel = None
+skyline_update_global_best_kernel = None
+skyline_write_best_and_update_global_kernel = None
 
 _kernels_created = False
 
@@ -66,9 +66,9 @@ def create_metal_kernels():
     The kernels are defined here (not at module load time) to ensure
     Taichi JIT compiles them with the actual field references.
     """
-    global ga_find_best_combo_key_kernel
-    global ga_write_best_results_from_key_kernel, ga_find_best_combo_warmstart_kernel
-    global ga_update_global_best_kernel, ga_write_best_and_update_global_kernel
+    global skyline_find_best_combo_key_kernel
+    global skyline_write_best_results_from_key_kernel, skyline_find_best_combo_warmstart_kernel
+    global skyline_update_global_best_kernel, skyline_write_best_and_update_global_kernel
     global _kernels_created
 
     if _kernels_created:
@@ -79,7 +79,7 @@ def create_metal_kernels():
     from .kernels.kernels_scoring import optimize_core_device_exact_bound
 
     @ti.kernel
-    def _ga_find_best_combo_key_kernel(
+    def _skyline_find_best_combo_key_kernel(
         n_genomes: ti.i32,
         n_combos: ti.i32,
         combo_offset: ti.i32,
@@ -181,7 +181,7 @@ def create_metal_kernels():
                     chunk_best_idx[genome_idx] = combo_idx
 
     @ti.kernel
-    def _ga_write_best_results_from_key_kernel(
+    def _skyline_write_best_results_from_key_kernel(
         n_genomes: ti.i32,
         total_budget: ti.i32,
         gem_scale_fever: ti.i32,
@@ -211,7 +211,7 @@ def create_metal_kernels():
 
             if score < 0 or combo_idx < 0:
                 genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
-                ga_scores[genome_idx] = -1
+                skyline_scores[genome_idx] = -1
                 continue
 
             ft: ti.i32 = ftff_combo_ft[combo_idx]
@@ -299,10 +299,10 @@ def create_metal_kernels():
                     res_vec[4],
                 ]
             )
-            ga_scores[genome_idx] = final_score
+            skyline_scores[genome_idx] = final_score
 
     @ti.kernel
-    def _ga_find_best_combo_warmstart_kernel(
+    def _skyline_find_best_combo_warmstart_kernel(
         n_genomes: ti.i32,
         n_combos: ti.i32,
         combo_offset: ti.i32,
@@ -334,7 +334,7 @@ def create_metal_kernels():
         w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
-            if reuse_exact_eval_results != 0 and ga_exact_eval_rep_idx[genome_idx] != genome_idx:
+            if reuse_exact_eval_results != 0 and skyline_exact_eval_rep_idx[genome_idx] != genome_idx:
                 continue
             combo_idx: ti.i32 = combo_offset + local_c
             if combo_idx >= n_combos:
@@ -512,20 +512,20 @@ def create_metal_kernels():
                     chunk_best_idx[genome_idx] = combo_idx
 
     @ti.kernel
-    def _ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
+    def _skyline_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
         """
         Metal-safe global-best update.
 
         Metal does not support 64-bit atomics, so we use a serialized scan to find the
         best score (tie-break: lower genome index), then materialize IDs/results.
         """
-        prev_best: ti.i32 = ga_global_best_score[0]
+        prev_best: ti.i32 = skyline_global_best_score[0]
         best_score: ti.i32 = -1
         best_g: ti.i32 = -1
 
         ti.loop_config(serialize=True)
         for g in range(n_genomes):
-            score: ti.i32 = ga_scores[g]
+            score: ti.i32 = skyline_scores[g]
             if score < 0:
                 continue
             if (score > best_score) or (score == best_score and (best_g < 0 or g < best_g)):
@@ -533,14 +533,14 @@ def create_metal_kernels():
                 best_g = g
 
         if best_g >= 0 and best_score > prev_best:
-            ga_global_best_score[0] = best_score
+            skyline_global_best_score[0] = best_score
             for s in range(n_slots):
-                ga_global_best_genome[s] = population_indices[best_g, s]
+                skyline_global_best_genome[s] = population_indices[best_g, s]
             res = genome_result_stats[best_g]
             for r in ti.static(range(7)):
-                ga_global_best_results[r] = res[r]
+                skyline_global_best_results[r] = res[r]
 
-    def _ga_write_best_and_update_global_kernel(
+    def _skyline_write_best_and_update_global_kernel(
         n_genomes: int,
         n_slots: int,
         total_budget: int,
@@ -563,7 +563,7 @@ def create_metal_kernels():
         # Replace the fused kernel (which used 64-bit atomics) with 2 Metal-safe kernels.
         from . import kernels as base_kernels
 
-        base_kernels.ga_write_best_results_from_key_kernel(
+        base_kernels.skyline_write_best_results_from_key_kernel(
             int(n_genomes),
             int(total_budget),
             int(gem_scale_fever),
@@ -582,13 +582,13 @@ def create_metal_kernels():
             int(song_slot),
             int(use_exact_inner_solver),
         )
-        _ga_update_global_best_kernel(int(n_genomes), int(n_slots))
+        _skyline_update_global_best_kernel(int(n_genomes), int(n_slots))
 
     # Assign to module-level names
-    ga_find_best_combo_key_kernel = _ga_find_best_combo_key_kernel
-    ga_write_best_results_from_key_kernel = _ga_write_best_results_from_key_kernel
-    ga_find_best_combo_warmstart_kernel = _ga_find_best_combo_warmstart_kernel
-    ga_update_global_best_kernel = _ga_update_global_best_kernel
-    ga_write_best_and_update_global_kernel = _ga_write_best_and_update_global_kernel
+    skyline_find_best_combo_key_kernel = _skyline_find_best_combo_key_kernel
+    skyline_write_best_results_from_key_kernel = _skyline_write_best_results_from_key_kernel
+    skyline_find_best_combo_warmstart_kernel = _skyline_find_best_combo_warmstart_kernel
+    skyline_update_global_best_kernel = _skyline_update_global_best_kernel
+    skyline_write_best_and_update_global_kernel = _skyline_write_best_and_update_global_kernel
 
     _kernels_created = True

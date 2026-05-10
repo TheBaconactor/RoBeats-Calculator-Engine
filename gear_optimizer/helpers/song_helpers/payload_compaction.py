@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .ga_entry_utils import materialize_candidate_names, materialize_entry_names
+from .candidate_entry_utils import materialize_candidate_names, materialize_entry_names
 from .item_utils import names_list
 
 
@@ -52,7 +52,7 @@ def compact_fg_variants(variants: list[dict] | None) -> list[dict[str, Any]]:
     return out
 
 
-def compact_ga_candidates(candidates: list[dict] | None) -> list[dict[str, Any]]:
+def compact_skyline_candidates(candidates: list[dict] | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for candidate in candidates or []:
         if not isinstance(candidate, dict):
@@ -93,3 +93,4 @@ def compact_loadout_entries(entries: dict[str, dict] | None) -> dict[str, dict[s
             "force": value.get("force"),
         }
     return out
+

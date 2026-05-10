@@ -3,7 +3,7 @@ SQLite schema versioning for the evolution database.
 
 We use `PRAGMA user_version` as the single source of truth for schema state.
 
-Note: This repo intentionally does NOT provide or maintain legacy view-based schemas.
+Note: This repo intentionally does NOT provide or maintain historical view-based schemas.
 Consumers should use `gear_optimizer.data.db_manager.EvolutionDbManager` for reads.
 """
 
@@ -76,7 +76,7 @@ def _load_json(payload: object, *, default: object) -> object:
         return default
 
 
-def _decode_legacy_gear_names(payload: object) -> list[str]:
+def _decode_historical_gear_names(payload: object) -> list[str]:
     raw = _load_json(payload, default=[])
     if not isinstance(raw, list):
         return []
@@ -88,7 +88,7 @@ def _decode_legacy_gear_names(payload: object) -> list[str]:
     return out
 
 
-def _decode_legacy_mini_groups(payload: object) -> list[list[str]]:
+def _decode_historical_mini_groups(payload: object) -> list[list[str]]:
     raw = _load_json(payload, default=[])
     if not isinstance(raw, list):
         return []
@@ -204,7 +204,7 @@ def _encoding_name_to_id(conn: sqlite3.Connection, table: str) -> dict[str, int]
     return out
 
 
-def _backfill_legacy_piece_blobs(conn: sqlite3.Connection, *, table: str) -> None:
+def _backfill_historical_piece_blobs(conn: sqlite3.Connection, *, table: str) -> None:
     if not _table_exists(conn, table):
         return
 
@@ -236,12 +236,12 @@ def _backfill_legacy_piece_blobs(conn: sqlite3.Connection, *, table: str) -> Non
         try:
             rowid = int(row[0] or 0)
         except Exception as e:
-            logger.debug(f"__init__:_backfill_legacy_piece_blobs: {e}")
+            logger.debug(f"__init__:_backfill_historical_piece_blobs: {e}")
             rowid = 0
         if rowid <= 0:
             continue
-        gears = _decode_legacy_gear_names(row[1])
-        minis = _decode_legacy_mini_groups(row[2])
+        gears = _decode_historical_gear_names(row[1])
+        minis = _decode_historical_mini_groups(row[2])
         gear_names.update(gears)
         for group in minis:
             mini_names.update(group)
@@ -296,8 +296,8 @@ def _ensure_compact_piece_storage_postconditions(conn: sqlite3.Connection) -> No
         );
         """
     )
-    _backfill_legacy_piece_blobs(conn, table="team_buff_loadouts")
-    _backfill_legacy_piece_blobs(conn, table="team_buff_fg_loadouts")
+    _backfill_historical_piece_blobs(conn, table="team_buff_loadouts")
+    _backfill_historical_piece_blobs(conn, table="team_buff_fg_loadouts")
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -457,22 +457,22 @@ def _migration_11_noop(conn: sqlite3.Connection) -> None:
 
 
 def _migration_12_noop(conn: sqlite3.Connection) -> None:
-    """Removed: legacy SQL views."""
+    """Removed: historical SQL views."""
     return
 
 
 def _migration_13_noop(conn: sqlite3.Connection) -> None:
-    """Removed: legacy frontend SQL views."""
+    """Removed: historical frontend SQL views."""
     return
 
 
 def _migration_14_noop(conn: sqlite3.Connection) -> None:
-    """Removed: legacy frontend SQL views."""
+    """Removed: historical frontend SQL views."""
     return
 
 
 def _migration_15_noop(conn: sqlite3.Connection) -> None:
-    """Removed: legacy unified/frontend SQL views."""
+    """Removed: historical unified/frontend SQL views."""
     return
 
 
@@ -494,7 +494,7 @@ def _migration_16_drop_deprecated_tables(conn: sqlite3.Connection) -> None:
 
 
 def _migration_17_noop(conn: sqlite3.Connection) -> None:
-    """Removed: legacy color-aware frontend SQL views."""
+    """Removed: historical color-aware frontend SQL views."""
     return
 
 

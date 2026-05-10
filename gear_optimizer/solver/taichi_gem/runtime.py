@@ -581,7 +581,7 @@ def init_taichi():
             _offline_cache_dir = None
 
         # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
-        # multiple spawned processes (dual-process in-flight). Serialize `ti.init()` per offline-cache
+        # multiple spawned processes (dual-process queued). Serialize `ti.init()` per offline-cache
         # directory to avoid races in the Vulkan loader/driver and on-disk cache setup.
         def _taichi_init_lock():
             try:

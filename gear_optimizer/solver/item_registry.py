@@ -61,12 +61,10 @@ def _stable_item_sort_key(item: object) -> tuple:
     """
     Deterministic ordering for gear/mini pools.
 
-    GPU-native GA is deterministic in *ID-space* (it mutates/samples integer IDs from per-slot pools).
-    That determinism only holds end-to-end if the (slot, item) -> item_id mapping is stable across
-    processes. Upstream pool construction may iterate dicts/sets; if so, item order can vary with
-    PYTHONHASHSEED and make GA results look "lucky" even when GA_SEED is fixed.
-
-    Canonicalizing the pool order fixes that: same pool contents => same IDs => same GA trajectory.
+    Exact skyline is deterministic in item-id space. That determinism only holds
+    end-to-end if the (slot, item) -> item_id mapping is stable across processes.
+    Upstream pool construction may iterate dicts/sets; if so, item order can vary
+    with PYTHONHASHSEED. Canonicalizing the pool order fixes that.
     """
 
     if not isinstance(item, dict):

@@ -3,9 +3,7 @@ import logging
 import multiprocessing
 import os
 import re
-import secrets
 import sys
-import zlib
 import threading
 import time
 import typing
@@ -13,9 +11,9 @@ import typing
 import numpy as np
 
 # Import from refactored modules
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, GA_POPULATION_SIZE
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR
 from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import config_bool, env_flag, truthy
+from gear_optimizer.core.parsing import env_flag, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.core.config import (
     AppRuntimeSettings,
@@ -46,7 +44,6 @@ from gear_optimizer.data.csv_parser import (
 )
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
-from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
@@ -76,7 +73,6 @@ from gear_optimizer.ui.progress import (
 )
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
-from gear_optimizer.app_inflight_runner import InflightRunner
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
@@ -107,7 +103,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self.setup_logging()
         self._async_db_saver = AsyncDbSaver()
         self._stop_control = StopController(bin_dir=BIN_DIR)
-        self._inflight_runner = InflightRunner(self)
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = bool(getattr(ENV, "output_enabled", False))
@@ -197,7 +192,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return self._stop_control.request_stop(reason, force=force)
         finally:
             # Best-effort: once the user asks to stop, ask the GPU owner to abort
-            # long-running in-flight requests so shutdown does not wait for a full GA/FG drain.
+            # long-running skyline GPU work so shutdown does not wait for a full drain.
             try:
                 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
@@ -223,10 +218,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
 
-    @staticmethod
-    def _cfg_truthy(cfg, section: str, key: str, *, fallback: bool = False) -> bool:
-        return config_bool(cfg, section, key, default=fallback)
-
     def _current_runtime_settings(self, cfg=None) -> AppRuntimeSettings:
         settings = getattr(self, "_runtime_settings", None)
         if isinstance(settings, AppRuntimeSettings):
@@ -238,39 +229,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return AppRuntimeSettings.from_config(None)
 
     def _configure_execution_and_prewarm(self, cfg) -> None:
-        runtime_settings = self._current_runtime_settings(cfg)
-        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
-        if not gpu_mode_requested:
-            logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-            try:
-                if not cfg.has_section("IterationEngine"):
-                    cfg.add_section("IterationEngine")
-                cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception as e:
-                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-
-        if bool(runtime_settings.gpu.gpu_native_ga):
-            ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
-            try:
-                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-                gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-            except Exception as e:
-                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-
-        try:
-            inflight_req = int(runtime_settings.inflight.songs or 0)
-        except Exception as e:
-            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-            inflight_req = 0
-        if inflight_req <= 1:
-            return
-
-        inflight_instances = self._inflight_runner.get_effective_inflight_instances(cfg)
-        if int(inflight_instances) > 1:
-            return
+        del cfg
 
         try:
             logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
@@ -307,7 +266,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             "GPU_SERVICE_PROFILE_PRINT",
             "GPU_SYNC_FOR_TIMING",
             "GPU_FORCE_SYNC",
-            "INFLIGHT_STAGE_PROFILE",
             "TAICHI_KERNEL_PROFILER",
             "TAICHI_KERNEL_PROFILER_PRINT",
             "METAFINDER_PROFILE_EVENTS",
@@ -320,7 +278,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
         path_keys = (
             "GPU_EXECUTOR_TRACE_PATH",
-            "INFLIGHT_STAGE_PROFILE_PATH",
             "METAFINDER_PROFILE_EVENTS_PATH",
             "PROFILE_EVENTS_PATH",
         )
@@ -328,12 +285,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if str(env_get(key, "") or "").strip():
                 return True
 
-        # DEV / DEBUG: profile-only config overrides (Debug.DebugProfile, IterationEngine.DebugProfile).
-        if cfg is not None:
-            if self._cfg_truthy(cfg, "Debug", "DebugProfile", fallback=False):
-                return True
-            if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
-                return True
+        del cfg
         return False
 
     def _optimizer_priority_api_enabled(self) -> bool:
@@ -432,13 +384,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     self._runtime_settings = runtime_settings
                     loop_forever_effective = runtime_settings.loop_forever
                     song_repeats_effective = runtime_settings.song_repeats
-                    inflight_songs_effective = runtime_settings.inflight.songs
                     if backend_benchmark_mode:
                         logger.info(
                             "[RoBeatsMeta] Service defaults enabled (benchmark): "
                             f"LoopForever={loop_forever_effective}, "
                             f"SongRepeats={song_repeats_effective}, "
-                            f"InFlightSongs={inflight_songs_effective}, "
                             "Difficulty=All, QueueScope=PendingSongIds.",
                         )
                     else:
@@ -446,12 +396,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                             "[RoBeatsMeta] Service defaults enabled: "
                             f"LoopForever={loop_forever_effective}, "
                             f"SongRepeats={song_repeats_effective}, "
-                            f"InFlightSongs={inflight_songs_effective}, "
                             "Difficulty=All, QueueScope=PendingSongIds.",
                         )
                 elif not self._robeatsmeta_api.service_defaults_enabled():
                     logger.info(
-                        "[RoBeatsMeta] Service mode enabled: keeping IterationEngine/CalculateSong config (service defaults disabled).",
+                        "[RoBeatsMeta] Service mode enabled: keeping CalculateSong config (service defaults disabled).",
                     )
 
                 # Backend-special behavior: default to headless runtime status via API.
@@ -472,7 +421,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         queued_tasks = 0
 
         FEVER_TIMELINE_CACHE.clear()
-        GEM_SOLVER_CACHE.clear()
         FG_CACHE.clear()
 
         manager = None
@@ -528,23 +476,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             # Config reading
             ie = runtime_settings.iteration_engine
-            meta_finder = bool(ie.meta_finder)
-            enable_auto = bool(meta_finder)
             auto_buff = bool(ie.auto_select_buff_and_color)
             fg_debug = bool(ie.force_greats_debug)
 
-            if ie.force_greats_mode:
-                if ie.force_greats_finder:
-                    fg_status = "ForceGreatsFinder"
-                elif ie.manual_force_greats:
-                    fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
-                else:
-                    fg_status = "Enabled but inactive (no manual config; ForceGreatsFinder=false)"
+            logger.info(" >> [Solver] Exact Skyline (base + native retained-candidate FG)")
 
-                logger.info(f" >> [ForceGreats] {fg_status}")
-
-            # PRODUCTION: runtime / persistence flags (GA_SearchDepth, UseEvolutionDB, LoopForever, EvalCPUCores).
-            ga_depth = int(runtime_settings.ga.search_depth)
+            # PRODUCTION: runtime / persistence flags (UseEvolutionDB, LoopForever, EvalCPUCores).
+            solver_depth = 0
             use_evo_db = bool(runtime_settings.use_evolution_db)
             loop_forever = bool(runtime_settings.loop_forever)
             if self._profiling_mode_enabled(cfg):
@@ -555,17 +493,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         event="profiling_forced_loop_forever_off",
                         metrics={"requested_loop_forever": 1},
                     )
-                loop_forever = False
+            loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
-            self._inflight_runner.apply_overrides(cfg)
-            self._inflight_runner.maybe_apply_ram_mode(cfg)
-            self._inflight_runner.maybe_autoset_gpu_song_slots(cfg)
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
-
-            # CRITICAL FIX: Prevent DB tainting by disabling inputs in auto mode
-            if enable_auto:
-                self._disable_inputs_to_prevent_taint(cfg)
 
             ref_arrays = self._preload_ref_arrays(stats_table)
             all_gears = load_all_gears_list(paths)
@@ -613,7 +544,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 minis_by_name,
                 use_evo_db,
                 auto_buff,
-                ga_depth,
+                solver_depth,
                 status_queue,
                 fg_debug,
             )
@@ -761,20 +692,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.error(f"[StatsVerifier] Unexpected error: {e}")
             logger.warning(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")
-
-    def _disable_inputs_to_prevent_taint(self, cfg):
-        logger.info(
-            " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
-        )
-        if not cfg.has_section("UserInputStatsGems"):
-            cfg.add_section("UserInputStatsGems")
-        for key in ["perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"]:
-            cfg.set("UserInputStatsGems", key, "0")
-
-        if not cfg.has_section("ElementalGems"):
-            cfg.add_section("ElementalGems")
-        for key in ["Chill", "Flow", "Rush", "Beat", "Vibe"]:
-            cfg.set("ElementalGems", key, "0")
 
     def _preload_ref_arrays(self, stats_table):
         from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
@@ -1189,24 +1106,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         minis_by_name,
         use_evo_db,
         auto_buff,
-        ga_depth,
+        solver_depth,
         status_queue,
         fg_debug,
     ):
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
         parallel_workers = 1
-
-        # When GA_SEED is set, users expect reproducible A/B comparisons.
-        # Historically we still generated per-repeat seeds via `secrets.randbits`,
-        # which made runs non-reproducible even in "deterministic mode".
-        ga_seed_base: int | None = None
-        raw_ga_seed = env_get("GA_SEED")
-        if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
-            try:
-                ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
-            except (ValueError, TypeError):
-                ga_seed_base = None
 
         # PRODUCTION: repeat flags.
         runtime_settings = self._current_runtime_settings(cfg)
@@ -1225,7 +1131,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 bundle_song_repeats = truthy(raw_bundle)
         except (ValueError, TypeError):
             pass
-        used_ga_seeds: set[int] = set()
         backend_service_mode = bool(
             getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
         )
@@ -1238,29 +1143,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if priority_repeat_count <= 0:
             priority_repeat_count = int(song_repeats)
 
-        def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
-            # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.
-            base = int(ga_seed_base or 0) & 0xFFFFFFFF
-            name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
-            idx = int(repeat_index) & 0xFFFFFFFF
-            seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
-            return int(seed or 1)
-
         def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
-            if ga_seed_base is not None:
-                ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
-                while ga_seed in used_ga_seeds:
-                    # Extremely unlikely, but keep the uniqueness guarantee across the queue.
-                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
-            else:
-                ga_seed = int(secrets.randbits(32) or 1)
-                while ga_seed in used_ga_seeds:
-                    ga_seed = int(secrets.randbits(32) or 1)
-            used_ga_seeds.add(int(ga_seed))
+            del song_name
             return {
                 "repeat_index": int(repeat_index),
                 "repeat_total": int(repeat_total),
-                "ga_seed": int(ga_seed),
+                "solver_seed": None,
             }
 
         for fp, found_song_name, task_diff in song_queue:
@@ -1272,51 +1160,26 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if repeats_for_song <= 1:
                 logger.info(f"[QUEUE] {found_song_name}")
 
-                if ga_seed_base is not None:
-                    # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
-                    repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
-                    tasks.append(
-                        (
-                            fp,
-                            found_song_name,
-                            task_diff,
-                            cfg_dict,
-                            paths,
-                            ref_arrays,
-                            all_gears,
-                            all_minis,
-                            gears_by_name,
-                            minis_by_name,
-                            use_evo_db,
-                            auto_buff,
-                            ga_depth,
-                            status_queue,
-                            parallel_workers,
-                            fg_debug,
-                            repeat_ctx,
-                        )
+                tasks.append(
+                    (
+                        fp,
+                        found_song_name,
+                        task_diff,
+                        cfg_dict,
+                        paths,
+                        ref_arrays,
+                        all_gears,
+                        all_minis,
+                        gears_by_name,
+                        minis_by_name,
+                        use_evo_db,
+                        auto_buff,
+                        solver_depth,
+                        status_queue,
+                        parallel_workers,
+                        fg_debug,
                     )
-                else:
-                    tasks.append(
-                        (
-                            fp,
-                            found_song_name,
-                            task_diff,
-                            cfg_dict,
-                            paths,
-                            ref_arrays,
-                            all_gears,
-                            all_minis,
-                            gears_by_name,
-                            minis_by_name,
-                            use_evo_db,
-                            auto_buff,
-                            ga_depth,
-                            status_queue,
-                            parallel_workers,
-                            fg_debug,
-                        )
-                    )
+                )
                 continue
 
             if bundle_song_repeats:
@@ -1348,7 +1211,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         minis_by_name,
                         use_evo_db,
                         auto_buff,
-                        ga_depth,
+                        solver_depth,
                         status_queue,
                         parallel_workers,
                         fg_debug,
@@ -1379,7 +1242,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         minis_by_name,
                         use_evo_db,
                         auto_buff,
-                        ga_depth,
+                        solver_depth,
                         status_queue,
                         parallel_workers,
                         fg_debug,
@@ -1395,7 +1258,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         for extra in task[16:]:
             if not isinstance(extra, dict):
                 continue
-            if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+            if "repeat_index" in extra and "repeat_total" in extra and "solver_seed" in extra:
                 return extra
         return None
 
@@ -1485,15 +1348,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             except Exception as e:
                 logger.warning(f"app:_iter_exception_chain: {e}")
 
-    def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
+    def _is_fatal_gpu_exception(self, exc: BaseException) -> bool:
         if not self._fatal_gpu_errors_enabled():
             return False
-
-        try:
-            from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
-        except Exception as e:
-            logger.warning(f"app:_is_fatal_inflight_exception: {e}")
-            GpuServiceTimeoutError = ()
 
         fatal_markers = (
             "gpu executor timeout after",
@@ -1514,12 +1371,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         )
 
         for current in self._iter_exception_chain(exc):
-            if GpuServiceTimeoutError and isinstance(current, GpuServiceTimeoutError):
-                return True
             try:
                 message = f"{type(current).__name__}: {current}".lower()
             except Exception as e:
-                logger.warning(f"app:_is_fatal_inflight_exception: {e}")
+                logger.warning(f"app:_is_fatal_gpu_exception: {e}")
                 message = ""
             if any(marker in message for marker in fatal_markers):
                 return True
@@ -1599,3 +1454,4 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logging.warning(f"Failed to delete resume file: {e}")
         if wait_s > 0.0:
             time.sleep(wait_s)
+

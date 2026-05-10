@@ -5,12 +5,10 @@ from typing import Any, Callable
 
 from gear_optimizer.core.constants import FG_SEARCH_RADIUS, GEM_SCALE_FEVER
 from gear_optimizer.core.parsing import env_flag, env_get
+from gear_optimizer.solver.force_greats_common import extract_base_stats
+from gear_optimizer.solver.native_force_greats import solve_native_force_greats_gpu
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
-from gear_optimizer.solver.scoring.force_greats import (
-    FORCE_GREATS_ALGO_VERSION,
-    _extract_base_stats,
-    run_force_greats_hill_climb,
-)
+from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
@@ -30,7 +28,7 @@ def _candidate_base_stats(data: dict[str, Any], *, selected_color: str) -> dict[
     if not isinstance(stats, dict) or not stats:
         raise ValueError("skyline FG candidate is missing Stats/BaseStats")
 
-    base_stats = _extract_base_stats(
+    base_stats = extract_base_stats(
         stats,
         data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {},
         str(selected_color or data.get("Selected Element", "") or ""),
@@ -248,12 +246,14 @@ def score_retained_skyline_force_greats(
     status_cb: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """
-    Score retained skyline candidates on the production Force Greats surface.
+    Score retained skyline candidates on the production ForceGreats surface.
 
     This is intentionally candidate-local: skyline supplies a retained loadout, then
     FG solves the joint gem allocation + forced-great configuration for that loadout.
     It does not enable any FG ceiling pruning.
     """
+    if not use_gpu:
+        raise RuntimeError("Skyline native FG is GPU-only; CPU FG scoring is not a production path.")
 
     if status_cb is None:
 
@@ -297,22 +297,21 @@ def score_retained_skyline_force_greats(
         if int(radius) < 0:
             center_ft_arg = None
             center_ff_arg = None
-            radius_arg = FG_SEARCH_RADIUS
+            radius_arg = None
         else:
             center_ft_arg = int(center_ft)
             center_ff_arg = int(center_ff)
             radius_arg = int(radius)
 
         call_t0 = time.perf_counter()
-        fg_result = run_force_greats_hill_climb(
-            base_stats,
-            calc_song,
-            ref_arrays,
+        fg_result = solve_native_force_greats_gpu(
+            base_stats=base_stats,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
             selected_color=selected_color,
             center_ft=center_ft_arg,
             center_ff=center_ff_arg,
             search_radius=radius_arg,
-            use_gpu=bool(use_gpu),
         )
         fg_elapsed = float(time.perf_counter() - call_t0)
         fg_elapsed_total += float(fg_elapsed)
@@ -430,7 +429,7 @@ def score_retained_skyline_force_greats(
     outside_best_row = max(outside_rows, key=lambda row: int(row["fg_score"]), default=None)
 
     summary = {
-        "mode": "finder_joint_gem_gpu" if bool(use_gpu) else "finder_joint_gem_cpu_reference",
+        "mode": "native_joint_gem_gpu",
         "candidate_count": int(len(candidate_records)),
         "bucket_count": 0,
         "ceiling_dp_calls": 0,

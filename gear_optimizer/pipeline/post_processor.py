@@ -32,7 +32,7 @@ def _should_persist_pending_fg_job(item: dict[str, Any]) -> bool:
     """
     Persist pending FG work only for explicit durable deferral.
 
-    Normal GPU-native in-flight runs already drain FG in-process. Writing every
+    Normal skyline runs already drain FG in-process. Writing every
     in-memory FG queue item into SQLite creates large transient JSON pages that
     SQLite keeps after delete, without improving the completed product result.
     """
@@ -155,7 +155,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         prefix = f"[POST][TIMING] {song} " if song else "[POST][TIMING] "
         print(f"{prefix}{label}={ms:.1f}ms")
 
-    # In the native in-flight pipeline, the GA result is posted immediately while ForceGreats (FG)
+    # In the queued GPU pipeline, the skyline result is posted immediately while ForceGreats (FG)
     # runs later in the main process; printing the final block immediately can make subsequent FG
     # logs appear "after" the final output. To keep output coherent, we can delay printing per-song
     # final output until we see the corresponding FG update message.
@@ -619,7 +619,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 cpu_t0 = time.process_time()
                 persist_entries = canonicalize_and_assemble(
                     db_payload=db_payload,
-                    ga_candidates=item.get("ga_candidates") or [],
+                    skyline_candidates=item.get("skyline_candidates") or [],
                     loadout_entries=item.get("loadout_entries"),
                     build_details_fn=build_details,
                     replay_ctx=ReplayContext(
@@ -631,7 +631,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
 
-                # Durable deferred FG is opt-in. The normal in-flight queue is already
+                # Durable deferred FG is opt-in. The normal skyline queue is already
                 # drained by FG workers; persisting it here bloats the main DB with
                 # transient JSON pages and is not part of retained frontier coverage.
                 if _should_persist_pending_fg_job(item):
@@ -640,7 +640,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         cpu_t0 = time.process_time()
                         async_db.submit_pending_fg_job(
                             item.get("db_key", item.get("song", "Unknown")),
-                            item.get("ga_candidates") or [],
+                            item.get("skyline_candidates") or [],
                         )
                         _log_timing(
                             "upsert_pending_fg_job_enqueue",
@@ -773,7 +773,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         async_db.raise_if_failed()
 
     # Flush pending DB work before exiting so we don't leave the main pipeline
-    # waiting on in-flight DB tasks.
+    # waiting on DB tasks.
     async_db.shutdown(timeout=30.0)
 
     try:
@@ -790,3 +790,4 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         profiler.emit()
     except Exception as e:
         logger.warning(f"post_processor:_emit: {e}")
+

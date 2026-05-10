@@ -931,12 +931,12 @@ def prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None
     """
     Build/cache the exact symbolic frontier payload without touching Taichi fields.
 
-    Native in-flight mode uses this on background CPU workers for prepared future
+    Queued GPU mode uses this on background CPU workers for prepared future
     songs. The later GPU request still owns field upload and kernel execution.
     """
     result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     emit_profile_event(
-        component="inflight_orchestrator",
+        component="queued_orchestrator",
         event="timeline_frontier_prewarm",
         song_key=result.song_profile_key,
         metrics={

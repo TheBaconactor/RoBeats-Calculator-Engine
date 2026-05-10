@@ -1,9 +1,9 @@
 """
 Shared FT/FF gem-pair enumeration.
 
-GA owns the GPU-resident FT/FF combo table, and FG should use the same
+skyline owns the GPU-resident FT/FF combo table, and FG should use the same
 triangular order when it needs host-visible pair windows. Keeping this contract
-small and central prevents GA/FG search surfaces from drifting.
+small and central prevents skyline/FG search surfaces from drifting.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def ftff_combo_arrays(
     max_ff_gems: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Return FT, FF, and remaining-budget arrays in GA combo-table order.
+    Return FT, FF, and remaining-budget arrays in skyline combo-table order.
 
     Order:
       ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0
@@ -91,7 +91,7 @@ def ftff_combo_pairs_array(
     max_ft_gems: int | None = None,
     max_ff_gems: int | None = None,
 ) -> np.ndarray:
-    """Return a read-only ``(n, 2)`` FT/FF pair array in GA combo-table order."""
+    """Return a read-only ``(n, 2)`` FT/FF pair array in skyline combo-table order."""
 
     budget = _normalize_budget(total_budget)
     cap_ft = _normalize_cap(max_ft_gems, budget)
@@ -111,7 +111,7 @@ def ftff_combo_pairs_list(
     max_ft_gems: int | None = None,
     max_ff_gems: int | None = None,
 ) -> list[tuple[int, int]]:
-    """Return FT/FF pairs as a mutable list while preserving GA combo-table order."""
+    """Return FT/FF pairs as a mutable list while preserving skyline combo-table order."""
 
     budget = _normalize_budget(total_budget)
     cap_ft = _normalize_cap(max_ft_gems, budget)
@@ -137,7 +137,7 @@ def collect_ftff_pairs_from_centers(
     use_fast: bool = True,
 ) -> list[tuple[int, int]]:
     """
-    Collect unique FT/FF pairs for an FG search window in GA combo-table order.
+    Collect unique FT/FF pairs for an FG search window in skyline combo-table order.
 
     Full-window FG returns the exact same pair order as GA's resident combo table.
     Radius-limited windows remain lexicographic, matching the historical FG

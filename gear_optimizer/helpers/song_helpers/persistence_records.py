@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...core.utils import safe_int
-from .force_greats.entry_resolution import entry_base_score
+from .entry_scores import entry_base_score
 from .fg_config import has_valid_fg_config
 
 

@@ -232,7 +232,7 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
     if not isinstance(gem_counts, dict):
         gem_counts = {}
     try:
-        from .force_greats.result_application import apply_gems_to_base_fast
+        from .fg_payload import apply_gems_to_base_fast
 
         sel = force_obj.get("Selected Element") or force_obj.get("SelectedElement") or ""
         ft_val = int(force_obj.get("FT", 0) or 0)

@@ -38,19 +38,13 @@ class EnvConfig:
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
     gpu_executor_profile: bool  # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
     gpu_executor_warmup_fg: bool  # GPU_EXECUTOR_WARMUP_FG: Pre-warm FG Taichi kernels at executor startup
-    gpu_executor_warmup_ga: bool  # GPU_EXECUTOR_WARMUP_GA: Pre-warm GA Taichi kernels at executor startup
     gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
-    gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
-    gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
     gpu_timeline_only: bool  # GPU_TIMELINE_ONLY: Force GPU timeline (avoid CPU precompute_all)
     gpu_strict: bool  # GPU_STRICT: Fail fast on any CPU fallback
 
     # General Performance
     perf_timing: bool  # PERF_TIMING (gated): Enable performance timing globally
     perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by perf print sites
-
-    # Genetic Algorithm
-    ga_seed: str | None  # GA_SEED: Seed for genetic algorithm RNG
 
     # ForceGreats
     fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override)
@@ -96,17 +90,12 @@ class EnvConfig:
             gpu_force_sync=debug_profile and env_flag("GPU_FORCE_SYNC"),
             gpu_executor_profile=debug_profile and env_flag("GPU_EXECUTOR_PROFILE"),
             gpu_executor_warmup_fg=env_flag("GPU_EXECUTOR_WARMUP_FG", "1"),
-            gpu_executor_warmup_ga=env_flag("GPU_EXECUTOR_WARMUP_GA", "1"),
             gpu_profiler=debug_profile and env_flag("GPU_PROFILER"),
-            gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
-            gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
             gpu_timeline_only=env_flag("GPU_TIMELINE_ONLY", "1"),
             gpu_strict=env_flag("GPU_STRICT", "1"),
             # General Performance
             perf_timing=debug_profile and perf_timing_unconditional,
             perf_timing_unconditional=perf_timing_unconditional,
-            # Genetic Algorithm
-            ga_seed=env_get("GA_SEED"),
             # ForceGreats
             fg_search_radius=env_int("FG_SEARCH_RADIUS", 5),
             # JIT / profiling / memory helpers

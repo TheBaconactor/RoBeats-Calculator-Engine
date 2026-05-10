@@ -1,5 +1,5 @@
 """
-ForceGreatsFinder GPU kernels (Taichi).
+native FG solver GPU kernels (Taichi).
 
 This module contains ONLY the FG finder kernels and their helper @ti.func's.
 It reuses the shared scoring helpers from `gear_optimizer.solver.taichi_gem.kernels`
@@ -4361,7 +4361,7 @@ def fg_copy_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_
 
     On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
     MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., a compact GA run).
+    number of genomes are active (e.g., a compact skyline run).
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     total_cols = 11 + FG_MAX_SECTIONS
@@ -4376,7 +4376,7 @@ def fg_copy_global_best_packed_to_download_staging_kernel(out_packed: ti.templat
 
     On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
     MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., a compact GA run).
+    number of genomes are active (e.g., a compact skyline run).
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     total_cols = 11 + FG_MAX_SECTIONS

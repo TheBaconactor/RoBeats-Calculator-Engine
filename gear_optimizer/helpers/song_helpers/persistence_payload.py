@@ -5,7 +5,7 @@ import logging
 
 from ...core.utils import get_selected_element, safe_int
 from .fg_config import has_valid_fg_config
-from .force_greats.result_application import materialize_stats_from_payload
+from .fg_payload import materialize_stats_from_payload
 from .item_utils import names_list
 from .persistence_records import evaluate_record_update
 

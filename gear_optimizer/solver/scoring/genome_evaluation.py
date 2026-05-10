@@ -1,13 +1,13 @@
 """
-Genome Evaluation - Batch Genome Evaluation for Genetic Algorithm.
+Genome Evaluation - Batch Genome Evaluation for Skyline candidate.
 
-This module provides high-performance genome evaluation for the co-evolution genetic algorithm:
+This module provides high-performance genome evaluation for the co-evolution Skyline candidate:
 - worker_coevolution_evaluate: Evaluates a single genome (gear + minis) in parallel worker
 - batch_evaluate_genomes: Evaluates entire population in SINGLE GPU kernel launch
 
 Key optimizations:
 - Stat-signature caching: Reuse gem solver results for genomes with identical effective stats
-- GPU mega-batch: Flatten ALL timelines from ALL genomes into one work list
+- GPU meskyline-batch: Flatten ALL timelines from ALL genomes into one work list
 - Signature deduplication: Evaluate unique stat combinations only once
 - IPC routing: Route GPU calls through executor for parallel song processing
 """
@@ -388,7 +388,7 @@ def worker_coevolution_evaluate(args):
     the same effective stats for the song's Primary/Secondary/Selected paths,
     we reuse the gem solver result instead of recomputing.
 
-    This is called in parallel by the genetic algorithm.
+    This is called in parallel by the Skyline candidate.
 
     Args:
         args: Tuple of (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
@@ -438,7 +438,7 @@ def worker_coevolution_evaluate(args):
     res["BaseScore"] = base_score
 
     return {
-        "Score": base_score,  # Used for GA selection
+        "Score": base_score,  # Used for skyline selection
         "BaseScore": base_score,  # True base score (all perfects)
         "Genome": genome,
         "Gear": gear_part,

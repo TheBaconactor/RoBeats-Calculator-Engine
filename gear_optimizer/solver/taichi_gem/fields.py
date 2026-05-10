@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
 MAX_HEAD_NOTES = 100  # Maximum notes in head section
 MAX_GENOMES = 4096  # Support up to 4096 unique genomes per batch
-MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
+MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native skyline representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
@@ -66,29 +66,29 @@ WRITE_UNPACKED_GRID_MASKS_DEFAULT = env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS"
 
 # FT/FF combo reduction sizing (Vulkan path).
 # Used by the warmstart and combo-search reduction kernels.
-GA_FTFF_REDUCE_BLOCK_DIM = env_int(
-    "GA_FTFF_REDUCE_BLOCK_DIM", 256
-)  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
-GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(GA_FTFF_REDUCE_BLOCK_DIM), 256))
-GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
-if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
-    GA_FTFF_REDUCE_BLOCK_DIM = 32
-GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 and wave64 (uses lane//32)
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = env_int(
+    "SKYLINE_FTFF_REDUCE_BLOCK_DIM", 256
+)  # Must match kernels/skyline_eval/warmstart.py Vulkan block dim
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(SKYLINE_FTFF_REDUCE_BLOCK_DIM), 256))
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = (SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32) * 32
+if SKYLINE_FTFF_REDUCE_BLOCK_DIM <= 0:
+    SKYLINE_FTFF_REDUCE_BLOCK_DIM = 32
+SKYLINE_FTFF_REDUCE_WAVE_STRIDE = SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 and wave64 (uses lane//32)
 
-# GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
-# Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to
-# seed ForceGreats candidate selection. GA packs a small per-run candidate table on GPU.
+# GPU-native skyline -> ForceGreats candidate table (compact GPU-resident buffer).
+# Avoids downloading full `(runs, pop, payload_cols)` skyline run payloads back to CPU just to
+# seed ForceGreats candidate selection. skyline packs a small per-run candidate table on GPU.
 # Layout per row (int32):
 #   [score, slot_ids(9), result_row(7), base_stats7(7)]
 # Where base_stats7 is `[pp, cm, fm, p_val, s_val, ft_stat, ff_stat]` (same column order
-# used by ForceGreatsFinder GPU kernels via `genome_base_stats`).
-GA_FG_CANDIDATES_PER_RUN = env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
-GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(GA_FG_CANDIDATES_PER_RUN)))
-GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
+# used by native FG solver GPU kernels via `genome_base_stats`).
+SKYLINE_FG_CANDIDATES_PER_RUN = env_int("GPU_SKYLINE_FG_CANDIDATES_PER_RUN", 64)
+SKYLINE_FG_CANDIDATES_PER_RUN = max(1, min(128, int(SKYLINE_FG_CANDIDATES_PER_RUN)))
+SKYLINE_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
 
 # GPU-side initial population generation (heuristic sampling)
-GA_INIT_HEURISTIC_K = env_int("GPU_GA_INIT_HEURISTIC_K", 64)
-GA_INIT_HEURISTIC_K = max(0, min(256, int(GA_INIT_HEURISTIC_K)))
+SKYLINE_INIT_HEURISTIC_K = env_int("GPU_SKYLINE_INIT_HEURISTIC_K", 64)
+SKYLINE_INIT_HEURISTIC_K = max(0, min(256, int(SKYLINE_INIT_HEURISTIC_K)))
 
 # ============================================================================
 # GPU FIELDS (Device-resident data)
@@ -149,84 +149,84 @@ bp_result_mask: ti.Field = None  # (16, 64) i32
 # Per-genome base stats: [pp, cm, fm, p, s, ft, ff]
 genome_base_stats: ti.Field = None
 
-# GPU-native GA fields
-# These fields support GPU-side GA operators. They are wired into the GA kernels
-# via bind_fields() and used by ga_operations.py API calls.
+# GPU-native skyline fields
+# These fields support GPU-side skyline operators. They are wired into the skyline kernels
+# via bind_fields() and used by skyline_operations.py API calls.
 population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (genome,slot)
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
 # Initial populations staged on GPU for multi-start runs (uploaded once per segment, then copied run-by-run).
-ga_initial_populations: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) item_id per (run,genome,slot)
-ga_init_heuristic_topk: ti.Field = None  # (MAX_SLOTS, GA_INIT_HEURISTIC_K) item_id per (slot,k)
+skyline_initial_populations: ti.Field = None  # (MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES, MAX_SLOTS) item_id per (run,genome,slot)
+skyline_init_heuristic_topk: ti.Field = None  # (MAX_SLOTS, SKYLINE_INIT_HEURISTIC_K) item_id per (slot,k)
 item_stats: ti.Field = None  # (MAX_ITEMS, ITEM_STAT_DIM) dense item stats table
 base_fixed_stats: ti.Field = None  # (ITEM_STAT_DIM,) fixed base stats (added to all genomes)
-ga_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluation)
-ga_rng_state: ti.Field = None  # (MAX_GENOMES,) uint32 RNG state per genome/thread
-ga_parent_a: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index A
-ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
-GA_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS  # encoded gear/minis genome IDs
-GA_EXACT_EVAL_HASH_SIZE = 16384  # Open-addressing table for exact duplicate-genome detection.
-ga_exact_eval_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy (0=empty, else rep_idx+1)
-ga_exact_eval_hash_keys: ti.Field = None  # (HASH_SIZE, KEY_COLS) i32 exact genome key (trailing cols reserved)
-ga_exact_eval_hash_sort_keys: ti.Field = None  # (MAX_GENOMES,) i32 hash keys for parallel sort grouping
-ga_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome indices permuted with sort keys
-ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
-ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
+skyline_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluation)
+skyline_rng_state: ti.Field = None  # (MAX_GENOMES,) uint32 RNG state per genome/thread
+skyline_parent_a: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index A
+skyline_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
+SKYLINE_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS  # encoded gear/minis genome IDs
+SKYLINE_EXACT_EVAL_HASH_SIZE = 16384  # Open-addressing table for exact duplicate-genome detection.
+skyline_exact_eval_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy (0=empty, else rep_idx+1)
+skyline_exact_eval_hash_keys: ti.Field = None  # (HASH_SIZE, KEY_COLS) i32 exact genome key (trailing cols reserved)
+skyline_exact_eval_hash_sort_keys: ti.Field = None  # (MAX_GENOMES,) i32 hash keys for parallel sort grouping
+skyline_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome indices permuted with sort keys
+skyline_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
+skyline_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
-ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
-ga_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best genome
-ga_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
-ga_global_best_scan_key: ti.Field = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
-ga_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
-# Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
-ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
-# Download staging buffer for `ga_run_payload_packed` (reduce padded Vulkan `to_numpy()` transfers).
-ga_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
-# Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
-DEFAULT_MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
-DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE.
-MAX_GA_RUNS = DEFAULT_MAX_GA_RUNS
-MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
-ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
-# Download staging buffers (smaller than `ga_runs_payload_packed` to reduce padded Vulkan `to_numpy()` transfers).
-GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Small staging buffer for compact run payload downloads.
-ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
-ga_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
-ga_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
+skyline_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
+skyline_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best genome
+skyline_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+skyline_global_best_scan_key: ti.Field = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
+skyline_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
+# Packed skyline download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
+skyline_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
+# Download staging buffer for `skyline_run_payload_packed` (reduce padded Vulkan `to_numpy()` transfers).
+skyline_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
+# Multi-start skyline snapshot buffer (stores packed payload per run to avoid per-run downloads).
+DEFAULT_MAX_SKYLINE_RUNS = 128  # Stores up to this many skyline runs before a flush/download.
+DEFAULT_MAX_SKYLINE_RUN_GENOMES = 1024  # Must be >= SKYLINE_POPULATION_SIZE.
+MAX_SKYLINE_RUNS = DEFAULT_MAX_SKYLINE_RUNS
+MAX_SKYLINE_RUN_GENOMES = DEFAULT_MAX_SKYLINE_RUN_GENOMES
+skyline_runs_payload_packed: ti.Field = None  # (MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES+1, 17) i32
+# Download staging buffers (smaller than `skyline_runs_payload_packed` to reduce padded Vulkan `to_numpy()` transfers).
+SKYLINE_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Small staging buffer for compact run payload downloads.
+skyline_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
+skyline_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
+skyline_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
 
-# Compact GA -> FG candidate table (GPU-resident), plus a single-slot download staging field.
-ga_fg_candidates_packed: ti.Field = (
-    None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
+# Compact skyline -> FG candidate table (GPU-resident), plus a single-slot download staging field.
+skyline_fg_candidates_packed: ti.Field = (
+    None  # (MAX_SONG_SLOTS, MAX_SKYLINE_RUNS, SKYLINE_FG_CANDIDATES_PER_RUN+1, SKYLINE_FG_CANDIDATE_COLS) i32
 )
-ga_fg_candidates_download_staging: ti.Field = (
-    None  # (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
+skyline_fg_candidates_download_staging: ti.Field = (
+    None  # (MAX_SKYLINE_RUNS, SKYLINE_FG_CANDIDATES_PER_RUN+1, SKYLINE_FG_CANDIDATE_COLS) i32
 )
 
-# GPU-side GA->FG candidate selection outputs (avoid downloading full candidate tables).
+# GPU-side skyline->FG candidate selection outputs (avoid downloading full candidate tables).
 # Selected payload row layout (int32), used for bounded CPU downloads:
 # - Header row 0: [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
 # - Rows 1..N:    [run_idx, row_idx, score, slot_ids(9), result_row(7), base_stats7(7)]
-GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed candidate row (24)
-GA_FG_SELECTED_MAX = 5000  # Must cover clamp in `read_fg_candidate_limit` (<=5000).
-GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
-GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
+SKYLINE_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed candidate row (24)
+SKYLINE_FG_SELECTED_MAX = 5000  # Must cover clamp in `read_fg_candidate_limit` (<=5000).
+SKYLINE_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
+SKYLINE_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
 
-ga_fg_select_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy
-ga_fg_select_hash_keys: ti.Field = None  # (HASH_SIZE, 9) i32
-ga_fg_select_stub_count: ti.Field = None  # (1,) i32
-ga_fg_select_stub_run: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_row: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_score: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_fg_proxy: ti.Field = None  # (STUBS_MAX,) i64
-ga_fg_select_stub_center_ft: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_center_ff: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_ids: ti.Field = None  # (STUBS_MAX, 9) i32
-ga_fg_select_selected_mask: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_selected_count: ti.Field = None  # (1,) i32
-ga_fg_selected_coords: ti.Field = None  # (GA_FG_SELECTED_MAX, 2) i32
-ga_fg_selected_payload_staging_256: ti.Field = None  # (257, GA_FG_SELECTED_PAYLOAD_COLS) i32
-ga_fg_selected_payload_staging_1024: ti.Field = None  # (1025, GA_FG_SELECTED_PAYLOAD_COLS) i32
-ga_fg_selected_payload_staging_5000: ti.Field = None  # (5001, GA_FG_SELECTED_PAYLOAD_COLS) i32
+skyline_fg_select_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy
+skyline_fg_select_hash_keys: ti.Field = None  # (HASH_SIZE, 9) i32
+skyline_fg_select_stub_count: ti.Field = None  # (1,) i32
+skyline_fg_select_stub_run: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_row: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_score: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_fg_proxy: ti.Field = None  # (STUBS_MAX,) i64
+skyline_fg_select_stub_center_ft: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_center_ff: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_ids: ti.Field = None  # (STUBS_MAX, 9) i32
+skyline_fg_select_selected_mask: ti.Field = None  # (STUBS_MAX,) i32
+skyline_fg_selected_count: ti.Field = None  # (1,) i32
+skyline_fg_selected_coords: ti.Field = None  # (SKYLINE_FG_SELECTED_MAX, 2) i32
+skyline_fg_selected_payload_staging_256: ti.Field = None  # (257, SKYLINE_FG_SELECTED_PAYLOAD_COLS) i32
+skyline_fg_selected_payload_staging_1024: ti.Field = None  # (1025, SKYLINE_FG_SELECTED_PAYLOAD_COLS) i32
+skyline_fg_selected_payload_staging_5000: ti.Field = None  # (5001, SKYLINE_FG_SELECTED_PAYLOAD_COLS) i32
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
@@ -282,7 +282,7 @@ def reset_fields_state() -> None:
     globals so `ensure_fields_allocated()` can safely re-allocate and re-bind.
     """
     global _fields_allocated, _grid_fields_allocated
-    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
+    global MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES
 
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global exact_pp_best_gems_prefix
@@ -297,32 +297,32 @@ def reset_fields_state() -> None:
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
-    global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
+    global population_indices, population_next_indices, skyline_initial_populations, skyline_init_heuristic_topk
     global item_stats, base_fixed_stats
-    global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
-    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
-    global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
-    global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global skyline_scores, skyline_rng_state, skyline_parent_a, skyline_parent_b
+    global skyline_exact_eval_hash_used, skyline_exact_eval_hash_keys
+    global skyline_exact_eval_hash_sort_keys, skyline_exact_eval_hash_sort_indices
+    global skyline_exact_eval_rep_idx, skyline_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
-    global ga_global_best_packed
-    global ga_runs_payload_packed
-    global ga_run_payload_packed
-    global ga_run_payload_download_staging_256
+    global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results, skyline_global_best_scan_key
+    global skyline_global_best_packed
+    global skyline_runs_payload_packed
+    global skyline_run_payload_packed
+    global skyline_run_payload_download_staging_256
     global \
-        ga_runs_payload_download_staging_16, \
-        ga_runs_payload_download_staging_64, \
-        ga_runs_payload_download_staging_128
-    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
-    global ga_fg_select_hash_used, ga_fg_select_hash_keys
-    global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
-    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
-    global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
-    global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
+        skyline_runs_payload_download_staging_16, \
+        skyline_runs_payload_download_staging_64, \
+        skyline_runs_payload_download_staging_128
+    global skyline_fg_candidates_packed, skyline_fg_candidates_download_staging
+    global skyline_fg_select_hash_used, skyline_fg_select_hash_keys
+    global skyline_fg_select_stub_count, skyline_fg_select_stub_run, skyline_fg_select_stub_row, skyline_fg_select_stub_score
+    global skyline_fg_select_stub_fg_proxy, skyline_fg_select_stub_center_ft, skyline_fg_select_stub_center_ff, skyline_fg_select_stub_ids
+    global skyline_fg_select_selected_mask, skyline_fg_selected_count, skyline_fg_selected_coords
+    global skyline_fg_selected_payload_staging_256, skyline_fg_selected_payload_staging_1024, skyline_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -370,56 +370,56 @@ def reset_fields_state() -> None:
     # Genome base
     genome_base_stats = None
 
-    # GA fields
+    # skyline fields
     population_indices = None
     population_next_indices = None
-    ga_initial_populations = None
+    skyline_initial_populations = None
     item_stats = None
     base_fixed_stats = None
-    ga_scores = None
-    ga_rng_state = None
-    ga_parent_a = None
-    ga_parent_b = None
-    ga_exact_eval_hash_used = None
-    ga_exact_eval_hash_keys = None
-    ga_exact_eval_hash_sort_keys = None
-    ga_exact_eval_hash_sort_indices = None
-    ga_exact_eval_rep_idx = None
-    ga_exact_eval_unique_count = None
+    skyline_scores = None
+    skyline_rng_state = None
+    skyline_parent_a = None
+    skyline_parent_b = None
+    skyline_exact_eval_hash_used = None
+    skyline_exact_eval_hash_keys = None
+    skyline_exact_eval_hash_sort_keys = None
+    skyline_exact_eval_hash_sort_indices = None
+    skyline_exact_eval_rep_idx = None
+    skyline_exact_eval_unique_count = None
     slot_start = None
     slot_count = None
     island_boundaries = None
     island_elite_indices = None
     island_elite_count = None
-    ga_global_best_score = None
-    ga_global_best_genome = None
-    ga_global_best_results = None
-    ga_global_best_scan_key = None
-    ga_global_best_packed = None
-    ga_runs_payload_packed = None
-    ga_run_payload_packed = None
-    ga_run_payload_download_staging_256 = None
-    ga_runs_payload_download_staging_16 = None
-    ga_runs_payload_download_staging_64 = None
-    ga_runs_payload_download_staging_128 = None
-    ga_fg_candidates_packed = None
-    ga_fg_candidates_download_staging = None
-    ga_fg_select_hash_used = None
-    ga_fg_select_hash_keys = None
-    ga_fg_select_stub_count = None
-    ga_fg_select_stub_run = None
-    ga_fg_select_stub_row = None
-    ga_fg_select_stub_score = None
-    ga_fg_select_stub_fg_proxy = None
-    ga_fg_select_stub_center_ft = None
-    ga_fg_select_stub_center_ff = None
-    ga_fg_select_stub_ids = None
-    ga_fg_select_selected_mask = None
-    ga_fg_selected_count = None
-    ga_fg_selected_coords = None
-    ga_fg_selected_payload_staging_256 = None
-    ga_fg_selected_payload_staging_1024 = None
-    ga_fg_selected_payload_staging_5000 = None
+    skyline_global_best_score = None
+    skyline_global_best_genome = None
+    skyline_global_best_results = None
+    skyline_global_best_scan_key = None
+    skyline_global_best_packed = None
+    skyline_runs_payload_packed = None
+    skyline_run_payload_packed = None
+    skyline_run_payload_download_staging_256 = None
+    skyline_runs_payload_download_staging_16 = None
+    skyline_runs_payload_download_staging_64 = None
+    skyline_runs_payload_download_staging_128 = None
+    skyline_fg_candidates_packed = None
+    skyline_fg_candidates_download_staging = None
+    skyline_fg_select_hash_used = None
+    skyline_fg_select_hash_keys = None
+    skyline_fg_select_stub_count = None
+    skyline_fg_select_stub_run = None
+    skyline_fg_select_stub_row = None
+    skyline_fg_select_stub_score = None
+    skyline_fg_select_stub_fg_proxy = None
+    skyline_fg_select_stub_center_ft = None
+    skyline_fg_select_stub_center_ff = None
+    skyline_fg_select_stub_ids = None
+    skyline_fg_select_selected_mask = None
+    skyline_fg_selected_count = None
+    skyline_fg_selected_coords = None
+    skyline_fg_selected_payload_staging_256 = None
+    skyline_fg_selected_payload_staging_1024 = None
+    skyline_fg_selected_payload_staging_5000 = None
     genome_result_stats = None
     genome_result_stats_download_staging_256 = None
     genome_result_stats_download_staging_1024 = None
@@ -430,10 +430,10 @@ def reset_fields_state() -> None:
     ftff_combo_ft = None
     ftff_combo_ff = None
 
-    # Restore configurable GA buffer shapes so future sessions/modules do not inherit
+    # Restore configurable skyline buffer shapes so future sessions/modules do not inherit
     # the previous caller's reduced multi-run sizing after a hard reset.
-    MAX_GA_RUNS = int(DEFAULT_MAX_GA_RUNS)
-    MAX_GA_RUN_GENOMES = int(DEFAULT_MAX_GA_RUN_GENOMES)
+    MAX_SKYLINE_RUNS = int(DEFAULT_MAX_SKYLINE_RUNS)
+    MAX_SKYLINE_RUN_GENOMES = int(DEFAULT_MAX_SKYLINE_RUN_GENOMES)
 
     _fields_allocated = False
     _grid_fields_allocated = False
@@ -445,7 +445,7 @@ def reset_fields_state() -> None:
 # ============================================================================
 
 
-def _clamp_ga_runs(n: int) -> int:
+def _clamp_skyline_runs(n: int) -> int:
     if n < 1:
         return 1
     # Prevent accidental huge allocations.
@@ -454,8 +454,8 @@ def _clamp_ga_runs(n: int) -> int:
     return n
 
 
-def _clamp_ga_genomes(n: int) -> int:
-    # Must be >= GA_POPULATION_SIZE for GPU-native GA.
+def _clamp_SKYLINE_genomes(n: int) -> int:
+    # Must be >= SKYLINE_POPULATION_SIZE for GPU-native GA.
     if n < 250:
         return 250
     if n > MAX_GENOMES:
@@ -463,40 +463,40 @@ def _clamp_ga_genomes(n: int) -> int:
     return n
 
 
-def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
+def configure_skyline_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
     """
-    Configure GPU-native GA buffer sizes before fields are allocated.
+    Configure GPU-native skyline buffer sizes before fields are allocated.
 
-    This reduces large padded CPUâ†”GPU transfers in GA multi-run mode by shrinking
-    `ga_initial_populations` and `ga_runs_payload_packed` to the smallest required
+    This reduces large padded CPUâ†”GPU transfers in skyline multi-run mode by shrinking
+    `skyline_initial_populations` and `skyline_runs_payload_packed` to the smallest required
     shapes for the current session.
 
     Callers MUST invoke this before the first `ensure_fields_allocated()`/kernel run.
     """
-    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
+    global MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES
 
     if _fields_allocated:
         return
 
     if max_runs is not None:
-        MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
+        MAX_SKYLINE_RUNS = _clamp_skyline_runs(int(max_runs))
     if max_genomes is not None:
-        MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
+        MAX_SKYLINE_RUN_GENOMES = _clamp_SKYLINE_genomes(int(max_genomes))
 
 
-def _maybe_configure_ga_run_buffers_from_env() -> None:
+def _maybe_configure_skyline_run_buffers_from_env() -> None:
     """
-    Best-effort GA buffer sizing before the first field allocation.
+    Best-effort skyline buffer sizing before the first field allocation.
 
     This is primarily to avoid large padded Vulkan `to_numpy()` transfers for
-    GPU-native GA multi-run payloads when Taichi fields are allocated early
-    (e.g., by the GPU executor) before the GA code can call `configure_ga_run_buffers()`.
+    GPU-native skyline multi-run payloads when Taichi fields are allocated early
+    (e.g., by the GPU executor) before the skyline code can call `configure_skyline_run_buffers()`.
     """
     if _fields_allocated:
         return
 
-    raw_runs = str(env_get("GPU_NATIVE_GA_MAX_RUNS", "") or "").strip()
-    raw_genomes = str(env_get("GPU_NATIVE_GA_MAX_GENOMES", "") or "").strip()
+    raw_runs = str(env_get("SKYLINE_GPU_MAX_RUNS", "") or "").strip()
+    raw_genomes = str(env_get("SKYLINE_GPU_MAX_GENOMES", "") or "").strip()
     if not raw_runs and not raw_genomes:
         return
 
@@ -506,18 +506,18 @@ def _maybe_configure_ga_run_buffers_from_env() -> None:
         try:
             max_runs = int(raw_runs)
         except Exception as e:
-            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
+            logger.debug(f"fields:_maybe_configure_skyline_run_buffers_from_env: {e}")
             max_runs = None
     if raw_genomes:
         try:
             max_genomes = int(raw_genomes)
         except Exception as e:
-            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
+            logger.debug(f"fields:_maybe_configure_skyline_run_buffers_from_env: {e}")
             max_genomes = None
 
     if max_runs is None and max_genomes is None:
         return
-    configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
+    configure_skyline_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
 
 
 def allocate_fields():
@@ -533,34 +533,34 @@ def allocate_fields():
     global \
         population_indices, \
         population_next_indices, \
-        ga_initial_populations, \
-        ga_init_heuristic_topk, \
+        skyline_initial_populations, \
+        skyline_init_heuristic_topk, \
         item_stats, \
         base_fixed_stats
-    global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
-    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
-    global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
-    global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global skyline_scores, skyline_rng_state, skyline_parent_a, skyline_parent_b
+    global skyline_exact_eval_hash_used, skyline_exact_eval_hash_keys
+    global skyline_exact_eval_hash_sort_keys, skyline_exact_eval_hash_sort_indices
+    global skyline_exact_eval_rep_idx, skyline_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
-    global ga_global_best_packed
-    global ga_runs_payload_packed
-    global ga_run_payload_packed
-    global ga_run_payload_download_staging_256
+    global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results, skyline_global_best_scan_key
+    global skyline_global_best_packed
+    global skyline_runs_payload_packed
+    global skyline_run_payload_packed
+    global skyline_run_payload_download_staging_256
     global \
-        ga_runs_payload_download_staging_16, \
-        ga_runs_payload_download_staging_64, \
-        ga_runs_payload_download_staging_128
-    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
-    global ga_fg_select_hash_used, ga_fg_select_hash_keys
-    global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
-    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
-    global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
-    global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
+        skyline_runs_payload_download_staging_16, \
+        skyline_runs_payload_download_staging_64, \
+        skyline_runs_payload_download_staging_128
+    global skyline_fg_candidates_packed, skyline_fg_candidates_download_staging
+    global skyline_fg_select_hash_used, skyline_fg_select_hash_keys
+    global skyline_fg_select_stub_count, skyline_fg_select_stub_run, skyline_fg_select_stub_row, skyline_fg_select_stub_score
+    global skyline_fg_select_stub_fg_proxy, skyline_fg_select_stub_center_ft, skyline_fg_select_stub_center_ff, skyline_fg_select_stub_ids
+    global skyline_fg_select_selected_mask, skyline_fg_selected_count, skyline_fg_selected_coords
+    global skyline_fg_selected_payload_staging_256, skyline_fg_selected_payload_staging_1024, skyline_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
     global _fields_allocated
 
@@ -584,29 +584,29 @@ def allocate_fields():
     # [pp, cm, fm, p_val, s_val, ft, ff]
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
 
-    # GPU-native GA / stat aggregation (Phase 3/4)
+    # GPU-native skyline / stat aggregation (Phase 3/4)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
     population_next_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
-    ga_initial_populations = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS))
-    if GA_INIT_HEURISTIC_K > 0:
-        ga_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, GA_INIT_HEURISTIC_K))
+    skyline_initial_populations = ti.field(dtype=ti.i32, shape=(MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES, MAX_SLOTS))
+    if SKYLINE_INIT_HEURISTIC_K > 0:
+        skyline_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, SKYLINE_INIT_HEURISTIC_K))
     else:
-        ga_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, 1))
+        skyline_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, 1))
     item_stats = ti.field(dtype=ti.i32, shape=(MAX_ITEMS, ITEM_STAT_DIM))
     base_fixed_stats = ti.field(dtype=ti.i32, shape=ITEM_STAT_DIM)
-    ga_scores = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_rng_state = ti.field(dtype=ti.u32, shape=MAX_GENOMES)
-    ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_exact_eval_hash_used = ti.field(dtype=ti.i32, shape=int(GA_EXACT_EVAL_HASH_SIZE))
-    ga_exact_eval_hash_keys = ti.field(
+    skyline_scores = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_rng_state = ti.field(dtype=ti.u32, shape=MAX_GENOMES)
+    skyline_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_exact_eval_hash_used = ti.field(dtype=ti.i32, shape=int(SKYLINE_EXACT_EVAL_HASH_SIZE))
+    skyline_exact_eval_hash_keys = ti.field(
         dtype=ti.i32,
-        shape=(int(GA_EXACT_EVAL_HASH_SIZE), int(GA_EXACT_EVAL_HASH_KEY_COLS)),
+        shape=(int(SKYLINE_EXACT_EVAL_HASH_SIZE), int(SKYLINE_EXACT_EVAL_HASH_KEY_COLS)),
     )
-    ga_exact_eval_hash_sort_keys = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_exact_eval_hash_sort_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    ga_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
+    skyline_exact_eval_hash_sort_keys = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_exact_eval_hash_sort_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    skyline_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
 
     # Slot pools for GPU mutation
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
@@ -632,68 +632,68 @@ def allocate_fields():
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
 
     # GPU-side global best tracking (avoids per-generation CPU downloads)
-    ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
-    ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
-    ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
-    ga_global_best_scan_key = ti.field(dtype=ti.u64, shape=1)
-    ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
+    skyline_global_best_score = ti.field(dtype=ti.i32, shape=1)
+    skyline_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
+    skyline_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
+    skyline_global_best_scan_key = ti.field(dtype=ti.u64, shape=1)
+    skyline_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
     _payload_cols = 1 + MAX_SLOTS + 7
-    ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, _payload_cols))
-    _run_staging_genomes = min(int(MAX_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
-    ga_run_payload_download_staging_256 = ti.field(dtype=ti.i32, shape=(_run_staging_genomes + 1, _payload_cols))
-    ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, _payload_cols))
-    # NOTE: these staging buffers are intentionally smaller than ga_runs_payload_packed so we can
-    # download only the populated slice for typical GA workloads.
-    _staging_genomes = min(int(MAX_GA_RUN_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
-    ga_runs_payload_download_staging_16 = ti.field(
+    skyline_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, _payload_cols))
+    _run_staging_genomes = min(int(MAX_GENOMES), int(SKYLINE_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
+    skyline_run_payload_download_staging_256 = ti.field(dtype=ti.i32, shape=(_run_staging_genomes + 1, _payload_cols))
+    skyline_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES + 1, _payload_cols))
+    # NOTE: these staging buffers are intentionally smaller than skyline_runs_payload_packed so we can
+    # download only the populated slice for typical skyline workloads.
+    _staging_genomes = min(int(MAX_SKYLINE_RUN_GENOMES), int(SKYLINE_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
+    skyline_runs_payload_download_staging_16 = ti.field(
         dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 16), _staging_genomes + 1, _payload_cols),
+        shape=(min(int(MAX_SKYLINE_RUNS), 16), _staging_genomes + 1, _payload_cols),
     )
-    ga_runs_payload_download_staging_64 = ti.field(
+    skyline_runs_payload_download_staging_64 = ti.field(
         dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 64), _staging_genomes + 1, _payload_cols),
+        shape=(min(int(MAX_SKYLINE_RUNS), 64), _staging_genomes + 1, _payload_cols),
     )
-    ga_runs_payload_download_staging_128 = ti.field(
+    skyline_runs_payload_download_staging_128 = ti.field(
         dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 128), _staging_genomes + 1, _payload_cols),
-    )
-
-    # Compact GA -> FG candidate table (one per song slot) + single-slot download staging.
-    ga_fg_candidates_packed = ti.field(
-        dtype=ti.i32,
-        shape=(MAX_SONG_SLOTS, MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
-    )
-    ga_fg_candidates_download_staging = ti.field(
-        dtype=ti.i32,
-        shape=(MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
+        shape=(min(int(MAX_SKYLINE_RUNS), 128), _staging_genomes + 1, _payload_cols),
     )
 
-    # GPU-side GA->FG candidate selection buffers (bounded CPU downloads).
-    ga_fg_select_hash_used = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_HASH_SIZE))
-    ga_fg_select_hash_keys = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_HASH_SIZE), 9))
-    ga_fg_select_stub_count = ti.field(dtype=ti.i32, shape=1)
-    ga_fg_select_stub_run = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_row = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_score = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_fg_proxy = ti.field(dtype=ti.i64, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_center_ft = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_center_ff = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_ids = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_STUBS_MAX), 9))
-    ga_fg_select_selected_mask = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_selected_count = ti.field(dtype=ti.i32, shape=1)
-    ga_fg_selected_coords = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_MAX), 2))
+    # Compact skyline -> FG candidate table (one per song slot) + single-slot download staging.
+    skyline_fg_candidates_packed = ti.field(
+        dtype=ti.i32,
+        shape=(MAX_SONG_SLOTS, MAX_SKYLINE_RUNS, int(SKYLINE_FG_CANDIDATES_PER_RUN) + 1, int(SKYLINE_FG_CANDIDATE_COLS)),
+    )
+    skyline_fg_candidates_download_staging = ti.field(
+        dtype=ti.i32,
+        shape=(MAX_SKYLINE_RUNS, int(SKYLINE_FG_CANDIDATES_PER_RUN) + 1, int(SKYLINE_FG_CANDIDATE_COLS)),
+    )
 
-    ga_fg_selected_payload_staging_256 = ti.field(
+    # GPU-side skyline->FG candidate selection buffers (bounded CPU downloads).
+    skyline_fg_select_hash_used = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_HASH_SIZE))
+    skyline_fg_select_hash_keys = ti.field(dtype=ti.i32, shape=(int(SKYLINE_FG_SELECTED_HASH_SIZE), 9))
+    skyline_fg_select_stub_count = ti.field(dtype=ti.i32, shape=1)
+    skyline_fg_select_stub_run = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_row = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_score = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_fg_proxy = ti.field(dtype=ti.i64, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_center_ft = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_center_ff = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_select_stub_ids = ti.field(dtype=ti.i32, shape=(int(SKYLINE_FG_SELECTED_STUBS_MAX), 9))
+    skyline_fg_select_selected_mask = ti.field(dtype=ti.i32, shape=int(SKYLINE_FG_SELECTED_STUBS_MAX))
+    skyline_fg_selected_count = ti.field(dtype=ti.i32, shape=1)
+    skyline_fg_selected_coords = ti.field(dtype=ti.i32, shape=(int(SKYLINE_FG_SELECTED_MAX), 2))
+
+    skyline_fg_selected_payload_staging_256 = ti.field(
         dtype=ti.i32,
-        shape=(257, int(GA_FG_SELECTED_PAYLOAD_COLS)),
+        shape=(257, int(SKYLINE_FG_SELECTED_PAYLOAD_COLS)),
     )
-    ga_fg_selected_payload_staging_1024 = ti.field(
+    skyline_fg_selected_payload_staging_1024 = ti.field(
         dtype=ti.i32,
-        shape=(1025, int(GA_FG_SELECTED_PAYLOAD_COLS)),
+        shape=(1025, int(SKYLINE_FG_SELECTED_PAYLOAD_COLS)),
     )
-    ga_fg_selected_payload_staging_5000 = ti.field(
+    skyline_fg_selected_payload_staging_5000 = ti.field(
         dtype=ti.i32,
-        shape=(int(GA_FG_SELECTED_MAX) + 1, int(GA_FG_SELECTED_PAYLOAD_COLS)),
+        shape=(int(SKYLINE_FG_SELECTED_MAX) + 1, int(SKYLINE_FG_SELECTED_PAYLOAD_COLS)),
     )
 
     # GPU-side island elitism (avoids per-generation score downloads)
@@ -738,7 +738,7 @@ def allocate_grid_fields():
     grid_Sigma_hn = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_Sigma_hf = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     if WRITE_UNPACKED_GRID_MASKS_DEFAULT:
-        # Unpacked masks are legacy/debug-only; keep them minimal to avoid VRAM blowups.
+        # Unpacked masks are historical/debug-only; keep them minimal to avoid VRAM blowups.
         # We only allocate slot 0 (shape[0]=1). Multi-slot code must use bitpacked masks.
         grid_fever_masks = ti.field(dtype=ti.i8, shape=(1, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     else:
@@ -795,7 +795,7 @@ def ensure_grid_unpacked_masks_allocated() -> None:
     if grid_fever_masks is not None:
         return
 
-    # Unpacked masks are legacy/debug-only; keep them minimal to avoid VRAM blowups.
+    # Unpacked masks are historical/debug-only; keep them minimal to avoid VRAM blowups.
     # We only allocate slot 0 (shape[0]=1). Multi-slot code must use bitpacked masks.
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(1, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     from . import kernels
@@ -876,23 +876,23 @@ def bind_fields(kernels_module):
     # Genome base stats
     target.genome_base_stats = genome_base_stats
 
-    # GPU-native GA / stat aggregation
+    # GPU-native skyline / stat aggregation
     target.population_indices = population_indices
     target.population_next_indices = population_next_indices
-    target.ga_initial_populations = ga_initial_populations
-    target.ga_init_heuristic_topk = ga_init_heuristic_topk
+    target.skyline_initial_populations = skyline_initial_populations
+    target.skyline_init_heuristic_topk = skyline_init_heuristic_topk
     target.item_stats = item_stats
     target.base_fixed_stats = base_fixed_stats
-    target.ga_scores = ga_scores
-    target.ga_rng_state = ga_rng_state
-    target.ga_parent_a = ga_parent_a
-    target.ga_parent_b = ga_parent_b
-    target.ga_exact_eval_hash_used = ga_exact_eval_hash_used
-    target.ga_exact_eval_hash_keys = ga_exact_eval_hash_keys
-    target.ga_exact_eval_hash_sort_keys = ga_exact_eval_hash_sort_keys
-    target.ga_exact_eval_hash_sort_indices = ga_exact_eval_hash_sort_indices
-    target.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
-    target.ga_exact_eval_unique_count = ga_exact_eval_unique_count
+    target.skyline_scores = skyline_scores
+    target.skyline_rng_state = skyline_rng_state
+    target.skyline_parent_a = skyline_parent_a
+    target.skyline_parent_b = skyline_parent_b
+    target.skyline_exact_eval_hash_used = skyline_exact_eval_hash_used
+    target.skyline_exact_eval_hash_keys = skyline_exact_eval_hash_keys
+    target.skyline_exact_eval_hash_sort_keys = skyline_exact_eval_hash_sort_keys
+    target.skyline_exact_eval_hash_sort_indices = skyline_exact_eval_hash_sort_indices
+    target.skyline_exact_eval_rep_idx = skyline_exact_eval_rep_idx
+    target.skyline_exact_eval_unique_count = skyline_exact_eval_unique_count
     target.slot_start = slot_start
     target.slot_count = slot_count
 
@@ -908,31 +908,31 @@ def bind_fields(kernels_module):
     target.chunk_best_results = chunk_best_results
 
     # GPU-side global best tracking
-    target.ga_global_best_score = ga_global_best_score
-    target.ga_global_best_genome = ga_global_best_genome
-    target.ga_global_best_results = ga_global_best_results
-    target.ga_global_best_scan_key = ga_global_best_scan_key
-    target.ga_global_best_packed = ga_global_best_packed
-    target.ga_runs_payload_packed = ga_runs_payload_packed
-    target.ga_run_payload_packed = ga_run_payload_packed
-    target.ga_fg_candidates_packed = ga_fg_candidates_packed
-    target.ga_fg_candidates_download_staging = ga_fg_candidates_download_staging
-    target.ga_fg_select_hash_used = ga_fg_select_hash_used
-    target.ga_fg_select_hash_keys = ga_fg_select_hash_keys
-    target.ga_fg_select_stub_count = ga_fg_select_stub_count
-    target.ga_fg_select_stub_run = ga_fg_select_stub_run
-    target.ga_fg_select_stub_row = ga_fg_select_stub_row
-    target.ga_fg_select_stub_score = ga_fg_select_stub_score
-    target.ga_fg_select_stub_fg_proxy = ga_fg_select_stub_fg_proxy
-    target.ga_fg_select_stub_center_ft = ga_fg_select_stub_center_ft
-    target.ga_fg_select_stub_center_ff = ga_fg_select_stub_center_ff
-    target.ga_fg_select_stub_ids = ga_fg_select_stub_ids
-    target.ga_fg_select_selected_mask = ga_fg_select_selected_mask
-    target.ga_fg_selected_count = ga_fg_selected_count
-    target.ga_fg_selected_coords = ga_fg_selected_coords
-    target.ga_fg_selected_payload_staging_256 = ga_fg_selected_payload_staging_256
-    target.ga_fg_selected_payload_staging_1024 = ga_fg_selected_payload_staging_1024
-    target.ga_fg_selected_payload_staging_5000 = ga_fg_selected_payload_staging_5000
+    target.skyline_global_best_score = skyline_global_best_score
+    target.skyline_global_best_genome = skyline_global_best_genome
+    target.skyline_global_best_results = skyline_global_best_results
+    target.skyline_global_best_scan_key = skyline_global_best_scan_key
+    target.skyline_global_best_packed = skyline_global_best_packed
+    target.skyline_runs_payload_packed = skyline_runs_payload_packed
+    target.skyline_run_payload_packed = skyline_run_payload_packed
+    target.skyline_fg_candidates_packed = skyline_fg_candidates_packed
+    target.skyline_fg_candidates_download_staging = skyline_fg_candidates_download_staging
+    target.skyline_fg_select_hash_used = skyline_fg_select_hash_used
+    target.skyline_fg_select_hash_keys = skyline_fg_select_hash_keys
+    target.skyline_fg_select_stub_count = skyline_fg_select_stub_count
+    target.skyline_fg_select_stub_run = skyline_fg_select_stub_run
+    target.skyline_fg_select_stub_row = skyline_fg_select_stub_row
+    target.skyline_fg_select_stub_score = skyline_fg_select_stub_score
+    target.skyline_fg_select_stub_fg_proxy = skyline_fg_select_stub_fg_proxy
+    target.skyline_fg_select_stub_center_ft = skyline_fg_select_stub_center_ft
+    target.skyline_fg_select_stub_center_ff = skyline_fg_select_stub_center_ff
+    target.skyline_fg_select_stub_ids = skyline_fg_select_stub_ids
+    target.skyline_fg_select_selected_mask = skyline_fg_select_selected_mask
+    target.skyline_fg_selected_count = skyline_fg_selected_count
+    target.skyline_fg_selected_coords = skyline_fg_selected_coords
+    target.skyline_fg_selected_payload_staging_256 = skyline_fg_selected_payload_staging_256
+    target.skyline_fg_selected_payload_staging_1024 = skyline_fg_selected_payload_staging_1024
+    target.skyline_fg_selected_payload_staging_5000 = skyline_fg_selected_payload_staging_5000
 
     # GPU-side island elitism
     target.island_boundaries = island_boundaries
@@ -962,7 +962,7 @@ def ensure_fields_allocated():
         init_taichi()
 
     if not _fields_allocated:
-        _maybe_configure_ga_run_buffers_from_env()
+        _maybe_configure_skyline_run_buffers_from_env()
         allocate_fields()
 
         # Some kernels/tests rely on `song_timestamps` without needing the full
@@ -986,14 +986,14 @@ def ensure_fields_allocated():
             # Bind shared non-grid fields needed by Metal kernels
             kernels_metal.genome_result_stats = genome_result_stats
             kernels_metal.genome_base_stats = genome_base_stats
-            kernels_metal.ga_scores = ga_scores
+            kernels_metal.skyline_scores = skyline_scores
             kernels_metal.population_indices = population_indices
-            kernels_metal.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
+            kernels_metal.skyline_exact_eval_rep_idx = skyline_exact_eval_rep_idx
             kernels_metal.ftff_combo_ft = ftff_combo_ft
             kernels_metal.ftff_combo_ff = ftff_combo_ff
-            kernels_metal.ga_global_best_score = ga_global_best_score
-            kernels_metal.ga_global_best_genome = ga_global_best_genome
-            kernels_metal.ga_global_best_results = ga_global_best_results
+            kernels_metal.skyline_global_best_score = skyline_global_best_score
+            kernels_metal.skyline_global_best_genome = skyline_global_best_genome
+            kernels_metal.skyline_global_best_results = skyline_global_best_results
 
 
 def ensure_grid_fields_allocated():
@@ -1037,3 +1037,4 @@ def ensure_grid_fields_allocated():
             from .kernel_loader import apply_metal_patches
 
             apply_metal_patches()
+

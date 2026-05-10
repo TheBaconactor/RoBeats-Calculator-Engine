@@ -4,7 +4,7 @@ Stats Scoring - Stats Evaluation Helpers.
 This module provides functions for evaluating fixed stats without gem optimization:
 - evaluate_stats_score: Calculate score for a fixed stats snapshot
 - build_great_penalty_table: Precompute ramp penalties for force greats
-- fg_baseline_params: Lightweight baseline computation for ForceGreatsFinder batching
+- fg_baseline_params: Lightweight baseline computation for native FG solver batching
 - Helper functions for song caching and config conversion
 """
 
@@ -32,7 +32,7 @@ _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
 _FG_BASELINE_CACHE_MAX = 8192
 _FG_BASELINE_GRID_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 _FG_BASELINE_GRID_CACHE_MAX = 64
-_FG_BASELINE_GRID_INFLIGHT: dict[tuple, threading.Event] = {}
+_FG_BASELINE_GRID_PENDING: dict[tuple, threading.Event] = {}
 _FG_BASELINE_POINT_MISS_COUNT: dict[tuple, int] = {}
 _FG_BASELINE_CACHE_LOCK = threading.Lock()
 
@@ -72,7 +72,7 @@ def _get_fg_baseline_grids(
     ref_arrays: dict,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build or fetch per-song baseline grids for fast ForceGreatsFinder batching.
+    Build or fetch per-song baseline grids for fast native FG solver batching.
 
     Returns:
         (fever_activations_grid, gap_grid, non_fever_base_by_ff)
@@ -83,10 +83,10 @@ def _get_fg_baseline_grids(
         cached = _FG_BASELINE_GRID_CACHE.get(song_key)
         if cached is not None:
             return cached
-        build_event = _FG_BASELINE_GRID_INFLIGHT.get(song_key)
+        build_event = _FG_BASELINE_GRID_PENDING.get(song_key)
         if build_event is None:
             build_event = threading.Event()
-            _FG_BASELINE_GRID_INFLIGHT[song_key] = build_event
+            _FG_BASELINE_GRID_PENDING[song_key] = build_event
             is_builder = True
     if not is_builder and build_event is not None:
         build_event.wait()
@@ -142,7 +142,7 @@ def _get_fg_baseline_grids(
             cached = _FG_BASELINE_GRID_CACHE[song_key]
     finally:
         with _FG_BASELINE_CACHE_LOCK:
-            event = _FG_BASELINE_GRID_INFLIGHT.pop(song_key, None)
+            event = _FG_BASELINE_GRID_PENDING.pop(song_key, None)
         if event is not None:
             event.set()
     return cached
@@ -270,7 +270,7 @@ def _fg_baseline_params_point(
 
 def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None = None):
     """
-    Lightweight baseline computation for ForceGreatsFinder batching.
+    Lightweight baseline computation for native FG solver batching.
 
     Returns:
         (num_non_fever_sections, non_fever_base)

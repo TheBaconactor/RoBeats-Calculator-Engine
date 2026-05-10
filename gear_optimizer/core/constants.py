@@ -33,30 +33,22 @@ FEVER_TIME_SCALE = 0.15
 # Fever Time constant offset added to scaled duration (seconds)
 FEVER_TIME_OFFSET = 0.15
 
-# --- GA (GENETIC ALGORITHM) CONSTANTS ---
+# --- skyline (Skyline candidate) CONSTANTS ---
 # These will be overwritten by config.ini if present
 #
 # EXPLORATION vs EXPLOITATION TUNING:
 # - Higher mutation_rate = more exploration (random changes)
 # - More multi_runs = more fresh starts (escape local optima)
 # - Elitism = exploitation (preserving best solutions)
-GA_POPULATION_SIZE = 705  # 1.5x of 470; keep moderate for diversity + speed
-GA_MUTATION_RATE = 0.35  # INCREASED: 0.275 → 0.35 (more exploration)
-GA_ELITISM = 1  # Keep 1 elite (exploitation anchor)
-GA_MULTI_RUNS_DEFAULT = 5  # INCREASED: 3 → 5 (more fresh starts)
-GA_MUTATION_RATE_MAX = 0.55  # INCREASED: 0.45 → 0.55 (allow more aggressive mutation on stagnation)
 
 # Local search constants
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
 CM_LOOKAHEAD_MAX = 10  # Max lookahead iterations for CM plateau-breaking in gem optimization
 
-# --- GPU GA ISLAND MODEL ---
+# --- GPU skyline ISLAND MODEL ---
 # Real-song benchmarks showed island migration amplifying exact-clone pressure
 # without improving score quality consistently, so keep the default on a single
 # island until migration is revisited.
-GPU_GA_NUM_ISLANDS = 1
-GPU_GA_GENS_PER_MIGRATION = 5  # Generations between elite migrations
-GPU_GA_MIGRATE_COUNT = 2  # Elites to migrate per island (ring topology)
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"

@@ -21,7 +21,7 @@ from ..core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_
 
 class AnalyticalFGScorer:
     """
-    Analytical Force Greats scorer - no simulation, pure math.
+    Analytical ForceGreats scorer - no simulation, pure math.
 
     This class can pre-compute all timeline data on CPU, which the GPU kernel
     then uses for gem optimization only (no more timeline simulation on GPU).

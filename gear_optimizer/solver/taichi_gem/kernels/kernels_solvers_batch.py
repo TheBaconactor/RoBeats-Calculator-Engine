@@ -20,15 +20,15 @@ from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 try:
-    GA_FTFF_BLOCK_DIM = int(env_get("GA_FTFF_BLOCK_DIM", "64") or "64")
+    SKYLINE_FTFF_BLOCK_DIM = int(env_get("SKYLINE_FTFF_BLOCK_DIM", "64") or "64")
 except Exception as e:
     logger.debug(f"kernels_solvers_batch: {e}")
-    GA_FTFF_BLOCK_DIM = 64
-GA_FTFF_BLOCK_DIM = max(32, min(int(GA_FTFF_BLOCK_DIM), 256))
-GA_FTFF_BLOCK_DIM = (GA_FTFF_BLOCK_DIM // 32) * 32
-if GA_FTFF_BLOCK_DIM <= 0:
-    GA_FTFF_BLOCK_DIM = 32
-GA_FTFF_BLOCK_WAVES = (GA_FTFF_BLOCK_DIM + 31) // 32
+    SKYLINE_FTFF_BLOCK_DIM = 64
+SKYLINE_FTFF_BLOCK_DIM = max(32, min(int(SKYLINE_FTFF_BLOCK_DIM), 256))
+SKYLINE_FTFF_BLOCK_DIM = (SKYLINE_FTFF_BLOCK_DIM // 32) * 32
+if SKYLINE_FTFF_BLOCK_DIM <= 0:
+    SKYLINE_FTFF_BLOCK_DIM = 32
+SKYLINE_FTFF_BLOCK_WAVES = (SKYLINE_FTFF_BLOCK_DIM + 31) // 32
 
 
 @ti.kernel
@@ -193,31 +193,31 @@ def solve_genomes_with_ftff_block_kernel(
     Threads stride across combo indices and reduce to a single packed winner per genome.
     Avoids atomics while keeping enough parallelism per genome to increase occupancy.
     """
-    ti.loop_config(block_dim=GA_FTFF_BLOCK_DIM)
+    ti.loop_config(block_dim=SKYLINE_FTFF_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
     # One entry per "wave slot" (see wave_slot computation below). We track the best packed key and
     # the winning lane's gem allocation payload, so lane 0 can write the full result without
     # recomputing `optimize_core_device()` for the winning combo.
-    shared_waves_key = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.u64)
-    shared_waves_combo = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
-    shared_waves_pp = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
-    shared_waves_cm = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
-    shared_waves_fm = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
-    shared_waves_ov = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_waves_key = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.u64)
+    shared_waves_combo = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_waves_pp = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_waves_cm = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_waves_fm = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_waves_ov = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
     shared_prefix_end = simt.block.SharedArray((1,), ti.i32)
     shared_max_ft = simt.block.SharedArray((1,), ti.i32)
     shared_max_ff = simt.block.SharedArray((1,), ti.i32)
-    total_threads = n_genomes * GA_FTFF_BLOCK_DIM
+    total_threads = n_genomes * SKYLINE_FTFF_BLOCK_DIM
 
     # Do not derive `lane` from the Python loop index; use real SPIR-V invocation IDs (Vulkan-safe).
-    block_dim = ti.cast(GA_FTFF_BLOCK_DIM, ti.i32)
+    block_dim = ti.cast(SKYLINE_FTFF_BLOCK_DIM, ti.i32)
     for tid in range(total_threads):
         genome_idx = tid // block_dim
         lane = ti.cast(simt.block.thread_idx(), ti.i32)
 
-        if lane < GA_FTFF_BLOCK_WAVES:
+        if lane < SKYLINE_FTFF_BLOCK_WAVES:
             shared_waves_key[lane] = ti.u64(0)
             shared_waves_combo[lane] = 0
             shared_waves_pp[lane] = 0
@@ -336,7 +336,7 @@ def solve_genomes_with_ftff_block_kernel(
                         local_best_fm = res_vec[3]
                         local_best_ov = res_vec[4]
 
-            combo_idx += GA_FTFF_BLOCK_DIM
+            combo_idx += SKYLINE_FTFF_BLOCK_DIM
 
         best = simt.subgroup.reduce_max(local_best_key)
         win_combo: ti.i32 = 0
@@ -368,7 +368,7 @@ def solve_genomes_with_ftff_block_kernel(
         if lane == 0:
             block_best = shared_waves_key[0]
             block_best_wave: ti.i32 = 0
-            for i in range(1, GA_FTFF_BLOCK_WAVES):
+            for i in range(1, SKYLINE_FTFF_BLOCK_WAVES):
                 v = shared_waves_key[i]
                 if v > block_best:
                     block_best = v

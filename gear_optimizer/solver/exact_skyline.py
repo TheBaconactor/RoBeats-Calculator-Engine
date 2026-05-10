@@ -1453,18 +1453,12 @@ def solve_exact_skyline(
     optimize_minis=True,
     fixed_gear=None,
     fixed_minis=None,
-    ga_depth=75,
-    db_seed=None,
-    ga_settings=None,
     status_cb=None,
-    executor=None,
-    known_loadouts=None,
     song_slot: int = 0,
-    ga_seed: int | None = None,
     gpu_client: Any | None = None,
     solver_ctx: SolverContext | None = None,
 ):
-    del paths, gears_by_name, minis_by_name, ga_depth, db_seed, ga_settings, executor, known_loadouts, ga_seed
+    del paths, gears_by_name, minis_by_name
 
     if status_cb is None:
 
@@ -1492,3 +1486,4 @@ def solve_exact_skyline(
     if solver_ctx is None:
         return None, [], [], None, [], [], []
     return _solve_exact_skyline_ctx(solver_ctx)
+

@@ -18,6 +18,7 @@ from ...core.constants import TOTAL_ROWS
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices
+from ..force_greats_common import compute_force_greats_timeline
 from ..scoring_core import lookup_reference_py
 from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict
 
@@ -157,8 +158,6 @@ def evaluate_force_greats_exact(
         return None
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
 
-    from .force_greats import _compute_force_greats_timeline
-
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
@@ -217,7 +216,7 @@ def evaluate_force_greats_exact(
         count_body_normal,
         non_fever_base,
         section_details,
-    ) = _compute_force_greats_timeline(
+    ) = compute_force_greats_timeline(
         timestamps,
         great_candidates,
         total_notes,

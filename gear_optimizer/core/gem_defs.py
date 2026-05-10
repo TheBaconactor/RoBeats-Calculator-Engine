@@ -90,34 +90,8 @@ class UserGemsSettings:
 
     @classmethod
     def from_config(cls, cfg: Any, selected_color: str = "") -> "UserGemsSettings":
-        if cfg is None:
-            return cls(selected_color=str(selected_color or ""))
-
-        section = "UserInputStatsGems"
-        selected = str(selected_color or "")
-
-        def _cfg_get(option: str, fallback: int = 0) -> int:
-            try:
-                return safe_int(cfg.get(section, option, fallback=fallback), fallback)
-            except Exception as e:
-                logger.debug(f"gem_defs:_cfg_get: {e}")
-                return int(fallback)
-
-        try:
-            static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
-        except Exception as e:
-            logger.debug(f"gem_defs:_cfg_get: {e}")
-            static_element = 0
-
-        return cls(
-            fever_time=_cfg_get("fever_time", 0),
-            fever_fill=_cfg_get("fever_fill", 0),
-            perfect_points=_cfg_get("perfect_points", 0),
-            combo_multiplier=_cfg_get("combo_multiplier", 0),
-            fever_multiplier=_cfg_get("fever_multiplier", 0),
-            static_element=int(static_element),
-            selected_color=selected,
-        )
+        del cfg
+        return cls(selected_color=str(selected_color or ""))
 
     def to_solver_cfg(self) -> dict[str, int | str]:
         return {

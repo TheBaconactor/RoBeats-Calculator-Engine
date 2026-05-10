@@ -2,7 +2,7 @@
 Shared helpers for constructing base fixed stats vectors used by GPU paths.
 
 These helpers centralize the "subtract user-fixed gems + static overflow gems"
-logic so the GA, batch evaluators, and utilities stay consistent.
+logic so the skyline, batch evaluators, and utilities stay consistent.
 """
 
 from __future__ import annotations

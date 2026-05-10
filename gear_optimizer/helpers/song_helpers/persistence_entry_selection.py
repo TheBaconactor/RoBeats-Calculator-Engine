@@ -6,9 +6,9 @@ from typing import Any
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
 from ...data.database import get_loadout_hash
-from .force_greats.entry_resolution import entry_base_score
+from .entry_scores import entry_base_score
 from .fg_config import has_valid_fg_config
-from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
+from .candidate_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .retention import select_retained_hashes
 
 AppendEntryFn = Callable[..., None]
@@ -63,16 +63,16 @@ def add_best_fg_entry(best_fg: dict | None, loadout_entries: dict | None, append
     )
 
 
-def add_ga_candidate_entries(
-    ga_candidates: list[dict] | None,
+def add_skyline_candidate_entries(
+    skyline_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
     append_entry: AppendEntryFn,
 ) -> None:
-    if not ga_candidates or loadout_entries is not None:
+    if not skyline_candidates or loadout_entries is not None:
         return
 
-    for eval_result in ga_candidates:
+    for eval_result in skyline_candidates:
         eval_data = eval_result.get("Data") or {}
         eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
         eval_gear, eval_minis = materialize_candidate_names(eval_result, mutate=True)
@@ -169,3 +169,4 @@ def _fg_score(entry: dict) -> int:
 def _fg_valid(entry: dict) -> bool:
     force_obj = entry.get("force")
     return force_obj is not None and has_valid_fg_config(force_obj)
+

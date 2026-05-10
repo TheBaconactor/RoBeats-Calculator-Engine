@@ -67,7 +67,7 @@ class PersistenceEntry(DbLoadoutPayload, total=False):
 
 
 class StageTiming(TypedDict, total=False):
-    """Per-song stage timing emitted by song_processor/native inflight pipelines."""
+    """Per-song stage timing emitted by song_processor/native queued pipelines."""
 
     song_wall_sec: float
     cpu_read_sec: float
@@ -76,7 +76,7 @@ class StageTiming(TypedDict, total=False):
     cpu_prep_sec: float
     cpu_human_hit_sim_sec: float
     gpu_timeline_precompute_sec: float
-    cpu_ga_wall_sec: float
+    skyline_wall_sec: float
     cpu_fg_wall_sec: float
     cpu_post_sec: float
 
@@ -94,7 +94,7 @@ class GpuTiming(TypedDict, total=False):
 
 class SongResultPayload(TypedDict, total=False):
     """
-    Result payload emitted by `process_song_task()` or by in-flight/post-processing pipelines.
+    Result payload emitted by `process_song_task()` or by queued/post-processing pipelines.
 
     This is consumed by `gear_optimizer/app.py` and/or `pipeline/post_processor.py`.
     """
@@ -106,7 +106,7 @@ class SongResultPayload(TypedDict, total=False):
     _queue_label: str
     _repeat_index: int
     _repeat_total: int
-    _ga_seed: Optional[int]
+    _solver_seed: Optional[int]
 
     # Inputs
     file_path: str
@@ -165,9 +165,3 @@ class SolveGenomesFromRegistryPayload(TypedDict, total=False):
     is_p_ov: bool
     is_s_ov: bool
 
-
-class SolveForceGreatsFinderPayload(TypedDict, total=False):
-    """Payload for `GpuRequestType.SOLVE_FORCE_GREATS_FINDER`."""
-
-    args: Tuple[Any, ...]
-    kwargs: JsonDict

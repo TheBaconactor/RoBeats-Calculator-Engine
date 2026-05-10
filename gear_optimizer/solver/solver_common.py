@@ -10,11 +10,12 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
-from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
+from gear_optimizer.solver.item_pools import initialize_item_pools
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
-from gear_optimizer.solver.scoring import _extract_base_stats, solve_best_fever_combination
+from gear_optimizer.solver.force_greats_common import extract_base_stats
+from gear_optimizer.solver.scoring import solve_best_fever_combination
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ def build_candidate_payload(
     stats = out.get("Stats")
     if isinstance(stats, dict) and stats:
         selected = str(out.get("Selected Element", "") or override_cfg.get("selected_color", "") or "")
-        base_stats = _extract_base_stats(
+        base_stats = extract_base_stats(
             stats,
             out.get("GemCounts") if isinstance(out.get("GemCounts"), dict) else {},
             selected,
@@ -383,7 +384,7 @@ def prepare_solver_context(
     cfg_data["selected_color"] = selected_color
     cfg_data["fg_candidate_limit"] = max(int(LOADOUTS_PER_SONG_LIMIT), int(FG_CANDIDATE_LIMIT))
 
-    pools = initialize_pools(all_gears, all_minis, p_color, list(GEAR_SLOTS), s_color=s_color)
+    pools = initialize_item_pools(all_gears, all_minis, p_color, list(GEAR_SLOTS), s_color=s_color)
     if pools is None:
         return None
     if len(pools) == 4:

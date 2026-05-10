@@ -13,7 +13,6 @@ from gear_optimizer.solver.windows_timer import (
 
 logger = logging.getLogger(__name__)
 WARMUP_SENTINEL_SCHEMA = 3
-GA_WARMUP_PROFILE = "v4_live_request_setup_refresh"
 
 
 def default_executor_heartbeat_path() -> Path:
@@ -25,7 +24,6 @@ def warmup_sentinel_is_fresh(
     *,
     sentinel_path: Path,
     warmup_fg: bool,
-    warmup_ga: bool,
 ) -> bool:
     try:
         payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
@@ -44,10 +42,6 @@ def warmup_sentinel_is_fresh(
     if not bool(payload.get("ok", False)):
         return False
     if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
-        return False
-    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
-        return False
-    if str(payload.get("ga_warmup_profile", "") or "") != GA_WARMUP_PROFILE:
         return False
     return True
 

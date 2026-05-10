@@ -3,10 +3,10 @@ Taichi Kernels Package - Public Kernel Entry Points.
 
 This package splits the monolithic kernels.py (1,757 lines) into 6 focused modules:
 1. kernels_helpers.py - Field placeholders & lookup functions
-2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
+2. kernels_skyline.py - 8 skyline kernels (selection, crossover, mutation, etc.)
 3. kernels_scoring.py - Score calculation & optimize_core_device
 4. kernels_solvers_batch.py - Batch solver kernels
-5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
+5. skyline_eval/ (kernels_skyline_eval.py) - skyline evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
 
 This module re-exports kernel entry points used by the Taichi gem solver runtime.
@@ -34,14 +34,14 @@ from .kernels_helpers import (
     population_next_indices,
     item_stats,
     base_fixed_stats,
-    ga_scores,
-    ga_rng_state,
-    ga_parent_a,
-    ga_parent_b,
-    ga_exact_eval_hash_used,
-    ga_exact_eval_hash_keys,
-    ga_exact_eval_rep_idx,
-    ga_exact_eval_unique_count,
+    skyline_scores,
+    skyline_rng_state,
+    skyline_parent_a,
+    skyline_parent_b,
+    skyline_exact_eval_hash_used,
+    skyline_exact_eval_hash_keys,
+    skyline_exact_eval_rep_idx,
+    skyline_exact_eval_unique_count,
     slot_start,
     slot_count,
     genome_result_stats,
@@ -70,34 +70,34 @@ from .kernels_helpers import (
     calc_score_with_grid_bits,
 )
 
-# Import GA kernels
-from .kernels_ga import (
-    ga_seed_rng_kernel,
-    ga_seed_rng_runs_kernel,
-    ga_load_initial_population_kernel,
-    ga_load_initial_populations_batch_kernel,
-    ga_generate_initial_populations_kernel,
-    ga_upload_item_stats_and_slots_kernel,
-    ga_copy_population_indices_from_ndarray_kernel,
-    ga_build_exact_eval_reuse_map_kernel,
-    ga_build_exact_eval_reuse_map_from_base_stats_kernel,
-    ga_propagate_exact_eval_reuse_base_stats_kernel,
-    ga_propagate_exact_eval_reuse_chunk_best_kernel,
-    ga_select_parents_tournament_kernel,
-    ga_crossover_mutate_kernel,
-    ga_swap_populations_kernel,
-    ga_copy_elites_kernel,
-    ga_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
-    ga_aggregate_genome_stats_kernel,
-    ga_copy_scores_kernel,
+# Import skyline kernels
+from .kernels_skyline import (
+    skyline_seed_rng_kernel,
+    skyline_seed_rng_runs_kernel,
+    skyline_load_initial_population_kernel,
+    skyline_load_initial_populations_batch_kernel,
+    skyline_generate_initial_populations_kernel,
+    skyline_upload_item_stats_and_slots_kernel,
+    skyline_copy_population_indices_from_ndarray_kernel,
+    SKYLINE_build_exact_eval_reuse_map_kernel,
+    SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel,
+    SKYLINE_propagate_exact_eval_reuse_base_stats_kernel,
+    SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel,
+    skyline_select_parents_tournament_kernel,
+    SKYLINE_crossover_mutate_kernel,
+    SKYLINE_swap_populations_kernel,
+    skyline_copy_elites_kernel,
+    skyline_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
+    skyline_aggregate_genome_stats_kernel,
+    skyline_copy_scores_kernel,
     # FUSED kernels
-    ga_aggregate_and_init_best_kernel,
-    ga_select_crossover_mutate_kernel,
-    ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
-    ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
-    ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
-    ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
-    ga_swap_population_kernel,  # FUSED: swap
+    skyline_aggregate_and_init_best_kernel,
+    skyline_select_crossover_mutate_kernel,
+    skyline_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
+    skyline_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
+    skyline_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
+    skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
+    SKYLINE_swap_population_kernel,  # FUSED: swap
 )
 
 # Import scoring functions and optimize_core_device
@@ -114,37 +114,37 @@ from .kernels_solvers_batch import (
     copy_genome_result_stats_to_download_staging_kernel,
 )
 
-# Import GA evaluation & reduction kernels
-from .ga_eval import (
-    ga_find_best_combo_key_kernel,
-    ga_refresh_scores_and_update_runs_best_kernel,
-    ga_write_best_results_from_key_kernel,
-    ga_write_best_results_and_update_runs_best_kernel,
+# Import skyline evaluation & reduction kernels
+from .skyline_eval import (
+    skyline_find_best_combo_key_kernel,
+    skyline_refresh_scores_and_update_runs_best_kernel,
+    skyline_write_best_results_from_key_kernel,
+    skyline_write_best_results_and_update_runs_best_kernel,
     # GPU-side global best tracking
-    ga_init_global_best_kernel,
-    ga_pack_global_best_kernel,
-    ga_update_global_best_kernel,
-    ga_pack_and_store_run_payload_kernel,
-    ga_pack_and_store_run_payload_segmented_kernel,
-    ga_pack_fg_candidates_table_segmented_kernel,
-    ga_pack_run_payload_kernel,
-    ga_copy_run_payload_to_download_staging_kernel,
-    ga_copy_runs_payload_to_download_staging_kernel,
-    ga_copy_fg_candidates_table_to_download_staging_kernel,
-    ga_select_fg_candidates_coords_kernel,
-    ga_copy_fg_selected_payload_to_download_staging_kernel,
-    ga_init_runs_best_kernel,
-    ga_update_runs_best_kernel,
-    ga_store_runs_payload_snapshot_segmented_kernel,
+    SKYLINE_INIT_global_best_kernel,
+    skyline_pack_global_best_kernel,
+    skyline_update_global_best_kernel,
+    skyline_pack_and_store_run_payload_kernel,
+    skyline_pack_and_store_run_payload_segmented_kernel,
+    skyline_pack_fg_candidates_table_segmented_kernel,
+    skyline_pack_run_payload_kernel,
+    skyline_copy_run_payload_to_download_staging_kernel,
+    skyline_copy_runs_payload_to_download_staging_kernel,
+    skyline_copy_fg_candidates_table_to_download_staging_kernel,
+    skyline_select_fg_candidates_coords_kernel,
+    skyline_copy_fg_selected_payload_to_download_staging_kernel,
+    SKYLINE_INIT_runs_best_kernel,
+    skyline_update_runs_best_kernel,
+    skyline_store_runs_payload_snapshot_segmented_kernel,
     # GPU-side island elitism
-    ga_find_island_elites_kernel,
+    skyline_find_island_elites_kernel,
     # GPU-side island migration
-    ga_island_migration_kernel,
-    ga_island_migration_runs_kernel,
-    # Exact GA evaluation
-    ga_find_best_combo_warmstart_kernel,
+    skyline_island_migration_kernel,
+    skyline_island_migration_runs_kernel,
+    # Exact skyline evaluation
+    skyline_find_best_combo_warmstart_kernel,
     # FUSED kernels
-    ga_write_best_and_update_global_kernel,
+    skyline_write_best_and_update_global_kernel,
 )
 
 # Import timeline kernel
@@ -177,14 +177,14 @@ __all__ = [
     "population_next_indices",
     "item_stats",
     "base_fixed_stats",
-    "ga_scores",
-    "ga_rng_state",
-    "ga_parent_a",
-    "ga_parent_b",
-    "ga_exact_eval_hash_used",
-    "ga_exact_eval_hash_keys",
-    "ga_exact_eval_rep_idx",
-    "ga_exact_eval_unique_count",
+    "skyline_scores",
+    "skyline_rng_state",
+    "skyline_parent_a",
+    "skyline_parent_b",
+    "skyline_exact_eval_hash_used",
+    "skyline_exact_eval_hash_keys",
+    "skyline_exact_eval_rep_idx",
+    "skyline_exact_eval_unique_count",
     "slot_start",
     "slot_count",
     "genome_result_stats",
@@ -199,34 +199,34 @@ __all__ = [
     "lookup_ref_ft",
     "lookup_ref_ff",
     "_xorshift32",
-    # GA kernels
-    "ga_seed_rng_kernel",
-    "ga_seed_rng_runs_kernel",
-    "ga_load_initial_population_kernel",
-    "ga_load_initial_populations_batch_kernel",
-    "ga_generate_initial_populations_kernel",
-    "ga_upload_item_stats_and_slots_kernel",
-    "ga_copy_population_indices_from_ndarray_kernel",
-    "ga_build_exact_eval_reuse_map_kernel",
-    "ga_build_exact_eval_reuse_map_from_base_stats_kernel",
-    "ga_propagate_exact_eval_reuse_base_stats_kernel",
-    "ga_propagate_exact_eval_reuse_chunk_best_kernel",
-    "ga_select_parents_tournament_kernel",
-    "ga_crossover_mutate_kernel",
-    "ga_swap_populations_kernel",
-    "ga_copy_elites_kernel",
-    "ga_copy_island_elites_kernel",
-    "ga_aggregate_genome_stats_kernel",
-    "ga_copy_scores_kernel",
-    # FUSED GA kernels
-    "ga_aggregate_and_init_best_kernel",
-    "ga_select_crossover_mutate_kernel",
-    "ga_next_generation_full_kernel",
-    "ga_next_generation_full_islands_kernel",
-    "ga_next_generation_full_runs_kernel",
-    "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
-    "ga_swap_population_kernel",
-    "ga_write_best_and_update_global_kernel",
+    # skyline kernels
+    "skyline_seed_rng_kernel",
+    "skyline_seed_rng_runs_kernel",
+    "skyline_load_initial_population_kernel",
+    "skyline_load_initial_populations_batch_kernel",
+    "skyline_generate_initial_populations_kernel",
+    "skyline_upload_item_stats_and_slots_kernel",
+    "skyline_copy_population_indices_from_ndarray_kernel",
+    "SKYLINE_build_exact_eval_reuse_map_kernel",
+    "SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel",
+    "SKYLINE_propagate_exact_eval_reuse_base_stats_kernel",
+    "SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel",
+    "skyline_select_parents_tournament_kernel",
+    "SKYLINE_crossover_mutate_kernel",
+    "SKYLINE_swap_populations_kernel",
+    "skyline_copy_elites_kernel",
+    "skyline_copy_island_elites_kernel",
+    "skyline_aggregate_genome_stats_kernel",
+    "skyline_copy_scores_kernel",
+    # FUSED skyline kernels
+    "skyline_aggregate_and_init_best_kernel",
+    "skyline_select_crossover_mutate_kernel",
+    "skyline_next_generation_full_kernel",
+    "skyline_next_generation_full_islands_kernel",
+    "skyline_next_generation_full_runs_kernel",
+    "skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
+    "SKYLINE_swap_population_kernel",
+    "skyline_write_best_and_update_global_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
@@ -240,34 +240,34 @@ __all__ = [
     "solve_genomes_with_ftff_kernel",
     "solve_genomes_with_ftff_block_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
-    # GA evaluation kernels
-    "ga_find_best_combo_key_kernel",
-    "ga_refresh_scores_and_update_runs_best_kernel",
-    "ga_write_best_results_from_key_kernel",
-    "ga_write_best_results_and_update_runs_best_kernel",
+    # skyline evaluation kernels
+    "skyline_find_best_combo_key_kernel",
+    "skyline_refresh_scores_and_update_runs_best_kernel",
+    "skyline_write_best_results_from_key_kernel",
+    "skyline_write_best_results_and_update_runs_best_kernel",
     # GPU-side global best tracking
-    "ga_init_global_best_kernel",
-    "ga_pack_global_best_kernel",
-    "ga_update_global_best_kernel",
-    "ga_pack_and_store_run_payload_kernel",
-    "ga_pack_and_store_run_payload_segmented_kernel",
-    "ga_pack_fg_candidates_table_segmented_kernel",
-    "ga_pack_run_payload_kernel",
-    "ga_copy_run_payload_to_download_staging_kernel",
-    "ga_copy_runs_payload_to_download_staging_kernel",
-    "ga_copy_fg_candidates_table_to_download_staging_kernel",
-    "ga_select_fg_candidates_coords_kernel",
-    "ga_copy_fg_selected_payload_to_download_staging_kernel",
-    "ga_init_runs_best_kernel",
-    "ga_update_runs_best_kernel",
-    "ga_store_runs_payload_snapshot_segmented_kernel",
+    "SKYLINE_INIT_global_best_kernel",
+    "skyline_pack_global_best_kernel",
+    "skyline_update_global_best_kernel",
+    "skyline_pack_and_store_run_payload_kernel",
+    "skyline_pack_and_store_run_payload_segmented_kernel",
+    "skyline_pack_fg_candidates_table_segmented_kernel",
+    "skyline_pack_run_payload_kernel",
+    "skyline_copy_run_payload_to_download_staging_kernel",
+    "skyline_copy_runs_payload_to_download_staging_kernel",
+    "skyline_copy_fg_candidates_table_to_download_staging_kernel",
+    "skyline_select_fg_candidates_coords_kernel",
+    "skyline_copy_fg_selected_payload_to_download_staging_kernel",
+    "SKYLINE_INIT_runs_best_kernel",
+    "skyline_update_runs_best_kernel",
+    "skyline_store_runs_payload_snapshot_segmented_kernel",
     # GPU-side island migration
-    "ga_island_migration_kernel",
-    "ga_island_migration_runs_kernel",
+    "skyline_island_migration_kernel",
+    "skyline_island_migration_runs_kernel",
     # GPU-side island elitism
-    "ga_find_island_elites_kernel",
-    # Exact GA evaluation
-    "ga_find_best_combo_warmstart_kernel",
+    "skyline_find_island_elites_kernel",
+    # Exact skyline evaluation
+    "skyline_find_best_combo_warmstart_kernel",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",

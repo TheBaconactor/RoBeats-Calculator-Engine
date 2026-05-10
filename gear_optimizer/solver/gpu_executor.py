@@ -53,7 +53,6 @@ from gear_optimizer.solver.gpu_executor_batching import (
     effective_owner_batch_max as _effective_owner_batch_max,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    GA_WARMUP_PROFILE as _GA_WARMUP_PROFILE,
     WARMUP_SENTINEL_SCHEMA as _WARMUP_SENTINEL_SCHEMA,
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
@@ -74,14 +73,13 @@ class GpuRequestType(Enum):
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
-    GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     FG_SELECT_SIGNATURE_FRONTIER_BATCH = "fg_select_signature_frontier_batch"
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS_BATCH = "fg_solve_with_breakpoints_batch"
-    GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS = "ga_fg_fused_solve_with_breakpoints"
+    SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS = "SKYLINE_FG_fused_solve_with_breakpoints"
     SHUTDOWN = "shutdown"
 
 
@@ -517,32 +515,24 @@ class GpuExecutor:
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_RESET_GLOBAL_BEST,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
             GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH,
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
         }
     )
-    # Downstream FG service work must not stay buried behind unrelated full-song GA turns.
-    _GA_RECOVERY_REQUEST_TYPES = frozenset(set(_FG_REQUEST_TYPES))
     _COALESCABLE_REQUEST_TYPES = frozenset(
         {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
     )
-    # Full-song GA requests unlock downstream decode/FG work for the same song. Letting the
-    # owner gather multiple GA requests together hides those completions behind unrelated songs
-    # and recreates the "GA then FG" stall pattern. Keep GA as a one-request owner turn; the
-    # per-request GA kernels still batch internally, so this does not force rebuilds or skinny
-    # GPU launches inside one song.
-    _NO_BATCH_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
+    _NO_BATCH_REQUEST_TYPES = frozenset()
     _NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _NO_BATCH_REQUEST_TYPES})
-    _GA_RECOVERY_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _GA_RECOVERY_REQUEST_TYPES})
 
     @classmethod
     def _is_no_batch_request_type(cls, request_type: Any) -> bool:
@@ -553,19 +543,6 @@ class GpuExecutor:
         except (AttributeError, TypeError):
             value = ""
         return value in cls._NO_BATCH_REQUEST_TYPE_VALUES
-
-    @classmethod
-    def _is_ga_recovery_request_type(cls, request_type: Any) -> bool:
-        if request_type in cls._GA_RECOVERY_REQUEST_TYPES:
-            return True
-        try:
-            value = str(getattr(request_type, "value", request_type))
-        except (AttributeError, TypeError):
-            value = ""
-        return value in cls._GA_RECOVERY_REQUEST_TYPE_VALUES
-
-    def _is_ga_recovery_request(self, request: "GpuRequest") -> bool:
-        return self._is_ga_recovery_request_type(getattr(request, "request_type", None))
 
     def __new__(cls):
         """Singleton pattern."""
@@ -607,7 +584,6 @@ class GpuExecutor:
         # downstream FG recovery work can surface without losing queue ordering guarantees
         # for requests that have already been dequeued from the shared queue.
         self._staged_requests: deque[GpuRequest] = deque()
-        self._ga_owner_turn_streak = 0
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
         self._last_ref_arrays_sig: bytes | None = None
@@ -725,14 +701,13 @@ class GpuExecutor:
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
-            GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST: self._execute_fg_download_global_best,
             GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH: self._execute_fg_select_signature_frontier_batch,
             GpuRequestType.FG_COMPUTE_BREAKPOINTS: self._execute_fg_compute_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS: self._execute_fg_solve_with_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: self._execute_fg_solve_with_breakpoints_batch,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._execute_ga_fg_fused_solve_with_breakpoints,
+            GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._execute_SKYLINE_FG_fused_solve_with_breakpoints,
         }
 
     def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
@@ -924,14 +899,6 @@ class GpuExecutor:
             n = self._size_hint(payload.get("population_indices"))
             return float(max(1, n))
 
-        if req_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-            n_genomes = int(payload.get("n_genomes", 0) or 0)
-            if n_genomes <= 0:
-                n_genomes = self._size_hint(payload.get("initial_populations"))
-            n_generations = max(1, int(payload.get("n_generations", 1) or 1))
-            runs = max(1, int(payload.get("num_runs", 1) or 1))
-            return float(max(1, n_genomes) * n_generations * runs)
-
         if req_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
             kwargs = payload.get("kwargs")
             if not isinstance(kwargs, dict):
@@ -966,7 +933,7 @@ class GpuExecutor:
                     pair_total += 1
             return float(max(1, pair_total))
 
-        if req_type in (GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS):
+        if req_type in (GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS):
             return float(max(1, self._size_hint(payload.get("ftff_pairs"))))
 
         if req_type in (GpuRequestType.LOAD_REF_ARRAYS, GpuRequestType.PRECOMPUTE_TIMELINE):
@@ -1294,7 +1261,6 @@ class GpuExecutor:
         self._taichi_ready = False
         self._last_init_error = None
         self._staged_requests.clear()
-        self._ga_owner_turn_streak = 0
         self._ready_event.clear()
         self.clear_abort()
         self._last_ref_arrays_sig = None
@@ -1604,7 +1570,7 @@ class GpuExecutor:
                 logger.debug(f"gpu_executor:_p95: {e}")
 
         # Surface transfer/throughput counters from the in-process GPU profiler.
-        # (Especially useful in in-flight mode where Windows GPU Engine counters
+        # (Especially useful in queued mode where Windows GPU Engine counters
         # can be noisy and queue/executor timings include host-side work.)
         if ENV.gpu_profiler:
             try:
@@ -1799,163 +1765,16 @@ class GpuExecutor:
             self._write_heartbeat(phase="init_failed", note=self._last_init_error, force=True)
             logger.debug("[GpuExecutor] Taichi init failed: %s", e)
             return
-        # Taichi init completed (warmup may still be running below).
+        # Taichi init completed.
         self._write_heartbeat(phase="init_ok", force=True)
-        # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
-        # incurring multi-second Taichi JIT latency (which shows up as a GA->FG GPU idle gap).
-        warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
-        warmup_ga = bool(getattr(ENV, "gpu_executor_warmup_ga", False))
-        if warmup_fg or warmup_ga:
-            # Cross-process warmup coordination:
-            # - On cold caches, Taichi warmups can take ~minute-scale wall time on Windows/Vulkan.
-            # - In dual-process mode, workers can race compiling the same kernels into the shared
-            #   offline-cache directory, increasing wall time and sometimes failing.
-            # - Serialize the cold-cache warmup once per offline-cache dir using a file lock +
-            #   a sentinel file. Other workers skip the expensive warmup work.
+        if bool(getattr(ENV, "gpu_executor_warmup_fg", False)):
             try:
-                from .taichi_gem import runtime as ti_runtime
+                self._write_heartbeat(phase="warmup_fg", force=True)
+                from .taichi_gem.force_greats import fields as fg_fields
 
-                lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
+                fg_fields.ensure_ready_with_warmup()
             except Exception as e:
                 logger.debug(f"gpu_executor:_executor_loop: {e}")
-                lock_cm = nullcontext("")
-
-            self._write_heartbeat(phase="warmup_wait", force=True)
-            try:
-                with lock_cm as cache_dir:
-                    cache_dir = str(cache_dir or "").strip()
-                    sentinel_path = Path(cache_dir) / "metafinder_warmup_done.json" if cache_dir else None
-                    warmup_cached = bool(
-                        sentinel_path is not None
-                        and sentinel_path.exists()
-                        and _warmup_sentinel_is_fresh(
-                            sentinel_path=sentinel_path,
-                            warmup_fg=bool(warmup_fg),
-                            warmup_ga=bool(warmup_ga),
-                        )
-                    )
-                    if warmup_cached:
-                        self._write_heartbeat(phase="warmup_cached", force=True)
-                        try:
-                            if warmup_fg:
-                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
-                                from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                                    warmup_force_greats_finder_runtime_imports,
-                                )
-
-                                fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_finder_runtime_imports()
-                            if warmup_ga:
-                                self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
-                                from .taichi_gem.api import ga_operations as ga_ops
-
-                                ga_ops.warmup_ga_live_request_kernels()
-                        except Exception as e:
-                            try:
-                                logger.debug("[GpuExecutor] Cached warmup refresh failed: %s: %s", type(e).__name__, e)
-                            except Exception as e:
-                                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                    else:
-                        sentinel_error = ""
-                        try:
-                            # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
-                            # paying compilation latency (which shows up as a GA->FG GPU idle gap).
-                            if warmup_fg:
-                                try:
-                                    self._write_heartbeat(phase="warmup_fg", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                                    warmup_force_greats_finder_runtime_imports,
-                                )
-
-                                fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_finder_runtime_imports()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
-
-                            # Warm up GPU-native GA kernels up-front to avoid the first GA request paying
-                            # multi-second compilation latency. This also helps stabilize external GPU
-                            # utilization graphs that otherwise show an early low-util \"hiccup\".
-                            if warmup_ga:
-                                try:
-                                    self._write_heartbeat(phase="warmup_ga", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                from .taichi_gem.api import ga_operations as ga_ops
-
-                                ga_ops.warmup_ga_kernels()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
-                        except Exception as e:
-                            sentinel_error = f"{type(e).__name__}: {e}"
-                            try:
-                                logger.debug("[GpuExecutor] Warmup failed: %s", sentinel_error)
-                            except Exception as e:
-                                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                        finally:
-                            if sentinel_path is not None:
-                                try:
-                                    payload = {
-                                        "schema": int(_WARMUP_SENTINEL_SCHEMA),
-                                        "ok": not bool(sentinel_error),
-                                        "error": str(sentinel_error or ""),
-                                        "pid": int(os.getpid()),
-                                        "warmed_at": int(time.time() * 1000.0),
-                                        "warmup_fg": bool(warmup_fg),
-                                        "warmup_ga": bool(warmup_ga),
-                                        "ga_warmup_profile": str(_GA_WARMUP_PROFILE),
-                                    }
-                                    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-                                    tmp_path = sentinel_path.with_suffix(".tmp")
-                                    tmp_path.write_text(
-                                        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-                                        encoding="utf-8",
-                                    )
-                                    os.replace(tmp_path, sentinel_path)
-                                except (OSError, ValueError, TypeError):
-                                    pass
-            except Exception as e:
-                # If anything about cross-process coordination fails, fall back to best-effort warmup.
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                try:
-                    if warmup_fg:
-                        from .taichi_gem.force_greats import fields as fg_fields
-                        from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                            warmup_force_greats_finder_runtime_imports,
-                        )
-
-                        fg_fields.ensure_ready_with_warmup()
-                        warmup_force_greats_finder_runtime_imports()
-                    if warmup_ga:
-                        from .taichi_gem.api import ga_operations as ga_ops
-
-                        ga_ops.warmup_ga_kernels()
-                except Exception as e:
-                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-
-        # When GA phase timing is enabled, callers usually care about stable per-phase measurements.
-        # Even with offline caches, the first-hit JIT/load cost for template-specialized kernels can
-        # show up as a single massive outlier in `evaluate.max_ms`. Keep a lightweight per-process
-        # warmup enabled in that mode so the first real GA request doesn't pay that spike.
-        try:
-            warmup_ga_light = bool(warmup_ga) and bool(env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0"))
-        except (ValueError, TypeError):
-            warmup_ga_light = False
-        if warmup_ga_light:
-            try:
-                from .taichi_gem.api import ga_operations as ga_ops
-
-                ga_ops.warmup_ga_kernels_light()
-            except Exception as e:
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-
         self._taichi_ready = True
         self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)
@@ -2019,7 +1838,7 @@ class GpuExecutor:
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
         env_refresh_counter = 0
         cached_batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
@@ -2216,12 +2035,11 @@ class GpuExecutor:
                 self._write_heartbeat(phase="running", batch=batch)
 
                 grouped_handlers = {
-                    GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
                     GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._coalesce_fg_task_requests,
                     GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: (
                         self._coalesce_fg_solve_with_breakpoints_batch_requests
                     ),
-                    GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_ga_fg_fused_requests,
+                    GpuRequestType.SKYLINE_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_SKYLINE_FG_fused_requests,
                     GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._coalesce_solve_genomes_from_registry,
                 }
 
@@ -2272,11 +2090,6 @@ class GpuExecutor:
                         self._live_exec_sec += float(dt_exec)
                         self._live_type_counts[request_type] += len(requests)
                         self._maybe_live_report()
-                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                        self._ga_owner_turn_streak = min(1024, int(self._ga_owner_turn_streak) + 1)
-                    else:
-                        self._ga_owner_turn_streak = 0
-
                 # Preserve batch order while still coalescing adjacent grouped-family requests.
                 execution_units: list[list[Any]] = []
                 for req in batch:
@@ -2336,7 +2149,6 @@ class GpuExecutor:
                         self._live_exec_sec += float(dt_exec)
                         self._live_type_counts[req.request_type] += 1
                         self._maybe_live_report()
-                    self._ga_owner_turn_streak = 0
 
                 work_end_ts = perf_counter()
                 self._last_work_end_ts = float(work_end_ts)
@@ -2454,83 +2266,10 @@ class GpuExecutor:
         finally:
             self._staged_requests.rotate(rotate_by)
 
-    def _ga_recovery_streak_cap(self) -> int:
-        try:
-            raw = int(str(_ENV_GET("GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX", "1") or "1").strip())
-        except (ValueError, TypeError):
-            raw = 1
-        return max(1, min(int(raw), 128))
-
-    def _ga_recovery_lookahead_limit(self, *, batch_max_size: int) -> int:
-        default_limit = max(8, min(max(1, int(batch_max_size)) * 4, 64))
-        try:
-            raw = int(
-                str(
-                    _ENV_GET(
-                        "GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS",
-                        str(default_limit),
-                    )
-                    or str(default_limit)
-                ).strip()
-            )
-        except (ValueError, TypeError):
-            raw = default_limit
-        return max(1, min(int(raw), 256))
-
-    def _pop_queue_request(self, timeout: float) -> "GpuRequest":
-        request = self._queue_get(timeout)
-        return self._stamp_request_dequeue(request)
-
-    def _prefetch_ga_recovery_requests(self, *, deadline: float, batch_max_size: int) -> None:
-        if not self._in_process_queues:
-            return
-        if int(self._ga_owner_turn_streak) < int(self._ga_recovery_streak_cap()):
-            return
-        if not self._staged_requests:
-            return
-        try:
-            first_request = self._staged_requests[0]
-        except (IndexError, AttributeError):
-            return
-        if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-            return
-        if any(self._is_ga_recovery_request(req) for req in list(self._staged_requests)[1:]):
-            return
-
-        lookahead_limit = self._ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))
-        while len(self._staged_requests) < int(lookahead_limit):
-            remaining = float(deadline - perf_counter())
-            if remaining <= 0.0:
-                break
-            try:
-                request = self._pop_queue_request(remaining)
-            except queue.Empty:
-                break
-            self._staged_requests.append(request)
-            if request.request_type == GpuRequestType.SHUTDOWN:
-                break
-            if self._is_ga_recovery_request(request):
-                break
-
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
+        del deadline, batch_max_size
         if not self._staged_requests:
             self._stage_request(self._pop_queue_request(timeout))
-
-        self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
-
-        if (
-            self._in_process_queues
-            and int(self._ga_owner_turn_streak) >= int(self._ga_recovery_streak_cap())
-            and self._staged_requests
-            and self._staged_requests[0].request_type == GpuRequestType.GPU_NATIVE_GA_RUN
-        ):
-            for idx, staged in enumerate(self._staged_requests):
-                if idx == 0:
-                    continue
-                if staged.request_type == GpuRequestType.SHUTDOWN:
-                    return self._pop_staged_request(idx)
-                if self._is_ga_recovery_request(staged):
-                    return self._pop_staged_request(idx)
 
         return self._pop_staged_request(0)
 
@@ -2560,7 +2299,7 @@ class GpuExecutor:
         recent_idle_grace_s = 0.0
         inproc_yields_left = 0
         if self._in_process_queues:
-            # In-process queues can be extremely latency sensitive when there is already work in-flight, but when
+            # In-process queues can be extremely latency sensitive when there is already work queued, but when
             # completely idle we should avoid a tight (ms-scale) poll loop that burns CPU on Windows.
             try:
                 raw_idle_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
@@ -2783,10 +2522,8 @@ class GpuExecutor:
         except (ValueError, TypeError):
             task_budget = None
         if task_budget is None:
-            inflight_v3 = env_flag("INFLIGHT_V3")
-            inflight_v4 = env_flag("INFLIGHT_V4")
             # Safety default: chunk FG task uploads in in-process mode to avoid multi-second continuous GPU work.
-            task_budget = 256 if (inflight_v3 or inflight_v4 or self._in_process_queues) else 0
+            task_budget = 256 if self._in_process_queues else 0
         task_budget = max(0, int(task_budget))
 
         def _extract_task_only(
@@ -2987,7 +2724,7 @@ class GpuExecutor:
         per-request slices.
 
         This reduces request queue overhead and prevents small FG jobs from creating GPU bubbles when many
-        FG jobs are produced concurrently (in-flight drain mode).
+        FG jobs are produced concurrently (queued drain mode).
         """
         if not requests:
             return []
@@ -3206,9 +2943,9 @@ class GpuExecutor:
         by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]
 
-    def _coalesce_ga_fg_fused_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+    def _coalesce_SKYLINE_FG_fused_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
-        Coalesce GA->FG fused requests by routing through the FG breakpoint batch handler.
+        Coalesce skyline->FG fused requests by routing through the FG breakpoint batch handler.
 
         Each request payload matches `FG_SOLVE_WITH_BREAKPOINTS` input. We pack request payloads
         into one synthetic `FG_SOLVE_WITH_BREAKPOINTS_BATCH` call and then split outputs.
@@ -3268,7 +3005,7 @@ class GpuExecutor:
             for req in requests:
                 if int(req.request_id) in fallback_ids:
                     warn_fallback(
-                        "gpu_executor.ga_fg_fused_coalesce.request",
+                        "gpu_executor.SKYLINE_FG_fused_coalesce.request",
                         "coalesced fused request fallback to per-request execution",
                         context={
                             "request_id": int(req.request_id),
@@ -3291,8 +3028,8 @@ class GpuExecutor:
         import numpy as np
 
         from .taichi_gem.api import (
-            ga_upload_base_fixed_stats,
-            ga_upload_item_stats,
+            skyline_upload_base_fixed_stats,
+            skyline_upload_item_stats,
             load_ref_arrays,
             solve_genomes_from_registry,
         )
@@ -3505,9 +3242,9 @@ class GpuExecutor:
                 self._last_ref_arrays_sig = sig
 
             if "item_stats" in p0 and "slot_start" in p0 and "slot_count" in p0:
-                ga_upload_item_stats(p0["item_stats"], p0["slot_start"], p0["slot_count"])
+                skyline_upload_item_stats(p0["item_stats"], p0["slot_start"], p0["slot_count"])
             if "base_fixed_stats" in p0:
-                ga_upload_base_fixed_stats(p0["base_fixed_stats"])
+                skyline_upload_base_fixed_stats(p0["base_fixed_stats"])
 
             i = 0
             while i < len(group):
@@ -3620,8 +3357,8 @@ class GpuExecutor:
     def _execute_solve_genomes_from_registry(self, request: GpuRequest, song_slot: int = 0) -> GpuResponse:
         """Execute solve_genomes_from_registry on GPU (GPU-resident stat aggregation path)."""
         from .taichi_gem.api import (
-            ga_upload_base_fixed_stats,
-            ga_upload_item_stats,
+            skyline_upload_base_fixed_stats,
+            skyline_upload_item_stats,
             load_ref_arrays,
             solve_genomes_from_registry,
         )
@@ -3642,10 +3379,10 @@ class GpuExecutor:
                 self._last_ref_arrays_sig = sig
 
         if "item_stats" in payload and "slot_start" in payload and "slot_count" in payload:
-            ga_upload_item_stats(payload["item_stats"], payload["slot_start"], payload["slot_count"])
+            skyline_upload_item_stats(payload["item_stats"], payload["slot_start"], payload["slot_count"])
 
         if "base_fixed_stats" in payload:
-            ga_upload_base_fixed_stats(payload["base_fixed_stats"])
+            skyline_upload_base_fixed_stats(payload["base_fixed_stats"])
 
         song_slot = int(payload.get("song_slot", song_slot) or 0)
         if (
@@ -3716,14 +3453,14 @@ class GpuExecutor:
         # ------------------------------------------------------------------
         ensure_timeline_precompute = bool(kwargs.pop("ensure_timeline_precompute", False))
         calc_song = kwargs.pop("calc_song", None)
-        if kwargs.pop("ga_stage_coords", None) is not None:
+        if kwargs.pop("SKYLINE_stage_coords", None) is not None:
             return GpuResponse(
                 request_id=request.request_id,
                 success=False,
-                error="SOLVE_FORCE_GREATS_FINDER GA->FG resident genome-stat staging has been removed",
+                error="SOLVE_FORCE_GREATS_FINDER skyline->FG resident genome-stat staging has been removed",
             )
-        kwargs.pop("ga_stage_table_slot", None)
-        kwargs.pop("ga_stage_n_slots", None)
+        kwargs.pop("SKYLINE_stage_table_slot", None)
+        kwargs.pop("SKYLINE_stage_n_slots", None)
 
         # Optional: precompute the timeline grid as part of this same request so callers
         # don't need a separate PRECOMPUTE_TIMELINE request that can interleave across songs.
@@ -3903,178 +3640,6 @@ class GpuExecutor:
             result=None,
         )
 
-    def _execute_gpu_native_ga_run_batch(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        """
-        Execute multiple GPU_NATIVE_GA_RUN requests on the owner thread.
-
-        This keeps request dispatch in one executor pass and reduces per-request routing overhead.
-        """
-        if not requests:
-            return []
-        if len(requests) == 1:
-            return [self._execute_gpu_native_ga_run(requests[0])]
-
-        try:
-            max_reqs = int(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
-        except (ValueError, TypeError):
-            max_reqs = 1
-        max_reqs = max(1, min(int(max_reqs), 128))
-
-        try:
-            max_work_units = float(env_get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
-        except (ValueError, TypeError):
-            max_work_units = 720000.0
-        if max_work_units <= 0.0:
-            max_work_units = float("inf")
-
-        out: list[GpuResponse] = []
-        chunk: list[GpuRequest] = []
-        chunk_units = 0.0
-
-        for idx, req in enumerate(requests):
-            if self.abort_requested():
-                out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
-                return out
-            req_units = max(1.0, float(self._estimate_request_work_units(req)))
-            if chunk and (len(chunk) >= int(max_reqs) or (chunk_units + req_units) > float(max_work_units)):
-                out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
-                if self.abort_requested():
-                    out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
-                    return out
-                chunk = []
-                chunk_units = 0.0
-            chunk.append(req)
-            chunk_units += req_units
-
-        if chunk:
-            out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
-
-        return out
-
-    def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        if not requests:
-            return []
-        out: list[GpuResponse] = []
-        for idx, req in enumerate(requests):
-            if self.abort_requested():
-                out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
-                break
-            out.append(self._execute_gpu_native_ga_run(req))
-        return out
-
-    def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
-        """
-        Fused GA->FG request.
-
-        Payload contract matches `FG_SOLVE_WITH_BREAKPOINTS`; this type exists so callers can
-        explicitly mark the GA->FG fast path and the executor can batch/coalesce it separately.
-        """
-        return self._execute_fg_solve_with_breakpoints(request)
-
-    def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
-        """
-        Execute a full GPU-native GA run on the GPU-owner thread.
-
-        This request is intended for the GPU-native in-flight pipeline where
-        CPU-side population building is done elsewhere and the GPU thread
-        stays busy running Taichi kernels back-to-back.
-        """
-        if not self._in_process_queues:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="GPU_NATIVE_GA_RUN requires in-process queues (avoid IPC pickling)",
-            )
-
-        try:
-            self._raise_if_abort_requested()
-        except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=str(e),
-            )
-
-        payload = request.payload or {}
-        calc_song = payload.get("calc_song")
-        ref_arrays = payload.get("ref_arrays")
-        item_stats = payload.get("item_stats")
-        slot_start = payload.get("slot_start")
-        slot_count = payload.get("slot_count")
-        base_fixed_stats_arr = payload.get("base_fixed_stats_arr")
-        initial_populations = payload.get("initial_populations")
-        num_runs = payload.get("num_runs")
-        n_genomes = payload.get("n_genomes")
-        init_heuristic_topk = payload.get("init_heuristic_topk")
-        init_heuristic_k = payload.get("init_heuristic_k", 0)
-        init_heuristic_copies = payload.get("init_heuristic_copies", 25)
-        db_seed_ids = payload.get("db_seed_ids")
-        db_seed_prob = payload.get("db_seed_prob", 0.0)
-        db_seed_copies = payload.get("db_seed_copies", 1)
-        db_seed_mutations = payload.get("db_seed_mutations", 1)
-        song_slot = int(payload.get("song_slot", 0) or 0)
-        n_generations = int(payload.get("n_generations", 1) or 1)
-        elite_count = int(payload.get("elite_count", 2) or 2)
-        mutation_rate = float(payload.get("mutation_rate", 0.02) or 0.02)
-        immigrant_rate = float(payload.get("immigrant_rate", 0.0) or 0.0)
-        tournament_k = int(payload.get("tournament_k", 3) or 3)
-        color_flags = payload.get("color_flags") or {}
-        cfg_data = payload.get("cfg_data") or {}
-        ga_seed = payload.get("ga_seed")
-
-        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="Invalid payload for GPU_NATIVE_GA_RUN (expected calc_song/ref_arrays dicts)",
-            )
-
-        try:
-            from gear_optimizer.solver.genetic import run_gpu_native_ga_runs_payload_prebuilt
-
-            kwargs = dict(
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                song_slot=song_slot,
-                item_stats=item_stats,
-                slot_start=slot_start,
-                slot_count=slot_count,
-                base_fixed_stats_arr=base_fixed_stats_arr,
-                n_generations=n_generations,
-                initial_populations=initial_populations,
-                num_runs=int(num_runs) if num_runs is not None else None,
-                init_heuristic_topk=init_heuristic_topk,
-                init_heuristic_k=int(init_heuristic_k or 0),
-                init_heuristic_copies=int(init_heuristic_copies or 0),
-                db_seed_ids=db_seed_ids,
-                db_seed_prob=float(db_seed_prob or 0.0),
-                db_seed_copies=int(db_seed_copies or 0),
-                db_seed_mutations=int(db_seed_mutations or 0),
-                elite_count=elite_count,
-                mutation_rate=mutation_rate,
-                immigrant_rate=immigrant_rate,
-                tournament_k=tournament_k,
-                color_flags=dict(color_flags),
-                cfg_data=dict(cfg_data),
-                ga_seed=int(ga_seed) if ga_seed is not None else None,
-                abort_requested=self.abort_requested,
-            )
-            if n_genomes is not None:
-                kwargs["n_genomes"] = int(n_genomes)
-            runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**kwargs)
-        except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"{type(e).__name__}: {e}",
-            )
-
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=runs_payload,
-        )
-
     def _execute_fg_reset_global_best(self, request: GpuRequest) -> GpuResponse:
         """Reset FG global-best accumulation fields on the GPU."""
         if not self._in_process_queues:
@@ -4177,7 +3742,7 @@ class GpuExecutor:
 
     def _execute_fg_compute_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
-        Compute per-FT/FF breakpoint ranges for ForceGreatsFinder on the GPU-owner thread.
+        Compute per-FT/FF breakpoint ranges for native FG solver on the GPU-owner thread.
 
         Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
         Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
@@ -4767,7 +4332,7 @@ class GpuExecutor:
             return None
 
         # Optional: precompute the timeline grid in this same executor request to avoid
-        # an extra PRECOMPUTE_TIMELINE boundary between GA/FG.
+        # an extra PRECOMPUTE_TIMELINE boundary between skyline/FG.
         #
         # This is safe: `precompute_timeline_gpu` is cached per (song_slot, song_key).
         ensure_timeline = bool(payload.get("ensure_timeline_precompute", False))
@@ -4846,27 +4411,7 @@ class GpuExecutor:
                                 non_fever_base_by_ff=non_fever_base_by_ff,
                                 fp_cap_table=fp_cap_table,
                             )
-                            from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
-                                reduce_ftff_pairs_by_max_fp_surface,
-                            )
-
-                            surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
-                                pairs_arr,
-                                max_fp_matrix,
-                                n_sections=int(n_sections),
-                                total_budget=int(solve_kwargs_payload.get("total_budget", 90) or 90),
-                                is_p_ft=int(solve_kwargs_payload.get("is_p_ft", 0) or 0),
-                                is_s_ft=int(solve_kwargs_payload.get("is_s_ft", 0) or 0),
-                                is_p_ff=int(solve_kwargs_payload.get("is_p_ff", 0) or 0),
-                                is_s_ff=int(solve_kwargs_payload.get("is_s_ff", 0) or 0),
-                            )
-                            fused_surface_pair_drops = max(0, int(surface_reduction.dropped))
-                            if fused_surface_pair_drops > 0:
-                                pairs_arr = np.ascontiguousarray(surface_reduction.pairs, dtype=np.int32)
-                                max_fp_matrix_for_task = np.ascontiguousarray(
-                                    surface_reduction.max_fp_matrix,
-                                    dtype=np.int16,
-                                )
+                            fused_surface_pair_drops = 0
                             else:
                                 max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
                         except Exception as e:
@@ -5033,7 +4578,7 @@ class GpuExecutor:
         if n_genomes <= 0:
             raise ValueError("FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0")
 
-        if payload.get("ga_stage_coords") is not None or bool(kwargs_local.get("genome_stats_preuploaded")):
+        if payload.get("SKYLINE_stage_coords") is not None or bool(kwargs_local.get("genome_stats_preuploaded")):
             raise ValueError("FG resident genome-stat preupload/staging has been removed")
 
         kwargs_local.pop("n_genomes_override", None)
@@ -5502,3 +5047,7 @@ def submit_gpu_solve_genomes_from_registry(
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
     return result
+
+
+
+

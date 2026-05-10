@@ -1,5 +1,5 @@
 """
-GA convergence trace writer (production, opt-in).
+skyline convergence trace writer (production, opt-in).
 
 Writes one JSON object per sampled generation to a JSONL file. Tracing is best-effort:
 file-system errors are swallowed so optimizer execution is never interrupted.
@@ -64,10 +64,10 @@ class ConvergenceTraceConfig:
     @staticmethod
     def from_cfg_data(cfg_data: dict | None) -> "ConvergenceTraceConfig":
         cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
-        enabled = truthy(cfg_data.get("ga_convergence_trace_enabled", False))
-        every = max(1, _safe_int(cfg_data.get("ga_convergence_trace_every", 1), 1))
-        out_dir = str(cfg_data.get("ga_convergence_trace_out_dir", "artifacts/ga_trace") or "artifacts/ga_trace")
-        song_filter = str(cfg_data.get("ga_convergence_trace_song_filter", "") or "")
+        enabled = truthy(cfg_data.get("SKYLINE_convergence_trace_enabled", False))
+        every = max(1, _safe_int(cfg_data.get("SKYLINE_convergence_trace_every", 1), 1))
+        out_dir = str(cfg_data.get("SKYLINE_convergence_trace_out_dir", "artifacts/SKYLINE_trace") or "artifacts/SKYLINE_trace")
+        song_filter = str(cfg_data.get("SKYLINE_convergence_trace_song_filter", "") or "")
         return ConvergenceTraceConfig(
             enabled=bool(enabled),
             every=int(every),
@@ -83,23 +83,23 @@ class ConvergenceTraceWriter:
         out_dir: str,
         song_name: str,
         difficulty: str,
-        ga_seed: int,
+        skyline_seed: int,
     ) -> None:
         self.song_name = str(song_name or "")
         self.difficulty = str(difficulty or "")
-        self.ga_seed = int(ga_seed)
+        self.skyline_seed = int(skyline_seed)
         self._lock = threading.Lock()
         self._file_path = self._build_path(out_dir=out_dir)
 
     def _build_path(self, *, out_dir: str) -> str | None:
         try:
-            out_dir_norm = os.path.abspath(str(out_dir or "artifacts/ga_trace"))
+            out_dir_norm = os.path.abspath(str(out_dir or "artifacts/SKYLINE_trace"))
             os.makedirs(out_dir_norm, exist_ok=True)
             song_slug = _sanitize_name(self.song_name, fallback="song")
             diff_slug = _sanitize_name(self.difficulty, fallback="diff")
             ts_ms = int(time.time() * 1000.0)
             pid = int(os.getpid())
-            filename = f"{song_slug}__{diff_slug}__ga{int(self.ga_seed)}__{ts_ms}__p{pid}.jsonl"
+            filename = f"{song_slug}__{diff_slug}__ga{int(self.skyline_seed)}__{ts_ms}__p{pid}.jsonl"
             return os.path.join(out_dir_norm, filename)
         except Exception as e:
             logger.debug(f"convergence_trace:_build_path: {e}")
@@ -125,7 +125,7 @@ class ConvergenceTraceWriter:
         row: dict[str, Any] = {
             "song_name": self.song_name,
             "difficulty": self.difficulty,
-            "ga_seed": int(self.ga_seed),
+            "skyline_seed": int(self.skyline_seed),
             "generation_idx": int(generation_idx),
             "elapsed_s": float(elapsed_s),
             "wall_time_unix_s": float(time.time()),
@@ -163,7 +163,7 @@ def build_convergence_trace_writer(
     *,
     calc_song: dict,
     cfg_data: dict | None,
-    ga_seed: int | None,
+    skyline_seed: int | None,
 ) -> tuple[ConvergenceTraceWriter | None, int]:
     """
     Build a trace writer for a song/run when enabled by cfg_data.
@@ -183,7 +183,7 @@ def build_convergence_trace_writer(
         out_dir=cfg.out_dir,
         song_name=song_name,
         difficulty=_difficulty(calc_song),
-        ga_seed=_safe_int(ga_seed, 0),
+        skyline_seed=_safe_int(skyline_seed, 0),
     )
     if not writer.file_path:
         return None, int(cfg.every)

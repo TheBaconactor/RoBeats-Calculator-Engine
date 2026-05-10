@@ -1,5 +1,5 @@
 """
-Force Greats GPU APIs (Taichi/Vulkan).
+ForceGreats GPU APIs (Taichi/Vulkan).
 
 Public entrypoints:
   - solve_force_greats_finder_gpu(...)
@@ -1465,7 +1465,7 @@ def _solve_force_greats_finder_gpu_impl(
     genome_stats_preuploaded: bool = False,
 ) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
     """
-    Full GPU ForceGreatsFinder (tolerant mode).
+    Full GPU native FG solver (tolerant mode).
 
     Args:
         genome_stats_list: Either list[dict] with keys base_pp/cm/fm/p_val/s_val/ft_stat/ff_stat,
@@ -1570,7 +1570,7 @@ def _solve_force_greats_finder_gpu_impl(
         # Upload genome base stats.
         #
         # IMPORTANT: `genome_base_stats` is shared across multiple GPU entrypoints
-        # (gem solver, GA solver, FG solver). Caching across independent entrypoints
+        # (gem solver, skyline solver, FG solver). Caching across independent entrypoints
         # can be unsafe because another entrypoint may overwrite the field.
         #
         # For in-process batched FG tasks (GpuExecutor), callers can intentionally
@@ -2334,7 +2334,7 @@ def solve_force_greats_finder_gpu_tasks(
 
     use_gpu_cfg_ranges = _FG_GPU_CFG_RANGES
 
-    # Packed mega-job mode:
+    # Packed meskyline-job mode:
     # - Upload all config windows into the global config table once (at their base_cfg_offset)
     # - Batch FT/FF pairs across all tasks into a single Stage-1/Stage-2 sequence per FG_MAX_FTFF chunk
     # - Keep Stage 1 buffers alive across cfg bands (cfg_chunk) to avoid TDR while preserving correctness

@@ -42,7 +42,7 @@ def _candidate_genome(candidate: dict) -> list[dict]:
     if isinstance(genome, list) and genome:
         return _as_genome(candidate)
 
-    registry = candidate.get("_ga_registry")
+    registry = candidate.get("_item_registry")
     genome_ids = candidate.get("GenomeIDs")
     if registry is not None and genome_ids is not None:
         try:
@@ -66,7 +66,7 @@ def hydrate_fg_candidate_stats(
     """
     Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
 
-    Some GA/decode paths intentionally keep candidates lightweight and omit fully
+    Some skyline/decode paths intentionally keep candidates lightweight and omit fully
     materialized `Data` payloads. This helper hydrates only the retained subset so
     downstream FG code can read a stable shape without rebuilding stats ad hoc.
     """
@@ -174,3 +174,4 @@ def hydrate_fg_candidate_stats(
         data["Selected Element"] = sel
         data["Stats"] = stats
         cand["Data"] = data
+

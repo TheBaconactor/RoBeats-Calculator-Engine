@@ -467,7 +467,7 @@ class MemoryGuardResumeTracker:
         # Windows can intermittently raise PermissionError on atomic replace if an external
         # process (e.g., AV/scanner/indexer) briefly holds either file open.
         #
-        # This state file is best-effort; never raise here (it can disable the in-flight
+        # This state file is best-effort; never raise here (it can disable the queued
         # pipeline and abort long runs). We'll retry briefly, then log and continue.
         last_exc = None
         for attempt in range(12):

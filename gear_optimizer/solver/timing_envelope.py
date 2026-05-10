@@ -437,7 +437,7 @@ def build_great_candidate_envelope_sec(
 
     FG only needs the carry-extending side of Great timing. We therefore choose
     the latest valid candidate per chord group, which is exact for the retained
-    late-carry envelope and avoids legacy seeded sampling.
+    late-carry envelope and avoids historical seeded sampling.
     """
 
     ts_sec = np.asarray(timestamps_sec, dtype=np.float32)

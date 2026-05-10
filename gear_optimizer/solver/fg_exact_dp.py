@@ -1,7 +1,7 @@
 """
-Exact Force Greats DP.
+Exact ForceGreats DP.
 
-This module implements an exact dynamic program for Force Greats that matches the repo's
+This module implements an exact dynamic program for ForceGreats that matches the repo's
 timeline semantics:
   - fill-delay via notes_to_fill(k) = ceil(raw_fill + 0.5*k) with the section-1 offset
   - optional timing-aware carry via great-candidate timestamps (prefix-max carry_time)
@@ -107,7 +107,7 @@ def _build_forced_great_penalty_prefix(
     """
     Build prefix sums of per-note forced-Great penalties c_i >= 0.
 
-    Mirrors `evaluate_force_greats(...)` logic in solver/scoring/force_greats.py.
+    Mirrors the shared ForceGreats timeline semantics used by exact replay.
     """
     n = int(total_notes)
     if n <= 0:

@@ -1211,7 +1211,7 @@ def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict
     if not isinstance(force_data, dict):
         return {}
 
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+    from gear_optimizer.helpers.song_helpers.fg_payload import materialize_stats_from_payload
 
     payload = force_data.get("details") if isinstance(force_data.get("details"), dict) else force_data
     if not isinstance(payload, dict):
@@ -1676,7 +1676,7 @@ def save_team_buff_loadouts_batch(
 
         This prevents persisting:
         - mini-variant off-element drift (equivalence-group representatives),
-        - config-tainted Stats snapshots that don't match legacy DB semantics.
+        - config-tainted Stats snapshots that don't match historical DB semantics.
         """
         if not isinstance(details_obj, dict):
             details_obj = {}
@@ -1881,7 +1881,7 @@ def save_team_buff_loadouts_batch(
                     s_color,
                     sel_color,
                 )
-                # Legacy mini-group representation contract:
+                # Historical mini-group representation contract:
                 # - choose distinct representatives across duplicate groups when possible, and
                 # - rotate each group so the representative becomes the first element (consumers often read `g[0]`).
                 groups = rotate_mini_groups_for_slot_display(groups)
@@ -1897,7 +1897,7 @@ def save_team_buff_loadouts_batch(
                 groups = [[n] for n in mini_names]
 
             # Canonicalize persisted Stats:
-            # - Use representative mini names for equivalence groups (legacy DB behavior)
+            # - Use representative mini names for equivalence groups (historical DB behavior)
             # - Avoid persisting config-tainted Stats snapshots (ElementalGems/UserInputStatsGems)
             # - Preserve unknown-gear/minis cases (tests/tools may use synthetic names)
             details_unpacked = _unpack_stats_after_load(details) if isinstance(details, dict) else details
@@ -2602,7 +2602,7 @@ def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> N
     Persist a crash-safe pending ForceGreats job for a song.
 
     This stores a compact candidate list so FG can be computed later without
-    rerunning GA (e.g. when FG is deferred/batched for throughput).
+    rerunning skyline (e.g. when FG is deferred/batched for throughput).
     """
     song_name = str(song_name or "").strip()
     if not song_name:

@@ -47,7 +47,7 @@ def precompute_fever_end_idx_kernel(total_notes: ti.i32, last_note_time: ti.f32)
 @ti.kernel
 def unpack_timeline_grid_masks_kernel(song_slot: ti.i32):
     """
-    Unpack bitpacked head-fever masks (4×u32) into the legacy i8 mask grid.
+    Unpack bitpacked head-fever masks (4×u32) into the historical i8 mask grid.
 
     Production kernels use `grid_fever_masks_bits` as the canonical representation.
     This kernel exists for debug/tests that still compare against the unpacked

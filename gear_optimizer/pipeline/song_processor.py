@@ -5,8 +5,7 @@ This module handles song file reading, optimization execution, and result persis
 Contains the main process_song_task function that coordinates:
 - Song data loading
 - Fixed stats calculation
-- GA optimization
-- Force greats evaluation
+- Exact skyline optimization
 - Database persistence
 
 REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainability.
@@ -36,19 +35,8 @@ from ..core.env_config import ENV
 from ..core.result_payloads import build_error_payload
 from ..core.types import SongResultPayload
 from ..core.constants import (
-    LOADOUTS_PER_SONG_LIMIT,
-    FG_CANDIDATE_LIMIT,
     PATHS,
 )
-
-from ..core.config import (
-    read_fg_candidate_limit,
-    read_fg_search_radius,
-    read_fg_solver_mode,
-    read_outer_search_engine,
-    read_pre_prune_mode,
-)
-from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
@@ -64,25 +52,19 @@ from ..helpers.song_helpers import (
     load_database_progress_baseline,
     setup_song_config,
     build_loadout_entries,
-    # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
-    # without increasing FG_CandidateLimit.
-    process_force_greats,
     ReplayContext,
     build_db_payload,
     canonicalize_and_assemble,
     print_results,
 )
 from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
-from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.payload_compaction import (
     compact_fg_variants,
-    compact_ga_candidates,
+    compact_skyline_candidates,
     compact_item_names,
     compact_loadout_entries,
     compact_prev_record,
 )
-
-# Global warn-once instance
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
@@ -121,7 +103,7 @@ class SongContext:
     minis_by_name: dict[str, Any]
     use_evo_db: bool
     auto_buff: bool
-    ga_depth: int
+    solver_depth: int
     status_queue: Any
     defer_post: bool
     emit: Callable[[str], None]
@@ -132,7 +114,7 @@ class SongContext:
     calc_song: dict[str, Any]
     meta_primary_color: str
     meta_secondary_color: str
-    ga_settings: Any
+    solver_settings: Any
     fixed_stats: dict[str, Any]
     current_gear_stats: dict[str, Any]
     current_gear_list: list[dict]
@@ -156,13 +138,13 @@ class SongContext:
     attempts_first: int
     prev_attempts_first: int
     db_baseline_valid: bool
-    outer_engine: str = "ga"
-    pre_prune_mode: str = "auto"
+    outer_engine: str = "exact"
+    pre_prune_mode: str = "none"
     fg_solver_mode: str = "finder"
     fg_search_radius: int | None = None
     gpu_mode: bool = True
     gpu_song_slot: int = 0
-    ga_seed: int | None = None
+    solver_seed: int | None = None
     solver_ctx: SolverContext | None = None
 
 
@@ -172,7 +154,7 @@ class OuterSearchResult:
     best_gear: list[dict]
     best_minis: list[dict]
     all_evaluated: list[dict[str, Any]]
-    ga_candidates: list[dict[str, Any]]
+    skyline_candidates: list[dict[str, Any]]
     wall_sec: float = 0.0
 
 
@@ -595,26 +577,18 @@ def _setup_song_context(
     minis_by_name: dict[str, Any],
     use_evo_db: bool,
     auto_buff: bool,
-    ga_depth: int,
+    solver_depth: int,
     status_queue: Any,
     fg_debug: bool,
     defer_post: bool,
     preloaded_calc_song: dict[str, Any] | None,
     repeat_index: int,
     repeat_total: int,
-    ga_seed: int | None,
+    solver_seed: int | None,
     emit: Callable[[str], None],
     stage_timing: dict[str, float],
 ) -> SongContext:
     cfg = cfg_from_dict(cfg_dict)
-    gpu_mode_requested = True
-    try:
-        gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-        gpu_mode_requested = True
-    if not gpu_mode_requested:
-        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
     gpu_mode = True
 
     if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
@@ -655,7 +629,7 @@ def _setup_song_context(
 
     t_setup0 = time.perf_counter()
     (
-        ga_settings,
+        solver_settings,
         fixed_stats,
         current_gear_stats,
         current_gear_list,
@@ -710,14 +684,10 @@ def _setup_song_context(
         for key in ("cpu_read_sec", "cpu_human_hit_sim_sec", "cpu_setup_sec", "cpu_db_load_sec")
     )
 
-    outer_engine = "ga"
+    outer_engine = "exact"
     pre_prune_mode = "none"
-    fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
-    fg_search_radius = read_fg_search_radius(cfg)
-    if enable_gear or enable_mini:
-        outer_engine = read_outer_search_engine(cfg, default="ga")
-        if outer_engine == "exact":
-            pre_prune_mode = read_pre_prune_mode(cfg, default="none")
+    fg_solver_mode = "finder"
+    fg_search_radius = -1
 
     return SongContext(
         fp=fp,
@@ -734,7 +704,7 @@ def _setup_song_context(
         minis_by_name=minis_by_name,
         use_evo_db=bool(use_evo_db),
         auto_buff=bool(auto_buff),
-        ga_depth=int(ga_depth),
+        solver_depth=int(solver_depth),
         status_queue=status_queue,
         defer_post=bool(defer_post),
         emit=emit,
@@ -745,7 +715,7 @@ def _setup_song_context(
         calc_song=calc_song,
         meta_primary_color=str(meta_primary_color or ""),
         meta_secondary_color=str(meta_secondary_color or ""),
-        ga_settings=ga_settings,
+        solver_settings=solver_settings,
         fixed_stats=fixed_stats,
         current_gear_stats=current_gear_stats,
         current_gear_list=current_gear_list,
@@ -775,7 +745,7 @@ def _setup_song_context(
         fg_search_radius=fg_search_radius,
         gpu_mode=bool(gpu_mode),
         gpu_song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
-        ga_seed=ga_seed,
+        solver_seed=solver_seed,
     )
 
 
@@ -791,17 +761,6 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
                 ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
             except Exception as e:
                 logger.warning(f"song_processor:_run_outer_search: {e}")
-            try:
-                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-                gpu_fields.configure_ga_run_buffers(
-                    max_runs=ctx.ga_settings.multi_start,
-                    max_genomes=GA_POPULATION_SIZE,
-                )
-            except Exception as e:
-                logger.warning(f"song_processor:_run_outer_search: {e}")
-
-        solver_pre_prune = ctx.pre_prune_mode if ctx.outer_engine == "exact" else "none"
         ctx.solver_ctx = prepare_solver_context(
             ctx.cfg,
             ctx.fixed_stats,
@@ -813,68 +772,35 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             optimize_minis=ctx.enable_mini,
             fixed_gear=ctx.current_gear_list,
             fixed_minis=ctx.current_mini_list,
-            pre_prune_mode=solver_pre_prune,
+            pre_prune_mode="none",
             status_cb=lambda message: ctx.emit(message),
             song_slot=int(ctx.gpu_song_slot),
         )
 
-        ga_start = time.perf_counter()
-        if ctx.outer_engine == "exact":
-            from gear_optimizer.solver.exact_skyline import solve_exact_skyline
+        skyline_start = time.perf_counter()
+        from gear_optimizer.solver.exact_skyline import solve_exact_skyline
 
-            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_exact_skyline(
-                ctx.cfg,
-                ctx.fixed_stats,
-                ctx.paths,
-                ctx.calc_song,
-                ctx.ref_arrays,
-                ctx.all_gears,
-                ctx.all_minis,
-                ctx.gears_by_name,
-                ctx.minis_by_name,
-                optimize_gear=ctx.enable_gear,
-                optimize_minis=ctx.enable_mini,
-                fixed_gear=ctx.current_gear_list,
-                fixed_minis=ctx.current_mini_list,
-                ga_depth=ctx.ga_depth,
-                db_seed=ctx.prev_record if ctx.prev_record else None,
-                ga_settings=ctx.ga_settings,
-                status_cb=lambda message: ctx.emit(message),
-                executor=None,
-                known_loadouts=ctx.known_loadouts,
-                song_slot=int(ctx.gpu_song_slot),
-                ga_seed=ctx.ga_seed,
-                solver_ctx=ctx.solver_ctx,
-            )
-        else:
-            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
-                ctx.cfg,
-                ctx.fixed_stats,
-                ctx.paths,
-                ctx.calc_song,
-                ctx.ref_arrays,
-                ctx.all_gears,
-                ctx.all_minis,
-                ctx.gears_by_name,
-                ctx.minis_by_name,
-                optimize_gear=ctx.enable_gear,
-                optimize_minis=ctx.enable_mini,
-                fixed_gear=ctx.current_gear_list,
-                fixed_minis=ctx.current_mini_list,
-                ga_depth=ctx.ga_depth,
-                db_seed=ctx.prev_record if ctx.prev_record else None,
-                ga_settings=ctx.ga_settings,
-                status_cb=lambda message: ctx.emit(message),
-                executor=None,
-                known_loadouts=ctx.known_loadouts,
-                song_slot=int(ctx.gpu_song_slot),
-                ga_seed=ctx.ga_seed,
-                solver_ctx=ctx.solver_ctx,
-            )
-        wall_sec = time.perf_counter() - ga_start
+        best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_exact_skyline(
+            ctx.cfg,
+            ctx.fixed_stats,
+            ctx.paths,
+            ctx.calc_song,
+            ctx.ref_arrays,
+            ctx.all_gears,
+            ctx.all_minis,
+            ctx.gears_by_name,
+            ctx.minis_by_name,
+            optimize_gear=ctx.enable_gear,
+            optimize_minis=ctx.enable_mini,
+            fixed_gear=ctx.current_gear_list,
+            fixed_minis=ctx.current_mini_list,
+            status_cb=lambda message: ctx.emit(message),
+            song_slot=int(ctx.gpu_song_slot),
+            solver_ctx=ctx.solver_ctx,
+        )
+        wall_sec = time.perf_counter() - skyline_start
         if PERF_TIMING_ENABLED:
-            label = "Exact Skyline" if ctx.outer_engine == "exact" else "GA"
-            print(f"[PERF] {label}: {wall_sec:.2f}s")
+            print(f"[PERF] Exact Skyline: {wall_sec:.2f}s")
         if ctx.known_loadouts:
             ctx.known_loadouts.clear()
     else:
@@ -911,10 +837,10 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             ]
         wall_sec = 0.0
 
-    ga_candidates = list(all_evaluated or [])
+    skyline_candidates = list(all_evaluated or [])
     if best_data and best_gear and best_minis:
         base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
-        ga_candidates.append(
+        skyline_candidates.append(
             {
                 "Score": base_score,
                 "BaseScore": base_score,
@@ -929,69 +855,29 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
         best_gear=list(best_gear or []),
         best_minis=list(best_minis or []),
         all_evaluated=list(all_evaluated or []),
-        ga_candidates=ga_candidates,
+        skyline_candidates=skyline_candidates,
         wall_sec=float(wall_sec),
     )
 
 
-def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
-    ga_candidates = list(outer.ga_candidates or [])
-    fg_candidate_limit = read_fg_candidate_limit(
-        ctx.cfg,
-        default=FG_CANDIDATE_LIMIT,
-        min_limit=LOADOUTS_PER_SONG_LIMIT,
-    )
-    if ctx.manual_force_greats or ctx.force_greats_finder:
-        ga_candidates = select_fg_candidates(
-            ga_candidates,
-            limit=fg_candidate_limit,
-            primary_color=str(ctx.meta_primary_color or ""),
-            secondary_color=str(ctx.meta_secondary_color or ""),
-        )
-
+def _build_skyline_loadout_entries(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
+    skyline_candidates = list(outer.skyline_candidates or [])
     build_details = make_build_details_fn(ctx.meta_primary_color, ctx.meta_secondary_color, ctx.effective_difficulty)
-    fg_variants: list[dict[str, Any]] = []
-    loadout_entries = None
-    fg_wall_sec = 0.0
-    direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
+    loadout_entries = build_loadout_entries(
+        ctx.found_song_name,
+        False,
+        skyline_candidates,
+        max(1, int(len(skyline_candidates))),
+        ctx.gears_by_name,
+        ctx.minis_by_name,
+        build_details,
+        team_buff=str(ctx.baseline_team_buff or "T5"),
+        allow_db_query=False,
+        materialize_candidate_details=False,
+    )
 
-    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
-        loadout_entries = build_loadout_entries(
-            ctx.found_song_name,
-            ctx.use_evo_db,
-            [] if direct_ga_candidates_for_fg else ga_candidates,
-            fg_candidate_limit,
-            ctx.gears_by_name,
-            ctx.minis_by_name,
-            build_details,
-            team_buff=str(ctx.baseline_team_buff or "T5"),
-            materialize_ga_details=False,
-        )
-
-    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
-        fg_start = time.perf_counter()
-        fg_variants = process_force_greats(
-            loadout_entries,
-            ctx.manual_force_greats,
-            ctx.force_greats_finder,
-            ctx.force_greats_config,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.meta_primary_color,
-            build_details,
-            use_gpu=ctx.gpu_mode,
-            fg_search_radius=ctx.fg_search_radius,
-            perf_timing=PERF_TIMING_ENABLED,
-            ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
-            ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
-        )
-        fg_wall_sec = time.perf_counter() - fg_start
-        if PERF_TIMING_ENABLED:
-            n_loadouts = len(loadout_entries) if loadout_entries else 0
-            print(f"[PERF] ForceGreats: {fg_wall_sec:.2f}s ({n_loadouts} loadouts, finder={ctx.force_greats_finder})")
-
-    outer.ga_candidates = ga_candidates
-    return FGResult(fg_variants=fg_variants, loadout_entries=loadout_entries, wall_sec=float(fg_wall_sec))
+    outer.skyline_candidates = skyline_candidates
+    return FGResult(fg_variants=[], loadout_entries=loadout_entries, wall_sec=0.0)
 
 
 def _build_and_persist(
@@ -1032,7 +918,7 @@ def _build_and_persist(
                 "_queue_label": ctx.queue_label,
                 "_repeat_index": int(ctx.repeat_index),
                 "_repeat_total": int(ctx.repeat_total),
-                "_ga_seed": int(ctx.ga_seed) if ctx.ga_seed is not None else None,
+                "_solver_seed": int(ctx.solver_seed) if ctx.solver_seed is not None else None,
                 "db_key": ctx.db_key,
                 "file_path": ctx.fp,
                 "difficulty": ctx.effective_difficulty,
@@ -1048,7 +934,7 @@ def _build_and_persist(
                 "enable_gear": bool(ctx.enable_gear),
                 "enable_mini": bool(ctx.enable_mini),
                 "fg_variants": compact_fg_variants(fg.fg_variants),
-                "ga_candidates": compact_ga_candidates(outer.ga_candidates),
+                "skyline_candidates": compact_skyline_candidates(outer.skyline_candidates),
                 "loadout_entries": compact_loadout_entries(fg.loadout_entries),
                 "prev_record": compact_prev_record(ctx.prev_record),
                 "attempt_lifetime": ctx.attempt_lifetime,
@@ -1082,7 +968,7 @@ def _build_and_persist(
         t_persist0 = time.perf_counter()
         persist_entries = canonicalize_and_assemble(
             db_payload=db_payload,
-            ga_candidates=outer.ga_candidates,
+            skyline_candidates=outer.skyline_candidates,
             loadout_entries=fg.loadout_entries,
             build_details_fn=build_details,
             replay_ctx=ReplayContext(
@@ -1143,7 +1029,7 @@ def _build_and_persist(
             "_queue_label": ctx.queue_label,
             "_repeat_index": int(ctx.repeat_index),
             "_repeat_total": int(ctx.repeat_total),
-            "_ga_seed": int(ctx.ga_seed) if ctx.ga_seed is not None else None,
+            "_solver_seed": int(ctx.solver_seed) if ctx.solver_seed is not None else None,
             "db_key": ctx.db_key,
             "file_path": ctx.fp,
             "difficulty": ctx.effective_difficulty,
@@ -1177,22 +1063,21 @@ def process_song_task(args) -> SongResultPayload:
     1. Parse arguments and setup
     2. Read song file
     3. Load previous best from database (if using DB)
-    4. Run GA or gem solver only
-    5. Apply force greats if enabled
-    6. Build persistence payload
-    7. Cleanup and return results
+    4. Run exact skyline
+    5. Build persistence payload
+    6. Cleanup and return results
 
     Args:
         args: Tuple of (fp, song_name, difficulty, cfg_dict, paths, ref_arrays,
                         all_gears, all_minis, gears_by_name, minis_by_name,
-                        use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers)
+                        use_evo_db, auto_buff, solver_depth, status_queue, parallel_workers)
 
     Returns:
         dict: Result with song, db_key, db_payload, best_data, persist_entries, log
     """
     # --- CRITICAL: Clear caches at start of task to prevent OOM in worker process ---
     # These globals persist in the worker process if not cleared, leading to memory leaks
-    # especially when GA is skipped (Calculate-Only mode) but caches are still populated.
+    # especially when skyline is skipped (Calculate-Only mode) but caches are still populated.
     GEM_SOLVER_CACHE.clear()
     FEVER_TIMELINE_CACHE.clear()
     FG_CACHE.clear()
@@ -1211,7 +1096,7 @@ def process_song_task(args) -> SongResultPayload:
         minis_by_name,
         use_evo_db,
         auto_buff,
-        ga_depth,
+        solver_depth,
         status_queue,
         _parallel_workers,
         fg_debug,
@@ -1230,14 +1115,14 @@ def process_song_task(args) -> SongResultPayload:
                 if extra.get("song_data") is not None:
                     preloaded_calc_song = extra
                     continue
-                if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+                if "repeat_index" in extra and "repeat_total" in extra and "solver_seed" in extra:
                     repeat_ctx = extra
                     continue
             if isinstance(extra, bool) and not defer_post:
                 defer_post = bool(extra)
 
     queue_label = found_song_name
-    ga_seed = None
+    solver_seed = None
     repeat_index = 0
     repeat_total = 0
     if isinstance(repeat_ctx, dict):
@@ -1249,11 +1134,11 @@ def process_song_task(args) -> SongResultPayload:
             repeat_index = 0
             repeat_total = 0
         try:
-            raw_seed = repeat_ctx.get("ga_seed")
-            ga_seed = int(str(raw_seed)) if raw_seed is not None else None
+            raw_seed = repeat_ctx.get("solver_seed")
+            solver_seed = int(str(raw_seed)) if raw_seed is not None else None
         except Exception as e:
             logger.warning(f"song_processor:process_song_task: {e}")
-            ga_seed = None
+            solver_seed = None
         if repeat_index > 0 and repeat_total > 1:
             queue_label = f"{found_song_name} (Run {repeat_index}/{repeat_total})"
 
@@ -1281,12 +1166,12 @@ def process_song_task(args) -> SongResultPayload:
     stage_timing: dict[str, float] = {}
     _song_wall_t0 = time.perf_counter()
     _cpu_prep_t0 = _song_wall_t0
-    ga_time_sec = 0.0
+    skyline_time_sec = 0.0
     fg_time_sec = 0.0
     db_payload_time_sec = 0.0
     persist_build_time_sec = 0.0
     report_time_sec = 0.0
-    # GPU timeline slot reuse (GA -> FG). Keep these in outer scope for cleanup.
+    # GPU timeline slot reuse (skyline -> FG). Keep these in outer scope for cleanup.
     _gpu_song_slot = 0
 
     try:
@@ -1320,21 +1205,21 @@ def process_song_task(args) -> SongResultPayload:
             minis_by_name=minis_by_name,
             use_evo_db=use_evo_db,
             auto_buff=auto_buff,
-            ga_depth=ga_depth,
+            solver_depth=solver_depth,
             status_queue=status_queue,
             fg_debug=fg_debug,
             defer_post=defer_post,
             preloaded_calc_song=preloaded_calc_song,
             repeat_index=repeat_index,
             repeat_total=repeat_total,
-            ga_seed=ga_seed,
+            solver_seed=solver_seed,
             emit=emit,
             stage_timing=stage_timing,
         )
         song_ctx.queue_label = queue_label
 
         outer_result = _run_outer_search(song_ctx)
-        fg_result = _run_force_greats(song_ctx, outer_result)
+        fg_result = _build_skyline_loadout_entries(song_ctx, outer_result)
         loadout_entries = fg_result.loadout_entries
         known_loadouts = song_ctx.known_loadouts
         _gpu_song_slot = int(song_ctx.gpu_song_slot)
@@ -1347,7 +1232,7 @@ def process_song_task(args) -> SongResultPayload:
             capture_log_payload=_CAPTURE_SONG_LOG_PAYLOAD,
         )
 
-        ga_time_sec = float(outer_result.wall_sec)
+        skyline_time_sec = float(outer_result.wall_sec)
         fg_time_sec = float(fg_result.wall_sec)
         db_payload_time_sec = float(song_ctx.stage_timing.get("_db_payload_sec", 0.0) or 0.0)
         persist_build_time_sec = float(song_ctx.stage_timing.get("_persist_build_sec", 0.0) or 0.0)
@@ -1363,7 +1248,7 @@ def process_song_task(args) -> SongResultPayload:
         stage_timing["cpu_post_sec"] = (
             float(db_payload_time_sec) + float(persist_build_time_sec) + float(report_time_sec)
         )
-        stage_timing["cpu_ga_wall_sec"] = float(ga_time_sec)
+        stage_timing["skyline_wall_sec"] = float(skyline_time_sec)
         stage_timing["cpu_fg_wall_sec"] = float(fg_time_sec)
 
         if isinstance(result_payload, dict):
@@ -1461,3 +1346,6 @@ def safe_process_song_task(args) -> SongResultPayload:
             exc=exc,
             trace=tb,
         )
+
+
+

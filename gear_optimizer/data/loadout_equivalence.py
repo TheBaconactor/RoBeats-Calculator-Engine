@@ -135,7 +135,7 @@ def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[st
     """
     Rotate mini variant groups so the representative for each slot becomes the first element.
 
-    Legacy DB behavior:
+    Historical DB behavior:
     - Minis are persisted as "variant groups" per equipped slot, e.g. [["A","B"], ["A","B"], ["C"]].
     - Many consumers historically treated `group[0]` as the displayed/representative mini name.
     - When a variant group repeats across slots, rotate representatives so the first elements are
@@ -278,7 +278,7 @@ def minis_signature_to_names_map(
     Build (and cache) a signature->all-names map for a given song-context.
 
     This lets persistence populate mini variant groups deterministically from Minis.csv
-    (instead of relying on the GA to have explored both names).
+    (instead of relying on the skyline to have explored both names).
     """
     key = (int(id(minis_by_name)), str(primary_color), str(secondary_color), str(selected_color))
     cached = _MINI_SIG_TO_NAMES_CACHE.get(key)

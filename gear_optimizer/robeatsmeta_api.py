@@ -24,9 +24,6 @@ from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
-# Keep the 24/7 service default aligned with the checked-in config instead of the
-# higher profiling-oriented overlap that materially increases continuous-service RAM.
-_DEFAULT_INFLIGHT_SONGS = 12
 _DEFAULT_MAX_PENDING_VISITS = 10
 _DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS = 0.05
 _VISIT_SCOPE_ENV = "ROBEATSMETA_OPTIMIZER_VISIT_SCOPE"
@@ -287,17 +284,12 @@ class RoBeatsMetaOptimizerApi:
         if not self.backend_mode_enabled() or cfg is None or not self.service_defaults_enabled():
             return False
 
-        if not cfg.has_section("IterationEngine"):
-            cfg.add_section("IterationEngine")
         if not cfg.has_section("CalculateSong"):
             cfg.add_section("CalculateSong")
 
         # Backend-special behavior: keep the optimizer in continuous service mode.
         # Queue selection is controlled by pending song IDs from the API bridge.
-        cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
-        cfg.set("IterationEngine", "SongRepeats", str(_DEFAULT_SONG_REPEATS))
-        cfg.set("IterationEngine", "UseEvolutionDB", "true")
-        cfg.set("IterationEngine", "InFlightSongs", str(_DEFAULT_INFLIGHT_SONGS))
+        cfg.set("CalculateSong", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
 
         # Keep broad discovery here; the backend pending-song filter narrows execution
         # to requested song IDs before task preparation.

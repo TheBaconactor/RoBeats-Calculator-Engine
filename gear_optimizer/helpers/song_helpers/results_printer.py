@@ -115,7 +115,7 @@ def print_results(
         # "Best FG Score Found" should reflect the best FG-scored result available for printing.
         #
         # Important: `fg_variants` can include DB-cached FG results (source="db") as well as
-        # GA-origin results (source="ga"). Filtering to GA-only can hide the actual persisted
+        # skyline-origin results (source="ga"). Filtering to skyline-only can hide the actual persisted
         # best FG loadout (and its config) even when `db_best_fg_score` is correctly printed.
         candidates: list[dict] = []
         for v in fg_variants or []:
@@ -125,7 +125,7 @@ def print_results(
                 continue
             candidates.append(v)
         if candidates:
-            # Prefer GA-origin when scores tie (keeps "found this run" behavior when equivalent),
+            # Prefer skyline-origin when scores tie (keeps "found this run" behavior when equivalent),
             # but never at the expense of hiding a better DB-cached FG result.
             def _fg_pick_key(entry: dict) -> tuple[int, int]:
                 return (_extract_final_score(entry), 1 if bool(entry.get("_is_ga", False)) else 0)

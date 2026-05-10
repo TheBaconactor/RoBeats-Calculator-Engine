@@ -30,7 +30,7 @@ def ensure_stats(
     1. If *details_obj* already carries a valid ``"Stats"`` dict -> return unchanged.
     2. If *build_details_fn* is provided and can rebuild from *eval_data* -> return rebuilt details.
     3. If *force_fail* is True -> raise ``ValueError`` (persistence-canon strict path).
-    4. Otherwise -> return *details_obj* as-is (legacy compat for database.py paths
+    4. Otherwise -> return *details_obj* as-is (historical compat for database.py paths
        that do their own heavyweight reconstruction later).
     """
     if details_have_stats(details_obj):

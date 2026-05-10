@@ -12,7 +12,7 @@ from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
 from .persistence_keys import stable_loadout_key
 from .persistence_entry_selection import (
     add_db_payload_priority_entries,
-    add_ga_candidate_entries,
+    add_skyline_candidate_entries,
     build_retained_loadout_entries,
 )
 from .persistence_payload import normalize_force_payload
@@ -90,7 +90,7 @@ def _normalize_entry_shape(
 def _collect_raw_entries(
     *,
     db_payload: dict,
-    ga_candidates: list[dict] | None,
+    skyline_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
 ) -> list[dict[str, Any]]:
@@ -123,7 +123,7 @@ def _collect_raw_entries(
         )
 
     add_db_payload_priority_entries(db_payload, loadout_entries, _append_entry)
-    add_ga_candidate_entries(ga_candidates, loadout_entries, build_details_fn, _append_entry)
+    add_skyline_candidate_entries(skyline_candidates, loadout_entries, build_details_fn, _append_entry)
 
     retained_entries = build_retained_loadout_entries(loadout_entries, build_details_fn)
     for retained in retained_entries:
@@ -294,7 +294,7 @@ def _dedupe_entries(entries: list[dict[str, Any]]) -> list[dict]:
 def canonicalize_and_assemble(
     *,
     db_payload: dict,
-    ga_candidates: list[dict] | None,
+    skyline_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
     replay_ctx: ReplayContext,
@@ -314,7 +314,7 @@ def canonicalize_and_assemble(
 
     raw_entries = _collect_raw_entries(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
+        skyline_candidates=skyline_candidates,
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
     )
@@ -326,19 +326,20 @@ def canonicalize_and_assemble(
 def assemble_without_replay(
     *,
     db_payload: dict,
-    ga_candidates: list[dict] | None,
+    skyline_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
 ) -> list[dict]:
     """
     Compatibility path for tooling/tests that do not provide replay context.
 
-    This preserves legacy non-authoritative behavior: collect + dedup without replay.
+    This preserves historical non-authoritative behavior: collect + dedup without replay.
     """
     raw_entries = _collect_raw_entries(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
+        skyline_candidates=skyline_candidates,
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
     )
     return _dedupe_entries(raw_entries)
+

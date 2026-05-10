@@ -17,7 +17,7 @@ from .team_buff import team_buff_effect, resolve_baseline_team_buff_from_cfg_dic
 from .config_adapter import UserGemSettings
 
 
-def build_base_stats_from_config(cfg_dict):
+def build_base_stats_from_config(cfg_dict, *, primary_color: str = ""):
     """
     Build base stats from config including user input gems, elemental gems, and team buffs.
 
@@ -54,7 +54,7 @@ def build_base_stats_from_config(cfg_dict):
                 base_stats[el] = base_stats.get(el, 0) + val * ELEMENTAL_GEM_SCALE
 
     team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-    team_color = resolve_team_color_from_cfg_dict(cfg_dict)
+    team_color = resolve_team_color_from_cfg_dict(cfg_dict, primary_color=primary_color)
 
     for stat_name, delta in team_buff_effect(team_buff, team_color).items():
         base_stats[stat_name] = base_stats.get(stat_name, 0) + int(delta)

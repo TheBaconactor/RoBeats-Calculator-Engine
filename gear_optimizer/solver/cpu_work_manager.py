@@ -23,7 +23,7 @@ class CpuWorkManager:
     """
     Central coordinator for startup CPU work that must complete before GPU init.
 
-    This keeps expensive host-side preparation out of live GA/FG dispatch and
+    This keeps expensive host-side preparation out of live skyline/FG dispatch and
     gives the app one place to report CPU startup phases.
     """
 

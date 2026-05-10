@@ -150,7 +150,7 @@ class GpuProfiler:
 
             # Categorize timing
             name_lower = name.lower()
-            # ForceGreatsFinder adds named measurements *in addition* to calling the typed
+            # native FG solver adds named measurements *in addition* to calling the typed
             # record_* APIs. Skip categorization for these to avoid double-counting.
             if name_lower.startswith(("fg_upload::", "fg_download::", "fg_kernel::")):
                 return

@@ -253,7 +253,7 @@ def load_all_gears_list(paths):
     return parse_gear_rows(resolve_stats_csv(paths, "Gears.csv"))
 
 
-def get_fixed_stats(cfg):
+def get_fixed_stats(cfg, *, primary_color: str = ""):
     """
     Calculate fixed stats from gems and team buffs in config.
 
@@ -263,7 +263,7 @@ def get_fixed_stats(cfg):
     Returns:
         dict: Stats dictionary with gem and team buff contributions
     """
-    return build_base_stats_from_config(cfg_to_dict(cfg))
+    return build_base_stats_from_config(cfg_to_dict(cfg), primary_color=primary_color)
 
 
 def get_config_gear_stats(cfg, paths, gears_db=None):

@@ -28,10 +28,10 @@ from .initialization import (
     _ensure_ftff_combo_tables,
 )
 from .timeline import precompute_timeline_gpu
-from .ga_operations import (
-    ga_upload_population_indices,
-    ga_evaluate_population,
-    ga_download_results,
+from .skyline_operations import (
+    skyline_upload_population_indices,
+    skyline_evaluate_population,
+    skyline_download_results,
 )
 
 from gear_optimizer.core.parsing import env_get
@@ -55,7 +55,7 @@ _USE_FTFF_BLOCK_KERNEL = str(env_get("GPU_FTFF_BLOCK_KERNEL", "0") or "").strip(
 kernels = get_kernels()
 
 # -----------------------------------------------------------------------------
-# Legacy helpers (kept for regression tests + strict fallback policy).
+# Historical helpers (kept for regression tests + strict fallback policy).
 # -----------------------------------------------------------------------------
 
 
@@ -356,8 +356,8 @@ def solve_genomes_from_registry(
     56KB genome_base_stats upload per call.
 
     PREREQUISITES (must be called before this function):
-    - ga_upload_item_stats() with registry.to_gpu_arrays()
-    - ga_upload_base_fixed_stats() with base stats array
+    - skyline_upload_item_stats() with registry.to_gpu_arrays()
+    - skyline_upload_base_fixed_stats() with base stats array
 
     This function:
     1. Uploads population_indices (once per call)
@@ -394,7 +394,7 @@ def solve_genomes_from_registry(
     # Upload population indices (only ~150KB vs building/uploading genome_stats)
     if _profiler.enabled:
         _t_upload = time.perf_counter()
-        n_uploaded = int(ga_upload_population_indices(population_indices, n_slots=9) or 0)
+        n_uploaded = int(skyline_upload_population_indices(population_indices, n_slots=9) or 0)
         _maybe_sync(for_timing=True)
         _profiler.record_upload(
             time.perf_counter() - _t_upload,
@@ -402,14 +402,14 @@ def solve_genomes_from_registry(
         )
         _t_kernel = time.perf_counter()
     else:
-        ga_upload_population_indices(population_indices, n_slots=9)
+        skyline_upload_population_indices(population_indices, n_slots=9)
         _t_kernel = None
 
     # GPU-native eval:
     # - Fused aggregate + best-key init
     # - Parallel (genome, ft/ff) combo search (chunked to limit kernel wall time)
     # - Materialize best allocations per genome (writes genome_result_stats)
-    ga_evaluate_population(
+    skyline_evaluate_population(
         n_genomes,
         n_slots=9,
         total_budget=int(total_budget),
@@ -438,7 +438,7 @@ def solve_genomes_from_registry(
     # Download only the active result prefix (uses staging field when available).
     _maybe_sync(for_timing=False)  # Single sync before download (respects sync policy)
     _t_download = time.perf_counter()
-    results_np = ga_download_results(int(n_genomes))
+    results_np = skyline_download_results(int(n_genomes))
     if _profiler.enabled:
         try:
             download_bytes = int(results_np.nbytes)

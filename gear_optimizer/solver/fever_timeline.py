@@ -406,9 +406,9 @@ class SongTimelineGrid:
     Pre-computed 161x161 grid of fever timelines for a specific song.
 
     Caches all possible timelines based on raw FT/FF stat indices (0-160).
-    Provides O(1) lookup for the gem solver and Force Greats.
+    Provides O(1) lookup for the gem solver and ForceGreats.
 
-    Key insight: Force Greats just increases fill requirement per section,
+    Key insight: ForceGreats just increases fill requirement per section,
     so we cache base parameters (non_fever_base, real_fever_time) and
     compute adjusted timelines dynamically.
     """
@@ -684,7 +684,7 @@ class SongTimelineGrid:
 
     def get_fever_params(self, ft_idx, ff_idx):
         """
-        Get fever parameters for Force Greats calculation.
+        Get fever parameters for ForceGreats calculation.
 
         Args:
             ft_idx: Fever Time stat index (0-160)
@@ -710,7 +710,7 @@ class SongTimelineGrid:
     def precompute_all(self):
         """
         Eagerly compute all 161x161 timeline entries.
-        Call this once per song before mega-batch GPU processing.
+        Call this once per song before meskyline-batch GPU processing.
         """
         if self._precomputed:
             return  # Already computed - skip!

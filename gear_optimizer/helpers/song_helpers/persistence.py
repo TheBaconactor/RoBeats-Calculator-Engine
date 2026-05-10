@@ -23,7 +23,7 @@ _normalize_force_payload = normalize_force_payload
 
 def build_persistence_entries(
     db_payload,
-    ga_candidates,
+    skyline_candidates,
     loadout_entries,
     build_details_fn,
     *,
@@ -40,7 +40,7 @@ def build_persistence_entries(
     if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
         return assemble_without_replay(
             db_payload=db_payload if isinstance(db_payload, dict) else {},
-            ga_candidates=ga_candidates,
+            skyline_candidates=skyline_candidates,
             loadout_entries=loadout_entries,
             build_details_fn=build_details_fn,
         )
@@ -52,8 +52,9 @@ def build_persistence_entries(
     )
     return canonicalize_and_assemble(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
+        skyline_candidates=skyline_candidates,
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
         replay_ctx=replay_ctx,
     )
+

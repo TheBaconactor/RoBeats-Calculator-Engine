@@ -144,14 +144,14 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
 
     from .scoring.gpu_solver import _GPU_LOCK
     from .taichi_gem.api import (
-        ga_upload_base_fixed_stats,
-        ga_upload_item_stats,
+        skyline_upload_base_fixed_stats,
+        skyline_upload_item_stats,
         solve_genomes_from_registry,
     )
 
     with _GPU_LOCK:
-        ga_upload_item_stats(request.item_stats, request.slot_start, request.slot_count)
-        ga_upload_base_fixed_stats(request.base_fixed_stats)
+        skyline_upload_item_stats(request.item_stats, request.slot_start, request.slot_count)
+        skyline_upload_base_fixed_stats(request.base_fixed_stats)
         return solve_genomes_from_registry(
             request.population_indices,
             request.timeline_grid,

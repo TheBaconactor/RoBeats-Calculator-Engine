@@ -5,8 +5,7 @@ This module provides configuration operations:
 - setup_song_config: Setup configuration, auto-buff, load current stats
 """
 
-from ...data.models import GASettings
-from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
+from ...data.csv_parser import get_fixed_stats
 from ...core.config import read_iteration_engine_settings
 
 
@@ -23,12 +22,12 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
         minis_by_name: Dictionary of minis by name
 
     Returns:
-        tuple: (ga_settings, fixed_stats, current_gear_stats, current_gear_list,
+        tuple: (solver_settings, fixed_stats, current_gear_stats, current_gear_list,
                 current_mini_stats, current_mini_list, meta_finder, enable_fever,
                 enable_mini, enable_gear, force_greats_mode, force_greats_finder,
                 force_greats_config, manual_force_greats)
     """
-    ga_settings = GASettings.from_cfg(cfg)
+    solver_settings = None
 
     ie = read_iteration_engine_settings(cfg)
     meta_finder = bool(ie.meta_finder)
@@ -41,23 +40,16 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
     force_greats_config = list(ie.force_greats_config or [])
     manual_force_greats = bool(ie.manual_force_greats)
 
-    # --- Auto Select Buff & Color Logic ---
-    if auto_buff:
-        p_col = calc_song["metadata"].get("Primary Color", "Rush")
-        if not cfg.has_section("TeamContributionBuffConstant"):
-            cfg.add_section("TeamContributionBuffConstant")
-        cfg.set("TeamContributionBuffConstant", "TeamColor", p_col)
-        cfg.set("TeamContributionBuffConstant", "TeamBuff", "T5")
-        # Keep auto-buff selection silent so the UI stays clean.
+    p_col = calc_song["metadata"].get("Primary Color", "Rush") if auto_buff else ""
 
-    fixed_stats = get_fixed_stats(cfg)
+    fixed_stats = get_fixed_stats(cfg, primary_color=p_col)
 
-    # Load Current Config for Seeding / Fallback
-    current_gear_stats, current_gear_list = get_config_gear_stats(cfg, paths, gears_by_name)
-    current_mini_stats, current_mini_list = get_config_mini_stats(cfg, paths, minis_by_name)
+    del paths, gears_by_name, minis_by_name
+    current_gear_stats, current_gear_list = {}, []
+    current_mini_stats, current_mini_list = {}, []
 
     return (
-        ga_settings,
+        solver_settings,
         fixed_stats,
         current_gear_stats,
         current_gear_list,
@@ -72,3 +64,5 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
         force_greats_config,
         manual_force_greats,
     )
+
+

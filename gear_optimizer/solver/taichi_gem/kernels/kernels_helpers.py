@@ -28,15 +28,15 @@ _KERNEL_BLOCK_DIM = get_block_dim()
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
 try:
-    _ga_reduce_block_dim = int(env_get("GA_FTFF_REDUCE_BLOCK_DIM", "256") or "256")
+    _SKYLINE_reduce_block_dim = int(env_get("SKYLINE_FTFF_REDUCE_BLOCK_DIM", "256") or "256")
 except Exception as e:
     logger.debug(f"kernels_helpers: {e}")
-    _ga_reduce_block_dim = 256
-GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_ga_reduce_block_dim), 256))
-GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
-if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
-    GA_FTFF_REDUCE_BLOCK_DIM = 32
-GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
+    _SKYLINE_reduce_block_dim = 256
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_SKYLINE_reduce_block_dim), 256))
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = (SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32) * 32
+if SKYLINE_FTFF_REDUCE_BLOCK_DIM <= 0:
+    SKYLINE_FTFF_REDUCE_BLOCK_DIM = 32
+SKYLINE_FTFF_REDUCE_WAVE_STRIDE = SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
 
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by fields.bind_fields() after allocation)
@@ -88,23 +88,23 @@ song_group_high_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> max feasible ca
 genome_base_stats = None
 # [pp, cm, fm, p_val, s_val, ft, ff]
 
-# GPU-native GA / stat aggregation fields
+# GPU-native skyline / stat aggregation fields
 population_indices = None
 population_next_indices = None
-ga_initial_populations = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) staged initial populations
-ga_init_heuristic_topk = None  # (MAX_SLOTS, K) per-slot heuristic sampling table (K may be 1 when disabled)
+skyline_initial_populations = None  # (MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES, MAX_SLOTS) staged initial populations
+skyline_init_heuristic_topk = None  # (MAX_SLOTS, K) per-slot heuristic sampling table (K may be 1 when disabled)
 item_stats = None
 base_fixed_stats = None
-ga_scores = None
-ga_rng_state = None
-ga_parent_a = None
-ga_parent_b = None
-ga_exact_eval_hash_used = None  # (HASH_SIZE,) i32 - open-addressing table for exact duplicate-genome reuse
-ga_exact_eval_hash_keys = None  # (HASH_SIZE, 9) i32 - encoded genome key
-ga_exact_eval_hash_sort_keys = None  # (MAX_GENOMES,) i32 - hash keys for parallel sort grouping
-ga_exact_eval_hash_sort_indices = None  # (MAX_GENOMES,) i32 - genome indices permuted with hash_sort_keys
-ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
-ga_exact_eval_unique_count = None  # (1,) i32 - number of unique genome rows
+skyline_scores = None
+skyline_rng_state = None
+skyline_parent_a = None
+skyline_parent_b = None
+skyline_exact_eval_hash_used = None  # (HASH_SIZE,) i32 - open-addressing table for exact duplicate-genome reuse
+skyline_exact_eval_hash_keys = None  # (HASH_SIZE, 9) i32 - encoded genome key
+skyline_exact_eval_hash_sort_keys = None  # (MAX_GENOMES,) i32 - hash keys for parallel sort grouping
+skyline_exact_eval_hash_sort_indices = None  # (MAX_GENOMES,) i32 - genome indices permuted with hash_sort_keys
+skyline_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
+skyline_exact_eval_unique_count = None  # (1,) i32 - number of unique genome rows
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
 
@@ -119,33 +119,33 @@ ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
-ga_global_best_score = None  # (1,) i32 - best score across all generations
-ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
-ga_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
-ga_global_best_scan_key = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
-ga_global_best_packed = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
-ga_runs_payload_packed = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
-ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
-ga_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, K+1, 24) i32 - compact GA->FG candidate table
-ga_fg_candidates_download_staging = None  # (MAX_GA_RUNS, K+1, 24) i32 - single-slot download staging
+skyline_global_best_score = None  # (1,) i32 - best score across all generations
+skyline_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
+skyline_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+skyline_global_best_scan_key = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
+skyline_global_best_packed = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
+skyline_runs_payload_packed = None  # (MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES+1, 17) i32 - packed snapshots per run
+skyline_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
+skyline_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_SKYLINE_RUNS, K+1, 24) i32 - compact skyline->FG candidate table
+skyline_fg_candidates_download_staging = None  # (MAX_SKYLINE_RUNS, K+1, 24) i32 - single-slot download staging
 
-# GPU-side GA->FG candidate selection (avoid downloading full candidate tables)
-ga_fg_select_hash_used = None  # (HASH_SIZE,) i32 - open-addressing value (0=empty, else stub_index+1)
-ga_fg_select_hash_keys = None  # (HASH_SIZE, 9) i32 - canonical (gear+minis) key
-ga_fg_select_stub_count = None  # (1,) i32 - number of unique stubs
-ga_fg_select_stub_run = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_row = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_score = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_fg_proxy = None  # (STUBS_MAX,) i64
-ga_fg_select_stub_center_ft = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_center_ff = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_ids = None  # (STUBS_MAX, 9) i32
-ga_fg_select_selected_mask = None  # (STUBS_MAX,) i32
-ga_fg_selected_count = None  # (1,) i32
-ga_fg_selected_coords = None  # (MAX_SELECTED, 2) i32
-ga_fg_selected_payload_staging_256 = None  # (257, 26) i32 - row0 header + up to 256 candidates
-ga_fg_selected_payload_staging_1024 = None  # (1025, 26) i32 - row0 header + up to 1024 candidates
-ga_fg_selected_payload_staging_5000 = None  # (5001, 26) i32 - row0 header + up to 5000 candidates
+# GPU-side skyline->FG candidate selection (avoid downloading full candidate tables)
+skyline_fg_select_hash_used = None  # (HASH_SIZE,) i32 - open-addressing value (0=empty, else stub_index+1)
+skyline_fg_select_hash_keys = None  # (HASH_SIZE, 9) i32 - canonical (gear+minis) key
+skyline_fg_select_stub_count = None  # (1,) i32 - number of unique stubs
+skyline_fg_select_stub_run = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_row = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_score = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_fg_proxy = None  # (STUBS_MAX,) i64
+skyline_fg_select_stub_center_ft = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_center_ff = None  # (STUBS_MAX,) i32
+skyline_fg_select_stub_ids = None  # (STUBS_MAX, 9) i32
+skyline_fg_select_selected_mask = None  # (STUBS_MAX,) i32
+skyline_fg_selected_count = None  # (1,) i32
+skyline_fg_selected_coords = None  # (MAX_SELECTED, 2) i32
+skyline_fg_selected_payload_staging_256 = None  # (257, 26) i32 - row0 header + up to 256 candidates
+skyline_fg_selected_payload_staging_1024 = None  # (1025, 26) i32 - row0 header + up to 1024 candidates
+skyline_fg_selected_payload_staging_5000 = None  # (5001, 26) i32 - row0 header + up to 5000 candidates
 
 # GPU-side island elitism (avoids per-generation score downloads)
 island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices
@@ -244,10 +244,10 @@ def lookup_ref_ff(value: ti.i32) -> ti.f32:
 @ti.func
 def _xorshift32(x: ti.u32) -> ti.u32:
     """
-    Deterministic per-thread RNG (fast, good enough for GA operators).
+    Deterministic per-thread RNG (fast, good enough for skyline operators).
 
     Uses xorshift32 algorithm for fast, low-quality random numbers.
-    Perfect for genetic algorithm mutation/crossover.
+    Perfect for Skyline candidate mutation/crossover.
 
     Args:
         x: Current RNG state
@@ -481,7 +481,7 @@ def calc_score_with_grid(
     count_normal: ti.i32,
 ) -> ti.i32:
     """
-    Score calculation using the legacy unpacked i8 grid mask.
+    Score calculation using the historical unpacked i8 grid mask.
 
     This exists for parity tests and debug tooling. Production scoring uses
     `calc_score_with_grid_bits` exclusively for speed/VRAM.

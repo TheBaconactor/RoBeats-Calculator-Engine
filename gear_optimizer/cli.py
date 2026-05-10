@@ -10,7 +10,7 @@ from typing import Sequence
 import logging
 
 from gear_optimizer.core.config import find_and_cache_paths, get_config_path, load_config, load_paths_cache
-from gear_optimizer.core.parsing import config_bool, env_flag
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.data.database import init_db
 
 
@@ -28,16 +28,9 @@ def _read_config_path() -> str:
 
 
 def _debug_profile_enabled(cfg_path: str) -> bool:
+    del cfg_path
     if env_flag("DEBUG_PROFILE") or env_flag("METAFINDER_DEBUG_PROFILE"):
         return True
-    try:
-        cfg = load_config(cfg_path)
-        if config_bool(cfg, "Debug", "DebugProfile", default=False):
-            return True
-        if config_bool(cfg, "IterationEngine", "DebugProfile", default=False):
-            return True
-    except Exception as e:
-        logger.warning(f"cli:_debug_profile_enabled: {e}")
     return False
 
 
@@ -53,8 +46,6 @@ def _apply_debug_profile_env(cfg_path: str) -> None:
         "GPU_PROFILER",
         "GPU_SERVICE_PROFILE",
         "GPU_SERVICE_PROFILE_PRINT",
-        "INFLIGHT_STAGE_PROFILE",
-        "INFLIGHT_STAGE_PROFILE_EMIT_SEC",
         "TAICHI_KERNEL_PROFILER",
         "TAICHI_KERNEL_PROFILER_PRINT",
     ):
@@ -81,27 +72,12 @@ def _apply_taichi_shell_env() -> None:
     os.environ.setdefault("TI_ENABLE_PYBUF", "0")
 
 
-def _apply_gpu_song_slots_default() -> None:
-    if "GPU_SONG_SLOTS" in os.environ:
-        return
-    cfg_path = _read_config_path()
-    try:
-        cfg = load_config(cfg_path)
-        cfg_slots = int(str(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0") or "0"))
-    except Exception as e:
-        logger.warning(f"cli:_apply_gpu_song_slots_default: {e}")
-        cfg_slots = 0
-    if int(cfg_slots) > 0:
-        os.environ.setdefault("GPU_SONG_SLOTS", str(int(cfg_slots)))
-
-
 def run() -> int:
     common_init()
     try:
         cfg_path = _read_config_path()
         _apply_taichi_shell_env()
         _apply_debug_profile_env(cfg_path)
-        _apply_gpu_song_slots_default()
         _apply_throughput_mode_env()
         from gear_optimizer.app import GearOptimizerApp
 

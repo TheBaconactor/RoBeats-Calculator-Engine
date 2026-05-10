@@ -62,11 +62,11 @@ def apply_metal_patches():
     kernels_metal.create_metal_kernels()
 
     # Override the 64-bit atomic kernels with Metal-safe versions
-    base_kernels.ga_find_best_combo_key_kernel = kernels_metal.ga_find_best_combo_key_kernel
-    base_kernels.ga_write_best_results_from_key_kernel = kernels_metal.ga_write_best_results_from_key_kernel
-    base_kernels.ga_find_best_combo_warmstart_kernel = kernels_metal.ga_find_best_combo_warmstart_kernel
-    base_kernels.ga_update_global_best_kernel = kernels_metal.ga_update_global_best_kernel
-    base_kernels.ga_write_best_and_update_global_kernel = kernels_metal.ga_write_best_and_update_global_kernel
+    base_kernels.skyline_find_best_combo_key_kernel = kernels_metal.skyline_find_best_combo_key_kernel
+    base_kernels.skyline_write_best_results_from_key_kernel = kernels_metal.skyline_write_best_results_from_key_kernel
+    base_kernels.skyline_find_best_combo_warmstart_kernel = kernels_metal.skyline_find_best_combo_warmstart_kernel
+    base_kernels.skyline_update_global_best_kernel = kernels_metal.skyline_update_global_best_kernel
+    base_kernels.skyline_write_best_and_update_global_kernel = kernels_metal.skyline_write_best_and_update_global_kernel
 
     _metal_patched = True
     print("[Metal] Applied kernel patches for macOS (Metal-safe reductions)")

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-_GA_BATCH_RUNS_EVAL_HEADROOM = 8_192
+_SKYLINE_BATCH_RUNS_EVAL_HEADROOM = 8_192
 _FG_DEFAULT_TARGET_THREADS_PER_KERNEL = 2_000_000
 
 
 @dataclass(frozen=True)
-class GaBatchRunsPlan:
+class SkylineBatchRunsPlan:
     batch_runs: int
     max_runs_by_work: int
     max_runs_by_genomes: int
@@ -16,15 +16,15 @@ class GaBatchRunsPlan:
     override_applied: bool
 
 
-def choose_ga_batch_runs(
+def choose_skyline_batch_runs(
     *,
     n_genomes: int,
     n_combos: int,
     max_evals_per_dispatch: int,
     max_genomes: int,
     batch_runs_override: int = 0,
-    eval_headroom: int = _GA_BATCH_RUNS_EVAL_HEADROOM,
-) -> GaBatchRunsPlan:
+    eval_headroom: int = _SKYLINE_BATCH_RUNS_EVAL_HEADROOM,
+) -> SkylineBatchRunsPlan:
     n_genomes = int(n_genomes)
     n_combos = int(n_combos)
     max_evals_per_dispatch = max(1, int(max_evals_per_dispatch))
@@ -53,7 +53,7 @@ def choose_ga_batch_runs(
     if override_applied:
         batch_runs = int(batch_runs_override)
 
-    return GaBatchRunsPlan(
+    return SkylineBatchRunsPlan(
         batch_runs=int(batch_runs),
         max_runs_by_work=int(max_runs_by_work),
         max_runs_by_genomes=int(max_runs_by_genomes),
