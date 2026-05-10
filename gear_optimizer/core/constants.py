@@ -33,27 +33,14 @@ FEVER_TIME_SCALE = 0.15
 # Fever Time constant offset added to scaled duration (seconds)
 FEVER_TIME_OFFSET = 0.15
 
-# --- skyline (Skyline candidate) CONSTANTS ---
-# These will be overwritten by config.ini if present
-#
-# EXPLORATION vs EXPLOITATION TUNING:
-# - Higher mutation_rate = more exploration (random changes)
-# - More multi_runs = more fresh starts (escape local optima)
-# - Elitism = exploitation (preserving best solutions)
-
-# Local search constants
+# --- SKYLINE CANDIDATE CONSTANTS ---
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
 CM_LOOKAHEAD_MAX = 10  # Max lookahead iterations for CM plateau-breaking in gem optimization
-
-# --- GPU skyline ISLAND MODEL ---
-# Real-song benchmarks showed island migration amplifying exact-clone pressure
-# without improving score quality consistently, so keep the default on a single
-# island until migration is revisited.
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score
-FG_CANDIDATE_LIMIT = 51  # Default FG funnel size (retention cap minimum)
+FG_CANDIDATE_LIMIT = 51  # Compatibility metric for persisted top-row retention.
 
 # --- SHARED ENUMS / TOKENS ---
 DIFFICULTIES = ("Easy", "Normal", "Hard")

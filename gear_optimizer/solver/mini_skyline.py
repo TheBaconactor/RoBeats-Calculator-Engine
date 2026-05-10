@@ -35,12 +35,10 @@ def _lane_base_init(item: dict, p_color: str, s_color: str) -> int:
     return (2 * primary) + secondary
 
 
-def _suffix_max_4d(src: np.ndarray, out: np.ndarray) -> None:
+def _suffix_max_cm_fm(src: np.ndarray, out: np.ndarray) -> None:
     out[...] = src
     np.maximum.accumulate(out[::-1, :, :, :], axis=0, out=out[::-1, :, :, :])
     np.maximum.accumulate(out[:, ::-1, :, :], axis=1, out=out[:, ::-1, :, :])
-    np.maximum.accumulate(out[:, :, ::-1, :], axis=2, out=out[:, :, ::-1, :])
-    np.maximum.accumulate(out[:, :, :, ::-1], axis=3, out=out[:, :, :, ::-1])
 
 
 def mini_combo_skyline(
@@ -119,7 +117,7 @@ def mini_combo_skyline(
     shape = (cm_size, fm_size, ft_size, ff_size)
     grid_elems = int(cm_size) * int(fm_size) * int(ft_size) * int(ff_size)
     if grid_elems > 250_000_000:
-        raise MemoryError(f"Mini skyline grid too large: {shape} ({grid_elems:,} elems). Try reducing pools or use GA.")
+        raise MemoryError(f"Mini skyline grid too large: {shape} ({grid_elems:,} elems). Try reducing pools.")
 
     layer_grid = np.full(shape, -1, dtype=np.int16)
     layer_suffix = np.empty(shape, dtype=np.int16)
@@ -136,7 +134,7 @@ def mini_combo_skyline(
     layer_flat = layer_grid.reshape(-1)
     layer_flat.fill(-1)
     layer_flat[uniq_flat] = base_u
-    _suffix_max_4d(layer_grid, layer_suffix)
+    _suffix_max_cm_fm(layer_grid, layer_suffix)
 
     ff_u = uniq_flat % ff_size
     tmp = uniq_flat // ff_size
@@ -152,12 +150,6 @@ def mini_combo_skyline(
     m1 = (fm_u + 1) < fm_size
     if np.any(m1):
         strict[m1] = np.maximum(strict[m1], layer_suffix[cm_u[m1], fm_u[m1] + 1, ft_u[m1], ff_u[m1]])
-    m2 = (ft_u + 1) < ft_size
-    if np.any(m2):
-        strict[m2] = np.maximum(strict[m2], layer_suffix[cm_u[m2], fm_u[m2], ft_u[m2] + 1, ff_u[m2]])
-    m3 = (ff_u + 1) < ff_size
-    if np.any(m3):
-        strict[m3] = np.maximum(strict[m3], layer_suffix[cm_u[m3], fm_u[m3], ft_u[m3], ff_u[m3] + 1])
 
     layer_sky = base_u > strict
     if not np.any(layer_sky):

@@ -416,7 +416,7 @@ def score_retained_skyline_force_greats(
 
         if (idx + 1) % 16 == 0 or (idx + 1) == len(candidate_records):
             status_cb(
-                "exact_skyline: native FG scored "
+                "skyline: native FG scored "
                 f"{idx + 1}/{len(candidate_records)} candidates "
                 f"(best_fg={int(best_fg_score)})"
             )

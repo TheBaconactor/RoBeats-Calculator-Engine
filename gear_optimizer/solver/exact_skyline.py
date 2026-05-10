@@ -8,7 +8,6 @@ import numpy as np
 
 from gear_optimizer.core.constants import (
     ELEMENTAL_GEM_SCALE,
-    FG_CANDIDATE_LIMIT,
     GEM_SCALE_FEVER,
     GEM_SCALE_NORMAL,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -53,9 +52,15 @@ _mini_ids_from_code = _mini_ids_from_code_common
 _build_candidate_payload = _build_candidate_payload_common
 _mini_combo_skyline_points_6d_lane_base_with_codes = _mini_combo_skyline_common
 
+SKYLINE_CERTIFICATION_STATUS = "timing_cell_candidate_frontier"
+SKYLINE_CERTIFICATION_NOTE = (
+    "Raw dominance is restricted to fixed final FT/FF timing cells. "
+    "FG is exact over retained skyline candidates, not over candidates pruned before the timing-cell frontier."
+)
+
 
 def _read_skyline_fg_candidate_mode() -> str:
-    raw = str(env_get("SKYLINE_FG_CANDIDATES", "topk") or "topk").strip().lower().replace("-", "_")
+    raw = str(env_get("SKYLINE_FG_CANDIDATES", "all") or "all").strip().lower().replace("-", "_")
     if raw in {"all", "full", "entire", "skyline"}:
         return "all"
     if raw in {"sample", "stratified", "stratified_sample", "bands"}:
@@ -405,10 +410,8 @@ def _reduce_gear_dp_frontier_arrays(stats: np.ndarray, codes: np.ndarray) -> tup
     if int(pts.shape[0]) != int(code_arr.shape[0]):
         raise ValueError("gear DP stats/code length mismatch")
 
-    row_order = np.arange(int(pts.shape[0]), dtype=np.int64)
     order = np.lexsort(
         (
-            row_order,
             -pts[:, 5].astype(np.int64, copy=False),
             pts[:, 4],
             pts[:, 3],
@@ -420,37 +423,10 @@ def _reduce_gear_dp_frontier_arrays(stats: np.ndarray, codes: np.ndarray) -> tup
     sorted_pts = pts[order]
     sorted_codes = code_arr[order]
 
-    same_key_ff = np.zeros(int(sorted_pts.shape[0]), dtype=np.bool_)
+    same_key = np.zeros(int(sorted_pts.shape[0]), dtype=np.bool_)
     if int(sorted_pts.shape[0]) > 1:
-        same_key_ff[1:] = np.all(sorted_pts[1:, :5] == sorted_pts[:-1, :5], axis=1)
-    if np.any(same_key_ff):
-        sorted_pts = sorted_pts[~same_key_ff]
-        sorted_codes = sorted_codes[~same_key_ff]
-
-    n = int(sorted_pts.shape[0])
-    keep = np.zeros(n, dtype=np.bool_)
-    key_start = np.zeros(n, dtype=np.bool_)
-    if n > 0:
-        key_start[0] = True
-    if n > 1:
-        key_start[1:] = np.any(sorted_pts[1:, :4] != sorted_pts[:-1, :4], axis=1)
-
-    starts = np.flatnonzero(key_start)
-    ends = np.empty_like(starts)
-    if starts.size:
-        ends[:-1] = starts[1:]
-        ends[-1] = n
-
-    for start, end in zip(starts.tolist(), ends.tolist(), strict=True):
-        group_base = sorted_pts[int(start) : int(end), 5]
-        group_len = int(end) - int(start)
-        if group_len <= 0:
-            continue
-        keep[int(end) - 1] = True
-        if group_len > 1:
-            suffix_best = np.maximum.accumulate(group_base[::-1])[::-1]
-            keep[int(start) : int(end) - 1] = group_base[:-1] > suffix_best[1:]
-
+        same_key[1:] = np.all(sorted_pts[1:, :5] == sorted_pts[:-1, :5], axis=1)
+    keep = ~same_key
     return sorted_pts[keep].astype(np.int32, copy=False), sorted_codes[keep].astype(np.uint64, copy=False)
 
 
@@ -623,7 +599,7 @@ def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
     shape = (cm_size, fm_size, ft_size, ff_size)
     grid_elems = int(cm_size) * int(fm_size) * int(ft_size) * int(ff_size)
     if grid_elems > 250_000_000:
-        raise MemoryError(f"Gear skyline grid too large: {shape} ({grid_elems:,} elems). Try reducing pools or use GA.")
+        raise MemoryError(f"Gear skyline grid too large: {shape} ({grid_elems:,} elems). Try reducing pools.")
 
     layer_grid = np.full(shape, -1, dtype=np.int16)
     layer_suffix = np.empty(shape, dtype=np.int16)
@@ -793,7 +769,7 @@ def _evaluate_product_exact(
         keep_top_k=int(keep_top_k),
         gpu_client=gpu_client,
         status_cb=status_cb,
-        status_label="exact_skyline",
+        status_label="skyline",
         status_every=max_batch * 16,
     )
 
@@ -982,7 +958,7 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     gear_points: np.ndarray,
     mini_points: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """GPU-resident exact combined skyline over gear ⊕ mini stat products."""
+    """GPU-resident timing-cell skyline over gear ⊕ mini stat products."""
 
     return combined_global_skyline_pairs_6d_sparse(gear_points, mini_points)
 
@@ -1058,7 +1034,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     if ctx.mini_points.size == 0:
         return None, [], [], None, [], [], []
 
-    status_cb("exact_skyline: gear DP")
+    status_cb("skyline: gear DP")
     phase_started = time.perf_counter()
     dp_states, dp_stats = _dp_gear_ff_base_frontier_with_codes(
         ctx.gear_pool,
@@ -1072,7 +1048,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     if not dp_states:
         return None, [], [], None, [], [], []
 
-    status_cb("exact_skyline: gear global skyline")
+    status_cb("skyline: gear timing-cell skyline")
     phase_started = time.perf_counter()
     gear_sky_stats, gear_points, gear_codes = _global_gear_skyline_points_6d_lane_base_with_codes(dp_states)
     _record_phase(phase_seconds, "gear_global_skyline_gpu", phase_started)
@@ -1100,7 +1076,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             w_ov=int(w_ov),
         )
         _record_phase(phase_seconds, "envelope_lut_cpu", phase_started)
-        status_cb("exact_skyline: local envelope prune")
+        status_cb("skyline: local envelope prune")
         phase_started = time.perf_counter()
         env_stats, gear_points, gear_codes = _reduce_same_stat_envelope_frontier_with_codes(
             gear_points,
@@ -1116,7 +1092,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         phase_counts["gear_local_envelope_in"] = int(env_stats.points_in)
         phase_counts["gear_local_envelope_out"] = int(env_stats.points_out)
         status_cb(
-            "exact_skyline: local envelope kept "
+            "skyline: local envelope kept "
             f"{int(env_stats.points_out):,}/{int(env_stats.points_in):,} "
             f"(groups={int(env_stats.groups_multi):,}, max_group={int(env_stats.max_group_size)}, "
             f"time={float(env_stats.seconds):.2f}s)"
@@ -1137,11 +1113,11 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     phase_counts["mini_ids"] = int(mini_ids.shape[0])
 
     status_cb(
-        "exact_skyline: build registry + evaluate candidates "
+        "skyline: build registry + evaluate candidates "
         f"(gear={int(gear_points.shape[0])}, minis={int(ctx.mini_points.shape[0])})"
     )
 
-    base_keep_top_k = max(int(LOADOUTS_PER_SONG_LIMIT), int(FG_CANDIDATE_LIMIT))
+    base_keep_top_k = int(LOADOUTS_PER_SONG_LIMIT)
     keep_top_k = int(base_keep_top_k)
     fg_candidate_mode = _read_skyline_fg_candidate_mode()
     product_total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
@@ -1150,7 +1126,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     top_codes: list[tuple[int, int, int]] = []
     combined_candidate_count = 0
 
-    status_cb("exact_skyline: combined skyline prune")
+    status_cb("skyline: combined timing-cell prune")
     phase_started = time.perf_counter()
     pair_g_idx, pair_m_idx = _combined_global_skyline_pairs_6d_lane_base_with_indices(gear_points, ctx.mini_points)
     _record_phase(phase_seconds, "combined_skyline_gpu_sparse", phase_started)
@@ -1165,7 +1141,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             phase_counts[f"combined_sparse.{name}"] = int(count or 0)
     if pair_g_idx.size > 0:
         if ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
-            status_cb("exact_skyline: combined envelope prune")
+            status_cb("skyline: combined envelope prune")
             phase_started = time.perf_counter()
             g_pts = gear_points[pair_g_idx].astype(np.int32, copy=False)
             m_pts = ctx.mini_points[pair_m_idx].astype(np.int32, copy=False)
@@ -1209,7 +1185,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             phase_counts["combined_envelope_in"] = int(pair_env_stats.points_in)
             phase_counts["combined_envelope_out"] = int(pair_env_stats.points_out)
             status_cb(
-                "exact_skyline: combined envelope kept "
+                "skyline: combined envelope kept "
                 f"{int(pair_env_stats.points_out):,}/{int(pair_env_stats.points_in):,} "
                 f"(groups={int(pair_env_stats.groups_multi):,}, max_group={int(pair_env_stats.max_group_size)}, "
                 f"time={float(pair_env_stats.seconds):.2f}s)"
@@ -1219,7 +1195,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 pair_g_idx, pair_m_idx = _unpack_pair_codes(reduced_codes)
 
         status_cb(
-            "exact_skyline: evaluate combined skyline "
+            "skyline: evaluate combined frontier "
             f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
         )
         combined_candidate_count = int(pair_g_idx.shape[0])
@@ -1297,7 +1273,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             top_codes = top_base_codes + random_outside
             top_codes.sort(reverse=True)
             status_cb(
-                "exact_skyline: sample FG set "
+                "skyline: sample FG set "
                 f"(top_base={len(top_base_codes)}, random_outside={len(random_outside)}, "
                 f"combined={int(combined_candidate_count)})"
             )
@@ -1374,6 +1350,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     native_fg_summary["candidate_scope"] = str(fg_candidate_mode)
     native_fg_summary["base_keep_top_k"] = int(base_keep_top_k)
     native_fg_summary["combined_skyline_candidates"] = int(combined_candidate_count)
+    native_fg_summary["skyline_certification_status"] = SKYLINE_CERTIFICATION_STATUS
+    native_fg_summary["skyline_certification_note"] = SKYLINE_CERTIFICATION_NOTE
     native_fg_summary["skyline_phase_seconds"] = _rounded_phase_seconds(phase_seconds)
     native_fg_summary["skyline_phase_counts"] = dict(phase_counts)
     if fg_candidate_mode == "sample":
@@ -1423,16 +1401,16 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     if isinstance(best_data, dict):
         best_data["NativeFG"] = dict(native_fg_summary)
     if phase_seconds:
-        status_cb(f"exact_skyline: phase telemetry ({_slowest_phase_label(phase_seconds)})")
+        status_cb(f"skyline: phase telemetry ({_slowest_phase_label(phase_seconds)})")
     status_cb(
-        "exact_skyline: native FG "
+        "skyline: native FG "
         f"(mode={native_fg_summary.get('mode')}, candidates={int(len(candidate_records))}, "
         f"exact_calls={int(native_fg_summary.get('exact_calls', 0) or 0)}, "
         f"gains={int(native_fg_summary.get('fg_gains', 0) or 0)}, "
         f"best_fg={int(native_fg_summary.get('best_fg_score', 0) or 0)})"
     )
     status_cb(
-        "exact_skyline: done "
+        "skyline: done "
         f"(dp_pairs={dp_stats.pairs_6d}, gear_sky={gear_sky_stats.points_out}, "
         f"gear_env={int(gear_points.shape[0])}, mini_sky={int(ctx.mini_points.shape[0])})"
     )
@@ -1458,6 +1436,7 @@ def solve_exact_skyline(
     gpu_client: Any | None = None,
     solver_ctx: SolverContext | None = None,
 ):
+    """Solve through the skyline candidate frontier and exact per-candidate scorers."""
     del paths, gears_by_name, minis_by_name
 
     if status_cb is None:

@@ -1,5 +1,5 @@
 """
-Taichi Kernels - exact skyline evaluation.
+Taichi Kernels - skyline evaluation.
 
 Includes:
 - skyline_find_best_combo_warmstart_kernel

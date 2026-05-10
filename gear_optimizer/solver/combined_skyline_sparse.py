@@ -25,10 +25,10 @@ def _pareto_6d(
     for i in range(N):
         dominated = 0
         for j in range(i):
-            if dominated == 0:
+            if dominated == 0 and pts[j, 3] == pts[i, 3] and pts[j, 4] == pts[i, 4]:
                 ge = 1
                 gt = 0
-                for d in ti.static(range(6)):
+                for d in ti.static((0, 1, 2, 5)):
                     if pts[j, d] < pts[i, d]:
                         ge = 0
                     if pts[j, d] > pts[i, d]:
@@ -49,10 +49,10 @@ def _pareto_current_6d(
         i = higher_count + local_i
         dominated = 0
         for j in range(i):
-            if dominated == 0:
+            if dominated == 0 and pts[j, 3] == pts[i, 3] and pts[j, 4] == pts[i, 4]:
                 ge = 1
                 gt = 0
-                for d in ti.static(range(6)):
+                for d in ti.static((0, 1, 2, 5)):
                     if pts[j, d] < pts[i, d]:
                         ge = 0
                     if pts[j, d] > pts[i, d]:
@@ -73,6 +73,7 @@ def combined_global_skyline_pairs_6d_sparse(
         _LAST_COMBINED_SKYLINE_STATS = {
             "phase_seconds": {},
             "counts": {"gear_points": 0, "mini_points": 0, "layers": 0},
+            "dominance": "fixed_final_ft_ff",
             "total_seconds": 0.0,
         }
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
@@ -241,6 +242,7 @@ def combined_global_skyline_pairs_6d_sparse(
                 "kept_rows_total": 0,
                 "out_pairs": 0,
             },
+            "dominance": "fixed_final_ft_ff",
             "total_seconds": round(float(time.perf_counter() - t_total), 6),
         }
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
@@ -259,6 +261,7 @@ def combined_global_skyline_pairs_6d_sparse(
             "kept_rows_total": int(kept_rows_total),
             "out_pairs": int(out_g.shape[0]),
         },
+        "dominance": "fixed_final_ft_ff",
         "total_seconds": round(float(time.perf_counter() - t_total), 6),
     }
     return out_g, out_m

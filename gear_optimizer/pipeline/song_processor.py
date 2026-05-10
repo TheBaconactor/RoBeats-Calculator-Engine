@@ -1063,7 +1063,7 @@ def process_song_task(args) -> SongResultPayload:
     1. Parse arguments and setup
     2. Read song file
     3. Load previous best from database (if using DB)
-    4. Run exact skyline
+    4. Run skyline
     5. Build persistence payload
     6. Cleanup and return results
 

@@ -112,7 +112,7 @@ class TaskExecutionMixin:
             if not tasks:
                 return
 
-            logger.info("[Skyline] Running direct exact skyline task path.")
+            logger.info("[Skyline] Running direct skyline task path.")
             self._consume_results(
                 (safe_process_song_task(task) for task in tasks),
                 completed_songs=completed_songs,
