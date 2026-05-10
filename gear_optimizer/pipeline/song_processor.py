@@ -46,6 +46,7 @@ from ..core.config import (
     read_fg_search_radius,
     read_fg_solver_mode,
     read_outer_search_engine,
+    read_pre_prune_mode,
 )
 from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
@@ -715,6 +716,8 @@ def _setup_song_context(
     fg_search_radius = read_fg_search_radius(cfg)
     if enable_gear or enable_mini:
         outer_engine = read_outer_search_engine(cfg, default="ga")
+        if outer_engine == "exact":
+            pre_prune_mode = read_pre_prune_mode(cfg, default="none")
 
     return SongContext(
         fp=fp,
@@ -798,6 +801,7 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             except Exception as e:
                 logger.warning(f"song_processor:_run_outer_search: {e}")
 
+        solver_pre_prune = ctx.pre_prune_mode if ctx.outer_engine == "exact" else "none"
         ctx.solver_ctx = prepare_solver_context(
             ctx.cfg,
             ctx.fixed_stats,
@@ -809,39 +813,68 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             optimize_minis=ctx.enable_mini,
             fixed_gear=ctx.current_gear_list,
             fixed_minis=ctx.current_mini_list,
-            pre_prune_mode="none",
+            pre_prune_mode=solver_pre_prune,
             status_cb=lambda message: ctx.emit(message),
             song_slot=int(ctx.gpu_song_slot),
         )
 
         ga_start = time.perf_counter()
-        best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
-            ctx.cfg,
-            ctx.fixed_stats,
-            ctx.paths,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.all_gears,
-            ctx.all_minis,
-            ctx.gears_by_name,
-            ctx.minis_by_name,
-            optimize_gear=ctx.enable_gear,
-            optimize_minis=ctx.enable_mini,
-            fixed_gear=ctx.current_gear_list,
-            fixed_minis=ctx.current_mini_list,
-            ga_depth=ctx.ga_depth,
-            db_seed=ctx.prev_record if ctx.prev_record else None,
-            ga_settings=ctx.ga_settings,
-            status_cb=lambda message: ctx.emit(message),
-            executor=None,
-            known_loadouts=ctx.known_loadouts,
-            song_slot=int(ctx.gpu_song_slot),
-            ga_seed=ctx.ga_seed,
-            solver_ctx=ctx.solver_ctx,
-        )
+        if ctx.outer_engine == "exact":
+            from gear_optimizer.solver.exact_skyline import solve_exact_skyline
+
+            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_exact_skyline(
+                ctx.cfg,
+                ctx.fixed_stats,
+                ctx.paths,
+                ctx.calc_song,
+                ctx.ref_arrays,
+                ctx.all_gears,
+                ctx.all_minis,
+                ctx.gears_by_name,
+                ctx.minis_by_name,
+                optimize_gear=ctx.enable_gear,
+                optimize_minis=ctx.enable_mini,
+                fixed_gear=ctx.current_gear_list,
+                fixed_minis=ctx.current_mini_list,
+                ga_depth=ctx.ga_depth,
+                db_seed=ctx.prev_record if ctx.prev_record else None,
+                ga_settings=ctx.ga_settings,
+                status_cb=lambda message: ctx.emit(message),
+                executor=None,
+                known_loadouts=ctx.known_loadouts,
+                song_slot=int(ctx.gpu_song_slot),
+                ga_seed=ctx.ga_seed,
+                solver_ctx=ctx.solver_ctx,
+            )
+        else:
+            best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
+                ctx.cfg,
+                ctx.fixed_stats,
+                ctx.paths,
+                ctx.calc_song,
+                ctx.ref_arrays,
+                ctx.all_gears,
+                ctx.all_minis,
+                ctx.gears_by_name,
+                ctx.minis_by_name,
+                optimize_gear=ctx.enable_gear,
+                optimize_minis=ctx.enable_mini,
+                fixed_gear=ctx.current_gear_list,
+                fixed_minis=ctx.current_mini_list,
+                ga_depth=ctx.ga_depth,
+                db_seed=ctx.prev_record if ctx.prev_record else None,
+                ga_settings=ctx.ga_settings,
+                status_cb=lambda message: ctx.emit(message),
+                executor=None,
+                known_loadouts=ctx.known_loadouts,
+                song_slot=int(ctx.gpu_song_slot),
+                ga_seed=ctx.ga_seed,
+                solver_ctx=ctx.solver_ctx,
+            )
         wall_sec = time.perf_counter() - ga_start
         if PERF_TIMING_ENABLED:
-            print(f"[PERF] GA: {wall_sec:.2f}s")
+            label = "Exact Skyline" if ctx.outer_engine == "exact" else "GA"
+            print(f"[PERF] {label}: {wall_sec:.2f}s")
         if ctx.known_loadouts:
             ctx.known_loadouts.clear()
     else:

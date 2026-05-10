@@ -14,11 +14,21 @@ from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_poo
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
-from gear_optimizer.solver.scoring import solve_best_fever_combination
+from gear_optimizer.solver.scoring import _extract_base_stats, solve_best_fever_combination
 
 logger = logging.getLogger(__name__)
 
 GEAR_SLOTS: tuple[str, ...] = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
+
+
+@dataclass(frozen=True)
+class BitPack:
+    shifts: tuple[int, ...]
+    masks: tuple[int, ...]
+    total_bits: int
+
+    def unpack(self, code: int) -> tuple[int, ...]:
+        return tuple((int(code) >> shift) & mask for shift, mask in zip(self.shifts, self.masks, strict=True))
 
 
 @dataclass
@@ -37,6 +47,10 @@ class SolverContext:
     gpu_arrays: dict[str, np.ndarray]
     base_fixed_stats_arr: np.ndarray
     color_flags: dict[str, int]
+    mini_points: np.ndarray
+    mini_codes: np.ndarray
+    gear_pack: BitPack
+    mini_pack: BitPack
     slot_item_ids: list[np.ndarray]
     mini_item_ids: np.ndarray
     optimize_gear: bool = True
@@ -46,6 +60,49 @@ class SolverContext:
     song_slot: int = 0
     gpu_client: Any | None = None
     status_cb: Callable[[str], None] | None = None
+
+
+def make_pack(sizes: Iterable[int]) -> BitPack:
+    shifts: list[int] = []
+    masks: list[int] = []
+    shift = 0
+    for size in sizes:
+        size = int(size)
+        if size <= 0:
+            raise ValueError("BitPack sizes must be positive")
+        bits = max(1, int(size - 1).bit_length())
+        shifts.append(shift)
+        masks.append((1 << bits) - 1)
+        shift += bits
+    if shift > 64:
+        raise ValueError(f"BitPack overflow: need {shift} bits > 64")
+    return BitPack(shifts=tuple(shifts), masks=tuple(masks), total_bits=int(shift))
+
+
+def gear_ids_from_code(
+    code: int,
+    *,
+    pack: BitPack,
+    slot_item_ids: list[np.ndarray],
+) -> np.ndarray:
+    idxs = pack.unpack(code)
+    out = np.zeros(len(GEAR_SLOTS), dtype=np.int32)
+    for idx, item_idx in enumerate(idxs):
+        out[idx] = int(slot_item_ids[idx][int(item_idx)])
+    return out
+
+
+def mini_ids_from_code(
+    code: int,
+    *,
+    pack: BitPack,
+    mini_item_ids: np.ndarray,
+) -> np.ndarray:
+    idxs = pack.unpack(code)
+    out = np.zeros(3, dtype=np.int32)
+    for idx, item_idx in enumerate(idxs):
+        out[idx] = int(mini_item_ids[int(item_idx)])
+    return out
 
 
 def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_color: str) -> dict[str, Any]:
@@ -110,7 +167,6 @@ def build_candidate_payload(
         ref_arrays,
         silent=True,
         override_cfg=override_cfg,
-        gpu_client=gpu_client,
     )
     out = dict(refined or {})
     out["Genome"] = list(genome)
@@ -120,7 +176,74 @@ def build_candidate_payload(
     out["MiniNames"] = [m.get("Name", "None") for m in out["Minis"]]
     if out.get("BaseScore") is None:
         out["BaseScore"] = int(out.get("Score", 0) or 0)
+    stats = out.get("Stats")
+    if isinstance(stats, dict) and stats:
+        selected = str(out.get("Selected Element", "") or override_cfg.get("selected_color", "") or "")
+        base_stats = _extract_base_stats(
+            stats,
+            out.get("GemCounts") if isinstance(out.get("GemCounts"), dict) else {},
+            selected,
+            int(out.get("FT", 0) or 0),
+            int(out.get("FF", 0) or 0),
+        )
+        if isinstance(base_stats, dict) and base_stats:
+            out["BaseStats"] = base_stats
     return out
+
+
+def _coerce_registry_scores(results: Any, *, expected_rows: int) -> np.ndarray:
+    result_arr = np.asarray(results, dtype=np.int64)
+    if result_arr.ndim != 2 or result_arr.shape[0] != int(expected_rows) or result_arr.shape[1] < 1:
+        raise ValueError(
+            "registry solver returned an unexpected result shape: "
+            f"expected ({int(expected_rows)}, >=1), got {tuple(result_arr.shape)}"
+        )
+    return result_arr[:, 0]
+
+
+def _push_candidate_heap_streaming(
+    *,
+    heap: list[tuple[int, int, int]],
+    scores: np.ndarray,
+    batch_gear_codes: np.ndarray,
+    batch_mini_codes: np.ndarray,
+    keep_top_k: int,
+) -> None:
+    if int(keep_top_k) <= 0:
+        return
+
+    row_count = int(scores.shape[0])
+    start_idx = 0
+    if len(heap) < int(keep_top_k):
+        fill_count = min(int(keep_top_k) - len(heap), row_count)
+        for idx in range(fill_count):
+            heapq.heappush(
+                heap,
+                (
+                    int(scores[idx]),
+                    int(batch_gear_codes[idx]),
+                    int(batch_mini_codes[idx]),
+                ),
+            )
+        start_idx = fill_count
+
+    if start_idx >= row_count or len(heap) < int(keep_top_k):
+        return
+
+    threshold_score = int(heap[0][0])
+    interesting_offsets = np.flatnonzero(scores[start_idx:] > threshold_score)
+    for offset in interesting_offsets:
+        idx = int(offset) + start_idx
+        score = int(scores[idx])
+        if score > heap[0][0]:
+            heapq.heapreplace(
+                heap,
+                (
+                    score,
+                    int(batch_gear_codes[idx]),
+                    int(batch_mini_codes[idx]),
+                ),
+            )
 
 
 def batched_registry_eval(
@@ -162,22 +285,19 @@ def batched_registry_eval(
             use_exact_inner_solver=True,
         )
         results = dispatch_registry_solve(req, gpu_client=gpu_client)
-        for idx, result in enumerate(results):
-            try:
-                score = int(result[0] or 0)
-            except Exception as e:
-                logger.debug(f"solver_common:batched_registry_eval: {e}")
-                score = 0
-            gear_code = int(batch_gear_codes[idx])
-            mini_code = int(batch_mini_codes[idx])
-            if score > best_score:
-                best_score = score
-                best_ids = batch_ids[idx].copy()
-            if keep_top_k > 0:
-                if len(heap) < keep_top_k:
-                    heapq.heappush(heap, (score, gear_code, mini_code))
-                elif score > heap[0][0]:
-                    heapq.heapreplace(heap, (score, gear_code, mini_code))
+        scores = _coerce_registry_scores(results, expected_rows=int(batch_ids.shape[0]))
+        batch_best_idx = int(np.argmax(scores))
+        batch_best_score = int(scores[batch_best_idx])
+        if batch_best_score > best_score:
+            best_score = batch_best_score
+            best_ids = batch_ids[batch_best_idx].copy()
+        _push_candidate_heap_streaming(
+            heap=heap,
+            scores=scores,
+            batch_gear_codes=batch_gear_codes,
+            batch_mini_codes=batch_mini_codes,
+            keep_top_k=int(keep_top_k),
+        )
 
         done += int(batch_ids.shape[0])
         if status_cb is not None and (done == int(candidate_total) or done % int(status_every) == 0):
@@ -251,6 +371,8 @@ def prepare_solver_context(
     song_slot: int = 0,
     gpu_client: Any | None = None,
 ) -> SolverContext | None:
+    from gear_optimizer.solver.mini_skyline import mini_combo_skyline
+
     p_color = str((calc_song or {}).get("metadata", {}).get("Primary Color", "Rush") or "Rush")
     s_color = str((calc_song or {}).get("metadata", {}).get("Secondary Color", "") or "")
     selected_color = p_color
@@ -306,6 +428,15 @@ def prepare_solver_context(
     if len(mini_pool) <= 0:
         return None
 
+    gear_pack = make_pack([len(gear_pool.get(slot, []) or []) for slot in GEAR_SLOTS])
+    mini_pack = make_pack([len(mini_pool), len(mini_pool), len(mini_pool)])
+    _mini_stats, mini_points, mini_codes = mini_combo_skyline(
+        mini_pool,
+        p_color=p_color,
+        s_color=s_color,
+        pack=mini_pack,
+    )
+
     registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
     registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
     registry = ItemRegistry(
@@ -334,6 +465,10 @@ def prepare_solver_context(
         gpu_arrays=gpu_arrays,
         base_fixed_stats_arr=base_fixed_stats_arr,
         color_flags=color_flags,
+        mini_points=mini_points,
+        mini_codes=mini_codes,
+        gear_pack=gear_pack,
+        mini_pack=mini_pack,
         slot_item_ids=slot_item_ids,
         mini_item_ids=mini_item_ids,
         optimize_gear=bool(optimize_gear),

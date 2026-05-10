@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine
+from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine, read_pre_prune_mode
 from gear_optimizer.core.utils import cfg_from_dict
 
 
@@ -91,10 +91,36 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
     return prepared
 
 
-@pytest.mark.parametrize("requested_mode", ["ga", "genetic", "genetic_algorithm", "geneticalgorithm", "unsupported"])
-def test_read_outer_search_engine_forces_ga_on_main(requested_mode):
+@pytest.mark.parametrize(
+    ("requested_mode", "expected_mode"),
+    [
+        ("ga", "ga"),
+        ("genetic", "ga"),
+        ("genetic_algorithm", "ga"),
+        ("geneticalgorithm", "ga"),
+        ("exact", "exact"),
+        ("skyline", "exact"),
+        ("unsupported", "ga"),
+    ],
+)
+def test_read_outer_search_engine_research_modes(requested_mode, expected_mode):
     cfg = cfg_from_dict(_common_cfg(OuterSearchEngine=requested_mode))
-    assert read_outer_search_engine(cfg, default="ga") == "ga"
+    assert read_outer_search_engine(cfg, default="ga") == expected_mode
+
+
+@pytest.mark.parametrize(
+    ("requested_mode", "expected_mode"),
+    [
+        ("auto", "auto"),
+        ("marginal", "marginal"),
+        ("none", "none"),
+        ("off", "none"),
+        ("unsupported", "auto"),
+    ],
+)
+def test_read_pre_prune_mode_research_modes(requested_mode, expected_mode):
+    cfg = cfg_from_dict(_common_cfg(PrePruneMode=requested_mode))
+    assert read_pre_prune_mode(cfg, default="auto") == expected_mode
 
 
 @pytest.mark.parametrize("legacy_mode", ["exact_dp", "dp", "exact"])
@@ -123,6 +149,36 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
     assert prepared["pre_prune_mode"] == "none"
     assert result.get("_deferred_post") is True
     assert (result.get("best_data") or {}).get("BaseScore") == 123
+
+
+def test_process_song_task_routes_exact_outer_engine(monkeypatch):
+    from gear_optimizer.pipeline import song_processor
+
+    prepared = _patch_common(monkeypatch, song_processor)
+    calls = {"ga": 0, "exact": 0}
+
+    def _fake_exact(*args, **kwargs):
+        calls["exact"] += 1
+        assert kwargs.get("solver_ctx") is not None
+        assert kwargs.get("optimize_gear") is True
+        assert kwargs.get("optimize_minis") is True
+        return ({"BaseScore": 456, "Score": 456}, [], [], None, None, None, [])
+
+    def _fake_ga(*args, **kwargs):
+        calls["ga"] += 1
+        raise AssertionError("GA solver should not be called when OuterSearchEngine=exact")
+
+    monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
+    monkeypatch.setattr("gear_optimizer.solver.exact_skyline.solve_exact_skyline", _fake_exact)
+
+    cfg = _common_cfg(OuterSearchEngine="exact", PrePruneMode="marginal")
+    result = song_processor.process_song_task(_common_args(cfg, song_name="pytest exact routing"))
+
+    assert calls["exact"] == 1
+    assert calls["ga"] == 0
+    assert prepared["pre_prune_mode"] == "marginal"
+    assert result.get("_deferred_post") is True
+    assert (result.get("best_data") or {}).get("BaseScore") == 456
 
 
 def test_process_song_task_treats_exact_dp_mode_as_finder_alias(monkeypatch):

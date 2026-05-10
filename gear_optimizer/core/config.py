@@ -747,21 +747,51 @@ def _canon_outer_search_engine(raw: Any) -> str:
 
 
 def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
-    """Read `[IterationEngine].OuterSearchEngine` for mainline production routing."""
+    """Read `[IterationEngine].OuterSearchEngine` for research branch routing."""
 
-    default_c = "ga"
+    default_c = _canon_outer_search_engine(default) or "ga"
     raw_env = env_str("METAFINDER_OUTER_SEARCH_ENGINE", "")
     if not raw_env:
         raw_env = env_str("OUTER_SEARCH_ENGINE", "")
     raw = raw_env or cfg_get(cfg, "IterationEngine", "OuterSearchEngine", str, default_c)
     value = _canon_outer_search_engine(raw)
-    if value == "ga":
+    if value in {"ga", "exact", "skyline"}:
+        if value == "skyline":
+            return "exact"
         return value
     if not value:
         return default_c
     warn_fallback(
         "config.outer_search_engine.invalid",
         "invalid OuterSearchEngine; using default",
+        context={"value": str(raw), "default": default_c},
+    )
+    return default_c
+
+
+def read_pre_prune_mode(cfg: Any, *, default: str = "auto") -> str:
+    """Read `[IterationEngine].PrePruneMode` for exact skyline routing."""
+
+    def _canon(raw: Any) -> str:
+        value = str(raw or "").strip().lower().replace("-", "_")
+        value = "_".join(part for part in value.split("_") if part)
+        if value in {"off", "disabled", "disable", "false", "0"}:
+            return "none"
+        return value
+
+    default_c = _canon(default) or "auto"
+    if default_c not in {"none", "auto", "marginal"}:
+        default_c = "auto"
+
+    raw = cfg_get(cfg, "IterationEngine", "PrePruneMode", str, default_c)
+    value = _canon(raw)
+    if value in {"none", "auto", "marginal"}:
+        return value
+    if not value:
+        return default_c
+    warn_fallback(
+        "config.pre_prune_mode.invalid",
+        "invalid PrePruneMode; using default",
         context={"value": str(raw), "default": default_c},
     )
     return default_c

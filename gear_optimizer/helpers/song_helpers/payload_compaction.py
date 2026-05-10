@@ -62,6 +62,10 @@ def compact_ga_candidates(candidates: list[dict] | None) -> list[dict[str, Any]]
             {
                 "Score": candidate.get("Score", 0),
                 "BaseScore": candidate.get("BaseScore", candidate.get("Score", 0)),
+                "FGScore": candidate.get("FGScore", 0),
+                "FGDelta": candidate.get("FGDelta", 0),
+                "FGUpperBound": candidate.get("FGUpperBound", 0),
+                "NativeFGWouldSkipByCeiling": bool(candidate.get("NativeFGWouldSkipByCeiling", False)),
                 "Gear": list(gear_names),
                 "Minis": list(mini_names),
                 "Data": candidate.get("Data") or {},

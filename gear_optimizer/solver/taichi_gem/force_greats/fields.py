@@ -13,7 +13,7 @@ import numpy as np
 import taichi as ti
 
 from ..runtime import init_taichi, is_initialized
-from ..fields import IS_METAL, MAX_GENOMES, MAX_SONG_SLOTS
+from ..fields import IS_METAL, MAX_FTFF_COMBOS, MAX_GENOMES, MAX_SONG_SLOTS
 
 # ============================================================================
 # CONSTANTS
@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 FG_MAX_SECTIONS = 16
 FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
-_FG_MAX_FTFF_DEFAULT = 1024
+_FG_MAX_FTFF_DEFAULT = int(MAX_FTFF_COMBOS)
 try:
     _fg_max_ftff_env = int(env_get("FG_MAX_FTFF", _FG_MAX_FTFF_DEFAULT) or _FG_MAX_FTFF_DEFAULT)
 except Exception as e:
     logger.debug(f"fields: {e}")
     _fg_max_ftff_env = _FG_MAX_FTFF_DEFAULT
-# Clamp to a conservative range to avoid pathological allocations on low-memory GPUs.
-_fg_max_ftff_env = max(256, min(int(_fg_max_ftff_env), 4096))
+# Clamp to the full gem-solver FT/FF surface. For the current 90-gem budget this is 4,186 pairs.
+_fg_max_ftff_env = max(256, min(int(_fg_max_ftff_env), int(MAX_FTFF_COMBOS)))
 FG_MAX_FTFF = int(_fg_max_ftff_env)
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)

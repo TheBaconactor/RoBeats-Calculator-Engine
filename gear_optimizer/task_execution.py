@@ -10,11 +10,12 @@ import threading
 import time
 
 from gear_optimizer.core.constants import BIN_DIR
+from gear_optimizer.core.config import read_outer_search_engine
 from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_get, env_int, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.core.utils import safe_int
+from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.pipeline.song_processor import safe_process_song_task
 
 logger = logging.getLogger(__name__)
@@ -139,10 +140,26 @@ class TaskExecutionMixin:
             ie0 = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             raw_meta_finder = ie0.get("MetaFinder", ie0.get("metafinder", True)) if isinstance(ie0, dict) else True
             meta_finder_enabled = str(raw_meta_finder).strip().lower() in TRUTHY_ENV_VALUES
+            try:
+                outer_engine = read_outer_search_engine(cfg_from_dict(cfg_dict0), default="ga")
+            except Exception as e:
+                logger.debug(f"task_execution:_run_sequential: {e}")
+                outer_engine = "ga"
 
             if not bool(meta_finder_enabled):
                 logger.info(
                     "[InFlight] Native pipeline skipped: calculate-only / gem-only mode keeps the direct per-song path."
+                )
+                self._consume_results(
+                    (safe_process_song_task(task) for task in tasks),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    total_tasks=self._effective_total_tasks(tasks if isinstance(tasks, list) else []),
+                )
+                return
+            if outer_engine == "exact":
+                logger.info(
+                    "[InFlight] Native GA pipeline skipped: OuterSearchEngine=exact uses the exact skyline song path."
                 )
                 self._consume_results(
                     (safe_process_song_task(task) for task in tasks),
@@ -1217,4 +1234,3 @@ class TaskExecutionMixin:
 
             if failed > 0:
                 logger.warning(f"[SUMMARY] {failed}/{total} songs failed.")
-
