@@ -36,6 +36,9 @@ class RegistrySolveRequest:
     gem_scale_fever: int = GEM_SCALE_FEVER
     song_slot: int = 0
     use_exact_inner_solver: bool = True
+    max_ft_gems_global: int | None = None
+    max_ff_gems_global: int | None = None
+    score_only: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
@@ -50,6 +53,13 @@ class RegistrySolveRequest:
             "gem_scale_fever": int(self.gem_scale_fever),
             "song_slot": int(self.song_slot),
             "use_exact_inner_solver": int(bool(self.use_exact_inner_solver)),
+            "max_ft_gems_global": (
+                None if self.max_ft_gems_global is None else int(self.max_ft_gems_global)
+            ),
+            "max_ff_gems_global": (
+                None if self.max_ff_gems_global is None else int(self.max_ff_gems_global)
+            ),
+            "score_only": int(bool(self.score_only)),
         }
         for key in _REGISTRY_FLAG_KEYS:
             payload[key] = int(self.flags.get(key, 0))
@@ -140,6 +150,9 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
             use_exact_inner_solver=bool(request.use_exact_inner_solver),
+            max_ft_gems_global=request.max_ft_gems_global,
+            max_ff_gems_global=request.max_ff_gems_global,
+            score_only=bool(request.score_only),
         )
 
     from .scoring.gpu_solver import _GPU_LOCK
@@ -172,4 +185,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),
             use_exact_inner_solver=bool(request.use_exact_inner_solver),
+            max_ft_gems_global=request.max_ft_gems_global,
+            max_ff_gems_global=request.max_ff_gems_global,
+            score_only=bool(request.score_only),
         )

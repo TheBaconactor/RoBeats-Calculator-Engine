@@ -131,6 +131,13 @@ def _best_score_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
     return out_score
 
 
+@ti.kernel
+def skyline_write_scores_from_key_kernel(n_genomes: ti.i32):
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for genome_idx in range(n_genomes):
+        kernels_helpers.skyline_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+
+
 @ti.func
 def _solve_best_combo_uncached(
     genome_idx: ti.i32,

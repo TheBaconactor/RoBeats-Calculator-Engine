@@ -31,6 +31,7 @@ from .timeline import precompute_timeline_gpu
 from .skyline_operations import (
     skyline_upload_population_indices,
     skyline_evaluate_population,
+    skyline_download_scores,
     skyline_download_results,
 )
 
@@ -348,6 +349,9 @@ def solve_genomes_from_registry(
     gem_scale_fever: int = 3,
     song_slot: int = 0,
     use_exact_inner_solver: bool = True,
+    max_ft_gems_global: int | None = None,
+    max_ff_gems_global: int | None = None,
+    score_only: bool = False,
 ) -> list:
     """
     V3: GPU-RESIDENT stat aggregation path.
@@ -428,8 +432,23 @@ def solve_genomes_from_registry(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         use_exact_inner_solver=bool(use_exact_inner_solver),
-        materialize_mode="results_only",
+        max_ft_gems_global=max_ft_gems_global,
+        max_ff_gems_global=max_ff_gems_global,
+        materialize_mode="scores_only" if bool(score_only) else "results_only",
     )
+
+    if bool(score_only):
+        _maybe_sync(for_timing=False)
+        _t_download = time.perf_counter()
+        scores_np = skyline_download_scores(int(n_genomes))
+        if _profiler.enabled:
+            try:
+                download_bytes = int(scores_np.nbytes)
+            except Exception as e:
+                logger.debug(f"parallel_solvers:solve_genomes_from_registry: {e}")
+                download_bytes = 0
+            _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
+        return scores_np
 
     if _profiler.enabled and _SYNC_FOR_TIMING and _t_kernel is not None:
         _maybe_sync(for_timing=True)

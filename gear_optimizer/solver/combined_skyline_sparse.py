@@ -3,7 +3,6 @@ import time
 import numpy as np
 
 from gear_optimizer.core.constants import MAX_STAT_INDEX
-from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
 
 _LAST_COMBINED_SKYLINE_STATS: dict[str, object] = {}
 
@@ -16,50 +15,9 @@ def _add_phase(phase_seconds: dict[str, float], name: str, started: float) -> No
     phase_seconds[str(name)] = float(phase_seconds.get(str(name), 0.0) + (time.perf_counter() - float(started)))
 
 
-@ti.kernel
-def _pareto_6d(
-    pts: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    N: ti.i32,
-    keep: ti.types.ndarray(dtype=ti.i32, ndim=1),
-):
-    for i in range(N):
-        dominated = 0
-        for j in range(i):
-            if dominated == 0 and pts[j, 3] == pts[i, 3] and pts[j, 4] == pts[i, 4]:
-                ge = 1
-                gt = 0
-                for d in ti.static((0, 1, 2, 5)):
-                    if pts[j, d] < pts[i, d]:
-                        ge = 0
-                    if pts[j, d] > pts[i, d]:
-                        gt = 1
-                if ge == 1 and gt == 1:
-                    dominated = 1
-        keep[i] = 1 - dominated
-
-
-@ti.kernel
-def _pareto_current_6d(
-    pts: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    higher_count: ti.i32,
-    current_count: ti.i32,
-    keep_current: ti.types.ndarray(dtype=ti.i32, ndim=1),
-):
-    for local_i in range(current_count):
-        i = higher_count + local_i
-        dominated = 0
-        for j in range(i):
-            if dominated == 0 and pts[j, 3] == pts[i, 3] and pts[j, 4] == pts[i, 4]:
-                ge = 1
-                gt = 0
-                for d in ti.static((0, 1, 2, 5)):
-                    if pts[j, d] < pts[i, d]:
-                        ge = 0
-                    if pts[j, d] > pts[i, d]:
-                        gt = 1
-                if ge == 1 and gt == 1:
-                    dominated = 1
-        keep_current[local_i] = 1 - dominated
+def _suffix_max_2d_inplace(grid: np.ndarray) -> None:
+    np.maximum.accumulate(grid[::-1, :], axis=0, out=grid[::-1, :])
+    np.maximum.accumulate(grid[:, ::-1], axis=1, out=grid[:, ::-1])
 
 
 def combined_global_skyline_pairs_6d_sparse(
@@ -78,13 +36,19 @@ def combined_global_skyline_pairs_6d_sparse(
         }
         return np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
 
-    init_taichi()
-
     t_phase = time.perf_counter()
     gear = np.ascontiguousarray(gear_points.astype(np.int32))
     mini = np.ascontiguousarray(mini_points.astype(np.int32))
     M = int(mini.shape[0])
     max_pp = int(np.max(gear[:, 0]))
+    max_cm = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 1]) + np.max(mini[:, 0]))))
+    max_fm = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 2]) + np.max(mini[:, 1]))))
+    max_ff = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 4]) + np.max(mini[:, 3]))))
+    base_max = int(np.max(gear[:, 5]) + np.max(mini[:, 4]))
+    base_dtype = np.int16 if base_max <= int(np.iinfo(np.int16).max) else np.int32
+    cm_size = int(max_cm) + 1
+    fm_size = int(max_fm) + 1
+    ff_size = int(max_ff) + 1
     _add_phase(phase_seconds, "host_input_cast", t_phase)
 
     t_phase = time.perf_counter()
@@ -99,13 +63,13 @@ def combined_global_skyline_pairs_6d_sparse(
     kept_g: list[np.ndarray] = []
     kept_m: list[np.ndarray] = []
 
-    higher = np.zeros((0, 8), dtype=np.int32)
+    higher_by_cell: dict[int, np.ndarray] = {}
+    layer_grid = np.empty((cm_size, fm_size), dtype=base_dtype)
     layer_count_total = 0
     layer_rows_total = 0
     layer_unique_total = 0
-    combined_rows_total = 0
-    combined_rows_max = 0
     kept_rows_total = 0
+    timing_cell_visits = 0
 
     for pp in range(int(max_pp), -1, -1):
         s = int(offsets[pp])
@@ -175,58 +139,71 @@ def combined_global_skyline_pairs_6d_sparse(
         _add_phase(phase_seconds, "host_layer_sort_dedupe", t_phase)
 
         t_phase = time.perf_counter()
-        layer_desc = np.ascontiguousarray(
-            layer_arr[
-                np.lexsort(
-                    (
-                        -layer_arr[:, 5].astype(np.int64),
-                        -layer_arr[:, 4].astype(np.int64),
-                        -layer_arr[:, 3].astype(np.int64),
-                        -layer_arr[:, 2].astype(np.int64),
-                        -layer_arr[:, 1].astype(np.int64),
-                    )
-                )
-            ]
+        if layer_arr.size == 0:
+            _add_phase(phase_seconds, "host_timing_cell_frontier", t_phase)
+            continue
+
+        cell_keys = (layer_arr[:, 3].astype(np.int64) * int(ff_size) + layer_arr[:, 4].astype(np.int64)).astype(
+            np.int32,
+            copy=False,
         )
-        _add_phase(phase_seconds, "host_current_sort", t_phase)
+        cell_order = np.argsort(cell_keys, kind="stable")
+        sorted_cells = cell_keys[cell_order]
+        starts = np.concatenate(
+            (
+                np.asarray([0], dtype=np.int64),
+                np.flatnonzero(sorted_cells[1:] != sorted_cells[:-1]).astype(np.int64) + 1,
+            )
+        )
+        ends = np.empty_like(starts)
+        if starts.size > 0:
+            ends[:-1] = starts[1:]
+            ends[-1] = int(cell_order.shape[0])
 
-        t_phase = time.perf_counter()
-        H = int(higher.shape[0])
-        if H > 0:
-            combined = np.concatenate([higher, layer_desc], axis=0)
-        else:
-            combined = layer_desc
+        for start, end in zip(starts.tolist(), ends.tolist(), strict=True):
+            loc = cell_order[int(start) : int(end)]
+            timing_cell_visits += 1
 
-        N = int(combined.shape[0])
-        current_n = int(layer_desc.shape[0])
-        combined_rows_total += int(N)
-        combined_rows_max = max(int(combined_rows_max), int(N))
-        _add_phase(phase_seconds, "host_combine_sort", t_phase)
+            cm_c = layer_arr[loc, 1].astype(np.int32, copy=False)
+            fm_c = layer_arr[loc, 2].astype(np.int32, copy=False)
+            base_c = layer_arr[loc, 5].astype(np.int32, copy=False)
 
-        t_phase = time.perf_counter()
-        pts_dev = ti.ndarray(dtype=ti.i32, shape=(N, 6))
-        keep_dev = ti.ndarray(dtype=ti.i32, shape=(current_n,))
-        pts_dev.from_numpy(np.ascontiguousarray(combined[:, :6]))
-        _add_phase(phase_seconds, "gpu_alloc_upload", t_phase)
+            layer_grid.fill(-1)
+            layer_grid[cm_c, fm_c] = base_c.astype(base_dtype, copy=False)
+            _suffix_max_2d_inplace(layer_grid)
 
-        t_phase = time.perf_counter()
-        _pareto_current_6d(pts_dev, int(H), int(current_n), keep_dev)
-        _add_phase(phase_seconds, "gpu_pareto_submit", t_phase)
+            strict = np.full(int(loc.shape[0]), -1, dtype=np.int32)
+            m0 = (cm_c + 1) < int(cm_size)
+            if np.any(m0):
+                strict[m0] = np.maximum(strict[m0], layer_grid[cm_c[m0] + 1, fm_c[m0]].astype(np.int32, copy=False))
+            m1 = (fm_c + 1) < int(fm_size)
+            if np.any(m1):
+                strict[m1] = np.maximum(strict[m1], layer_grid[cm_c[m1], fm_c[m1] + 1].astype(np.int32, copy=False))
 
-        t_phase = time.perf_counter()
-        current_keep = keep_dev.to_numpy().astype(bool)
-        _add_phase(phase_seconds, "gpu_sync_download", t_phase)
+            keep = base_c > strict
+            cell_key = int(sorted_cells[int(start)])
+            higher_grid = higher_by_cell.get(cell_key)
+            if higher_grid is not None:
+                keep &= base_c > higher_grid[cm_c, fm_c].astype(np.int32, copy=False)
 
-        t_phase = time.perf_counter()
-        if np.any(current_keep):
-            current_kept = layer_desc[current_keep]
-            kept_g.append(current_kept[:, 6])
-            kept_m.append(current_kept[:, 7])
-            kept_rows_total += int(current_kept.shape[0])
-            higher = np.concatenate([higher, current_kept], axis=0) if H > 0 else current_kept
-        elif H <= 0:
-            higher = np.zeros((0, 8), dtype=np.int32)
-        _add_phase(phase_seconds, "host_collect", t_phase)
+            if not np.any(keep):
+                continue
+
+            kept_rows = layer_arr[loc[keep]]
+            kept_g.append(kept_rows[:, 6].astype(np.int32, copy=False))
+            kept_m.append(kept_rows[:, 7].astype(np.int32, copy=False))
+            kept_rows_total += int(kept_rows.shape[0])
+
+            if higher_grid is None:
+                higher_grid = np.full((cm_size, fm_size), -1, dtype=base_dtype)
+                higher_by_cell[cell_key] = higher_grid
+            cm_k = kept_rows[:, 1].astype(np.int32, copy=False)
+            fm_k = kept_rows[:, 2].astype(np.int32, copy=False)
+            base_k = kept_rows[:, 5].astype(base_dtype, copy=False)
+            np.maximum.at(higher_grid, (cm_k, fm_k), base_k)
+            _suffix_max_2d_inplace(higher_grid)
+
+        _add_phase(phase_seconds, "host_timing_cell_frontier", t_phase)
 
     if not kept_g:
         _LAST_COMBINED_SKYLINE_STATS = {
@@ -237,8 +214,8 @@ def combined_global_skyline_pairs_6d_sparse(
                 "layers": int(layer_count_total),
                 "layer_rows_total": int(layer_rows_total),
                 "layer_unique_total": int(layer_unique_total),
-                "combined_rows_total": int(combined_rows_total),
-                "combined_rows_max": int(combined_rows_max),
+                "timing_cell_visits": int(timing_cell_visits),
+                "active_timing_cells": int(len(higher_by_cell)),
                 "kept_rows_total": 0,
                 "out_pairs": 0,
             },
@@ -256,8 +233,8 @@ def combined_global_skyline_pairs_6d_sparse(
             "layers": int(layer_count_total),
             "layer_rows_total": int(layer_rows_total),
             "layer_unique_total": int(layer_unique_total),
-            "combined_rows_total": int(combined_rows_total),
-            "combined_rows_max": int(combined_rows_max),
+            "timing_cell_visits": int(timing_cell_visits),
+            "active_timing_cells": int(len(higher_by_cell)),
             "kept_rows_total": int(kept_rows_total),
             "out_pairs": int(out_g.shape[0]),
         },

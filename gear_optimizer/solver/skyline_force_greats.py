@@ -6,7 +6,7 @@ from typing import Any, Callable
 from gear_optimizer.core.constants import FG_SEARCH_RADIUS, GEM_SCALE_FEVER
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.force_greats_common import extract_base_stats
-from gear_optimizer.solver.native_force_greats import solve_native_force_greats_gpu
+from gear_optimizer.solver.native_force_greats import solve_native_force_greats_gpu_batch
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
 from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
@@ -277,11 +277,7 @@ def score_retained_skyline_force_greats(
             best_record = rec
             break
 
-    fg_gains = 0
-    exact_calls = 0
-    fg_elapsed_total = 0.0
-    telemetry_rows: list[dict[str, Any]] = []
-    timeline_scorer = create_scorer_from_calc_song(calc_song, ref_arrays) if telemetry_enabled else None
+    prepared: list[dict[str, Any]] = []
 
     for idx, rec in enumerate(candidate_records):
         data = rec.get("data")
@@ -303,19 +299,50 @@ def score_retained_skyline_force_greats(
             center_ff_arg = int(center_ff)
             radius_arg = int(radius)
 
-        call_t0 = time.perf_counter()
-        fg_result = solve_native_force_greats_gpu(
-            base_stats=base_stats,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            selected_color=selected_color,
-            center_ft=center_ft_arg,
-            center_ff=center_ff_arg,
-            search_radius=radius_arg,
+        prepared.append(
+            {
+                "idx": int(idx),
+                "rec": rec,
+                "data": data,
+                "base_score": int(base_score),
+                "selected_color": selected_color,
+                "base_stats": base_stats,
+                "center_ft": int(center_ft),
+                "center_ff": int(center_ff),
+                "center_ft_arg": center_ft_arg,
+                "center_ff_arg": center_ff_arg,
+                "radius_arg": radius_arg,
+            }
         )
-        fg_elapsed = float(time.perf_counter() - call_t0)
-        fg_elapsed_total += float(fg_elapsed)
-        exact_calls += 1
+
+    call_t0 = time.perf_counter()
+    fg_results, batch_stats = solve_native_force_greats_gpu_batch(
+        base_stats_list=[dict(item["base_stats"]) for item in prepared],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_colors=[str(item["selected_color"]) for item in prepared],
+        center_fts=[item["center_ft_arg"] for item in prepared],
+        center_ffs=[item["center_ff_arg"] for item in prepared],
+        search_radius=prepared[0]["radius_arg"] if prepared else None,
+    )
+    fg_elapsed_total = float(time.perf_counter() - call_t0)
+    exact_calls = int(len(prepared))
+    fg_elapsed_each = float(fg_elapsed_total) / float(max(1, len(prepared)))
+
+    fg_gains = 0
+    telemetry_rows: list[dict[str, Any]] = []
+    timeline_scorer = create_scorer_from_calc_song(calc_song, ref_arrays) if telemetry_enabled else None
+
+    for idx, prep in enumerate(prepared):
+        rec = prep["rec"]
+        data = prep["data"]
+        base_score = int(prep["base_score"])
+        selected_color = str(prep["selected_color"])
+        base_stats = dict(prep["base_stats"])
+        center_ft = int(prep["center_ft"])
+        center_ff = int(prep["center_ff"])
+        fg_result = fg_results[idx] if idx < len(fg_results) else None
+        fg_elapsed = float(fg_elapsed_each)
 
         fg_score = base_score
         fg_base_score = base_score
@@ -435,6 +462,8 @@ def score_retained_skyline_force_greats(
         "ceiling_dp_calls": 0,
         "exact_calls": int(exact_calls),
         "exact_dp_calls": int(exact_calls),
+        "gpu_batches": int(batch_stats.get("gpu_batches", 0) if isinstance(batch_stats, dict) else 0),
+        "batch_groups": int(batch_stats.get("groups", 0) if isinstance(batch_stats, dict) else 0),
         "ceiling_pruning_enabled": False,
         "hypothetical_skipped_by_ceiling": 0,
         "fg_gains": int(fg_gains),

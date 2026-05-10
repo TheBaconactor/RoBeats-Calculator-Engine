@@ -194,6 +194,8 @@ def build_candidate_payload(
 
 def _coerce_registry_scores(results: Any, *, expected_rows: int) -> np.ndarray:
     result_arr = np.asarray(results, dtype=np.int64)
+    if result_arr.ndim == 1 and int(result_arr.shape[0]) == int(expected_rows):
+        return result_arr
     if result_arr.ndim != 2 or result_arr.shape[0] != int(expected_rows) or result_arr.shape[1] < 1:
         raise ValueError(
             "registry solver returned an unexpected result shape: "
@@ -268,7 +270,21 @@ def batched_registry_eval(
     heap: list[tuple[int, int, int]] = []
     done = 0
 
-    for batch_ids, batch_gear_codes, batch_mini_codes in candidate_batches:
+    for candidate_batch in candidate_batches:
+        max_ft_gems_global = None
+        max_ff_gems_global = None
+        if len(candidate_batch) == 5:
+            (
+                batch_ids,
+                batch_gear_codes,
+                batch_mini_codes,
+                max_ft_gems_global,
+                max_ff_gems_global,
+            ) = candidate_batch
+        elif len(candidate_batch) == 3:
+            batch_ids, batch_gear_codes, batch_mini_codes = candidate_batch
+        else:
+            raise ValueError(f"candidate batch must have 3 or 5 fields, got {len(candidate_batch)}")
         if batch_ids.size == 0:
             continue
         req = RegistrySolveRequest(
@@ -284,6 +300,9 @@ def batched_registry_eval(
             gem_scale_fever=GEM_SCALE_FEVER,
             song_slot=int(song_slot),
             use_exact_inner_solver=True,
+            max_ft_gems_global=max_ft_gems_global,
+            max_ff_gems_global=max_ff_gems_global,
+            score_only=done > 0,
         )
         results = dispatch_registry_solve(req, gpu_client=gpu_client)
         scores = _coerce_registry_scores(results, expected_rows=int(batch_ids.shape[0]))

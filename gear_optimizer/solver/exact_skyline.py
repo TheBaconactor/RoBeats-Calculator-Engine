@@ -21,6 +21,7 @@ from gear_optimizer.solver.combined_skyline_sparse import (
     combined_global_skyline_pairs_6d_sparse,
     get_last_combined_skyline_stats,
 )
+from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
 from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
@@ -41,6 +42,7 @@ from gear_optimizer.solver.solver_common import (
     prepare_solver_context,
 )
 from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
+from gear_optimizer.solver.taichi_gem import fields as gem_fields
 
 LaneAwareMiniSkylineStats = _LaneAwareMiniSkylineStats_common
 _SLOTS = GEAR_SLOTS
@@ -55,12 +57,13 @@ _mini_combo_skyline_points_6d_lane_base_with_codes = _mini_combo_skyline_common
 SKYLINE_CERTIFICATION_STATUS = "timing_cell_candidate_frontier"
 SKYLINE_CERTIFICATION_NOTE = (
     "Raw dominance is restricted to fixed final FT/FF timing cells. "
-    "FG is exact over retained skyline candidates, not over candidates pruned before the timing-cell frontier."
+    "FG is exact over the configured retained candidate set; set SKYLINE_FG_CANDIDATES=all "
+    "for the full timing-cell frontier research mode."
 )
 
 
 def _read_skyline_fg_candidate_mode() -> str:
-    raw = str(env_get("SKYLINE_FG_CANDIDATES", "all") or "all").strip().lower().replace("-", "_")
+    raw = str(env_get("SKYLINE_FG_CANDIDATES", "topk") or "topk").strip().lower().replace("-", "_")
     if raw in {"all", "full", "entire", "skyline"}:
         return "all"
     if raw in {"sample", "stratified", "stratified_sample", "bands"}:
@@ -86,6 +89,33 @@ def _rounded_phase_seconds(phase_seconds: dict[str, float]) -> dict[str, float]:
 def _slowest_phase_label(phase_seconds: dict[str, float], *, limit: int = 5) -> str:
     pairs = sorted(phase_seconds.items(), key=lambda item: float(item[1]), reverse=True)[: int(limit)]
     return ", ".join(f"{name}={seconds:.2f}s" for name, seconds in pairs)
+
+
+def _read_combined_dense_max_gib() -> float:
+    raw = str(env_get("SKYLINE_COMBINED_DENSE_MAX_GIB", "3.0") or "3.0").strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 3.0
+    return max(0.0, float(value))
+
+
+def _read_combined_dense_mode() -> str:
+    raw = str(env_get("SKYLINE_COMBINED_DENSE", "sparse") or "sparse").strip().lower()
+    if raw in {"0", "false", "no", "off", "sparse"}:
+        return "sparse"
+    if raw in {"1", "true", "yes", "on", "dense"}:
+        return "dense"
+    return "sparse"
+
+
+def _read_combined_dense_gpu_mode() -> str:
+    raw = str(env_get("SKYLINE_COMBINED_DENSE_GPU", "auto") or "auto").strip().lower()
+    if raw in {"0", "false", "no", "off", "sparse"}:
+        return "sparse"
+    if raw in {"1", "true", "yes", "on", "gpu", "dense"}:
+        return "gpu"
+    return "auto"
 
 
 def _sample_pair_indices(
@@ -330,10 +360,22 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     if int(pts.shape[0]) != int(c_arr.shape[0]):
         raise ValueError("points/codes length mismatch")
 
-    groups: dict[tuple[int, int, int, int], list[int]] = {}
-    for idx, row in enumerate(pts):
-        key = (int(row[1]), int(row[2]), int(row[3]), int(row[4]))
-        groups.setdefault(key, []).append(int(idx))
+    stat_size = int(MAX_STAT_INDEX) + 1
+    group_keys = (
+        (((pts[:, 1].astype(np.int64, copy=False) * stat_size) + pts[:, 2].astype(np.int64, copy=False)) * stat_size)
+        + pts[:, 3].astype(np.int64, copy=False)
+    ) * stat_size + pts[:, 4].astype(np.int64, copy=False)
+    group_order = np.argsort(group_keys, kind="stable")
+    sorted_keys = group_keys[group_order]
+    if int(sorted_keys.shape[0]) > 0:
+        group_starts = np.concatenate(
+            (
+                np.asarray([0], dtype=np.int64),
+                np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]).astype(np.int64) + 1,
+            )
+        )
+    else:
+        group_starts = np.zeros(0, dtype=np.int64)
 
     if dominance_lut is None:
         w_pp = _lane_weight("Chill", p_color=p_color, s_color=s_color, scale=GEM_STAT_TO_ELEMENT_SCALE)
@@ -351,15 +393,16 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     groups_multi = 0
     max_group_size = 1
 
-    for idxs in groups.values():
-        g = int(len(idxs))
+    for group_pos, start in enumerate(group_starts.tolist()):
+        end = int(group_starts[group_pos + 1]) if group_pos + 1 < int(group_starts.shape[0]) else int(group_order.shape[0])
+        g = int(end) - int(start)
         if g <= 1:
             continue
         groups_multi += 1
         if g > max_group_size:
             max_group_size = g
 
-        idx_arr = np.asarray(idxs, dtype=np.int64)
+        idx_arr = group_order[int(start) : int(end)].astype(np.int64, copy=False)
         group_pp = np.clip(pts[idx_arr, 0], 0, int(lut.pp_max_idx)).astype(np.int32, copy=False)
         group_base = pts[idx_arr, 5].astype(np.float32, copy=False)
 
@@ -391,7 +434,7 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     stats = EnvelopeReductionStats(
         points_in=int(pts.shape[0]),
         points_out=int(reduced_points.shape[0]),
-        groups=int(len(groups)),
+        groups=int(group_starts.shape[0]),
         groups_multi=int(groups_multi),
         max_group_size=int(max_group_size),
         seconds=float(time.perf_counter() - t0),
@@ -410,22 +453,24 @@ def _reduce_gear_dp_frontier_arrays(stats: np.ndarray, codes: np.ndarray) -> tup
     if int(pts.shape[0]) != int(code_arr.shape[0]):
         raise ValueError("gear DP stats/code length mismatch")
 
+    stride = np.uint64(int(MAX_STAT_INDEX) + 1)
+    stat_key = pts[:, 0].astype(np.uint64, copy=False)
+    for col in range(1, 5):
+        stat_key = (stat_key * stride) + pts[:, col].astype(np.uint64, copy=False)
+
     order = np.lexsort(
         (
             -pts[:, 5].astype(np.int64, copy=False),
-            pts[:, 4],
-            pts[:, 3],
-            pts[:, 2],
-            pts[:, 1],
-            pts[:, 0],
+            stat_key,
         )
     )
     sorted_pts = pts[order]
     sorted_codes = code_arr[order]
+    sorted_key = stat_key[order]
 
     same_key = np.zeros(int(sorted_pts.shape[0]), dtype=np.bool_)
     if int(sorted_pts.shape[0]) > 1:
-        same_key[1:] = np.all(sorted_pts[1:, :5] == sorted_pts[:-1, :5], axis=1)
+        same_key[1:] = sorted_key[1:] == sorted_key[:-1]
     keep = ~same_key
     return sorted_pts[keep].astype(np.int32, copy=False), sorted_codes[keep].astype(np.uint64, copy=False)
 
@@ -524,6 +569,13 @@ def _suffix_max_4d_inplace(dst: np.ndarray) -> None:
     np.maximum.accumulate(v2, axis=2, out=v2)
     v3 = dst[:, :, :, ::-1]
     np.maximum.accumulate(v3, axis=3, out=v3)
+
+
+def _suffix_max_cm_fm_inplace(dst: np.ndarray) -> None:
+    v0 = dst[::-1, :, :, :]
+    np.maximum.accumulate(v0, axis=0, out=v0)
+    v1 = dst[:, ::-1, :, :]
+    np.maximum.accumulate(v1, axis=1, out=v1)
 
 
 _PAIR_CODE_MASK = np.uint64(0xFFFF_FFFF)
@@ -736,7 +788,8 @@ def _evaluate_product_exact(
     if gear_ids.size == 0 or mini_ids.size == 0:
         return None, []
 
-    max_batch = 4096
+    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 4096)
+    max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
     g_n = int(gear_ids.shape[0])
     m_n = int(mini_ids.shape[0])
@@ -820,12 +873,14 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
 
     # Guardrail: combined skylines can inflate ranges; keep this as an opt-in optimization.
     # Use a bytes-based guard so we can safely take advantage of int16 grids.
-    if grid_elems > 250_000_000:
-        raise MemoryError(f"Combined skyline grid too large: {shape} ({grid_elems:,} elems)")
     approx_bytes = int(grid_elems) * int(np.dtype(base_dtype).itemsize) * 3
-    if approx_bytes > 2_100_000_000:
+    dense_limit_gib = _read_combined_dense_max_gib()
+    if approx_bytes > int(float(dense_limit_gib) * float(1024**3)):
         gib = float(approx_bytes) / float(1024**3)
-        raise MemoryError(f"Combined skyline grid too large: {shape} ({grid_elems:,} elems, ~{gib:.2f} GiB)")
+        raise MemoryError(
+            f"Combined skyline grid too large: {shape} ({grid_elems:,} elems, ~{gib:.2f} GiB, "
+            f"limit={dense_limit_gib:.2f} GiB)"
+        )
 
     gear_pp = gear_points[:, 0]
     pp_order = np.argsort(gear_pp, kind="stable")
@@ -909,7 +964,7 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
 
         layer_flat.fill(-1)
         layer_flat[uniq_flat] = base_u
-        _suffix_max_4d_inplace(layer_grid)
+        _suffix_max_cm_fm_inplace(layer_grid)
 
         ff_u = uniq_flat % ff_size
         tmp = uniq_flat // ff_size
@@ -925,12 +980,6 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
         m1 = (fm_u + 1) < fm_size
         if np.any(m1):
             strict[m1] = np.maximum(strict[m1], layer_grid[cm_u[m1], fm_u[m1] + 1, ft_u[m1], ff_u[m1]])
-        m2 = (ft_u + 1) < ft_size
-        if np.any(m2):
-            strict[m2] = np.maximum(strict[m2], layer_grid[cm_u[m2], fm_u[m2], ft_u[m2] + 1, ff_u[m2]])
-        m3 = (ff_u + 1) < ff_size
-        if np.any(m3):
-            strict[m3] = np.maximum(strict[m3], layer_grid[cm_u[m3], fm_u[m3], ft_u[m3], ff_u[m3] + 1])
 
         layer_sky = base_u > strict
         if higher_valid:
@@ -945,7 +994,8 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
         idx = uniq_flat[layer_sky]
         vals_h = base_u[layer_sky]
         higher_flat[idx] = np.maximum(higher_flat[idx], vals_h)
-        _suffix_max_4d(higher_grid, higher_suffix)
+        np.copyto(higher_suffix, higher_grid)
+        _suffix_max_cm_fm_inplace(higher_suffix)
         higher_valid = True
 
     if not kept_g_idx:
@@ -958,9 +1008,54 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     gear_points: np.ndarray,
     mini_points: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """GPU-resident timing-cell skyline over gear ⊕ mini stat products."""
+    """Timing-cell skyline over gear ⊕ mini stat products."""
 
+    gpu_mode = _read_combined_dense_gpu_mode()
+    if gpu_mode in {"auto", "gpu"}:
+        try:
+            pair_g, pair_m, _seconds = combined_global_skyline_pairs_6d_dense_gpu(gear_points, mini_points)
+            return pair_g, pair_m
+        except MemoryError:
+            if gpu_mode == "gpu":
+                raise
+
+    mode = _read_combined_dense_mode()
+    if mode in {"auto", "dense"}:
+        try:
+            return _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(gear_points, mini_points)
+        except MemoryError:
+            if mode == "dense":
+                raise
     return combined_global_skyline_pairs_6d_sparse(gear_points, mini_points)
+
+
+def _pair_ftff_cap_arrays(
+    *,
+    base_fixed_stats_arr: np.ndarray,
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+    pair_gear_idx: np.ndarray,
+    pair_mini_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if pair_gear_idx.size == 0:
+        return np.zeros(0, dtype=np.int16), np.zeros(0, dtype=np.int16)
+
+    base_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
+    base_ft = int(base_arr[3]) if int(base_arr.shape[0]) > 3 else 0
+    base_ff = int(base_arr[4]) if int(base_arr.shape[0]) > 4 else 0
+
+    gp = np.asarray(gear_points, dtype=np.int32)
+    mp = np.asarray(mini_points, dtype=np.int32)
+    gi = np.asarray(pair_gear_idx, dtype=np.int32)
+    mi = np.asarray(pair_mini_idx, dtype=np.int32)
+
+    pair_ft = np.minimum(int(MAX_STAT_INDEX), gp[gi, 3] + mp[mi, 2]) + int(base_ft)
+    pair_ff = np.minimum(int(MAX_STAT_INDEX), gp[gi, 4] + mp[mi, 3]) + int(base_ff)
+    rem_ft = np.maximum(0, int(MAX_STAT_INDEX) - pair_ft)
+    rem_ff = np.maximum(0, int(MAX_STAT_INDEX) - pair_ff)
+    ft_caps = np.minimum(int(TOTAL_GEM_BUDGET), rem_ft // int(GEM_SCALE_FEVER)).astype(np.int16, copy=False)
+    ff_caps = np.minimum(int(TOTAL_GEM_BUDGET), rem_ff // int(GEM_SCALE_FEVER)).astype(np.int16, copy=False)
+    return ft_caps, ff_caps
 
 
 def _evaluate_pairs_exact(
@@ -978,30 +1073,65 @@ def _evaluate_pairs_exact(
     mini_codes: np.ndarray,
     pair_gear_idx: np.ndarray,
     pair_mini_idx: np.ndarray,
+    pair_max_ft_gems: np.ndarray | None = None,
+    pair_max_ff_gems: np.ndarray | None = None,
     keep_top_k: int,
     status_cb: Callable[[str], None] | None,
 ) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
     if pair_gear_idx.size == 0 or pair_mini_idx.size == 0:
         return None, []
 
-    max_batch = 4096
+    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 4096)
+    max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(pair_gear_idx.shape[0])
     g_idx = np.asarray(pair_gear_idx, dtype=np.int32)
     m_idx = np.asarray(pair_mini_idx, dtype=np.int32)
+    ft_caps = None if pair_max_ft_gems is None else np.asarray(pair_max_ft_gems, dtype=np.int16)
+    ff_caps = None if pair_max_ff_gems is None else np.asarray(pair_max_ff_gems, dtype=np.int16)
+    if ft_caps is not None and ff_caps is not None and int(ft_caps.shape[0]) == total and int(ff_caps.shape[0]) == total:
+        cap_key = ft_caps.astype(np.int32, copy=False) * (int(TOTAL_GEM_BUDGET) + 1)
+        cap_key += ff_caps.astype(np.int32, copy=False)
+        order = np.argsort(cap_key, kind="stable")
+        g_idx = g_idx[order]
+        m_idx = m_idx[order]
+        ft_caps = ft_caps[order]
+        ff_caps = ff_caps[order]
+    else:
+        ft_caps = None
+        ff_caps = None
 
-    def _candidate_batches() -> Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        for offset in range(0, int(total), int(max_batch)):
+    warmup_batch = min(int(total), max(1, min(int(max_batch), 256)))
+
+    def _build_candidate_batch(
+        offset: int,
+        n: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+        seg = slice(int(offset), int(offset) + int(n))
+        g_seg = g_idx[seg]
+        m_seg = m_idx[seg]
+
+        batch = np.empty((int(n), 9), dtype=np.int32)
+        batch[:, :6] = gear_ids[g_seg]
+        batch[:, 6:] = mini_ids[m_seg]
+        batch_gc = gear_codes[g_seg].astype(np.uint64, copy=False)
+        batch_mc = mini_codes[m_seg].astype(np.uint64, copy=False)
+        if ft_caps is not None and ff_caps is not None:
+            max_ft = int(np.max(ft_caps[seg])) if int(n) > 0 else int(TOTAL_GEM_BUDGET)
+            max_ff = int(np.max(ff_caps[seg])) if int(n) > 0 else int(TOTAL_GEM_BUDGET)
+            return batch, batch_gc, batch_mc, max_ft, max_ff
+        return batch, batch_gc, batch_mc
+
+    def _candidate_batches() -> Iterable[
+        tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
+    ]:
+        offset = 0
+        if int(warmup_batch) > 0:
+            yield _build_candidate_batch(0, int(warmup_batch))
+            offset = int(warmup_batch)
+
+        for offset in range(int(offset), int(total), int(max_batch)):
             n = min(int(max_batch), int(total) - int(offset))
-            seg = slice(offset, offset + n)
-            g_seg = g_idx[seg]
-            m_seg = m_idx[seg]
-
-            batch = np.empty((n, 9), dtype=np.int32)
-            batch[:, :6] = gear_ids[g_seg]
-            batch[:, 6:] = mini_ids[m_seg]
-            batch_gc = gear_codes[g_seg].astype(np.uint64, copy=False)
-            batch_mc = mini_codes[m_seg].astype(np.uint64, copy=False)
-            yield batch, batch_gc, batch_mc
+            yield _build_candidate_batch(int(offset), int(n))
 
     return batched_registry_eval(
         gpu_arrays=gpu_arrays,
@@ -1140,60 +1270,6 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         for name, count in sparse_counts.items():
             phase_counts[f"combined_sparse.{name}"] = int(count or 0)
     if pair_g_idx.size > 0:
-        if ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
-            status_cb("skyline: combined envelope prune")
-            phase_started = time.perf_counter()
-            g_pts = gear_points[pair_g_idx].astype(np.int32, copy=False)
-            m_pts = ctx.mini_points[pair_m_idx].astype(np.int32, copy=False)
-
-            pair_points = np.empty((int(pair_g_idx.shape[0]), 6), dtype=np.int32)
-            pair_points[:, 0] = g_pts[:, 0]
-
-            pair_points[:, 1] = g_pts[:, 1]
-            pair_points[:, 1] += m_pts[:, 0]
-            np.minimum(pair_points[:, 1], int(MAX_STAT_INDEX), out=pair_points[:, 1])
-
-            pair_points[:, 2] = g_pts[:, 2]
-            pair_points[:, 2] += m_pts[:, 1]
-            np.minimum(pair_points[:, 2], int(MAX_STAT_INDEX), out=pair_points[:, 2])
-
-            pair_points[:, 3] = g_pts[:, 3]
-            pair_points[:, 3] += m_pts[:, 2]
-            np.minimum(pair_points[:, 3], int(MAX_STAT_INDEX), out=pair_points[:, 3])
-
-            pair_points[:, 4] = g_pts[:, 4]
-            pair_points[:, 4] += m_pts[:, 3]
-            np.minimum(pair_points[:, 4], int(MAX_STAT_INDEX), out=pair_points[:, 4])
-
-            pair_points[:, 5] = g_pts[:, 5]
-            pair_points[:, 5] += m_pts[:, 4]
-
-            pair_codes = _pack_pair_indices(pair_g_idx, pair_m_idx)
-            _record_phase(phase_seconds, "combined_pair_points_cpu", phase_started)
-            phase_started = time.perf_counter()
-            pair_env_stats, _, reduced_codes = _reduce_same_stat_envelope_frontier_with_codes(
-                pair_points,
-                pair_codes,
-                p_color=ctx.p_color,
-                s_color=ctx.s_color,
-                selected_color=ctx.selected_color,
-                ref_pp=ref_pp,
-                budget_max=int(TOTAL_GEM_BUDGET),
-                dominance_lut=envelope_lut,
-            )
-            _record_phase(phase_seconds, "combined_envelope_cpu", phase_started)
-            phase_counts["combined_envelope_in"] = int(pair_env_stats.points_in)
-            phase_counts["combined_envelope_out"] = int(pair_env_stats.points_out)
-            status_cb(
-                "skyline: combined envelope kept "
-                f"{int(pair_env_stats.points_out):,}/{int(pair_env_stats.points_in):,} "
-                f"(groups={int(pair_env_stats.groups_multi):,}, max_group={int(pair_env_stats.max_group_size)}, "
-                f"time={float(pair_env_stats.seconds):.2f}s)"
-            )
-
-            if reduced_codes.size > 0:
-                pair_g_idx, pair_m_idx = _unpack_pair_codes(reduced_codes)
-
         status_cb(
             "skyline: evaluate combined frontier "
             f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
@@ -1205,6 +1281,18 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
             keep_top_k = max(int(base_keep_top_k), 1000)
+        pair_ft_caps, pair_ff_caps = _pair_ftff_cap_arrays(
+            base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+            gear_points=gear_points,
+            mini_points=ctx.mini_points,
+            pair_gear_idx=pair_g_idx,
+            pair_mini_idx=pair_m_idx,
+        )
+        if pair_ft_caps.size > 0:
+            phase_counts["base_eval_ft_cap_max"] = int(np.max(pair_ft_caps))
+            phase_counts["base_eval_ff_cap_max"] = int(np.max(pair_ff_caps))
+            phase_counts["base_eval_ft_cap_p50"] = int(np.percentile(pair_ft_caps, 50))
+            phase_counts["base_eval_ff_cap_p50"] = int(np.percentile(pair_ff_caps, 50))
         phase_started = time.perf_counter()
         best_ids, top_codes = _evaluate_pairs_exact(
             gpu_arrays=ctx.gpu_arrays,
@@ -1220,6 +1308,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             mini_codes=ctx.mini_codes,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
+            pair_max_ft_gems=pair_ft_caps,
+            pair_max_ff_gems=pair_ff_caps,
             keep_top_k=int(keep_top_k),
             status_cb=status_cb,
         )
@@ -1256,6 +1346,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     mini_codes=ctx.mini_codes,
                     pair_gear_idx=pair_g_idx[sample_idx],
                     pair_mini_idx=pair_m_idx[sample_idx],
+                    pair_max_ft_gems=pair_ft_caps[sample_idx] if pair_ft_caps.size else None,
+                    pair_max_ff_gems=pair_ff_caps[sample_idx] if pair_ff_caps.size else None,
                     keep_top_k=int(sample_idx.shape[0]),
                     status_cb=status_cb,
                 )

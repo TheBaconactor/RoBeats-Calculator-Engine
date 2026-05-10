@@ -67,54 +67,24 @@ def test_sparse_matches_cpu_reference_with_duplicates():
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_sparse_matches_dense_gpu():
-    from gear_optimizer.solver.combined_skyline_gpu import combined_global_skyline_pairs_6d_gpu
+def test_sparse_keeps_different_ff_timing_cells():
     from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 
     gear_points = np.asarray(
         [
-            [0, 15, 1, 2, 3, 100],
-            [0, 15, 1, 2, 3, 105],
-            [1, 5, 6, 7, 8, 200],
-            [1, 5, 6, 8, 8, 190],
-            [2, 3, 4, 5, 6, 20],
-            [2, 4, 4, 5, 6, 19],
-            [3, 1, 2, 3, 4, 50],
+            [0, 0, 0, 0, 0, 100],
+            [0, 0, 0, 0, 10, 100],
         ],
         dtype=np.int32,
     )
-    mini_points = np.asarray(
-        [
-            [2, 2, 3, 4, 7],
-            [2, 2, 3, 4, 7],
-            [5, 7, 1, 2, 30],
-            [1, 1, 9, 2, 40],
-            [0, 0, 0, 10, 60],
-        ],
-        dtype=np.int32,
-    )
+    mini_points = np.asarray([[0, 0, 0, 0, 0]], dtype=np.int32)
 
-    dense_g, dense_m = combined_global_skyline_pairs_6d_gpu(gear_points, mini_points)
     sparse_g, sparse_m = combined_global_skyline_pairs_6d_sparse(gear_points, mini_points)
 
-    def stats(g_idx: np.ndarray, m_idx: np.ndarray) -> list[tuple[int, int, int, int, int, int]]:
-        return sorted(
-            map(
-                tuple,
-                np.column_stack(
-                    (
-                        gear_points[g_idx, 0],
-                        np.minimum(160, gear_points[g_idx, 1] + mini_points[m_idx, 0]),
-                        np.minimum(160, gear_points[g_idx, 2] + mini_points[m_idx, 1]),
-                        np.minimum(160, gear_points[g_idx, 3] + mini_points[m_idx, 2]),
-                        np.minimum(160, gear_points[g_idx, 4] + mini_points[m_idx, 3]),
-                        gear_points[g_idx, 5] + mini_points[m_idx, 4],
-                    )
-                ),
-            )
-        )
-
-    assert stats(sparse_g, sparse_m) == stats(dense_g, dense_m)
+    assert {(int(g), int(m)) for g, m in zip(sparse_g.tolist(), sparse_m.tolist(), strict=True)} == {
+        (0, 0),
+        (1, 0),
+    }
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")

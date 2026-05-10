@@ -833,6 +833,10 @@ def _skyline_materialize_population_results(
     if mode in {"", "none", "off", "false", "0"}:
         return
 
+    if mode in {"scores", "scores_only", "score_only", "write_scores"}:
+        kernels.skyline_write_scores_from_key_kernel(int(n_genomes))
+        return
+
     common_args = (
         int(n_genomes),
         int(total_budget),

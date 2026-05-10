@@ -3412,6 +3412,9 @@ class GpuExecutor:
             gem_scale_fever=payload.get("gem_scale_fever", 3),
             song_slot=song_slot,
             use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 1)),
+            max_ft_gems_global=payload.get("max_ft_gems_global"),
+            max_ff_gems_global=payload.get("max_ff_gems_global"),
+            score_only=bool(payload.get("score_only", 0)),
         )
 
         return GpuResponse(
@@ -4412,8 +4415,7 @@ class GpuExecutor:
                                 fp_cap_table=fp_cap_table,
                             )
                             fused_surface_pair_drops = 0
-                            else:
-                                max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
+                            max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
                         except Exception as e:
                             raise RuntimeError(f"fused surface pair reduction failed: {type(e).__name__}: {e}") from e
                         finally:
@@ -4950,6 +4952,9 @@ def submit_gpu_solve_genomes_from_registry(
     gem_scale_fever: int = 3,
     song_slot: int = 0,
     use_exact_inner_solver: bool = True,
+    max_ft_gems_global: int | None = None,
+    max_ff_gems_global: int | None = None,
+    score_only: bool = False,
     timeout: float = 60.0,
 ) -> list:
     """
@@ -4995,6 +5000,9 @@ def submit_gpu_solve_genomes_from_registry(
             "gem_scale_fever": int(gem_scale_fever),
             "song_slot": int(song_slot),
             "use_exact_inner_solver": int(bool(use_exact_inner_solver)),
+            "max_ft_gems_global": None if max_ft_gems_global is None else int(max_ft_gems_global),
+            "max_ff_gems_global": None if max_ff_gems_global is None else int(max_ff_gems_global),
+            "score_only": int(bool(score_only)),
         }
         if inline_static:
             payload.update(

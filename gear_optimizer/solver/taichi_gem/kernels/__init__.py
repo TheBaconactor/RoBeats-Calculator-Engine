@@ -118,6 +118,7 @@ from .kernels_solvers_batch import (
 from .skyline_eval import (
     skyline_find_best_combo_key_kernel,
     skyline_refresh_scores_and_update_runs_best_kernel,
+    skyline_write_scores_from_key_kernel,
     skyline_write_best_results_from_key_kernel,
     skyline_write_best_results_and_update_runs_best_kernel,
     # GPU-side global best tracking
@@ -243,6 +244,7 @@ __all__ = [
     # skyline evaluation kernels
     "skyline_find_best_combo_key_kernel",
     "skyline_refresh_scores_and_update_runs_best_kernel",
+    "skyline_write_scores_from_key_kernel",
     "skyline_write_best_results_from_key_kernel",
     "skyline_write_best_results_and_update_runs_best_kernel",
     # GPU-side global best tracking

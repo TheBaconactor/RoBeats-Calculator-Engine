@@ -28,12 +28,22 @@ logger = logging.getLogger(__name__)
 
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
 MAX_HEAD_NOTES = 100  # Maximum notes in head section
-MAX_GENOMES = 4096  # Support up to 4096 unique genomes per batch
+MAX_GENOMES = max(4096, min(env_int("GPU_MAX_GENOMES", 8192), 32768))
+"""Maximum active genomes per GPU dispatch.
+
+The production target can experiment with larger batches when useful, but the
+8192-row default is the recovered steady-state skyline profile on the target
+GPU-first path. Keep a 4096 floor and clamp the env override so accidental
+values do not turn field allocation into an OOM trap.
+"""
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native skyline representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
-MAX_EVALS_PER_DISPATCH = 4_194_304  # Upper bound used for chunking (genomes * FT/FF combos)
+MAX_EVALS_PER_DISPATCH = max(
+    4_194_304,
+    min(env_int("SKYLINE_GPU_MAX_EVALS_PER_DISPATCH", 4_194_304), 67_108_864),
+)  # Upper bound used for chunking (genomes * FT/FF combos)
 
 
 def _clamp_song_slots(n: int) -> int:
