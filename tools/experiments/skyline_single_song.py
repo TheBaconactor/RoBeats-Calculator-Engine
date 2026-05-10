@@ -68,7 +68,7 @@ def main() -> int:
     parser.add_argument("--song", default="Data/Hard/00 (Hard) by garlagan.txt")
     parser.add_argument("--ga-depth", type=int, default=25)
     parser.add_argument("--ga-seed", type=int, default=123)
-    parser.add_argument("--fix-minis", action="store_true", default=True, help="Fix minis for faster skyline")
+    parser.add_argument("--fix-minis", action="store_true", default=False, help="Fix minis for faster skyline (debug only)")
     parser.add_argument("--no-fix-minis", dest="fix_minis", action="store_false")
     args = parser.parse_args()
 

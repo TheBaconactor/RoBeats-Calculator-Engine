@@ -23,6 +23,7 @@ from gear_optimizer.solver.fg_exact_dp import (
     solve_force_greats_exact_dp as _fg_exact_dp,
 )
 from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu
+from gear_optimizer.solver.gear_dp_gpu import gear_dp_vectorized
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
@@ -273,13 +274,9 @@ def _reduce_same_stat_envelope_frontier_with_codes(
 
     pts = np.asarray(points, dtype=np.int32)
     c_arr = np.asarray(codes, dtype=np.uint64)
-    if int(pts.shape[0]) != int(c_arr.shape[0]):
+    N = int(pts.shape[0])
+    if int(c_arr.shape[0]) != N:
         raise ValueError("points/codes length mismatch")
-
-    groups: dict[tuple[int, int, int, int], list[int]] = {}
-    for idx, row in enumerate(pts):
-        key = (int(row[1]), int(row[2]), int(row[3]), int(row[4]))
-        groups.setdefault(key, []).append(int(idx))
 
     if dominance_lut is None:
         w_pp = _lane_weight("Chill", p_color=p_color, s_color=s_color, scale=GEM_STAT_TO_ELEMENT_SCALE)
@@ -293,19 +290,63 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     else:
         lut = dominance_lut
 
-    keep = np.ones(int(pts.shape[0]), dtype=np.bool_)
+    keep = np.ones(N, dtype=np.bool_)
+
+    # Vectorized group creation: sort by packed (cm,fm,ft,ff) key
+    key = (
+        (pts[:, 1].astype(np.int64) << 48)
+        | (pts[:, 2].astype(np.int64) << 32)
+        | (pts[:, 3].astype(np.int64) << 16)
+        | pts[:, 4].astype(np.int64)
+    )
+    order = np.argsort(key, kind="stable")
+    sorted_key = key[order]
+    _, unique_starts = np.unique(sorted_key, return_index=True)
+    group_ends = np.concatenate([unique_starts[1:].astype(np.int64), np.array([N], dtype=np.int64)])
+
     groups_multi = 0
     max_group_size = 1
+    total_groups = int(len(unique_starts))
+    group_sizes = (group_ends - unique_starts).astype(np.int32)
 
-    for idxs in groups.values():
-        g = int(len(idxs))
-        if g <= 1:
+    # Vectorized processing for size-2 groups (majority)
+    size2_mask = group_sizes == 2
+    if np.any(size2_mask):
+        s2_starts = unique_starts[size2_mask]
+        s2_count = int(np.sum(size2_mask))
+        groups_multi += s2_count
+        max_group_size = max(max_group_size, 2)
+
+        idx_a = order[s2_starts.astype(np.int64)]
+        idx_b = order[(s2_starts + 1).astype(np.int64)]
+
+        pp_a = np.clip(pts[idx_a, 0], 0, int(lut.pp_max_idx)).astype(np.int32, copy=False)
+        pp_b = np.clip(pts[idx_b, 0], 0, int(lut.pp_max_idx)).astype(np.int32, copy=False)
+        base_a = pts[idx_a, 5].astype(np.float32, copy=False)
+        base_b = pts[idx_b, 5].astype(np.float32, copy=False)
+
+        delta_max_ab = lut.delta_max[pp_a, pp_b]
+        delta_min_ab = lut.delta_min[pp_a, pp_b]
+        a_dom_b = _envelope_dominates_from_delta(base_a - base_b, delta_max_ab, delta_min_ab)
+        keep[idx_b[a_dom_b]] = False
+
+        delta_max_ba = lut.delta_max[pp_b, pp_a]
+        delta_min_ba = lut.delta_min[pp_b, pp_a]
+        b_dom_a = _envelope_dominates_from_delta(base_b - base_a, delta_max_ba, delta_min_ba)
+        keep[idx_a[b_dom_a]] = False
+
+    # Per-group loop for size >= 3 (small minority)
+    for gi in range(total_groups):
+        g_start = int(unique_starts[gi])
+        g_end = int(group_ends[gi])
+        g = int(group_sizes[gi])
+        if g <= 2:
             continue
         groups_multi += 1
         if g > max_group_size:
             max_group_size = g
 
-        idx_arr = np.asarray(idxs, dtype=np.int64)
+        idx_arr = order[g_start:g_end].astype(np.int64, copy=False)
         group_pp = np.clip(pts[idx_arr, 0], 0, int(lut.pp_max_idx)).astype(np.int32, copy=False)
         group_base = pts[idx_arr, 5].astype(np.float32, copy=False)
 
@@ -335,9 +376,9 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     reduced_points = pts[keep].astype(np.int32, copy=False)
     reduced_codes = c_arr[keep].astype(np.uint64, copy=False)
     stats = EnvelopeReductionStats(
-        points_in=int(pts.shape[0]),
+        points_in=N,
         points_out=int(reduced_points.shape[0]),
-        groups=int(len(groups)),
+        groups=int(total_groups),
         groups_multi=int(groups_multi),
         max_group_size=int(max_group_size),
         seconds=float(time.perf_counter() - t0),
@@ -350,29 +391,12 @@ def _frontier_insert_ff_base_code(frontier: list[tuple[int, int, int]], ff: int,
     base = int(base)
     code = int(code)
 
-    n = len(frontier)
-    i = 0
-    while i < n and frontier[i][0] < ff:
-        i += 1
-
-    if i < n and frontier[i][0] == ff:
-        if base <= frontier[i][1]:
+    for i, (f, b, _c) in enumerate(frontier):
+        if f == ff:
+            if base > b:
+                frontier[i] = (ff, base, code)
             return
-        frontier[i] = (ff, base, code)
-    else:
-        if i < n and frontier[i][1] >= base:
-            return
-        frontier.insert(i, (ff, base, code))
-        n += 1
-
-    j = i - 1
-    while j >= 0 and frontier[j][1] <= base:
-        del frontier[j]
-        i -= 1
-        j -= 1
-
-    if i + 1 < len(frontier) and frontier[i + 1][1] >= frontier[i][1]:
-        del frontier[i]
+    frontier.append((ff, base, code))
 
 
 def _dp_gear_ff_base_frontier_with_codes(
@@ -1301,8 +1325,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     if ctx.mini_points.size == 0:
         return None, [], [], None, [], [], []
 
-    status_cb("exact_skyline: gear DP")
-    dp_states, dp_stats = _dp_gear_ff_base_frontier_with_codes(
+    status_cb("exact_skyline: gear DP (numpy)")
+    dp_states, dp_stats = gear_dp_vectorized(
         ctx.gear_pool,
         p_color=ctx.p_color,
         s_color=ctx.s_color,
@@ -1361,36 +1385,57 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     for idx, mini_code in enumerate(ctx.mini_codes.tolist()):
         mini_ids[idx] = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
 
-    status_cb("exact_skyline: theorem5 response prune")
-    theorem5_stats, gear_points, gear_codes, gear_ids = _theorem5_response_prune_gears_exact(
-        gear_points=gear_points,
-        gear_codes=gear_codes,
-        gear_ids=gear_ids,
-        mini_points=ctx.mini_points,
-        mini_codes=ctx.mini_codes,
-        mini_ids=mini_ids,
-        gpu_arrays=ctx.gpu_arrays,
-        base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-        calc_song=ctx.calc_song,
-        ref_arrays=ctx.ref_arrays,
-        flags=ctx.color_flags,
-        song_slot=int(ctx.song_slot),
-        gpu_client=ctx.gpu_client,
-        status_cb=status_cb,
-    )
-    if theorem5_stats.skipped_reason is None:
-        status_cb(
-            "exact_skyline: theorem5 kept "
-            f"{int(theorem5_stats.gear_out):,}/{int(theorem5_stats.gear_in):,} gears "
-            f"(lambda={int(theorem5_stats.lambda_classes):,}, eval_pairs={int(theorem5_stats.eval_pairs):,}, "
-            f"time={float(theorem5_stats.seconds):.2f}s)"
-        )
-    else:
-        status_cb(
-            f"exact_skyline: theorem5 skipped ({theorem5_stats.skipped_reason})"
-        )
     if gear_points.size == 0:
         return None, [], [], None, [], [], []
+
+    status_cb("exact_skyline: FG_CEILING table")
+    fg_ceiling_t0 = time.perf_counter()
+    fg_ceiling: dict[tuple, int] = {}
+    gear_ft = gear_points[:, 3]
+    gear_ff = gear_points[:, 4]
+    gear_base = gear_points[:, 5]
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
+
+    max_mini_base = int(ctx.mini_points[:, 4].max()) if ctx.mini_points.size > 0 else 0
+
+    packed_ftff = gear_ft.astype(np.int64) * 200 + gear_ff.astype(np.int64)
+    order = np.argsort(packed_ftff, kind="stable")
+    sorted_packed = packed_ftff[order]
+    sorted_base = gear_base[order]
+    _, unique_starts = np.unique(sorted_packed, return_index=True)
+    group_ends = np.concatenate([unique_starts[1:].astype(np.int64), np.array([len(sorted_packed)], dtype=np.int64)])
+
+    for gi in range(len(unique_starts)):
+        g_start = int(unique_starts[gi])
+        g_end = int(group_ends[gi])
+        pk = int(sorted_packed[g_start])
+        ft_val = int(pk // 200)
+        ff_val = int(pk % 200)
+        slice_max_base = int(sorted_base[g_start:g_end].max())
+        max_base = slice_max_base + max_mini_base
+        primary = max_base // 2
+        secondary = 0
+
+        stats_cap = {
+            "Perfect Points": 160, "Combo Multiplier": 160, "Fever Multiplier": 160,
+            "Fever Time": ft_val, "Fever Fill Rate": ff_val,
+            ctx.p_color: primary, ctx.s_color: secondary,
+        }
+        try:
+            dp_cap = _fg_exact_dp(stats=stats_cap, calc_song=ctx.calc_song, ref_arrays=ctx.ref_arrays, mode="timing_aware", prune=True)
+            max_g = int(dp_cap.best_delta)
+            stats_zero = {
+                "Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0,
+                "Fever Time": ft_val, "Fever Fill Rate": ff_val,
+                ctx.p_color: 0, ctx.s_color: 0,
+            }
+            min_b = int(score_stats_exact(stats_zero, ctx.calc_song, ctx.ref_arrays))
+            fg_ceiling[(ft_val, ff_val)] = max_g - min_b
+        except Exception:
+            fg_ceiling[(ft_val, ff_val)] = 0
+
+    fg_ceiling_sec = float(time.perf_counter() - fg_ceiling_t0)
+    status_cb(f"exact_skyline: FG_CEILING table built ({len(fg_ceiling)} slices, {fg_ceiling_sec:.2f}s)")
 
     status_cb(
         "exact_skyline: build registry + evaluate candidates "
@@ -1454,6 +1499,89 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             if reduced_codes.size > 0:
                 pair_g_idx, pair_m_idx = _unpack_pair_codes(reduced_codes)
 
+        P = int(pair_g_idx.shape[0])
+        if P > 5000 and ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
+            status_cb(f"exact_skyline: CPU pre-filter ({P:,} pairs)")
+            pf_t0 = time.perf_counter()
+            g_pts_filt = gear_points[pair_g_idx].astype(np.int32, copy=False)
+            m_pts_filt = ctx.mini_points[pair_m_idx].astype(np.int32, copy=False)
+            comb_pp = g_pts_filt[:, 0].astype(np.int32, copy=False)
+            comb_cm = np.minimum(g_pts_filt[:, 1].astype(np.int32) + m_pts_filt[:, 0].astype(np.int32), MAX_STAT_INDEX)
+            comb_fm = np.minimum(g_pts_filt[:, 2].astype(np.int32) + m_pts_filt[:, 1].astype(np.int32), MAX_STAT_INDEX)
+            comb_ft = np.minimum(g_pts_filt[:, 3].astype(np.int32) + m_pts_filt[:, 2].astype(np.int32), MAX_STAT_INDEX)
+            comb_ff = np.minimum(g_pts_filt[:, 4].astype(np.int32) + m_pts_filt[:, 3].astype(np.int32), MAX_STAT_INDEX)
+            comb_bl = g_pts_filt[:, 5].astype(np.int64, copy=False) + m_pts_filt[:, 4].astype(np.int64, copy=False)
+
+            pp_idx = np.clip(comb_pp, 0, MAX_STAT_INDEX).astype(np.int32)
+            cm_idx = np.clip(comb_cm, 0, MAX_STAT_INDEX).astype(np.int32)
+            fm_idx = np.clip(comb_fm, 0, MAX_STAT_INDEX).astype(np.int32)
+
+            ref_pp_arr = np.asarray(ctx.ref_arrays.get("Perfect Points", []), dtype=np.float64)
+            ref_cm_arr = np.asarray(ctx.ref_arrays.get("Combo Multiplier", []), dtype=np.float64)
+            ref_fm_arr = np.asarray(ctx.ref_arrays.get("Fever Multiplier", []), dtype=np.float64)
+
+            lookup_pp = np.clip(MAX_STAT_INDEX - pp_idx, 0, MAX_STAT_INDEX)
+            lookup_cm = np.clip(MAX_STAT_INDEX - cm_idx, 0, MAX_STAT_INDEX)
+            lookup_fm = np.clip(MAX_STAT_INDEX - fm_idx, 0, MAX_STAT_INDEX)
+
+            pp_f = ref_pp_arr[lookup_pp].astype(np.float64, copy=False)
+            cm_f = ref_cm_arr[lookup_cm].astype(np.float64, copy=False)
+            fm_f = ref_fm_arr[lookup_fm].astype(np.float64, copy=False)
+
+            base_value = comb_bl.astype(np.float64) + pp_f
+
+            song_data = ctx.calc_song.get("song_data", ctx.calc_song)
+            song_data = song_data or {}
+            timestamps = song_data.get("timestamps")
+            if timestamps is None:
+                timestamps = song_data.get("chart_timestamps", song_data.get("fg_timestamps", ()))
+            total_notes = int(len(timestamps))
+            head_len = min(total_notes, 100)
+            body_notes = max(0, total_notes - 100)
+            factor_full = (cm_f - 1.0) * base_value / 100.0
+
+            ceiling_lut = np.zeros((MAX_STAT_INDEX + 1, MAX_STAT_INDEX + 1), dtype=np.int32)
+            for (ftk, ffk), val in fg_ceiling.items():
+                if 0 <= ftk <= MAX_STAT_INDEX and 0 <= ffk <= MAX_STAT_INDEX:
+                    ceiling_lut[ftk, ffk] = int(val)
+
+            chunk = 500000
+            cpu_bound = np.empty(P, dtype=np.int64)
+            temp_f64 = np.empty(chunk, dtype=np.float64)
+
+            for c_start in range(0, P, chunk):
+                c_end = min(P, c_start + chunk)
+                cn = c_end - c_start
+                bv = base_value[c_start:c_end].astype(np.float64, copy=False)
+                fct = factor_full[c_start:c_end]
+                fm_slice = fm_f[c_start:c_end]
+                hs = np.zeros(cn, dtype=np.int64)
+
+                for i in range(head_len):
+                    temp_f64[:cn] = bv + (float(i + 1) * fct)
+                    temp_f64[:cn] *= fm_slice
+                    np.floor(temp_f64[:cn], out=temp_f64[:cn])
+                    hs += temp_f64[:cn].astype(np.int64)
+
+                body_slice = body_notes * np.floor(bv * cm_f[c_start:c_end] * fm_slice).astype(np.int64)
+                cpu_bound[c_start:c_end] = hs + body_slice
+
+            cpu_bound += ceiling_lut[comb_ft, comb_ff].astype(np.int64)
+
+            sort_idx = np.argsort(-cpu_bound, kind="stable")
+            keep_n = max(int(LOADOUTS_PER_SONG_LIMIT) * 10, 10000)
+            keep_n = min(keep_n, P)
+            pf_mask = np.zeros(P, dtype=bool)
+            pf_mask[sort_idx[:keep_n]] = True
+
+            pair_g_idx = pair_g_idx[pf_mask].astype(np.int32, copy=False)
+            pair_m_idx = pair_m_idx[pf_mask].astype(np.int32, copy=False)
+            pf_sec = float(time.perf_counter() - pf_t0)
+            status_cb(
+                f"exact_skyline: CPU pre-filter kept {int(pair_g_idx.shape[0]):,}/{P:,} "
+                f"(top={keep_n}, head={head_len}, notes={total_notes}, {pf_sec:.2f}s)"
+            )
+
         status_cb(
             "exact_skyline: evaluate combined skyline "
             f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
@@ -1480,24 +1608,13 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         return None, [], [], None, [], [], []
 
     override_cfg = build_solver_override_cfg(ctx.cfg_data, p_color=ctx.p_color, selected_color=ctx.selected_color)
-    genome_best = ctx.registry.decode_genome(best_ids)
-    best_data = _build_candidate_payload(
-        cfg=ctx.cfg,
-        base_stats_fixed=ctx.base_stats_fixed,
-        calc_song=ctx.calc_song,
-        ref_arrays=ctx.ref_arrays,
-        genome=genome_best,
-        override_cfg=override_cfg,
-        gpu_client=ctx.gpu_client,
-    )
 
-    best_gear = list(best_data.get("Gear") or [])
-    best_minis = list(best_data.get("Minis") or [])
-
+    best_data = None
+    best_gear: list = []
+    best_minis: list = []
     all_evaluated: list[dict[str, Any]] = []
     fg_dp_calls = 0
     fg_gains = 0
-    fg_cache: dict[tuple, int] = {}
 
     def _fg_stat_key(stats: dict) -> tuple:
         return (
@@ -1510,6 +1627,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             int(stats.get(ctx.s_color, 0) or 0) if ctx.s_color != ctx.p_color else 0,
         )
 
+    candidates: list[dict[str, Any]] = []
     for score, gear_code, mini_code in top_codes:
         g_ids = _gear_ids_from_code(int(gear_code), pack=ctx.gear_pack, slot_item_ids=ctx.slot_item_ids)
         m_ids = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
@@ -1525,60 +1643,146 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             gpu_client=ctx.gpu_client,
         )
         base_score = int(data.get("BaseScore") or data.get("Score", 0) or 0)
-
-        fg_delta = 0
         post_stats = data.get("Stats") or data.get("Details", {}).get("Stats", {}) or {}
-        if post_stats:
-            sk = _fg_stat_key(post_stats)
-            cached_delta = fg_cache.get(sk)
-            if cached_delta is not None:
-                fg_delta = cached_delta
-                if fg_delta > 0:
-                    fg_gains += 1
-            else:
-                try:
-                    dp = _fg_exact_dp(
-                        stats=post_stats,
-                        calc_song=ctx.calc_song,
-                        ref_arrays=ctx.ref_arrays,
-                        mode="timing_aware",
-                        prune=True,
-                    )
-                    fg_dp_calls += 1
-                    if dp.best_delta > 0:
-                        prepared = prepare_force_greats_exact_dp_inputs(
-                            stats=post_stats,
-                            calc_song=ctx.calc_song,
-                            ref_arrays=ctx.ref_arrays,
-                        )
-                        if prepared is not None:
-                            baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
-                                prepared=prepared, section_counts=[]
-                            )
-                            fg_delta = max(0, int(dp.best_delta) - int(baseline_bonus))
-                            if fg_delta > 0:
-                                fg_gains += 1
-                    fg_cache[sk] = fg_delta
-                except Exception:
-                    fg_delta = 0
-                    fg_cache[sk] = 0
-
-        all_evaluated.append(
+        candidates.append(
             {
-                "Score": base_score,
-                "BaseScore": base_score,
-                "FGDelta": fg_delta,
-                "Gear": genome[:6],
-                "Minis": genome[6:9],
-                "Data": data,
+                "base_score": base_score,
+                "gear_code": gear_code,
+                "mini_code": mini_code,
+                "genome": genome,
+                "data": data,
+                "stats": post_stats,
             }
         )
 
+    def _fg_ceiling_bound(stats: dict) -> int:
+        if not stats or not fg_ceiling:
+            return 0
+        ft = int(stats.get("Fever Time", 0) or 0)
+        ff = int(stats.get("Fever Fill Rate", 0) or 0)
+        return fg_ceiling.get((ft, ff), 0)
+
+    if candidates:
+        status_cb("exact_skyline: FG gate (FG_CEILING)")
+        for c in candidates:
+            ceiling = _fg_ceiling_bound(c["stats"])
+            c["fg_upper"] = c["base_score"] + ceiling
+
+        candidates.sort(key=lambda d: max(d["base_score"], d.get("fg_upper", 0)), reverse=True)
+
+        best_any = 0
+        fg_cache: dict[tuple, int] = {}
+
+        for c in candidates:
+            ub = max(c["base_score"], c.get("fg_upper", 0))
+            if ub <= best_any and best_any > 0:
+                continue
+
+            fg_delta = 0
+            post_stats = c["stats"]
+            if post_stats:
+                sk = _fg_stat_key(post_stats)
+                cached_delta = fg_cache.get(sk)
+                if cached_delta is not None:
+                    fg_delta = cached_delta
+                    if fg_delta > 0:
+                        fg_gains += 1
+                else:
+                    try:
+                        dp = _fg_exact_dp(
+                            stats=post_stats,
+                            calc_song=ctx.calc_song,
+                            ref_arrays=ctx.ref_arrays,
+                            mode="timing_aware",
+                            prune=True,
+                        )
+                        fg_dp_calls += 1
+                        if dp.best_delta > 0:
+                            prepared = prepare_force_greats_exact_dp_inputs(
+                                stats=post_stats,
+                                calc_song=ctx.calc_song,
+                                ref_arrays=ctx.ref_arrays,
+                            )
+                            if prepared is not None:
+                                baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(
+                                    prepared=prepared, section_counts=[]
+                                )
+                                fg_delta = max(0, int(dp.best_delta) - int(baseline_bonus))
+                                if fg_delta > 0:
+                                    fg_gains += 1
+                        fg_cache[sk] = fg_delta
+                    except Exception:
+                        fg_delta = 0
+                        fg_cache[sk] = 0
+
+            combined = c["base_score"] + fg_delta
+            all_evaluated.append(
+                {
+                    "Score": combined,
+                    "BaseScore": c["base_score"],
+                    "FGDelta": fg_delta,
+                    "Gear": c["genome"][:6],
+                    "Minis": c["genome"][6:9],
+                    "Data": c["data"],
+                }
+            )
+
+            if combined > best_any:
+                best_any = combined
+                best_data = c["data"]
+                best_gear = list(c["genome"][:6])
+                best_minis = list(c["genome"][6:9])
+
+            cand_ub = c["base_score"] + fg_delta
+            if cand_ub > best_any:
+                best_any = cand_ub
+
+    if not all_evaluated:
+        if best_ids is not None:
+            genome_best = ctx.registry.decode_genome(best_ids)
+            best_data = _build_candidate_payload(
+                cfg=ctx.cfg,
+                base_stats_fixed=ctx.base_stats_fixed,
+                calc_song=ctx.calc_song,
+                ref_arrays=ctx.ref_arrays,
+                genome=genome_best,
+                override_cfg=override_cfg,
+                gpu_client=ctx.gpu_client,
+            )
+            best_gear = list(best_data.get("Gear") or [])
+            best_minis = list(best_data.get("Minis") or [])
+
     all_evaluated.sort(key=lambda d: int(d.get("Score", 0) or 0), reverse=True)
+
     if fg_dp_calls:
         status_cb(
-            f"exact_skyline: FG exact DP scored ({fg_dp_calls} calls, {fg_gains} gains)"
+            f"exact_skyline: FG exact DP scored ({fg_dp_calls} calls, {fg_gains} gains, "
+            f"total_candidates={len(all_evaluated)})"
         )
+
+    if best_data is not None:
+        status_cb("exact_skyline: replay verify winner")
+        try:
+            from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
+            winner_stats = best_data.get("Stats") or best_data.get("Details", {}).get("Stats", {}) or {}
+            if winner_stats:
+                verify_base = int(score_stats_exact(winner_stats, ctx.calc_song, ctx.ref_arrays))
+                verify_fg = _fg_exact_dp(stats=winner_stats, calc_song=ctx.calc_song, ref_arrays=ctx.ref_arrays, mode="timing_aware", prune=True)
+                if verify_fg.best_delta > 0:
+                    prepared = prepare_force_greats_exact_dp_inputs(stats=winner_stats, calc_song=ctx.calc_song, ref_arrays=ctx.ref_arrays)
+                    if prepared is not None:
+                        baseline_bonus = score_force_greats_exact_dp_bonus_from_prepared(prepared=prepared, section_counts=[])
+                        verify_fg_delta = max(0, int(verify_fg.best_delta) - int(baseline_bonus))
+                    else:
+                        verify_fg_delta = 0
+                else:
+                    verify_fg_delta = 0
+                status_cb(
+                    f"exact_skyline: replay verify base={verify_base} fg_delta={verify_fg_delta}"
+                )
+        except Exception as e:
+            status_cb(f"exact_skyline: replay verify failed ({e})")
+
     status_cb(
         "exact_skyline: done "
         f"(dp_pairs={dp_stats.pairs_6d}, gear_sky={gear_sky_stats.points_out}, "

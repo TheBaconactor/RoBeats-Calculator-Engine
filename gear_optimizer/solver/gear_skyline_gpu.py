@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from gear_optimizer.solver.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_4d_gpu
+from gear_optimizer.solver.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_cm_fm_gpu
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
 
 
@@ -77,14 +77,6 @@ def _filter_gear_layer(
                 v1 = layer_suffix[(((cm * fm_size) + fm + 1) * ft_size + ft) * ff_size + ff]
                 if v1 > strict:
                     strict = v1
-            if ft + 1 < ft_size:
-                v2 = layer_suffix[(((cm * fm_size) + fm) * ft_size + ft + 1) * ff_size + ff]
-                if v2 > strict:
-                    strict = v2
-            if ff + 1 < ff_size:
-                v3 = layer_suffix[f + 1]
-                if v3 > strict:
-                    strict = v3
 
             keep = b > strict
             if keep and higher_valid != 0:
@@ -235,7 +227,7 @@ def global_gear_skyline_points_6d_gpu(
 
         _scatter_gear_layer_base(flat_dev, base_dev, layer_start, layer_count, layer_grid)
         _scatter_gear_layer_owner(flat_dev, base_dev, layer_start, layer_count, layer_grid, owner_grid)
-        suffix_max_4d_gpu(layer_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
+        suffix_max_cm_fm_gpu(layer_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
         _filter_gear_layer(
             flat_dev,
             base_dev,
@@ -255,7 +247,7 @@ def global_gear_skyline_points_6d_gpu(
             out_code,
             out_count,
         )
-        suffix_max_4d_gpu(higher_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
+        suffix_max_cm_fm_gpu(higher_grid, cm_size=cm_size, fm_size=fm_size, ft_size=ft_size, ff_size=ff_size)
         higher_valid = 1
 
         count = int(out_count.to_numpy()[0])

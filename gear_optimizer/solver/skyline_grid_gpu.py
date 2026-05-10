@@ -91,6 +91,11 @@ def suffix_max_4d_gpu(grid, *, cm_size: int, fm_size: int, ft_size: int, ff_size
     _suffix_ff(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
 
 
+def suffix_max_cm_fm_gpu(grid, *, cm_size: int, fm_size: int, ft_size: int, ff_size: int) -> None:
+    _suffix_cm(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
+    _suffix_fm(grid, int(cm_size), int(fm_size), int(ft_size), int(ff_size))
+
+
 def layer_offsets(sorted_pp: np.ndarray, max_pp: int) -> np.ndarray:
     counts = np.bincount(sorted_pp, minlength=int(max_pp) + 1).astype(np.int64, copy=False)
     offsets = np.zeros(int(max_pp) + 2, dtype=np.int64)
