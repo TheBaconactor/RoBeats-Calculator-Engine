@@ -1391,6 +1391,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     status_cb("exact_skyline: FG_CEILING table")
     fg_ceiling_t0 = time.perf_counter()
     fg_ceiling: dict[tuple, int] = {}
+    slice_r_max: dict[tuple, float] = {}
     gear_ft = gear_points[:, 3]
     gear_ff = gear_points[:, 4]
     gear_base = gear_points[:, 5]
@@ -1424,6 +1425,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         try:
             dp_cap = _fg_exact_dp(stats=stats_cap, calc_song=ctx.calc_song, ref_arrays=ctx.ref_arrays, mode="timing_aware", prune=True)
             max_g = int(dp_cap.best_delta)
+            max_b = int(score_stats_exact(stats_cap, ctx.calc_song, ctx.ref_arrays))
             stats_zero = {
                 "Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0,
                 "Fever Time": ft_val, "Fever Fill Rate": ff_val,
@@ -1431,8 +1433,10 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             }
             min_b = int(score_stats_exact(stats_zero, ctx.calc_song, ctx.ref_arrays))
             fg_ceiling[(ft_val, ff_val)] = max_g - min_b
+            slice_r_max[(ft_val, ff_val)] = float(max_g) / float(max_b) if max_b > 0 else 0.0
         except Exception:
             fg_ceiling[(ft_val, ff_val)] = 0
+            slice_r_max[(ft_val, ff_val)] = 0.0
 
     fg_ceiling_sec = float(time.perf_counter() - fg_ceiling_t0)
     status_cb(f"exact_skyline: FG_CEILING table built ({len(fg_ceiling)} slices, {fg_ceiling_sec:.2f}s)")
