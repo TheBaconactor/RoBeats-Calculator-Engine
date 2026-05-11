@@ -20,23 +20,23 @@ pytestmark = pytest.mark.gpu
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_gem_solver_refines_when_cm_nonzero_regression() -> None:
+def test_exact_bound_ignores_legacy_refine_hint_when_cm_nonzero() -> None:
     """
-    Regression guard: the refined gem allocator must still refine even when CM != 0.
+    Regression guard: the canonical exact-bound allocator must not depend on the
+    old refined-from-hint CM/FM sweep.
 
     This test uses synthetic reference tables with step/plateau behavior:
     - CM multiplier plateaus at CM gems >= 12
     - FM multiplier plateaus at FM gems >= 2
 
-    Given a suboptimal hint (CM=12, FM=3, OV=70) under a fixed budget (85),
-    the refined allocator should reduce FM by 1 and reallocate that gem to OV.
+    The exact result for this fixed budget is CM=12, FM=2, OV=71.
     """
     import taichi as ti
 
+    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernels import kernels_scoring
-
-    fields.ensure_fields_allocated()
 
     # Synthetic reference tables (161 entries, 0..160).
     # Keep PP constant so PP gems are never attractive in this scenario.
@@ -52,9 +52,13 @@ def test_gem_solver_refines_when_cm_nonzero_regression() -> None:
     ref_fm = np.ones(161, dtype=np.float32)
     ref_fm[6:] = 2.0
 
-    fields.ref_pp_field.from_numpy(ref_pp)
-    fields.ref_cm_field.from_numpy(ref_cm)
-    fields.ref_fm_field.from_numpy(ref_fm)
+    ref_arrays = {
+        "Perfect Points": ref_pp,
+        "Combo Multiplier": ref_cm,
+        "Fever Multiplier": ref_fm,
+        "Fever Fill Rate": np.ones(161, dtype=np.float32),
+        "Fever Time": np.ones(161, dtype=np.float32),
+    }
 
     out = np.zeros(7, dtype=np.int32)
 
@@ -66,7 +70,7 @@ def test_gem_solver_refines_when_cm_nonzero_regression() -> None:
         m2 = ti.u32(0xFFFFFFFF)
         m3 = ti.u32(0xFFFFFFFF)
 
-        res = kernels_scoring._optimize_core_device_refined_from_hint_preloaded_bits_impl(
+        res = kernels_scoring.optimize_core_device_exact_bound_preloaded_bits(
             ti.i32(85),  # budget (remaining after FT/FF)
             ti.i32(0),  # cur_pp
             ti.i32(0),  # cur_cm
@@ -88,16 +92,17 @@ def test_gem_solver_refines_when_cm_nonzero_regression() -> None:
             ti.i32(100),  # head_len
             ti.i32(0),  # count_fever (body)
             ti.i32(0),  # count_normal (body)
-            ti.i32(0),  # hint_pp
-            ti.i32(12),  # hint_cm
-            ti.i32(3),  # hint_fm
-            ti.i32(70),  # hint_ov
         )
         for i in ti.static(range(7)):
             out_arr[i] = res[i]
 
-    _run(out)
-    ti.sync()
+    with _GPU_LOCK:
+        ensure_ready(ref_arrays)
+        fields.ref_pp_field.from_numpy(ref_pp)
+        fields.ref_cm_field.from_numpy(ref_cm)
+        fields.ref_fm_field.from_numpy(ref_fm)
+        _run(out)
+        ti.sync()
 
     # Layout: [score, pp, cm, fm, ov, p_val, s_val]
     assert int(out[1]) == 0

@@ -263,7 +263,7 @@ ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index (Metal)
 
-# Cached evaluation results per genome (eliminates redundant optimize_core_device calls)
+# Cached evaluation results per genome (eliminates redundant exact-bound calls)
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
 
 # ============================================================================

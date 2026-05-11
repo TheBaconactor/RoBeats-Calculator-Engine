@@ -1068,7 +1068,7 @@ def skyline_aggregate_genome_stats_kernel(
         # Compute p_val (primary color contribution)
         # p_val is the *elemental* value for the song's primary color:
         #   Beat<-FT, Vibe<-FF, Rush<-FM, Flow<-CM, Chill<-PP
-        # (Overflow gems are handled later by optimize_core_device via is_p_ov/is_s_ov.)
+        # (Overflow gems are handled later by the exact-bound allocator via is_p_ov/is_s_ov.)
         p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
 
         # Compute s_val (secondary color contribution)

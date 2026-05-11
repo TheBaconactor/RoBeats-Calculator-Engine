@@ -34,9 +34,6 @@ FEVER_TIME_SCALE = 0.15
 FEVER_TIME_OFFSET = 0.15
 
 # --- SKYLINE CANDIDATE CONSTANTS ---
-PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
-CM_LOOKAHEAD_MAX = 10  # Max lookahead iterations for CM plateau-breaking in gem optimization
-
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score

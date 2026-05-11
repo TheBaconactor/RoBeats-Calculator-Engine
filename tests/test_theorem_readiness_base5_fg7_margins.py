@@ -49,12 +49,16 @@ def _compute_margin_brute_force(
 
     scores: list[int] = []
 
-    max_pp_gems = min(budget, (MAX_STAT_INDEX - cur_pp) // GEM_SCALE_NORMAL) if cur_pp < MAX_STAT_INDEX and (is_p_pp or is_s_pp) else 0
-    max_cm_gems = min(budget, (MAX_STAT_INDEX - cur_cm) // GEM_SCALE_NORMAL) if cur_cm < MAX_STAT_INDEX else 0
-    if not (is_p_cm or is_s_cm) and cur_cm > 50:
-        max_cm_gems = 0
-    elif not (is_p_cm or is_s_cm):
-        max_cm_gems = min(max_cm_gems, (50 - cur_cm) // GEM_SCALE_NORMAL + 1)
+    max_pp_gems = (
+        min(budget, ((MAX_STAT_INDEX - cur_pp) + GEM_SCALE_NORMAL - 1) // GEM_SCALE_NORMAL)
+        if cur_pp < MAX_STAT_INDEX
+        else 0
+    )
+    max_cm_gems = (
+        min(budget, ((MAX_STAT_INDEX - cur_cm) + GEM_SCALE_NORMAL - 1) // GEM_SCALE_NORMAL)
+        if cur_cm < MAX_STAT_INDEX
+        else 0
+    )
     max_fm_gems = min(budget, (MAX_STAT_INDEX - cur_fm) // GEM_SCALE_FEVER) if cur_fm < MAX_STAT_INDEX else 0
 
     for g_cm in range(max_cm_gems + 1):

@@ -4,7 +4,7 @@ Taichi Kernels - Batch Solver Strategies.
 This module contains batch solving kernels:
 - solve_genomes_with_ftff_kernel: Iterate FT/FF combos per genome (GPU-internal)
 
-All kernels use optimize_core_device from kernels_scoring for greedy gem allocation.
+All kernels use the exact-bound gem allocator.
 """
 import logging
 
@@ -14,7 +14,7 @@ from taichi.lang import simt
 
 from . import kernels_helpers
 
-from .kernels_scoring import optimize_core_device_refined as optimize_core_device
+from .kernels_scoring import optimize_core_device_exact_bound
 
 from gear_optimizer.core.parsing import env_get
 
@@ -121,8 +121,7 @@ def solve_genomes_with_ftff_kernel(
                 p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                 s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                # Run greedy gem allocation (shared optimize_core_device) for exact behavioral match
-                res_vec = optimize_core_device(
+                res_vec = optimize_core_device_exact_bound(
                     budget,
                     base_pp,
                     base_cm,
@@ -199,7 +198,7 @@ def solve_genomes_with_ftff_block_kernel(
 
     # One entry per "wave slot" (see wave_slot computation below). We track the best packed key and
     # the winning lane's gem allocation payload, so lane 0 can write the full result without
-    # recomputing `optimize_core_device()` for the winning combo.
+    # recomputing the exact-bound allocator for the winning combo.
     shared_waves_key = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.u64)
     shared_waves_combo = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
     shared_waves_pp = simt.block.SharedArray((SKYLINE_FTFF_BLOCK_WAVES,), ti.i32)
@@ -301,7 +300,7 @@ def solve_genomes_with_ftff_block_kernel(
                 p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                 s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                res_vec = optimize_core_device(
+                res_vec = optimize_core_device_exact_bound(
                     budget,
                     base_pp,
                     base_cm,

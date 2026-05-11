@@ -5,11 +5,11 @@ import numpy as np
 from gear_optimizer.solver.scoring_core import optimize_core_jit
 
 
-def test_optimize_core_jit_cm_lookahead_breaks_plateau_trap() -> None:
+def test_optimize_core_jit_does_not_use_cm_plateau_lookahead() -> None:
     """
-    Regression guard: CM multipliers are lookup-table based, so the first CM gem can be
-    "invisible" (no improvement) until we cross a breakpoint. The greedy allocator must
-    be able to invest in CM across a short plateau window.
+    CM multipliers are lookup-table based, so the first CM gem can be "invisible"
+    until a later breakpoint. The greedy allocator should no longer have a special
+    CM lookahead rule that invests across that plateau.
     """
     # Breakpoint: CM multiplier stays at 1.0 until stat >= 6, then jumps to 2.0.
     # With GEM_SCALE_NORMAL=2, this requires 3 CM gems before any improvement is observed.
@@ -87,4 +87,4 @@ def test_optimize_core_jit_cm_lookahead_breaks_plateau_trap() -> None:
         MAX_STAT_INDEX,
     )
 
-    assert int(g_cm) >= 3, "CM lookahead failed to cross the breakpoint plateau"
+    assert int(g_cm) == 0

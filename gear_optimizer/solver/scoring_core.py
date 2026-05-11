@@ -141,18 +141,6 @@ def optimize_core_jit(
     gems_fm = 0
     gems_ov = 0
     remaining_budget = budget
-    # Tie-breaking / secondary objective:
-    # - Primary: maximize score
-    # - Secondary (when scores tie): maximize Overflow (OV) usage
-    #
-    # IMPORTANT: Pure "prefer OV on ties" can prevent reaching score breakpoints that
-    # require several PP gems (because early PP steps may tie). To address this,
-    # we add a small lookahead: if PP ties with OV now but investing a few PP gems
-    # would strictly improve score within the lookahead window, we still pick PP.
-    PP_TIE_LOOKAHEAD_MAX = 8
-    # CM can also have discrete breakpoint plateaus (multiplier lookup table + integer rounding),
-    # where the first CM gem doesn't improve but a small streak of CM gems does.
-    CM_LOOKAHEAD_MAX = 10
 
     while remaining_budget > 0:
         fill_budget = remaining_budget - 1
@@ -177,21 +165,18 @@ def optimize_core_jit(
         )
         best_opt_idx = 3
 
-        pp_score = -1
         fill_budget = remaining_budget - 1
         fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
 
-        # Option 0: PP gem
-        # Optimization: Skip PP upgrades if Chill is not in Primary/Secondary (user request)
-        allow_pp = (is_p_pp > 0) or (is_s_pp > 0)
-
-        if allow_pp and cur_pp < MAX_STAT_INDEX:
+        # Option 0: PP gem. PP stat value is globally legal; lane flags only
+        # control elemental side value.
+        if cur_pp < MAX_STAT_INDEX:
             t_pp = cur_pp + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (fill_bonus * is_s_ov)
             pp_factor_pp = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
             base = np.float32((t_p * 2) + t_s) + pp_factor_pp
-            pp_score = fast_calculate_score(
+            score = fast_calculate_score(
                 base,
                 c_mul_cur,
                 f_mul_cur,
@@ -199,12 +184,12 @@ def optimize_core_jit(
                 count_body_fever,
                 count_body_normal,
             )
-            if pp_score > best_score:
-                best_score = pp_score
+            if score > best_score:
+                best_score = score
                 best_opt_idx = 0
 
         # Option 1: CM gem
-        if cur_cm < MAX_STAT_INDEX and (cur_cm <= 50 or is_p_cm or is_s_cm):
+        if cur_cm < MAX_STAT_INDEX:
             t_cm = cur_cm + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (fill_bonus * is_s_ov)
@@ -240,68 +225,6 @@ def optimize_core_jit(
             if score > best_score:
                 best_score = score
                 best_opt_idx = 2
-
-        # PP lookahead: if OV wins a tie *now*, but a few PP gems would break the tie
-        # into a real improvement soon, start investing in PP.
-        if allow_pp and best_opt_idx == 3 and pp_score == best_score and remaining_budget > 1:
-            max_k = remaining_budget
-            if max_k > PP_TIE_LOOKAHEAD_MAX:
-                max_k = PP_TIE_LOOKAHEAD_MAX
-            k = 2
-            while k <= max_k:
-                fill_bonus_k = (remaining_budget - k) * ELEMENTAL_GEM_SCALE
-                t_pp = cur_pp + (k * GEM_SCALE_NORMAL)
-                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (fill_bonus_k * is_p_ov)
-                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (fill_bonus_k * is_s_ov)
-                pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
-                base = np.float32((t_p * 2) + t_s) + pp_factor
-                score_k = fast_calculate_score(
-                    base,
-                    c_mul_cur,
-                    f_mul_cur,
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                )
-                if score_k > best_score:
-                    best_opt_idx = 0
-                    break
-                k += 1
-
-        # CM lookahead: if OV wins now but investing a few CM gems would cross a breakpoint
-        # and strictly improve score soon, start investing in CM.
-        if (
-            best_opt_idx == 3
-            and remaining_budget > 1
-            and cur_cm < MAX_STAT_INDEX
-            and (cur_cm <= 50 or is_p_cm or is_s_cm)
-        ):
-            max_k = remaining_budget
-            if max_k > CM_LOOKAHEAD_MAX:
-                max_k = CM_LOOKAHEAD_MAX
-            max_k_by_cap = (MAX_STAT_INDEX - cur_cm) // GEM_SCALE_NORMAL
-            if max_k > max_k_by_cap:
-                max_k = max_k_by_cap
-            k = 2
-            while k <= max_k:
-                fill_bonus_k = (remaining_budget - k) * ELEMENTAL_GEM_SCALE
-                t_cm = cur_cm + (k * GEM_SCALE_NORMAL)
-                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (fill_bonus_k * is_p_ov)
-                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (fill_bonus_k * is_s_ov)
-                base = np.float32((t_p * 2) + t_s) + pp_factor_cur
-                c_mul = np.float32(lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS))
-                score_k = fast_calculate_score(
-                    base,
-                    c_mul,
-                    f_mul_cur,
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                )
-                if score_k > best_score:
-                    best_opt_idx = 1
-                    break
-                k += 1
 
         # Apply the best option
         if best_opt_idx == 0:
@@ -497,22 +420,15 @@ def optimize_core_exact_bounded_jit(
 
     n_hn, n_hf, sigma_hn, sigma_hf = _head_mask_coefficients_jit(fever_mask_head)
 
-    allow_pp = (is_p_pp > 0) or (is_s_pp > 0)
-    allow_cm_color = (is_p_cm > 0) or (is_s_cm > 0)
-
-    if cur_pp >= MAX_STAT_INDEX or not allow_pp:
+    if cur_pp >= MAX_STAT_INDEX:
         max_pp_gems = 0
     else:
         max_pp_gems = _ceil_div_pos_jit(MAX_STAT_INDEX - cur_pp, GEM_SCALE_NORMAL)
 
     if cur_cm >= MAX_STAT_INDEX:
         max_cm_gems = 0
-    elif allow_cm_color:
-        max_cm_gems = _ceil_div_pos_jit(MAX_STAT_INDEX - cur_cm, GEM_SCALE_NORMAL)
-    elif cur_cm > 50:
-        max_cm_gems = 0
     else:
-        max_cm_gems = ((50 - cur_cm) // GEM_SCALE_NORMAL) + 1
+        max_cm_gems = _ceil_div_pos_jit(MAX_STAT_INDEX - cur_cm, GEM_SCALE_NORMAL)
 
     if cur_fm >= MAX_STAT_INDEX:
         max_fm_gems = 0

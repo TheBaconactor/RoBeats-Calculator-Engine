@@ -74,8 +74,8 @@ def create_metal_kernels():
     if _kernels_created:
         return
 
-    # Import scoring solvers at kernel creation time
-    from .kernels import optimize_core_device
+    # Import scoring solver at kernel creation time.  Metal patches are active
+    # production kernels on macOS, so keep them on the exact-bound allocator too.
     from .kernels.kernels_scoring import optimize_core_device_exact_bound
 
     @ti.kernel
@@ -152,7 +152,7 @@ def create_metal_kernels():
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
+            res_vec = optimize_core_device_exact_bound(
                 budget,
                 base_pp,
                 base_cm,
@@ -239,53 +239,28 @@ def create_metal_kernels():
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
-            if use_exact_inner_solver != 0:
-                res_vec = optimize_core_device_exact_bound(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
-            else:
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+            res_vec = optimize_core_device_exact_bound(
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
 
             final_score: ti.i32 = res_vec[0]
             genome_result_stats[genome_idx] = ti.Vector(
@@ -456,54 +431,28 @@ def create_metal_kernels():
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
-
-            if use_exact_inner_solver != 0:
-                res_vec = optimize_core_device_exact_bound(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
-            else:
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+            res_vec = optimize_core_device_exact_bound(
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
 
             score: ti.i32 = res_vec[0]
             if score >= 0:

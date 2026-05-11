@@ -4,7 +4,7 @@ Taichi Kernels Package - Public Kernel Entry Points.
 This package splits the monolithic kernels.py (1,757 lines) into 6 focused modules:
 1. kernels_helpers.py - Field placeholders & lookup functions
 2. kernels_skyline.py - 8 skyline kernels (selection, crossover, mutation, etc.)
-3. kernels_scoring.py - Score calculation & optimize_core_device
+3. kernels_scoring.py - Score calculation & exact-bound gem allocation
 4. kernels_solvers_batch.py - Batch solver kernels
 5. skyline_eval/ (kernels_skyline_eval.py) - skyline evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
@@ -100,11 +100,11 @@ from .kernels_skyline import (
     SKYLINE_swap_population_kernel,  # FUSED: swap
 )
 
-# Import scoring functions and optimize_core_device
+# Import scoring functions and exact gem allocator
 from .kernels_scoring import (
     _calc_head_score_grid,
     calc_score_cached_device,
-    optimize_core_device,
+    optimize_core_device_exact_bound,
 )
 
 # Import batch solver kernels
@@ -236,7 +236,7 @@ __all__ = [
     "calc_score_with_grid",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
-    "optimize_core_device",
+    "optimize_core_device_exact_bound",
     # Batch solver kernels
     "solve_genomes_with_ftff_kernel",
     "solve_genomes_with_ftff_block_kernel",

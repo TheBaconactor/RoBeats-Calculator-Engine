@@ -86,7 +86,7 @@ def _score_from_alloc(
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_registry_solve_exact_inner_matches_cpu_exact():
+def test_registry_solve_inner_selector_matches_cpu_exact_for_both_branches():
     from gear_optimizer.core.color_flags import build_color_flags
     from gear_optimizer.core.constants import (
         ELEMENTAL_GEM_SCALE,
@@ -235,21 +235,26 @@ def test_registry_solve_exact_inner_matches_cpu_exact():
     slot_start = np.arange(1, 10, dtype=np.int32)
     slot_count = np.ones(9, dtype=np.int32)
     population_indices = np.asarray([[1, 2, 3, 4, 5, 6, 7, 8, 9]], dtype=np.int32)
-    req = RegistrySolveRequest(
-        population_indices=population_indices,
-        item_stats=item_stats,
-        slot_start=slot_start,
-        slot_count=slot_count,
-        base_fixed_stats=build_stats_array(base_stats),
-        timeline_grid=calc_song,
-        ref_arrays=ref_arrays,
-        flags={k: int(v) for k, v in flags.items()},
-        total_budget=int(TOTAL_GEM_BUDGET),
-        gem_scale_fever=int(GEM_SCALE_FEVER),
-        song_slot=0,
-        use_exact_inner_solver=True,
-    )
-    gpu_results = dispatch_registry_solve(req)
-    assert len(gpu_results) == 1
-    gpu_best = tuple(int(v) for v in gpu_results[0])
-    assert gpu_best[0] == int(cpu_best[0])
+    gpu_bests = []
+    for use_exact_inner_solver in (True, False):
+        req = RegistrySolveRequest(
+            population_indices=population_indices,
+            item_stats=item_stats,
+            slot_start=slot_start,
+            slot_count=slot_count,
+            base_fixed_stats=build_stats_array(base_stats),
+            timeline_grid=calc_song,
+            ref_arrays=ref_arrays,
+            flags={k: int(v) for k, v in flags.items()},
+            total_budget=int(TOTAL_GEM_BUDGET),
+            gem_scale_fever=int(GEM_SCALE_FEVER),
+            song_slot=0,
+            use_exact_inner_solver=use_exact_inner_solver,
+        )
+        gpu_results = dispatch_registry_solve(req)
+        assert len(gpu_results) == 1
+        gpu_best = tuple(int(v) for v in gpu_results[0])
+        assert gpu_best[0] == int(cpu_best[0])
+        gpu_bests.append(gpu_best)
+
+    assert gpu_bests[0] == gpu_bests[1]

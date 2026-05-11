@@ -18,22 +18,17 @@ from gear_optimizer.solver.scoring_core import (
 
 
 def _cm_cap(cur_cm: int, is_p_cm: int, is_s_cm: int, budget: int) -> int:
-    allow_cm_color = int(is_p_cm) != 0 or int(is_s_cm) != 0
+    del is_p_cm, is_s_cm
     if int(cur_cm) >= int(MAX_STAT_INDEX):
-        out = 0
-    elif allow_cm_color:
-        rem = int(MAX_STAT_INDEX) - int(cur_cm)
-        out = (rem + int(GEM_SCALE_NORMAL) - 1) // int(GEM_SCALE_NORMAL)
-    elif int(cur_cm) > 50:
-        out = 0
-    else:
-        out = ((50 - int(cur_cm)) // int(GEM_SCALE_NORMAL)) + 1
+        return 0
+    rem = int(MAX_STAT_INDEX) - int(cur_cm)
+    out = (rem + int(GEM_SCALE_NORMAL) - 1) // int(GEM_SCALE_NORMAL)
     return max(0, min(int(budget), int(out)))
 
 
 def _pp_cap(cur_pp: int, is_p_pp: int, is_s_pp: int, budget: int) -> int:
-    allow_pp = int(is_p_pp) != 0 or int(is_s_pp) != 0
-    if not allow_pp or int(cur_pp) >= int(MAX_STAT_INDEX):
+    del is_p_pp, is_s_pp
+    if int(cur_pp) >= int(MAX_STAT_INDEX):
         return 0
     rem = int(MAX_STAT_INDEX) - int(cur_pp)
     out = (rem + int(GEM_SCALE_NORMAL) - 1) // int(GEM_SCALE_NORMAL)
@@ -435,3 +430,83 @@ def test_semi_exact_upper_bound_dominates_exact_score():
         )
     )
     assert ub >= float(exact)
+
+
+def test_exact_bounded_allows_cm_above_50_without_flow_lane() -> None:
+    ref_pp = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_cm = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_fm = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_cm[62:] = np.float32(10.0)
+    fever_mask_head = np.zeros(0, dtype=np.bool_)
+
+    exact = optimize_core_exact_bounded_jit(
+        1,
+        0,
+        60,
+        0,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        fever_mask_head,
+        0,
+        8,
+        GEM_SCALE_NORMAL,
+        GEM_SCALE_FEVER,
+        GEM_STAT_TO_ELEMENT_SCALE,
+        ELEMENTAL_GEM_SCALE,
+        TOTAL_ROWS,
+        MAX_STAT_INDEX,
+    )
+
+    assert int(exact[6]) == 1
+    assert int(exact[1]) == 62
+
+
+def test_exact_bounded_allows_pp_without_chill_lane() -> None:
+    ref_pp = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_cm = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_fm = np.ones(TOTAL_ROWS + 1, dtype=np.float32)
+    ref_pp[12:] = np.float32(1000.0)
+    fever_mask_head = np.zeros(0, dtype=np.bool_)
+
+    exact = optimize_core_exact_bounded_jit(
+        1,
+        10,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        fever_mask_head,
+        0,
+        100,
+        GEM_SCALE_NORMAL,
+        GEM_SCALE_FEVER,
+        GEM_STAT_TO_ELEMENT_SCALE,
+        ELEMENTAL_GEM_SCALE,
+        TOTAL_ROWS,
+        MAX_STAT_INDEX,
+    )
+
+    assert int(exact[5]) == 1
+    assert int(exact[0]) == 12

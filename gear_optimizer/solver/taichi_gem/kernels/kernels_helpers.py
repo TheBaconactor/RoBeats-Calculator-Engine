@@ -526,7 +526,7 @@ def calc_score_with_grid_bits(
     Bit i corresponds to head note i being a fever note.
 
     More efficient than grid lookup for repeated score calculations
-    in optimize_core_device.
+    in the exact-bound gem allocator.
 
     Args:
         base_value: (primary*2) + secondary + pp_factor

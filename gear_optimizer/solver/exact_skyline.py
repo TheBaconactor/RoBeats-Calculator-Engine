@@ -7,10 +7,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 
 from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
     GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
     LOADOUTS_PER_SONG_LIMIT,
     MAX_STAT_INDEX,
     TOTAL_GEM_BUDGET,
@@ -22,6 +19,7 @@ from gear_optimizer.solver.combined_skyline_sparse import (
     get_last_combined_skyline_stats,
 )
 from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
+from gear_optimizer.solver.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
 from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
@@ -164,27 +162,6 @@ class LaneAwareGlobalSkylineStats:
     seconds: float
 
 
-@dataclass(frozen=True)
-class EnvelopeReductionStats:
-    points_in: int
-    points_out: int
-    groups: int
-    groups_multi: int
-    max_group_size: int
-    seconds: float
-
-
-@dataclass(frozen=True)
-class EnvelopeDominanceLUT:
-    pp_max_idx: int
-    budget_max: int
-    delta_max: np.ndarray
-    delta_min: np.ndarray
-
-
-_ENVELOPE_DOMINANCE_TOL = np.float32(1.0e-6)
-
-
 def _item_vec_5(item: dict) -> tuple[int, int, int, int, int]:
     return (
         int(item.get("Perfect Points", 0) or 0),
@@ -199,359 +176,6 @@ def _lane_base_init(item: dict, p_color: str, s_color: str) -> int:
     p = int(item.get(p_color, 0) or 0) if p_color else 0
     s = int(item.get(s_color, 0) or 0) if s_color and s_color != p_color else 0
     return (2 * p) + s
-
-
-def _clamp_idx(v: int) -> int:
-    if v < 0:
-        return 0
-    if v > MAX_STAT_INDEX:
-        return MAX_STAT_INDEX
-    return int(v)
-
-
-def _ceil_div_pos(num: int, den: int) -> int:
-    num_i = int(num)
-    den_i = int(den)
-    if den_i <= 0:
-        raise ValueError("den must be positive")
-    if num_i <= 0:
-        return 0
-    return (num_i + den_i - 1) // den_i
-
-
-def _lane_weight(color: str, *, p_color: str, s_color: str, scale: int) -> int:
-    return int(scale) * ((2 if p_color == color else 0) + (1 if s_color == color else 0))
-
-
-def _build_envelope_dominance_lut(
-    *,
-    ref_pp: np.ndarray,
-    budget_max: int,
-    w_pp: int,
-    w_ov: int,
-) -> EnvelopeDominanceLUT:
-    budget = max(0, int(budget_max))
-    pp_max_idx = int(MAX_STAT_INDEX)
-    pp_states = int(pp_max_idx) + 1
-
-    ref_raw = np.asarray(ref_pp, dtype=np.float32).reshape(-1)
-    if ref_raw.size == 0:
-        ref_vals = np.zeros(pp_states, dtype=np.float32)
-    elif int(ref_raw.shape[0]) < pp_states:
-        ref_vals = np.empty(pp_states, dtype=np.float32)
-        ref_vals[: int(ref_raw.shape[0])] = ref_raw
-        ref_vals[int(ref_raw.shape[0]) :] = np.float32(ref_raw[-1])
-    else:
-        ref_vals = ref_raw[:pp_states].astype(np.float32, copy=False)
-
-    g_table = np.empty((pp_states, budget + 1), dtype=np.float32)
-    pp_vs_ov_delta = np.float32(float(int(w_pp) - int(w_ov)))
-
-    for p_idx in range(pp_states):
-        if p_idx >= int(pp_max_idx):
-            pp_cap = 0
-        else:
-            pp_cap = min(int(budget), _ceil_div_pos(int(pp_max_idx) - int(p_idx), int(GEM_SCALE_NORMAL)))
-
-        prefix_best = np.empty(pp_cap + 1, dtype=np.float32)
-        best = np.float32(ref_vals[int(p_idx)])
-        prefix_best[0] = best
-
-        for pp_steps in range(1, pp_cap + 1):
-            pp_idx = int(p_idx) + int(pp_steps) * int(GEM_SCALE_NORMAL)
-            if pp_idx > int(pp_max_idx):
-                pp_idx = int(pp_max_idx)
-            cand = np.float32(float(pp_steps) * float(pp_vs_ov_delta) + float(ref_vals[int(pp_idx)]))
-            if cand > best:
-                best = cand
-            prefix_best[pp_steps] = best
-
-        g_table[int(p_idx), : int(pp_cap) + 1] = prefix_best
-        if int(pp_cap) < int(budget):
-            g_table[int(p_idx), int(pp_cap) + 1 :] = prefix_best[int(pp_cap)]
-
-    # Delta theorem table: state B dominates state A iff base_diff >= max_L(G_A(L)-G_B(L)).
-    diff = g_table[:, None, :] - g_table[None, :, :]
-    delta_max = diff.max(axis=2).astype(np.float32, copy=False)
-    delta_min = diff.min(axis=2).astype(np.float32, copy=False)
-
-    return EnvelopeDominanceLUT(
-        pp_max_idx=int(pp_max_idx),
-        budget_max=int(budget),
-        delta_max=delta_max,
-        delta_min=delta_min,
-    )
-
-
-def _envelope_dominates_from_delta(
-    base_diff: np.ndarray,
-    delta_max: np.ndarray,
-    delta_min: np.ndarray,
-) -> np.ndarray:
-    ge = base_diff >= (delta_max + _ENVELOPE_DOMINANCE_TOL)
-    strict = (base_diff > (delta_max + _ENVELOPE_DOMINANCE_TOL)) | (
-        (delta_max - delta_min) > _ENVELOPE_DOMINANCE_TOL
-    )
-    return ge & strict
-
-
-def _pp_ov_envelope_curve(
-    *,
-    pp_stat: int,
-    base_lane: int,
-    ref_pp: np.ndarray,
-    budget_max: int,
-    w_pp: int,
-    w_ov: int,
-) -> np.ndarray:
-    budget = max(0, int(budget_max))
-    if int(pp_stat) >= int(MAX_STAT_INDEX):
-        pp_cap = 0
-    else:
-        pp_cap = min(int(budget), _ceil_div_pos(int(MAX_STAT_INDEX) - int(pp_stat), int(GEM_SCALE_NORMAL)))
-
-    prefix_best = np.empty(pp_cap + 1, dtype=np.float32)
-    best = np.float32(ref_pp[_clamp_idx(int(pp_stat))])
-    prefix_best[0] = best
-
-    delta = np.float32(float(int(w_pp) - int(w_ov)))
-    for p in range(1, pp_cap + 1):
-        pp_idx = _clamp_idx(int(pp_stat) + int(p) * int(GEM_SCALE_NORMAL))
-        cand = np.float32(float(p) * float(delta) + float(ref_pp[pp_idx]))
-        if cand > best:
-            best = cand
-        prefix_best[p] = best
-
-    curve = np.empty(budget + 1, dtype=np.float32)
-    base_f = np.float32(float(base_lane))
-    w_ov_f = np.float32(float(w_ov))
-    for l_budget in range(budget + 1):
-        lim = pp_cap if l_budget >= pp_cap else int(l_budget)
-        curve[l_budget] = base_f + np.float32(float(l_budget) * float(w_ov_f)) + prefix_best[lim]
-    return curve
-
-
-def _reduce_same_stat_envelope_frontier_with_codes(
-    points: np.ndarray,
-    codes: np.ndarray,
-    *,
-    p_color: str,
-    s_color: str,
-    selected_color: str,
-    ref_pp: np.ndarray,
-    budget_max: int = TOTAL_GEM_BUDGET,
-    dominance_lut: EnvelopeDominanceLUT | None = None,
-) -> tuple[EnvelopeReductionStats, np.ndarray, np.ndarray]:
-    t0 = time.perf_counter()
-    if points.size == 0 or codes.size == 0:
-        stats = EnvelopeReductionStats(
-            points_in=0,
-            points_out=0,
-            groups=0,
-            groups_multi=0,
-            max_group_size=0,
-            seconds=float(time.perf_counter() - t0),
-        )
-        return stats, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64)
-
-    pts = np.asarray(points, dtype=np.int32)
-    c_arr = np.asarray(codes, dtype=np.uint64)
-    if int(pts.shape[0]) != int(c_arr.shape[0]):
-        raise ValueError("points/codes length mismatch")
-
-    stat_size = int(MAX_STAT_INDEX) + 1
-    group_keys = (
-        (((pts[:, 1].astype(np.int64, copy=False) * stat_size) + pts[:, 2].astype(np.int64, copy=False)) * stat_size)
-        + pts[:, 3].astype(np.int64, copy=False)
-    ) * stat_size + pts[:, 4].astype(np.int64, copy=False)
-    group_order = np.argsort(group_keys, kind="stable")
-    sorted_keys = group_keys[group_order]
-    if int(sorted_keys.shape[0]) > 0:
-        group_starts = np.concatenate(
-            (
-                np.asarray([0], dtype=np.int64),
-                np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]).astype(np.int64) + 1,
-            )
-        )
-    else:
-        group_starts = np.zeros(0, dtype=np.int64)
-
-    if dominance_lut is None:
-        w_pp = _lane_weight("Chill", p_color=p_color, s_color=s_color, scale=GEM_STAT_TO_ELEMENT_SCALE)
-        w_ov = _lane_weight(str(selected_color or ""), p_color=p_color, s_color=s_color, scale=ELEMENTAL_GEM_SCALE)
-        lut = _build_envelope_dominance_lut(
-            ref_pp=ref_pp,
-            budget_max=int(budget_max),
-            w_pp=int(w_pp),
-            w_ov=int(w_ov),
-        )
-    else:
-        lut = dominance_lut
-
-    keep = np.ones(int(pts.shape[0]), dtype=np.bool_)
-    groups_multi = 0
-    max_group_size = 1
-
-    for group_pos, start in enumerate(group_starts.tolist()):
-        end = int(group_starts[group_pos + 1]) if group_pos + 1 < int(group_starts.shape[0]) else int(group_order.shape[0])
-        g = int(end) - int(start)
-        if g <= 1:
-            continue
-        groups_multi += 1
-        if g > max_group_size:
-            max_group_size = g
-
-        idx_arr = group_order[int(start) : int(end)].astype(np.int64, copy=False)
-        group_pp = np.clip(pts[idx_arr, 0], 0, int(lut.pp_max_idx)).astype(np.int32, copy=False)
-        group_base = pts[idx_arr, 5].astype(np.float32, copy=False)
-
-        if g <= 2048:
-            delta_max_g = lut.delta_max[np.ix_(group_pp, group_pp)]
-            delta_min_g = lut.delta_min[np.ix_(group_pp, group_pp)]
-            base_diff = group_base[np.newaxis, :] - group_base[:, np.newaxis]
-            dominates = _envelope_dominates_from_delta(base_diff, delta_max_g, delta_min_g)
-            np.fill_diagonal(dominates, False)
-            dominated = np.any(dominates, axis=1)
-        else:
-            dominated = np.zeros(g, dtype=np.bool_)
-            for i in range(g):
-                if dominated[i]:
-                    continue
-                delta_max_row = lut.delta_max[int(group_pp[i]), group_pp]
-                delta_min_row = lut.delta_min[int(group_pp[i]), group_pp]
-                base_diff = group_base - group_base[i]
-                dominates_row = _envelope_dominates_from_delta(base_diff, delta_max_row, delta_min_row)
-                dominates_row[i] = False
-                if np.any(dominates_row):
-                    dominated[i] = True
-
-        if np.any(dominated):
-            keep[idx_arr[dominated]] = False
-
-    reduced_points = pts[keep].astype(np.int32, copy=False)
-    reduced_codes = c_arr[keep].astype(np.uint64, copy=False)
-    stats = EnvelopeReductionStats(
-        points_in=int(pts.shape[0]),
-        points_out=int(reduced_points.shape[0]),
-        groups=int(group_starts.shape[0]),
-        groups_multi=int(groups_multi),
-        max_group_size=int(max_group_size),
-        seconds=float(time.perf_counter() - t0),
-    )
-    return stats, reduced_points, reduced_codes
-
-
-def _reduce_combined_pair_envelope_fast(
-    *,
-    gear_points: np.ndarray,
-    mini_points: np.ndarray,
-    pair_gear_idx: np.ndarray,
-    pair_mini_idx: np.ndarray,
-    dominance_lut: EnvelopeDominanceLUT,
-) -> tuple[EnvelopeReductionStats, np.ndarray, np.ndarray]:
-    t0 = time.perf_counter()
-    if pair_gear_idx.size == 0:
-        stats = EnvelopeReductionStats(
-            points_in=0,
-            points_out=0,
-            groups=0,
-            groups_multi=0,
-            max_group_size=0,
-            seconds=float(time.perf_counter() - t0),
-        )
-        return stats, np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
-
-    gp = np.asarray(gear_points, dtype=np.int32)
-    mp = np.asarray(mini_points, dtype=np.int32)
-    gi = np.asarray(pair_gear_idx, dtype=np.int32)
-    mi = np.asarray(pair_mini_idx, dtype=np.int32)
-
-    g_pp = gp[gi, 0]
-    cm = np.minimum(int(MAX_STAT_INDEX), gp[gi, 1] + mp[mi, 0])
-    fm = np.minimum(int(MAX_STAT_INDEX), gp[gi, 2] + mp[mi, 1])
-    ft = np.minimum(int(MAX_STAT_INDEX), gp[gi, 3] + mp[mi, 2])
-    ff = np.minimum(int(MAX_STAT_INDEX), gp[gi, 4] + mp[mi, 3])
-    base = (gp[gi, 5] + mp[mi, 4]).astype(np.float32, copy=False)
-
-    stat_size = int(MAX_STAT_INDEX) + 1
-    group_keys = ((((cm.astype(np.int64) * stat_size) + fm) * stat_size + ft) * stat_size) + ff
-    order = np.argsort(group_keys, kind="stable")
-    sorted_keys = group_keys[order]
-    if int(sorted_keys.shape[0]) > 1:
-        group_starts = np.concatenate(
-            (
-                np.asarray([0], dtype=np.int64),
-                np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]).astype(np.int64) + 1,
-            )
-        )
-        group_ends = np.concatenate((group_starts[1:], np.asarray([int(sorted_keys.shape[0])], dtype=np.int64)))
-        group_sizes = group_ends - group_starts
-        max_group_size = int(group_sizes.max()) if group_sizes.size else 1
-        groups_multi = int(np.count_nonzero(group_sizes > 1))
-    else:
-        group_starts = np.zeros(1 if int(sorted_keys.shape[0]) else 0, dtype=np.int64)
-        max_group_size = int(sorted_keys.shape[0])
-        groups_multi = 0
-
-    # Exact but intentionally conservative: the combined frontier usually has tiny
-    # timing slices. If a future inventory produces large slices, skip this optional
-    # reduction rather than making the hot path worse.
-    if max_group_size > 64:
-        stats = EnvelopeReductionStats(
-            points_in=int(gi.shape[0]),
-            points_out=int(gi.shape[0]),
-            groups=int(group_starts.shape[0]),
-            groups_multi=int(groups_multi),
-            max_group_size=int(max_group_size),
-            seconds=float(time.perf_counter() - t0),
-        )
-        return stats, gi, mi
-
-    sorted_pp = np.clip(g_pp[order], 0, int(dominance_lut.pp_max_idx)).astype(np.int32, copy=False)
-    sorted_base = base[order]
-    dominated_sorted = np.zeros(int(order.shape[0]), dtype=np.bool_)
-
-    for offset in range(1, int(max_group_size)):
-        same_group = sorted_keys[int(offset) :] == sorted_keys[: -int(offset)]
-        if not np.any(same_group):
-            continue
-        left = np.flatnonzero(same_group)
-        right = left + int(offset)
-
-        pp_left = sorted_pp[left]
-        pp_right = sorted_pp[right]
-        base_left = sorted_base[left]
-        base_right = sorted_base[right]
-
-        right_dominates_left = _envelope_dominates_from_delta(
-            base_right - base_left,
-            dominance_lut.delta_max[pp_left, pp_right],
-            dominance_lut.delta_min[pp_left, pp_right],
-        )
-        if np.any(right_dominates_left):
-            dominated_sorted[left[right_dominates_left]] = True
-
-        left_dominates_right = _envelope_dominates_from_delta(
-            base_left - base_right,
-            dominance_lut.delta_max[pp_right, pp_left],
-            dominance_lut.delta_min[pp_right, pp_left],
-        )
-        if np.any(left_dominates_right):
-            dominated_sorted[right[left_dominates_right]] = True
-
-    keep = np.ones(int(order.shape[0]), dtype=np.bool_)
-    if np.any(dominated_sorted):
-        keep[order[dominated_sorted]] = False
-
-    stats = EnvelopeReductionStats(
-        points_in=int(gi.shape[0]),
-        points_out=int(np.count_nonzero(keep)),
-        groups=int(group_starts.shape[0]),
-        groups_multi=int(groups_multi),
-        max_group_size=int(max_group_size),
-        seconds=float(time.perf_counter() - t0),
-    )
-    return stats, gi[keep].astype(np.int32, copy=False), mi[keep].astype(np.int32, copy=False)
 
 
 def _reduce_gear_dp_frontier_arrays(stats: np.ndarray, codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -637,17 +261,25 @@ def _dp_gear_ff_base_frontier_with_codes(
         np.clip(expanded[:, :5], 0, int(MAX_STAT_INDEX), out=expanded[:, :5])
 
         expanded_codes = (codes[:, None] | item_codes[None, :]).ravel()
-        stats, codes = _reduce_gear_dp_frontier_arrays(expanded, expanded_codes)
+        # Lossless prefix skyline: this is the same fixed-FT/FF dominance used by
+        # the final gear skyline, but applied after each slot so dominated
+        # prefixes cannot multiply through later slots.
+        _, stats, codes = reduce_fixed_timing_prefix_skyline(expanded, expanded_codes)
 
     if int(stats.shape[0]) > 0:
-        group_start = np.ones(int(stats.shape[0]), dtype=np.bool_)
-        if int(stats.shape[0]) > 1:
-            group_start[1:] = np.any(stats[1:, :4] != stats[:-1, :4], axis=1)
-        starts = np.flatnonzero(group_start)
-        sizes = np.diff(np.append(starts, int(stats.shape[0]))).astype(np.int32, copy=False)
+        # Telemetry only. Keep it independent of row ordering; the prefix skyline
+        # is sorted by timing cell, not by the old (PP,CM,FM,FT) grouping.
+        stat_span = int(MAX_STAT_INDEX) + 1
+        key4 = (
+            ((stats[:, 0].astype(np.int64, copy=False) * np.int64(stat_span) + stats[:, 1])
+             * np.int64(stat_span) + stats[:, 2])
+            * np.int64(stat_span) + stats[:, 3]
+        )
+        _, sizes = np.unique(key4, return_counts=True)
+        sizes = sizes.astype(np.int32, copy=False)
     else:
         sizes = np.zeros(0, dtype=np.int32)
-    pairs = int(sizes.sum())
+    pairs = int(stats.shape[0])
     dp_stats = LaneAwareGearDPStats(
         keys_4d=int(sizes.shape[0]),
         pairs_6d=pairs,
@@ -1312,49 +944,6 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     if gear_points.size == 0:
         return None, [], [], None, [], [], []
 
-    ref_pp_raw = ctx.ref_arrays.get("Perfect Points") if isinstance(ctx.ref_arrays, dict) else None
-    ref_pp = np.asarray(ref_pp_raw, dtype=np.float32) if ref_pp_raw is not None else np.zeros(0, dtype=np.float32)
-    envelope_lut: EnvelopeDominanceLUT | None = None
-    if ref_pp.ndim == 1 and ref_pp.shape[0] > 0:
-        phase_started = time.perf_counter()
-        w_pp = _lane_weight("Chill", p_color=ctx.p_color, s_color=ctx.s_color, scale=GEM_STAT_TO_ELEMENT_SCALE)
-        w_ov = _lane_weight(
-            str(ctx.selected_color or ""),
-            p_color=ctx.p_color,
-            s_color=ctx.s_color,
-            scale=ELEMENTAL_GEM_SCALE,
-        )
-        envelope_lut = _build_envelope_dominance_lut(
-            ref_pp=ref_pp,
-            budget_max=int(TOTAL_GEM_BUDGET),
-            w_pp=int(w_pp),
-            w_ov=int(w_ov),
-        )
-        _record_phase(phase_seconds, "envelope_lut_cpu", phase_started)
-        status_cb("skyline: local envelope prune")
-        phase_started = time.perf_counter()
-        env_stats, gear_points, gear_codes = _reduce_same_stat_envelope_frontier_with_codes(
-            gear_points,
-            gear_codes,
-            p_color=ctx.p_color,
-            s_color=ctx.s_color,
-            selected_color=ctx.selected_color,
-            ref_pp=ref_pp,
-            budget_max=int(TOTAL_GEM_BUDGET),
-            dominance_lut=envelope_lut,
-        )
-        _record_phase(phase_seconds, "gear_local_envelope_cpu", phase_started)
-        phase_counts["gear_local_envelope_in"] = int(env_stats.points_in)
-        phase_counts["gear_local_envelope_out"] = int(env_stats.points_out)
-        status_cb(
-            "skyline: local envelope kept "
-            f"{int(env_stats.points_out):,}/{int(env_stats.points_in):,} "
-            f"(groups={int(env_stats.groups_multi):,}, max_group={int(env_stats.max_group_size)}, "
-            f"time={float(env_stats.seconds):.2f}s)"
-        )
-        if gear_points.size == 0:
-            return None, [], [], None, [], [], []
-
     phase_started = time.perf_counter()
     gear_ids = np.zeros((int(gear_codes.shape[0]), 6), dtype=np.int32)
     for idx, gear_code in enumerate(gear_codes.tolist()):
@@ -1402,30 +991,6 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         combined_candidate_count = int(pair_g_idx.shape[0])
         phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
         phase_counts["combined_product_total"] = int(product_total)
-        if envelope_lut is not None:
-            status_cb("skyline: combined local envelope prune")
-            phase_started = time.perf_counter()
-            env_stats, pair_g_idx, pair_m_idx = _reduce_combined_pair_envelope_fast(
-                gear_points=gear_points,
-                mini_points=mini_points,
-                pair_gear_idx=pair_g_idx,
-                pair_mini_idx=pair_m_idx,
-                dominance_lut=envelope_lut,
-            )
-            _record_phase(phase_seconds, "combined_local_envelope_cpu", phase_started)
-            combined_candidate_count = int(pair_g_idx.shape[0])
-            phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
-            phase_counts["combined_local_envelope_in"] = int(env_stats.points_in)
-            phase_counts["combined_local_envelope_out"] = int(env_stats.points_out)
-            phase_counts["combined_local_envelope_groups"] = int(env_stats.groups)
-            status_cb(
-                "skyline: combined local envelope kept "
-                f"{int(env_stats.points_out):,}/{int(env_stats.points_in):,} "
-                f"(groups={int(env_stats.groups_multi):,}, max_group={int(env_stats.max_group_size)}, "
-                f"time={float(env_stats.seconds):.2f}s)"
-            )
-            if pair_g_idx.size == 0:
-                return None, [], [], None, [], [], []
         if fg_candidate_mode == "all":
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
@@ -1473,7 +1038,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             top_base_keys = {(int(gear_code), int(mini_code)) for _score, gear_code, mini_code in top_base_codes}
             top_base_cutoff = int(top_base_codes[-1][0]) if top_base_codes else 0
             sample_idx = _sample_pair_indices(
-                int(fg_candidate_count),
+                int(combined_candidate_count),
                 top_limits=(),
                 random_after=0,
                 random_count=_read_skyline_fg_sample_limit(),
@@ -1653,7 +1218,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     status_cb(
         "skyline: done "
         f"(dp_pairs={dp_stats.pairs_6d}, gear_sky={gear_sky_stats.points_out}, "
-        f"gear_env={int(gear_points.shape[0])}, mini_sky={int(mini_points.shape[0])})"
+        f"gear_frontier={int(gear_points.shape[0])}, mini_sky={int(mini_points.shape[0])})"
     )
     return best_data, best_gear, best_minis, dict(native_fg_summary), _native_fg_best_record, [], all_evaluated
 
