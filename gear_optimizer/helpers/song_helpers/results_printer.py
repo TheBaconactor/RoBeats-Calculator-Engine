@@ -141,10 +141,23 @@ def print_results(
     if db_best_fg_score_int > fg_score_to_print:
         fg_score_to_print = db_best_fg_score_int
 
+    native_fg_score_run = 0
+    try:
+        native_fg_meta = best_data.get("NativeFG") if isinstance(best_data, dict) else None
+        if isinstance(native_fg_meta, dict):
+            native_fg_score_run = _coerce_int_score(
+                native_fg_meta.get("best_fg_score", native_fg_meta.get("best_fg", 0))
+            )
+    except Exception as e:
+        logger.debug(f"results_printer:print_results:native_fg_score_run: {e}")
+        native_fg_score_run = 0
+
     print("-" * 30)
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
     print(f"Best Base Score Found: {base_score_to_print}")
     print(f"Best FG Score Found: {fg_score_to_print}")
+    if native_fg_score_run > 0 and native_fg_score_run != int(fg_score_to_print):
+        print(f"Native FG Best (Run Telemetry): {native_fg_score_run}")
 
     status_emit_fn(f"Base={base_score_to_print} | FG={fg_score_to_print}")
 

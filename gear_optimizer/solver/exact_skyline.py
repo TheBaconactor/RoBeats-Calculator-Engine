@@ -43,6 +43,10 @@ from gear_optimizer.solver.solver_common import (
 )
 from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
 from gear_optimizer.solver.taichi_gem import fields as gem_fields
+from gear_optimizer.solver.taichi_gem.api.skyline_operations import (
+    configure_timing_quotient_keep_bits,
+    disable_timing_quotient_keep_bits,
+)
 
 LaneAwareMiniSkylineStats = _LaneAwareMiniSkylineStats_common
 _SLOTS = GEAR_SLOTS
@@ -69,6 +73,11 @@ def _read_skyline_fg_candidate_mode() -> str:
     if raw in {"sample", "stratified", "stratified_sample", "bands"}:
         return "sample"
     return "topk"
+
+
+def _timing_prune_enabled() -> bool:
+    raw = str(env_get("SKYLINE_GPU_PLATEAU_PRUNE", "1") or "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _read_skyline_fg_sample_limit() -> int:
@@ -1178,6 +1187,57 @@ def _pair_ftff_cap_arrays(
     return ft_caps, ff_caps
 
 
+def _pair_base_timing_template_arrays(
+    *,
+    base_fixed_stats_arr: np.ndarray,
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+    pair_gear_idx: np.ndarray,
+    pair_mini_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if pair_gear_idx.size == 0:
+        return np.zeros(0, dtype=np.int16), np.zeros(0, dtype=np.int16)
+
+    base_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
+    base_ft = int(base_arr[3]) if int(base_arr.shape[0]) > 3 else 0
+    base_ff = int(base_arr[4]) if int(base_arr.shape[0]) > 4 else 0
+
+    gp = np.asarray(gear_points, dtype=np.int32)
+    mp = np.asarray(mini_points, dtype=np.int32)
+    gi = np.asarray(pair_gear_idx, dtype=np.int32)
+    mi = np.asarray(pair_mini_idx, dtype=np.int32)
+
+    pair_ft = np.clip(base_ft + gp[gi, 3] + mp[mi, 2], 0, int(MAX_STAT_INDEX)).astype(
+        np.int16,
+        copy=False,
+    )
+    pair_ff = np.clip(base_ff + gp[gi, 4] + mp[mi, 3], 0, int(MAX_STAT_INDEX)).astype(
+        np.int16,
+        copy=False,
+    )
+    return pair_ft, pair_ff
+
+
+def _pair_base_timing_templates(
+    *,
+    base_fixed_stats_arr: np.ndarray,
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+    pair_gear_idx: np.ndarray,
+    pair_mini_idx: np.ndarray,
+) -> np.ndarray:
+    pair_ft, pair_ff = _pair_base_timing_template_arrays(
+        base_fixed_stats_arr=base_fixed_stats_arr,
+        gear_points=gear_points,
+        mini_points=mini_points,
+        pair_gear_idx=pair_gear_idx,
+        pair_mini_idx=pair_mini_idx,
+    )
+    if pair_ft.size == 0:
+        return np.empty((0, 2), dtype=np.int16)
+    return np.unique(np.column_stack((pair_ft, pair_ff)), axis=0).astype(np.int16, copy=False)
+
+
 def _evaluate_pairs_exact(
     *,
     gpu_arrays: dict[str, np.ndarray],
@@ -1285,7 +1345,9 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
         status_cb = _noop_status_cb
 
-    if ctx.mini_points.size == 0:
+    mini_points = ctx.mini_points
+    mini_codes = ctx.mini_codes
+    if mini_points.size == 0:
         return None, [], [], None, [], [], []
 
     status_cb("skyline: gear DP")
@@ -1359,8 +1421,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     for idx, gear_code in enumerate(gear_codes.tolist()):
         gear_ids[idx] = _gear_ids_from_code(int(gear_code), pack=ctx.gear_pack, slot_item_ids=ctx.slot_item_ids)
 
-    mini_ids = np.zeros((int(ctx.mini_codes.shape[0]), 3), dtype=np.int32)
-    for idx, mini_code in enumerate(ctx.mini_codes.tolist()):
+    mini_ids = np.zeros((int(mini_codes.shape[0]), 3), dtype=np.int32)
+    for idx, mini_code in enumerate(mini_codes.tolist()):
         mini_ids[idx] = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
     _record_phase(phase_seconds, "decode_candidate_ids_cpu", phase_started)
     phase_counts["gear_ids"] = int(gear_ids.shape[0])
@@ -1368,7 +1430,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
     status_cb(
         "skyline: build registry + evaluate candidates "
-        f"(gear={int(gear_points.shape[0])}, minis={int(ctx.mini_points.shape[0])})"
+        f"(gear={int(gear_points.shape[0])}, minis={int(mini_points.shape[0])})"
     )
 
     base_keep_top_k = int(LOADOUTS_PER_SONG_LIMIT)
@@ -1382,7 +1444,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
     status_cb("skyline: combined timing-cell prune")
     phase_started = time.perf_counter()
-    pair_g_idx, pair_m_idx = _combined_global_skyline_pairs_6d_lane_base_with_indices(gear_points, ctx.mini_points)
+    pair_g_idx, pair_m_idx = _combined_global_skyline_pairs_6d_lane_base_with_indices(gear_points, mini_points)
     _record_phase(phase_seconds, "combined_skyline_gpu_sparse", phase_started)
     combined_sparse_stats = get_last_combined_skyline_stats()
     sparse_phase_seconds = combined_sparse_stats.get("phase_seconds", {})
@@ -1406,7 +1468,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             phase_started = time.perf_counter()
             env_stats, pair_g_idx, pair_m_idx = _reduce_combined_pair_envelope_fast(
                 gear_points=gear_points,
-                mini_points=ctx.mini_points,
+                mini_points=mini_points,
                 pair_gear_idx=pair_g_idx,
                 pair_mini_idx=pair_m_idx,
                 dominance_lut=envelope_lut,
@@ -1432,7 +1494,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         pair_ft_caps, pair_ff_caps = _pair_ftff_cap_arrays(
             base_fixed_stats_arr=ctx.base_fixed_stats_arr,
             gear_points=gear_points,
-            mini_points=ctx.mini_points,
+            mini_points=mini_points,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
         )
@@ -1441,6 +1503,38 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             phase_counts["base_eval_ff_cap_max"] = int(np.max(pair_ff_caps))
             phase_counts["base_eval_ft_cap_p50"] = int(np.percentile(pair_ft_caps, 50))
             phase_counts["base_eval_ff_cap_p50"] = int(np.percentile(pair_ff_caps, 50))
+        timing_prune_enabled = _timing_prune_enabled()
+        if timing_prune_enabled:
+            phase_started = time.perf_counter()
+            pair_timing_ft, pair_timing_ff = _pair_base_timing_template_arrays(
+                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+                gear_points=gear_points,
+                mini_points=mini_points,
+                pair_gear_idx=pair_g_idx,
+                pair_mini_idx=pair_m_idx,
+            )
+            pair_timing_templates = (
+                np.unique(np.column_stack((pair_timing_ft, pair_timing_ff)), axis=0).astype(np.int16, copy=False)
+                if pair_timing_ft.size
+                else np.empty((0, 2), dtype=np.int16)
+            )
+            flags = ctx.color_flags
+            timing_quotient_stats = configure_timing_quotient_keep_bits(
+                song_slot=int(ctx.song_slot),
+                templates=pair_timing_templates,
+                w_ft=int(GEM_STAT_TO_ELEMENT_SCALE)
+                * ((int(flags.get("is_p_ft", 0)) << 1) + int(flags.get("is_s_ft", 0))),
+                w_ff=int(GEM_STAT_TO_ELEMENT_SCALE)
+                * ((int(flags.get("is_p_ff", 0)) << 1) + int(flags.get("is_s_ff", 0))),
+                w_overflow=int(ELEMENTAL_GEM_SCALE)
+                * ((int(flags.get("is_p_ov", 0)) << 1) + int(flags.get("is_s_ov", 0))),
+                total_budget=int(TOTAL_GEM_BUDGET),
+                gem_scale=int(GEM_SCALE_FEVER),
+            )
+            phase_counts.update({str(key): int(value) for key, value in timing_quotient_stats.items()})
+            _record_phase(phase_seconds, "timing_quotient_cpu_gpu", phase_started)
+        else:
+            phase_counts["timing_quotient_enabled"] = 0
         phase_started = time.perf_counter()
         best_ids, top_codes = _evaluate_pairs_exact(
             gpu_arrays=ctx.gpu_arrays,
@@ -1453,11 +1547,11 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             gear_ids=gear_ids,
             mini_ids=mini_ids,
             gear_codes=gear_codes,
-            mini_codes=ctx.mini_codes,
+            mini_codes=mini_codes,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
-            pair_max_ft_gems=pair_ft_caps,
-            pair_max_ff_gems=pair_ff_caps,
+            pair_max_ft_gems=None if timing_prune_enabled else pair_ft_caps,
+            pair_max_ff_gems=None if timing_prune_enabled else pair_ff_caps,
             keep_top_k=int(keep_top_k),
             status_cb=status_cb,
         )
@@ -1472,7 +1566,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             top_base_keys = {(int(gear_code), int(mini_code)) for _score, gear_code, mini_code in top_base_codes}
             top_base_cutoff = int(top_base_codes[-1][0]) if top_base_codes else 0
             sample_idx = _sample_pair_indices(
-                int(combined_candidate_count),
+                int(fg_candidate_count),
                 top_limits=(),
                 random_after=0,
                 random_count=_read_skyline_fg_sample_limit(),
@@ -1491,11 +1585,11 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     gear_ids=gear_ids,
                     mini_ids=mini_ids,
                     gear_codes=gear_codes,
-                    mini_codes=ctx.mini_codes,
+                    mini_codes=mini_codes,
                     pair_gear_idx=pair_g_idx[sample_idx],
                     pair_mini_idx=pair_m_idx[sample_idx],
-                    pair_max_ft_gems=pair_ft_caps[sample_idx] if pair_ft_caps.size else None,
-                    pair_max_ff_gems=pair_ff_caps[sample_idx] if pair_ff_caps.size else None,
+                    pair_max_ft_gems=None if timing_prune_enabled else (pair_ft_caps[sample_idx] if pair_ft_caps.size else None),
+                    pair_max_ff_gems=None if timing_prune_enabled else (pair_ff_caps[sample_idx] if pair_ff_caps.size else None),
                     keep_top_k=int(sample_idx.shape[0]),
                     status_cb=status_cb,
                 )
@@ -1517,6 +1611,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 f"(top_base={len(top_base_codes)}, random_outside={len(random_outside)}, "
                 f"combined={int(combined_candidate_count)})"
             )
+
+    disable_timing_quotient_keep_bits(song_slot=int(ctx.song_slot))
 
     if best_ids is None:
         return None, [], [], None, [], [], []
@@ -1652,7 +1748,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     status_cb(
         "skyline: done "
         f"(dp_pairs={dp_stats.pairs_6d}, gear_sky={gear_sky_stats.points_out}, "
-        f"gear_env={int(gear_points.shape[0])}, mini_sky={int(ctx.mini_points.shape[0])})"
+        f"gear_env={int(gear_points.shape[0])}, mini_sky={int(mini_points.shape[0])})"
     )
     return best_data, best_gear, best_minis, dict(native_fg_summary), _native_fg_best_record, [], all_evaluated
 

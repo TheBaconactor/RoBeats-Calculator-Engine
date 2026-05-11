@@ -125,6 +125,35 @@ def test_results_printer_prints_db_best_fg_score_when_no_variants(capsys):
     assert "Best FG Score Found: 456" in out
 
 
+def test_results_printer_prints_native_fg_telemetry_when_mismatch(capsys):
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    print_results(
+        "Test Song",
+        best_data={
+            "Score": 123,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {},
+            "Selected Element": "Rush",
+            "NativeFG": {"best_fg_score": 111},
+        },
+        best_gear=[],
+        best_minis=[],
+        current_gear_list=[],
+        current_mini_list=[],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[],
+        status_emit_fn=_noop_status_emit,
+        db_best_fg_score=456,
+    )
+
+    out = capsys.readouterr().out
+    assert "Best FG Score Found: 456" in out
+    assert "Native FG Best (Run Telemetry): 111" in out
+
+
 def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys):
     """
     Regression test:
