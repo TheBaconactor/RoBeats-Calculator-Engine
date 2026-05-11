@@ -8,7 +8,6 @@ This module provides GPU-accelerated timeline precomputation:
 import time
 import hashlib
 import threading
-from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,17 +126,6 @@ def _upload_timeline_grid_masks_bits_slot_kernel(
 
 
 @ti.kernel
-def _upload_timing_alias_witness_slot_kernel(
-    song_slot: ti.i32,
-    src_ft: ti.types.ndarray(dtype=ti.i16, ndim=3),
-    src_ff: ti.types.ndarray(dtype=ti.i16, ndim=3),
-):
-    for ft, ff, k in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE, fields.SKYLINE_TIMING_ALIAS_WITNESS_K):
-        fields.grid_timing_alias_witness_ft[song_slot, ft, ff, k] = src_ft[ft, ff, k]
-        fields.grid_timing_alias_witness_ff[song_slot, ft, ff, k] = src_ff[ft, ff, k]
-
-
-@ti.kernel
 def _upload_timeline_pool_slot_i32_kernel(
     dst: ti.template(),
     song_slot: ti.i32,
@@ -160,82 +148,6 @@ def _upload_timeline_pool_masks_bits_slot_kernel(
 
 def _slot_payload(payload: np.ndarray, source_slot_i: int, dtype) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(payload, dtype=dtype)[int(source_slot_i)])
-
-
-def _build_timing_alias_witness_index(
-    grid_sig0: np.ndarray,
-    grid_sig1: np.ndarray,
-    grid_frontier_count: np.ndarray,
-    *,
-    witness_k: int | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Build Theorem-6 witness candidates from exact base timing signatures.
-
-    The returned cells are only an index into possible witnesses. The hot kernel
-    still checks candidate-local reachability, same-signature equality, residual
-    budget, and saved-gem compensation before pruning.
-    """
-    k_max = int(fields.SKYLINE_TIMING_ALIAS_WITNESS_K if witness_k is None else witness_k)
-    k_max = max(1, min(int(k_max), int(fields.SKYLINE_TIMING_ALIAS_WITNESS_K)))
-    size = int(fields.GRID_SIZE)
-    witness_ft = np.full((size, size, k_max), -1, dtype=np.int16)
-    witness_ff = np.full((size, size, k_max), -1, dtype=np.int16)
-
-    sig0 = np.asarray(grid_sig0, dtype=np.uint64)
-    sig1 = np.asarray(grid_sig1, dtype=np.uint64)
-    frontier_count = np.asarray(grid_frontier_count, dtype=np.int32)
-    valid = frontier_count <= 1
-    groups: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-    coords = np.argwhere(valid)
-    for ft_i, ff_i in coords:
-        ft = int(ft_i)
-        ff = int(ff_i)
-        groups.setdefault((int(sig0[ft, ff]), int(sig1[ft, ff])), []).append((ft + ff, ft, ff))
-
-    cheap_take = max(1, k_max // 2)
-    near_take = max(1, k_max - cheap_take)
-    for members in groups.values():
-        if len(members) <= 1:
-            continue
-        ordered = sorted(members)
-        sums = [m[0] for m in ordered]
-        cheap = ordered[: min(len(ordered), cheap_take)]
-        for cur_sum, cur_ft, cur_ff in ordered:
-            chosen: list[tuple[int, int]] = []
-            seen: set[tuple[int, int]] = set()
-
-            for cand_sum, cand_ft, cand_ff in cheap:
-                if cand_sum > cur_sum or (cand_ft == cur_ft and cand_ff == cur_ff):
-                    continue
-                key = (cand_ft, cand_ff)
-                if key not in seen:
-                    seen.add(key)
-                    chosen.append(key)
-                if len(chosen) >= cheap_take:
-                    break
-
-            idx = bisect_right(sums, cur_sum) - 1
-            near_count = 0
-            while idx >= 0 and near_count < near_take:
-                cand_sum, cand_ft, cand_ff = ordered[idx]
-                if cand_sum <= cur_sum and not (cand_ft == cur_ft and cand_ff == cur_ff):
-                    key = (cand_ft, cand_ff)
-                    if key not in seen:
-                        seen.add(key)
-                        chosen.append(key)
-                        near_count += 1
-                idx -= 1
-
-            for out_idx, (cand_ft, cand_ff) in enumerate(chosen[:k_max]):
-                witness_ft[cur_ft, cur_ff, out_idx] = int(cand_ft)
-                witness_ff[cur_ft, cur_ff, out_idx] = int(cand_ff)
-
-    if k_max < int(fields.SKYLINE_TIMING_ALIAS_WITNESS_K):
-        pad = int(fields.SKYLINE_TIMING_ALIAS_WITNESS_K) - k_max
-        witness_ft = np.pad(witness_ft, ((0, 0), (0, 0), (0, pad)), constant_values=-1).astype(np.int16, copy=False)
-        witness_ff = np.pad(witness_ff, ((0, 0), (0, 0), (0, pad)), constant_values=-1).astype(np.int16, copy=False)
-    return np.ascontiguousarray(witness_ft), np.ascontiguousarray(witness_ff)
 
 
 def _upload_timeline_frontier_payload_slot(
@@ -296,13 +208,6 @@ def _upload_timeline_frontier_payload_slot(
     upload_i32_grid(fields.grid_frontier_offset, payload.grid_frontier_offset)
     upload_u64_grid(fields.grid_sig0, payload.grid_sig0)
     upload_u64_grid(fields.grid_sig1, payload.grid_sig1)
-    alias_ft, alias_ff = _build_timing_alias_witness_index(
-        np.asarray(payload.grid_sig0[source_slot_i], dtype=np.uint64),
-        np.asarray(payload.grid_sig1[source_slot_i], dtype=np.uint64),
-        np.asarray(payload.grid_frontier_count[source_slot_i], dtype=np.int32),
-    )
-    upload_bytes += int(alias_ft.nbytes + alias_ff.nbytes)
-    _upload_timing_alias_witness_slot_kernel(song_slot_i, alias_ft, alias_ff)
     upload_i32_grid(fields.grid_gap, payload.grid_gap)
     upload_i32_grid(fields.grid_fever_activations, payload.grid_fever_activations)
 

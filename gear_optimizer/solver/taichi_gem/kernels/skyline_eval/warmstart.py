@@ -38,109 +38,6 @@ def _same_grid_sig(song_slot: ti.i32, sig0: ti.u64, sig1: ti.u64, ft_i: ti.i32, 
 
 
 @ti.func
-def _same_sig_budget_value_dominates(
-    song_slot: ti.i32,
-    sig0: ti.u64,
-    sig1: ti.u64,
-    base_ft_stat: ti.i32,
-    base_ff_stat: ti.i32,
-    gem_scale_fever: ti.i32,
-    combo_budget: ti.i32,
-    max_ft_gems: ti.i32,
-    max_ff_gems: ti.i32,
-    cur_ft: ti.i32,
-    cur_ff: ti.i32,
-    witness_ft: ti.i32,
-    witness_ff: ti.i32,
-    w_ft: ti.i32,
-    w_ff: ti.i32,
-    w_ov: ti.i32,
-) -> ti.i32:
-    """
-    Candidate-local exact base certificate.
-
-    A witness timing allocation may replace the current allocation only when it
-    is reachable for this same loadout, has the exact same base timing response,
-    costs no more FT/FF gems, and can reproduce or exceed the skipped
-    allocation's scalar base value with saved overflow gems.
-    """
-    dominates = ti.i32(0)
-    if (
-        witness_ft >= 0
-        and witness_ff >= 0
-        and witness_ft <= max_ft_gems
-        and witness_ff <= max_ff_gems
-        and witness_ft + witness_ff <= combo_budget
-    ):
-        cur_cost: ti.i32 = cur_ft + cur_ff
-        witness_cost: ti.i32 = witness_ft + witness_ff
-        saved: ti.i32 = cur_cost - witness_cost
-        if saved >= 0:
-            witness_ft_val: ti.i32 = base_ft_stat + (witness_ft * gem_scale_fever)
-            witness_ff_val: ti.i32 = base_ff_stat + (witness_ff * gem_scale_fever)
-            witness_ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, witness_ft_val))
-            witness_ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, witness_ff_val))
-            if _same_grid_sig(song_slot, sig0, sig1, witness_ft_idx, witness_ff_idx) != 0:
-                cur_value: ti.i32 = (cur_ft * w_ft) + (cur_ff * w_ff)
-                witness_value: ti.i32 = (witness_ft * w_ft) + (witness_ff * w_ff)
-                compensated_value: ti.i32 = witness_value + (saved * w_ov)
-                if compensated_value > cur_value:
-                    dominates = 1
-                elif compensated_value == cur_value:
-                    if saved > 0:
-                        dominates = 1
-                    elif saved == 0 and (witness_ft < cur_ft or (witness_ft == cur_ft and witness_ff < cur_ff)):
-                        dominates = 1
-    return dominates
-
-
-@ti.func
-def _same_sig_final_cell_dominates(
-    song_slot: ti.i32,
-    sig0: ti.u64,
-    sig1: ti.u64,
-    base_ft_stat: ti.i32,
-    base_ff_stat: ti.i32,
-    gem_scale_fever: ti.i32,
-    combo_budget: ti.i32,
-    max_ft_gems: ti.i32,
-    max_ff_gems: ti.i32,
-    cur_ft: ti.i32,
-    cur_ff: ti.i32,
-    witness_ft_idx: ti.i32,
-    witness_ff_idx: ti.i32,
-    w_ft: ti.i32,
-    w_ff: ti.i32,
-    w_ov: ti.i32,
-) -> ti.i32:
-    dominates = ti.i32(0)
-    if witness_ft_idx >= 0 and witness_ff_idx >= 0:
-        delta_ft: ti.i32 = witness_ft_idx - base_ft_stat
-        delta_ff: ti.i32 = witness_ff_idx - base_ff_stat
-        if delta_ft >= 0 and delta_ff >= 0:
-            if delta_ft % gem_scale_fever == 0 and delta_ff % gem_scale_fever == 0:
-                dominates = _same_sig_budget_value_dominates(
-                    song_slot,
-                    sig0,
-                    sig1,
-                    base_ft_stat,
-                    base_ff_stat,
-                    gem_scale_fever,
-                    combo_budget,
-                    max_ft_gems,
-                    max_ff_gems,
-                    cur_ft,
-                    cur_ff,
-                    delta_ft // gem_scale_fever,
-                    delta_ff // gem_scale_fever,
-                    w_ft,
-                    w_ff,
-                    w_ov,
-                )
-    return dominates
-
-
-@ti.func
 def _solve_combo_warmstart_preloaded(
     genome_idx: ti.i32,
     combo_idx: ti.i32,
@@ -181,7 +78,6 @@ def _solve_combo_warmstart_preloaded(
         score is -1 when the combo is invalid/pruned.
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
 
     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
     ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]

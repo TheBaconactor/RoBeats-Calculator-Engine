@@ -37,7 +37,6 @@ SKYLINE_FTFF_REDUCE_BLOCK_DIM = (SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32) * 32
 if SKYLINE_FTFF_REDUCE_BLOCK_DIM <= 0:
     SKYLINE_FTFF_REDUCE_BLOCK_DIM = 32
 SKYLINE_FTFF_REDUCE_WAVE_STRIDE = SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
-SKYLINE_TIMING_ALIAS_WITNESS_K = 2
 
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by fields.bind_fields() after allocation)
@@ -68,10 +67,6 @@ grid_frontier_body_normal_pool = None
 grid_frontier_masks_bits_pool = None
 grid_sig0 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
 grid_sig1 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
-grid_timing_alias_witness_ft = None  # (MAX_SONG_SLOTS, 161, 161, K) i16 final FT index witnesses
-grid_timing_alias_witness_ff = None  # (MAX_SONG_SLOTS, 161, 161, K) i16 final FF index witnesses
-grid_timing_quotient_keep_bits = None  # (MAX_SONG_SLOTS, 161, 161, words) u32 local FT/FF quotient mask
-grid_timing_quotient_enabled = None  # (MAX_SONG_SLOTS) i32 - 1 when quotient mask is uploaded
 grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
 grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 

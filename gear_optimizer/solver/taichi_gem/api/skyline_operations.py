@@ -24,7 +24,6 @@ import logging
 import numpy as np
 
 from gear_optimizer.core.parsing import env_flag, env_get
-from gear_optimizer.solver.timing_quotient import build_timing_quotient_keep_bits
 
 from .. import fields
 from ..fields import MAX_EVALS_PER_DISPATCH
@@ -68,49 +67,6 @@ _skyline_exact_EVAL_RESULTS_REUSE_RAW: str | None = None
 _skyline_exact_EVAL_RESULTS_REUSE_ENABLED: int = 0
 _skyline_exact_STATS_REUSE_RAW: str | None = None
 _skyline_exact_STATS_REUSE_ENABLED: int = 0
-
-
-def configure_timing_quotient_keep_bits(
-    *,
-    song_slot: int,
-    templates: np.ndarray,
-    w_ft: int,
-    w_ff: int,
-    w_overflow: int,
-    total_budget: int,
-    gem_scale: int,
-) -> dict[str, int]:
-    """Upload exact candidate-local FT/FF quotient masks for the active song slot."""
-
-    ensure_ready()
-    sig0 = fields.grid_sig0.to_numpy()[int(song_slot)]
-    sig1 = fields.grid_sig1.to_numpy()[int(song_slot)]
-    frontier_count = fields.grid_frontier_count.to_numpy()[int(song_slot)]
-    keep_bits, stats = build_timing_quotient_keep_bits(
-        sig0,
-        sig1,
-        frontier_count,
-        templates,
-        w_ft=int(w_ft),
-        w_ff=int(w_ff),
-        w_overflow=int(w_overflow),
-        total_budget=int(total_budget),
-        gem_scale=int(gem_scale),
-    )
-    keep_bits_all = fields.grid_timing_quotient_keep_bits.to_numpy()
-    keep_bits_all[int(song_slot), :, :, :] = keep_bits
-    fields.grid_timing_quotient_keep_bits.from_numpy(keep_bits_all)
-    enabled = fields.grid_timing_quotient_enabled.to_numpy()
-    enabled[int(song_slot)] = np.int32(1)
-    fields.grid_timing_quotient_enabled.from_numpy(enabled)
-    return stats
-
-
-def disable_timing_quotient_keep_bits(*, song_slot: int) -> None:
-    ensure_ready()
-    enabled = fields.grid_timing_quotient_enabled.to_numpy()
-    enabled[int(song_slot)] = np.int32(0)
-    fields.grid_timing_quotient_enabled.from_numpy(enabled)
 
 
 def _skyline_eval_budget() -> int:
@@ -2549,4 +2505,3 @@ def warmup_skyline_kernels_light() -> None:
         logger.debug(f"skyline_operations:warmup_skyline_kernels_light: {e}")
 
     _SKYLINE_KERNELS_LIGHT_WARMED = True
-

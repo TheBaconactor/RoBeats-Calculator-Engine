@@ -70,8 +70,6 @@ MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
-SKYLINE_TIMING_ALIAS_WITNESS_K = 2
-SKYLINE_TIMING_QUOTIENT_WORDS = (MAX_FTFF_COMBOS + 31) // 32
 
 # Optional allocations: unpacked timeline masks are optional; bitpacked masks are the production path.
 WRITE_UNPACKED_GRID_MASKS_DEFAULT = env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS")
@@ -136,10 +134,6 @@ grid_frontier_body_normal_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE
 grid_frontier_masks_bits_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4) u32
 grid_sig0: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
 grid_sig1: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
-grid_timing_alias_witness_ft: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, K) i16 final FT index witnesses
-grid_timing_alias_witness_ff: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, K) i16 final FF index witnesses
-grid_timing_quotient_keep_bits: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, words) u32 local FT/FF quotient mask
-grid_timing_quotient_enabled: ti.Field = None  # (MAX_SONG_SLOTS) i32 - 1 when quotient mask is uploaded
 grid_gap: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - gap to song end per (FT, FF)
 grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - fever activations per (FT, FF)
 
@@ -307,10 +301,7 @@ def reset_fields_state() -> None:
     global grid_fever_masks, grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
-    global grid_sig0, grid_sig1, grid_timing_alias_witness_ft, grid_timing_alias_witness_ff
-    global grid_timing_quotient_keep_bits, grid_timing_quotient_enabled
-    global grid_timing_quotient_keep_bits, grid_timing_quotient_enabled
-    global grid_timing_quotient_keep_bits, grid_timing_quotient_enabled
+    global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
@@ -369,10 +360,6 @@ def reset_fields_state() -> None:
     grid_frontier_masks_bits_pool = None
     grid_sig0 = None
     grid_sig1 = None
-    grid_timing_alias_witness_ft = None
-    grid_timing_alias_witness_ff = None
-    grid_timing_quotient_keep_bits = None
-    grid_timing_quotient_enabled = None
     grid_gap = None
     grid_fever_activations = None
 
@@ -742,8 +729,7 @@ def allocate_grid_fields():
     global grid_fever_masks, grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
-    global grid_sig0, grid_sig1, grid_timing_alias_witness_ft, grid_timing_alias_witness_ff
-    global grid_timing_quotient_keep_bits, grid_timing_quotient_enabled
+    global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
@@ -775,19 +761,6 @@ def allocate_grid_fields():
     grid_frontier_masks_bits_pool = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4))
     grid_sig0 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_sig1 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_timing_alias_witness_ft = ti.field(
-        dtype=ti.i16,
-        shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, SKYLINE_TIMING_ALIAS_WITNESS_K),
-    )
-    grid_timing_alias_witness_ff = ti.field(
-        dtype=ti.i16,
-        shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, SKYLINE_TIMING_ALIAS_WITNESS_K),
-    )
-    grid_timing_quotient_keep_bits = ti.field(
-        dtype=ti.u32,
-        shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, SKYLINE_TIMING_QUOTIENT_WORDS),
-    )
-    grid_timing_quotient_enabled = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS,))
     # Gap to song end: total_notes - last_fever_end_idx (positive = opportunity, negative = overshoot)
     grid_gap = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     # Fever activations count per (FT, FF) - sections beyond this have no fever
@@ -898,10 +871,6 @@ def bind_fields(kernels_module):
     target.grid_frontier_masks_bits_pool = grid_frontier_masks_bits_pool
     target.grid_sig0 = grid_sig0
     target.grid_sig1 = grid_sig1
-    target.grid_timing_alias_witness_ft = grid_timing_alias_witness_ft
-    target.grid_timing_alias_witness_ff = grid_timing_alias_witness_ff
-    target.grid_timing_quotient_keep_bits = grid_timing_quotient_keep_bits
-    target.grid_timing_quotient_enabled = grid_timing_quotient_enabled
     target.grid_gap = grid_gap
     target.grid_fever_activations = grid_fever_activations
 
@@ -1071,10 +1040,6 @@ def ensure_grid_fields_allocated():
             kernels_metal.grid_frontier_masks_bits_pool = grid_frontier_masks_bits_pool
             kernels_metal.grid_sig0 = grid_sig0
             kernels_metal.grid_sig1 = grid_sig1
-            kernels_metal.grid_timing_alias_witness_ft = grid_timing_alias_witness_ft
-            kernels_metal.grid_timing_alias_witness_ff = grid_timing_alias_witness_ff
-            kernels_metal.grid_timing_quotient_keep_bits = grid_timing_quotient_keep_bits
-            kernels_metal.grid_timing_quotient_enabled = grid_timing_quotient_enabled
             kernels_metal.grid_gap = grid_gap
             kernels_metal.grid_fever_activations = grid_fever_activations
 
@@ -1082,4 +1047,3 @@ def ensure_grid_fields_allocated():
             from .kernel_loader import apply_metal_patches
 
             apply_metal_patches()
-
