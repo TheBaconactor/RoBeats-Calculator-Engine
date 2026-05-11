@@ -76,7 +76,7 @@ def _read_skyline_fg_candidate_mode() -> str:
 
 
 def _timing_prune_enabled() -> bool:
-    raw = str(env_get("SKYLINE_GPU_PLATEAU_PRUNE", "1") or "1").strip().lower()
+    raw = str(env_get("SKYLINE_TIMING_QUOTIENT_PRUNE", "0") or "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1550,8 +1550,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             mini_codes=mini_codes,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
-            pair_max_ft_gems=None if timing_prune_enabled else pair_ft_caps,
-            pair_max_ff_gems=None if timing_prune_enabled else pair_ff_caps,
+            pair_max_ft_gems=pair_ft_caps,
+            pair_max_ff_gems=pair_ff_caps,
             keep_top_k=int(keep_top_k),
             status_cb=status_cb,
         )
@@ -1588,8 +1588,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     mini_codes=mini_codes,
                     pair_gear_idx=pair_g_idx[sample_idx],
                     pair_mini_idx=pair_m_idx[sample_idx],
-                    pair_max_ft_gems=None if timing_prune_enabled else (pair_ft_caps[sample_idx] if pair_ft_caps.size else None),
-                    pair_max_ff_gems=None if timing_prune_enabled else (pair_ff_caps[sample_idx] if pair_ff_caps.size else None),
+                    pair_max_ft_gems=pair_ft_caps[sample_idx] if pair_ft_caps.size else None,
+                    pair_max_ff_gems=pair_ff_caps[sample_idx] if pair_ff_caps.size else None,
                     keep_top_k=int(sample_idx.shape[0]),
                     status_cb=status_cb,
                 )
@@ -1801,6 +1801,5 @@ def solve_exact_skyline(
     if solver_ctx is None:
         return None, [], [], None, [], [], []
     return _solve_exact_skyline_ctx(solver_ctx)
-
 
 
