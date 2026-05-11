@@ -34,7 +34,6 @@ import time
 import random
 import math
 import hashlib
-from contextlib import nullcontext
 from pathlib import Path
 from collections import defaultdict, OrderedDict, deque
 from time import perf_counter
@@ -53,12 +52,10 @@ from gear_optimizer.solver.gpu_executor_batching import (
     effective_owner_batch_max as _effective_owner_batch_max,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    WARMUP_SENTINEL_SCHEMA as _WARMUP_SENTINEL_SCHEMA,
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
     release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
     system_timer_override_allowed as _system_timer_override_allowed,
-    warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
 )
 
 from gear_optimizer.core.parsing import env_get
@@ -2240,6 +2237,9 @@ class GpuExecutor:
                 except queue.Empty:
                     continue
 
+    def _pop_queue_request(self, timeout: float) -> "GpuRequest":
+        """Pop one request from the backing queue and mark its dequeue timestamp."""
+        return self._stamp_request_dequeue(self._queue_get(timeout))
     @staticmethod
     def _stamp_request_dequeue(request: "GpuRequest") -> "GpuRequest":
         try:
@@ -4070,6 +4070,13 @@ class GpuExecutor:
                 cfg_counts[gi, s] = int(val)
         return cfg_counts
 
+    def _execute_SKYLINE_FG_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
+        """
+        Skyline fused-FG requests use the same payload contract as FG_SOLVE_WITH_BREAKPOINTS.
+
+        Keep the dispatch table total: every declared request type must have a concrete handler.
+        """
+        return self._execute_fg_solve_with_breakpoints(request)
     def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
         Fused FG path for in-process mode:
