@@ -42,7 +42,7 @@ ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_EVALS_PER_DISPATCH = max(
     4_194_304,
-    min(env_int("SKYLINE_GPU_MAX_EVALS_PER_DISPATCH", 4_194_304), 67_108_864),
+    min(env_int("SKYLINE_GPU_MAX_EVALS_PER_DISPATCH", 67_108_864), 67_108_864),
 )  # Upper bound used for chunking (genomes * FT/FF combos)
 
 

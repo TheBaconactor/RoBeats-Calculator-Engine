@@ -467,3 +467,4 @@ def solve_genomes_from_registry(
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     return _results_from_stats(results_np, n_genomes)
+

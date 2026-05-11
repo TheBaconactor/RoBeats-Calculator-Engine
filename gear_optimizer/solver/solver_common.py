@@ -302,7 +302,9 @@ def batched_registry_eval(
             use_exact_inner_solver=True,
             max_ft_gems_global=max_ft_gems_global,
             max_ff_gems_global=max_ff_gems_global,
-            score_only=done > 0,
+            # The batch reducer only needs scores to choose exact top-K ids.
+            # Retained candidates are rebuilt later for full gem payloads.
+            score_only=True,
         )
         results = dispatch_registry_solve(req, gpu_client=gpu_client)
         scores = _coerce_registry_scores(results, expected_rows=int(batch_ids.shape[0]))

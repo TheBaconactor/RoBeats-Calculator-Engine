@@ -153,6 +153,8 @@ class OuterSearchResult:
     best_data: dict[str, Any] | None
     best_gear: list[dict]
     best_minis: list[dict]
+    native_fg_summary: dict[str, Any] | None
+    native_fg_best_record: dict[str, Any] | None
     all_evaluated: list[dict[str, Any]]
     skyline_candidates: list[dict[str, Any]]
     wall_sec: float = 0.0
@@ -780,7 +782,7 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
         skyline_start = time.perf_counter()
         from gear_optimizer.solver.exact_skyline import solve_exact_skyline
 
-        best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_exact_skyline(
+        best_data, best_gear, best_minis, native_fg_summary, native_fg_best_record, _, all_evaluated = solve_exact_skyline(
             ctx.cfg,
             ctx.fixed_stats,
             ctx.paths,
@@ -805,6 +807,8 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             ctx.known_loadouts.clear()
     else:
         all_evaluated = []
+        native_fg_summary = None
+        native_fg_best_record = None
         if not ctx.enable_fever:
             print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
 
@@ -850,14 +854,16 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
             }
         )
 
-    return OuterSearchResult(
-        best_data=best_data,
-        best_gear=list(best_gear or []),
-        best_minis=list(best_minis or []),
-        all_evaluated=list(all_evaluated or []),
-        skyline_candidates=skyline_candidates,
-        wall_sec=float(wall_sec),
-    )
+        return OuterSearchResult(
+            best_data=best_data,
+            best_gear=list(best_gear or []),
+            best_minis=list(best_minis or []),
+            native_fg_summary=dict(native_fg_summary or {}) or None,
+            native_fg_best_record=dict(native_fg_best_record or {}) or None,
+            all_evaluated=list(all_evaluated or []),
+            skyline_candidates=skyline_candidates,
+            wall_sec=float(wall_sec),
+        )
 
 
 def _build_skyline_loadout_entries(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
@@ -877,7 +883,112 @@ def _build_skyline_loadout_entries(ctx: SongContext, outer: OuterSearchResult) -
     )
 
     outer.skyline_candidates = skyline_candidates
-    return FGResult(fg_variants=[], loadout_entries=loadout_entries, wall_sec=0.0)
+    fg_variants: list[dict[str, Any]] = []
+    best_fg_variant = _best_native_fg_variant_from_outer(outer)
+    if best_fg_variant is not None:
+        fg_variants.append(best_fg_variant)
+    return FGResult(fg_variants=fg_variants, loadout_entries=loadout_entries, wall_sec=0.0)
+
+
+def _best_native_fg_variant_from_outer(outer: OuterSearchResult) -> dict[str, Any] | None:
+    best_variant = _native_fg_variant_from_record(outer.native_fg_best_record)
+    best_fg_score = int(best_variant.get("fg_score", 0) or 0) if isinstance(best_variant, dict) else 0
+
+    for row in outer.all_evaluated or []:
+        variant = _native_fg_variant_from_eval_row(row)
+        if variant is None:
+            continue
+        variant_fg_score = int(variant.get("fg_score", 0) or 0)
+        if variant_fg_score > best_fg_score:
+            best_variant = variant
+            best_fg_score = variant_fg_score
+
+    return best_variant
+
+
+def _native_fg_variant_from_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(record, dict) or not record:
+        return None
+    data = record.get("data")
+    if not isinstance(data, dict) or not data:
+        return None
+    genome = record.get("genome")
+    gear_items = list(genome[:6]) if isinstance(genome, (list, tuple)) else []
+    mini_items = list(genome[6:9]) if isinstance(genome, (list, tuple)) else []
+    base_score = int(record.get("base_score", data.get("BaseScore", data.get("Score", 0))) or 0)
+    fg_score = int(record.get("fg_score", data.get("FGScore", 0)) or 0)
+    variant = {
+        "data": dict(data),
+        "gear": gear_items,
+        "minis": mini_items,
+        "score": int(base_score),
+        "base_score": int(base_score),
+        "fg_score": int(fg_score),
+        "_is_ga": False,
+    }
+    force_obj = record.get("force")
+    if not isinstance(force_obj, dict) and isinstance(data.get("force"), dict):
+        force_obj = data.get("force")
+    if isinstance(force_obj, dict):
+        force_copy = dict(force_obj)
+        variant["force"] = force_copy
+        fg_cfg = force_copy.get("ForceGreats")
+        if isinstance(fg_cfg, dict):
+            variant["ForceGreats"] = dict(fg_cfg)
+            if isinstance(variant["data"], dict) and not isinstance(variant["data"].get("ForceGreats"), dict):
+                variant["data"]["ForceGreats"] = dict(fg_cfg)
+    elif isinstance(data.get("ForceGreats"), dict):
+        variant["ForceGreats"] = dict(data.get("ForceGreats"))
+    if "fg_base_score" in record:
+        try:
+            variant["fg_base_score"] = int(record.get("fg_base_score", base_score) or base_score)
+        except Exception as e:
+            logger.debug(f"song_processor:_native_fg_variant_from_record: {e}")
+    return variant
+
+
+def _native_fg_variant_from_eval_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, dict) or not row:
+        return None
+    data = row.get("Data")
+    if not isinstance(data, dict) or not data:
+        return None
+    base_score = int(row.get("BaseScore", row.get("Score", 0)) or 0)
+    fg_score = int(row.get("FGScore", 0) or 0)
+    if fg_score <= base_score:
+        return None
+    variant = {
+        "data": dict(data),
+        "gear": list(row.get("Gear") or []),
+        "minis": list(row.get("Minis") or []),
+        "score": int(base_score),
+        "base_score": int(base_score),
+        "fg_score": int(fg_score),
+        "_is_ga": False,
+    }
+    force_obj = row.get("force")
+    if not isinstance(force_obj, dict) and isinstance(data.get("force"), dict):
+        force_obj = data.get("force")
+    if isinstance(force_obj, dict):
+        force_copy = dict(force_obj)
+        variant["force"] = force_copy
+        fg_cfg = force_copy.get("ForceGreats")
+        if isinstance(fg_cfg, dict):
+            variant["ForceGreats"] = dict(fg_cfg)
+            if isinstance(variant["data"], dict) and not isinstance(variant["data"].get("ForceGreats"), dict):
+                variant["data"]["ForceGreats"] = dict(fg_cfg)
+    elif isinstance(data.get("ForceGreats"), dict):
+        variant["ForceGreats"] = dict(data.get("ForceGreats"))
+    fg_base_score = row.get("FGBaseScore")
+    if fg_base_score is not None:
+        try:
+            variant["fg_base_score"] = int(fg_base_score or base_score)
+        except Exception as e:
+            logger.debug(f"song_processor:_native_fg_variant_from_eval_row: {e}")
+    force_obj = row.get("force")
+    if isinstance(force_obj, dict):
+        variant["force"] = dict(force_obj)
+    return variant
 
 
 def _build_and_persist(

@@ -78,6 +78,26 @@ from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
+def _song_name_matches_exact_filter(song_name: str, raw_filter: str) -> bool:
+    query = str(raw_filter or "").strip().casefold()
+    if not query:
+        return False
+
+    name = str(song_name or "").strip().casefold()
+    if not name:
+        return False
+    if name == query:
+        return True
+
+    title_match = re.match(r"^(.*?)\s+\((easy|normal|hard)\)\s+by\s+.+$", name)
+    if title_match and str(title_match.group(1) or "").strip() == query:
+        return True
+
+    if " by " in name and name.split(" by ", 1)[0].strip() == query:
+        return True
+    return False
+
+
 # Module-level worker initializer for GPU executor (must be picklable)
 def _gpu_worker_initializer(registrations, counter, lock):
     """
@@ -973,6 +993,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return []
             logger.error("Error: No matching songs found.")
             return []
+
+        if filter_search and song_queue:
+            exact_song_queue = [
+                item for item in song_queue if _song_name_matches_exact_filter(str(item[1] or ""), filter_search)
+            ]
+            if exact_song_queue:
+                song_queue = exact_song_queue
 
         try:
             logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")

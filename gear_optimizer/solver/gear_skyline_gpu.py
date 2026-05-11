@@ -139,6 +139,45 @@ def _flatten_states(
     return flat, base, code, pp_values, int(max_pp), cm_size, fm_size, ft_size, ff_size
 
 
+def _flatten_points(
+    points: np.ndarray,
+    codes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, int, int, int]:
+    pts = np.asarray(points, dtype=np.int32)
+    code = np.asarray(codes, dtype=np.uint64)
+    if pts.size == 0 or code.size == 0:
+        return (
+            np.zeros(0, dtype=np.int32),
+            np.zeros(0, dtype=np.int32),
+            np.zeros(0, dtype=np.uint64),
+            np.zeros(0, dtype=np.int32),
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+    if pts.ndim != 2 or int(pts.shape[1]) != 6:
+        raise ValueError(f"gear skyline points must have shape (n, 6), got {tuple(pts.shape)}")
+    if int(pts.shape[0]) != int(code.shape[0]):
+        raise ValueError("gear skyline points/code length mismatch")
+
+    max_pp = int(np.max(pts[:, 0]))
+    cm_size = int(np.max(pts[:, 1])) + 1
+    fm_size = int(np.max(pts[:, 2])) + 1
+    ft_size = int(np.max(pts[:, 3])) + 1
+    ff_size = int(np.max(pts[:, 4])) + 1
+
+    flat64 = (
+        (((pts[:, 1].astype(np.int64) * int(fm_size)) + pts[:, 2].astype(np.int64)) * int(ft_size))
+        + pts[:, 3].astype(np.int64)
+    ) * int(ff_size) + pts[:, 4].astype(np.int64)
+    flat = flat64.astype(np.int32, copy=False)
+    base = pts[:, 5].astype(np.int32, copy=False)
+    pp_values = pts[:, 0].astype(np.int32, copy=False)
+    return flat, base, code.astype(np.uint64, copy=False), pp_values, int(max_pp), cm_size, fm_size, ft_size, ff_size
+
+
 def _points_from_flat(pp: int, flat: np.ndarray, base: np.ndarray, *, fm_size: int, ft_size: int, ff_size: int) -> np.ndarray:
     ff = flat % int(ff_size)
     tmp = flat // int(ff_size)
@@ -158,17 +197,22 @@ def _points_from_flat(pp: int, flat: np.ndarray, base: np.ndarray, *, fm_size: i
     )
 
 
-def global_gear_skyline_points_6d_gpu(
-    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
+def _global_gear_skyline_points_6d_gpu_from_flat(
+    *,
+    flat: np.ndarray,
+    base: np.ndarray,
+    code: np.ndarray,
+    pp_values: np.ndarray,
+    max_pp: int,
+    cm_size: int,
+    fm_size: int,
+    ft_size: int,
+    ff_size: int,
+    started: float,
 ) -> tuple[int, np.ndarray, np.ndarray, float]:
-    t0 = time.perf_counter()
-    if not states:
-        return 0, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - t0)
-
-    flat, base, code, pp_values, max_pp, cm_size, fm_size, ft_size, ff_size = _flatten_states(states)
     total_points = int(flat.shape[0])
     if total_points <= 0:
-        return 0, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - t0)
+        return 0, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - started)
 
     grid_elems = int(cm_size) * int(fm_size) * int(ft_size) * int(ff_size)
     shape = (int(cm_size), int(fm_size), int(ft_size), int(ff_size))
@@ -190,7 +234,7 @@ def global_gear_skyline_points_6d_gpu(
     pp_offsets = layer_offsets(pp_sorted, int(max_pp))
     max_layer_count = int(np.max(np.diff(pp_offsets))) if pp_offsets.size > 1 else 0
     if max_layer_count <= 0:
-        return total_points, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - t0)
+        return total_points, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - started)
 
     flat_dev = ti.ndarray(dtype=ti.i32, shape=flat_sorted.shape)
     base_dev = ti.ndarray(dtype=ti.i32, shape=base_sorted.shape)
@@ -266,4 +310,46 @@ def global_gear_skyline_points_6d_gpu(
 
     points = np.concatenate(kept_points, axis=0) if kept_points else np.zeros((0, 6), dtype=np.int32)
     codes = np.concatenate(kept_codes, axis=0) if kept_codes else np.zeros(0, dtype=np.uint64)
-    return total_points, points, codes, float(time.perf_counter() - t0)
+    return total_points, points, codes, float(time.perf_counter() - started)
+
+
+def global_gear_skyline_points_6d_gpu(
+    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
+) -> tuple[int, np.ndarray, np.ndarray, float]:
+    t0 = time.perf_counter()
+    if not states:
+        return 0, np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64), float(time.perf_counter() - t0)
+
+    flat, base, code, pp_values, max_pp, cm_size, fm_size, ft_size, ff_size = _flatten_states(states)
+    return _global_gear_skyline_points_6d_gpu_from_flat(
+        flat=flat,
+        base=base,
+        code=code,
+        pp_values=pp_values,
+        max_pp=int(max_pp),
+        cm_size=int(cm_size),
+        fm_size=int(fm_size),
+        ft_size=int(ft_size),
+        ff_size=int(ff_size),
+        started=t0,
+    )
+
+
+def global_gear_skyline_points_6d_gpu_from_arrays(
+    points: np.ndarray,
+    codes: np.ndarray,
+) -> tuple[int, np.ndarray, np.ndarray, float]:
+    t0 = time.perf_counter()
+    flat, base, code, pp_values, max_pp, cm_size, fm_size, ft_size, ff_size = _flatten_points(points, codes)
+    return _global_gear_skyline_points_6d_gpu_from_flat(
+        flat=flat,
+        base=base,
+        code=code,
+        pp_values=pp_values,
+        max_pp=int(max_pp),
+        cm_size=int(cm_size),
+        fm_size=int(fm_size),
+        ft_size=int(ft_size),
+        ff_size=int(ff_size),
+        started=t0,
+    )

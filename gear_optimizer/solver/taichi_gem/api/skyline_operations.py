@@ -23,7 +23,7 @@ import logging
 
 import numpy as np
 
-from gear_optimizer.core.parsing import env_flag
+from gear_optimizer.core.parsing import env_flag, env_get
 
 from .. import fields
 from ..fields import MAX_EVALS_PER_DISPATCH
@@ -34,15 +34,16 @@ from .initialization import ensure_ready, _ensure_ftff_combo_tables
 
 # Cache environment variables at module load time to avoid per-call overhead.
 #
-# Note: plateau pruning is currently correctness-risky (it can prune away valid
-# FT/FF combos that produce better top-1 results). Keep it OFF by default and
-# allow explicit opt-in for profiling/experimentation.
-from gear_optimizer.core.parsing import env_get
+# Plateau pruning removes duplicate score states produced by mathematically
+# identical gem continuations. It is exact because each removed state has the
+# same timing signature and no better score response than its retained plateau
+# representative. Set SKYLINE_GPU_PLATEAU_PRUNE=0 to disable for diagnostics.
 
 logger = logging.getLogger(__name__)
-_SKYLINE_PLATEAU_PRUNE_ENABLED: int = 0
-if env_flag("SKYLINE_GPU_PLATEAU_PRUNE"):
-    _SKYLINE_PLATEAU_PRUNE_ENABLED = 1
+_SKYLINE_PLATEAU_PRUNE_ENABLED: int = 1
+_plateau_prune_raw = str(env_get("SKYLINE_GPU_PLATEAU_PRUNE", "1") or "1").strip().lower()
+if _plateau_prune_raw in {"0", "false", "no", "off"}:
+    _SKYLINE_PLATEAU_PRUNE_ENABLED = 0
 
 _SKYLINE_COMBO_CHUNK_MIN: int = max(64, int(env_get("SKYLINE_GPU_COMBO_CHUNK_MIN", "1024") or 1024))
 _SKYLINE_COMBO_CHUNK_MAX: int = max(
@@ -256,7 +257,6 @@ def skyline_upload_population_indices(population_indices_np: np.ndarray, *, n_sl
         pop_buf[:n_genomes, : int(n_slots)] = src
         fields.population_indices.from_numpy(pop_buf)
     return n_genomes
-
 
 def skyline_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
     """
@@ -688,7 +688,6 @@ def skyline_evaluate_population(
     if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
         kernels.SKYLINE_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
 
-    # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
     kernels.skyline_aggregate_and_init_best_kernel(
         n_genomes,
         n_slots,

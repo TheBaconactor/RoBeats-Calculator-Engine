@@ -22,7 +22,7 @@ from gear_optimizer.solver.combined_skyline_sparse import (
     get_last_combined_skyline_stats,
 )
 from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
-from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu
+from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
@@ -442,6 +442,119 @@ def _reduce_same_stat_envelope_frontier_with_codes(
     return stats, reduced_points, reduced_codes
 
 
+def _reduce_combined_pair_envelope_fast(
+    *,
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+    pair_gear_idx: np.ndarray,
+    pair_mini_idx: np.ndarray,
+    dominance_lut: EnvelopeDominanceLUT,
+) -> tuple[EnvelopeReductionStats, np.ndarray, np.ndarray]:
+    t0 = time.perf_counter()
+    if pair_gear_idx.size == 0:
+        stats = EnvelopeReductionStats(
+            points_in=0,
+            points_out=0,
+            groups=0,
+            groups_multi=0,
+            max_group_size=0,
+            seconds=float(time.perf_counter() - t0),
+        )
+        return stats, np.zeros(0, dtype=np.int32), np.zeros(0, dtype=np.int32)
+
+    gp = np.asarray(gear_points, dtype=np.int32)
+    mp = np.asarray(mini_points, dtype=np.int32)
+    gi = np.asarray(pair_gear_idx, dtype=np.int32)
+    mi = np.asarray(pair_mini_idx, dtype=np.int32)
+
+    g_pp = gp[gi, 0]
+    cm = np.minimum(int(MAX_STAT_INDEX), gp[gi, 1] + mp[mi, 0])
+    fm = np.minimum(int(MAX_STAT_INDEX), gp[gi, 2] + mp[mi, 1])
+    ft = np.minimum(int(MAX_STAT_INDEX), gp[gi, 3] + mp[mi, 2])
+    ff = np.minimum(int(MAX_STAT_INDEX), gp[gi, 4] + mp[mi, 3])
+    base = (gp[gi, 5] + mp[mi, 4]).astype(np.float32, copy=False)
+
+    stat_size = int(MAX_STAT_INDEX) + 1
+    group_keys = ((((cm.astype(np.int64) * stat_size) + fm) * stat_size + ft) * stat_size) + ff
+    order = np.argsort(group_keys, kind="stable")
+    sorted_keys = group_keys[order]
+    if int(sorted_keys.shape[0]) > 1:
+        group_starts = np.concatenate(
+            (
+                np.asarray([0], dtype=np.int64),
+                np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]).astype(np.int64) + 1,
+            )
+        )
+        group_ends = np.concatenate((group_starts[1:], np.asarray([int(sorted_keys.shape[0])], dtype=np.int64)))
+        group_sizes = group_ends - group_starts
+        max_group_size = int(group_sizes.max()) if group_sizes.size else 1
+        groups_multi = int(np.count_nonzero(group_sizes > 1))
+    else:
+        group_starts = np.zeros(1 if int(sorted_keys.shape[0]) else 0, dtype=np.int64)
+        max_group_size = int(sorted_keys.shape[0])
+        groups_multi = 0
+
+    # Exact but intentionally conservative: the combined frontier usually has tiny
+    # timing slices. If a future inventory produces large slices, skip this optional
+    # reduction rather than making the hot path worse.
+    if max_group_size > 64:
+        stats = EnvelopeReductionStats(
+            points_in=int(gi.shape[0]),
+            points_out=int(gi.shape[0]),
+            groups=int(group_starts.shape[0]),
+            groups_multi=int(groups_multi),
+            max_group_size=int(max_group_size),
+            seconds=float(time.perf_counter() - t0),
+        )
+        return stats, gi, mi
+
+    sorted_pp = np.clip(g_pp[order], 0, int(dominance_lut.pp_max_idx)).astype(np.int32, copy=False)
+    sorted_base = base[order]
+    dominated_sorted = np.zeros(int(order.shape[0]), dtype=np.bool_)
+
+    for offset in range(1, int(max_group_size)):
+        same_group = sorted_keys[int(offset) :] == sorted_keys[: -int(offset)]
+        if not np.any(same_group):
+            continue
+        left = np.flatnonzero(same_group)
+        right = left + int(offset)
+
+        pp_left = sorted_pp[left]
+        pp_right = sorted_pp[right]
+        base_left = sorted_base[left]
+        base_right = sorted_base[right]
+
+        right_dominates_left = _envelope_dominates_from_delta(
+            base_right - base_left,
+            dominance_lut.delta_max[pp_left, pp_right],
+            dominance_lut.delta_min[pp_left, pp_right],
+        )
+        if np.any(right_dominates_left):
+            dominated_sorted[left[right_dominates_left]] = True
+
+        left_dominates_right = _envelope_dominates_from_delta(
+            base_left - base_right,
+            dominance_lut.delta_max[pp_right, pp_left],
+            dominance_lut.delta_min[pp_right, pp_left],
+        )
+        if np.any(left_dominates_right):
+            dominated_sorted[right[left_dominates_right]] = True
+
+    keep = np.ones(int(order.shape[0]), dtype=np.bool_)
+    if np.any(dominated_sorted):
+        keep[order[dominated_sorted]] = False
+
+    stats = EnvelopeReductionStats(
+        points_in=int(gi.shape[0]),
+        points_out=int(np.count_nonzero(keep)),
+        groups=int(group_starts.shape[0]),
+        groups_multi=int(groups_multi),
+        max_group_size=int(max_group_size),
+        seconds=float(time.perf_counter() - t0),
+    )
+    return stats, gi[keep].astype(np.int32, copy=False), mi[keep].astype(np.int32, copy=False)
+
+
 def _reduce_gear_dp_frontier_arrays(stats: np.ndarray, codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if stats.size == 0 or codes.size == 0:
         return np.zeros((0, 6), dtype=np.int32), np.zeros(0, dtype=np.uint64)
@@ -481,7 +594,7 @@ def _dp_gear_ff_base_frontier_with_codes(
     p_color: str,
     s_color: str,
     pack: _BitPack,
-) -> tuple[dict[tuple[int, int, int, int], list[tuple[int, int, int]]], LaneAwareGearDPStats]:
+) -> tuple[np.ndarray, np.ndarray, LaneAwareGearDPStats]:
     t0 = time.perf_counter()
 
     stats = np.zeros((1, 6), dtype=np.int32)
@@ -491,7 +604,11 @@ def _dp_gear_ff_base_frontier_with_codes(
     for slot_idx, slot in enumerate(_SLOTS):
         items = gear_pool.get(slot, [])
         if not items:
-            return {}, LaneAwareGearDPStats(0, 0, 0.0, 0.0, 0, float(time.perf_counter() - t0))
+            return (
+                np.zeros((0, 6), dtype=np.int32),
+                np.zeros(0, dtype=np.uint64),
+                LaneAwareGearDPStats(0, 0, 0.0, 0.0, 0, float(time.perf_counter() - t0)),
+            )
         item_stats = np.zeros((len(items), 6), dtype=np.int32)
         item_codes = np.zeros(len(items), dtype=np.uint64)
         shift = pack.shifts[slot_idx]
@@ -523,22 +640,24 @@ def _dp_gear_ff_base_frontier_with_codes(
         expanded_codes = (codes[:, None] | item_codes[None, :]).ravel()
         stats, codes = _reduce_gear_dp_frontier_arrays(expanded, expanded_codes)
 
-    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]] = {}
-    for row, code in zip(stats, codes, strict=True):
-        key = (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
-        states.setdefault(key, []).append((int(row[4]), int(row[5]), int(code)))
-
-    sizes = np.fromiter((len(fr) for fr in states.values()), dtype=np.int32)
+    if int(stats.shape[0]) > 0:
+        group_start = np.ones(int(stats.shape[0]), dtype=np.bool_)
+        if int(stats.shape[0]) > 1:
+            group_start[1:] = np.any(stats[1:, :4] != stats[:-1, :4], axis=1)
+        starts = np.flatnonzero(group_start)
+        sizes = np.diff(np.append(starts, int(stats.shape[0]))).astype(np.int32, copy=False)
+    else:
+        sizes = np.zeros(0, dtype=np.int32)
     pairs = int(sizes.sum())
-    stats = LaneAwareGearDPStats(
-        keys_4d=int(len(states)),
+    dp_stats = LaneAwareGearDPStats(
+        keys_4d=int(sizes.shape[0]),
         pairs_6d=pairs,
         frontier_mean=float(sizes.mean()) if sizes.size else 0.0,
         frontier_p95=float(np.percentile(sizes, 95)) if sizes.size else 0.0,
         frontier_max=int(sizes.max()) if sizes.size else 0,
         seconds=float(time.perf_counter() - t0),
     )
-    return states, stats
+    return stats.astype(np.int32, copy=False), codes.astype(np.uint64, copy=False), dp_stats
 
 
 def _suffix_max_4d(src: np.ndarray, dst: np.ndarray) -> None:
@@ -757,9 +876,10 @@ def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
 
 
 def _global_gear_skyline_points_6d_lane_base_with_codes(
-    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
+    gear_points: np.ndarray,
+    gear_codes: np.ndarray,
 ) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
-    points_in, points, codes, seconds = global_gear_skyline_points_6d_gpu(states)
+    points_in, points, codes, seconds = global_gear_skyline_points_6d_gpu_from_arrays(gear_points, gear_codes)
     stats = LaneAwareGlobalSkylineStats(
         points_in=int(points_in),
         points_out=int(points.shape[0]),
@@ -788,7 +908,7 @@ def _evaluate_product_exact(
     if gear_ids.size == 0 or mini_ids.size == 0:
         return None, []
 
-    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 4096)
+    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 8192)
     max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
     g_n = int(gear_ids.shape[0])
@@ -1081,7 +1201,7 @@ def _evaluate_pairs_exact(
     if pair_gear_idx.size == 0 or pair_mini_idx.size == 0:
         return None, []
 
-    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 4096)
+    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 8192)
     max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(pair_gear_idx.shape[0])
     g_idx = np.asarray(pair_gear_idx, dtype=np.int32)
@@ -1105,7 +1225,10 @@ def _evaluate_pairs_exact(
     def _build_candidate_batch(
         offset: int,
         n: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]:
+    ) -> (
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+        | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
+    ):
         seg = slice(int(offset), int(offset) + int(n))
         g_seg = g_idx[seg]
         m_seg = m_idx[seg]
@@ -1122,7 +1245,8 @@ def _evaluate_pairs_exact(
         return batch, batch_gc, batch_mc
 
     def _candidate_batches() -> Iterable[
-        tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+        | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
     ]:
         offset = 0
         if int(warmup_batch) > 0:
@@ -1166,7 +1290,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
     status_cb("skyline: gear DP")
     phase_started = time.perf_counter()
-    dp_states, dp_stats = _dp_gear_ff_base_frontier_with_codes(
+    dp_points, dp_codes, dp_stats = _dp_gear_ff_base_frontier_with_codes(
         ctx.gear_pool,
         p_color=ctx.p_color,
         s_color=ctx.s_color,
@@ -1175,12 +1299,12 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     _record_phase(phase_seconds, "gear_dp_cpu", phase_started)
     phase_counts["gear_dp_pairs"] = int(dp_stats.pairs_6d)
     phase_counts["gear_dp_keys_4d"] = int(dp_stats.keys_4d)
-    if not dp_states:
+    if dp_points.size == 0:
         return None, [], [], None, [], [], []
 
     status_cb("skyline: gear timing-cell skyline")
     phase_started = time.perf_counter()
-    gear_sky_stats, gear_points, gear_codes = _global_gear_skyline_points_6d_lane_base_with_codes(dp_states)
+    gear_sky_stats, gear_points, gear_codes = _global_gear_skyline_points_6d_lane_base_with_codes(dp_points, dp_codes)
     _record_phase(phase_seconds, "gear_global_skyline_gpu", phase_started)
     phase_counts["gear_global_skyline_in"] = int(gear_sky_stats.points_in)
     phase_counts["gear_global_skyline_out"] = int(gear_sky_stats.points_out)
@@ -1277,6 +1401,30 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         combined_candidate_count = int(pair_g_idx.shape[0])
         phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
         phase_counts["combined_product_total"] = int(product_total)
+        if envelope_lut is not None:
+            status_cb("skyline: combined local envelope prune")
+            phase_started = time.perf_counter()
+            env_stats, pair_g_idx, pair_m_idx = _reduce_combined_pair_envelope_fast(
+                gear_points=gear_points,
+                mini_points=ctx.mini_points,
+                pair_gear_idx=pair_g_idx,
+                pair_mini_idx=pair_m_idx,
+                dominance_lut=envelope_lut,
+            )
+            _record_phase(phase_seconds, "combined_local_envelope_cpu", phase_started)
+            combined_candidate_count = int(pair_g_idx.shape[0])
+            phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
+            phase_counts["combined_local_envelope_in"] = int(env_stats.points_in)
+            phase_counts["combined_local_envelope_out"] = int(env_stats.points_out)
+            phase_counts["combined_local_envelope_groups"] = int(env_stats.groups)
+            status_cb(
+                "skyline: combined local envelope kept "
+                f"{int(env_stats.points_out):,}/{int(env_stats.points_in):,} "
+                f"(groups={int(env_stats.groups_multi):,}, max_group={int(env_stats.max_group_size)}, "
+                f"time={float(env_stats.seconds):.2f}s)"
+            )
+            if pair_g_idx.size == 0:
+                return None, [], [], None, [], [], []
         if fg_candidate_mode == "all":
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
@@ -1506,7 +1654,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         f"(dp_pairs={dp_stats.pairs_6d}, gear_sky={gear_sky_stats.points_out}, "
         f"gear_env={int(gear_points.shape[0])}, mini_sky={int(ctx.mini_points.shape[0])})"
     )
-    return best_data, best_gear, best_minis, None, [], [], all_evaluated
+    return best_data, best_gear, best_minis, dict(native_fg_summary), _native_fg_best_record, [], all_evaluated
 
 
 def solve_exact_skyline(

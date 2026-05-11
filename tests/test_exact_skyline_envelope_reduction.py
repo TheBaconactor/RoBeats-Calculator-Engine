@@ -308,3 +308,67 @@ def test_exact_skyline_envelope_delta_prune_matches_bruteforce_groupwise():
     assert {tuple(int(x) for x in row.tolist()) for row in reduced_points} == {
         tuple(int(x) for x in row.tolist()) for row in brute_points
     }
+
+
+def test_combined_pair_fast_envelope_matches_generic_envelope_reducer():
+    from gear_optimizer.solver.exact_skyline import (
+        MAX_STAT_INDEX,
+        _build_envelope_dominance_lut,
+        _pack_pair_indices,
+        _reduce_combined_pair_envelope_fast,
+        _reduce_same_stat_envelope_frontier_with_codes,
+    )
+
+    ref_pp = np.linspace(100.0, 300.0, 161, dtype=np.float32)
+    lut = _build_envelope_dominance_lut(ref_pp=ref_pp, budget_max=90, w_pp=0, w_ov=10)
+    gear_points = np.array(
+        [
+            [15, 20, 21, 22, 23, 120],
+            [30, 20, 21, 22, 23, 110],
+            [45, 20, 21, 22, 23, 100],
+            [15, 30, 31, 32, 33, 90],
+        ],
+        dtype=np.int32,
+    )
+    mini_points = np.array(
+        [
+            [5, 6, 7, 8, 20],
+            [5, 6, 7, 8, 5],
+        ],
+        dtype=np.int32,
+    )
+    pair_g = np.array([0, 1, 2, 3, 0, 1, 2, 3], dtype=np.int32)
+    pair_m = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int32)
+
+    g = gear_points[pair_g]
+    m = mini_points[pair_m]
+    pair_points = np.empty((int(pair_g.shape[0]), 6), dtype=np.int32)
+    pair_points[:, 0] = g[:, 0]
+    pair_points[:, 1] = np.minimum(int(MAX_STAT_INDEX), g[:, 1] + m[:, 0])
+    pair_points[:, 2] = np.minimum(int(MAX_STAT_INDEX), g[:, 2] + m[:, 1])
+    pair_points[:, 3] = np.minimum(int(MAX_STAT_INDEX), g[:, 3] + m[:, 2])
+    pair_points[:, 4] = np.minimum(int(MAX_STAT_INDEX), g[:, 4] + m[:, 3])
+    pair_points[:, 5] = g[:, 5] + m[:, 4]
+    pair_codes = _pack_pair_indices(pair_g, pair_m)
+
+    generic_stats, _generic_points, generic_codes = _reduce_same_stat_envelope_frontier_with_codes(
+        pair_points,
+        pair_codes,
+        p_color="Rush",
+        s_color="",
+        selected_color="Rush",
+        ref_pp=ref_pp,
+        dominance_lut=lut,
+    )
+    fast_stats, fast_g, fast_m = _reduce_combined_pair_envelope_fast(
+        gear_points=gear_points,
+        mini_points=mini_points,
+        pair_gear_idx=pair_g,
+        pair_mini_idx=pair_m,
+        dominance_lut=lut,
+    )
+    fast_codes = _pack_pair_indices(fast_g, fast_m)
+
+    assert int(fast_stats.points_in) == int(generic_stats.points_in)
+    assert int(fast_stats.points_out) == int(generic_stats.points_out)
+    assert {int(v) for v in fast_codes.tolist()} == {int(v) for v in generic_codes.tolist()}
