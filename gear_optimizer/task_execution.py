@@ -16,18 +16,6 @@ from gear_optimizer.persistence.entries import filter_valid_persistence_entries,
 logger = logging.getLogger(__name__)
 
 
-def safe_process_song_task(task):
-    """
-    Compatibility entrypoint for calculate-only execution.
-
-    Keep the old per-song pipeline out of the production native in-flight import
-    path; load it only when calculate-only mode actually executes.
-    """
-    from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task as _safe_process_song_task
-
-    return _safe_process_song_task(task)
-
-
 class TaskExecutionMixin:
     def _status_listener(self, q):
             while True:
@@ -127,6 +115,8 @@ class TaskExecutionMixin:
             meta_finder_enabled = str(raw_meta_finder).strip().lower() in TRUTHY_ENV_VALUES
 
             if not bool(meta_finder_enabled):
+                from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task
+
                 logger.info(
                     "[InFlight] Native pipeline skipped: calculate-only / gem-only mode keeps the direct per-song path."
                 )

@@ -72,7 +72,7 @@ def test_calculate_only_skips_native_inflight_pipeline(monkeypatch):
 
     app._consume_results = _consume
 
-    monkeypatch.setattr("gear_optimizer.task_execution.safe_process_song_task", _fake_safe_process)
+    monkeypatch.setattr("gear_optimizer.legacy.song_processor_adapter.safe_process_song_task", _fake_safe_process)
     monkeypatch.setitem(
         sys.modules,
         "gear_optimizer.solver.native_inflight_orchestrator",
