@@ -13,6 +13,25 @@ def _has_taichi() -> bool:
 pytestmark = [pytest.mark.gpu]
 
 
+def _points_and_codes_from_states(
+    states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
+) -> tuple[np.ndarray, np.ndarray]:
+    points: list[tuple[int, int, int, int, int, int]] = []
+    codes: list[int] = []
+    for (pp, cm, fm, ft), frontier in states.items():
+        for ff, base, code in frontier:
+            points.append((int(pp), int(cm), int(fm), int(ft), int(ff), int(base)))
+            codes.append(int(code))
+    return np.asarray(points, dtype=np.int32), np.asarray(codes, dtype=np.uint64)
+
+
+def _point_code_rows(points: np.ndarray, codes: np.ndarray) -> list[tuple[int, ...]]:
+    return sorted(
+        tuple(int(x) for x in row.tolist()) + (int(code),)
+        for row, code in zip(points, codes, strict=True)
+    )
+
+
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_global_gear_skyline_gpu_matches_cpu_reference():
     from gear_optimizer.solver.exact_skyline import (
@@ -31,9 +50,9 @@ def test_global_gear_skyline_gpu_matches_cpu_reference():
     }
 
     cpu_stats, cpu_points, cpu_codes = _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(states)
-    gpu_stats, gpu_points, gpu_codes = _global_gear_skyline_points_6d_lane_base_with_codes(states)
+    gear_points, gear_codes = _points_and_codes_from_states(states)
+    gpu_stats, gpu_points, gpu_codes = _global_gear_skyline_points_6d_lane_base_with_codes(gear_points, gear_codes)
 
     assert gpu_stats.points_in == cpu_stats.points_in
     assert gpu_stats.points_out == cpu_stats.points_out
-    np.testing.assert_array_equal(gpu_points, cpu_points)
-    np.testing.assert_array_equal(gpu_codes, cpu_codes)
+    assert _point_code_rows(gpu_points, gpu_codes) == _point_code_rows(cpu_points, cpu_codes)

@@ -93,6 +93,20 @@ def gear_ids_from_code(
     return out
 
 
+def gear_ids_from_codes(
+    codes: np.ndarray,
+    *,
+    pack: BitPack,
+    slot_item_ids: list[np.ndarray],
+) -> np.ndarray:
+    code_arr = np.asarray(codes, dtype=np.uint64).reshape(-1)
+    out = np.zeros((int(code_arr.shape[0]), len(GEAR_SLOTS)), dtype=np.int32)
+    for idx, (shift, mask) in enumerate(zip(pack.shifts, pack.masks, strict=True)):
+        item_idx = ((code_arr >> np.uint64(int(shift))) & np.uint64(int(mask))).astype(np.intp, copy=False)
+        out[:, idx] = np.asarray(slot_item_ids[idx], dtype=np.int32)[item_idx]
+    return out
+
+
 def mini_ids_from_code(
     code: int,
     *,
@@ -103,6 +117,21 @@ def mini_ids_from_code(
     out = np.zeros(3, dtype=np.int32)
     for idx, item_idx in enumerate(idxs):
         out[idx] = int(mini_item_ids[int(item_idx)])
+    return out
+
+
+def mini_ids_from_codes(
+    codes: np.ndarray,
+    *,
+    pack: BitPack,
+    mini_item_ids: np.ndarray,
+) -> np.ndarray:
+    code_arr = np.asarray(codes, dtype=np.uint64).reshape(-1)
+    out = np.zeros((int(code_arr.shape[0]), 3), dtype=np.int32)
+    item_ids = np.asarray(mini_item_ids, dtype=np.int32)
+    for idx, (shift, mask) in enumerate(zip(pack.shifts, pack.masks, strict=True)):
+        item_idx = ((code_arr >> np.uint64(int(shift))) & np.uint64(int(mask))).astype(np.intp, copy=False)
+        out[:, idx] = item_ids[item_idx]
     return out
 
 

@@ -26,6 +26,18 @@ from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
     mini_combo_skyline as _mini_combo_skyline_common,
 )
+from gear_optimizer.solver.mini_response_prune import (
+    MiniLocalResponseFilter,
+    mini_local_filter_gear_rows,
+    mini_response_phase_counts,
+    mini_response_phase_seconds,
+    prune_mini_response_envelope,
+)
+from gear_optimizer.solver.response_envelope_prune import (
+    prune_response_envelope_pairs,
+    response_envelope_phase_counts,
+    response_envelope_phase_seconds,
+)
 from gear_optimizer.solver.solver_common import (
     GEAR_SLOTS,
     BitPack as _BitPack_common,
@@ -35,7 +47,9 @@ from gear_optimizer.solver.solver_common import (
     build_solver_cfg_data as _build_cfg_data_common,
     build_solver_override_cfg,
     gear_ids_from_code as _gear_ids_from_code_common,
+    gear_ids_from_codes as _gear_ids_from_codes_common,
     mini_ids_from_code as _mini_ids_from_code_common,
+    mini_ids_from_codes as _mini_ids_from_codes_common,
     make_pack as _make_pack_common,
     prepare_solver_context,
 )
@@ -47,7 +61,9 @@ _BitPack = _BitPack_common
 _make_pack = _make_pack_common
 _build_cfg_data = _build_cfg_data_common
 _gear_ids_from_code = _gear_ids_from_code_common
+_gear_ids_from_codes = _gear_ids_from_codes_common
 _mini_ids_from_code = _mini_ids_from_code_common
+_mini_ids_from_codes = _mini_ids_from_codes_common
 _build_candidate_payload = _build_candidate_payload_common
 _mini_combo_skyline_points_6d_lane_base_with_codes = _mini_combo_skyline_common
 
@@ -291,36 +307,6 @@ def _dp_gear_ff_base_frontier_with_codes(
     return stats.astype(np.int32, copy=False), codes.astype(np.uint64, copy=False), dp_stats
 
 
-def _suffix_max_4d(src: np.ndarray, dst: np.ndarray) -> None:
-    np.copyto(dst, src)
-
-    v0 = dst[::-1, :, :, :]
-    np.maximum.accumulate(v0, axis=0, out=v0)
-    v1 = dst[:, ::-1, :, :]
-    np.maximum.accumulate(v1, axis=1, out=v1)
-    v2 = dst[:, :, ::-1, :]
-    np.maximum.accumulate(v2, axis=2, out=v2)
-    v3 = dst[:, :, :, ::-1]
-    np.maximum.accumulate(v3, axis=3, out=v3)
-
-
-def _suffix_max_4d_inplace(dst: np.ndarray) -> None:
-    """In-place 4D suffix max.
-
-    This is equivalent to `_suffix_max_4d(src, dst)` with `src == dst`, but avoids
-    the full-array copy.
-    """
-
-    v0 = dst[::-1, :, :, :]
-    np.maximum.accumulate(v0, axis=0, out=v0)
-    v1 = dst[:, ::-1, :, :]
-    np.maximum.accumulate(v1, axis=1, out=v1)
-    v2 = dst[:, :, ::-1, :]
-    np.maximum.accumulate(v2, axis=2, out=v2)
-    v3 = dst[:, :, :, ::-1]
-    np.maximum.accumulate(v3, axis=3, out=v3)
-
-
 def _suffix_max_cm_fm_inplace(dst: np.ndarray) -> None:
     v0 = dst[::-1, :, :, :]
     np.maximum.accumulate(v0, axis=0, out=v0)
@@ -349,6 +335,13 @@ def _unpack_pair_codes(pair_codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
     states: dict[tuple[int, int, int, int], list[tuple[int, int, int]]],
 ) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
+    """CPU reference for the fixed-final-timing gear skyline.
+
+    Dominance is only valid inside an identical final ``FT/FF`` timing cell.
+    The suffix grids therefore range over ``CM/FM`` only; ``FT`` and ``FF`` are
+    address dimensions, not dominance directions.
+    """
+
     t0 = time.perf_counter()
     if not states:
         return (
@@ -438,7 +431,8 @@ def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
         layer_flat.fill(-1)
         layer_flat[uniq_flat] = base_u
 
-        _suffix_max_4d(layer_grid, layer_suffix)
+        np.copyto(layer_suffix, layer_grid)
+        _suffix_max_cm_fm_inplace(layer_suffix)
 
         ff = uniq_flat % ff_size
         tmp = uniq_flat // ff_size
@@ -454,13 +448,6 @@ def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
         m1 = (fm + 1) < fm_size
         if np.any(m1):
             strict[m1] = np.maximum(strict[m1], layer_suffix[cm[m1], fm[m1] + 1, ft[m1], ff[m1]])
-        m2 = (ft + 1) < ft_size
-        if np.any(m2):
-            strict[m2] = np.maximum(strict[m2], layer_suffix[cm[m2], fm[m2], ft[m2] + 1, ff[m2]])
-        m3 = (ff + 1) < ff_size
-        if np.any(m3):
-            strict[m3] = np.maximum(strict[m3], layer_suffix[cm[m3], fm[m3], ft[m3], ff[m3] + 1])
-
         layer_sky = base_u > strict
         if higher_valid:
             layer_sky &= base_u > higher_suffix[cm, fm, ft, ff]
@@ -493,7 +480,8 @@ def _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference(
         idx = uniq_flat[layer_sky]
         vals = base_u[layer_sky]
         higher_flat[idx] = np.maximum(higher_flat[idx], vals)
-        _suffix_max_4d(higher_grid, higher_suffix)
+        np.copyto(higher_suffix, higher_grid)
+        _suffix_max_cm_fm_inplace(higher_suffix)
         higher_valid = True
 
     points = np.concatenate(kept_chunks, axis=0) if kept_chunks else np.zeros((0, 6), dtype=np.int32)
@@ -585,7 +573,7 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
     """Compute the exact global skyline for (gear ⊕ minis) and return argmax pairs.
 
     Dimensions (maximize):
-      (PP, CM, FM, FT, FF, base_lane)
+      (PP, CM, FM, base_lane), inside identical final (FT, FF) timing cells.
 
     Inputs are already reduced skylines:
     - gear_points: (G,6) => (pp,cm,fm,ft,ff,base_lane)
@@ -780,6 +768,27 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     return combined_global_skyline_pairs_6d_sparse(gear_points, mini_points)
 
 
+def _apply_local_mini_pair_filter(
+    *,
+    pair_g_idx: np.ndarray,
+    pair_m_idx: np.ndarray,
+    mini_allowed_by_gear_cell: np.ndarray | None,
+    mini_allowed_gear_rows: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    if mini_allowed_by_gear_cell is None or mini_allowed_gear_rows is None or pair_g_idx.size == 0:
+        return pair_g_idx, pair_m_idx, 0
+    allowed = np.asarray(mini_allowed_by_gear_cell, dtype=np.bool_)
+    gear_rows = np.asarray(mini_allowed_gear_rows, dtype=np.int32)
+    pg = np.asarray(pair_g_idx, dtype=np.int32)
+    pm = np.asarray(pair_m_idx, dtype=np.int32)
+    keep = allowed[gear_rows[pg], pm]
+    if np.all(keep):
+        return pair_g_idx, pair_m_idx, 0
+    out_g = pg[keep].astype(np.int32, copy=False)
+    out_m = pm[keep].astype(np.int32, copy=False)
+    return out_g, out_m, int(pg.shape[0] - out_g.shape[0])
+
+
 def _pair_ftff_cap_arrays(
     *,
     base_fixed_stats_arr: np.ndarray,
@@ -945,30 +954,84 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         return None, [], [], None, [], [], []
 
     phase_started = time.perf_counter()
-    gear_ids = np.zeros((int(gear_codes.shape[0]), 6), dtype=np.int32)
-    for idx, gear_code in enumerate(gear_codes.tolist()):
-        gear_ids[idx] = _gear_ids_from_code(int(gear_code), pack=ctx.gear_pack, slot_item_ids=ctx.slot_item_ids)
-
-    mini_ids = np.zeros((int(mini_codes.shape[0]), 3), dtype=np.int32)
-    for idx, mini_code in enumerate(mini_codes.tolist()):
-        mini_ids[idx] = _mini_ids_from_code(int(mini_code), pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
+    gear_ids = _gear_ids_from_codes(gear_codes, pack=ctx.gear_pack, slot_item_ids=ctx.slot_item_ids)
+    mini_ids = _mini_ids_from_codes(mini_codes, pack=ctx.mini_pack, mini_item_ids=ctx.mini_item_ids)
     _record_phase(phase_seconds, "decode_candidate_ids_cpu", phase_started)
     phase_counts["gear_ids"] = int(gear_ids.shape[0])
     phase_counts["mini_ids"] = int(mini_ids.shape[0])
+
+    base_keep_top_k = int(LOADOUTS_PER_SONG_LIMIT)
+    keep_top_k = int(base_keep_top_k)
+    fg_candidate_mode = _read_skyline_fg_candidate_mode()
+    mini_response_reason = "not_run"
+    mini_local_filter: MiniLocalResponseFilter | None = None
+    if fg_candidate_mode == "topk":
+        status_cb("skyline: mini response-envelope prune")
+        mini_prune_result = prune_mini_response_envelope(
+            gear_points=gear_points,
+            mini_points=mini_points,
+            mini_codes=mini_codes,
+            mini_ids=mini_ids,
+            gpu_arrays=ctx.gpu_arrays,
+            base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+            calc_song=ctx.calc_song,
+            ref_arrays=ctx.ref_arrays,
+            flags=ctx.color_flags,
+        )
+        if len(mini_prune_result) == 4:
+            mini_points, mini_codes, mini_ids, mini_response_stats = mini_prune_result
+            mini_local_filter = None
+        else:
+            mini_points, mini_codes, mini_ids, mini_response_stats, mini_local_filter = mini_prune_result
+        mini_response_reason = str(mini_response_stats.reason)
+        for name, count in mini_response_phase_counts(mini_response_stats).items():
+            phase_counts[name] = int(count)
+        for name, seconds in mini_response_phase_seconds(mini_response_stats).items():
+            phase_seconds[name] = float(seconds)
+        if int(mini_response_stats.pruned) > 0 or int(mini_response_stats.local_pruned_entries) > 0:
+            status_cb(
+                "skyline: mini response-envelope certified "
+                f"(global={int(mini_response_stats.pruned):,}, "
+                f"local_entries={int(mini_response_stats.local_pruned_entries):,}, "
+                f"remaining={int(mini_response_stats.minis_out):,}, "
+                f"time={float(mini_response_stats.seconds_total):.2f}s)"
+            )
+        else:
+            status_cb(
+                "skyline: mini response-envelope kept minis "
+                f"(reason={mini_response_reason}, time={float(mini_response_stats.seconds_total):.2f}s)"
+            )
+    else:
+        mini_response_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+        phase_counts["mini_response_enabled"] = 0
+        phase_counts["mini_response_minis_in"] = int(mini_points.shape[0])
+        phase_counts["mini_response_minis_out"] = int(mini_points.shape[0])
+        phase_counts["mini_response_pruned"] = 0
+    if mini_points.size == 0:
+        return None, [], [], None, [], [], []
+    phase_counts["mini_ids"] = int(mini_ids.shape[0])
+    mini_allowed_by_gear_cell: np.ndarray | None = None
+    mini_allowed_gear_rows: np.ndarray | None = None
+    if mini_local_filter is not None:
+        mini_allowed_by_gear_cell = mini_local_filter.allowed
+        mini_allowed_gear_rows = mini_local_filter_gear_rows(
+            local_filter=mini_local_filter,
+            gear_points=gear_points,
+            base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+        )
 
     status_cb(
         "skyline: build registry + evaluate candidates "
         f"(gear={int(gear_points.shape[0])}, minis={int(mini_points.shape[0])})"
     )
 
-    base_keep_top_k = int(LOADOUTS_PER_SONG_LIMIT)
-    keep_top_k = int(base_keep_top_k)
-    fg_candidate_mode = _read_skyline_fg_candidate_mode()
     product_total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
 
     best_ids: np.ndarray | None = None
     top_codes: list[tuple[int, int, int]] = []
     combined_candidate_count = 0
+    fixed_timing_candidate_count = 0
+    response_envelope_reason = "not_run"
 
     status_cb("skyline: combined timing-cell prune")
     phase_started = time.perf_counter()
@@ -984,17 +1047,80 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         for name, count in sparse_counts.items():
             phase_counts[f"combined_sparse.{name}"] = int(count or 0)
     if pair_g_idx.size > 0:
+        if mini_allowed_by_gear_cell is not None and mini_allowed_gear_rows is not None:
+            phase_started = time.perf_counter()
+            local_in = int(pair_g_idx.shape[0])
+            pair_g_idx, pair_m_idx, local_pruned = _apply_local_mini_pair_filter(
+                pair_g_idx=pair_g_idx,
+                pair_m_idx=pair_m_idx,
+                mini_allowed_by_gear_cell=mini_allowed_by_gear_cell,
+                mini_allowed_gear_rows=mini_allowed_gear_rows,
+            )
+            local_out = int(pair_g_idx.shape[0])
+            _record_phase(phase_seconds, "mini_response.local_pair_filter_cpu", phase_started)
+            phase_counts["mini_response_local_pair_candidates_in"] = int(local_in)
+            phase_counts["mini_response_local_pair_candidates_out"] = int(local_out)
+            phase_counts["mini_response_local_pair_pruned"] = int(local_pruned)
+        else:
+            phase_counts["mini_response_local_pair_candidates_in"] = int(pair_g_idx.shape[0])
+            phase_counts["mini_response_local_pair_candidates_out"] = int(pair_g_idx.shape[0])
+            phase_counts["mini_response_local_pair_pruned"] = 0
+        if pair_g_idx.size == 0:
+            return None, [], [], None, [], [], []
         status_cb(
             "skyline: evaluate combined frontier "
             f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
         )
-        combined_candidate_count = int(pair_g_idx.shape[0])
-        phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
+        fixed_timing_candidate_count = int(pair_g_idx.shape[0])
+        combined_candidate_count = int(fixed_timing_candidate_count)
+        phase_counts["combined_fixed_timing_candidates"] = int(fixed_timing_candidate_count)
         phase_counts["combined_product_total"] = int(product_total)
         if fg_candidate_mode == "all":
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
             keep_top_k = max(int(base_keep_top_k), 1000)
+        if fg_candidate_mode == "topk":
+            status_cb("skyline: response-envelope prune")
+            pair_g_idx, pair_m_idx, response_stats = prune_response_envelope_pairs(
+                pair_gear_idx=pair_g_idx,
+                pair_mini_idx=pair_m_idx,
+                gear_ids=gear_ids,
+                mini_ids=mini_ids,
+                gpu_arrays=ctx.gpu_arrays,
+                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+                calc_song=ctx.calc_song,
+                ref_arrays=ctx.ref_arrays,
+                flags=ctx.color_flags,
+                gear_points=gear_points,
+                mini_points=mini_points,
+            )
+            response_envelope_reason = str(response_stats.reason)
+            for name, count in response_envelope_phase_counts(response_stats).items():
+                phase_counts[name] = int(count)
+            for name, seconds in response_envelope_phase_seconds(response_stats).items():
+                phase_seconds[name] = float(seconds)
+            if int(response_stats.pruned) > 0:
+                status_cb(
+                    "skyline: response-envelope certified "
+                    f"(pruned={int(response_stats.pruned):,}, "
+                    f"remaining={int(response_stats.candidates_out):,}, "
+                    f"time={float(response_stats.seconds_total):.2f}s)"
+                )
+            else:
+                status_cb(
+                    "skyline: response-envelope kept frontier "
+                    f"(reason={response_envelope_reason}, time={float(response_stats.seconds_total):.2f}s)"
+                )
+            combined_candidate_count = int(pair_g_idx.shape[0])
+        else:
+            response_envelope_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+            phase_counts["response_envelope_enabled"] = 0
+            phase_counts["response_envelope_candidates_in"] = int(fixed_timing_candidate_count)
+            phase_counts["response_envelope_candidates_out"] = int(fixed_timing_candidate_count)
+            phase_counts["response_envelope_pruned"] = 0
+        phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
+        if pair_g_idx.size == 0:
+            return None, [], [], None, [], [], []
         pair_ft_caps, pair_ff_caps = _pair_ftff_cap_arrays(
             base_fixed_stats_arr=ctx.base_fixed_stats_arr,
             gear_points=gear_points,
@@ -1156,6 +1282,9 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     native_fg_summary["candidate_scope"] = str(fg_candidate_mode)
     native_fg_summary["base_keep_top_k"] = int(base_keep_top_k)
     native_fg_summary["combined_skyline_candidates"] = int(combined_candidate_count)
+    native_fg_summary["combined_fixed_timing_candidates"] = int(fixed_timing_candidate_count)
+    native_fg_summary["mini_response_reason"] = str(mini_response_reason)
+    native_fg_summary["response_envelope_reason"] = str(response_envelope_reason)
     native_fg_summary["skyline_certification_status"] = SKYLINE_CERTIFICATION_STATUS
     native_fg_summary["skyline_certification_note"] = SKYLINE_CERTIFICATION_NOTE
     native_fg_summary["skyline_phase_seconds"] = _rounded_phase_seconds(phase_seconds)

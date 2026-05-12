@@ -56,6 +56,19 @@ def mini_combo_skyline(
             np.zeros((0, 5), dtype=np.int32),
             np.zeros(0, dtype=np.uint64),
         )
+    nonzero_pp = [
+        str(item.get("Name", "<unnamed>") or "<unnamed>")
+        for item in mini_pool
+        if int(item.get("Perfect Points", 0) or 0) != 0
+    ]
+    if nonzero_pp:
+        sample = ", ".join(nonzero_pp[:3])
+        if len(nonzero_pp) > 3:
+            sample += f", ... (+{len(nonzero_pp) - 3} more)"
+        raise ValueError(
+            "mini skyline requires zero mini Perfect Points until PP is part of the mini/product skyline state; "
+            f"nonzero mini PP found on: {sample}"
+        )
 
     combos_total = int(math.comb(n, 3))
     states: dict[tuple[int, int, int, int], tuple[int, int]] = {}
