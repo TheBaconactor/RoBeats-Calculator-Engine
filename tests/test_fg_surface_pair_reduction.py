@@ -8,6 +8,7 @@ from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
     reduce_ftff_pairs_by_surface_keys,
 )
 from gear_optimizer.solver import gpu_executor
+from gear_optimizer.solver import gpu_executor_fg_breakpoint_tasks
 from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
 from gear_optimizer.solver.taichi_gem.force_greats import kernels as fg_kernels
 
@@ -89,12 +90,14 @@ def test_fg_pair_reduction_is_after_gpu_surface_not_before_payload() -> None:
 def test_fused_and_explicit_paths_use_shared_surface_reduction_contract() -> None:
     dispatch_body = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
     executor_body = inspect.getsource(gpu_executor.GpuExecutor._run_fg_solve_with_breakpoints_payload)
+    executor_task_body = inspect.getsource(gpu_executor_fg_breakpoint_tasks.build_fg_breakpoint_tasks)
 
     assert "reduce_ftff_pairs_by_max_fp_surface(" in dispatch_body
-    assert "reduce_ftff_pairs_by_max_fp_surface(" in executor_body
+    assert "_build_fg_breakpoint_tasks(" in executor_body
+    assert "reduce_ftff_pairs_by_max_fp_surface(" in executor_task_body
     assert "_reduce_ftff_pairs_by_max_fp_surface(" not in dispatch_body
-    assert "_reduce_ftff_pairs_by_max_fp_surface(" not in executor_body
-    assert "FG_FUSED_SURFACE_PAIR_REDUCTION" in executor_body
+    assert "_reduce_ftff_pairs_by_max_fp_surface(" not in executor_task_body
+    assert "FG_FUSED_SURFACE_PAIR_REDUCTION" in executor_task_body
 
 
 def test_surface_reduction_result_object_is_single_contract() -> None:

@@ -1,15 +1,103 @@
 from __future__ import annotations
 
-from typing import Any
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
 import logging
 
 from gear_optimizer.core.utils import safe_float, safe_int
 from gear_optimizer.solver.inflight_utils import _truthy
+from gear_optimizer.solver.native_inflight_types import native_song_label
 
 
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GAQueueLimitController:
+    dynamic_enabled: bool
+    base_limit: int
+    pressure_window_s: float
+    extra_free_on_slot_pressure: int
+    fg_slot_reserve: int
+    song_slot_limit: int
+    monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
+    _cache_key: tuple[bool, int, int, int, int] | None = field(default=None, init=False, repr=False)
+    _cache_value: int = field(default=1, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.base_limit = max(1, int(self.base_limit))
+        self.pressure_window_s = max(0.0, float(self.pressure_window_s))
+        self.extra_free_on_slot_pressure = max(0, int(self.extra_free_on_slot_pressure))
+        self.fg_slot_reserve = max(0, int(self.fg_slot_reserve))
+        self.song_slot_limit = max(1, int(self.song_slot_limit))
+        self._cache_value = int(self.base_limit)
+
+    def effective_limit(self, *, last_slot_block_t: float | None) -> int:
+        if not bool(self.dynamic_enabled):
+            return int(self.base_limit)
+
+        extra_free = 0
+        slot_pressure_active = False
+
+        if last_slot_block_t is not None and float(self.pressure_window_s) > 0.0:
+            try:
+                if (float(self.monotonic()) - float(last_slot_block_t)) <= float(self.pressure_window_s):
+                    slot_pressure_active = True
+                    extra_free = max(int(extra_free), int(self.extra_free_on_slot_pressure))
+            except Exception as e:
+                logger.debug(f"native_inflight_scheduler:GAQueueLimitController.effective_limit: {e}")
+
+        cache_key = (
+            bool(slot_pressure_active),
+            int(extra_free),
+            int(self.fg_slot_reserve),
+            int(self.song_slot_limit),
+            int(self.base_limit),
+        )
+        if cache_key == self._cache_key:
+            return int(self._cache_value)
+
+        min_free = int(self.fg_slot_reserve) + int(extra_free)
+        min_free = max(0, min(int(min_free), max(0, int(self.song_slot_limit) - 1)))
+        limit_from_free = max(1, int(self.song_slot_limit) - int(min_free))
+        self._cache_value = max(1, min(int(self.base_limit), int(limit_from_free)))
+        self._cache_key = cache_key
+        return int(self._cache_value)
+
+
+def _song_lane_key(song: Any) -> str:
+    try:
+        return native_song_label(song)
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_song_lane_key: {e}")
+        return ""
+
+
+def count_active_song_lanes(
+    *,
+    ga_inflight,
+    decode_inflight,
+    fg_active_keys,
+) -> int:
+    keys: set[str] = set()
+    for song in ga_inflight:
+        key = _song_lane_key(song)
+        if key:
+            keys.add(key)
+    for song in decode_inflight:
+        key = _song_lane_key(song)
+        if key:
+            keys.add(key)
+    try:
+        keys.update(str(key).strip() for key in fg_active_keys if str(key).strip())
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:count_active_song_lanes: {e}")
+    return int(len(keys))
+
+
 def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
     """
     Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
@@ -42,6 +130,37 @@ def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count
 
     target = max(inflight_limit, min(8, max(4, inflight_limit * 2)))
     return max(1, min(target, prep_limit, pending_count))
+
+
+def _read_prime_target(
+    cfg0: Any,
+    *,
+    inflight_limit: int,
+    prep_limit: int,
+    pending_count: int,
+) -> int:
+    target = 0
+    try:
+        if cfg0 is not None:
+            target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
+    except Exception as e:
+        logger.debug(f"native_inflight_scheduler:_read_prime_target: {e}")
+        target = 0
+
+    raw = env_get("INFLIGHT_PRIME_TARGET")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            target = int(raw)
+        except Exception as e:
+            logger.debug(f"native_inflight_scheduler:_read_prime_target: {e}")
+
+    if int(target) <= 0:
+        return _default_prime_target(
+            inflight_limit=int(inflight_limit),
+            prep_limit=int(prep_limit),
+            pending_count=int(pending_count),
+        )
+    return max(0, min(int(target), int(prep_limit), int(pending_count)))
 
 
 def _read_fg_scheduler_mode() -> str:

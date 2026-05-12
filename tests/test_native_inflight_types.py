@@ -18,6 +18,7 @@ from gear_optimizer.solver.native_inflight_types import (
     make_native_song,
     native_song_get,
     native_song_group,
+    native_song_label,
     native_song_set,
 )
 
@@ -86,6 +87,17 @@ def test_native_song_helpers_reject_unknown_fields():
         native_song_set(song, "missing", 1)
     with pytest.raises(TypeError):
         make_native_song(not_a_field=1)
+
+
+def test_native_song_label_prefers_task_key_then_song_name_then_optional_id():
+    keyed = make_native_song(task_key="task-a", song_name="Song A")
+    named = make_native_song(task_key="", song_name="Song B")
+    unnamed = make_native_song(task_key="", song_name="")
+
+    assert native_song_label(keyed) == "task-a"
+    assert native_song_label(named) == "Song B"
+    assert native_song_label(unnamed) == ""
+    assert native_song_label(unnamed, fallback_id=True) == str(id(unnamed))
 
 
 def test_native_song_field_path_map_matches_runtime_substate_definitions():

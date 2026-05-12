@@ -183,7 +183,7 @@ def _load_paths_cache_dict() -> dict:
 def _build_song_index_for_difficulty(difficulty: str) -> dict[str, str]:
     from pathlib import Path
 
-    from ..pipeline.song_processor import scan_song_header
+    from .song_io import scan_song_header
 
     paths = _load_paths_cache_dict()
     root = str(paths.get(str(difficulty).strip().title(), "") or "").strip()
@@ -421,7 +421,7 @@ class EvolutionDbManager:
             ref_arrays_local = dict(ref_arrays) if not isinstance(ref_arrays, dict) else dict(ref_arrays)
 
         from ..core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-        from ..pipeline.song_processor import clone_calc_song, get_base_calc_song
+        from .song_io import clone_calc_song, get_base_calc_song
 
         baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
         entries = self.get_best_loadouts(

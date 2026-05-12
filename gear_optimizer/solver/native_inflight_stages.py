@@ -5,7 +5,6 @@ import logging
 import os
 import threading
 import time
-from collections import OrderedDict
 from typing import Any, Optional
 
 import numpy as np
@@ -18,14 +17,16 @@ from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_ca
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_caches import get_cached_chart_scorer
+from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
-from gear_optimizer.pipeline.song_processor import clone_calc_song
+from gear_optimizer.data.song_io import clone_calc_song
 
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver import native_inflight_fg_db_cache as _fg_db_cache
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
@@ -37,71 +38,11 @@ _FG_JIT_WARMED = False
 _FG_FINDER_RUNTIME_WARMED = False
 _FG_JIT_WARM_LOCK = threading.Lock()
 _FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
-_FG_DB_LOADOUTS_CACHE: "OrderedDict[tuple[str, str], tuple[int, list[dict]]]" = OrderedDict()
-_FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
+_FG_DB_LOADOUTS_CACHE = _fg_db_cache._FG_DB_LOADOUTS_CACHE
+_FG_DB_LOADOUTS_CACHE_LOCK = _fg_db_cache._FG_DB_LOADOUTS_CACHE_LOCK
+_fg_db_cache_put = _fg_db_cache.fg_db_cache_put
+_prefetch_db_loadouts_sync = _fg_db_cache.prefetch_db_loadouts_sync
 _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
-
-
-def _fg_db_cache_max() -> int:
-    try:
-        raw = env_get("INFLIGHT_FG_DB_CACHE_MAX")
-        if raw is not None and str(raw).strip() != "":
-            return max(0, int(raw))
-    except (ValueError, TypeError):
-        pass
-    return 256
-
-
-def _fg_db_cache_get(song_name: str, *, limit: int, team_buff: str = "T5") -> list[dict] | None:
-    song_key = str(song_name or "").strip()
-    if not song_key:
-        return None
-    tier_key = str(team_buff or "T5").strip().upper() or "T5"
-    key = (song_key, tier_key)
-    try:
-        with _FG_DB_LOADOUTS_CACHE_LOCK:
-            entry = _FG_DB_LOADOUTS_CACHE.get(key)
-            if entry is None:
-                return None
-            cached_limit, rows = entry
-            if int(cached_limit) < int(limit):
-                return None
-            _FG_DB_LOADOUTS_CACHE.move_to_end(key)
-            return list(rows[: int(limit)])
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _fg_db_cache_put(song_name: str, *, limit: int, rows: list[dict], team_buff: str = "T5") -> None:
-    song_key = str(song_name or "").strip()
-    if not song_key:
-        return
-    tier_key = str(team_buff or "T5").strip().upper() or "T5"
-    key = (song_key, tier_key)
-    if not isinstance(rows, list):
-        return
-    try:
-        limit_i = max(0, int(limit))
-    except (ValueError, TypeError):
-        limit_i = 0
-    try:
-        with _FG_DB_LOADOUTS_CACHE_LOCK:
-            prev = _FG_DB_LOADOUTS_CACHE.get(key)
-            if prev is not None:
-                prev_limit, _prev_rows = prev
-                # Keep the wider payload for this song key when possible.
-                if int(prev_limit) > int(limit_i):
-                    return
-            _FG_DB_LOADOUTS_CACHE[key] = (int(limit_i), list(rows))
-            _FG_DB_LOADOUTS_CACHE.move_to_end(key)
-            max_n = int(_fg_db_cache_max())
-            if max_n <= 0:
-                _FG_DB_LOADOUTS_CACHE.clear()
-                return
-            while len(_FG_DB_LOADOUTS_CACHE) > max_n:
-                _FG_DB_LOADOUTS_CACHE.popitem(last=False)
-    except (KeyError, TypeError, ValueError):
-        return
 
 
 def _truthy(raw: Any) -> bool:
@@ -218,21 +159,6 @@ def _cfg_value_ci(section: dict, key: str, default: object = None) -> object:
         if str(cur_key).lower() == target:
             return cur_value
     return default
-
-
-def _resolve_baseline_team_buff_for_db(cfg_dict: dict | None) -> str:
-    """
-    Resolve the baseline TeamBuff tier for DB reads in native in-flight stages.
-
-    Default config is auto mode => T5, but this must not be hardcoded for manual configs.
-    """
-    try:
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-
-        return resolve_baseline_team_buff_from_cfg_dict(cfg_dict or {}, default="T5")
-    except Exception as e:
-        logger.debug(f"native_inflight_stages:_resolve_baseline_team_buff_for_db: {e}")
-        return "T5"
 
 
 class _InFlightStageProfiler:
@@ -695,41 +621,6 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
     return out
 
 
-def _prefetch_db_loadouts_sync(
-    song_name: str,
-    *,
-    limit: int,
-    gears_by_name: dict,
-    minis_by_name: dict,
-    team_buff: str = "T5",
-) -> list[dict]:
-    try:
-        limit_i = max(0, int(limit))
-    except (ValueError, TypeError):
-        limit_i = 0
-    cached = _fg_db_cache_get(song_name, limit=limit_i, team_buff=str(team_buff or "T5"))
-    if cached is not None:
-        return cached
-
-    try:
-        from gear_optimizer.data.database import get_best_loadouts
-
-        rows = get_best_loadouts(
-            song_name,
-            limit=limit_i,
-            gears_by_name=gears_by_name,
-            minis_by_name=minis_by_name,
-            team_buff=str(team_buff or "T5"),
-        )
-        if isinstance(rows, list):
-            _fg_db_cache_put(song_name, limit=limit_i, rows=rows, team_buff=str(team_buff or "T5"))
-            return rows
-        return []
-    except Exception as e:
-        logger.debug(f"native_inflight_stages:_prefetch_db_loadouts_sync: {e}")
-        return []
-
-
 def _prepare_fg_static_sync(song: _NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
@@ -791,7 +682,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
                             config.db_key,
                             limit=int(fg_candidate_limit),
                             rows=db_loadouts_full,
-                            team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
+                            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
                         )
                 except Exception as e:
                     logger.debug(f"native_inflight_stages:_prepare_fg_static_sync: {e}")
@@ -813,7 +704,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
         gpu_inputs.gears_by_name,
         gpu_inputs.minis_by_name,
         song.runtime.fg.fg_build_details,
-        team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
+        team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
         db_loadouts_full=db_loadouts_full,
         allow_db_query=not bool(prefetch_pending),
         materialize_ga_details=False,
@@ -960,7 +851,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                             config.db_key,
                             limit=int(fg_candidate_limit),
                             rows=db_loadouts_full,
-                            team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
+                            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
                         )
                 except Exception as e:
                     logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
@@ -997,7 +888,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             gpu_inputs.gears_by_name,
             gpu_inputs.minis_by_name,
             build_details,
-            team_buff=_resolve_baseline_team_buff_for_db(config.cfg_dict),
+            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
             db_loadouts_full=db_loadouts_full,
             # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
             allow_db_query=not bool(prefetch_pending),

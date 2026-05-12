@@ -3,9 +3,13 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 import time
+import logging
 from dataclasses import dataclass, field
+from typing import Iterable, Any
 
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,3 +60,40 @@ class CompletionTracker:
 
     def clear(self) -> None:
         self.event.clear()
+
+
+def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = ()) -> bool:
+    for group in queue_groups:
+        try:
+            if group:
+                return True
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:has_waitable_work: {e}")
+            continue
+    for song in pending_fg:
+        try:
+            if song.runtime.db.db_loadouts_future is not None:
+                return True
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:has_waitable_work: {e}")
+            continue
+    return False
+
+
+def mark_song_completed(
+    *,
+    completed_songs: set[str],
+    task_key: str,
+    song_name: str,
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+) -> None:
+    key = str(task_key)
+    completed_songs.add(key)
+    if memory_resume_tracker:
+        memory_resume_tracker.mark_completed(str(song_name))
+    if bundle_completed_cb is not None:
+        try:
+            bundle_completed_cb(key, completed_songs)
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:mark_song_completed: {e}")

@@ -10,7 +10,7 @@ This package splits the monolithic song_helpers.py (1,327 lines) into focused mo
 - results_printer.py: Results display
 """
 
-from .database_context import load_database_context, load_database_progress_baseline
+from .database_context import load_database_context, load_database_progress_baseline, resolve_database_baseline_team_buff
 from .force_greats import process_force_greats
 from .loadout_builder import build_loadout_entries
 from .persistence import ReplayContext, build_db_payload, build_persistence_entries, canonicalize_and_assemble
@@ -20,6 +20,7 @@ from .song_config import setup_song_config
 __all__ = [
     "load_database_context",
     "load_database_progress_baseline",
+    "resolve_database_baseline_team_buff",
     "setup_song_config",
     "build_loadout_entries",
     "process_force_greats",

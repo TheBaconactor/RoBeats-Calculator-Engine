@@ -1,4 +1,6 @@
 import configparser
+import logging
+from pathlib import Path
 
 import pytest
 
@@ -40,7 +42,7 @@ def _build_config() -> configparser.ConfigParser:
                 "GAConvergenceTraceEvery": "0",
                 "GAConvergenceTraceOutDir": "",
                 "GAConvergenceTraceSongFilter": "pytest",
-                "GA_Depth": "0",
+                "GA_SearchDepth": "0",
                 "GA_MultiStart": "0",
                 "InFlightSongs": "-3",
                 "InFlightInstances": "0",
@@ -109,7 +111,7 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert inflight.team_buff_calc_cache_max == 5
     assert inflight.ga_queue_mult == 7
 
-    assert calc.difficulty == "Hard"
+    assert calc.difficulty == "All"
     assert calc.song_name == "pytest song"
     assert calc.target_primary == ""
     assert calc.target_secondary == "Rush"
@@ -138,6 +140,55 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert read_fg_search_radius(cfg) is None
     assert read_outer_search_engine(cfg, default="ga") == "ga"
     assert read_fg_solver_mode(cfg, default="finder") == "finder"
+
+
+def test_ga_settings_uses_canonical_ga_search_depth_over_legacy_alias(caplog):
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"GA_SearchDepth": "125", "GA_Depth": "1"}})
+
+    with caplog.at_level(logging.WARNING):
+        ga = GASettings.from_config(cfg)
+
+    assert ga.search_depth == 125
+    assert "GA_Depth is deprecated" not in caplog.text
+
+
+def test_ga_settings_accepts_legacy_ga_depth_with_warning(caplog):
+    from gear_optimizer.core import config as config_module
+
+    config_module._CFG_ALIAS_WARNED.clear()
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"GA_Depth": "12"}})
+
+    with caplog.at_level(logging.WARNING):
+        ga = GASettings.from_config(cfg)
+
+    assert ga.search_depth == 12
+    assert "GA_Depth is deprecated; use IterationEngine.GA_SearchDepth" in caplog.text
+
+
+def test_gpu_execution_settings_warns_false_flags_are_noops(caplog):
+    from gear_optimizer.core import config as config_module
+
+    config_module._GPU_FIRST_FLAG_WARNED.clear()
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"GPU_Mode": "false", "GPU_Native_GA": "false"}})
+
+    with caplog.at_level(logging.WARNING):
+        gpu = GPUExecutionSettings.from_config(cfg)
+
+    assert gpu.gpu_mode is True
+    assert gpu.gpu_native_ga is True
+    assert "GPU_Mode=false ignored" in caplog.text
+    assert "GPU_Native_GA=false ignored" in caplog.text
+
+
+def test_repo_config_ga_search_depth_is_runtime_active():
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = load_config(str(repo_root / "config.ini"))
+
+    assert cfg.has_option("IterationEngine", "GA_SearchDepth")
+    assert GASettings.from_config(cfg).search_depth == cfg.getint("IterationEngine", "GA_SearchDepth")
 
 
 def test_read_iteration_engine_settings_warns_on_invalid_boolean(monkeypatch, capsys):

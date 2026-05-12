@@ -1,20 +1,389 @@
 import queue
 import os
+from types import SimpleNamespace
+
+import pytest
 
 from gear_optimizer.solver.gpu_executor import (
     GpuExecutor,
     GpuRequest,
     GpuRequestType,
-    _effective_owner_batch_max,
+)
+from gear_optimizer.solver.gpu_executor_batching import (
+    InProcessCoalesceSettings,
+    batch_contains_fg_burst_work,
+    effective_owner_batch_max,
+    extend_inprocess_after_first_deadline,
+    ga_recovery_lookahead_limit,
+    ga_recovery_streak_cap,
+    load_inprocess_coalesce_settings,
+    load_loop_batch_settings,
+    next_fg_burst_until,
+    plan_loop_batch,
+    select_inprocess_batch_timeout,
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_gpu_executor_singleton():
+    GpuExecutor._instance = None
+    yield
+    GpuExecutor._instance = None
+
+
 def test_effective_owner_batch_max_limits_inproc_default_breadth() -> None:
-    assert _effective_owner_batch_max(8, in_process_queues=True, batch_max_overridden=False) == 24
-    assert _effective_owner_batch_max(24, in_process_queues=True, batch_max_overridden=False) == 24
-    assert _effective_owner_batch_max(32, in_process_queues=True, batch_max_overridden=False) == 32
-    assert _effective_owner_batch_max(16, in_process_queues=True, batch_max_overridden=True) == 16
-    assert _effective_owner_batch_max(8, in_process_queues=False, batch_max_overridden=False) == 8
+    assert effective_owner_batch_max(8, in_process_queues=True, batch_max_overridden=False) == 24
+    assert effective_owner_batch_max(24, in_process_queues=True, batch_max_overridden=False) == 24
+    assert effective_owner_batch_max(32, in_process_queues=True, batch_max_overridden=False) == 32
+    assert effective_owner_batch_max(16, in_process_queues=True, batch_max_overridden=True) == 16
+    assert effective_owner_batch_max(8, in_process_queues=False, batch_max_overridden=False) == 8
+
+
+def test_inprocess_coalesce_settings_default_to_idle_safe_values() -> None:
+    env: dict[str, str] = {}
+
+    settings = load_inprocess_coalesce_settings(
+        max_wait_ms=7,
+        in_process_queues=True,
+        env_get=lambda name, default=None: env.get(name, default),
+        env_flag_fn=lambda name, default: str(env.get(name, default)).lower() in {"1", "true", "yes", "on"},
+    )
+
+    assert settings.enabled is True
+    assert settings.idle_wait_s == 0.1
+    assert settings.recent_idle_wait_s == 0.01
+    assert settings.recent_idle_grace_s == 0.25
+    assert settings.yields_left == 7
+    assert settings.after_first_ms == 2
+
+
+def test_inprocess_coalesce_settings_clamp_env_values() -> None:
+    env = {
+        "GPU_EXECUTOR_INPROC_COALESCE": "0",
+        "GPU_EXECUTOR_INPROC_IDLE_WAIT_MS": "2000",
+        "GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS": "5000",
+        "GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS": "9000",
+        "GPU_EXECUTOR_INPROC_COALESCE_YIELD_ROUNDS": "999",
+        "GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS": "-5",
+    }
+
+    settings = load_inprocess_coalesce_settings(
+        max_wait_ms=9,
+        in_process_queues=True,
+        env_get=lambda name, default=None: env.get(name, default),
+        env_flag_fn=lambda name, default: str(env.get(name, default)).lower() in {"1", "true", "yes", "on"},
+    )
+
+    assert settings.enabled is False
+    assert settings.idle_wait_s == 1.0
+    assert settings.recent_idle_wait_s == 1.0
+    assert settings.recent_idle_grace_s == 5.0
+    assert settings.yields_left == 256
+    assert settings.after_first_ms == 0
+
+
+def test_loop_batch_settings_preserve_env_override_flags() -> None:
+    env = {
+        "GPU_EXECUTOR_BATCH_WAIT_MS": "12",
+        "GPU_EXECUTOR_MAX_BATCH": "32",
+        "GPU_EXECUTOR_FG_BURST_WINDOW_MS": "9",
+        "GPU_EXECUTOR_FG_BURST_BATCH_WAIT_MS": "99",
+    }
+
+    settings = load_loop_batch_settings(
+        env_config=SimpleNamespace(gpu_executor_batch_wait_ms=10, gpu_executor_max_batch=8),
+        env_get=lambda name: env.get(name),
+    )
+
+    assert settings.wait_ms == 12
+    assert settings.max_batch == 32
+    assert settings.wait_overridden is True
+    assert settings.max_overridden is True
+    assert settings.fg_burst_window_ms == 9
+    assert settings.fg_burst_wait_ms == 10
+
+
+def test_loop_batch_settings_ignore_invalid_override_values() -> None:
+    env = {
+        "GPU_EXECUTOR_BATCH_WAIT_MS": "bad",
+        "GPU_EXECUTOR_MAX_BATCH": "also-bad",
+        "GPU_EXECUTOR_FG_BURST_WINDOW_MS": "-3",
+        "GPU_EXECUTOR_FG_BURST_BATCH_WAIT_MS": "-4",
+    }
+
+    settings = load_loop_batch_settings(
+        env_config=SimpleNamespace(gpu_executor_batch_wait_ms=11, gpu_executor_max_batch=7),
+        env_get=lambda name: env.get(name),
+    )
+
+    assert settings.wait_ms == 11
+    assert settings.max_batch == 7
+    assert settings.wait_overridden is False
+    assert settings.max_overridden is False
+    assert settings.fg_burst_window_ms == 0
+    assert settings.fg_burst_wait_ms == 0
+
+
+def test_plan_loop_batch_applies_inproc_defaults_and_fg_burst_wait() -> None:
+    settings = load_loop_batch_settings(
+        env_config=SimpleNamespace(gpu_executor_batch_wait_ms=10, gpu_executor_max_batch=8),
+        env_get=lambda _name: None,
+    )
+
+    plan = plan_loop_batch(
+        settings,
+        in_process_queues=True,
+        queue_depth_hint=6,
+        fg_burst_active=True,
+    )
+
+    assert plan.wait_ms == 2
+    assert plan.max_batch == 24
+    assert plan.mode == "fg_burst"
+    assert plan.queue_depth_hint == 6
+    assert plan.pressure_hint == 0.25
+
+
+def test_plan_loop_batch_preserves_overridden_wait_and_zeros_under_pressure() -> None:
+    settings = load_loop_batch_settings(
+        env_config=SimpleNamespace(gpu_executor_batch_wait_ms=10, gpu_executor_max_batch=8),
+        env_get=lambda name: {"GPU_EXECUTOR_BATCH_WAIT_MS": "12", "GPU_EXECUTOR_MAX_BATCH": "4"}.get(name),
+    )
+
+    plan = plan_loop_batch(
+        settings,
+        in_process_queues=True,
+        queue_depth_hint=4,
+        fg_burst_active=False,
+    )
+
+    assert plan.wait_ms == 0
+    assert plan.max_batch == 4
+    assert plan.mode == "inproc"
+    assert plan.pressure_hint == 1.0
+
+
+def test_batch_contains_fg_burst_work_ignores_shutdown_and_detects_fused_fg() -> None:
+    batch = [
+        GpuRequest(
+            request_type=GpuRequestType.SHUTDOWN,
+            request_id=-1,
+            worker_id=-1,
+            payload={},
+        ),
+        GpuRequest(
+            request_type=GpuRequestType.LOAD_REF_ARRAYS,
+            request_id=1,
+            worker_id=1,
+            payload={},
+        ),
+    ]
+
+    assert batch_contains_fg_burst_work(batch) is False
+
+    batch.append(
+        GpuRequest(
+            request_type=GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            request_id=2,
+            worker_id=1,
+            payload={},
+        )
+    )
+
+    assert batch_contains_fg_burst_work(batch) is True
+
+
+def test_next_fg_burst_until_extends_only_for_inproc_fg_work() -> None:
+    assert (
+        next_fg_burst_until(
+            10.0,
+            saw_fg_work=True,
+            in_process_queues=True,
+            window_ms=6,
+            now_s=11.0,
+        )
+        == pytest.approx(11.006)
+    )
+    assert (
+        next_fg_burst_until(
+            10.0,
+            saw_fg_work=True,
+            in_process_queues=False,
+            window_ms=6,
+            now_s=11.0,
+        )
+        == 10.0
+    )
+    assert (
+        next_fg_burst_until(
+            10.0,
+            saw_fg_work=False,
+            in_process_queues=True,
+            window_ms=6,
+            now_s=11.0,
+        )
+        == 10.0
+    )
+    assert (
+        next_fg_burst_until(
+            12.0,
+            saw_fg_work=True,
+            in_process_queues=True,
+            window_ms=6,
+            now_s=11.0,
+        )
+        == 12.0
+    )
+
+
+def test_ga_recovery_settings_use_defaults_and_clamps() -> None:
+    empty_env: dict[str, str] = {}
+
+    assert ga_recovery_streak_cap(env_get=lambda name, default=None: empty_env.get(name, default)) == 1
+    assert ga_recovery_lookahead_limit(batch_max_size=3, env_get=lambda name, default=None: empty_env.get(name, default)) == 12
+    assert ga_recovery_lookahead_limit(batch_max_size=99, env_get=lambda name, default=None: empty_env.get(name, default)) == 64
+
+    env = {
+        "GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX": "999",
+        "GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS": "999",
+    }
+
+    def env_get(name, default=None):
+        return env.get(name, default)
+
+    assert ga_recovery_streak_cap(env_get=env_get) == 128
+    assert ga_recovery_lookahead_limit(batch_max_size=1, env_get=env_get) == 256
+
+
+def test_select_inprocess_batch_timeout_uses_recent_idle_window() -> None:
+    settings = InProcessCoalesceSettings(
+        enabled=True,
+        idle_wait_s=0.1,
+        recent_idle_wait_s=0.01,
+        recent_idle_grace_s=0.25,
+        yields_left=8,
+        after_first_ms=2,
+    )
+
+    timeout = select_inprocess_batch_timeout(
+        [],
+        max_wait_ms=5,
+        remaining_s=0.005,
+        settings=settings,
+        last_work_end_ts=10.0,
+        now_s=10.1,
+        coalescable_request_types={GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY},
+    )
+
+    assert timeout == 0.01
+
+
+def test_select_inprocess_batch_timeout_blocks_non_coalescable_followup() -> None:
+    settings = InProcessCoalesceSettings(
+        enabled=True,
+        idle_wait_s=0.1,
+        recent_idle_wait_s=0.01,
+        recent_idle_grace_s=0.25,
+        yields_left=8,
+        after_first_ms=2,
+    )
+    batch = [
+        GpuRequest(
+            request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+            request_id=901,
+            worker_id=1,
+            payload={},
+        )
+    ]
+
+    timeout = select_inprocess_batch_timeout(
+        batch,
+        max_wait_ms=5,
+        remaining_s=0.004,
+        settings=settings,
+        last_work_end_ts=None,
+        now_s=None,
+        coalescable_request_types={GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY},
+    )
+
+    assert timeout == 0.0
+
+
+def test_select_inprocess_batch_timeout_allows_coalescable_followup() -> None:
+    settings = InProcessCoalesceSettings(
+        enabled=True,
+        idle_wait_s=0.1,
+        recent_idle_wait_s=0.01,
+        recent_idle_grace_s=0.25,
+        yields_left=8,
+        after_first_ms=2,
+    )
+    batch = [
+        GpuRequest(
+            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            request_id=902,
+            worker_id=1,
+            payload={},
+        )
+    ]
+
+    timeout = select_inprocess_batch_timeout(
+        batch,
+        max_wait_ms=5,
+        remaining_s=0.004,
+        settings=settings,
+        last_work_end_ts=None,
+        now_s=None,
+        coalescable_request_types={GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY},
+    )
+
+    assert timeout == 0.004
+
+
+def test_extend_inprocess_after_first_deadline_extends_for_first_coalescable_request() -> None:
+    settings = InProcessCoalesceSettings(
+        enabled=True,
+        idle_wait_s=0.1,
+        recent_idle_wait_s=0.01,
+        recent_idle_grace_s=0.25,
+        yields_left=8,
+        after_first_ms=2,
+    )
+
+    deadline = extend_inprocess_after_first_deadline(
+        10.0,
+        in_process_queues=True,
+        settings=settings,
+        batch_size=1,
+        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+        coalescable_request_types={GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY},
+        now_fn=lambda: 10.005,
+    )
+
+    assert deadline == pytest.approx(10.007)
+
+
+def test_extend_inprocess_after_first_deadline_leaves_non_coalescable_unchanged() -> None:
+    settings = InProcessCoalesceSettings(
+        enabled=True,
+        idle_wait_s=0.1,
+        recent_idle_wait_s=0.01,
+        recent_idle_grace_s=0.25,
+        yields_left=8,
+        after_first_ms=2,
+    )
+
+    deadline = extend_inprocess_after_first_deadline(
+        10.0,
+        in_process_queues=True,
+        settings=settings,
+        batch_size=1,
+        request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+        coalescable_request_types={GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY},
+        now_fn=lambda: 10.005,
+    )
+
+    assert deadline == 10.0
 
 
 def test_gather_batch_inproc_uses_idle_wait_for_first_item(monkeypatch):

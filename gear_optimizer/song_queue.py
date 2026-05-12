@@ -4,7 +4,7 @@ import os
 import typing
 from typing import Any
 
-from gear_optimizer.pipeline.song_processor import scan_song_header as _scan_song_header
+from gear_optimizer.data.song_io import scan_song_header as _scan_song_header
 
 def infer_song_difficulty_from_path(root: str) -> str:
     parent_folder = os.path.basename(str(root or "")).lower()

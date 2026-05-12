@@ -18,6 +18,7 @@ from .core.constants import BIN_DIR, PATHS
 from .core.parsing import env_flag
 from .core.utils import safe_int as _safe_int
 from .core.utils import parse_float as _safe_float
+from .domain.jobs import task_song_name
 
 from gear_optimizer.core.parsing import env_get
 
@@ -1296,9 +1297,7 @@ class RoBeatsMetaOptimizerApi:
 
     @staticmethod
     def _task_song_name(task: tuple) -> str:
-        if not isinstance(task, tuple) or len(task) < 2:
-            return ""
-        return str(task[1] or "").strip()
+        return task_song_name(task)
 
 
 __all__ = ["RoBeatsMetaOptimizerApi"]

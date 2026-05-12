@@ -66,18 +66,13 @@ class BubbleTracker:
             self.total_idle_s += max(0.0, float(now_mono) - float(self.active_started))
             self.active_started = None
 
+    def finish_active(self, *, now_mono: float) -> None:
+        if self.active_started is None:
+            return
+        self.total_idle_s += max(0.0, float(now_mono) - float(self.active_started))
+        self.active_started = None
+
     def summary(self, *, active_song_lanes: int, target_song_lanes: int) -> dict[str, float | int]:
-        if self.active_started is not None:
-            return {
-                "bubble_total_idle_sec": float(self.total_idle_s),
-                "bubble_peak_kpi": float(self.peak_kpi),
-                "bubble_peak_ready_ga": int(self.peak_ready_ga),
-                "bubble_peak_ready_fg": int(self.peak_ready_fg),
-                "bubble_peak_backlog": int(self.peak_backlog),
-                "bubble_peak_oldest_fg_wait_sec": float(self.peak_oldest_fg_wait_s),
-                "active_song_lanes": int(active_song_lanes),
-                "icfg.target_song_lanes": int(target_song_lanes),
-            }
         return {
             "bubble_total_idle_sec": float(self.total_idle_s),
             "bubble_peak_kpi": float(self.peak_kpi),

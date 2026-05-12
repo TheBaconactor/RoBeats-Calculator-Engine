@@ -11,6 +11,7 @@ import time
 from gear_optimizer.core.config import load_config
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 from gear_optimizer.data.database import get_best_loadouts, get_song_counters
+from gear_optimizer.domain.jobs import task_difficulty
 from gear_optimizer.helpers.song_helpers.persistence import (
     RECORD_UPDATE_SCORE_EPSILON,
     evaluate_progress_record_update,
@@ -576,11 +577,7 @@ class RuntimeUiMixin:
                 label = self._task_queue_label(t)
                 if label in completed:
                     continue
-                try:
-                    diff = str(t[2] or "")
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_tui_up_next_lines: {e}")
-                    diff = ""
+                diff = task_difficulty(t)
                 out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
                 shown += 1
                 if shown >= int(n):
@@ -627,11 +624,7 @@ class RuntimeUiMixin:
                 label = self._task_queue_label(t)
                 if label in completed:
                     continue
-                try:
-                    diff = str(t[2] or "")
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_hotkey_next_songs: {e}")
-                    diff = ""
+                diff = task_difficulty(t)
                 out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
                 shown += 1
                 if shown >= int(n):
@@ -818,4 +811,3 @@ class RuntimeUiMixin:
                 total=int(self._runtime_total_count or 0),
                 failed=int(self._runtime_failed_count or 0),
             )
-

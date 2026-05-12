@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import time
+import traceback
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Callable
 import logging
@@ -18,6 +20,8 @@ from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker
 from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
+from gear_optimizer.solver.native_inflight_result_events import fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
@@ -30,6 +34,25 @@ class NativeFGPipelineSettings:
     batch_max: int
     prep_workers: int
     ga_credit_budget: int
+    static_prep_max_inflight: int = 0
+    db_prefetch_workers: int = 1
+
+
+@dataclass(frozen=True)
+class NativeFGPrepCompletion:
+    song: _NativeSong
+    submit_t0: float | None
+    cpu_seconds: float | None
+    error: Exception | None = None
+    trace: str = ""
+    future_missing: bool = False
+
+
+@dataclass(frozen=True)
+class NativeFGJobCompletion:
+    song: _NativeSong
+    future: concurrent.futures.Future
+    submit_t0: float
 
 
 def read_native_fg_pipeline_settings(
@@ -37,6 +60,7 @@ def read_native_fg_pipeline_settings(
     *,
     inflight_limit: int,
     ga_credit_budget_cfg: int,
+    cpu_prewarm_lookahead: int = 0,
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
@@ -83,12 +107,21 @@ def read_native_fg_pipeline_settings(
     if fg_prep_workers <= 0:
         fg_prep_workers = default_worker_threads(inflight_limit=inflight_limit_i, kind="fg_prep")
     fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
+    static_prep_max_inflight = _read_fg_static_prep_max_inflight(
+        cfg0,
+        fg_prep_workers=int(fg_prep_workers),
+        inflight_limit=int(inflight_limit_i),
+        cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
+    )
+    db_prefetch_workers = _read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
 
     return NativeFGPipelineSettings(
         workers=int(fg_workers),
         batch_max=int(fg_batch_max),
         prep_workers=int(fg_prep_workers),
         ga_credit_budget=max(1, int(ga_credit_budget_cfg)),
+        static_prep_max_inflight=int(static_prep_max_inflight),
+        db_prefetch_workers=int(db_prefetch_workers),
     )
 
 
@@ -206,6 +239,130 @@ class NativeFGPipeline:
                 logger.debug(f"native_inflight_fg_pipeline:has_active_prep: {e}")
                 continue
         return False
+
+    def finish_completed_prep(self) -> list[NativeFGPrepCompletion]:
+        completions: list[NativeFGPrepCompletion] = []
+        for song in list(self.prep_inflight):
+            future = getattr(song.runtime.fg, "fg_prep_future", None)
+            if future is None:
+                self.prep_inflight.remove(song)
+                completions.append(
+                    NativeFGPrepCompletion(
+                        song=song,
+                        submit_t0=None,
+                        cpu_seconds=None,
+                        future_missing=True,
+                    )
+                )
+                continue
+            if not future.done():
+                continue
+
+            self.prep_inflight.remove(song)
+            submit_t0 = getattr(song.runtime.fg, "fg_prep_submit_t0", None)
+            cpu_seconds = getattr(song.runtime.fg, "cpu_fg_prep_s", None)
+            error: Exception | None = None
+            trace = ""
+            try:
+                if submit_t0 is not None:
+                    song.runtime.fg.fg_prep_submit_t0 = None
+                future.result()
+                try:
+                    song.runtime.fg.fg_dynamic_prep_done = True
+                except Exception as e:
+                    logger.debug(f"native_inflight_fg_pipeline:finish_completed_prep: {e}")
+            except Exception as exc:
+                error = exc
+                trace = traceback.format_exc()
+            finally:
+                song.runtime.fg.fg_prep_future = None
+
+            completions.append(
+                NativeFGPrepCompletion(
+                    song=song,
+                    submit_t0=submit_t0,
+                    cpu_seconds=cpu_seconds,
+                    error=error,
+                    trace=trace,
+                )
+            )
+        return completions
+
+    def active_static_prep_count(self, *external_song_groups: Iterable[_NativeSong]) -> int:
+        active = 0
+        seen_ids: set[int] = set()
+
+        def _track(song: _NativeSong) -> None:
+            nonlocal active
+            try:
+                song_id = int(id(song))
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:active_static_prep_count: {e}")
+                return
+            if song_id in seen_ids:
+                return
+            seen_ids.add(song_id)
+            fut = getattr(song.runtime.fg, "fg_static_prep_future", None)
+            if fut is None:
+                return
+            try:
+                if fut.done():
+                    return
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:active_static_prep_count: {e}")
+                return
+            active += 1
+
+        for group in external_song_groups:
+            for song in group:
+                _track(song)
+        for song in self.pending:
+            _track(song)
+        for song in self.prep_inflight:
+            _track(song)
+        for song, _future, _t_submit in self.futures:
+            _track(song)
+        return int(active)
+
+    def static_prep_budget(self) -> int:
+        if int(self.settings.static_prep_max_inflight) <= 0:
+            return 0
+        dynamic_fg_prep = max(0, int(len(self.prep_inflight)))
+        spare_workers = max(0, int(self.prep_workers) - int(dynamic_fg_prep))
+        return max(0, min(int(self.settings.static_prep_max_inflight), int(spare_workers)))
+
+    def start_static_prep(
+        self,
+        song: _NativeSong,
+        prep_fn: Callable[..., Any],
+        *,
+        external_song_groups: Iterable[Iterable[_NativeSong]] = (),
+        register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
+    ) -> bool:
+        if int(self.settings.static_prep_max_inflight) <= 0:
+            return False
+        if not bool(getattr(song.gpu_inputs, "manual_force_greats", False) or getattr(song.gpu_inputs, "force_greats_finder", False)):
+            return False
+        if getattr(song.runtime.fg, "fg_static_prep_future", None) is not None:
+            return False
+        if bool(getattr(song.runtime.fg, "fg_static_prep_done", False)):
+            return False
+        if int(self.active_static_prep_count(*external_song_groups)) >= int(self.static_prep_budget()):
+            return False
+        try:
+            song.runtime.fg.fg_static_prep_submit_t0 = time.perf_counter()
+            static_future = self.prep_executor.submit(prep_fn, song)
+            song.runtime.fg.fg_static_prep_future = static_future
+            if register_future is not None:
+                register_future(static_future)
+            return True
+        except Exception as e:
+            logger.debug(f"native_inflight_fg_pipeline:start_static_prep: {e}")
+            try:
+                song.runtime.fg.fg_static_prep_future = None
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:start_static_prep: {e}")
+            return False
 
     def start_pending_prep(
         self,
@@ -374,6 +531,28 @@ class NativeFGPipeline:
     def replace_futures(self, futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]]) -> None:
         self.futures.clear()
         self.futures.extend(futures)
+
+    def pop_completed_jobs(self) -> list[NativeFGJobCompletion]:
+        completions: list[NativeFGJobCompletion] = []
+        still_pending: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
+        for song, future, submit_t0 in list(self.futures):
+            try:
+                done = future.done()
+            except Exception as e:
+                logger.debug(f"native_inflight_fg_pipeline:pop_completed_jobs: {e}")
+                done = False
+            if done:
+                completions.append(
+                    NativeFGJobCompletion(
+                        song=song,
+                        future=future,
+                        submit_t0=float(submit_t0),
+                    )
+                )
+            else:
+                still_pending.append((song, future, submit_t0))
+        self.replace_futures(still_pending)
+        return completions
 
     def note_ga_submit(self) -> None:
         if self.pending:
@@ -690,3 +869,21 @@ def run_fg_job_sync(
                 "cfg_dict": getattr(song.config, "cfg_dict", None),
             }
         )
+
+
+def score_fg_inside_ga(
+    song: _NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+) -> None:
+    if not fg_enabled_for_song(song):
+        return
+    run_fg_job_sync(
+        song,
+        gpu_client=gpu_client,
+        post_sender=None,
+        progress_cb=None,
+        progress_tracker=None,
+    )
+    if getattr(song.runtime.fg, "fg_variants", None) is None:
+        song.runtime.fg.fg_variants = []

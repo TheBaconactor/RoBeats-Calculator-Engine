@@ -12,33 +12,23 @@ Contains the main process_song_task function that coordinates:
 REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainability.
 """
 
-import atexit
 import contextlib
 import gc
-import hashlib
-import json
 import logging
-import os
 import sys
-import threading
 import time
 import traceback
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from io import StringIO
 from typing import Any, Callable, cast
 
-import numpy as np
-from cachetools import LRUCache
-
-from ..data.models import Tee, WarnOnce
+from ..data.models import Tee
 from ..core.env_config import ENV
 from ..core.result_payloads import build_error_payload
 from ..core.types import SongResultPayload
 from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     FG_CANDIDATE_LIMIT,
-    PATHS,
 )
 
 from ..core.config import (
@@ -56,12 +46,13 @@ from ..solver.scoring import (
 )
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..solver.solver_common import SolverContext, prepare_solver_context
+from ..solver.song_db_context import load_prepared_song_db_context
+from ..solver.song_preparation import build_prepared_calc_song, build_prepared_song_config
 from ..core.memory import log_memory_usage
 from ..core.utils import cfg_from_dict
-from ..core.array_signature import array_sig16
+from ..data import song_io as _song_io
+from ..domain.jobs import seed_plan_from_song_job, task_queue_label, task_song_name, task_tuple_to_legacy_view
 from ..helpers.song_helpers import (
-    load_database_progress_baseline,
-    setup_song_config,
     build_loadout_entries,
     # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
     # without increasing FG_CandidateLimit.
@@ -81,11 +72,16 @@ from ..helpers.song_helpers.payload_compaction import (
     compact_prev_record,
 )
 
-# Global warn-once instance
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
-WARN_ONCE = WarnOnce()
+
+_flush_song_header_cache = _song_io._flush_song_header_cache
+_reset_song_header_cache_for_tests = _song_io._reset_song_header_cache_for_tests
+clone_calc_song = _song_io.clone_calc_song
+get_base_calc_song = _song_io.get_base_calc_song
+read_song_file = _song_io.read_song_file
+scan_song_header = _song_io.scan_song_header
 
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
@@ -204,278 +200,6 @@ class _NullLogBuffer:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Base calc_song cache (pre-timing-envelope mutation), keyed by file path + config hash.
-#
-# Motivation:
-# - When the same song is processed multiple times (SongRepeats / repeated queue),
-#   we were fully parsing the file + building arrays on every run.
-# - Timing-envelope FG streams are attached per run, so we cache the base
-#   calc_song and clone it before adding runtime analysis payloads.
-# ---------------------------------------------------------------------------
-_CFG_HASH_CACHE: dict[int, tuple[int, str]] = {}
-_CFG_HASH_CACHE_LOCK = threading.Lock()
-
-
-def _stable_cfg_hash(cfg_dict: dict | None) -> str:
-    if not isinstance(cfg_dict, dict) or not cfg_dict:
-        return "cfg0"
-    cfg_id = int(id(cfg_dict))
-    cfg_len = int(len(cfg_dict))
-    with _CFG_HASH_CACHE_LOCK:
-        cached = _CFG_HASH_CACHE.get(cfg_id)
-        if cached is not None and int(cached[0]) == cfg_len:
-            return str(cached[1])
-    try:
-        payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    except Exception as e:
-        logger.warning(f"song_processor:_stable_cfg_hash: {e}")
-        payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
-    h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
-    out = h[:16]
-    with _CFG_HASH_CACHE_LOCK:
-        _CFG_HASH_CACHE[cfg_id] = (cfg_len, out)
-        if len(_CFG_HASH_CACHE) > 32:
-            _CFG_HASH_CACHE.clear()
-    return out
-
-
-_BASE_CALC_SONG_CACHE_MAX = max(1, int(env_get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))
-_BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
-_BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
-
-_SONG_HEADER_CACHE_PATH = PATHS.bin_path("song_header_cache.json")
-_SONG_HEADER_CACHE_MAX = max(256, int(env_get("SONG_HEADER_CACHE_MAX", "4096") or "4096"))
-_SONG_HEADER_CACHE_LOCK = threading.Lock()
-_SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
-_SONG_HEADER_CACHE_LOADED = False
-_SONG_HEADER_CACHE_DIRTY = False
-
-
-def clone_calc_song(calc_song: dict) -> dict:
-    """
-    Clone a calc_song dict for per-run mutation.
-
-    Arrays are shared by reference (read-only); dicts are copied.
-    """
-    if not isinstance(calc_song, dict):
-        return {}
-    meta = calc_song.get("metadata", {}) or {}
-    song_data = calc_song.get("song_data", {}) or {}
-    return {"metadata": dict(meta), "song_data": dict(song_data)}
-
-
-def _build_base_calc_song_from_file(fp: str) -> dict:
-    song_data = read_song_file(fp)
-
-    timestamps_raw = song_data.get("timestamps")
-    note_types_raw = song_data.get("note_types")
-    if isinstance(timestamps_raw, np.ndarray):
-        song_timestamps_np = timestamps_raw.astype(np.float32, copy=False)
-    else:
-        song_timestamps_np = np.asarray(timestamps_raw if timestamps_raw is not None else [], dtype=np.float32)
-
-    if isinstance(note_types_raw, np.ndarray):
-        song_note_types_np = note_types_raw.astype(np.int16, copy=False)
-    else:
-        song_note_types_np = np.asarray(note_types_raw if note_types_raw is not None else [], dtype=np.int16)
-    if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
-        song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
-
-    # Cache stable content signatures on the base calc_song so GPU timeline caching
-    # doesn't need to hash full arrays on every request (pickling breaks `id()` reuse).
-    ts_sig = array_sig16(song_timestamps_np)
-    nt_sig = array_sig16(song_note_types_np)
-
-    return {
-        "metadata": song_data.get("song_details", {}) or {},
-        "song_data": {
-            "timestamps": song_timestamps_np,
-            "chart_timestamps": song_timestamps_np,
-            "note_types": song_note_types_np,
-            "_timestamps_sig": ts_sig,
-            "_chart_timestamps_sig": ts_sig,
-            "_note_types_sig": nt_sig,
-        },
-    }
-
-
-def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
-    """
-    Get cached base calc_song for this file/config pair.
-
-    The returned object is shared; callers must clone via clone_calc_song()
-    before applying timing-envelope streams or any other per-run mutation.
-    """
-    if not fp:
-        return {}
-
-    abs_fp = os.path.abspath(fp)
-    cfg_h = _stable_cfg_hash(cfg_dict)
-    key = (abs_fp, cfg_h)
-
-    try:
-        st = os.stat(abs_fp)
-        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-    except Exception as e:
-        logger.warning(f"song_processor:get_base_calc_song: {e}")
-        mtime_ns = -1
-
-    with _BASE_CALC_SONG_CACHE_LOCK:
-        entry = _BASE_CALC_SONG_CACHE.get(key)
-        if entry is not None:
-            cached_mtime_ns, cached_calc_song = entry
-            if int(cached_mtime_ns) == int(mtime_ns) and isinstance(cached_calc_song, dict):
-                return cached_calc_song
-
-    base = _build_base_calc_song_from_file(abs_fp)
-    with _BASE_CALC_SONG_CACHE_LOCK:
-        _BASE_CALC_SONG_CACHE[key] = (int(mtime_ns), base)
-    return base
-
-
-def _prune_song_header_cache_locked() -> None:
-    while len(_SONG_HEADER_CACHE) > int(_SONG_HEADER_CACHE_MAX):
-        _SONG_HEADER_CACHE.popitem(last=False)
-
-
-def _load_song_header_cache_locked() -> None:
-    global _SONG_HEADER_CACHE_LOADED
-    if _SONG_HEADER_CACHE_LOADED:
-        return
-    _SONG_HEADER_CACHE_LOADED = True
-    try:
-        with open(_SONG_HEADER_CACHE_PATH, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except Exception as e:
-        logger.warning(f"song_processor:_load_song_header_cache_locked: {e}")
-        return
-    if not isinstance(payload, dict):
-        return
-    for key, entry in payload.items():
-        if not isinstance(key, str) or not isinstance(entry, dict):
-            continue
-        try:
-            mtime_ns = int(entry.get("mtime_ns", -1))
-            file_size = int(entry.get("size", -1))
-        except Exception as e:
-            logger.warning(f"song_processor:_load_song_header_cache_locked: {e}")
-            continue
-        meta = entry.get("meta")
-        if meta is not None and not isinstance(meta, dict):
-            continue
-        _SONG_HEADER_CACHE[key] = {"mtime_ns": mtime_ns, "size": file_size, "meta": meta}
-    _prune_song_header_cache_locked()
-
-
-def _flush_song_header_cache() -> None:
-    global _SONG_HEADER_CACHE_DIRTY
-    with _SONG_HEADER_CACHE_LOCK:
-        if not _SONG_HEADER_CACHE_DIRTY:
-            return
-        payload = {
-            key: {
-                "mtime_ns": int(str(entry.get("mtime_ns", -1) or -1)),
-                "size": int(str(entry.get("size", -1) or -1)),
-                "meta": entry.get("meta"),
-            }
-            for key, entry in _SONG_HEADER_CACHE.items()
-        }
-        _SONG_HEADER_CACHE_DIRTY = False
-    try:
-        os.makedirs(os.path.dirname(_SONG_HEADER_CACHE_PATH), exist_ok=True)
-        tmp_path = f"{_SONG_HEADER_CACHE_PATH}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=True, separators=(",", ":"))
-        os.replace(tmp_path, _SONG_HEADER_CACHE_PATH)
-    except Exception as e:
-        logger.warning(f"song_processor:_flush_song_header_cache: {e}")
-        with _SONG_HEADER_CACHE_LOCK:
-            _SONG_HEADER_CACHE_DIRTY = True
-
-
-def _reset_song_header_cache_for_tests() -> None:
-    global _SONG_HEADER_CACHE_LOADED, _SONG_HEADER_CACHE_DIRTY
-    with _SONG_HEADER_CACHE_LOCK:
-        _SONG_HEADER_CACHE.clear()
-        _SONG_HEADER_CACHE_LOADED = False
-        _SONG_HEADER_CACHE_DIRTY = False
-
-
-atexit.register(_flush_song_header_cache)
-
-
-def scan_song_header(fp):
-    """
-    Scan first 20 lines of song file for metadata (fast check).
-
-    Args:
-        fp: File path to song file
-
-    Returns:
-        dict: Metadata dictionary or None if parse fails
-    """
-    abs_fp = os.path.abspath(fp)
-    try:
-        st = os.stat(abs_fp)
-        mtime_ns_raw = getattr(st, "st_mtime_ns", None)
-        mtime_ns = int(mtime_ns_raw) if isinstance(mtime_ns_raw, int) else int(st.st_mtime * 1e9)
-        file_size = int(st.st_size)
-    except Exception as e:
-        logger.warning(f"song_processor:scan_song_header: {e}")
-        mtime_ns = -1
-        file_size = -1
-
-    with _SONG_HEADER_CACHE_LOCK:
-        _load_song_header_cache_locked()
-        cached = _SONG_HEADER_CACHE.get(abs_fp)
-        if isinstance(cached, dict):
-            try:
-                if int(str(cached.get("mtime_ns", -2) or -2)) == int(mtime_ns) and int(
-                    str(cached.get("size", -2) or -2)
-                ) == int(file_size):
-                    _SONG_HEADER_CACHE.move_to_end(abs_fp)
-                    meta_cached = cached.get("meta")
-                    return dict(meta_cached) if isinstance(meta_cached, dict) else None
-            except Exception as e:
-                logger.warning(f"song_processor:scan_song_header: {e}")
-
-    meta = {"Song Name": "", "Primary Color": "", "Secondary Color": "", "Difficulty": ""}
-    try:
-        with open(abs_fp, "r", encoding="utf-8-sig") as f:
-            for _ in range(20):
-                line = f.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if line == "Song Data":
-                    break
-                # Handle both TAB and COLON separators
-                if "\t" in line:
-                    parts = line.split("\t", 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        if key in meta:
-                            meta[key] = parts[1].strip()
-                elif ":" in line:
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        if key in meta:
-                            meta[key] = parts[1].strip()
-        result = meta if meta["Song Name"] else None
-        with _SONG_HEADER_CACHE_LOCK:
-            _SONG_HEADER_CACHE[abs_fp] = {"mtime_ns": int(mtime_ns), "size": int(file_size), "meta": result}
-            _SONG_HEADER_CACHE.move_to_end(abs_fp)
-            _prune_song_header_cache_locked()
-            global _SONG_HEADER_CACHE_DIRTY
-            _SONG_HEADER_CACHE_DIRTY = True
-        return dict(result) if isinstance(result, dict) else None
-    except Exception as e:
-        logger.warning(f"song_processor:scan_song_header: {e}")
-        return None
-
-
 def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
     if not isinstance(config, dict) or not config:
         return ()
@@ -507,77 +231,6 @@ def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
     if sum(out) <= 0:
         return ()
     return tuple(int(v) for v in out)
-
-
-def read_song_file(fp):
-    """
-    Read complete song file including metadata and note timestamps.
-
-    Args:
-        fp: File path to song file
-
-    Returns:
-        dict: Song data with song_details and timestamps
-    """
-    data = {
-        "song_details": {
-            "Song Name": "",
-            "Difficulty": "",
-            "Primary Color": "",
-            "Secondary Color": "",
-            "Last Note Time": "",
-            "Total Notes": "",
-            "Fever Fill": "",
-            "Fever Time": "",
-            "Long Notes": "",
-        },
-        "timestamps": np.empty((0,), dtype=np.float32),
-        "note_types": np.empty((0,), dtype=np.int16),
-    }
-    if not fp:
-        return data
-    try:
-        found_song_data = False
-        note_lines = []
-        with open(fp, "r", encoding="utf-8-sig") as f:
-            for raw_line in f:
-                line = raw_line.rstrip("\r\n")
-                stripped = line.strip()
-                if not found_song_data:
-                    if stripped == "Song Data":
-                        found_song_data = True
-                        continue
-                    if not stripped:
-                        continue
-                    parts = line.split("\t", 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        if key in data["song_details"]:
-                            data["song_details"][key] = parts[1].strip() or "0"
-                    continue
-
-                if not stripped:
-                    continue
-                c = stripped[0]
-                if ("0" <= c <= "9") or c == ".":
-                    note_lines.append(line)
-
-        if not found_song_data:
-            return data
-
-        if note_lines:
-            nd = np.loadtxt(StringIO("\n".join(note_lines)), delimiter=None)
-            if nd.size:
-                nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
-                if nd.shape[1] >= 4:
-                    data["timestamps"] = np.asarray(nd[:, 0], dtype=np.float32)
-                    # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
-                    # Keep as int so we can apply held-tail timing rules when needed.
-                    data["note_types"] = nd[:, 3].astype(np.int16, copy=False)
-        return data
-    except Exception as exc:
-        WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
-        return data
 
 
 def _setup_song_context(
@@ -616,93 +269,52 @@ def _setup_song_context(
         print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
     gpu_mode = True
 
-    if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
-        calc_song = clone_calc_song(preloaded_calc_song)
-        stage_timing["cpu_read_sec"] = 0.0
-    else:
-        t_read0 = time.perf_counter()
-        base_calc_song = get_base_calc_song(fp, cfg_dict)
-        calc_song = clone_calc_song(base_calc_song)
-        stage_timing["cpu_read_sec"] = time.perf_counter() - t_read0
-
-    try:
-        song_data = calc_song.get("song_data", {}) or {}
-        if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
-            song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-
-    try:
-        from ..solver.timing_envelope import apply_timing_envelope
-
-        t_sim0 = time.perf_counter()
-        sim_info = apply_timing_envelope(calc_song)
-        if sim_info is not None:
-            stage_timing["cpu_timing_envelope_sec"] = time.perf_counter() - t_sim0
-            try:
-                print(
-                    f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
-                    f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
-                )
-            except Exception as e:
-                logger.warning(f"song_processor:_setup_song_context: {e}")
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
+    prepared_calc_song = build_prepared_calc_song(
+        fp=fp,
+        cfg_dict=cfg_dict,
+        preloaded_calc_song=preloaded_calc_song,
+    )
+    calc_song = prepared_calc_song.calc_song
+    stage_timing["cpu_read_sec"] = prepared_calc_song.read_sec
+    if prepared_calc_song.timing_envelope_info is not None:
+        stage_timing["cpu_timing_envelope_sec"] = prepared_calc_song.timing_envelope_sec
+        try:
+            sim_info = prepared_calc_song.timing_envelope_info
+            print(
+                f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
+                f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
+            )
+        except Exception as e:
+            logger.warning(f"song_processor:_setup_song_context: {e}")
 
     meta_primary_color = calc_song["metadata"].get("Primary Color", "")
     meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 
     t_setup0 = time.perf_counter()
-    (
-        ga_settings,
-        fixed_stats,
-        current_gear_stats,
-        current_gear_list,
-        current_mini_stats,
-        current_mini_list,
-        meta_finder,
-        enable_fever,
-        enable_mini,
-        enable_gear,
-        force_greats_mode,
-        force_greats_finder,
-        force_greats_config,
-        manual_force_greats,
-    ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+    prepared_config = build_prepared_song_config(
+        cfg=cfg,
+        calc_song=calc_song,
+        auto_buff=bool(auto_buff),
+        paths=paths,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+    )
     stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
 
-    try:
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
-
-        baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-        baseline_team_buff = "T5"
-
-    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
-
-    db_key = build_db_key(found_song_name, calc_song)
-
     t_db0 = time.perf_counter()
-    (
-        prev_record,
-        known_loadouts,
-        db_best_score,
-        db_best_fg_score,
-        attempt_lifetime,
-        prev_attempts_first,
-        db_baseline_valid,
-    ) = load_database_progress_baseline(
-        db_key,
-        use_evo_db,
-        gears_by_name,
-        minis_by_name,
+    db_context = load_prepared_song_db_context(
+        found_song_name=found_song_name,
+        calc_song=calc_song,
+        cfg=cfg,
+        cfg_dict=cfg_dict,
+        use_evo_db=bool(use_evo_db),
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        load_known_loadouts=True,
         allow_fallback=False,
-        team_buff=str(baseline_team_buff or "T5"),
     )
     stage_timing["cpu_db_load_sec"] = time.perf_counter() - t_db0
 
-    attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
     emit("START")
     stage_timing["cpu_prep_sec"] = sum(
         float(stage_timing.get(key, 0.0) or 0.0)
@@ -713,7 +325,7 @@ def _setup_song_context(
     pre_prune_mode = "none"
     fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
     fg_search_radius = read_fg_search_radius(cfg)
-    if enable_gear or enable_mini:
+    if prepared_config.enable_gear or prepared_config.enable_mini:
         outer_engine = read_outer_search_engine(cfg, default="ga")
 
     return SongContext(
@@ -742,30 +354,30 @@ def _setup_song_context(
         calc_song=calc_song,
         meta_primary_color=str(meta_primary_color or ""),
         meta_secondary_color=str(meta_secondary_color or ""),
-        ga_settings=ga_settings,
-        fixed_stats=fixed_stats,
-        current_gear_stats=current_gear_stats,
-        current_gear_list=current_gear_list,
-        current_mini_stats=current_mini_stats,
-        current_mini_list=current_mini_list,
-        meta_finder=bool(meta_finder),
-        enable_fever=bool(enable_fever),
-        enable_mini=bool(enable_mini),
-        enable_gear=bool(enable_gear),
-        force_greats_mode=bool(force_greats_mode),
-        force_greats_finder=bool(force_greats_finder),
-        force_greats_config=force_greats_config,
-        manual_force_greats=bool(manual_force_greats),
-        baseline_team_buff=str(baseline_team_buff or "T5"),
-        db_key=db_key,
-        prev_record=prev_record,
-        known_loadouts=known_loadouts,
-        db_best_score=int(db_best_score or 0),
-        db_best_fg_score=int(db_best_fg_score or 0),
-        attempt_lifetime=int(attempt_lifetime or 0),
-        attempts_first=int(attempts_first),
-        prev_attempts_first=int(prev_attempts_first or 0),
-        db_baseline_valid=bool(db_baseline_valid),
+        ga_settings=prepared_config.ga_settings,
+        fixed_stats=prepared_config.fixed_stats,
+        current_gear_stats=prepared_config.current_gear_stats,
+        current_gear_list=prepared_config.current_gear_list,
+        current_mini_stats=prepared_config.current_mini_stats,
+        current_mini_list=prepared_config.current_mini_list,
+        meta_finder=prepared_config.meta_finder,
+        enable_fever=prepared_config.enable_fever,
+        enable_mini=prepared_config.enable_mini,
+        enable_gear=prepared_config.enable_gear,
+        force_greats_mode=prepared_config.force_greats_mode,
+        force_greats_finder=prepared_config.force_greats_finder,
+        force_greats_config=prepared_config.force_greats_config,
+        manual_force_greats=prepared_config.manual_force_greats,
+        baseline_team_buff=str(db_context.baseline_team_buff or "T5"),
+        db_key=db_context.db_key,
+        prev_record=db_context.prev_record,
+        known_loadouts=db_context.known_loadouts,
+        db_best_score=int(db_context.db_best_score or 0),
+        db_best_fg_score=int(db_context.db_best_fg_score or 0),
+        attempt_lifetime=int(db_context.attempt_lifetime or 0),
+        attempts_first=int(db_context.attempts_first),
+        prev_attempts_first=int(db_context.prev_attempts_first or 0),
+        db_baseline_valid=bool(db_context.db_baseline_valid),
         outer_engine=outer_engine,
         pre_prune_mode=pre_prune_mode,
         fg_solver_mode=fg_solver_mode,
@@ -1165,64 +777,45 @@ def process_song_task(args) -> SongResultPayload:
     FG_CACHE.clear()
 
     args_list = list(args) if isinstance(args, (list, tuple)) else [args]
-    (
-        fp,
-        found_song_name,
-        effective_difficulty,  # Difficulty determined from file header or folder path
-        cfg_dict,
-        paths,
-        ref_arrays,
-        all_gears,
-        all_minis,
-        gears_by_name,
-        minis_by_name,
-        use_evo_db,
-        auto_buff,
-        ga_depth,
-        status_queue,
-        _parallel_workers,
-        fg_debug,
-    ) = args_list[:16]
+    task_view = task_tuple_to_legacy_view(args_list)
+    job = task_view.job
+    run_context = task_view.context
+    seed_plan = seed_plan_from_song_job(job)
+    fp = job.file_path
+    found_song_name = job.song_name
+    effective_difficulty = job.difficulty
+    cfg_dict = run_context.cfg_dict
+    paths = run_context.paths
+    ref_arrays = run_context.ref_arrays
+    all_gears = run_context.all_gears
+    all_minis = run_context.all_minis
+    gears_by_name = run_context.gears_by_name
+    minis_by_name = run_context.minis_by_name
+    use_evo_db = run_context.use_evo_db
+    auto_buff = run_context.auto_buff
+    ga_depth = run_context.ga_depth
+    status_queue = run_context.status_queue
+    fg_debug = run_context.fg_debug
 
     # Optional extras (sequential pipeline mode):
     # - preloaded calc_song dict to avoid repeated disk I/O + parsing
     # - defer_post: if True, skip persistence/reporting and return raw compute payload
     preloaded_calc_song = None
-    repeat_ctx = None
     defer_post = False
-    extras = args_list[16:] if len(args_list) > 16 else []
+    extras = task_view.extras
     if extras:
         for extra in extras:
             if isinstance(extra, dict):
                 if extra.get("song_data") is not None:
                     preloaded_calc_song = extra
                     continue
-                if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
-                    repeat_ctx = extra
-                    continue
             if isinstance(extra, bool) and not defer_post:
                 defer_post = bool(extra)
 
-    queue_label = found_song_name
-    ga_seed = None
-    repeat_index = 0
-    repeat_total = 0
-    if isinstance(repeat_ctx, dict):
-        try:
-            repeat_index = int(str(repeat_ctx.get("repeat_index") or 0))
-            repeat_total = int(str(repeat_ctx.get("repeat_total") or 0))
-        except Exception as e:
-            logger.warning(f"song_processor:process_song_task: {e}")
-            repeat_index = 0
-            repeat_total = 0
-        try:
-            raw_seed = repeat_ctx.get("ga_seed")
-            ga_seed = int(str(raw_seed)) if raw_seed is not None else None
-        except Exception as e:
-            logger.warning(f"song_processor:process_song_task: {e}")
-            ga_seed = None
-        if repeat_index > 0 and repeat_total > 1:
-            queue_label = f"{found_song_name} (Run {repeat_index}/{repeat_total})"
+    queue_label = seed_plan.queue_label
+    ga_seed = seed_plan.ga_seed
+    repeat_index = seed_plan.repeat_index
+    repeat_total = seed_plan.repeat_total
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     loadout_entries = None
@@ -1396,22 +989,8 @@ def safe_process_song_task(args) -> SongResultPayload:
     queue_label = None
     try:
         if isinstance(args, (list, tuple)) and len(args) > 1:
-            song_name = args[1]
-            queue_label = str(song_name)
-            try:
-                if len(args) > 16:
-                    for extra in args[16:]:
-                        if not isinstance(extra, dict):
-                            continue
-                        if "repeat_index" in extra and "repeat_total" in extra:
-                            idx = int(extra.get("repeat_index") or 0)
-                            total = int(extra.get("repeat_total") or 0)
-                            if idx > 0 and total > 1:
-                                queue_label = f"{song_name} (Run {idx}/{total})"
-                            break
-            except Exception as e:
-                logger.warning(f"song_processor:safe_process_song_task: {e}")
-                queue_label = str(song_name)
+            song_name = task_song_name(args)
+            queue_label = task_queue_label(args)
         return process_song_task(args)
     except Exception as exc:
         tb = traceback.format_exc()

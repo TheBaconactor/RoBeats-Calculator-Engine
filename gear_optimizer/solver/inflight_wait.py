@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
-import logging
-
 
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
+
+
+def read_inflight_event_wait_timeout_s() -> float:
+    """
+    Base scheduler wait timeout when waiting for in-flight futures to complete.
+
+    Keep this modest to avoid long producer wake-up delays that can starve the
+    GPU owner thread between GA/FG stage transitions.
+    """
+    timeout_s = 0.05
+    raw = env_get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            timeout_s = float(raw)
+        except Exception as e:
+            logger.debug(f"inflight_wait:read_inflight_event_wait_timeout_s: {e}")
+    return max(0.001, min(float(timeout_s), 5.0))
+
+
 def read_inflight_event_wait_gpu_cap_s() -> float:
     """
     Optional tighter cap for completion-event waits while GPU work is active.

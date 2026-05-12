@@ -78,7 +78,7 @@ Difficulty = All
 ; Main optimizer toggles
 MetaFinder = true
 
-; GPU acceleration (Taichi/Vulkan)
+; Legacy GPU flags: production is GPU-first; false values are ignored with a warning.
 GPU_Mode = true
 GPU_Native_GA = true
 InFlightSongs = 0

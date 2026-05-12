@@ -17,20 +17,82 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     _wait_for_completion_event,
 )
 from gear_optimizer.solver.native_inflight_scheduler import (
+    GAQueueLimitController,
+    count_active_song_lanes,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
     _read_fg_ga_credit_budget,
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
     _read_inflight_target_song_lanes,
+    _read_prime_target,
 )
-from gear_optimizer.solver.native_inflight_config import _read_cpu_prewarm_lookahead
+from gear_optimizer.solver.native_inflight_config import (
+    _read_cpu_prewarm_lookahead,
+    _read_cpu_prewarm_workers,
+    _read_db_prefetch_workers,
+    _read_inflight_worker_count,
+    first_task_config,
+    inflight_shutdown_debug_enabled,
+    inflight_stall_debug_enabled,
+    read_inflight_loop_observer_settings,
+    read_inflight_runtime_settings,
+)
+from gear_optimizer.solver.inflight_wait import read_inflight_event_wait_timeout_s
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {k: str(v) for k, v in pairs.items()}
     return cfg
+
+
+def test_ga_queue_limit_controller_reserves_slots_and_applies_slot_pressure_window():
+    now_box = {"now": 10.0}
+    controller = GAQueueLimitController(
+        dynamic_enabled=True,
+        base_limit=12,
+        pressure_window_s=2.0,
+        extra_free_on_slot_pressure=2,
+        fg_slot_reserve=1,
+        song_slot_limit=5,
+        monotonic=lambda: float(now_box["now"]),
+    )
+
+    assert controller.effective_limit(last_slot_block_t=None) == 4
+    assert controller.effective_limit(last_slot_block_t=9.0) == 2
+
+    now_box["now"] = 12.5
+    assert controller.effective_limit(last_slot_block_t=9.0) == 4
+
+
+def test_ga_queue_limit_controller_disabled_returns_base_limit():
+    controller = GAQueueLimitController(
+        dynamic_enabled=False,
+        base_limit=12,
+        pressure_window_s=2.0,
+        extra_free_on_slot_pressure=2,
+        fg_slot_reserve=4,
+        song_slot_limit=5,
+    )
+
+    assert controller.effective_limit(last_slot_block_t=0.0) == 12
+
+
+def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
+    ga_song = make_native_song(task_key="song-a", song_name="Song A")
+    decode_song = make_native_song(task_key="song-a", song_name="Song A")
+    other_decode = make_native_song(task_key="", song_name="Song B")
+
+    assert (
+        count_active_song_lanes(
+            ga_inflight=[ga_song],
+            decode_inflight=[decode_song, other_decode],
+            fg_active_keys={"Song B", "song-c", ""},
+        )
+        == 3
+    )
 
 
 def test_read_fg_scheduler_mode_defaults_to_continuous(monkeypatch):
@@ -308,6 +370,137 @@ def test_read_cpu_prewarm_lookahead_defaults_to_five_and_honors_overrides(monkey
 
     monkeypatch.setenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", "2")
     assert _read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 2
+
+
+def test_first_task_config_extracts_legacy_task_config():
+    task = (None, "Song", "Hard", {"IterationEngine": {"InFlight_PrimeTarget": "6"}})
+    cfg = first_task_config([task])
+
+    assert cfg is not None
+    assert cfg.get("IterationEngine", "InFlight_PrimeTarget") == "6"
+    assert first_task_config([]) is None
+
+
+def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_PREP_WORKERS", raising=False)
+    cfg = _cfg_with_iteration_engine(InFlight_PrepWorkers="3")
+
+    assert (
+        _read_inflight_worker_count(
+            cfg,
+            config_key="InFlight_PrepWorkers",
+            env_key="INFLIGHT_PREP_WORKERS",
+            inflight_limit=8,
+            kind="prep",
+        )
+        == 3
+    )
+
+    monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "5")
+    assert (
+        _read_inflight_worker_count(
+            cfg,
+            config_key="InFlight_PrepWorkers",
+            env_key="INFLIGHT_PREP_WORKERS",
+            inflight_limit=8,
+            kind="prep",
+        )
+        == 5
+    )
+
+    monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "0")
+    assert (
+        _read_inflight_worker_count(
+            _cfg_with_iteration_engine(),
+            config_key="InFlight_PrepWorkers",
+            env_key="INFLIGHT_PREP_WORKERS",
+            inflight_limit=8,
+            kind="prep",
+            ga_seed="fixed",
+        )
+        == 1
+    )
+
+
+def test_read_cpu_prewarm_workers_respects_lookahead_and_env(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_CPU_PREWARM_WORKERS", raising=False)
+
+    assert _read_cpu_prewarm_workers(_cfg_with_iteration_engine(), inflight_limit=8, cpu_prewarm_lookahead=0) == 0
+
+    cfg = _cfg_with_iteration_engine(InFlight_CPUPrewarmWorkers="6")
+    assert _read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 3
+
+    monkeypatch.setenv("INFLIGHT_CPU_PREWARM_WORKERS", "4")
+    assert _read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 4
+
+
+def test_read_db_prefetch_workers_defaults_from_fg_prep_and_honors_overrides(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_DB_PREFETCH_WORKERS", raising=False)
+
+    assert _read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=2) == 2
+    assert _read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=9) == 4
+
+    cfg = _cfg_with_iteration_engine(InFlight_DBPrefetchWorkers="6")
+    assert _read_db_prefetch_workers(cfg, fg_prep_workers=2) == 6
+
+    monkeypatch.setenv("INFLIGHT_DB_PREFETCH_WORKERS", "7")
+    assert _read_db_prefetch_workers(cfg, fg_prep_workers=2) == 7
+
+
+def test_read_inflight_loop_observer_settings_reads_env_values():
+    values = {
+        "INFLIGHT_HEARTBEAT_SEC": "1.5",
+        "INFLIGHT_THROUGHPUT_SEC": "2.5",
+        "INFLIGHT_STAGE_PROFILE_EMIT_SEC": "3.5",
+        "INFLIGHT_PROFILE_MAX_SONGS": "4",
+    }
+
+    settings = read_inflight_loop_observer_settings(env_get_fn=lambda name, default=None: values.get(name, default))
+
+    assert settings.heartbeat_sec == 1.5
+    assert settings.throughput_sec == 2.5
+    assert settings.stage_profile_emit_sec == 3.5
+    assert settings.profile_max_songs == 4
+
+
+def test_read_inflight_runtime_settings_reads_static_runtime_env_values():
+    values = {
+        "GPU_EXECUTOR_INIT_TIMEOUT_SEC": "42.5",
+        "INFLIGHT_GA_QUEUE_DEBUG": "1",
+    }
+
+    settings = read_inflight_runtime_settings(env_get_fn=lambda name, default=None: values.get(name, default))
+
+    assert settings.gpu_executor_init_timeout_sec == 42.5
+    assert settings.ga_queue_debug is True
+
+
+def test_read_inflight_runtime_settings_uses_legacy_init_timeout_failure_default():
+    settings = read_inflight_runtime_settings(env_get_fn=lambda _name, _default=None: "bad")
+
+    assert settings.gpu_executor_init_timeout_sec == 180.0
+    assert settings.ga_queue_debug is False
+
+
+def test_inflight_dynamic_debug_helpers_read_current_env_value():
+    assert inflight_stall_debug_enabled(env_get_fn=lambda _name, _default=None: "1") is True
+    assert inflight_shutdown_debug_enabled(env_get_fn=lambda _name, _default=None: "true") is True
+    assert inflight_stall_debug_enabled(env_get_fn=lambda _name, _default=None: "0") is False
+    assert inflight_shutdown_debug_enabled(env_get_fn=lambda _name, _default=None: "") is False
+
+
+def test_read_inflight_loop_observer_settings_uses_safe_defaults_for_invalid_values():
+    settings = read_inflight_loop_observer_settings(env_get_fn=lambda _name, _default=None: "bad")
+
+    assert settings.heartbeat_sec == 0.0
+    assert settings.throughput_sec == 0.0
+    assert settings.stage_profile_emit_sec == 0.0
+    assert settings.profile_max_songs == 0
+
+    negative = read_inflight_loop_observer_settings(
+        env_get_fn=lambda name, default=None: "-1" if name == "INFLIGHT_PROFILE_MAX_SONGS" else default,
+    )
+    assert negative.profile_max_songs == 0
 
 
 def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_explicit_override(monkeypatch):
@@ -783,6 +976,22 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
     assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=3) == 3
     assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
 
+
+def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_PRIME_TARGET", raising=False)
+
+    cfg = _cfg_with_iteration_engine()
+    assert _read_prime_target(cfg, inflight_limit=2, prep_limit=8, pending_count=20) == 4
+
+    cfg_explicit = _cfg_with_iteration_engine(InFlight_PrimeTarget="6")
+    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 6
+
+    monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "9")
+    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 8
+
+    monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "0")
+    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
+
     budget_no_drain = _continuous_fg_submit_budget(
         pending_fg_count=5,
         ready_fg_count=0,
@@ -825,6 +1034,7 @@ def test_read_inflight_event_wait_settings_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", raising=False)
 
     assert abs(_read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
+    assert abs(read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
     assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
     assert abs(_read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
 
@@ -833,6 +1043,7 @@ def test_read_inflight_event_wait_settings_defaults_and_overrides(monkeypatch):
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", "100")
 
     assert abs(_read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
+    assert abs(read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
     assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.0) < 1e-9
     assert abs(_read_inflight_event_wait_short_spin_s() - 0.05) < 1e-9
 

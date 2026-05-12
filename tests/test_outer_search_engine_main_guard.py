@@ -4,6 +4,8 @@ import pytest
 
 from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine
 from gear_optimizer.core.utils import cfg_from_dict
+from gear_optimizer.solver.song_db_context import PreparedSongDbContext
+from gear_optimizer.solver.song_preparation import PreparedSongConfig
 
 
 def _common_cfg(**iteration_engine: str) -> dict:
@@ -62,25 +64,41 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
 
     monkeypatch.delenv("METAFINDER_OUTER_SEARCH_ENGINE", raising=False)
     monkeypatch.delenv("OUTER_SEARCH_ENGINE", raising=False)
-    monkeypatch.setattr(song_processor, "load_database_progress_baseline", lambda *args, **kwargs: (None, [], 0, 0, 0, 0, True))
     monkeypatch.setattr(
         song_processor,
-        "setup_song_config",
-        lambda *args, **kwargs: (
-            SimpleNamespace(multi_start=1),
-            {},
-            {},
-            [],
-            {},
-            [],
-            True,
-            True,
-            True,
-            True,
-            False,
-            False,
-            [],
-            False,
+        "load_prepared_song_db_context",
+        lambda *args, **kwargs: PreparedSongDbContext(
+            baseline_team_buff="T5",
+            db_key="pytest",
+            prev_record=None,
+            known_loadouts={},
+            db_best_score=0,
+            db_best_fg_score=0,
+            attempt_lifetime=0,
+            attempts_first=1,
+            prev_attempts_first=0,
+            db_baseline_valid=True,
+            allow_db_seed=True,
+        ),
+    )
+    monkeypatch.setattr(
+        song_processor,
+        "build_prepared_song_config",
+        lambda *args, **kwargs: PreparedSongConfig(
+            ga_settings=SimpleNamespace(multi_start=1),
+            fixed_stats={},
+            current_gear_stats={},
+            current_gear_list=[],
+            current_mini_stats={},
+            current_mini_list=[],
+            meta_finder=True,
+            enable_fever=True,
+            enable_mini=True,
+            enable_gear=True,
+            force_greats_mode=False,
+            force_greats_finder=False,
+            force_greats_config=[],
+            manual_force_greats=False,
         ),
     )
     def _fake_prepare_solver_context(*args, **kwargs):

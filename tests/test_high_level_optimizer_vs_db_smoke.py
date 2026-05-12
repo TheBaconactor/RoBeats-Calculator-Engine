@@ -48,7 +48,7 @@ def _load_ref_arrays_from_stats_txt(stats_txt: str) -> dict:
 
 
 def _find_song_file(*, song_name: str, difficulty: str, paths: dict) -> Optional[Path]:
-    from gear_optimizer.pipeline.song_processor import scan_song_header
+    from gear_optimizer.data.song_io import scan_song_header
 
     diff_key = str(difficulty or "").strip().title()
     root = paths.get(diff_key)

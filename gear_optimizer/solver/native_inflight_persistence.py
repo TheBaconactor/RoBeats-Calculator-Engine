@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import concurrent.futures
+from dataclasses import dataclass, field
 from typing import Callable
 import logging
 
@@ -9,6 +10,7 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_entry_names
+from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items
 from gear_optimizer.solver.native_inflight_types import _NativeSong
@@ -16,14 +18,24 @@ from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
 logger = logging.getLogger(__name__)
-@dataclass(frozen=True)
+
+
+@dataclass
 class InflightDBPersistence:
     candidate_limit_default: int = FG_CANDIDATE_LIMIT
+    prefetch_workers: int = 1
+    prefetch_executor: concurrent.futures.ThreadPoolExecutor = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.prefetch_workers = max(1, int(self.prefetch_workers))
+        self.prefetch_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=int(self.prefetch_workers),
+            thread_name_prefix="FGDBPrefetch",
+        )
 
     def maybe_submit_prefetch(
         self,
         song: _NativeSong,
-        executor,
         prefetch_fn: Callable,
         *,
         register_future: Callable,
@@ -40,24 +52,13 @@ class InflightDBPersistence:
                 song.gpu_inputs.cfg_data.get("fg_candidate_limit", int(self.candidate_limit_default)),
                 int(self.candidate_limit_default),
             )
-            baseline_team_buff = "T5"
-            try:
-                from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-
-                baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(
-                    song.config.cfg_dict or {}, default="T5"
-                )
-            except Exception as e:
-                logger.debug(f"native_inflight_persistence:maybe_submit_prefetch: {e}")
-                baseline_team_buff = "T5"
-
-            song.runtime.db.db_loadouts_future = executor.submit(
+            song.runtime.db.db_loadouts_future = self.prefetch_executor.submit(
                 prefetch_fn,
                 song.config.db_key,
                 limit=int(prefetch_limit),
                 gears_by_name=song.gpu_inputs.gears_by_name,
                 minis_by_name=song.gpu_inputs.minis_by_name,
-                team_buff=str(baseline_team_buff or "T5"),
+                team_buff=resolve_database_baseline_team_buff(cfg_dict=song.config.cfg_dict),
             )
             register_future(song.runtime.db.db_loadouts_future)
             return True
@@ -65,6 +66,9 @@ class InflightDBPersistence:
             logger.debug(f"native_inflight_persistence:maybe_submit_prefetch: {e}")
             song.runtime.db.db_loadouts_future = None
             return False
+
+    def shutdown_prefetch(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
+        self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
 def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:

@@ -67,7 +67,7 @@ def _get_fg_session_slot_pool():
         except Exception as e:
             logger.debug(f"core:_get_fg_session_slot_pool: {e}")
             max_slots = 8
-    from ....solver.inflight_utils import SongSlotPool
+    from ....solver.song_slot_pool import SongSlotPool
 
     _FG_SESSION_SLOT_POOL = SongSlotPool(max_song_slots=int(max_slots))
     return _FG_SESSION_SLOT_POOL

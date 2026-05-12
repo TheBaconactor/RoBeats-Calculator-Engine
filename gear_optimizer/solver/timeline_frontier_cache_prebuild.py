@@ -393,7 +393,7 @@ def build_timeline_frontier_cache_for_path(
     *,
     skip_cached: bool = True,
 ) -> TimelineFrontierCacheBuildResult:
-    from gear_optimizer.pipeline.song_processor import get_base_calc_song
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         timeline_frontier_payload_cache_info,

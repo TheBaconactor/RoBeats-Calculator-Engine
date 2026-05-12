@@ -284,10 +284,10 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
 
     captured: dict[str, object] = {}
 
@@ -326,10 +326,10 @@ def test_db_manager_on_demand_replay_canonicalizes_baseline_seed_rows(tmp_path: 
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": [0]})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
 
     requested_limits: list[int] = []
 
@@ -386,10 +386,10 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
 
     captured: dict[str, object] = {}
 
@@ -507,10 +507,10 @@ def test_db_manager_get_leaderboard_entry_uses_fg_base_score_context(tmp_path: P
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
 
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
@@ -569,10 +569,10 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
         EvolutionDbManager,
@@ -626,10 +626,10 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_source_
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
         EvolutionDbManager,
@@ -730,10 +730,10 @@ def test_db_manager_get_leaderboard_entry_breaks_ties_by_loadout_hash(tmp_path: 
     )
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: {"Perfect Points": []})
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _song_file, _cfg_dict: {"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
     )
-    monkeypatch.setattr("gear_optimizer.pipeline.song_processor.clone_calc_song", lambda calc_song: dict(calc_song))
+    monkeypatch.setattr("gear_optimizer.data.song_io.clone_calc_song", lambda calc_song: dict(calc_song))
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
     monkeypatch.setattr(
         EvolutionDbManager,

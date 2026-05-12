@@ -11,7 +11,7 @@ from gear_optimizer.core.config import load_paths_cache, read_iteration_engine_s
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, PATHS
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
-from gear_optimizer.pipeline.song_processor import scan_song_header
+from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.solver.native_inflight_prepare import _prepare_song
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api import hard_reset_taichi
@@ -121,19 +121,19 @@ def test_gpu_ga_cold_eval_is_stable_across_hard_resets(monkeypatch: pytest.Monke
     with _GPU_LOCK:
         for rep in range(4):
             hard_reset_taichi(reason=f"pytest Light Speed cold-eval determinism {rep}")
-            ga_upload_item_stats(song.item_stats, song.slot_start, song.slot_count)
-            ga_upload_base_fixed_stats(song.base_fixed_stats_arr)
-            precompute_timeline_gpu(song.calc_song, song.ref_arrays, song_slot=0)
+            ga_upload_item_stats(song.gpu_inputs.item_stats, song.gpu_inputs.slot_start, song.gpu_inputs.slot_count)
+            ga_upload_base_fixed_stats(song.gpu_inputs.base_fixed_stats_arr)
+            precompute_timeline_gpu(song.gpu_inputs.calc_song, song.gpu_inputs.ref_arrays, song_slot=0)
             ga_upload_population_indices(population_ids, n_slots=9)
             ga_init_global_best()
             ga_evaluate_population(
                 n_genomes=n_genomes,
                 n_slots=9,
-                total_budget=int(song.cfg_data.get("TotalBudget", 90)),
-                gem_scale_fever=int(song.cfg_data.get("GemScaleFever", GEM_SCALE_FEVER)),
+                total_budget=int(song.gpu_inputs.cfg_data.get("TotalBudget", 90)),
+                gem_scale_fever=int(song.gpu_inputs.cfg_data.get("GemScaleFever", GEM_SCALE_FEVER)),
                 song_slot=0,
                 materialize_mode="update_global",
-                **song.color_flags,
+                **song.gpu_inputs.color_flags,
             )
             score, best_ids, best_results = ga_download_global_best()
             winners.append(

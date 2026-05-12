@@ -1,8 +1,59 @@
 from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_result_events import build_native_song_error_payload, build_native_task_error_payload
+
+
+def test_native_song_error_payload_suppresses_bundle_progress():
+    song = make_native_song(song_name="Bundle Song", task_key="bundle-key")
+    song.runtime.bundle.bundle_parent_task = ("parent",)
+
+    payload = build_native_song_error_payload(
+        song,
+        exc=RuntimeError("boom"),
+        trace="TRACE",
+    )
+
+    assert payload["_error"] == "boom"
+    assert payload["_error_type"] == "RuntimeError"
+    assert payload["song"] == "Bundle Song"
+    assert payload["_queue_key"] == "bundle-key"
+    assert payload["_queue_label"] == "bundle-key"
+    assert payload["_suppress_progress"] is True
+
+
+def test_native_song_error_payload_can_leave_bundle_progress_unsuppressed():
+    song = make_native_song(song_name="Bundle Song", task_key="bundle-key")
+    song.runtime.bundle.bundle_parent_task = ("parent",)
+
+    payload = build_native_song_error_payload(
+        song,
+        exc=RuntimeError("boom"),
+        trace="TRACE",
+        suppress_for_bundle=False,
+    )
+
+    assert "_suppress_progress" not in payload
+
+
+def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progress():
+    payload = build_native_task_error_payload(
+        song_name="Task Song",
+        queue_key="task-key",
+        exc=ValueError("bad task"),
+        trace="TRACE",
+        suppress_progress=True,
+    )
+
+    assert payload["song"] == "Task Song"
+    assert payload["_queue_key"] == "task-key"
+    assert payload["_queue_label"] == "task-key"
+    assert payload["_error"] == "bad task"
+    assert payload["_error_type"] == "ValueError"
+    assert payload["_suppress_progress"] is True
 
 
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_result_events as result_events
 
     calc_song = {
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"},
@@ -22,12 +73,12 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     ]
 
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "select_effective_unique_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),
@@ -89,14 +140,15 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
 def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_result_events as result_events
 
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "select_effective_unique_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),
@@ -156,6 +208,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatch):
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     gpu_client = object()
@@ -176,7 +229,7 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
             }
         ]
 
-    monkeypatch.setattr(orchestrator, "_run_fg_job_sync", _fake_run_fg_job_sync)
+    monkeypatch.setattr(fg_pipeline, "run_fg_job_sync", _fake_run_fg_job_sync)
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
@@ -186,6 +239,7 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
         fg_variants=None,
     )
 
+    assert orchestrator._score_fg_inside_ga is fg_pipeline.score_fg_inside_ga
     orchestrator._score_fg_inside_ga(song, gpu_client=gpu_client)
 
     assert calls["gpu_client"] is gpu_client
@@ -198,6 +252,7 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_result_events as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = {
@@ -229,12 +284,12 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     inflated_score = raw_exact_score + 12345
 
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "select_effective_unique_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),

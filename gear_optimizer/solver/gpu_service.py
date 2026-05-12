@@ -33,14 +33,10 @@ from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
     split_fused_payload_by_budget,
 )
 
-from .gpu_executor import (
-    GpuExecutor,
-    GpuRequest,
-    GpuRequestType,
-    GpuResponse,
-    get_gpu_executor,
-    _registry_base_fixed_stats_sig,
-)
+from .gpu_executor import GpuExecutor, get_gpu_executor
+from .gpu_executor_registry_submit import build_registry_solve_request_payload as _build_registry_solve_request_payload
+from .gpu_executor_static_handles import registry_base_fixed_stats_sig as _registry_base_fixed_stats_sig
+from .gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 from gear_optimizer.core.parsing import env_get
 
@@ -387,17 +383,12 @@ class GpuServiceClient:
         if entry is None:
             return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
 
-        handle = int(entry.get("handle", 0) or 0)
         inline_static = not bool(entry.get("registered", False))
-        request_payload["registry_payload_handle"] = int(handle)
-        request_payload["registry_payload_inline"] = bool(inline_static)
-        if not inline_static:
-            request_payload.pop("item_stats", None)
-            request_payload.pop("slot_start", None)
-            request_payload.pop("slot_count", None)
-            request_payload.pop("base_fixed_stats", None)
-            request_payload.pop("timeline_grid", None)
-            request_payload.pop("ref_arrays", None)
+        request_payload = _build_registry_solve_request_payload(
+            request_payload,
+            entry,
+            inline_static=inline_static,
+        )
 
         job = self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
         entry["registered"] = True

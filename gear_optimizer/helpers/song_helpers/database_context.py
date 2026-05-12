@@ -11,6 +11,7 @@ import os
 import sqlite3
 import threading
 import time
+from typing import Any, Mapping
 
 from ...core.env_config import env_flag
 from ...data.database import (
@@ -110,6 +111,36 @@ def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
     # Keep signature for call sites that pass calc_song.
     _ = calc_song
     return str(found_song_name or "").strip()
+
+
+def resolve_database_baseline_team_buff(
+    cfg: Any | None = None,
+    *,
+    cfg_dict: Mapping[str, Any] | None = None,
+    default: str = "T5",
+) -> str:
+    """
+    Resolve the TeamBuff tier used for DB seed/context reads.
+
+    Auto TeamBuff mode stores and reads baseline DB rows under T5. Manual configs
+    must use their selected tier so GA and FG seed from the same leaderboard slice.
+    """
+    default_tier = str(default or "T5")
+    try:
+        if cfg_dict is None and isinstance(cfg, Mapping) and not hasattr(cfg, "getboolean"):
+            cfg_dict = cfg
+            cfg = None
+        if cfg is not None:
+            from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+
+            return resolve_baseline_team_buff_from_cfg(cfg, default=default_tier)
+
+        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+
+        return resolve_baseline_team_buff_from_cfg_dict(cfg_dict or {}, default=default_tier)
+    except Exception as e:
+        logger.debug(f"database_context:resolve_database_baseline_team_buff: {e}")
+        return default_tier
 
 
 def _maybe_wal_maintenance(conn) -> None:

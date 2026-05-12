@@ -9,6 +9,7 @@ import logging
 
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.utils import ceil_div, safe_int
+from gear_optimizer.domain.jobs import task_difficulty, task_song_name
 
 
 from gear_optimizer.core.parsing import env_get
@@ -152,8 +153,8 @@ def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tup
     grouped: dict[tuple[str, str], list[tuple]] = {}
     for task in tasks or []:
         try:
-            song_name = str(task[1] or "")
-            difficulty = str(task[2] or "")
+            song_name = task_song_name(task)
+            difficulty = task_difficulty(task)
         except Exception as e:
             logger.debug(f"dual_process_inflight:shard_inflight_tasks: {e}")
             song_name = "Unknown"
@@ -182,8 +183,8 @@ def shard_inflight_tasks(tasks: list[tuple], *, instances: int) -> list[list[tup
     # Preserve per-shard order as seen in the original queue.
     for task in tasks or []:
         try:
-            song_name = str(task[1] or "")
-            difficulty = str(task[2] or "")
+            song_name = task_song_name(task)
+            difficulty = task_difficulty(task)
         except Exception as e:
             logger.debug(f"dual_process_inflight:shard_inflight_tasks: {e}")
             song_name = "Unknown"

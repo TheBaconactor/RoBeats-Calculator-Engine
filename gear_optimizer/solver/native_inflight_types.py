@@ -220,6 +220,17 @@ def native_song_set(song: object, field_name: str, value) -> None:
     setattr(owner, str(field_name), value)
 
 
+def native_song_label(song: object, *, fallback_id: bool = False) -> str:
+    try:
+        config = getattr(song, "config", None)
+        label = str(getattr(config, "task_key", "") or getattr(config, "song_name", "") or "").strip()
+        if label:
+            return label
+    except Exception:
+        pass
+    return str(id(song)) if bool(fallback_id) else ""
+
+
 def make_native_song(**kwargs) -> _NativeSong:
     """Build a _NativeSong from flat keyword args, distributing to the correct sub-struct."""
     config = _NativeSongConfig()

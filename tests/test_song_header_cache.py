@@ -1,6 +1,6 @@
 import os
 
-from gear_optimizer.pipeline import song_processor
+from gear_optimizer.data import song_io
 
 
 def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
@@ -20,8 +20,8 @@ def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    song_processor._reset_song_header_cache_for_tests()
-    monkeypatch.setattr(song_processor, "_SONG_HEADER_CACHE_PATH", str(cache_path))
+    song_io._reset_song_header_cache_for_tests()
+    monkeypatch.setattr(song_io, "_SONG_HEADER_CACHE_PATH", str(cache_path))
 
     open_calls = {"song": 0}
     real_open = open
@@ -34,11 +34,11 @@ def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
 
     monkeypatch.setattr("builtins.open", _counting_open)
 
-    first = song_processor.scan_song_header(str(song_path))
-    song_processor._flush_song_header_cache()
-    song_processor._reset_song_header_cache_for_tests()
+    first = song_io.scan_song_header(str(song_path))
+    song_io._flush_song_header_cache()
+    song_io._reset_song_header_cache_for_tests()
 
-    second = song_processor.scan_song_header(str(song_path))
+    second = song_io.scan_song_header(str(song_path))
 
     assert first == second
     assert first["Song Name"] == "Cache Test Song"

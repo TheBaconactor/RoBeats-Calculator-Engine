@@ -11,78 +11,38 @@ from gear_optimizer.core.parsing import env_flag
 
 
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.domain.jobs import (
+    extract_repeat_bundle,
+    extract_repeat_context,
+    is_repeat_context,
+    materialize_repeat_task,
+    task_ga_seed,
+    task_queue_label,
+)
 
 logger = logging.getLogger(__name__)
 def _is_repeat_ctx_dict(extra: Any) -> bool:
-    return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
+    return is_repeat_context(extra)
 
 
 def _extract_repeat_ctx(task: tuple) -> dict | None:
-    if not isinstance(task, (tuple, list)) or len(task) <= 16:
-        return None
-    for extra in task[16:]:
-        if _is_repeat_ctx_dict(extra):
-            return extra
-    return None
+    return extract_repeat_context(task)
 
 
 def _extract_repeat_bundle(task: tuple) -> dict | None:
-    if not isinstance(task, (tuple, list)) or len(task) <= 16:
-        return None
-    for extra in task[16:]:
-        if not isinstance(extra, dict):
-            continue
-        if not bool(extra.get("repeat_bundle")):
-            continue
-        runs = extra.get("runs")
-        if isinstance(runs, list) and runs:
-            return extra
-    return None
+    return extract_repeat_bundle(task)
 
 
 def _materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
-    if not isinstance(task, (tuple, list)):
-        return task
-    prefix = list(task[:16])
-    extras: list[Any] = []
-    for extra in task[16:]:
-        if _is_repeat_ctx_dict(extra):
-            continue
-        if isinstance(extra, dict) and bool(extra.get("repeat_bundle")):
-            continue
-        extras.append(extra)
-    extras.append(dict(repeat_ctx or {}))
-    return tuple(prefix + extras)
+    return materialize_repeat_task(task, repeat_ctx)
 
 
 def _task_key(task: tuple) -> str:
-    if not isinstance(task, (tuple, list)) or len(task) < 2:
-        return "Unknown"
-    base = str(task[1])
-    repeat_ctx = _extract_repeat_ctx(task)
-    if repeat_ctx:
-        try:
-            idx = int(repeat_ctx.get("repeat_index") or 0)
-            total = int(repeat_ctx.get("repeat_total") or 0)
-        except Exception as e:
-            logger.debug(f"native_inflight_support:_task_key: {e}")
-            idx = 0
-            total = 0
-        if idx > 0 and total > 1:
-            return f"{base} (Run {idx}/{total})"
-    return base
+    return task_queue_label(task)
 
 
 def _task_ga_seed(task: tuple) -> int | None:
-    repeat_ctx = _extract_repeat_ctx(task)
-    if not repeat_ctx:
-        return None
-    try:
-        seed = repeat_ctx.get("ga_seed")
-        return int(seed) if seed is not None else None
-    except Exception as e:
-        logger.debug(f"native_inflight_support:_task_ga_seed: {e}")
-        return None
+    return task_ga_seed(task)
 
 
 def _lru_get(cache: OrderedDict, key: tuple) -> Any:

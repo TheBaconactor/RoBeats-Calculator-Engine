@@ -18,16 +18,16 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.helpers.song_helpers.database_context import load_database_progress_baseline
-from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
+from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_legacy_view
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
-    _compact_prev_record,
     _truthy,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.native_inflight_support import _lru_get, _lru_put, _task_ga_seed, _task_key
+from gear_optimizer.solver.song_db_context import load_prepared_song_db_context
+from gear_optimizer.solver.song_preparation import build_prepared_song_config
+from gear_optimizer.solver.native_inflight_support import _lru_get, _lru_put
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
     _NativeSong,
@@ -61,8 +61,6 @@ _CACHE_STATS = {
 }
 _CACHE_STATS_LOCK = threading.Lock()
 _CACHE_STATS_LAST_EMIT = 0.0
-_DB_CONTEXT_CACHE_LOCK = threading.Lock()
-_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, bool], tuple[float, Optional[dict], int, int, int, int]]" = OrderedDict()
 
 
 def bump_prep_cache_limits_for_ram_mode() -> tuple[int, int, int]:
@@ -73,99 +71,6 @@ def bump_prep_cache_limits_for_ram_mode() -> tuple[int, int, int]:
     _REGISTRY_CACHE_MAX = max(int(_REGISTRY_CACHE_MAX), 128)
     _INIT_HEURISTIC_CACHE_MAX = max(int(_INIT_HEURISTIC_CACHE_MAX), 256)
     return int(_POOL_CACHE_MAX), int(_REGISTRY_CACHE_MAX), int(_INIT_HEURISTIC_CACHE_MAX)
-
-
-def _db_context_cache_max() -> int:
-    try:
-        raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_MAX")
-        if raw is not None and str(raw).strip() != "":
-            return max(0, int(raw))
-    except Exception as e:
-        logger.debug(f"native_inflight_prepare:_db_context_cache_max: {e}")
-    return 1024
-
-
-def _db_context_cache_ttl_s() -> float:
-    try:
-        raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_TTL_SEC")
-        if raw is not None and str(raw).strip() != "":
-            return max(0.0, float(raw))
-    except Exception as e:
-        logger.debug(f"native_inflight_prepare:_db_context_cache_ttl_s: {e}")
-    return 1.0
-
-
-def _resolve_baseline_team_buff_for_db(cfg) -> str:
-    """
-    Resolve the baseline TeamBuff tier for DB seed/context reads.
-
-    Default config is auto mode => T5, but this must not be hardcoded when users run
-    with manual TeamBuff settings.
-    """
-    try:
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
-
-        return resolve_baseline_team_buff_from_cfg(cfg)
-    except Exception as e:
-        logger.debug(f"native_inflight_prepare:_resolve_baseline_team_buff_for_db: {e}")
-        return "T5"
-
-
-def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict], int, int, int, int] | None:
-    key = (str(db_key or "").strip(), bool(use_evo_db))
-    if not key[0] or not key[1]:
-        return None
-    ttl_s = float(_db_context_cache_ttl_s())
-    try:
-        with _DB_CONTEXT_CACHE_LOCK:
-            entry = _DB_CONTEXT_CACHE.get(key)
-            if entry is None:
-                return None
-            ts, prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
-            if ttl_s > 0.0 and (time.monotonic() - float(ts)) > ttl_s:
-                _DB_CONTEXT_CACHE.pop(key, None)
-                return None
-            _DB_CONTEXT_CACHE.move_to_end(key)
-            rec = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
-            return rec, int(db_best_score), int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
-    except Exception as e:
-        logger.debug(f"native_inflight_prepare:_db_context_cache_get: {e}")
-        return None
-
-
-def _db_context_cache_put(
-    db_key: str,
-    use_evo_db: bool,
-    prev_record: Optional[dict],
-    db_best_score: int,
-    db_best_fg_score: int,
-    attempt_lifetime: int,
-    prev_attempts_first: int,
-) -> None:
-    key = (str(db_key or "").strip(), bool(use_evo_db))
-    if not key[0] or not key[1]:
-        return
-    try:
-        record_copy = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
-        with _DB_CONTEXT_CACHE_LOCK:
-            _DB_CONTEXT_CACHE[key] = (
-                float(time.monotonic()),
-                record_copy,
-                int(db_best_score or 0),
-                int(db_best_fg_score or 0),
-                int(attempt_lifetime or 0),
-                int(prev_attempts_first or 0),
-            )
-            _DB_CONTEXT_CACHE.move_to_end(key)
-            max_n = int(_db_context_cache_max())
-            if max_n <= 0:
-                _DB_CONTEXT_CACHE.clear()
-                return
-            while len(_DB_CONTEXT_CACHE) > max_n:
-                _DB_CONTEXT_CACHE.popitem(last=False)
-    except Exception as e:
-        logger.debug(f"native_inflight_prepare:_db_context_cache_put: {e}")
-        return
 
 
 def _cache_stats_enabled() -> bool:
@@ -249,27 +154,26 @@ def _prepare_song(task: tuple) -> _NativeSong:
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
-    task_key = _task_key(task)
-    ga_seed = _task_ga_seed(task)
-
-    (
-        fp,
-        found_song_name,
-        effective_difficulty,
-        cfg_dict,
-        paths,
-        ref_arrays,
-        all_gears,
-        all_minis,
-        gears_by_name,
-        minis_by_name,
-        use_evo_db,
-        auto_buff,
-        ga_depth,
-        _status_queue,
-        _parallel_workers,
-        fg_debug,
-    ) = task[:16]
+    task_view = task_tuple_to_legacy_view(task)
+    job = task_view.job
+    seed_plan = seed_plan_from_song_job(job)
+    task_key = seed_plan.queue_label
+    ga_seed = seed_plan.ga_seed
+    run_context = task_view.context
+    fp = job.file_path
+    found_song_name = job.song_name
+    effective_difficulty = job.difficulty
+    cfg_dict = run_context.cfg_dict
+    paths = run_context.paths
+    ref_arrays = run_context.ref_arrays
+    all_gears = run_context.all_gears
+    all_minis = run_context.all_minis
+    gears_by_name = run_context.gears_by_name
+    minis_by_name = run_context.minis_by_name
+    use_evo_db = run_context.use_evo_db
+    auto_buff = run_context.auto_buff
+    ga_depth = run_context.ga_depth
+    fg_debug = run_context.fg_debug
 
     cfg = cfg_from_dict(cfg_dict)
 
@@ -291,69 +195,49 @@ def _prepare_song(task: tuple) -> _NativeSong:
     meta_primary_color = str(calc_song.get("metadata", {}).get("Primary Color", "") or "")
     meta_secondary_color = str(calc_song.get("metadata", {}).get("Secondary Color", "") or "")
 
-    (
-        ga_settings,
-        fixed_stats,
-        _current_gear_stats,
-        current_gear_list,
-        _current_mini_stats,
-        current_mini_list,
-        _meta_finder,
-        _enable_fever,
-        enable_mini,
-        enable_gear,
-        _force_greats_mode,
-        force_greats_finder,
-        force_greats_config,
-        manual_force_greats,
-    ) = setup_song_config(cfg, calc_song, bool(auto_buff), paths, gears_by_name, minis_by_name)
+    prepared_config = build_prepared_song_config(
+        cfg=cfg,
+        calc_song=calc_song,
+        auto_buff=bool(auto_buff),
+        paths=paths,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+    )
+    ga_settings = prepared_config.ga_settings
+    fixed_stats = prepared_config.fixed_stats
+    current_gear_list = prepared_config.current_gear_list
+    current_mini_list = prepared_config.current_mini_list
+    enable_mini = prepared_config.enable_mini
+    enable_gear = prepared_config.enable_gear
+    force_greats_finder = prepared_config.force_greats_finder
+    force_greats_config = prepared_config.force_greats_config
+    manual_force_greats = prepared_config.manual_force_greats
 
     if not (enable_gear or enable_mini):
         raise RuntimeError("GPU-native in-flight currently requires MetaFinder (enable gear or minis).")
 
-    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
-
-    db_key = build_db_key(found_song_name, calc_song)
-
     # Load DB seed record only; full known-loadout hydration is deferred/prefetched
     # in FG prep to avoid redundant per-song DB reads during prepare.
-    allow_db_seed = True
-    db_best_score = 0
-    db_baseline_valid = not bool(use_evo_db)
-    cached_db_ctx = _db_context_cache_get(db_key, bool(use_evo_db))
-    if cached_db_ctx is not None:
-        prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached_db_ctx
-        db_baseline_valid = True
-    else:
-        (
-            prev_record,
-            _known_loadouts,
-            db_best_score,
-            db_best_fg_score,
-            attempt_lifetime,
-            prev_attempts_first,
-            db_baseline_valid,
-        ) = load_database_progress_baseline(
-            db_key,
-            bool(use_evo_db),
-            gears_by_name,
-            minis_by_name,
-            load_known_loadouts=False,
-            allow_fallback=False,
-            team_buff=_resolve_baseline_team_buff_for_db(cfg),
-        )
-        if bool(db_baseline_valid):
-            _db_context_cache_put(
-                db_key,
-                bool(use_evo_db),
-                prev_record,
-                int(db_best_score),
-                int(db_best_fg_score),
-                int(attempt_lifetime),
-                int(prev_attempts_first),
-            )
-        else:
-            allow_db_seed = False
+    db_context = load_prepared_song_db_context(
+        found_song_name=found_song_name,
+        calc_song=calc_song,
+        cfg=cfg,
+        cfg_dict=cfg_dict,
+        use_evo_db=bool(use_evo_db),
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        load_known_loadouts=False,
+        allow_fallback=False,
+        cache_seed_context=True,
+    )
+    db_key = db_context.db_key
+    prev_record = db_context.prev_record
+    db_best_score = db_context.db_best_score
+    db_best_fg_score = db_context.db_best_fg_score
+    attempt_lifetime = db_context.attempt_lifetime
+    prev_attempts_first = db_context.prev_attempts_first
+    db_baseline_valid = db_context.db_baseline_valid
+    allow_db_seed = db_context.allow_db_seed
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")

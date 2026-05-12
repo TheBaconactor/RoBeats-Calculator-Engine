@@ -15,9 +15,31 @@ from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_get, env_int, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.pipeline.song_processor import safe_process_song_task
+from gear_optimizer.domain.jobs import (
+    task_cfg_dict,
+    task_difficulty,
+    task_extras,
+    task_file_path,
+    task_ref_arrays,
+    task_song_name,
+    task_tuple_to_shared_context,
+    task_with_status_queue,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def safe_process_song_task(task):
+    """
+    Compatibility entrypoint for calculate-only / legacy process-pool execution.
+
+    Keep the old per-song pipeline out of the production native in-flight import
+    path; load it only when a compatibility branch actually executes.
+    """
+    from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task as _safe_process_song_task
+
+    return _safe_process_song_task(task)
+
 
 def _gpu_worker_initializer(registrations, counter, lock):
     """
@@ -64,7 +86,7 @@ class TaskExecutionMixin:
                 return
             inflight_songs = 0
             try:
-                cfg_dict0 = tasks[0][3] if tasks else {}
+                cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
                 ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
                 if isinstance(ie, dict):
                     inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
@@ -135,7 +157,7 @@ class TaskExecutionMixin:
             if not tasks:
                 return
 
-            cfg_dict0 = tasks[0][3] if tasks else {}
+            cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
             ie0 = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             raw_meta_finder = ie0.get("MetaFinder", ie0.get("metafinder", True)) if isinstance(ie0, dict) else True
             meta_finder_enabled = str(raw_meta_finder).strip().lower() in TRUTHY_ENV_VALUES
@@ -327,44 +349,27 @@ class TaskExecutionMixin:
                 return
 
             # Shared immutable context (pickle once per worker, not once per task).
-            (
-                _fp0,
-                _song0,
-                _diff0,
-                cfg_dict,
-                paths,
-                ref_arrays,
-                all_gears,
-                all_minis,
-                gears_by_name,
-                minis_by_name,
-                use_evo_db,
-                auto_buff,
-                ga_depth,
-                _status_queue,
-                parallel_workers,
-                fg_debug,
-            ) = tasks[0][:16]
+            run_context = task_tuple_to_shared_context(tasks[0])
             shared_ctx = (
-                cfg_dict,
-                paths,
-                ref_arrays,
-                all_gears,
-                all_minis,
-                gears_by_name,
-                minis_by_name,
-                use_evo_db,
-                auto_buff,
-                ga_depth,
-                parallel_workers,
-                fg_debug,
+                run_context.cfg_dict,
+                run_context.paths,
+                run_context.ref_arrays,
+                run_context.all_gears,
+                run_context.all_minis,
+                run_context.gears_by_name,
+                run_context.minis_by_name,
+                run_context.use_evo_db,
+                run_context.auto_buff,
+                run_context.ga_depth,
+                run_context.parallel_workers,
+                run_context.fg_debug,
             )
 
             # Coordinator-owned completion state.
             task_key_to_song_name: dict[str, str] = {}
             for t in tasks:
                 try:
-                    task_key_to_song_name[_task_key(t)] = str(t[1] or "").strip()
+                    task_key_to_song_name[_task_key(t)] = task_song_name(t)
                 except Exception as e:
                     logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
                     continue
@@ -383,18 +388,18 @@ class TaskExecutionMixin:
                 work_items: list[tuple] = []
                 for t in shard:
                     try:
-                        fp = t[0]
-                        song_name = t[1]
-                        diff = t[2]
+                        fp = task_file_path(t)
+                        song_name = task_song_name(t)
+                        diff = task_difficulty(t)
                     except Exception as e:
                         logger.debug(f"task_execution:_run_dual_process_inflight: {e}")
                         continue
-                    extras = list(t[16:]) if isinstance(t, (tuple, list)) and len(t) > 16 else []
+                    extras = list(task_extras(t))
                     work_items.append((fp, song_name, diff, extras))
 
                 inflight_limit = max(1, min(int(inflight_songs or 1), int(len(shard))))
                 thread_overrides = recommend_dual_process_inflight_thread_overrides(
-                    cfg_dict if isinstance(cfg_dict, dict) else None,
+                    run_context.cfg_dict if isinstance(run_context.cfg_dict, dict) else None,
                     inflight_limit=int(inflight_limit),
                     instances=int(instances),
                     logical_cpus=os.cpu_count() or 1,
@@ -651,7 +656,7 @@ class TaskExecutionMixin:
         ):
             ref_arrays = None
             try:
-                ref_arrays = tasks[0][5] if tasks and len(tasks[0]) > 5 else None
+                ref_arrays = task_ref_arrays(tasks[0]) if tasks else None
             except Exception as e:
                 logger.debug(f"task_execution:_run_parallel: {e}")
                 ref_arrays = None
@@ -917,10 +922,7 @@ class TaskExecutionMixin:
                     remaining_songs = [t for t in tasks if self._task_queue_label(t) not in completed_songs]
                     remaining_tasks = []
                     for t in remaining_songs:
-                        # Recreate tuple with new status queue
-                        new_t = list(t)
-                        new_t[13] = status_queue
-                        remaining_tasks.append(tuple(new_t))
+                        remaining_tasks.append(task_with_status_queue(t, status_queue))
 
                     current_worker_cap = max(1, effective_workers - 1)
 
@@ -1217,4 +1219,3 @@ class TaskExecutionMixin:
 
             if failed > 0:
                 logger.warning(f"[SUMMARY] {failed}/{total} songs failed.")
-

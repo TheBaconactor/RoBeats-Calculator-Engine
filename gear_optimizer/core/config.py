@@ -132,6 +132,76 @@ def _parse_cfg_int(raw: Any) -> int:
 _parse_cfg_int.__name__ = "getint"
 
 
+_CFG_ALIAS_WARNED: set[tuple[str, str, str]] = set()
+_GPU_FIRST_FLAG_WARNED: set[str] = set()
+
+
+def _cfg_has_option(cfg: Any, section: str, key: str) -> bool:
+    try:
+        return bool(cfg.has_option(section, key))
+    except (AttributeError, TypeError, ValueError, configparser.Error):
+        return False
+
+
+def _warn_legacy_cfg_alias(section: str, legacy_key: str, canonical_key: str) -> None:
+    warn_key = (str(section), str(legacy_key), str(canonical_key))
+    if warn_key in _CFG_ALIAS_WARNED:
+        return
+    _CFG_ALIAS_WARNED.add(warn_key)
+    logging.warning(
+        "[Config] IterationEngine.%s is deprecated; use IterationEngine.%s.",
+        legacy_key,
+        canonical_key,
+    )
+
+
+def _warn_gpu_first_noop_flag(key: str) -> None:
+    key_s = str(key)
+    if key_s in _GPU_FIRST_FLAG_WARNED:
+        return
+    _GPU_FIRST_FLAG_WARNED.add(key_s)
+    logging.warning("[GPU] IterationEngine.%s=false ignored (GPU-first production policy).", key_s)
+
+
+def cfg_get_int_alias(
+    cfg: Any,
+    section: str,
+    canonical_key: str,
+    legacy_key: str,
+    default: int,
+    *,
+    clamp_min=None,
+    clamp_max=None,
+) -> int:
+    if _cfg_has_option(cfg, section, canonical_key):
+        return cfg_get_int(
+            cfg,
+            section,
+            canonical_key,
+            default,
+            clamp_min=clamp_min,
+            clamp_max=clamp_max,
+        )
+    if _cfg_has_option(cfg, section, legacy_key):
+        _warn_legacy_cfg_alias(section, legacy_key, canonical_key)
+        return cfg_get_int(
+            cfg,
+            section,
+            legacy_key,
+            default,
+            clamp_min=clamp_min,
+            clamp_max=clamp_max,
+        )
+    return cfg_get_int(
+        cfg,
+        section,
+        canonical_key,
+        default,
+        clamp_min=clamp_min,
+        clamp_max=clamp_max,
+    )
+
+
 def _parse_cfg_float(raw: Any) -> float:
     sentinel = object()
     parsed = safe_float(raw, sentinel)
@@ -414,8 +484,12 @@ class GPUExecutionSettings:
     def from_config(cls, cfg: Any) -> "GPUExecutionSettings":
         if cfg is None:
             return cls()
-        cfg_get_bool(cfg, "IterationEngine", "GPU_Mode", True)
-        cfg_get_bool(cfg, "IterationEngine", "GPU_Native_GA", True)
+        gpu_mode_requested = cfg_get_bool(cfg, "IterationEngine", "GPU_Mode", True)
+        gpu_native_requested = cfg_get_bool(cfg, "IterationEngine", "GPU_Native_GA", True)
+        if not gpu_mode_requested:
+            _warn_gpu_first_noop_flag("GPU_Mode")
+        if not gpu_native_requested:
+            _warn_gpu_first_noop_flag("GPU_Native_GA")
         gpu_song_slots = cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0, clamp_min=0)
         ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
         # GPU-first policy: runtime executes with GPU enabled.
@@ -481,7 +555,14 @@ class GASettings:
             "artifacts/ga_trace",
         )
         convergence_trace_song_filter = cfg_get(cfg, "IterationEngine", "GAConvergenceTraceSongFilter", str, "")
-        search_depth = cfg_get_int(cfg, "IterationEngine", "GA_Depth", 50, clamp_min=1)
+        search_depth = cfg_get_int_alias(
+            cfg,
+            "IterationEngine",
+            "GA_SearchDepth",
+            "GA_Depth",
+            50,
+            clamp_min=1,
+        )
         multi_start = cfg_get_int(
             cfg,
             "IterationEngine",

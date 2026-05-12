@@ -10,6 +10,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline import post_processor
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+    from gear_optimizer.solver import native_inflight_result_events as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_exact_authority.db"
@@ -45,12 +46,12 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     inflated_score = raw_exact_score + 12345
 
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "select_effective_unique_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
-        orchestrator,
+        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),
@@ -167,7 +168,7 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     monkeypatch.setattr(post_processor, "print_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.get_base_calc_song",
+        "gear_optimizer.data.song_io.get_base_calc_song",
         lambda _fp, _cfg: calc_song,
     )
     monkeypatch.setattr(

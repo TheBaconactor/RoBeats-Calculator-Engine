@@ -23,6 +23,14 @@ from gear_optimizer.helpers.song_helpers.persistence import (
     make_build_details_fn,
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
+from gear_optimizer.pipeline.post_processor_fg_variants import (
+    best_fg_improving_score_from_variants as _best_fg_improving_score_from_variants,
+    best_fg_improving_score_from_persist_entries as _best_fg_improving_score_from_persist_entries,
+    fg_variants_from_persist_entries as _fg_variants_from_persist_entries,
+)
+from gear_optimizer.pipeline.post_processor_fg_updates import (
+    canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
+)
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
@@ -162,133 +170,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     pending_final_print: dict[str, dict] = {}
     pending_fg_summary: dict[str, dict] = {}
 
-    def _best_fg_improving_score_from_variants(variants: list[dict]) -> int:
-        best = 0
-        for v in variants or []:
-            if not isinstance(v, dict):
-                continue
-            data = v.get("data") or {}
-            if not isinstance(data, dict):
-                data = {}
-            fg_meta = data.get("ForceGreats") or {}
-            if not isinstance(fg_meta, dict):
-                fg_meta = {}
-            cfg = fg_meta.get("config") or {}
-            if (
-                not isinstance(cfg, dict)
-                or sum([(int(x) if isinstance(x, (int, float)) else 0) for x in cfg.values()]) <= 0
-            ):
-                continue
-            try:
-                fg_score = int(v.get("fg_score", 0) or 0)
-            except Exception as e:
-                logger.warning(f"post_processor:_best_fg_improving_score_from_variants: {e}")
-                fg_score = 0
-            base_score = v.get("base_score")
-            if base_score is None:
-                base_score = v.get("score", 0)
-            try:
-                base_score_i = int(base_score or 0)
-            except Exception as e:
-                logger.warning(f"post_processor:_best_fg_improving_score_from_variants: {e}")
-                base_score_i = 0
-            if fg_score <= base_score_i:
-                continue
-            if fg_score > best:
-                best = fg_score
-        return int(best)
-
-    def _fg_variants_from_persist_entries(entries: list[dict]) -> list[dict]:
-        variants: list[dict] = []
-        for e in entries or []:
-            if not isinstance(e, dict):
-                continue
-            details = e.get("details") or {}
-            if not isinstance(details, dict):
-                details = {}
-            try:
-                fg_score = int(e.get("fg_score", 0) or 0)
-            except Exception as e:
-                logger.warning(f"post_processor:_fg_variants_from_persist_entries: {e}")
-                fg_score = 0
-            try:
-                base_score = int(e.get("score", 0) or 0)
-            except Exception as e:
-                logger.warning(f"post_processor:_fg_variants_from_persist_entries: {e}")
-                base_score = 0
-            data = dict(details)
-            data["Score"] = fg_score or base_score
-            variants.append(
-                {
-                    "data": data,
-                    "gear": e.get("gear") or [],
-                    "minis": e.get("minis") or [],
-                    "score": base_score,
-                    "fg_score": fg_score,
-                    "_is_ga": bool(e.get("_is_ga")),
-                }
-            )
-        return variants
-
-    def _canonicalize_fg_update_entries(
-        entries: list[dict],
-        *,
-        file_path: str,
-        cfg_dict_local: dict[str, Any],
-        ref_arrays_local: Any,
-        song_name: str,
-    ) -> list[dict]:
-        if not entries:
-            return []
-        fp = str(file_path or "").strip()
-        if not fp:
-            logger.warning("[POST][FG] Skipping FG deferred save for %s: missing file_path", song_name)
-            return []
-
-        cfg_local = dict(cfg_dict_local) if isinstance(cfg_dict_local, dict) else {}
-        try:
-            from gear_optimizer.pipeline.song_processor import get_base_calc_song
-
-            calc_song = get_base_calc_song(fp, cfg_local)
-        except Exception as e:
-            logger.warning(f"post_processor:_canonicalize_fg_update_entries: {e}")
-            logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song load failed", song_name)
-            return []
-        if not isinstance(calc_song, dict) or not calc_song:
-            logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song unavailable", song_name)
-            return []
-
-        resolved_ref_arrays = ref_arrays_local
-        if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
-            try:
-                from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-
-                resolved_ref_arrays = _get_team_buff_ref_arrays_cached()
-            except Exception as e:
-                logger.warning(f"post_processor:_canonicalize_fg_update_entries: {e}")
-                resolved_ref_arrays = None
-        if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
-            logger.warning("[POST][FG] Skipping FG deferred save for %s: ref_arrays unavailable", song_name)
-            return []
-
-        try:
-            from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
-
-            return canonicalize_baseline_persist_entries(
-                list(entries),
-                calc_song=calc_song,
-                ref_arrays=resolved_ref_arrays,
-                cfg_dict=cfg_local,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[POST][FG] Skipping FG deferred save for %s: canonicalization failed (%s: %s)",
-                song_name,
-                type(exc).__name__,
-                exc,
-            )
-            return []
-
     def _print_pending_final(song: str) -> None:
         payload = pending_final_print.get(song)
         if not payload:
@@ -385,8 +266,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     persisted = _canonicalize_fg_update_entries(
                         persisted,
                         file_path=str(item.get("file_path") or ""),
-                        cfg_dict_local=item.get("cfg_dict") or {},
-                        ref_arrays_local=item.get("ref_arrays"),
+                        cfg_dict=item.get("cfg_dict") or {},
+                        ref_arrays=item.get("ref_arrays"),
                         song_name=str(song_name),
                     )
                     valid_entries = [
@@ -434,26 +315,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 # `fg_score` can equal `score` when the optimal FG config is "no forced greats"
                 # (config all zeros). For reporting, treat "best FG" as the best *improving* FG
                 # result that has a valid force payload, matching DB `best_fg_score` semantics.
-                best_fg_improving = 0
-                for e in valid_entries:
-                    if not isinstance(e, dict):
-                        continue
-                    try:
-                        score = int(e.get("score", 0) or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        score = 0
-                    try:
-                        fg_score = int(e.get("fg_score", 0) or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        fg_score = 0
-                    if fg_score <= score:
-                        continue
-                    if not e.get("force"):
-                        continue
-                    if fg_score > best_fg_improving:
-                        best_fg_improving = fg_score
+                best_fg_improving = _best_fg_improving_score_from_persist_entries(valid_entries)
                 fg_state["best_fg"] = int(best_fg_improving)
                 fg_state["fg_variants"] = _fg_variants_from_persist_entries(valid_entries)
                 pending_fg_summary[song_name] = fg_state

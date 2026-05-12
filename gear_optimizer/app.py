@@ -38,7 +38,12 @@ from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
 )
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.pipeline.song_processor import scan_song_header
+from gear_optimizer.domain.jobs import (
+    effective_task_count,
+    extract_repeat_context,
+    task_queue_label,
+)
+from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
@@ -1390,14 +1395,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     @staticmethod
     def _extract_repeat_ctx(task) -> dict | None:
-        if not isinstance(task, (tuple, list)) or len(task) <= 16:
-            return None
-        for extra in task[16:]:
-            if not isinstance(extra, dict):
-                continue
-            if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
-                return extra
-        return None
+        return extract_repeat_context(task)
 
     @staticmethod
     def _effective_total_tasks(tasks: list) -> int:
@@ -1408,46 +1406,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         - Bundled repeats (`BundleSongRepeats=true`): each queued tuple expands into N repeat runs;
           count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
         """
-        if not isinstance(tasks, list) or not tasks:
-            return 0
-        total = 0
-        for task in tasks:
-            repeats = 1
-            try:
-                if isinstance(task, (tuple, list)) and len(task) > 16:
-                    for extra in task[16:]:
-                        if not isinstance(extra, dict) or not bool(extra.get("repeat_bundle")):
-                            continue
-                        try:
-                            repeats = int(extra.get("repeat_total") or 0)
-                        except (ValueError, TypeError):
-                            repeats = 0
-                        if repeats <= 0:
-                            runs = extra.get("runs")
-                            repeats = len(runs) if isinstance(runs, list) else 0
-                        repeats = max(1, int(repeats))
-                        break
-            except Exception as e:
-                logger.warning(f"app:_effective_total_tasks: {e}")
-                repeats = 1
-            total += max(1, int(repeats))
-        return max(0, int(total))
+        return effective_task_count(tasks)
 
     def _task_queue_label(self, task) -> str:
-        if not isinstance(task, (tuple, list)) or len(task) < 2:
-            return "Unknown"
-        base = str(task[1])
-        repeat_ctx = self._extract_repeat_ctx(task)
-        if repeat_ctx:
-            try:
-                idx = int(repeat_ctx.get("repeat_index") or 0)
-                total = int(repeat_ctx.get("repeat_total") or 0)
-            except (ValueError, TypeError):
-                idx = 0
-                total = 0
-            if idx > 0 and total > 1:
-                return f"{base} (Run {idx}/{total})"
-        return base
+        return task_queue_label(task)
 
     def _fatal_gpu_errors_enabled(self) -> bool:
         raw = str(env_get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()

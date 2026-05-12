@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.pipeline.song_processor import get_base_calc_song
+from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
     TimelineFrontierCacheBuildResult,

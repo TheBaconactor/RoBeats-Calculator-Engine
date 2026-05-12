@@ -15,6 +15,7 @@ from typing import Any
 
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
+from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_prepare import bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
@@ -131,6 +132,81 @@ def _read_cpu_prewarm_lookahead(
     return max(0, min(int(lookahead), int(prep_limit), 32))
 
 
+def _read_inflight_worker_count(
+    cfg0: Any,
+    *,
+    config_key: str,
+    env_key: str,
+    inflight_limit: int,
+    kind: str,
+    ga_seed: str = "",
+) -> int:
+    workers = 0
+    if cfg0 is not None:
+        try:
+            workers = safe_int(cfg0.get("IterationEngine", str(config_key), fallback="0"), 0)
+        except (configparser.Error, ValueError, TypeError):
+            workers = 0
+    raw = env_get(str(env_key))
+    if raw is not None and str(raw).strip() != "":
+        try:
+            workers = int(raw)
+        except (ValueError, TypeError):
+            pass
+    if workers <= 0:
+        if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
+            return 1
+        workers = _default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
+    return max(1, int(workers))
+
+
+def _read_cpu_prewarm_workers(
+    cfg0: Any,
+    *,
+    inflight_limit: int,
+    cpu_prewarm_lookahead: int,
+) -> int:
+    if int(cpu_prewarm_lookahead) <= 0:
+        return 0
+    workers = 0
+    if cfg0 is not None:
+        try:
+            workers = safe_int(cfg0.get("IterationEngine", "InFlight_CPUPrewarmWorkers", fallback="0"), 0)
+        except (configparser.Error, ValueError, TypeError):
+            workers = 0
+    raw = env_get("INFLIGHT_CPU_PREWARM_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            workers = int(raw)
+        except (ValueError, TypeError):
+            pass
+    if workers <= 0:
+        workers = min(2, max(1, _default_worker_threads(inflight_limit=int(inflight_limit), kind="prep")))
+    return max(1, min(int(workers), int(cpu_prewarm_lookahead), 4))
+
+
+def _read_db_prefetch_workers(
+    cfg0: Any,
+    *,
+    fg_prep_workers: int,
+) -> int:
+    workers = 0
+    if cfg0 is not None:
+        try:
+            workers = safe_int(cfg0.get("IterationEngine", "InFlight_DBPrefetchWorkers", fallback="0"), 0)
+        except (configparser.Error, ValueError, TypeError):
+            workers = 0
+    raw = env_get("INFLIGHT_DB_PREFETCH_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            workers = int(raw)
+        except (ValueError, TypeError):
+            pass
+    if workers <= 0:
+        workers = max(1, min(int(fg_prep_workers), 4))
+    return max(1, int(workers))
+
+
 @dataclass(frozen=True)
 class InflightConfig:
     inflight_ram_mode: bool
@@ -145,7 +221,10 @@ class InflightConfig:
     ga_queue_limit: int
     prep_buffer_mult: int
     prep_limit: int
+    prep_workers: int
     cpu_prewarm_lookahead: int
+    cpu_prewarm_workers: int
+    decode_workers: int
     fg_aging_trigger_s: float
     fg_aging_hard_s: float
     fg_scheduler_norm: str
@@ -167,16 +246,87 @@ class InflightConfig:
     fg_hold_budget: int
     stage_profile_enabled: bool
     stage_profile_path: str | None
+    runtime: "InflightRuntimeSettings"
+    loop_observer: "InflightLoopObserverSettings"
     fg_decision_debug: bool
     fg_submit_debug: bool
 
 
-def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
-    cfg0 = None
+@dataclass(frozen=True)
+class InflightRuntimeSettings:
+    gpu_executor_init_timeout_sec: float
+    ga_queue_debug: bool
+
+
+def read_inflight_runtime_settings(
+    *,
+    env_get_fn=env_get,
+) -> InflightRuntimeSettings:
     try:
-        cfg0 = cfg_from_dict(tasks[0][3] or {})
-    except (KeyError, TypeError, ValueError):
-        cfg0 = None
+        gpu_executor_init_timeout_sec = float(env_get_fn("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
+    except (ValueError, TypeError):
+        gpu_executor_init_timeout_sec = 180.0
+
+    return InflightRuntimeSettings(
+        gpu_executor_init_timeout_sec=float(gpu_executor_init_timeout_sec),
+        ga_queue_debug=_truthy(env_get_fn("INFLIGHT_GA_QUEUE_DEBUG", "0")),
+    )
+
+
+def inflight_stall_debug_enabled(*, env_get_fn=env_get) -> bool:
+    return _truthy(env_get_fn("INFLIGHT_STALL_DEBUG", "0"))
+
+
+def inflight_shutdown_debug_enabled(*, env_get_fn=env_get) -> bool:
+    return _truthy(env_get_fn("INFLIGHT_SHUTDOWN_DEBUG", "0"))
+
+
+def first_task_config(tasks: list[tuple]) -> Any | None:
+    try:
+        return cfg_from_dict(task_cfg_dict(tasks[0]))
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class InflightLoopObserverSettings:
+    heartbeat_sec: float
+    throughput_sec: float
+    stage_profile_emit_sec: float
+    profile_max_songs: int
+
+
+def read_inflight_loop_observer_settings(
+    *,
+    env_get_fn=env_get,
+) -> InflightLoopObserverSettings:
+    try:
+        heartbeat_sec = float(env_get_fn("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
+    except (ValueError, TypeError):
+        heartbeat_sec = 0.0
+    try:
+        throughput_sec = float(env_get_fn("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
+    except (ValueError, TypeError):
+        throughput_sec = 0.0
+    try:
+        stage_profile_emit_sec = float(env_get_fn("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
+    except (ValueError, TypeError):
+        stage_profile_emit_sec = 0.0
+    try:
+        profile_max_songs = int(env_get_fn("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
+    except (ValueError, TypeError):
+        profile_max_songs = 0
+
+    return InflightLoopObserverSettings(
+        heartbeat_sec=float(heartbeat_sec),
+        throughput_sec=float(throughput_sec),
+        stage_profile_emit_sec=float(stage_profile_emit_sec),
+        profile_max_songs=max(0, int(profile_max_songs)),
+    )
+
+
+def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
+    cfg0 = first_task_config(tasks)
 
     inflight_ram_mode = False
     try:
@@ -278,6 +428,27 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
     cpu_prewarm_lookahead = _read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
+    ga_seed = str(env_get("GA_SEED") or "").strip()
+    prep_workers = _read_inflight_worker_count(
+        cfg0,
+        config_key="InFlight_PrepWorkers",
+        env_key="INFLIGHT_PREP_WORKERS",
+        inflight_limit=int(inflight_limit),
+        kind="prep",
+        ga_seed=ga_seed,
+    )
+    cpu_prewarm_workers = _read_cpu_prewarm_workers(
+        cfg0,
+        inflight_limit=int(inflight_limit),
+        cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
+    )
+    decode_workers = _read_inflight_worker_count(
+        cfg0,
+        config_key="InFlight_DecodeWorkers",
+        env_key="INFLIGHT_DECODE_WORKERS",
+        inflight_limit=int(inflight_limit),
+        kind="decode",
+    )
 
     fg_aging_trigger_ms = 750.0
     fg_aging_hard_ms = 2500.0
@@ -516,6 +687,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     fg_decision_debug = _truthy(env_get("INFLIGHT_FG_DECISION_DEBUG", "0"))
     fg_submit_debug = _truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
+    runtime = read_inflight_runtime_settings()
+    loop_observer = read_inflight_loop_observer_settings()
 
     return InflightConfig(
         inflight_ram_mode=inflight_ram_mode,
@@ -530,7 +703,10 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         ga_queue_limit=ga_queue_limit,
         prep_buffer_mult=prep_buffer_mult,
         prep_limit=prep_limit,
+        prep_workers=prep_workers,
         cpu_prewarm_lookahead=cpu_prewarm_lookahead,
+        cpu_prewarm_workers=cpu_prewarm_workers,
+        decode_workers=decode_workers,
         fg_aging_trigger_s=fg_aging_trigger_s,
         fg_aging_hard_s=fg_aging_hard_s,
         fg_scheduler_norm=fg_scheduler_norm,
@@ -552,6 +728,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_hold_budget=fg_hold_budget,
         stage_profile_enabled=stage_profile_enabled,
         stage_profile_path=stage_profile_path,
+        runtime=runtime,
+        loop_observer=loop_observer,
         fg_decision_debug=fg_decision_debug,
         fg_submit_debug=fg_submit_debug,
     )
