@@ -312,7 +312,7 @@ def main() -> int:
                 )
                 result = fg_download_global_best(int(args.genomes))
             else:
-                from gear_optimizer.solver.gpu_executor import GpuRequestType
+                from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
                 if gpu_client is None:
                     raise RuntimeError("executor mode requires gpu_client")

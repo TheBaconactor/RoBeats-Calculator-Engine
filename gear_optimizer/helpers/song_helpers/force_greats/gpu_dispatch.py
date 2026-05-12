@@ -198,7 +198,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         fg_reset_global_best,
         fg_download_global_best,
     )
-    from ....solver.gpu_executor import GpuRequestType
+    from ....solver.gpu_executor_types import GpuRequestType
 
     _emit_pre_finder_phase("imports_ready")
     # Lean-only FG pipeline:

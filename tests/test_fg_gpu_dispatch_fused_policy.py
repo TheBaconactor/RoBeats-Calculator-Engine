@@ -9,6 +9,15 @@ def test_gpu_dispatch_timing_envelope_telemetry_is_present():
     assert "timing_envelope_fg" in source
 
 
+def test_gpu_dispatch_uses_request_type_owner_without_loading_executor():
+    import inspect
+
+    source = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
+
+    assert "solver.gpu_executor_types import GpuRequestType" in source
+    assert "solver.gpu_executor import GpuRequestType" not in source
+
+
 def test_uses_timing_envelope_fg_detects_fg_timing_stream():
     calc_song = {
         "metadata": {"TimingEnvelopeApplied": True},
