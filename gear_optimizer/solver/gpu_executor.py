@@ -245,11 +245,6 @@ from gear_optimizer.solver.gpu_executor_timeline import execute_precompute_timel
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
-_REGISTRY_STATIC_HANDLE_CACHE = _static_handles.REGISTRY_STATIC_HANDLE_CACHE
-_clear_registry_static_handle_cache = _static_handles.clear_registry_static_handle_cache
-_minimize_calc_song_for_gpu_timeline_grid = _static_handles.minimize_calc_song_for_gpu_timeline_grid
-_registry_base_fixed_stats_sig = _static_handles.registry_base_fixed_stats_sig
-_registry_static_handle_entry = _static_handles.registry_static_handle_entry
 
 
 def is_gpu_worker_mode() -> bool:
@@ -261,14 +256,14 @@ def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
     _worker_response_router.reset()
     _worker_state.clear()
-    _clear_registry_static_handle_cache()
+    _static_handles.clear_registry_static_handle_cache()
 
 
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
     """Configure this process as a GPU worker (called after fork/spawn)."""
     _worker_response_router.restart()
     _worker_state.configure(worker_id, request_queue, response_queue)
-    _clear_registry_static_handle_cache()
+    _static_handles.clear_registry_static_handle_cache()
 
 
 class GpuExecutor:
@@ -2661,7 +2656,7 @@ def submit_gpu_solve_genomes_from_registry(
     """
     if not _worker_state.enabled:
         raise RuntimeError("submit_gpu_solve_genomes_from_registry called but not in worker mode")
-    entry = _registry_static_handle_entry(
+    entry = _static_handles.registry_static_handle_entry(
         item_stats=item_stats,
         slot_start=slot_start,
         slot_count=slot_count,

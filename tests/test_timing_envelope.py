@@ -126,14 +126,17 @@ def test_timeline_window_counter_matches_prepared_analysis_for_resolved_stats() 
 
 
 def test_gpu_registry_payload_preserves_timing_envelope_inputs() -> None:
-    from gear_optimizer.solver import gpu_executor
+    from gear_optimizer.solver.gpu_executor_static_handles import (
+        clear_registry_static_handle_cache,
+        registry_static_handle_entry,
+    )
 
     calc_song = _calc_song()
     apply_timing_envelope(calc_song)
     calc_song["metadata"]["HumanHitSimApplied"] = True
 
-    gpu_executor._REGISTRY_STATIC_HANDLE_CACHE.clear()
-    entry = gpu_executor._registry_static_handle_entry(
+    clear_registry_static_handle_cache()
+    entry = registry_static_handle_entry(
         item_stats=np.zeros((1, 5), dtype=np.int32),
         slot_start=np.zeros((1,), dtype=np.int32),
         slot_count=np.ones((1,), dtype=np.int32),
