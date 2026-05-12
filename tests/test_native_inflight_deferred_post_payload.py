@@ -1,5 +1,9 @@
 from gear_optimizer.solver.native_inflight_types import make_native_song
-from gear_optimizer.solver.native_inflight_result_events import build_native_song_error_payload, build_native_task_error_payload
+from gear_optimizer.solver.native_inflight_result_events import (
+    build_failed_fg_update_payload,
+    build_native_song_error_payload,
+    build_native_task_error_payload,
+)
 
 
 def test_native_song_error_payload_suppresses_bundle_progress():
@@ -49,6 +53,30 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
     assert payload["_error"] == "bad task"
     assert payload["_error_type"] == "ValueError"
     assert payload["_suppress_progress"] is True
+
+
+def test_failed_fg_update_payload_uses_result_event_owner_shape():
+    cfg_dict = {"IterationEngine": {"ForceGreatsFinder": True}}
+    song = make_native_song(
+        song_name="Failed FG Song",
+        task_key="failed-fg-song",
+        db_key="failed-fg-db",
+        fp="Data/Hard/failed_fg_song.txt",
+        cfg_dict=cfg_dict,
+        use_evo_db=True,
+    )
+
+    payload = build_failed_fg_update_payload(song)
+
+    assert payload == {
+        "_fg_update": True,
+        "song": "Failed FG Song",
+        "db_key": "failed-fg-db",
+        "use_evo_db": True,
+        "persist_entries": [],
+        "file_path": "Data/Hard/failed_fg_song.txt",
+        "cfg_dict": cfg_dict,
+    }
 
 
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):

@@ -64,6 +64,18 @@ def build_native_task_error_payload(
     return payload
 
 
+def build_failed_fg_update_payload(song: _NativeSong) -> dict[str, Any]:
+    return {
+        "_fg_update": True,
+        "song": song.config.song_name,
+        "db_key": song.config.db_key,
+        "use_evo_db": bool(song.config.use_evo_db),
+        "persist_entries": [],
+        "file_path": song.config.fp,
+        "cfg_dict": song.config.cfg_dict,
+    }
+
+
 def build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}

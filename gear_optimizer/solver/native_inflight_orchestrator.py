@@ -50,6 +50,7 @@ from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipel
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
 from gear_optimizer.solver.native_inflight_result_events import (
+    build_failed_fg_update_payload as _build_failed_fg_update_payload,
     build_native_song_error_payload as _build_native_song_error_payload,
     build_native_task_error_payload as _build_native_task_error_payload,
     fg_enabled_for_song as _fg_enabled_for_song,
@@ -1048,7 +1049,6 @@ def run_native_inflight_song_pipeline(
                 fut = fg_completion.future
                 t_submit = fg_completion.submit_t0
                 did_work = True
-                bundle_parent = getattr(fg_song.runtime.bundle, "bundle_parent_task", None)
                 fg_failed = False
                 try:
                     fut.result()
@@ -1087,17 +1087,7 @@ def run_native_inflight_song_pipeline(
                 if fg_failed:
                     try:
                         if post_sender is not None and bool(getattr(fg_song.runtime.bundle, "bundle_wait_for_fg", False)):
-                            post_sender.send(
-                                {
-                                    "_fg_update": True,
-                                    "song": fg_song.config.song_name,
-                                    "db_key": fg_song.config.db_key,
-                                    "use_evo_db": bool(fg_song.config.use_evo_db),
-                                    "persist_entries": [],
-                                    "file_path": fg_song.config.fp,
-                                    "cfg_dict": fg_song.config.cfg_dict,
-                                }
-                            )
+                            post_sender.send(_build_failed_fg_update_payload(fg_song))
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 # Release this song's reserved timeline slot now that FG is complete.
