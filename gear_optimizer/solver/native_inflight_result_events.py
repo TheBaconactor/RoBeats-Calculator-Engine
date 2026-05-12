@@ -64,16 +64,20 @@ def build_native_task_error_payload(
     return payload
 
 
-def build_failed_fg_update_payload(song: _NativeSong) -> dict[str, Any]:
+def build_fg_update_payload(song: _NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
     return {
         "_fg_update": True,
         "song": song.config.song_name,
         "db_key": song.config.db_key,
         "use_evo_db": bool(song.config.use_evo_db),
-        "persist_entries": [],
+        "persist_entries": list(persist_entries or []),
         "file_path": song.config.fp,
         "cfg_dict": song.config.cfg_dict,
     }
+
+
+def build_failed_fg_update_payload(song: _NativeSong) -> dict[str, Any]:
+    return build_fg_update_payload(song, persist_entries=[])
 
 
 def build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:

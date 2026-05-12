@@ -1,6 +1,7 @@
 from gear_optimizer.solver.native_inflight_types import make_native_song
 from gear_optimizer.solver.native_inflight_result_events import (
     build_failed_fg_update_payload,
+    build_fg_update_payload,
     build_native_song_error_payload,
     build_native_task_error_payload,
 )
@@ -77,6 +78,32 @@ def test_failed_fg_update_payload_uses_result_event_owner_shape():
         "file_path": "Data/Hard/failed_fg_song.txt",
         "cfg_dict": cfg_dict,
     }
+
+
+def test_fg_update_payload_uses_shared_result_event_shape():
+    cfg_dict = {"IterationEngine": {"ForceGreatsFinder": True}}
+    entries = [{"score": 101, "fg_score": 111}]
+    song = make_native_song(
+        song_name="FG Song",
+        task_key="fg-song",
+        db_key="fg-db",
+        fp="Data/Hard/fg_song.txt",
+        cfg_dict=cfg_dict,
+        use_evo_db=True,
+    )
+
+    payload = build_fg_update_payload(song, persist_entries=entries)
+
+    assert payload == {
+        "_fg_update": True,
+        "song": "FG Song",
+        "db_key": "fg-db",
+        "use_evo_db": True,
+        "persist_entries": entries,
+        "file_path": "Data/Hard/fg_song.txt",
+        "cfg_dict": cfg_dict,
+    }
+    assert payload["persist_entries"] is not entries
 
 
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):

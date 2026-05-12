@@ -21,7 +21,7 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker
 from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
-from gear_optimizer.solver.native_inflight_result_events import fg_enabled_for_song
+from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
@@ -856,19 +856,7 @@ def run_fg_job_sync(
                 logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     if post_sender is not None:
-        post_sender.send(
-            {
-                "_fg_update": True,
-                "song": getattr(song.config, "song_name", ""),
-                "db_key": getattr(song.config, "db_key", ""),
-                "use_evo_db": bool(getattr(song.config, "use_evo_db", True)),
-                "persist_entries": _build_fg_persist_entries(song),
-                # Allow downstream post-process / async DB hooks (e.g., TeamBuff tier leaderboards)
-                # to run without requiring ForceGreatsDebug (which ships large objects).
-                "file_path": getattr(song.config, "fp", ""),
-                "cfg_dict": getattr(song.config, "cfg_dict", None),
-            }
-        )
+        post_sender.send(build_fg_update_payload(song, persist_entries=_build_fg_persist_entries(song)))
 
 
 def score_fg_inside_ga(
