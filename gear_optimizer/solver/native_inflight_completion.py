@@ -152,3 +152,47 @@ def emit_deferred_post_payload(
             progress_tracker.emit_done_song_progress(progress_cb, song)
 
     return True
+
+
+def finish_deferred_fg_completion(
+    song: _NativeSong,
+    *,
+    fg_failed: bool,
+    completed_songs: set[str],
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+    advance_bundle: Callable[..., None],
+    progress_tracker=None,
+    progress_cb=None,
+) -> bool:
+    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+    if bundle_parent is not None and bool(getattr(song.runtime.bundle, "bundle_wait_for_fg", False)):
+        advance_bundle(
+            bundle_parent,
+            song_name=str(song.config.song_name),
+            record_info=getattr(song.runtime.db, "record_info", None),
+            failed=bool(fg_failed),
+        )
+        try:
+            song.runtime.bundle.bundle_wait_for_fg = False
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:finish_deferred_fg_completion: {e}")
+        return True
+
+    if bool(getattr(song.runtime.post, "await_fg_completion_progress", False)):
+        mark_song_completed(
+            completed_songs=completed_songs,
+            task_key=song.config.task_key,
+            song_name=song.config.song_name,
+            memory_resume_tracker=memory_resume_tracker,
+            bundle_completed_cb=bundle_completed_cb,
+        )
+        if progress_tracker is not None:
+            progress_tracker.emit_done_song_progress(progress_cb, song)
+        try:
+            song.runtime.post.await_fg_completion_progress = False
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:finish_deferred_fg_completion: {e}")
+        return True
+
+    return False

@@ -58,6 +58,7 @@ from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgress
 from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     emit_deferred_post_payload as _emit_deferred_post_payload_once,
+    finish_deferred_fg_completion,
     has_waitable_work,
     mark_song_completed,
 )
@@ -1110,30 +1111,16 @@ def run_native_inflight_song_pipeline(
                     cpu_seconds=getattr(fg_song.runtime.fg, "cpu_fg_run_s", None),
                     song=fg_song.config.task_key,
                 )
-                if bundle_parent is not None and bool(getattr(fg_song.runtime.bundle, "bundle_wait_for_fg", False)):
-                    _advance_bundle(
-                        bundle_parent,
-                        song_name=str(fg_song.config.song_name),
-                        record_info=getattr(fg_song.runtime.db, "record_info", None),
-                        failed=bool(fg_failed),
-                    )
-                    try:
-                        fg_song.runtime.bundle.bundle_wait_for_fg = False
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                elif bool(getattr(fg_song.runtime.post, "await_fg_completion_progress", False)):
-                    mark_song_completed(
-                        completed_songs=completed_songs,
-                        task_key=fg_song.config.task_key,
-                        song_name=fg_song.config.song_name,
-                        memory_resume_tracker=memory_resume_tracker,
-                        bundle_completed_cb=bundle_completed_cb,
-                    )
-                    progress_tracker.emit_done_song_progress(progress_cb, fg_song)
-                    try:
-                        fg_song.runtime.post.await_fg_completion_progress = False
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                finish_deferred_fg_completion(
+                    fg_song,
+                    fg_failed=bool(fg_failed),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    bundle_completed_cb=bundle_completed_cb,
+                    advance_bundle=_advance_bundle,
+                    progress_tracker=progress_tracker,
+                    progress_cb=progress_cb,
+                )
 
             fg_oldest_wait_s = 0.0
             try:

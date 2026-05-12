@@ -3,6 +3,7 @@ from concurrent.futures import Future
 from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     emit_deferred_post_payload,
+    finish_deferred_fg_completion,
     has_waitable_work,
     mark_song_completed,
 )
@@ -162,3 +163,70 @@ def test_emit_deferred_post_payload_defers_completion_when_fg_drain_is_required(
     assert posted[0]["_persist_pending_fg_job"] is False
     assert song.runtime.post.await_fg_completion_progress is True
     assert completed == set()
+
+
+def test_finish_deferred_fg_completion_advances_waiting_bundle():
+    parent = object()
+    song = make_native_song(song_name="Song Bundle FG", task_key="song-bundle-fg")
+    song.runtime.bundle.bundle_parent_task = parent
+    song.runtime.bundle.bundle_wait_for_fg = True
+    song.runtime.db.record_info = {"improved": True}
+    advanced = []
+
+    finished = finish_deferred_fg_completion(
+        song,
+        fg_failed=True,
+        completed_songs=set(),
+        advance_bundle=lambda *args, **kwargs: advanced.append((args, kwargs)),
+    )
+
+    assert finished is True
+    assert song.runtime.bundle.bundle_wait_for_fg is False
+    assert advanced == [
+        (
+            (parent,),
+            {
+                "song_name": "Song Bundle FG",
+                "record_info": {"improved": True},
+                "failed": True,
+            },
+        )
+    ]
+
+
+def test_finish_deferred_fg_completion_marks_drain_at_end_song_done():
+    song = make_native_song(song_name="Song Drain FG", task_key="song-drain-fg")
+    song.runtime.post.await_fg_completion_progress = True
+    completed = set()
+    memory = _MemoryResumeTracker()
+    progress = _ProgressTracker()
+
+    finished = finish_deferred_fg_completion(
+        song,
+        fg_failed=False,
+        completed_songs=completed,
+        memory_resume_tracker=memory,
+        bundle_completed_cb=None,
+        advance_bundle=lambda *_args, **_kwargs: None,
+        progress_tracker=progress,
+        progress_cb="progress-cb",
+    )
+
+    assert finished is True
+    assert song.runtime.post.await_fg_completion_progress is False
+    assert completed == {"song-drain-fg"}
+    assert memory.completed == ["Song Drain FG"]
+    assert progress.done == [("progress-cb", "song-drain-fg")]
+
+
+def test_finish_deferred_fg_completion_noops_when_no_completion_is_pending():
+    song = make_native_song(song_name="Song Idle", task_key="song-idle")
+
+    finished = finish_deferred_fg_completion(
+        song,
+        fg_failed=False,
+        completed_songs=set(),
+        advance_bundle=lambda *_args, **_kwargs: None,
+    )
+
+    assert finished is False
