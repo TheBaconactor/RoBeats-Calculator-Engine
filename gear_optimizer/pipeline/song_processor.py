@@ -149,6 +149,43 @@ class SongContext:
 
 
 @dataclass
+class PreloadedSkylineAssets:
+    """
+    CPU-only song assets prepared while the previous song is using the GPU.
+
+    This object intentionally stops before DB/progress side effects. It contains
+    parsed timing data, runtime config/setup output, and the immutable solver
+    registry/context arrays that would otherwise be built immediately before the
+    next skyline GPU phase.
+    """
+
+    fp: str
+    cfg_hash: str
+    cfg: Any
+    calc_song: dict[str, Any]
+    stage_timing: dict[str, float]
+    solver_settings: Any
+    fixed_stats: dict[str, Any]
+    current_gear_stats: dict[str, Any]
+    current_gear_list: list[dict]
+    current_mini_stats: dict[str, Any]
+    current_mini_list: list[dict]
+    meta_finder: bool
+    enable_fever: bool
+    enable_mini: bool
+    enable_gear: bool
+    force_greats_mode: bool
+    force_greats_finder: bool
+    force_greats_config: Any
+    manual_force_greats: bool
+    meta_primary_color: str
+    meta_secondary_color: str
+    baseline_team_buff: str
+    db_key: str
+    solver_ctx: SolverContext | None = None
+
+
+@dataclass
 class OuterSearchResult:
     best_data: dict[str, Any] | None
     best_gear: list[dict]
@@ -317,6 +354,180 @@ def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
     with _BASE_CALC_SONG_CACHE_LOCK:
         _BASE_CALC_SONG_CACHE[key] = (int(mtime_ns), base)
     return base
+
+
+def _task_asset_key(fp: str, cfg_dict: dict | None) -> tuple[str, str]:
+    return (os.path.abspath(str(fp or "")), _stable_cfg_hash(cfg_dict))
+
+
+def _assets_match_task(assets: PreloadedSkylineAssets | None, fp: str, cfg_dict: dict | None) -> bool:
+    if assets is None:
+        return False
+    try:
+        return (str(assets.fp), str(assets.cfg_hash)) == _task_asset_key(fp, cfg_dict)
+    except Exception as e:
+        logger.warning(f"song_processor:_assets_match_task: {e}")
+        return False
+
+
+def _ensure_chart_timestamp_alias(calc_song: dict[str, Any]) -> None:
+    try:
+        song_data = calc_song.get("song_data", {}) or {}
+        if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
+            song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
+    except Exception as e:
+        logger.warning(f"song_processor:_ensure_chart_timestamp_alias: {e}")
+
+
+def _apply_runtime_timing_envelope(
+    calc_song: dict[str, Any],
+    *,
+    stage_timing: dict[str, float],
+    emit: Callable[[str], None] | None,
+    announce: bool,
+) -> None:
+    try:
+        from ..solver.timing_envelope import apply_timing_envelope
+
+        t_sim0 = time.perf_counter()
+        sim_info = apply_timing_envelope(calc_song)
+        if sim_info is not None:
+            stage_timing["cpu_timing_envelope_sec"] = time.perf_counter() - t_sim0
+            if announce:
+                msg = (
+                    f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
+                    f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
+                )
+                if emit is not None:
+                    emit(msg)
+                else:
+                    print(msg)
+    except Exception as e:
+        logger.warning(f"song_processor:_apply_runtime_timing_envelope: {e}")
+
+
+def preload_skyline_song_assets(args: Any) -> PreloadedSkylineAssets | None:
+    """
+    Prepare CPU-only assets for a song before the main GPU path reaches it.
+
+    The preloader is intentionally side-effect-light: it does not query/update
+    DB progress, emit run-start messages, persist, or print final output. It is
+    safe to discard; `process_song_task()` falls back to the normal path if the
+    preloaded object is absent or mismatched.
+    """
+    args_list = list(args) if isinstance(args, (list, tuple)) else [args]
+    if len(args_list) < 16:
+        return None
+    (
+        fp,
+        _found_song_name,
+        _effective_difficulty,
+        cfg_dict,
+        paths,
+        ref_arrays,
+        all_gears,
+        all_minis,
+        gears_by_name,
+        minis_by_name,
+        _use_evo_db,
+        auto_buff,
+        _solver_depth,
+        _status_queue,
+        _parallel_workers,
+        _fg_debug,
+    ) = args_list[:16]
+
+    stage_timing: dict[str, float] = {}
+    asset_fp, asset_cfg_hash = _task_asset_key(str(fp), cfg_dict if isinstance(cfg_dict, dict) else None)
+    cfg = cfg_from_dict(cfg_dict)
+
+    t_read0 = time.perf_counter()
+    base_calc_song = get_base_calc_song(str(fp), cfg_dict if isinstance(cfg_dict, dict) else None)
+    calc_song = clone_calc_song(base_calc_song)
+    stage_timing["cpu_read_sec"] = time.perf_counter() - t_read0
+    _ensure_chart_timestamp_alias(calc_song)
+    _apply_runtime_timing_envelope(calc_song, stage_timing=stage_timing, emit=None, announce=False)
+
+    meta_primary_color = str(calc_song.get("metadata", {}).get("Primary Color", "") or "")
+    meta_secondary_color = str(calc_song.get("metadata", {}).get("Secondary Color", "") or "")
+
+    t_setup0 = time.perf_counter()
+    (
+        solver_settings,
+        fixed_stats,
+        current_gear_stats,
+        current_gear_list,
+        current_mini_stats,
+        current_mini_list,
+        meta_finder,
+        enable_fever,
+        enable_mini,
+        enable_gear,
+        force_greats_mode,
+        force_greats_finder,
+        force_greats_config,
+        manual_force_greats,
+    ) = setup_song_config(cfg, calc_song, bool(auto_buff), paths, gears_by_name, minis_by_name)
+    stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
+
+    try:
+        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+
+        baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
+    except Exception as e:
+        logger.warning(f"song_processor:preload_skyline_song_assets: {e}")
+        baseline_team_buff = "T5"
+
+    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+
+    db_key = build_db_key(str(_found_song_name), calc_song)
+
+    solver_ctx: SolverContext | None = None
+    if bool(enable_gear) or bool(enable_mini):
+        t_solver_ctx0 = time.perf_counter()
+        solver_ctx = prepare_solver_context(
+            cfg,
+            fixed_stats,
+            calc_song,
+            ref_arrays,
+            all_gears,
+            all_minis,
+            optimize_gear=bool(enable_gear),
+            optimize_minis=bool(enable_mini),
+            fixed_gear=current_gear_list,
+            fixed_minis=current_mini_list,
+            pre_prune_mode="none",
+            status_cb=None,
+            song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
+        )
+        stage_timing["cpu_solver_context_prep_sec"] = time.perf_counter() - t_solver_ctx0
+
+    return PreloadedSkylineAssets(
+        fp=asset_fp,
+        cfg_hash=asset_cfg_hash,
+        cfg=cfg,
+        calc_song=calc_song,
+        stage_timing=stage_timing,
+        solver_settings=solver_settings,
+        fixed_stats=fixed_stats,
+        current_gear_stats=current_gear_stats,
+        current_gear_list=current_gear_list,
+        current_mini_stats=current_mini_stats,
+        current_mini_list=current_mini_list,
+        meta_finder=bool(meta_finder),
+        enable_fever=bool(enable_fever),
+        enable_mini=bool(enable_mini),
+        enable_gear=bool(enable_gear),
+        force_greats_mode=bool(force_greats_mode),
+        force_greats_finder=bool(force_greats_finder),
+        force_greats_config=force_greats_config,
+        manual_force_greats=bool(manual_force_greats),
+        meta_primary_color=meta_primary_color,
+        meta_secondary_color=meta_secondary_color,
+        baseline_team_buff=str(baseline_team_buff or "T5"),
+        db_key=db_key,
+        solver_ctx=solver_ctx,
+    )
 
 
 def _prune_song_header_cache_locked() -> None:
@@ -584,16 +795,24 @@ def _setup_song_context(
     fg_debug: bool,
     defer_post: bool,
     preloaded_calc_song: dict[str, Any] | None,
+    preloaded_assets: PreloadedSkylineAssets | None,
     repeat_index: int,
     repeat_total: int,
     solver_seed: int | None,
     emit: Callable[[str], None],
     stage_timing: dict[str, float],
 ) -> SongContext:
-    cfg = cfg_from_dict(cfg_dict)
+    use_assets = _assets_match_task(preloaded_assets, fp, cfg_dict)
+    cfg = preloaded_assets.cfg if use_assets and preloaded_assets is not None else cfg_from_dict(cfg_dict)
     gpu_mode = True
 
-    if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
+    solver_ctx: SolverContext | None = None
+    if use_assets and preloaded_assets is not None:
+        calc_song = preloaded_assets.calc_song
+        stage_timing.update(dict(preloaded_assets.stage_timing or {}))
+        stage_timing.setdefault("cpu_read_sec", 0.0)
+        solver_ctx = preloaded_assets.solver_ctx
+    elif isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
         calc_song = clone_calc_song(preloaded_calc_song)
         stage_timing["cpu_read_sec"] = 0.0
     else:
@@ -602,63 +821,61 @@ def _setup_song_context(
         calc_song = clone_calc_song(base_calc_song)
         stage_timing["cpu_read_sec"] = time.perf_counter() - t_read0
 
-    try:
-        song_data = calc_song.get("song_data", {}) or {}
-        if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
-            song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-
-    try:
-        from ..solver.timing_envelope import apply_timing_envelope
-
-        t_sim0 = time.perf_counter()
-        sim_info = apply_timing_envelope(calc_song)
-        if sim_info is not None:
-            stage_timing["cpu_timing_envelope_sec"] = time.perf_counter() - t_sim0
-            try:
-                print(
-                    f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
-                    f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
-                )
-            except Exception as e:
-                logger.warning(f"song_processor:_setup_song_context: {e}")
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
+    _ensure_chart_timestamp_alias(calc_song)
+    if not use_assets:
+        _apply_runtime_timing_envelope(calc_song, stage_timing=stage_timing, emit=emit, announce=True)
 
     meta_primary_color = calc_song["metadata"].get("Primary Color", "")
     meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 
-    t_setup0 = time.perf_counter()
-    (
-        solver_settings,
-        fixed_stats,
-        current_gear_stats,
-        current_gear_list,
-        current_mini_stats,
-        current_mini_list,
-        meta_finder,
-        enable_fever,
-        enable_mini,
-        enable_gear,
-        force_greats_mode,
-        force_greats_finder,
-        force_greats_config,
-        manual_force_greats,
-    ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
-    stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
+    if use_assets and preloaded_assets is not None:
+        solver_settings = preloaded_assets.solver_settings
+        fixed_stats = preloaded_assets.fixed_stats
+        current_gear_stats = preloaded_assets.current_gear_stats
+        current_gear_list = preloaded_assets.current_gear_list
+        current_mini_stats = preloaded_assets.current_mini_stats
+        current_mini_list = preloaded_assets.current_mini_list
+        meta_finder = preloaded_assets.meta_finder
+        enable_fever = preloaded_assets.enable_fever
+        enable_mini = preloaded_assets.enable_mini
+        enable_gear = preloaded_assets.enable_gear
+        force_greats_mode = preloaded_assets.force_greats_mode
+        force_greats_finder = preloaded_assets.force_greats_finder
+        force_greats_config = preloaded_assets.force_greats_config
+        manual_force_greats = preloaded_assets.manual_force_greats
+        baseline_team_buff = preloaded_assets.baseline_team_buff
+        db_key = preloaded_assets.db_key
+    else:
+        t_setup0 = time.perf_counter()
+        (
+            solver_settings,
+            fixed_stats,
+            current_gear_stats,
+            current_gear_list,
+            current_mini_stats,
+            current_mini_list,
+            meta_finder,
+            enable_fever,
+            enable_mini,
+            enable_gear,
+            force_greats_mode,
+            force_greats_finder,
+            force_greats_config,
+            manual_force_greats,
+        ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+        stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
 
-    try:
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+        try:
+            from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
-        baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-        baseline_team_buff = "T5"
+            baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg)
+        except Exception as e:
+            logger.warning(f"song_processor:_setup_song_context: {e}")
+            baseline_team_buff = "T5"
 
-    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+        from gear_optimizer.helpers.song_helpers.database_context import build_db_key
 
-    db_key = build_db_key(found_song_name, calc_song)
+        db_key = build_db_key(found_song_name, calc_song)
 
     t_db0 = time.perf_counter()
     (
@@ -748,6 +965,7 @@ def _setup_song_context(
         gpu_mode=bool(gpu_mode),
         gpu_song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
         solver_seed=solver_seed,
+        solver_ctx=solver_ctx,
     )
 
 
@@ -763,21 +981,26 @@ def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
                 ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
             except Exception as e:
                 logger.warning(f"song_processor:_run_outer_search: {e}")
-        ctx.solver_ctx = prepare_solver_context(
-            ctx.cfg,
-            ctx.fixed_stats,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.all_gears,
-            ctx.all_minis,
-            optimize_gear=ctx.enable_gear,
-            optimize_minis=ctx.enable_mini,
-            fixed_gear=ctx.current_gear_list,
-            fixed_minis=ctx.current_mini_list,
-            pre_prune_mode="none",
-            status_cb=lambda message: ctx.emit(message),
-            song_slot=int(ctx.gpu_song_slot),
-        )
+        if ctx.solver_ctx is None:
+            ctx.solver_ctx = prepare_solver_context(
+                ctx.cfg,
+                ctx.fixed_stats,
+                ctx.calc_song,
+                ctx.ref_arrays,
+                ctx.all_gears,
+                ctx.all_minis,
+                optimize_gear=ctx.enable_gear,
+                optimize_minis=ctx.enable_mini,
+                fixed_gear=ctx.current_gear_list,
+                fixed_minis=ctx.current_mini_list,
+                pre_prune_mode="none",
+                status_cb=lambda message: ctx.emit(message),
+                song_slot=int(ctx.gpu_song_slot),
+            )
+        else:
+            ctx.solver_ctx.status_cb = lambda message: ctx.emit(message)
+            ctx.solver_ctx.song_slot = int(ctx.gpu_song_slot)
+            ctx.solver_ctx.calc_song = ctx.calc_song
 
         skyline_start = time.perf_counter()
         from gear_optimizer.solver.exact_skyline import solve_exact_skyline
@@ -1215,16 +1438,27 @@ def process_song_task(args) -> SongResultPayload:
 
     # Optional extras (sequential pipeline mode):
     # - preloaded calc_song dict to avoid repeated disk I/O + parsing
+    # - preloaded skyline assets to avoid next-song CPU prep on the GPU path
     # - defer_post: if True, skip persistence/reporting and return raw compute payload
     preloaded_calc_song = None
+    preloaded_assets = None
     repeat_ctx = None
     defer_post = False
     extras = args_list[16:] if len(args_list) > 16 else []
     if extras:
         for extra in extras:
+            if isinstance(extra, PreloadedSkylineAssets):
+                preloaded_assets = extra
+                continue
             if isinstance(extra, dict):
                 if extra.get("song_data") is not None:
                     preloaded_calc_song = extra
+                    continue
+                if extra.get("_preloaded_skyline_assets") is not None and isinstance(
+                    extra.get("_preloaded_skyline_assets"),
+                    PreloadedSkylineAssets,
+                ):
+                    preloaded_assets = extra.get("_preloaded_skyline_assets")
                     continue
                 if "repeat_index" in extra and "repeat_total" in extra and "solver_seed" in extra:
                     repeat_ctx = extra
@@ -1321,6 +1555,7 @@ def process_song_task(args) -> SongResultPayload:
             fg_debug=fg_debug,
             defer_post=defer_post,
             preloaded_calc_song=preloaded_calc_song,
+            preloaded_assets=preloaded_assets,
             repeat_index=repeat_index,
             repeat_total=repeat_total,
             solver_seed=solver_seed,
@@ -1457,6 +1692,3 @@ def safe_process_song_task(args) -> SongResultPayload:
             exc=exc,
             trace=tb,
         )
-
-
-

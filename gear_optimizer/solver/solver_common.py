@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import heapq
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
+from gear_optimizer.core.parsing import env_get
 from gear_optimizer.solver.item_pools import initialize_item_pools
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -20,6 +22,45 @@ from gear_optimizer.solver.scoring import solve_best_fever_combination
 logger = logging.getLogger(__name__)
 
 GEAR_SLOTS: tuple[str, ...] = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
+
+
+def _env_enabled(name: str, default: str = "1") -> bool:
+    raw = str(env_get(name, default) or default).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def prefetch_one(
+    iterable: Iterable[Any],
+    *,
+    enabled: bool = True,
+    thread_name_prefix: str = "SolverPrefetch",
+) -> Iterator[Any]:
+    """
+    Yield an iterable in order while computing one next element ahead.
+
+    This is used only for CPU materialization of already-certified candidate
+    batches. It does not alter ordering, candidate identity, score thresholds,
+    or GPU solve requests.
+    """
+    iterator = iter(iterable)
+    if not bool(enabled):
+        yield from iterator
+        return
+
+    def _next_or_stop() -> tuple[bool, Any]:
+        try:
+            return True, next(iterator)
+        except StopIteration:
+            return False, None
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix) as executor:
+        future: Future[tuple[bool, Any]] = executor.submit(_next_or_stop)
+        while True:
+            has_value, value = future.result()
+            if not has_value:
+                return
+            future = executor.submit(_next_or_stop)
+            yield value
 
 
 @dataclass(frozen=True)
@@ -315,7 +356,12 @@ def batched_registry_eval(
     heap: list[tuple[int, int, int]] = []
     done = 0
 
-    for candidate_batch in candidate_batches:
+    batch_iter = prefetch_one(
+        candidate_batches,
+        enabled=_env_enabled("SKYLINE_BATCH_PREFETCH", "1"),
+        thread_name_prefix="SkylineBatchPrep",
+    )
+    for candidate_batch in batch_iter:
         max_ft_gems_global = None
         max_ff_gems_global = None
         timing_response_combo_ft = None

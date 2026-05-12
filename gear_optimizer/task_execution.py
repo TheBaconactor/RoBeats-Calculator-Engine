@@ -113,11 +113,72 @@ class TaskExecutionMixin:
                 return
 
             logger.info("[Skyline] Running direct skyline task path.")
+            task_list = list(tasks) if isinstance(tasks, list) else list(tasks or [])
+            if self._streaming_skyline_enabled(task_list):
+                self._run_streaming_sequential(task_list, completed_songs, memory_resume_tracker)
+                return
+
             self._consume_results(
-                (safe_process_song_task(task) for task in tasks),
+                (safe_process_song_task(task) for task in task_list),
                 completed_songs=completed_songs,
                 memory_resume_tracker=memory_resume_tracker,
-                total_tasks=self._effective_total_tasks(tasks if isinstance(tasks, list) else []),
+                total_tasks=self._effective_total_tasks(task_list),
+            )
+            return
+
+    def _streaming_skyline_enabled(self, tasks) -> bool:
+            if len(tasks or []) <= 1:
+                return False
+            raw = str(env_get("SKYLINE_STREAMING_PIPELINE", "1") or "1").strip().lower()
+            if raw in {"0", "false", "no", "off"}:
+                return False
+            # Deferred post-processing intentionally lets the GPU proceed to the
+            # next song before the previous song is persisted. That is lossless
+            # for a normal one-pass song pool, but same-file repeats need strict
+            # DB ordering because attempt counters and previous-best baselines
+            # are part of the per-run payload.
+            seen = set()
+            for task in tasks or []:
+                try:
+                    args = list(task) if isinstance(task, (list, tuple)) else [task]
+                    key = (str(args[0] if len(args) > 0 else ""), str(args[1] if len(args) > 1 else ""))
+                except Exception as e:
+                    logger.debug(f"task_execution:_streaming_skyline_enabled: {e}")
+                    return False
+                if key in seen:
+                    logger.info("[SkylineStream] Disabled for duplicate song inputs; preserving strict DB ordering.")
+                    return False
+                seen.add(key)
+            return True
+
+    def _run_streaming_sequential(self, tasks, completed_songs, memory_resume_tracker):
+            """Run a single-GPU skyline queue with CPU-prep lookahead and deferred post work."""
+            from gear_optimizer.pipeline.skyline_streaming import iter_streamed_song_results
+            from gear_optimizer.pipeline.song_processor import preload_skyline_song_assets
+
+            total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
+            logger.info(
+                "[SkylineStream] Enabled: one-song CPU prep lookahead + deferred post-processing "
+                "(SKYLINE_STREAMING_PIPELINE=0 disables)."
+            )
+            post_queue, post_proc = self._start_post_processor(int(total_tasks))
+
+            def _results_iter():
+                try:
+                    yield from iter_streamed_song_results(
+                        list(tasks or []),
+                        process_fn=safe_process_song_task,
+                        preload_fn=preload_skyline_song_assets,
+                        post_queue=post_queue,
+                    )
+                finally:
+                    self._stop_post_processor(post_queue, post_proc)
+
+            self._consume_results(
+                _results_iter(),
+                completed_songs=completed_songs,
+                memory_resume_tracker=memory_resume_tracker,
+                total_tasks=total_tasks,
             )
             return
 

@@ -248,6 +248,45 @@ def _search_ranges_for(center_ft: int | None, center_ff: int | None, search_radi
     )
 
 
+def _local_gear_response_key(base_stats: dict[str, Any], *, primary: str, secondary: str) -> tuple[int, ...]:
+    """
+    Return the complete stat row consumed by native FG for one retained gear loadout.
+
+    Local gear response theorem: within a fixed FG topology group (selected color,
+    section count/base, and FT/FF search window), native FG depends on a retained
+    gear candidate only through this seven-value row. Candidates with equal rows
+    therefore have identical joint gem/config search surfaces and may share one
+    GPU evaluation without losing any distinct loadout metadata.
+    """
+
+    return (
+        safe_int(base_stats.get("Perfect Points", 0), 0),
+        safe_int(base_stats.get("Combo Multiplier", 0), 0),
+        safe_int(base_stats.get("Fever Multiplier", 0), 0),
+        safe_int(base_stats.get(primary, 0), 0),
+        safe_int(base_stats.get(secondary, 0), 0),
+        safe_int(base_stats.get("Fever Time", 0), 0),
+        safe_int(base_stats.get("Fever Fill Rate", 0), 0),
+    )
+
+
+def _timing_response_key(base_stats: dict[str, Any]) -> tuple[int, int]:
+    return (
+        safe_int(base_stats.get("Fever Time", 0), 0),
+        safe_int(base_stats.get("Fever Fill Rate", 0), 0),
+    )
+
+
+def _genome_stats_array(stats_rows: list[dict[str, Any]], *, primary: str, secondary: str) -> np.ndarray:
+    genome_stats = np.zeros((len(stats_rows), 7), dtype=np.int16)
+    for local_idx, base_stats in enumerate(stats_rows):
+        genome_stats[local_idx, :] = np.asarray(
+            _local_gear_response_key(base_stats, primary=primary, secondary=secondary),
+            dtype=np.int16,
+        )
+    return genome_stats
+
+
 def solve_native_force_greats_gpu_batch(
     *,
     base_stats_list: list[dict[str, Any]],
@@ -259,13 +298,31 @@ def solve_native_force_greats_gpu_batch(
     search_radius: int | None,
 ) -> tuple[list[dict[str, Any] | None], dict[str, int]]:
     if not base_stats_list:
-        return [], {"gpu_batches": 0, "groups": 0}
+        return [], {
+            "gpu_batches": 0,
+            "groups": 0,
+            "input_genomes": 0,
+            "unique_genomes": 0,
+            "deduped_genomes": 0,
+            "dedupe_groups": 0,
+            "section_summary_cache_hits": 0,
+            "section_summary_cache_misses": 0,
+        }
 
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     total_notes = int(len(timestamps)) if timestamps is not None else 0
     if total_notes <= 0:
-        return [None for _ in base_stats_list], {"gpu_batches": 0, "groups": 0}
+        return [None for _ in base_stats_list], {
+            "gpu_batches": 0,
+            "groups": 0,
+            "input_genomes": 0,
+            "unique_genomes": 0,
+            "deduped_genomes": 0,
+            "dedupe_groups": 0,
+            "section_summary_cache_hits": 0,
+            "section_summary_cache_misses": 0,
+        }
 
     metadata = calc_song.get("metadata", {}) or {}
     long_notes = safe_int(metadata.get("Long Notes"), 0)
@@ -277,9 +334,21 @@ def solve_native_force_greats_gpu_batch(
 
     prepared_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     results: list[dict[str, Any] | None] = [None for _ in base_stats_list]
+    input_genomes = 0
+    section_summary_cache: dict[tuple[int, int], tuple[int, int]] = {}
+    section_summary_cache_hits = 0
+    section_summary_cache_misses = 0
 
     for idx, base_stats in enumerate(base_stats_list):
-        num_sections, non_fever_base = _section_summary(base_stats, calc_song, ref_arrays)
+        timing_key = _timing_response_key(base_stats)
+        section_summary = section_summary_cache.get(timing_key)
+        if section_summary is None:
+            section_summary = _section_summary(base_stats, calc_song, ref_arrays)
+            section_summary_cache[timing_key] = section_summary
+            section_summary_cache_misses += 1
+        else:
+            section_summary_cache_hits += 1
+        num_sections, non_fever_base = section_summary
         if num_sections <= 0:
             continue
         if num_sections > 20:
@@ -311,14 +380,27 @@ def solve_native_force_greats_gpu_batch(
 
         group["indices"].append(int(idx))
         group["stats"].append(base_stats)
+        input_genomes += 1
 
     if not prepared_groups:
-        return results, {"gpu_batches": 0, "groups": 0}
+        return results, {
+            "gpu_batches": 0,
+            "groups": 0,
+            "input_genomes": int(input_genomes),
+            "unique_genomes": 0,
+            "deduped_genomes": 0,
+            "dedupe_groups": 0,
+            "section_summary_cache_hits": int(section_summary_cache_hits),
+            "section_summary_cache_misses": int(section_summary_cache_misses),
+        }
 
     from gear_optimizer.solver.taichi_gem import fields as gem_fields
     from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
     gpu_batches = 0
+    unique_genomes = 0
+    deduped_genomes = 0
+    dedupe_groups = 0
     max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
 
     for group in prepared_groups.values():
@@ -329,18 +411,27 @@ def solve_native_force_greats_gpu_batch(
         selected_color = str(group["selected_color"] or "")
         flags = build_color_flags(primary, secondary, selected_color)
 
-        for start in range(0, len(stats_rows), max_genomes):
-            end = min(int(start) + int(max_genomes), len(stats_rows))
-            chunk_stats = stats_rows[int(start) : int(end)]
-            genome_stats = np.zeros((len(chunk_stats), 7), dtype=np.int16)
-            for local_idx, base_stats in enumerate(chunk_stats):
-                genome_stats[local_idx, 0] = int(base_stats.get("Perfect Points", 0))
-                genome_stats[local_idx, 1] = int(base_stats.get("Combo Multiplier", 0))
-                genome_stats[local_idx, 2] = int(base_stats.get("Fever Multiplier", 0))
-                genome_stats[local_idx, 3] = int(base_stats.get(primary, 0))
-                genome_stats[local_idx, 4] = int(base_stats.get(secondary, 0))
-                genome_stats[local_idx, 5] = int(base_stats.get("Fever Time", 0))
-                genome_stats[local_idx, 6] = int(base_stats.get("Fever Fill Rate", 0))
+        unique_stats: list[dict[str, Any]] = []
+        fanout: list[list[int]] = []
+        by_response: dict[tuple[int, ...], int] = {}
+        for original_local_idx, base_stats in enumerate(stats_rows):
+            response_key = _local_gear_response_key(base_stats, primary=primary, secondary=secondary)
+            unique_idx = by_response.get(response_key)
+            if unique_idx is None:
+                unique_idx = len(unique_stats)
+                by_response[response_key] = int(unique_idx)
+                unique_stats.append(base_stats)
+                fanout.append([])
+            fanout[int(unique_idx)].append(int(original_local_idx))
+
+        unique_genomes += int(len(unique_stats))
+        deduped_genomes += int(len(stats_rows) - len(unique_stats))
+        dedupe_groups += sum(1 for members in fanout if len(members) > 1)
+
+        for start in range(0, len(unique_stats), max_genomes):
+            end = min(int(start) + int(max_genomes), len(unique_stats))
+            chunk_stats = unique_stats[int(start) : int(end)]
+            genome_stats = _genome_stats_array(chunk_stats, primary=primary, secondary=secondary)
 
             out = solve_force_greats_finder_gpu(
                 genome_stats,
@@ -370,12 +461,24 @@ def solve_native_force_greats_gpu_batch(
             gpu_batches += 1
 
             for local_idx, best in enumerate(out or []):
-                src_idx = indices[int(start) + int(local_idx)]
-                results[src_idx] = _materialize_best(
+                unique_idx = int(start) + int(local_idx)
+                materialized = _materialize_best(
                     best,
                     counts=counts,
                     num_sections=int(group["num_sections"]),
                     non_fever_base=int(group["non_fever_base"]),
                 )
+                for original_local_idx in fanout[int(unique_idx)]:
+                    src_idx = indices[int(original_local_idx)]
+                    results[src_idx] = dict(materialized) if materialized is not None else None
 
-    return results, {"gpu_batches": int(gpu_batches), "groups": int(len(prepared_groups))}
+    return results, {
+        "gpu_batches": int(gpu_batches),
+        "groups": int(len(prepared_groups)),
+        "input_genomes": int(input_genomes),
+        "unique_genomes": int(unique_genomes),
+        "deduped_genomes": int(deduped_genomes),
+        "dedupe_groups": int(dedupe_groups),
+        "section_summary_cache_hits": int(section_summary_cache_hits),
+        "section_summary_cache_misses": int(section_summary_cache_misses),
+    }

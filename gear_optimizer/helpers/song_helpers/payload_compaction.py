@@ -92,5 +92,9 @@ def compact_loadout_entries(entries: dict[str, dict] | None) -> dict[str, dict[s
             "details": value.get("details") or {},
             "force": value.get("force"),
         }
+        eval_data = value.get("eval_data")
+        if isinstance(eval_data, dict) and eval_data:
+            out[str(key)]["eval_data"] = eval_data
+        if value.get("fg_base_score") is not None:
+            out[str(key)]["fg_base_score"] = value.get("fg_base_score")
     return out
-

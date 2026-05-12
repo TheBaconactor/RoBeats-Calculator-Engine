@@ -18,9 +18,12 @@ from gear_optimizer.solver.combined_skyline_sparse import (
     combined_global_skyline_pairs_6d_sparse,
     get_last_combined_skyline_stats,
 )
-from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
 from gear_optimizer.solver.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
-from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+from gear_optimizer.solver.gear_response_prune import (
+    gear_response_phase_counts,
+    gear_response_phase_seconds,
+    prune_local_gear_response_pairs,
+)
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
@@ -54,8 +57,6 @@ from gear_optimizer.solver.solver_common import (
     make_pack as _make_pack_common,
     prepare_solver_context,
 )
-from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
-from gear_optimizer.solver.taichi_gem import fields as gem_fields
 from gear_optimizer.solver.timing_response_antichain import (
     TimingResponseAntichainStats,
     TimingResponseAntichainTable,
@@ -100,6 +101,18 @@ def _read_skyline_fg_sample_limit() -> int:
 
 def _record_phase(phase_seconds: dict[str, float], name: str, started: float) -> None:
     phase_seconds[str(name)] = float(phase_seconds.get(str(name), 0.0) + (time.perf_counter() - float(started)))
+
+
+def _max_genomes() -> int:
+    from gear_optimizer.solver.taichi_gem import fields as gem_fields
+
+    return int(gem_fields.MAX_GENOMES)
+
+
+def _max_timing_response_combos() -> int:
+    from gear_optimizer.solver.taichi_gem import fields as gem_fields
+
+    return int(gem_fields.MAX_TIMING_RESPONSE_COMBOS)
 
 
 def _rounded_phase_seconds(phase_seconds: dict[str, float]) -> dict[str, float]:
@@ -505,6 +518,8 @@ def _global_gear_skyline_points_6d_lane_base_with_codes(
     gear_points: np.ndarray,
     gear_codes: np.ndarray,
 ) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
+    from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+
     points_in, points, codes, seconds = global_gear_skyline_points_6d_gpu_from_arrays(gear_points, gear_codes)
     stats = LaneAwareGlobalSkylineStats(
         points_in=int(points_in),
@@ -534,8 +549,9 @@ def _evaluate_product_exact(
     if gear_ids.size == 0 or mini_ids.size == 0:
         return None, []
 
-    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 8192)
-    max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
+    max_genomes = int(_max_genomes())
+    default_eval_batch = min(max_genomes, 8192)
+    max_batch = max(1, min(max_genomes, int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
     g_n = int(gear_ids.shape[0])
     m_n = int(mini_ids.shape[0])
@@ -759,6 +775,8 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     gpu_mode = _read_combined_dense_gpu_mode()
     if gpu_mode in {"auto", "gpu"}:
         try:
+            from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
+
             pair_g, pair_m, _seconds = combined_global_skyline_pairs_6d_dense_gpu(gear_points, mini_points)
             return pair_g, pair_m
         except MemoryError:
@@ -873,8 +891,9 @@ def _evaluate_pairs_exact(
     if pair_gear_idx.size == 0 or pair_mini_idx.size == 0:
         return None, []
 
-    default_eval_batch = min(int(gem_fields.MAX_GENOMES), 8192)
-    max_batch = max(1, min(int(gem_fields.MAX_GENOMES), int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
+    max_genomes = int(_max_genomes())
+    default_eval_batch = min(max_genomes, 8192)
+    max_batch = max(1, min(max_genomes, int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(pair_gear_idx.shape[0])
     g_idx = np.asarray(pair_gear_idx, dtype=np.int32)
     m_idx = np.asarray(pair_mini_idx, dtype=np.int32)
@@ -885,7 +904,7 @@ def _evaluate_pairs_exact(
         timing_response_table is not None
         and start_cells is not None
         and int(start_cells.shape[0]) == total
-        and int(timing_response_table.kept_combo_count) <= int(gem_fields.MAX_TIMING_RESPONSE_COMBOS)
+        and int(timing_response_table.kept_combo_count) <= int(_max_timing_response_combos())
     )
     if ft_caps is not None and ff_caps is not None and int(ft_caps.shape[0]) == total and int(ff_caps.shape[0]) == total:
         if use_timing_antichain and start_cells is not None and timing_response_table is not None:
@@ -1097,6 +1116,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     top_codes: list[tuple[int, int, int]] = []
     combined_candidate_count = 0
     fixed_timing_candidate_count = 0
+    gear_response_reason = "not_run"
     response_envelope_reason = "not_run"
 
     status_cb("skyline: combined timing-cell prune")
@@ -1133,9 +1153,47 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             phase_counts["mini_response_local_pair_pruned"] = 0
         if pair_g_idx.size == 0:
             return None, [], [], None, [], [], []
+
+        gear_response_in = int(pair_g_idx.shape[0])
+        if fg_candidate_mode == "topk":
+            status_cb("skyline: local gear response prune")
+            pair_g_idx, pair_m_idx, gear_response_stats = prune_local_gear_response_pairs(
+                pair_gear_idx=pair_g_idx,
+                pair_mini_idx=pair_m_idx,
+                gear_points=gear_points,
+                mini_points=mini_points,
+                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
+                calc_song=ctx.calc_song,
+                ref_arrays=ctx.ref_arrays,
+                flags=ctx.color_flags,
+            )
+            gear_response_reason = str(gear_response_stats.reason)
+            for name, count in gear_response_phase_counts(gear_response_stats).items():
+                phase_counts[name] = int(count)
+            for name, seconds in gear_response_phase_seconds(gear_response_stats).items():
+                phase_seconds[name] = float(seconds)
+            if int(gear_response_stats.pruned) > 0:
+                status_cb(
+                    "skyline: local gear response certified "
+                    f"(pruned={int(gear_response_stats.pruned):,}, "
+                    f"remaining={int(gear_response_stats.candidates_out):,}, "
+                    f"time={float(gear_response_stats.seconds_total):.2f}s)"
+                )
+            else:
+                status_cb(
+                    "skyline: local gear response kept frontier "
+                    f"(reason={gear_response_reason}, time={float(gear_response_stats.seconds_total):.2f}s)"
+                )
+        else:
+            gear_response_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+            phase_counts["gear_response_enabled"] = 0
+            phase_counts["gear_response_candidates_in"] = int(gear_response_in)
+            phase_counts["gear_response_candidates_out"] = int(pair_g_idx.shape[0])
+            phase_counts["gear_response_pruned"] = 0
         status_cb(
             "skyline: evaluate combined frontier "
-            f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,})"
+            f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,}, "
+            f"gear_response_in={gear_response_in:,})"
         )
         fixed_timing_candidate_count = int(pair_g_idx.shape[0])
         combined_candidate_count = int(fixed_timing_candidate_count)
@@ -1211,7 +1269,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             _record_phase(phase_seconds, "timing_response_antichain_build_cpu", phase_started)
             if (
                 timing_response_table is not None
-                and int(timing_response_table.kept_combo_count) > int(gem_fields.MAX_TIMING_RESPONSE_COMBOS)
+                and int(timing_response_table.kept_combo_count) > int(_max_timing_response_combos())
             ):
                 timing_response_table = None
                 timing_response_stats = TimingResponseAntichainStats(
@@ -1385,6 +1443,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
     fg_search_radius = read_fg_search_radius(ctx.cfg)
     phase_started = time.perf_counter()
+    from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
+
     native_fg_summary, _native_fg_best_record = score_retained_skyline_force_greats(
         candidate_records,
         calc_song=ctx.calc_song,
@@ -1400,6 +1460,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     native_fg_summary["combined_skyline_candidates"] = int(combined_candidate_count)
     native_fg_summary["combined_fixed_timing_candidates"] = int(fixed_timing_candidate_count)
     native_fg_summary["mini_response_reason"] = str(mini_response_reason)
+    native_fg_summary["gear_response_reason"] = str(gear_response_reason)
     native_fg_summary["response_envelope_reason"] = str(response_envelope_reason)
     native_fg_summary["skyline_certification_status"] = SKYLINE_CERTIFICATION_STATUS
     native_fg_summary["skyline_certification_note"] = SKYLINE_CERTIFICATION_NOTE

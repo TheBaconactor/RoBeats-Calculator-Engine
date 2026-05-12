@@ -464,6 +464,20 @@ def score_retained_skyline_force_greats(
         "exact_dp_calls": int(exact_calls),
         "gpu_batches": int(batch_stats.get("gpu_batches", 0) if isinstance(batch_stats, dict) else 0),
         "batch_groups": int(batch_stats.get("groups", 0) if isinstance(batch_stats, dict) else 0),
+        "fg_batch_input_genomes": int(
+            batch_stats.get("input_genomes", len(prepared)) if isinstance(batch_stats, dict) else 0
+        ),
+        "fg_batch_unique_genomes": int(
+            batch_stats.get("unique_genomes", len(prepared)) if isinstance(batch_stats, dict) else 0
+        ),
+        "fg_batch_deduped_genomes": int(batch_stats.get("deduped_genomes", 0) if isinstance(batch_stats, dict) else 0),
+        "fg_batch_dedupe_groups": int(batch_stats.get("dedupe_groups", 0) if isinstance(batch_stats, dict) else 0),
+        "fg_section_summary_cache_hits": int(
+            batch_stats.get("section_summary_cache_hits", 0) if isinstance(batch_stats, dict) else 0
+        ),
+        "fg_section_summary_cache_misses": int(
+            batch_stats.get("section_summary_cache_misses", 0) if isinstance(batch_stats, dict) else 0
+        ),
         "ceiling_pruning_enabled": False,
         "hypothetical_skipped_by_ceiling": 0,
         "fg_gains": int(fg_gains),

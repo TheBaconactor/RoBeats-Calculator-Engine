@@ -8,8 +8,7 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, MAX_STAT_INDEX, TOTAL_GEM_BUDGET
-from gear_optimizer.solver.taichi_gem.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
 
 _GRID = int(MAX_STAT_INDEX) + 1
@@ -232,6 +231,8 @@ def _exact_frontier_pack_grid(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
 ) -> tuple[np.ndarray, int, tuple[Any, ...]]:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
     result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     payload = result.payload
     counts = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
