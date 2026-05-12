@@ -303,7 +303,8 @@ RoBeats-Calculator-Engine/
 │      Orchestration Layer               │
 │  main.py                               │
 │  gear_optimizer/app.py (GearOptimizerApp) │
-│  gear_optimizer/pipeline/song_processor.py │
+│  gear_optimizer/solver/native_inflight_orchestrator.py │
+│  gear_optimizer/pipeline/post_processor.py │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐

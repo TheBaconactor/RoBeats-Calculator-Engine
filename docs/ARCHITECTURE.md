@@ -18,8 +18,8 @@
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      SONG PROCESSOR LAYER                            │
-│                      (pipeline/song_processor.py)                     │
+│                    NATIVE IN-FLIGHT ENGINE                           │
+│                 (solver/native_inflight_orchestrator.py)              │
 │                                                                       │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
 │  │ Read Song    │──│ Parse Config │──│ Execute      │              │
@@ -102,7 +102,9 @@ Level 4 (Depend on Levels 1-3):
   └─ data/discord_reporter.py [config]
 
 Level 5 (Orchestration):
-  └─ pipeline/song_processor.py [ALL]
+  └─ solver/native_inflight_orchestrator.py [optimizer]
+  └─ pipeline/post_processor.py [results]
+  └─ legacy/song_processor.py [calculate-only]
   └─ main.py          [ALL]
 ```
 
@@ -117,7 +119,7 @@ Level 5 (Orchestration):
      │
      ▼
 ┌────────────────┐
-│ Read Song File │  (song_processor.scan_song_header)
+│ Read Song File │  (data/song_io.py)
 └────┬───────────┘
      │
      ▼

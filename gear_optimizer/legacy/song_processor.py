@@ -1,8 +1,10 @@
 """
-Song processing orchestration.
+Legacy direct song processing orchestration.
 
-This module handles song file reading, optimization execution, and result persistence.
-Contains the main process_song_task function that coordinates:
+This module handles the calculate-only compatibility path. Production optimizer
+runs use the native in-flight engine instead.
+
+Contains the legacy process_song_task function that coordinates:
 - Song data loading
 - Fixed stats calculation
 - GA optimization

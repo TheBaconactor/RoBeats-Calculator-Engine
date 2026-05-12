@@ -16,10 +16,12 @@
 
 ## Typical Optimizer Flow
 
-- Config load (`config.ini` or `METAFINDER_CONFIG_PATH`) -> path discovery (`bin/paths_cache.json`) -> song queue -> per-song processing -> solver -> DB write
-- Per-song execution: `gear_optimizer/pipeline/song_processor.py`
+- Config load (`config.ini` or `METAFINDER_CONFIG_PATH`) -> path discovery (`bin/paths_cache.json`) -> song queue -> native in-flight engine -> post processor -> DB write
+- Production in-flight engine: `gear_optimizer/solver/native_inflight_orchestrator.py`
+- Post-processing: `gear_optimizer/pipeline/post_processor.py`
+- Calculate-only legacy processor: `gear_optimizer/legacy/song_processor.py`
 - GA loop: `gear_optimizer/solver/genetic.py`
-- In-flight (single-process, multi-song): `gear_optimizer/solver/inflight_orchestrator.py`, `gear_optimizer/solver/native_inflight_orchestrator.py`
+- In-flight support modules: `gear_optimizer/solver/native_inflight_*`
 - Scoring (CPU/GPU dispatch): `gear_optimizer/solver/scoring/`
 - Database/persistence: `gear_optimizer/data/database.py`
 - Config + paths: `gear_optimizer/core/config.py`, `gear_optimizer/core/constants.py`

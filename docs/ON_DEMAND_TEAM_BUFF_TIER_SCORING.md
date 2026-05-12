@@ -69,7 +69,7 @@ from gear_optimizer.core.config import load_config
 from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.database import get_best_loadouts
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 
 cfg = load_config()
 cfg_dict = cfg_to_dict(cfg)

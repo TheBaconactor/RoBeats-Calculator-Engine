@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import sys
 import traceback
@@ -14,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 def legacy_song_processor_module() -> ModuleType:
     """Return the quarantined per-song processor implementation."""
-    from gear_optimizer.pipeline import song_processor
-
-    return song_processor
+    return importlib.import_module("gear_optimizer.legacy.song_processor")
 
 
 def process_song_task(task) -> SongResultPayload:
