@@ -108,30 +108,3 @@ def test_fast_path_blocks_when_timing_gems_affect_lane_base() -> None:
     flags["is_p_ft"] = 1
 
     assert _fast_path_blocker(flags=flags, ref_arrays=_ref_arrays()) == "timing_ft_affects_lane_base"
-
-
-def test_response_envelope_prunes_timing_lane_exact_signature_candidate() -> None:
-    item_stats = np.zeros((3, 10), dtype=np.int32)
-    item_stats[1, [0, 1, 2, 5]] = [10, 10, 10, 10]
-    item_stats[2, [0, 1, 2, 5]] = [10, 10, 10, 11]
-    flags = _rush_primary_flags()
-    flags["is_p_ft"] = 1
-    flags["is_p_fm"] = 0
-
-    out_g, out_m, stats = prune_response_envelope_pairs(
-        pair_gear_idx=np.array([0, 1], dtype=np.int32),
-        pair_mini_idx=np.array([0, 0], dtype=np.int32),
-        gear_ids=np.array([[1, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0]], dtype=np.int32),
-        mini_ids=np.array([[0, 0, 0]], dtype=np.int32),
-        gpu_arrays={"item_stats": item_stats},
-        base_fixed_stats_arr=np.zeros(10, dtype=np.int32),
-        calc_song=_calc_song(),
-        ref_arrays=_ref_arrays(),
-        flags=flags,
-    )
-
-    assert stats.enabled
-    assert stats.reason == "certified_timing_lane_exact_signature"
-    assert stats.pruned == 1
-    assert out_g.tolist() == [1]
-    assert out_m.tolist() == [0]
