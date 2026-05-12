@@ -68,6 +68,7 @@ def _solve_combo_warmstart_preloaded(
     max_ff_gems: ti.i32,
     prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
+    use_timing_response_antichain: ti.template(),
 ) -> ti.types.vector(5, ti.i32):
     """
     Solve a single (genome, combo) work item and return [score, pp, cm, fm, ov].
@@ -78,13 +79,25 @@ def _solve_combo_warmstart_preloaded(
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
 
-    ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
-    ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
-
     out_res = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
 
+    ft: ti.i32 = 0
+    ff: ti.i32 = 0
+    combo_valid: ti.i32 = 1
+    if ti.static(use_timing_response_antichain):
+        length = kernels_helpers.timing_response_genome_length[genome_idx]
+        if combo_idx < length:
+            table_idx = kernels_helpers.timing_response_genome_offset[genome_idx] + combo_idx
+            ft = kernels_helpers.timing_response_combo_ft[table_idx]
+            ff = kernels_helpers.timing_response_combo_ff[table_idx]
+        else:
+            combo_valid = 0
+    else:
+        ft = kernels_helpers.ftff_combo_ft[combo_idx]
+        ff = kernels_helpers.ftff_combo_ff[combo_idx]
+
     # FT/FF tables already satisfy ft+ff <= combo_budget. Only apply per-genome headroom pruning here.
-    if ft <= max_ft_gems and ff <= max_ff_gems:
+    if combo_valid != 0 and ft <= max_ft_gems and ff <= max_ff_gems:
         ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
         ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
@@ -258,6 +271,7 @@ def _compute_combo_key_warmstart_preloaded(
     max_ff_gems: ti.i32,
     prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
+    use_timing_response_antichain: ti.template(),
 ) -> ti.u64:
     """
     Compute a packed max-key for a single (genome, combo) work item.
@@ -297,6 +311,7 @@ def _compute_combo_key_warmstart_preloaded(
         max_ff_gems,
         prune_plateaus,
         use_exact_inner_solver,
+        use_timing_response_antichain,
     )
     score = res_vec[0]
     if score >= 0:
@@ -328,6 +343,7 @@ def skyline_find_best_combo_warmstart_kernel(
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
     use_exact_inner_solver: ti.template(),  # Exact-bound fixed-(FT,FF) solve; legacy false route also resolves exact.
     reuse_exact_eval_results: ti.template(),
+    use_timing_response_antichain: ti.template(),
 ):
     """
     GPU-parallel evaluation with exact per-(genome, FT/FF) solving.
@@ -412,6 +428,7 @@ def skyline_find_best_combo_warmstart_kernel(
                 max_ff_gems,
                 prune_plateaus,
                 use_exact_inner_solver,
+                use_timing_response_antichain,
             )
             if key != 0:
                 score = ti.cast((key >> 32), ti.i32) - 1
@@ -493,6 +510,7 @@ def skyline_find_best_combo_warmstart_kernel(
                     max_ff_gems,
                     prune_plateaus,
                     use_exact_inner_solver,
+                    use_timing_response_antichain,
                 )
                 score = res_vec[0]
                 if score >= 0:

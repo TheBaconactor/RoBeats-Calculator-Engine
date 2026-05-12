@@ -351,6 +351,12 @@ def solve_genomes_from_registry(
     use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
+    timing_response_combo_ft: np.ndarray | None = None,
+    timing_response_combo_ff: np.ndarray | None = None,
+    timing_response_genome_offsets: np.ndarray | None = None,
+    timing_response_genome_lengths: np.ndarray | None = None,
+    timing_response_max_combos: int | None = None,
+    timing_response_cache_key: object | None = None,
     score_only: bool = False,
 ) -> list:
     """
@@ -434,6 +440,12 @@ def solve_genomes_from_registry(
         use_exact_inner_solver=bool(use_exact_inner_solver),
         max_ft_gems_global=max_ft_gems_global,
         max_ff_gems_global=max_ff_gems_global,
+        timing_response_combo_ft=timing_response_combo_ft,
+        timing_response_combo_ff=timing_response_combo_ff,
+        timing_response_genome_offsets=timing_response_genome_offsets,
+        timing_response_genome_lengths=timing_response_genome_lengths,
+        timing_response_max_combos=timing_response_max_combos,
+        timing_response_cache_key=timing_response_cache_key,
         materialize_mode="scores_only" if bool(score_only) else "results_only",
     )
 
@@ -467,4 +479,3 @@ def solve_genomes_from_registry(
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     return _results_from_stats(results_np, n_genomes)
-

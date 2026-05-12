@@ -69,6 +69,8 @@ MAX_TIMELINE_FRONTIER_SURFACES = max(1, min(int(MAX_TIMELINE_FRONTIER_SURFACES),
 MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
+MAX_TIMING_RESPONSE_COMBOS = env_int("GPU_TIMING_RESPONSE_ANTICHAIN_COMBOS", 2_000_000)
+MAX_TIMING_RESPONSE_COMBOS = max(MAX_FTFF_COMBOS, min(int(MAX_TIMING_RESPONSE_COMBOS), 8_000_000))
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 
 # Optional allocations: unpacked timeline masks are optional; bitpacked masks are the production path.
@@ -258,6 +260,10 @@ genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
+timing_response_combo_ft: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FT gems per antichain entry
+timing_response_combo_ff: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FF gems per antichain entry
+timing_response_genome_offset: ti.Field = None  # (MAX_GENOMES,) i32 offset into timing_response_combo_*
+timing_response_genome_length: ti.Field = None  # (MAX_GENOMES,) i32 antichain length for each genome row
 
 # Metal-specific 32-bit fields (used instead of u64 atomics on macOS)
 chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
@@ -318,6 +324,8 @@ def reset_fields_state() -> None:
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
+    global timing_response_combo_ft, timing_response_combo_ff
+    global timing_response_genome_offset, timing_response_genome_length
     global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results, skyline_global_best_scan_key
     global skyline_global_best_packed
     global skyline_runs_payload_packed
@@ -439,6 +447,10 @@ def reset_fields_state() -> None:
     chunk_best_results = None
     ftff_combo_ft = None
     ftff_combo_ff = None
+    timing_response_combo_ft = None
+    timing_response_combo_ff = None
+    timing_response_genome_offset = None
+    timing_response_genome_length = None
 
     # Restore configurable skyline buffer shapes so future sessions/modules do not inherit
     # the previous caller's reduced multi-run sizing after a hard reset.
@@ -556,6 +568,8 @@ def allocate_fields():
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
+    global timing_response_combo_ft, timing_response_combo_ff
+    global timing_response_genome_offset, timing_response_genome_length
     global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results, skyline_global_best_scan_key
     global skyline_global_best_packed
     global skyline_runs_payload_packed
@@ -638,6 +652,10 @@ def allocate_fields():
     # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
+    timing_response_combo_ft = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
+    timing_response_combo_ff = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
+    timing_response_genome_offset = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    timing_response_genome_length = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     # Cached evaluation results per genome [pp, cm, fm, ov] - avoids redundant scoring
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
 
@@ -915,6 +933,10 @@ def bind_fields(kernels_module):
         target.chunk_best_idx = chunk_best_idx
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
+    target.timing_response_combo_ft = timing_response_combo_ft
+    target.timing_response_combo_ff = timing_response_combo_ff
+    target.timing_response_genome_offset = timing_response_genome_offset
+    target.timing_response_genome_length = timing_response_genome_length
     target.chunk_best_results = chunk_best_results
 
     # GPU-side global best tracking

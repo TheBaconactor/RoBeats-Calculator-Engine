@@ -116,6 +116,10 @@ chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index (Metal)
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
+timing_response_combo_ft = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32
+timing_response_combo_ff = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32
+timing_response_genome_offset = None  # (MAX_GENOMES,) i32
+timing_response_genome_length = None  # (MAX_GENOMES,) i32
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)

@@ -41,6 +41,7 @@ from gear_optimizer.solver.response_envelope_prune import (
 from gear_optimizer.solver.solver_common import (
     GEAR_SLOTS,
     BitPack as _BitPack_common,
+    RegistryEvalBatch,
     SolverContext,
     batched_registry_eval,
     build_candidate_payload as _build_candidate_payload_common,
@@ -55,6 +56,12 @@ from gear_optimizer.solver.solver_common import (
 )
 from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
 from gear_optimizer.solver.taichi_gem import fields as gem_fields
+from gear_optimizer.solver.timing_response_antichain import (
+    TimingResponseAntichainStats,
+    TimingResponseAntichainTable,
+    build_timing_response_antichain_table,
+    timing_response_phase_counts,
+)
 LaneAwareMiniSkylineStats = _LaneAwareMiniSkylineStats_common
 _SLOTS = GEAR_SLOTS
 _BitPack = _BitPack_common
@@ -797,8 +804,28 @@ def _pair_ftff_cap_arrays(
     pair_gear_idx: np.ndarray,
     pair_mini_idx: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    _pair_start_cells, ft_caps, ff_caps = _pair_ftff_start_and_cap_arrays(
+        base_fixed_stats_arr=base_fixed_stats_arr,
+        gear_points=gear_points,
+        mini_points=mini_points,
+        pair_gear_idx=pair_gear_idx,
+        pair_mini_idx=pair_mini_idx,
+    )
+    return ft_caps, ff_caps
+
+
+def _pair_ftff_start_and_cap_arrays(
+    *,
+    base_fixed_stats_arr: np.ndarray,
+    gear_points: np.ndarray,
+    mini_points: np.ndarray,
+    pair_gear_idx: np.ndarray,
+    pair_mini_idx: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if pair_gear_idx.size == 0:
-        return np.zeros(0, dtype=np.int16), np.zeros(0, dtype=np.int16)
+        empty_cell = np.zeros(0, dtype=np.int32)
+        empty_cap = np.zeros(0, dtype=np.int16)
+        return empty_cell, empty_cap, empty_cap
 
     base_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
     base_ft = int(base_arr[3]) if int(base_arr.shape[0]) > 3 else 0
@@ -811,11 +838,14 @@ def _pair_ftff_cap_arrays(
 
     pair_ft = np.minimum(int(MAX_STAT_INDEX), gp[gi, 3] + mp[mi, 2]) + int(base_ft)
     pair_ff = np.minimum(int(MAX_STAT_INDEX), gp[gi, 4] + mp[mi, 3]) + int(base_ff)
+    start_ft = np.minimum(int(MAX_STAT_INDEX), np.maximum(0, pair_ft))
+    start_ff = np.minimum(int(MAX_STAT_INDEX), np.maximum(0, pair_ff))
+    start_cells = (start_ft * (int(MAX_STAT_INDEX) + 1) + start_ff).astype(np.int32, copy=False)
     rem_ft = np.maximum(0, int(MAX_STAT_INDEX) - pair_ft)
     rem_ff = np.maximum(0, int(MAX_STAT_INDEX) - pair_ff)
     ft_caps = np.minimum(int(TOTAL_GEM_BUDGET), rem_ft // int(GEM_SCALE_FEVER)).astype(np.int16, copy=False)
     ff_caps = np.minimum(int(TOTAL_GEM_BUDGET), rem_ff // int(GEM_SCALE_FEVER)).astype(np.int16, copy=False)
-    return ft_caps, ff_caps
+    return start_cells, ft_caps, ff_caps
 
 
 def _evaluate_pairs_exact(
@@ -833,8 +863,10 @@ def _evaluate_pairs_exact(
     mini_codes: np.ndarray,
     pair_gear_idx: np.ndarray,
     pair_mini_idx: np.ndarray,
+    pair_start_cells: np.ndarray | None = None,
     pair_max_ft_gems: np.ndarray | None = None,
     pair_max_ff_gems: np.ndarray | None = None,
+    timing_response_table: TimingResponseAntichainTable | None = None,
     keep_top_k: int,
     status_cb: Callable[[str], None] | None,
 ) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
@@ -848,17 +880,33 @@ def _evaluate_pairs_exact(
     m_idx = np.asarray(pair_mini_idx, dtype=np.int32)
     ft_caps = None if pair_max_ft_gems is None else np.asarray(pair_max_ft_gems, dtype=np.int16)
     ff_caps = None if pair_max_ff_gems is None else np.asarray(pair_max_ff_gems, dtype=np.int16)
+    start_cells = None if pair_start_cells is None else np.asarray(pair_start_cells, dtype=np.int32)
+    use_timing_antichain = (
+        timing_response_table is not None
+        and start_cells is not None
+        and int(start_cells.shape[0]) == total
+        and int(timing_response_table.kept_combo_count) <= int(gem_fields.MAX_TIMING_RESPONSE_COMBOS)
+    )
     if ft_caps is not None and ff_caps is not None and int(ft_caps.shape[0]) == total and int(ff_caps.shape[0]) == total:
-        cap_key = ft_caps.astype(np.int32, copy=False) * (int(TOTAL_GEM_BUDGET) + 1)
-        cap_key += ff_caps.astype(np.int32, copy=False)
+        if use_timing_antichain and start_cells is not None and timing_response_table is not None:
+            rows_for_sort = timing_response_table.cell_to_row[start_cells]
+            lens_for_sort = timing_response_table.lengths_by_row[rows_for_sort]
+            cap_key = lens_for_sort.astype(np.int32, copy=False) * ((int(MAX_STAT_INDEX) + 1) ** 2)
+            cap_key += start_cells.astype(np.int32, copy=False)
+        else:
+            cap_key = ft_caps.astype(np.int32, copy=False) * (int(TOTAL_GEM_BUDGET) + 1)
+            cap_key += ff_caps.astype(np.int32, copy=False)
         order = np.argsort(cap_key, kind="stable")
         g_idx = g_idx[order]
         m_idx = m_idx[order]
         ft_caps = ft_caps[order]
         ff_caps = ff_caps[order]
+        if start_cells is not None:
+            start_cells = start_cells[order]
     else:
         ft_caps = None
         ff_caps = None
+        use_timing_antichain = False
 
     warmup_batch = min(int(total), max(1, min(int(max_batch), 256)))
 
@@ -868,6 +916,7 @@ def _evaluate_pairs_exact(
     ) -> (
         tuple[np.ndarray, np.ndarray, np.ndarray]
         | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
+        | RegistryEvalBatch
     ):
         seg = slice(int(offset), int(offset) + int(n))
         g_seg = g_idx[seg]
@@ -881,12 +930,33 @@ def _evaluate_pairs_exact(
         if ft_caps is not None and ff_caps is not None:
             max_ft = int(np.max(ft_caps[seg])) if int(n) > 0 else int(TOTAL_GEM_BUDGET)
             max_ff = int(np.max(ff_caps[seg])) if int(n) > 0 else int(TOTAL_GEM_BUDGET)
+            if use_timing_antichain and start_cells is not None and timing_response_table is not None:
+                rows = timing_response_table.cell_to_row[start_cells[seg]]
+                if np.any(rows < 0):
+                    raise ValueError("timing response antichain missing a pair start cell")
+                offsets = timing_response_table.offsets_by_row[rows].astype(np.int32, copy=False)
+                lengths = timing_response_table.lengths_by_row[rows].astype(np.int32, copy=False)
+                max_len = int(np.max(lengths)) if int(n) > 0 else 0
+                return RegistryEvalBatch(
+                    batch_ids=batch,
+                    batch_gear_codes=batch_gc,
+                    batch_mini_codes=batch_mc,
+                    max_ft_gems_global=max_ft,
+                    max_ff_gems_global=max_ff,
+                    timing_response_combo_ft=timing_response_table.flat_ft,
+                    timing_response_combo_ff=timing_response_table.flat_ff,
+                    timing_response_genome_offsets=offsets,
+                    timing_response_genome_lengths=lengths,
+                    timing_response_max_combos=int(max_len),
+                    timing_response_cache_key=timing_response_table.cache_key,
+                )
             return batch, batch_gc, batch_mc, max_ft, max_ff
         return batch, batch_gc, batch_mc
 
     def _candidate_batches() -> Iterable[
         tuple[np.ndarray, np.ndarray, np.ndarray]
         | tuple[np.ndarray, np.ndarray, np.ndarray, int, int]
+        | RegistryEvalBatch
     ]:
         offset = 0
         if int(warmup_batch) > 0:
@@ -1117,13 +1187,59 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
         phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
         if pair_g_idx.size == 0:
             return None, [], [], None, [], [], []
-        pair_ft_caps, pair_ff_caps = _pair_ftff_cap_arrays(
+        pair_start_cells, pair_ft_caps, pair_ff_caps = _pair_ftff_start_and_cap_arrays(
             base_fixed_stats_arr=ctx.base_fixed_stats_arr,
             gear_points=gear_points,
             mini_points=mini_points,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
         )
+        timing_response_table: TimingResponseAntichainTable | None = None
+        timing_response_stats = TimingResponseAntichainStats(
+            enabled=False,
+            reason="not_run",
+            start_cells=0,
+        )
+        if pair_start_cells.size > 0:
+            phase_started = time.perf_counter()
+            timing_response_table, timing_response_stats = build_timing_response_antichain_table(
+                start_cells=np.unique(pair_start_cells.astype(np.int32, copy=False)),
+                calc_song=ctx.calc_song,
+                ref_arrays=ctx.ref_arrays,
+                flags=ctx.color_flags,
+            )
+            _record_phase(phase_seconds, "timing_response_antichain_build_cpu", phase_started)
+            if (
+                timing_response_table is not None
+                and int(timing_response_table.kept_combo_count) > int(gem_fields.MAX_TIMING_RESPONSE_COMBOS)
+            ):
+                timing_response_table = None
+                timing_response_stats = TimingResponseAntichainStats(
+                    enabled=False,
+                    reason="gpu_table_capacity",
+                    start_cells=int(np.unique(pair_start_cells).shape[0]),
+                    legal_combo_count=int(timing_response_stats.legal_combo_count),
+                    kept_combo_count=int(timing_response_stats.kept_combo_count),
+                    max_len=int(timing_response_stats.max_len),
+                    pack_count=int(timing_response_stats.pack_count),
+                    flat_combo_count=int(timing_response_stats.flat_combo_count),
+                )
+            for name, count in timing_response_phase_counts(timing_response_stats).items():
+                phase_counts[name] = int(count)
+            if timing_response_stats.enabled:
+                ratio = (
+                    float(timing_response_stats.legal_combo_count) / float(max(1, timing_response_stats.kept_combo_count))
+                )
+                phase_counts["timing_response_antichain_ratio_x100"] = int(round(ratio * 100.0))
+                status_cb(
+                    "skyline: timing-response antichain certified "
+                    f"(cells={int(timing_response_stats.start_cells):,}, "
+                    f"combos={int(timing_response_stats.legal_combo_count):,}"
+                    f"->{int(timing_response_stats.kept_combo_count):,}, "
+                    f"max_len={int(timing_response_stats.max_len):,})"
+                )
+            else:
+                status_cb(f"skyline: timing-response antichain skipped ({timing_response_stats.reason})")
         if pair_ft_caps.size > 0:
             phase_counts["base_eval_ft_cap_max"] = int(np.max(pair_ft_caps))
             phase_counts["base_eval_ff_cap_max"] = int(np.max(pair_ff_caps))
@@ -1144,8 +1260,10 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             mini_codes=mini_codes,
             pair_gear_idx=pair_g_idx,
             pair_mini_idx=pair_m_idx,
+            pair_start_cells=pair_start_cells,
             pair_max_ft_gems=pair_ft_caps,
             pair_max_ff_gems=pair_ff_caps,
+            timing_response_table=timing_response_table,
             keep_top_k=int(keep_top_k),
             status_cb=status_cb,
         )
@@ -1182,8 +1300,10 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     mini_codes=mini_codes,
                     pair_gear_idx=pair_g_idx[sample_idx],
                     pair_mini_idx=pair_m_idx[sample_idx],
+                    pair_start_cells=pair_start_cells[sample_idx] if pair_start_cells.size else None,
                     pair_max_ft_gems=pair_ft_caps[sample_idx] if pair_ft_caps.size else None,
                     pair_max_ff_gems=pair_ff_caps[sample_idx] if pair_ff_caps.size else None,
+                    timing_response_table=timing_response_table,
                     keep_top_k=int(sample_idx.shape[0]),
                     status_cb=status_cb,
                 )

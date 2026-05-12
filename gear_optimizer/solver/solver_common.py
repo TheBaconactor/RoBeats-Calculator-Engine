@@ -278,6 +278,21 @@ def _push_candidate_heap_streaming(
             )
 
 
+@dataclass(frozen=True)
+class RegistryEvalBatch:
+    batch_ids: np.ndarray
+    batch_gear_codes: np.ndarray
+    batch_mini_codes: np.ndarray
+    max_ft_gems_global: int | None = None
+    max_ff_gems_global: int | None = None
+    timing_response_combo_ft: np.ndarray | None = None
+    timing_response_combo_ff: np.ndarray | None = None
+    timing_response_genome_offsets: np.ndarray | None = None
+    timing_response_genome_lengths: np.ndarray | None = None
+    timing_response_max_combos: int | None = None
+    timing_response_cache_key: object | None = None
+
+
 def batched_registry_eval(
     *,
     gpu_arrays: dict[str, np.ndarray],
@@ -302,7 +317,25 @@ def batched_registry_eval(
     for candidate_batch in candidate_batches:
         max_ft_gems_global = None
         max_ff_gems_global = None
-        if len(candidate_batch) == 5:
+        timing_response_combo_ft = None
+        timing_response_combo_ff = None
+        timing_response_genome_offsets = None
+        timing_response_genome_lengths = None
+        timing_response_max_combos = None
+        timing_response_cache_key = None
+        if isinstance(candidate_batch, RegistryEvalBatch):
+            batch_ids = candidate_batch.batch_ids
+            batch_gear_codes = candidate_batch.batch_gear_codes
+            batch_mini_codes = candidate_batch.batch_mini_codes
+            max_ft_gems_global = candidate_batch.max_ft_gems_global
+            max_ff_gems_global = candidate_batch.max_ff_gems_global
+            timing_response_combo_ft = candidate_batch.timing_response_combo_ft
+            timing_response_combo_ff = candidate_batch.timing_response_combo_ff
+            timing_response_genome_offsets = candidate_batch.timing_response_genome_offsets
+            timing_response_genome_lengths = candidate_batch.timing_response_genome_lengths
+            timing_response_max_combos = candidate_batch.timing_response_max_combos
+            timing_response_cache_key = candidate_batch.timing_response_cache_key
+        elif len(candidate_batch) == 5:
             (
                 batch_ids,
                 batch_gear_codes,
@@ -331,6 +364,12 @@ def batched_registry_eval(
             use_exact_inner_solver=True,
             max_ft_gems_global=max_ft_gems_global,
             max_ff_gems_global=max_ff_gems_global,
+            timing_response_combo_ft=timing_response_combo_ft,
+            timing_response_combo_ff=timing_response_combo_ff,
+            timing_response_genome_offsets=timing_response_genome_offsets,
+            timing_response_genome_lengths=timing_response_genome_lengths,
+            timing_response_max_combos=timing_response_max_combos,
+            timing_response_cache_key=timing_response_cache_key,
             # The batch reducer only needs scores to choose exact top-K ids.
             # Retained candidates are rebuilt later for full gem payloads.
             score_only=True,

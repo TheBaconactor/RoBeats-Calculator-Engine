@@ -30,7 +30,12 @@ from ..fields import MAX_EVALS_PER_DISPATCH
 from ..skyline_chunking import compute_skyline_combo_chunk
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _ensure_ftff_combo_tables
+from .initialization import (
+    ensure_ready,
+    _ensure_ftff_combo_tables,
+    _ensure_timing_response_combo_tables,
+    _upload_timing_response_genome_rows,
+)
 
 # Cache environment variables at module load time to avoid per-call overhead.
 #
@@ -649,6 +654,12 @@ def skyline_evaluate_population(
     use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
+    timing_response_combo_ft: np.ndarray | None = None,
+    timing_response_combo_ff: np.ndarray | None = None,
+    timing_response_genome_offsets: np.ndarray | None = None,
+    timing_response_genome_lengths: np.ndarray | None = None,
+    timing_response_max_combos: int | None = None,
+    timing_response_cache_key: object | None = None,
     materialize_mode: str = "none",
     update_global_best: bool = False,
 ) -> None:
@@ -719,16 +730,47 @@ def skyline_evaluate_population(
     # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
     prune_plateaus_i = _SKYLINE_PLATEAU_PRUNE_ENABLED
 
+    use_timing_response_antichain = (
+        timing_response_combo_ft is not None
+        and timing_response_combo_ff is not None
+        and timing_response_genome_offsets is not None
+        and timing_response_genome_lengths is not None
+        and timing_response_max_combos is not None
+    )
+    materialize_mode_norm = str(materialize_mode or "none").strip().lower()
+    if use_timing_response_antichain and materialize_mode_norm not in {
+        "scores",
+        "scores_only",
+        "score_only",
+        "write_scores",
+    }:
+        raise ValueError("timing response antichain is score-only; materialize retained candidates with the full table")
+
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     max_ft_gems_i = int(total_budget_i) if max_ft_gems_global is None else int(max_ft_gems_global)
     max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
     max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
     max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
-    n_combos = _ensure_ftff_combo_tables(
-        total_budget_i,
-        max_ft_gems=max_ft_gems_i,
-        max_ff_gems=max_ff_gems_i,
-    )
+    if use_timing_response_antichain:
+        _ensure_timing_response_combo_tables(
+            combo_ft=np.asarray(timing_response_combo_ft, dtype=np.int32),
+            combo_ff=np.asarray(timing_response_combo_ff, dtype=np.int32),
+            cache_key=timing_response_cache_key,
+        )
+        _upload_timing_response_genome_rows(
+            genome_offsets=np.asarray(timing_response_genome_offsets, dtype=np.int32),
+            genome_lengths=np.asarray(timing_response_genome_lengths, dtype=np.int32),
+            n_genomes=int(n_genomes),
+        )
+        n_combos = int(timing_response_max_combos or 0)
+        if n_combos <= 0:
+            raise ValueError("timing response antichain max combo count must be positive")
+    else:
+        n_combos = _ensure_ftff_combo_tables(
+            total_budget_i,
+            max_ft_gems=max_ft_gems_i,
+            max_ff_gems=max_ff_gems_i,
+        )
     eval_budget = int(_skyline_eval_budget())
     max_evals = max(int(eval_budget), int(n_genomes))
     combo_chunk = compute_skyline_combo_chunk(
@@ -774,6 +816,7 @@ def skyline_evaluate_population(
             int(prune_plateaus_i),
             use_exact_inner_solver_i,
             int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
+            int(bool(use_timing_response_antichain)),
         )
         offset += int(chunk_len)
 

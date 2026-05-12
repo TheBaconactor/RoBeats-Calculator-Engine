@@ -3183,6 +3183,9 @@ class GpuExecutor:
             if pop is None:
                 groups.append([req])
                 continue
+            if p.get("timing_response_genome_offsets") is not None:
+                groups.append([req])
+                continue
             try:
                 handle_raw = p.get("registry_payload_handle")
                 if handle_raw is not None:
@@ -3414,6 +3417,12 @@ class GpuExecutor:
             use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 1)),
             max_ft_gems_global=payload.get("max_ft_gems_global"),
             max_ff_gems_global=payload.get("max_ff_gems_global"),
+            timing_response_combo_ft=payload.get("timing_response_combo_ft"),
+            timing_response_combo_ff=payload.get("timing_response_combo_ff"),
+            timing_response_genome_offsets=payload.get("timing_response_genome_offsets"),
+            timing_response_genome_lengths=payload.get("timing_response_genome_lengths"),
+            timing_response_max_combos=payload.get("timing_response_max_combos"),
+            timing_response_cache_key=payload.get("timing_response_cache_key"),
             score_only=bool(payload.get("score_only", 0)),
         )
 
@@ -4961,6 +4970,12 @@ def submit_gpu_solve_genomes_from_registry(
     use_exact_inner_solver: bool = True,
     max_ft_gems_global: int | None = None,
     max_ff_gems_global: int | None = None,
+    timing_response_combo_ft=None,
+    timing_response_combo_ff=None,
+    timing_response_genome_offsets=None,
+    timing_response_genome_lengths=None,
+    timing_response_max_combos: int | None = None,
+    timing_response_cache_key=None,
     score_only: bool = False,
     timeout: float = 60.0,
 ) -> list:
@@ -5011,6 +5026,15 @@ def submit_gpu_solve_genomes_from_registry(
             "max_ff_gems_global": None if max_ff_gems_global is None else int(max_ff_gems_global),
             "score_only": int(bool(score_only)),
         }
+        if timing_response_combo_ft is not None:
+            payload["timing_response_combo_ft"] = timing_response_combo_ft
+            payload["timing_response_combo_ff"] = timing_response_combo_ff
+            payload["timing_response_genome_offsets"] = timing_response_genome_offsets
+            payload["timing_response_genome_lengths"] = timing_response_genome_lengths
+            payload["timing_response_max_combos"] = (
+                None if timing_response_max_combos is None else int(timing_response_max_combos)
+            )
+            payload["timing_response_cache_key"] = timing_response_cache_key
         if inline_static:
             payload.update(
                 {
@@ -5062,7 +5086,5 @@ def submit_gpu_solve_genomes_from_registry(
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
     return result
-
-
 
 

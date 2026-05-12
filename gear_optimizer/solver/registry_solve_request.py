@@ -38,6 +38,12 @@ class RegistrySolveRequest:
     use_exact_inner_solver: bool = True
     max_ft_gems_global: int | None = None
     max_ff_gems_global: int | None = None
+    timing_response_combo_ft: Any | None = None
+    timing_response_combo_ff: Any | None = None
+    timing_response_genome_offsets: Any | None = None
+    timing_response_genome_lengths: Any | None = None
+    timing_response_max_combos: int | None = None
+    timing_response_cache_key: Any | None = None
     score_only: bool = False
 
     def to_payload(self) -> dict[str, Any]:
@@ -61,6 +67,15 @@ class RegistrySolveRequest:
             ),
             "score_only": int(bool(self.score_only)),
         }
+        if self.timing_response_combo_ft is not None:
+            payload["timing_response_combo_ft"] = self.timing_response_combo_ft
+            payload["timing_response_combo_ff"] = self.timing_response_combo_ff
+            payload["timing_response_genome_offsets"] = self.timing_response_genome_offsets
+            payload["timing_response_genome_lengths"] = self.timing_response_genome_lengths
+            payload["timing_response_max_combos"] = (
+                None if self.timing_response_max_combos is None else int(self.timing_response_max_combos)
+            )
+            payload["timing_response_cache_key"] = self.timing_response_cache_key
         for key in _REGISTRY_FLAG_KEYS:
             payload[key] = int(self.flags.get(key, 0))
         return payload
@@ -152,6 +167,12 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             use_exact_inner_solver=bool(request.use_exact_inner_solver),
             max_ft_gems_global=request.max_ft_gems_global,
             max_ff_gems_global=request.max_ff_gems_global,
+            timing_response_combo_ft=request.timing_response_combo_ft,
+            timing_response_combo_ff=request.timing_response_combo_ff,
+            timing_response_genome_offsets=request.timing_response_genome_offsets,
+            timing_response_genome_lengths=request.timing_response_genome_lengths,
+            timing_response_max_combos=request.timing_response_max_combos,
+            timing_response_cache_key=request.timing_response_cache_key,
             score_only=bool(request.score_only),
         )
 
@@ -187,5 +208,11 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             use_exact_inner_solver=bool(request.use_exact_inner_solver),
             max_ft_gems_global=request.max_ft_gems_global,
             max_ff_gems_global=request.max_ff_gems_global,
+            timing_response_combo_ft=request.timing_response_combo_ft,
+            timing_response_combo_ff=request.timing_response_combo_ff,
+            timing_response_genome_offsets=request.timing_response_genome_offsets,
+            timing_response_genome_lengths=request.timing_response_genome_lengths,
+            timing_response_max_combos=request.timing_response_max_combos,
+            timing_response_cache_key=request.timing_response_cache_key,
             score_only=bool(request.score_only),
         )
