@@ -12,6 +12,7 @@ import taichi as ti
 from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
+    response_score_upper_bound_relaxed,
     score_solution_from_gems_preloaded,
 )
 
@@ -69,6 +70,7 @@ def _solve_combo_warmstart_preloaded(
     prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
     use_timing_response_antichain: ti.template(),
+    score_cull_threshold: ti.i32,
 ) -> ti.types.vector(5, ti.i32):
     """
     Solve a single (genome, combo) work item and return [score, pp, cm, fm, ov].
@@ -169,56 +171,14 @@ def _solve_combo_warmstart_preloaded(
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            score: ti.i32 = -1
-            res_vec = optimize_core_device_exact_bound(
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
-
-            raw_score = res_vec[0]
-            if raw_score >= 0:
-                # Build the packed max-key from a selection-safe re-score of the
-                # returned gem payload. On Vulkan, the warmstart exact path can
-                # surface the winning payload correctly while the queued
-                # score field drifts, so we re-score the payload once here and
-                # keep the packed key aligned with the materialization path.
-                score = score_solution_from_gems_preloaded(
-                    ft,
-                    ff,
-                    res_vec[1],
-                    res_vec[2],
-                    res_vec[3],
-                    res_vec[4],
+            if score_cull_threshold > 0:
+                ub_score = response_score_upper_bound_relaxed(
+                    budget,
                     base_pp,
                     base_cm,
                     base_fm,
-                    base_p_val,
-                    base_s_val,
-                    base_ft_stat,
-                    base_ff_stat,
-                    gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
+                    p_val,
+                    s_val,
                     is_p_pp,
                     is_s_pp,
                     is_p_cm,
@@ -227,14 +187,80 @@ def _solve_combo_warmstart_preloaded(
                     is_s_fm,
                     is_p_ov,
                     is_s_ov,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
                     head_len,
                     count_fever,
                     count_normal,
                 )
-                out_res = ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
+                if ub_score < ti.cast(score_cull_threshold, ti.f32):
+                    pruned = 1
+
+            score: ti.i32 = -1
+            if pruned == 0:
+                res_vec = optimize_core_device_exact_bound(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+
+                raw_score = res_vec[0]
+                if raw_score >= 0:
+                    # Build the packed max-key from a selection-safe re-score of the
+                    # returned gem payload. On Vulkan, the warmstart exact path can
+                    # surface the winning payload correctly while the queued
+                    # score field drifts, so we re-score the payload once here and
+                    # keep the packed key aligned with the materialization path.
+                    score = score_solution_from_gems_preloaded(
+                        ft,
+                        ff,
+                        res_vec[1],
+                        res_vec[2],
+                        res_vec[3],
+                        res_vec[4],
+                        base_pp,
+                        base_cm,
+                        base_fm,
+                        base_p_val,
+                        base_s_val,
+                        base_ft_stat,
+                        base_ff_stat,
+                        gem_scale_fever,
+                        is_p_ft,
+                        is_s_ft,
+                        is_p_ff,
+                        is_s_ff,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        song_slot,
+                        ft_idx,
+                        ff_idx,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                    )
+                    out_res = ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
 
     return out_res
 
@@ -272,6 +298,7 @@ def _compute_combo_key_warmstart_preloaded(
     prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
     use_timing_response_antichain: ti.template(),
+    score_cull_threshold: ti.i32,
 ) -> ti.u64:
     """
     Compute a packed max-key for a single (genome, combo) work item.
@@ -312,6 +339,7 @@ def _compute_combo_key_warmstart_preloaded(
         prune_plateaus,
         use_exact_inner_solver,
         use_timing_response_antichain,
+        score_cull_threshold,
     )
     score = res_vec[0]
     if score >= 0:
@@ -344,6 +372,7 @@ def skyline_find_best_combo_warmstart_kernel(
     use_exact_inner_solver: ti.template(),  # Exact-bound fixed-(FT,FF) solve; legacy false route also resolves exact.
     reuse_exact_eval_results: ti.template(),
     use_timing_response_antichain: ti.template(),
+    score_cull_threshold: ti.i32,
 ):
     """
     GPU-parallel evaluation with exact per-(genome, FT/FF) solving.
@@ -429,6 +458,7 @@ def skyline_find_best_combo_warmstart_kernel(
                 prune_plateaus,
                 use_exact_inner_solver,
                 use_timing_response_antichain,
+                score_cull_threshold,
             )
             if key != 0:
                 score = ti.cast((key >> 32), ti.i32) - 1
@@ -479,6 +509,10 @@ def skyline_find_best_combo_warmstart_kernel(
             local_c: ti.i32 = lane
             while local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
+                local_score_threshold = score_cull_threshold
+                if local_best_key != ti.u64(0):
+                    local_best_score = ti.cast((local_best_key >> 32), ti.i32) - 1
+                    local_score_threshold = ti.max(local_score_threshold, local_best_score + 1)
                 res_vec = _solve_combo_warmstart_preloaded(
                     genome_idx,
                     combo_idx,
@@ -511,6 +545,7 @@ def skyline_find_best_combo_warmstart_kernel(
                     prune_plateaus,
                     use_exact_inner_solver,
                     use_timing_response_antichain,
+                    local_score_threshold,
                 )
                 score = res_vec[0]
                 if score >= 0:

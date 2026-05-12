@@ -473,6 +473,166 @@ def _exact_bound_ub_for_cm_fm(
 
 
 @ti.func
+def _exact_bound_ub_for_cmfm_rectangle(
+    budget: ti.i32,
+    g_cm_start: ti.i32,
+    g_cm_end: ti.i32,
+    g_fm_start: ti.i32,
+    g_fm_end: ti.i32,
+    max_pp_gems: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    base_init: ti.i32,
+    w_cm: ti.i32,
+    w_fm: ti.i32,
+    w_ov: ti.i32,
+    flags_idx: ti.i32,
+    cur_pp_idx: ti.i32,
+    delta_pp_vs_ov: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    n_hn: ti.i32,
+    n_hf: ti.i32,
+    sigma_hn: ti.i32,
+    sigma_hf: ti.i32,
+) -> ti.f32:
+    """
+    Certified upper bound for a CM/FM gem-count rectangle.
+
+    This relaxes the block by independently taking the best reachable CM
+    multiplier, FM multiplier, PP/OV prefix, and lane-base endpoint. Those
+    maxima need not be jointly achievable, so the result can only overestimate
+    every legal cell in the rectangle.
+    """
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+
+    ub: ti.f32 = ti.f32(-1.0e30)
+    max_leftover: ti.i32 = budget - g_cm_start - g_fm_start
+    if max_leftover >= 0:
+        cm_stat_ub: ti.i32 = cur_cm + (g_cm_end * GEM_SCALE_NORMAL)
+        c_mul_ub: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat_ub)
+
+        fm_stat_ub: ti.i32 = cur_fm + (g_fm_end * GEM_SCALE_FEVER)
+        f_mul_ub: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat_ub)
+
+        max_pp_here: ti.i32 = max_pp_gems
+        if max_pp_here > max_leftover:
+            max_pp_here = max_leftover
+
+        g_pp_best: ti.i32 = ti.cast(
+            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here], ti.i32
+        )
+        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+
+        cm_base_gems: ti.i32 = g_cm_start
+        if w_cm >= w_ov:
+            cm_base_gems = g_cm_end
+        fm_base_gems: ti.i32 = g_fm_start
+        if w_fm >= w_ov:
+            fm_base_gems = g_fm_end
+
+        base_linear_ub: ti.i32 = (
+            base_init
+            + (budget * w_ov)
+            + (cm_base_gems * (w_cm - w_ov))
+            + (fm_base_gems * (w_fm - w_ov))
+        )
+        base_value_ub: ti.f32 = ti.cast(base_linear_ub, ti.f32) + best_pp_extra
+
+        ub = _semi_exact_upper_bound(
+            base_value_ub,
+            c_mul_ub,
+            f_mul_ub,
+            count_fever,
+            count_normal,
+            n_hn,
+            n_hf,
+            sigma_hn,
+            sigma_hf,
+        )
+
+    return ub
+
+
+@ti.func
+def response_score_upper_bound_relaxed(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.f32:
+    """
+    Certified O(1) upper bound for a fixed timing response.
+
+    The bound relaxes the non-timing gem budget by letting the same remaining
+    gems simultaneously maximize PP, CM, FM, and lane base. It also relaxes the
+    timing surface by treating every visible note as fever. Both relaxations can
+    only increase the exact base score, so the result is safe for pruning.
+    """
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
+    w_pp: ti.i32 = (pp_p_delta << 1) + pp_s_delta
+    w_cm: ti.i32 = (cm_p_delta << 1) + cm_s_delta
+    w_fm: ti.i32 = (fm_p_delta << 1) + fm_s_delta
+    w_ov: ti.i32 = (ov_p_delta << 1) + ov_s_delta
+    w_max: ti.i32 = ti.max(ti.max(w_pp, w_cm), ti.max(w_fm, w_ov))
+
+    pp_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_pp + (budget * GEM_SCALE_NORMAL)))
+    cm_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_cm + (budget * GEM_SCALE_NORMAL)))
+    fm_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_fm + (budget * GEM_SCALE_FEVER)))
+
+    base_lane: ti.i32 = (cur_p_val << 1) + cur_s_val + (budget * w_max)
+    base_value: ti.f32 = ti.cast(base_lane, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+    combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+    fever_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+    head_len_c: ti.i32 = ti.max(0, ti.min(head_len, 100))
+    sigma_hf: ti.i32 = (head_len_c * (head_len_c + 1)) // 2
+    body_total: ti.i32 = ti.max(0, count_fever + count_normal)
+
+    return _semi_exact_upper_bound(
+        base_value,
+        combo_mul,
+        fever_mul,
+        body_total,
+        0,
+        0,
+        head_len_c,
+        0,
+        sigma_hf,
+    )
+
+
+@ti.func
 def _head_mask_coefficients_bits(
     m0: ti.u32,
     m1: ti.u32,
@@ -887,46 +1047,44 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
         seed_cm = seed_best_cm1
         seed_fm = seed_best_fm1
 
-    g_cm: ti.i32 = 0
-    while g_cm <= max_cm_gems:
-        leftover_after_cm: ti.i32 = budget - g_cm
-        if leftover_after_cm < 0:
-            break
+    CMFM_BLOCK_CM: ti.i32 = 4
+    CMFM_BLOCK_FM: ti.i32 = 8
 
-        cm_stat: ti.i32 = cur_cm + (g_cm * GEM_SCALE_NORMAL)
-        c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+    cm_block_start: ti.i32 = 0
+    while cm_block_start <= max_cm_gems:
+        cm_block_end: ti.i32 = cm_block_start + CMFM_BLOCK_CM - 1
+        if cm_block_end > max_cm_gems:
+            cm_block_end = max_cm_gems
+        if cm_block_end > budget:
+            cm_block_end = budget
 
-        max_fm_here: ti.i32 = max_fm_gems
-        if max_fm_here > leftover_after_cm:
-            max_fm_here = leftover_after_cm
+        max_fm_from_block_start: ti.i32 = budget - cm_block_start
+        if max_fm_from_block_start > max_fm_gems:
+            max_fm_from_block_start = max_fm_gems
 
-        g_fm: ti.i32 = 0
-        while g_fm <= max_fm_here:
-            leftover: ti.i32 = budget - g_cm - g_fm
-            if leftover < 0:
-                break
+        fm_block_start: ti.i32 = 0
+        while fm_block_start <= max_fm_from_block_start:
+            fm_block_end: ti.i32 = fm_block_start + CMFM_BLOCK_FM - 1
+            if fm_block_end > max_fm_from_block_start:
+                fm_block_end = max_fm_from_block_start
 
-            fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
-            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
-
-            max_pp_here: ti.i32 = max_pp_gems
-            if max_pp_here > leftover:
-                max_pp_here = leftover
-
-            g_pp_best: ti.i32 = ti.cast(
-                kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
-                ti.i32,
-            )
-            pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
-            best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
-
-            g_ov: ti.i32 = leftover - g_pp_best
-            base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
-            base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
-            ub = _semi_exact_upper_bound(
-                base_value,
-                c_mul,
-                f_mul,
+            block_ub = _exact_bound_ub_for_cmfm_rectangle(
+                budget,
+                cm_block_start,
+                cm_block_end,
+                fm_block_start,
+                fm_block_end,
+                max_pp_gems,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_init,
+                w_cm,
+                w_fm,
+                w_ov,
+                flags_idx,
+                cur_pp_idx,
+                delta_pp_vs_ov,
                 count_fever,
                 count_normal,
                 n_hn,
@@ -934,48 +1092,107 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
                 sigma_hn,
                 sigma_hf,
             )
-            if ub > ti.cast(best_score, ti.f32):
-                score = calc_score_cached_device(
-                    base_value,
-                    c_mul,
-                    f_mul,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    m0,
-                    m1,
-                    m2,
-                    m3,
-                )
-                if score > best_score or (
-                    score == best_score
-                    and (
-                        (g_cm < best_cm)
-                        or (g_cm == best_cm and ((g_fm < best_fm) or (g_fm == best_fm and g_pp_best < best_pp)))
-                    )
-                ):
-                    best_score = score
-                    best_pp = g_pp_best
-                    best_cm = g_cm
-                    best_fm = g_fm
-                    best_ov = g_ov
-                    best_p = (
-                        cur_p_val
-                        + (g_pp_best * pp_p_delta)
-                        + (g_cm * cm_p_delta)
-                        + (g_fm * fm_p_delta)
-                        + (g_ov * ov_p_delta)
-                    )
-                    best_s = (
-                        cur_s_val
-                        + (g_pp_best * pp_s_delta)
-                        + (g_cm * cm_s_delta)
-                        + (g_fm * fm_s_delta)
-                        + (g_ov * ov_s_delta)
-                    )
 
-            g_fm += 1
-        g_cm += 1
+            if block_ub > ti.cast(best_score, ti.f32):
+                g_cm: ti.i32 = cm_block_start
+                while g_cm <= cm_block_end:
+                    leftover_after_cm: ti.i32 = budget - g_cm
+                    if leftover_after_cm < 0:
+                        break
+
+                    cm_stat: ti.i32 = cur_cm + (g_cm * GEM_SCALE_NORMAL)
+                    c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+
+                    max_fm_here: ti.i32 = max_fm_gems
+                    if max_fm_here > leftover_after_cm:
+                        max_fm_here = leftover_after_cm
+                    if max_fm_here > fm_block_end:
+                        max_fm_here = fm_block_end
+
+                    g_fm: ti.i32 = fm_block_start
+                    while g_fm <= max_fm_here:
+                        leftover: ti.i32 = budget - g_cm - g_fm
+                        if leftover < 0:
+                            break
+
+                        fm_stat: ti.i32 = cur_fm + (g_fm * GEM_SCALE_FEVER)
+                        f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+                        max_pp_here: ti.i32 = max_pp_gems
+                        if max_pp_here > leftover:
+                            max_pp_here = leftover
+
+                        g_pp_best: ti.i32 = ti.cast(
+                            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
+                            ti.i32,
+                        )
+                        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+                        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(
+                            pp_stat
+                        )
+
+                        g_ov: ti.i32 = leftover - g_pp_best
+                        base_linear: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover * w_ov)
+                        base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+                        ub = _semi_exact_upper_bound(
+                            base_value,
+                            c_mul,
+                            f_mul,
+                            count_fever,
+                            count_normal,
+                            n_hn,
+                            n_hf,
+                            sigma_hn,
+                            sigma_hf,
+                        )
+                        if ub > ti.cast(best_score, ti.f32):
+                            score = calc_score_cached_device(
+                                base_value,
+                                c_mul,
+                                f_mul,
+                                head_len,
+                                count_fever,
+                                count_normal,
+                                m0,
+                                m1,
+                                m2,
+                                m3,
+                            )
+                            if score > best_score or (
+                                score == best_score
+                                and (
+                                    (g_cm < best_cm)
+                                    or (
+                                        g_cm == best_cm
+                                        and ((g_fm < best_fm) or (g_fm == best_fm and g_pp_best < best_pp))
+                                    )
+                                )
+                            ):
+                                best_score = score
+                                best_pp = g_pp_best
+                                best_cm = g_cm
+                                best_fm = g_fm
+                                best_ov = g_ov
+                                best_p = (
+                                    cur_p_val
+                                    + (g_pp_best * pp_p_delta)
+                                    + (g_cm * cm_p_delta)
+                                    + (g_fm * fm_p_delta)
+                                    + (g_ov * ov_p_delta)
+                                )
+                                best_s = (
+                                    cur_s_val
+                                    + (g_pp_best * pp_s_delta)
+                                    + (g_cm * cm_s_delta)
+                                    + (g_fm * fm_s_delta)
+                                    + (g_ov * ov_s_delta)
+                                )
+
+                        g_fm += 1
+                    g_cm += 1
+
+            fm_block_start += CMFM_BLOCK_FM
+        cm_block_start += CMFM_BLOCK_CM
 
     return ti.Vector([best_score, best_pp, best_cm, best_fm, best_ov, best_p, best_s])
 

@@ -236,7 +236,11 @@ def test_registry_solve_inner_selector_matches_cpu_exact_for_both_branches():
     slot_count = np.ones(9, dtype=np.int32)
     population_indices = np.asarray([[1, 2, 3, 4, 5, 6, 7, 8, 9]], dtype=np.int32)
     gpu_bests = []
-    for use_exact_inner_solver in (True, False):
+    for use_exact_inner_solver, score_cull_threshold in (
+        (True, None),
+        (False, None),
+        (True, int(cpu_best[0])),
+    ):
         req = RegistrySolveRequest(
             population_indices=population_indices,
             item_stats=item_stats,
@@ -250,6 +254,7 @@ def test_registry_solve_inner_selector_matches_cpu_exact_for_both_branches():
             gem_scale_fever=int(GEM_SCALE_FEVER),
             song_slot=0,
             use_exact_inner_solver=use_exact_inner_solver,
+            score_cull_threshold=score_cull_threshold,
         )
         gpu_results = dispatch_registry_solve(req)
         assert len(gpu_results) == 1

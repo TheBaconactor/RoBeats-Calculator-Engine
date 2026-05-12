@@ -660,6 +660,7 @@ def skyline_evaluate_population(
     timing_response_genome_lengths: np.ndarray | None = None,
     timing_response_max_combos: int | None = None,
     timing_response_cache_key: object | None = None,
+    score_cull_threshold: int | None = None,
     materialize_mode: str = "none",
     update_global_best: bool = False,
 ) -> None:
@@ -726,6 +727,7 @@ def skyline_evaluate_population(
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
+    score_cull_threshold_i = -1 if score_cull_threshold is None else int(score_cull_threshold)
 
     # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
     prune_plateaus_i = _SKYLINE_PLATEAU_PRUNE_ENABLED
@@ -817,6 +819,7 @@ def skyline_evaluate_population(
             use_exact_inner_solver_i,
             int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
             int(bool(use_timing_response_antichain)),
+            int(score_cull_threshold_i),
         )
         offset += int(chunk_len)
 

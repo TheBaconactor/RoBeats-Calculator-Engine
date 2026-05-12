@@ -44,6 +44,7 @@ class RegistrySolveRequest:
     timing_response_genome_lengths: Any | None = None
     timing_response_max_combos: int | None = None
     timing_response_cache_key: Any | None = None
+    score_cull_threshold: int | None = None
     score_only: bool = False
 
     def to_payload(self) -> dict[str, Any]:
@@ -66,6 +67,7 @@ class RegistrySolveRequest:
                 None if self.max_ff_gems_global is None else int(self.max_ff_gems_global)
             ),
             "score_only": int(bool(self.score_only)),
+            "score_cull_threshold": None if self.score_cull_threshold is None else int(self.score_cull_threshold),
         }
         if self.timing_response_combo_ft is not None:
             payload["timing_response_combo_ft"] = self.timing_response_combo_ft
@@ -173,6 +175,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             timing_response_genome_lengths=request.timing_response_genome_lengths,
             timing_response_max_combos=request.timing_response_max_combos,
             timing_response_cache_key=request.timing_response_cache_key,
+            score_cull_threshold=request.score_cull_threshold,
             score_only=bool(request.score_only),
         )
 
@@ -214,5 +217,6 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             timing_response_genome_lengths=request.timing_response_genome_lengths,
             timing_response_max_combos=request.timing_response_max_combos,
             timing_response_cache_key=request.timing_response_cache_key,
+            score_cull_threshold=request.score_cull_threshold,
             score_only=bool(request.score_only),
         )

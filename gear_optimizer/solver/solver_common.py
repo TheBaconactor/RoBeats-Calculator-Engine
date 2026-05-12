@@ -291,6 +291,7 @@ class RegistryEvalBatch:
     timing_response_genome_lengths: np.ndarray | None = None
     timing_response_max_combos: int | None = None
     timing_response_cache_key: object | None = None
+    score_cull_threshold: int | None = None
 
 
 def batched_registry_eval(
@@ -323,6 +324,7 @@ def batched_registry_eval(
         timing_response_genome_lengths = None
         timing_response_max_combos = None
         timing_response_cache_key = None
+        score_cull_threshold = heap[0][0] if len(heap) >= int(keep_top_k) and int(keep_top_k) > 0 else None
         if isinstance(candidate_batch, RegistryEvalBatch):
             batch_ids = candidate_batch.batch_ids
             batch_gear_codes = candidate_batch.batch_gear_codes
@@ -335,6 +337,8 @@ def batched_registry_eval(
             timing_response_genome_lengths = candidate_batch.timing_response_genome_lengths
             timing_response_max_combos = candidate_batch.timing_response_max_combos
             timing_response_cache_key = candidate_batch.timing_response_cache_key
+            if candidate_batch.score_cull_threshold is not None:
+                score_cull_threshold = candidate_batch.score_cull_threshold
         elif len(candidate_batch) == 5:
             (
                 batch_ids,
@@ -370,6 +374,7 @@ def batched_registry_eval(
             timing_response_genome_lengths=timing_response_genome_lengths,
             timing_response_max_combos=timing_response_max_combos,
             timing_response_cache_key=timing_response_cache_key,
+            score_cull_threshold=score_cull_threshold,
             # The batch reducer only needs scores to choose exact top-K ids.
             # Retained candidates are rebuilt later for full gem payloads.
             score_only=True,

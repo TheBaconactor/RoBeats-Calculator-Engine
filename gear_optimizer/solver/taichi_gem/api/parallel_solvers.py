@@ -357,6 +357,7 @@ def solve_genomes_from_registry(
     timing_response_genome_lengths: np.ndarray | None = None,
     timing_response_max_combos: int | None = None,
     timing_response_cache_key: object | None = None,
+    score_cull_threshold: int | None = None,
     score_only: bool = False,
 ) -> list:
     """
@@ -446,6 +447,7 @@ def solve_genomes_from_registry(
         timing_response_genome_lengths=timing_response_genome_lengths,
         timing_response_max_combos=timing_response_max_combos,
         timing_response_cache_key=timing_response_cache_key,
+        score_cull_threshold=score_cull_threshold,
         materialize_mode="scores_only" if bool(score_only) else "results_only",
     )
 

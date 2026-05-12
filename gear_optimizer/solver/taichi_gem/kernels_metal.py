@@ -300,6 +300,8 @@ def create_metal_kernels():
         prune_plateaus: ti.i32,
         use_exact_inner_solver: ti.i32,
         reuse_exact_eval_results: ti.i32,
+        use_timing_response_antichain: ti.i32,
+        score_cull_threshold: ti.i32,
     ):
         """Metal-safe exact-eval kernel using 32-bit atomics."""
         ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)

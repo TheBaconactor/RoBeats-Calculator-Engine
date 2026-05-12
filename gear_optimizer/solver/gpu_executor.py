@@ -3342,6 +3342,7 @@ class GpuExecutor:
                         gem_scale_fever=gem_scale_fever,
                         song_slot=song_slot,
                         use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 1)),
+                        score_cull_threshold=p0.get("score_cull_threshold"),
                     )
                     dt_kernel = perf_counter() - t_kernel0
                     dt_total = perf_counter() - t_pack0
@@ -3423,6 +3424,7 @@ class GpuExecutor:
             timing_response_genome_lengths=payload.get("timing_response_genome_lengths"),
             timing_response_max_combos=payload.get("timing_response_max_combos"),
             timing_response_cache_key=payload.get("timing_response_cache_key"),
+            score_cull_threshold=payload.get("score_cull_threshold"),
             score_only=bool(payload.get("score_only", 0)),
         )
 
@@ -4976,6 +4978,7 @@ def submit_gpu_solve_genomes_from_registry(
     timing_response_genome_lengths=None,
     timing_response_max_combos: int | None = None,
     timing_response_cache_key=None,
+    score_cull_threshold: int | None = None,
     score_only: bool = False,
     timeout: float = 60.0,
 ) -> list:
@@ -5025,6 +5028,7 @@ def submit_gpu_solve_genomes_from_registry(
             "max_ft_gems_global": None if max_ft_gems_global is None else int(max_ft_gems_global),
             "max_ff_gems_global": None if max_ff_gems_global is None else int(max_ff_gems_global),
             "score_only": int(bool(score_only)),
+            "score_cull_threshold": None if score_cull_threshold is None else int(score_cull_threshold),
         }
         if timing_response_combo_ft is not None:
             payload["timing_response_combo_ft"] = timing_response_combo_ft
@@ -5086,5 +5090,3 @@ def submit_gpu_solve_genomes_from_registry(
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
     return result
-
-
