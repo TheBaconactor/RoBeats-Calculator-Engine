@@ -23,11 +23,8 @@ from gear_optimizer.pipeline.post_processor_deferred import (
     build_deferred_post_result_payload,
     should_persist_pending_fg_job,
 )
-from gear_optimizer.pipeline.post_processor_fg_variants import (
-    best_fg_improving_score_from_persist_entries as _best_fg_improving_score_from_persist_entries,
-    fg_variants_from_persist_entries as _fg_variants_from_persist_entries,
-)
 from gear_optimizer.pipeline.post_processor_fg_updates import (
+    build_fg_update_state,
     canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
 )
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries
@@ -241,8 +238,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             try:
                 song_name = item.get("song", "Unknown")
                 db_key = item.get("db_key") or song_name
-                fg_state = pending_fg_summary.get(song_name) or {}
-                fg_state["saw_fg_update"] = True
                 valid_entries: list[dict] = []
 
                 if item.get("use_evo_db", True):
@@ -293,13 +288,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     except Exception as e:
                         logger.warning(f"post_processor:_print_pending_final: {e}")
 
-                fg_state["saved_count"] = len(valid_entries)
-                # `fg_score` can equal `score` when the optimal FG config is "no forced greats"
-                # (config all zeros). For reporting, treat "best FG" as the best *improving* FG
-                # result that has a valid force payload, matching DB `best_fg_score` semantics.
-                best_fg_improving = _best_fg_improving_score_from_persist_entries(valid_entries)
-                fg_state["best_fg"] = int(best_fg_improving)
-                fg_state["fg_variants"] = _fg_variants_from_persist_entries(valid_entries)
+                fg_state = build_fg_update_state(pending_fg_summary.get(song_name), valid_entries)
                 pending_fg_summary[song_name] = fg_state
 
                 if sync_output and song_name in pending_final_print:

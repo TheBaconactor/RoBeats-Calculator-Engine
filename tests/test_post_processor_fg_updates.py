@@ -1,4 +1,4 @@
-from gear_optimizer.pipeline.post_processor_fg_updates import canonicalize_fg_update_entries
+from gear_optimizer.pipeline.post_processor_fg_updates import build_fg_update_state, canonicalize_fg_update_entries
 
 
 def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkeypatch):
@@ -86,3 +86,33 @@ def test_canonicalize_fg_update_entries_rejects_missing_file_path():
         )
         == []
     )
+
+
+def test_build_fg_update_state_preserves_existing_state_and_reports_improving_fg():
+    state = build_fg_update_state(
+        {"queued_at": 123},
+        [
+            {"score": 100, "fg_score": 99, "force": {"ForceGreats": {"config": [1, 0]}}},
+            {
+                "score": 100,
+                "fg_score": 125,
+                "force": {"ForceGreats": {"config": [1, 0]}},
+                "details": {"ForceGreats": {"config": [1, 0]}},
+            },
+            {"score": 100, "fg_score": 140},
+        ],
+    )
+
+    assert state["queued_at"] == 123
+    assert state["saw_fg_update"] is True
+    assert state["saved_count"] == 3
+    assert state["best_fg"] == 125
+    assert len(state["fg_variants"]) == 3
+    assert state["fg_variants"][1] == {
+        "data": {"ForceGreats": {"config": [1, 0]}, "Score": 125},
+        "gear": [],
+        "minis": [],
+        "score": 100,
+        "fg_score": 125,
+        "_is_ga": False,
+    }

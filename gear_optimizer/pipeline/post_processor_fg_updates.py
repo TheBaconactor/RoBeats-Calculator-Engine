@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gear_optimizer.pipeline.post_processor_fg_variants import (
+    best_fg_improving_score_from_persist_entries,
+    fg_variants_from_persist_entries,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,3 +69,18 @@ def canonicalize_fg_update_entries(
             exc,
         )
         return []
+
+
+def build_fg_update_state(
+    existing_state: dict[str, Any] | None,
+    valid_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    state = dict(existing_state or {})
+    state["saw_fg_update"] = True
+    state["saved_count"] = len(valid_entries)
+    # `fg_score` can equal `score` when the optimal FG config is "no forced greats"
+    # (config all zeros). For reporting, treat "best FG" as the best *improving* FG
+    # result that has a valid force payload, matching DB `best_fg_score` semantics.
+    state["best_fg"] = int(best_fg_improving_score_from_persist_entries(valid_entries))
+    state["fg_variants"] = fg_variants_from_persist_entries(valid_entries)
+    return state
