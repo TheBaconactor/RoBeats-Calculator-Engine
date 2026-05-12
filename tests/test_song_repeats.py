@@ -1,7 +1,7 @@
 import configparser
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.solver.native_inflight_orchestrator import (
+from gear_optimizer.solver.native_inflight_support import (
     _extract_repeat_bundle,
     _materialize_repeat_task,
     _task_key,

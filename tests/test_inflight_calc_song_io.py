@@ -1,7 +1,7 @@
 import numpy as np
 
 from gear_optimizer.data.song_io import get_base_calc_song
-from gear_optimizer.solver.inflight_utils import _build_calc_song_from_file
+from gear_optimizer.solver.song_preparation import build_prepared_calc_song
 
 
 def _write_song(path):
@@ -32,12 +32,7 @@ def test_native_calc_song_uses_shared_base_song_io_and_clones_before_timing_enve
     cfg_dict = {"IterationEngine": {"GA_SearchDepth": "125"}}
 
     base_calc_song = get_base_calc_song(str(song_path), cfg_dict)
-    native_calc_song = _build_calc_song_from_file(
-        fp=str(song_path),
-        found_song_name="Shared IO Song (Hard) by Tester",
-        cfg=None,
-        cfg_dict=cfg_dict,
-    )
+    native_calc_song = build_prepared_calc_song(fp=str(song_path), cfg_dict=cfg_dict).calc_song
 
     assert native_calc_song is not base_calc_song
     assert native_calc_song["metadata"]["Song Name"] == "Shared IO Song"

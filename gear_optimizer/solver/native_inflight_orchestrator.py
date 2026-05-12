@@ -12,7 +12,6 @@ This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mod
 from __future__ import annotations
 
 import logging
-import threading
 import time
 import traceback
 from collections import deque
@@ -24,9 +23,7 @@ from gear_optimizer.domain.jobs import task_song_name
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
 from gear_optimizer.solver.native_inflight_config import (
-    InflightConfig,  # noqa: F401
     _default_worker_threads,
-    _read_fg_static_prep_max_inflight,  # noqa: F401 - compatibility export for scheduler tests/tools
     first_task_config,
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
@@ -36,12 +33,10 @@ from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_timeout_s,
     read_inflight_event_wait_gpu_cap_s,
     read_inflight_event_wait_short_spin_s,
-    wait_for_completion_event,
 )
 from gear_optimizer.solver.native_inflight_prepare import _prepare_song
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
-    _closed_loop_bubble_kpi,  # noqa: F401 - compatibility export for scheduler tests/tools
     _continuous_fg_allow_not_ready,
     _continuous_ga_should_yield_to_fg,
     _continuous_fg_should_fill_song_lanes,
@@ -49,26 +44,23 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _continuous_fg_submit_budget,
     _continuous_ga_warm_queue_limit,
     count_active_song_lanes,
-    _default_prime_target,  # noqa: F401 - compatibility export for scheduler tests/tools
     _read_prime_target,
 )
-from gear_optimizer.solver.native_inflight_fg_pipeline import (
-    NativeFGPipeline,
-    read_native_fg_pipeline_settings,
-    run_fg_job_sync as _run_fg_job_sync,
-    score_fg_inside_ga as _score_fg_inside_ga,
-)
+from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
-from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, _build_fg_persist_entries  # noqa: F401
+from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
 from gear_optimizer.solver.native_inflight_result_events import (
     build_native_song_error_payload as _build_native_song_error_payload,
     build_native_task_error_payload as _build_native_task_error_payload,
-    build_deferred_post_payload as _build_deferred_post_payload,
     fg_enabled_for_song as _fg_enabled_for_song,
-    fg_pending_for_post as _fg_pending_for_post,
 )
 from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
-from gear_optimizer.solver.native_inflight_completion import CompletionTracker, has_waitable_work, mark_song_completed
+from gear_optimizer.solver.native_inflight_completion import (
+    CompletionTracker,
+    emit_deferred_post_payload as _emit_deferred_post_payload_once,
+    has_waitable_work,
+    mark_song_completed,
+)
 from gear_optimizer.solver.native_inflight_bubble import BubbleTracker
 from gear_optimizer.solver.native_inflight_bundle import InflightBundleTracker
 from gear_optimizer.solver.native_inflight_cpu_prewarm import CpuPrewarmQueue
@@ -84,9 +76,7 @@ from gear_optimizer.solver.native_inflight_abort_log import (
 )
 from gear_optimizer.solver.native_inflight_support import (
     _PostSender,
-    _extract_repeat_bundle,  # noqa: F401 - compatibility export for repeat tests/tools
     _extract_repeat_ctx,
-    _materialize_repeat_task,  # noqa: F401 - compatibility export for repeat tests/tools
     _task_key,
 )
 from gear_optimizer.solver.native_inflight_types import _NativeSong
@@ -100,40 +90,6 @@ from gear_optimizer.solver.native_inflight_stages import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _read_inflight_event_wait_timeout_s() -> float:
-    # Kept as a wrapper for unit tests and historical call sites.
-    return float(read_inflight_event_wait_timeout_s())
-
-
-def _read_inflight_event_wait_gpu_cap_s() -> float:
-    # Kept as a wrapper for unit tests and historical call sites.
-    return float(read_inflight_event_wait_gpu_cap_s())
-
-
-def _read_inflight_event_wait_short_spin_s() -> float:
-    # Kept as a wrapper for unit tests and historical call sites.
-    return float(read_inflight_event_wait_short_spin_s())
-
-
-def _wait_for_completion_event(
-    completion_event: threading.Event,
-    *,
-    timeout_s: float,
-    short_spin_s: float,
-) -> bool:
-    # Delegate to the shared helper, but pass the module-local time funcs so tests
-    # can monkeypatch `native_inflight_orchestrator.time`.
-    return bool(
-        wait_for_completion_event(
-            completion_event,
-            timeout_s=float(timeout_s),
-            short_spin_s=float(short_spin_s),
-            perf_counter=time.perf_counter,
-            sleep=time.sleep,
-        )
-    )
 
 
 def run_native_inflight_song_pipeline(
@@ -249,14 +205,14 @@ def run_native_inflight_song_pipeline(
     decode_queue = GADecodeQueue(max_workers=int(icfg.decode_workers))
     decode_inflight = decode_queue.inflight
 
-    fg_pipeline_settings = read_native_fg_pipeline_settings(
+    fg_pipeline_settings = native_fg_pipeline.read_native_fg_pipeline_settings(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
         ga_credit_budget_cfg=int(icfg.fg_ga_credit_budget_cfg),
         cpu_prewarm_lookahead=int(icfg.cpu_prewarm_lookahead),
         default_worker_threads=_default_worker_threads,
     )
-    fg_pipeline = NativeFGPipeline(fg_pipeline_settings)
+    fg_pipeline = native_fg_pipeline.NativeFGPipeline(fg_pipeline_settings)
     db_persistence = InflightDBPersistence(
         candidate_limit_default=FG_CANDIDATE_LIMIT,
         prefetch_workers=int(fg_pipeline.settings.db_prefetch_workers),
@@ -413,40 +369,18 @@ def run_native_inflight_song_pipeline(
     _submit_cpu_prewarm_backlog()
 
     def _emit_deferred_post_payload(song: _NativeSong) -> None:
-        if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
-            return
-        _post(_build_deferred_post_payload(song, persist_pending_fg_job=bool(not icfg.fg_drain_at_end)))
-
-        try:
-            song.runtime.post.deferred_post_emitted = True
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
-
-        bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-        needs_fg_stage = bool(_fg_pending_for_post(song))
-        if bundle_parent is not None and needs_fg_stage:
-            song.runtime.bundle.bundle_wait_for_fg = True
-        elif bundle_parent is not None:
-            _advance_bundle(
-                bundle_parent,
-                song_name=str(song.config.song_name),
-                record_info=getattr(song.runtime.db, "record_info", None),
-                failed=False,
-            )
-        elif needs_fg_stage and bool(icfg.fg_drain_at_end):
-            try:
-                song.runtime.post.await_fg_completion_progress = True
-            except Exception as e:
-                logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
-        else:
-            mark_song_completed(
-                completed_songs=completed_songs,
-                task_key=song.config.task_key,
-                song_name=song.config.song_name,
-                memory_resume_tracker=memory_resume_tracker,
-                bundle_completed_cb=bundle_completed_cb,
-            )
-            progress_tracker.emit_done_song_progress(progress_cb, song)
+        _emit_deferred_post_payload_once(
+            song,
+            post=_post,
+            persist_pending_fg_job=bool(not icfg.fg_drain_at_end),
+            fg_drain_at_end=bool(icfg.fg_drain_at_end),
+            completed_songs=completed_songs,
+            memory_resume_tracker=memory_resume_tracker,
+            bundle_completed_cb=bundle_completed_cb,
+            advance_bundle=_advance_bundle,
+            progress_tracker=progress_tracker,
+            progress_cb=progress_cb,
+        )
 
     try:
         last_progress = time.monotonic()
@@ -458,7 +392,7 @@ def run_native_inflight_song_pipeline(
         throughput_sec = float(icfg.loop_observer.throughput_sec)
         stage_emit_sec = float(icfg.loop_observer.stage_profile_emit_sec)
 
-        event_wait_timeout_s = float(_read_inflight_event_wait_timeout_s())
+        event_wait_timeout_s = float(read_inflight_event_wait_timeout_s())
         event_wait_gpu_cap_s = float(read_inflight_event_wait_gpu_cap_s())
         event_wait_short_spin_s = float(read_inflight_event_wait_short_spin_s())
 
@@ -1048,7 +982,7 @@ def run_native_inflight_song_pipeline(
                 if _fg_enabled_for_song(song):
                     fg_t0 = time.perf_counter()
                     try:
-                        _score_fg_inside_ga(song, gpu_client=gpu_client)
+                        native_fg_pipeline.score_fg_inside_ga(song, gpu_client=gpu_client)
                     except GpuServiceTimeoutError:
                         raise
                     except Exception as exc:
@@ -1395,7 +1329,7 @@ def run_native_inflight_song_pipeline(
                         except Exception as e:
                             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         fg_pipeline.submit_job(
-                            _run_fg_job_sync,
+                            native_fg_pipeline.run_fg_job_sync,
                             fg_song,
                             gpu_client=gpu_client,
                             post_sender=post_sender,
@@ -1685,5 +1619,5 @@ def run_native_inflight_song_pipeline(
             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
 
-# NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, `_prepare_fg_job_sync`, `_run_fg_job_sync`,
-# and `_build_fg_persist_entries` are imported from their own modules to keep the orchestrator leaner.
+# NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, and `_prepare_fg_job_sync`
+# are imported from their own modules to keep the orchestrator leaner.

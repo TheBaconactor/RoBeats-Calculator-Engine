@@ -4,7 +4,6 @@ from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
@@ -60,7 +59,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         fg_variants=[],
     )
 
-    orchestrator._run_fg_job_sync(song, gpu_client=SimpleNamespace())
+    fg_pipeline.run_fg_job_sync(song, gpu_client=SimpleNamespace())
 
     assert calls["ga_candidates"] is song.runtime.decode.ga_candidates
     assert calls["registry"] is registry
@@ -71,7 +70,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
@@ -123,7 +121,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     )
 
     gpu_client = SimpleNamespace(name="gpu")
-    orchestrator._run_fg_job_sync(song, gpu_client=gpu_client)
+    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
     assert calls["search_radius"] == 5
     assert calls["ga_candidates"] is None

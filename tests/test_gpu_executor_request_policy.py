@@ -1,9 +1,11 @@
-from gear_optimizer.solver.gpu_executor import GpuExecutor
+from types import SimpleNamespace
+
 from gear_optimizer.solver.gpu_executor_request_policy import (
     COALESCABLE_REQUEST_TYPES,
     FG_REQUEST_TYPES,
     GA_RECOVERY_REQUEST_TYPES,
     NO_BATCH_REQUEST_TYPES,
+    is_ga_recovery_request,
     is_ga_recovery_request_type,
     is_no_batch_request_type,
 )
@@ -18,6 +20,7 @@ def test_fused_ga_fg_request_is_fg_recovery_and_coalescable():
     assert request_type in COALESCABLE_REQUEST_TYPES
     assert is_ga_recovery_request_type(request_type)
     assert is_ga_recovery_request_type(request_type.value)
+    assert is_ga_recovery_request(SimpleNamespace(request_type=request_type))
 
 
 def test_gpu_native_ga_is_the_only_no_batch_owner_turn():
@@ -27,16 +30,8 @@ def test_gpu_native_ga_is_the_only_no_batch_owner_turn():
     assert not is_no_batch_request_type(GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS)
 
 
-def test_gpu_executor_keeps_policy_aliases_for_compatibility():
-    assert GpuExecutor._FG_REQUEST_TYPES is FG_REQUEST_TYPES
-    assert GpuExecutor._GA_RECOVERY_REQUEST_TYPES is GA_RECOVERY_REQUEST_TYPES
-    assert GpuExecutor._COALESCABLE_REQUEST_TYPES is COALESCABLE_REQUEST_TYPES
-    assert GpuExecutor._NO_BATCH_REQUEST_TYPES is NO_BATCH_REQUEST_TYPES
-    assert GpuExecutor._is_ga_recovery_request_type(GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value)
-    assert GpuExecutor._is_no_batch_request_type(GpuRequestType.GPU_NATIVE_GA_RUN.value)
-    assert GpuExecutor._is_ga_recovery_request_type(
-        GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value
-    ) == is_ga_recovery_request_type(GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value)
-    assert GpuExecutor._is_no_batch_request_type(GpuRequestType.GPU_NATIVE_GA_RUN.value) == is_no_batch_request_type(
-        GpuRequestType.GPU_NATIVE_GA_RUN.value
-    )
+def test_request_policy_module_owns_policy_sets():
+    assert GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS in FG_REQUEST_TYPES
+    assert GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS in GA_RECOVERY_REQUEST_TYPES
+    assert GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS in COALESCABLE_REQUEST_TYPES
+    assert GpuRequestType.GPU_NATIVE_GA_RUN in NO_BATCH_REQUEST_TYPES

@@ -137,8 +137,7 @@ def test_load_workload_profile_settings_clamps_invalid_interval():
     assert invalid.interval_sec == 2.0
 
 
-def test_payload_dict_normalizes_non_dict_payloads_and_matches_executor_wrapper():
-    ex = _fresh_executor()
+def test_payload_dict_normalizes_non_dict_payloads():
     good = GpuRequest(
         request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         request_id=20,
@@ -154,8 +153,6 @@ def test_payload_dict_normalizes_non_dict_payloads_and_matches_executor_wrapper(
 
     assert payload_dict(good) == {"population_indices": [1, 2, 3]}
     assert payload_dict(bad) == {}
-    assert ex._payload_dict(good) == payload_dict(good)
-    assert ex._payload_dict(bad) == payload_dict(bad)
 
 
 def test_percentile95_handles_empty_and_sorted_samples():

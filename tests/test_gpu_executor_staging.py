@@ -1,5 +1,6 @@
 from collections import deque
 
+from gear_optimizer.solver.gpu_executor import GpuExecutor
 from gear_optimizer.solver.gpu_executor_staging import (
     pop_staged_request,
     stage_request,
@@ -16,6 +17,20 @@ def _request(request_id: int, *, dequeue_perf_ns: int = 0) -> GpuRequest:
         payload={},
         dequeue_perf_ns=dequeue_perf_ns,
     )
+
+
+def _executor_request(request_id: int, request_type: GpuRequestType) -> GpuRequest:
+    return GpuRequest(
+        request_type=request_type,
+        request_id=request_id,
+        worker_id=1,
+        payload={},
+    )
+
+
+def _fresh_executor() -> GpuExecutor:
+    GpuExecutor._instance = None
+    return GpuExecutor()
 
 
 def test_stamp_request_dequeue_sets_missing_timestamp_once():
@@ -58,3 +73,20 @@ def test_pop_staged_request_zero_index_pops_front():
 
     assert popped.request_id == 1
     assert [req.request_id for req in staged] == [2]
+
+
+def test_gpu_executor_pop_seed_request_pops_recovery_request_from_staged_queue():
+    ex = _fresh_executor()
+    ex._in_process_queues = True
+    ex._ga_owner_turn_streak = 1
+    ex._staged_requests = deque(
+        [
+            _executor_request(1, GpuRequestType.GPU_NATIVE_GA_RUN),
+            _executor_request(2, GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS),
+        ]
+    )
+
+    popped = ex._pop_seed_request(timeout=0.0, deadline=0.0, batch_max_size=8)
+
+    assert popped.request_id == 2
+    assert [req.request_id for req in ex._staged_requests] == [1]

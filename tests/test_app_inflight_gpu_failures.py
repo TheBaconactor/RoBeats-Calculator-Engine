@@ -1,3 +1,4 @@
+import configparser
 import sys
 import types
 
@@ -120,16 +121,13 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
 
-def test_dual_process_inflight_is_quarantined_on_main_without_explicit_env(monkeypatch):
+def test_inflight_instances_do_not_create_dual_process_workers(monkeypatch):
     app = _make_minimal_app()
     tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
     native_calls: list[dict] = []
-    dual_calls: list[dict] = []
 
     def _record_run(*args, **kwargs):
         native_calls.append({"args": args, "kwargs": kwargs})
-
-    app._run_dual_process_inflight = lambda *args, **kwargs: dual_calls.append({"args": args, "kwargs": kwargs})
 
     monkeypatch.setitem(
         sys.modules,
@@ -141,26 +139,38 @@ def test_dual_process_inflight_is_quarantined_on_main_without_explicit_env(monke
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
     assert len(native_calls) == 1
-    assert dual_calls == []
+    assert native_calls[0]["kwargs"]["in_flight_songs"] == 2
 
 
-def test_dual_process_inflight_requires_explicit_allow_env(monkeypatch):
+def test_dual_process_allow_env_does_not_change_main_route(monkeypatch):
     app = _make_minimal_app()
     tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
-    dual_calls: list[dict] = []
+    native_calls: list[dict] = []
 
-    app._run_dual_process_inflight = lambda *args, **kwargs: dual_calls.append({"args": args, "kwargs": kwargs})
+    def _record_run(*args, **kwargs):
+        native_calls.append({"args": args, "kwargs": kwargs})
 
     monkeypatch.setenv("INFLIGHT_ALLOW_DUAL_PROCESS", "1")
     monkeypatch.setitem(
         sys.modules,
         "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
     )
 
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
-    assert len(dual_calls) == 1
+    assert len(native_calls) == 1
+    assert native_calls[0]["args"][0] == tasks
+
+
+def test_configure_execution_does_not_mutate_gpu_mode_flag():
+    app = object.__new__(GearOptimizerApp)
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"GPU_Mode": "false", "GPU_Native_GA": "true", "InFlightSongs": "0"}})
+
+    app._configure_execution_and_prewarm(cfg)
+
+    assert cfg.get("IterationEngine", "GPU_Mode") == "false"
 
 
 def test_request_stop_requests_gpu_abort(monkeypatch):

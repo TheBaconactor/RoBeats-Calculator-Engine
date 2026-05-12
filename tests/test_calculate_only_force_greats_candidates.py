@@ -6,7 +6,7 @@ import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.data.csv_parser import read_table
-from gear_optimizer.pipeline.song_processor import process_song_task
+from gear_optimizer.legacy import song_processor_adapter as legacy_song_processor
 
 
 def _build_ref_arrays(stats_table) -> dict:
@@ -105,10 +105,8 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
         captured["ga_n"] = len(kwargs.get("ga_candidates") or [])
         return []
 
-    monkeypatch.setattr(
-        "gear_optimizer.pipeline.song_processor.process_force_greats",
-        _fake_process_force_greats,
-    )
+    song_processor = legacy_song_processor.legacy_song_processor_module()
+    monkeypatch.setattr(song_processor, "process_force_greats", _fake_process_force_greats)
 
     # Use a tiny synthetic song file in the modern tab-separated format to avoid
     # header edge cases (e.g. empty-string metadata fields).
@@ -161,6 +159,6 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
         False,  # fg_debug
     )
 
-    process_song_task(args)
+    legacy_song_processor.process_song_task(args)
     assert captured["n"] == 0
     assert captured["ga_n"] == 1

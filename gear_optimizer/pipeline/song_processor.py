@@ -17,14 +17,12 @@ import gc
 import logging
 import sys
 import time
-import traceback
 from dataclasses import dataclass, field
 from io import StringIO
 from typing import Any, Callable, cast
 
 from ..data.models import Tee
 from ..core.env_config import ENV
-from ..core.result_payloads import build_error_payload
 from ..core.types import SongResultPayload
 from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
@@ -32,6 +30,7 @@ from ..core.constants import (
 )
 
 from ..core.config import (
+    GPUExecutionSettings,
     read_fg_candidate_limit,
     read_fg_search_radius,
     read_fg_solver_mode,
@@ -46,12 +45,9 @@ from ..solver.scoring import (
 )
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..solver.solver_common import SolverContext, prepare_solver_context
-from ..solver.song_db_context import load_prepared_song_db_context
-from ..solver.song_preparation import build_prepared_calc_song, build_prepared_song_config
+from ..solver.song_preparation import build_prepared_song_core
 from ..core.memory import log_memory_usage
-from ..core.utils import cfg_from_dict
-from ..data import song_io as _song_io
-from ..domain.jobs import seed_plan_from_song_job, task_queue_label, task_song_name, task_tuple_to_legacy_view
+from ..domain.jobs import seed_plan_from_song_job, task_tuple_to_legacy_view
 from ..helpers.song_helpers import (
     build_loadout_entries,
     # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
@@ -75,13 +71,6 @@ from ..helpers.song_helpers.payload_compaction import (
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
-
-_flush_song_header_cache = _song_io._flush_song_header_cache
-_reset_song_header_cache_for_tests = _song_io._reset_song_header_cache_for_tests
-clone_calc_song = _song_io.clone_calc_song
-get_base_calc_song = _song_io.get_base_calc_song
-read_song_file = _song_io.read_song_file
-scan_song_header = _song_io.scan_song_header
 
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
@@ -258,28 +247,29 @@ def _setup_song_context(
     emit: Callable[[str], None],
     stage_timing: dict[str, float],
 ) -> SongContext:
-    cfg = cfg_from_dict(cfg_dict)
-    gpu_mode_requested = True
-    try:
-        gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
-    except Exception as e:
-        logger.warning(f"song_processor:_setup_song_context: {e}")
-        gpu_mode_requested = True
-    if not gpu_mode_requested:
-        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-    gpu_mode = True
-
-    prepared_calc_song = build_prepared_calc_song(
+    prepared_core = build_prepared_song_core(
         fp=fp,
+        found_song_name=found_song_name,
         cfg_dict=cfg_dict,
+        auto_buff=bool(auto_buff),
+        paths=paths,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        use_evo_db=bool(use_evo_db),
         preloaded_calc_song=preloaded_calc_song,
+        load_known_loadouts=True,
+        allow_fallback=False,
     )
-    calc_song = prepared_calc_song.calc_song
-    stage_timing["cpu_read_sec"] = prepared_calc_song.read_sec
-    if prepared_calc_song.timing_envelope_info is not None:
-        stage_timing["cpu_timing_envelope_sec"] = prepared_calc_song.timing_envelope_sec
+    cfg = prepared_core.cfg
+    gpu_mode = bool(GPUExecutionSettings.from_config(cfg).gpu_mode)
+    calc_song = prepared_core.calc_song
+    prepared_config = prepared_core.prepared_config
+    db_context = prepared_core.db_context
+    stage_timing["cpu_read_sec"] = prepared_core.prepared_calc_song.read_sec
+    if prepared_core.prepared_calc_song.timing_envelope_info is not None:
+        stage_timing["cpu_timing_envelope_sec"] = prepared_core.prepared_calc_song.timing_envelope_sec
         try:
-            sim_info = prepared_calc_song.timing_envelope_info
+            sim_info = prepared_core.prepared_calc_song.timing_envelope_info
             print(
                 f"[TimingEnvelope] Applied (mode={sim_info.get('mode')}, "
                 f"great={sim_info.get('great_mode')}, notes={sim_info.get('notes')})"
@@ -287,33 +277,8 @@ def _setup_song_context(
         except Exception as e:
             logger.warning(f"song_processor:_setup_song_context: {e}")
 
-    meta_primary_color = calc_song["metadata"].get("Primary Color", "")
-    meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
-
-    t_setup0 = time.perf_counter()
-    prepared_config = build_prepared_song_config(
-        cfg=cfg,
-        calc_song=calc_song,
-        auto_buff=bool(auto_buff),
-        paths=paths,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
-    )
-    stage_timing["cpu_setup_sec"] = time.perf_counter() - t_setup0
-
-    t_db0 = time.perf_counter()
-    db_context = load_prepared_song_db_context(
-        found_song_name=found_song_name,
-        calc_song=calc_song,
-        cfg=cfg,
-        cfg_dict=cfg_dict,
-        use_evo_db=bool(use_evo_db),
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
-        load_known_loadouts=True,
-        allow_fallback=False,
-    )
-    stage_timing["cpu_db_load_sec"] = time.perf_counter() - t_db0
+    stage_timing["cpu_setup_sec"] = prepared_core.setup_sec
+    stage_timing["cpu_db_load_sec"] = prepared_core.db_load_sec
 
     emit("START")
     stage_timing["cpu_prep_sec"] = sum(
@@ -352,8 +317,8 @@ def _setup_song_context(
         repeat_total=int(repeat_total),
         fg_debug=bool(fg_debug),
         calc_song=calc_song,
-        meta_primary_color=str(meta_primary_color or ""),
-        meta_secondary_color=str(meta_secondary_color or ""),
+        meta_primary_color=prepared_core.meta_primary_color,
+        meta_secondary_color=prepared_core.meta_secondary_color,
         ga_settings=prepared_config.ga_settings,
         fixed_stats=prepared_config.fixed_stats,
         current_gear_stats=prepared_config.current_gear_stats,
@@ -972,38 +937,3 @@ def process_song_task(args) -> SongResultPayload:
 
         redirect_ctx.__exit__(None, None, None)
         redirect_err_ctx.__exit__(None, None, None)
-
-
-def safe_process_song_task(args) -> SongResultPayload:
-    """
-    Wrapper around process_song_task that never raises across process boundaries.
-    Returns an error payload with traceback if anything escapes, to avoid crashing pools.
-
-    Args:
-        args: Arguments tuple for process_song_task
-
-    Returns:
-        dict: Result dict or error dict with _error and _trace keys
-    """
-    song_name = "Unknown"
-    queue_label = None
-    try:
-        if isinstance(args, (list, tuple)) and len(args) > 1:
-            song_name = task_song_name(args)
-            queue_label = task_queue_label(args)
-        return process_song_task(args)
-    except Exception as exc:
-        tb = traceback.format_exc()
-        msg = f"[safe_process_song_task] {song_name} failed: {type(exc).__name__}: {exc}"
-        try:
-            logging.error(msg + "\n" + tb)
-            print(msg, file=sys.stderr)
-        except Exception as e:
-            logger.warning(f"song_processor:safe_process_song_task: {e}")
-        return build_error_payload(
-            song_name=str(song_name),
-            queue_key=str(queue_label or song_name),
-            queue_label=str(queue_label or song_name),
-            exc=exc,
-            trace=tb,
-        )

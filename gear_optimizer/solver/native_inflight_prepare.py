@@ -10,7 +10,6 @@ import numpy as np
 
 from gear_optimizer.core.config import (
     GASettings as GARuntimeSettings,
-    GPUExecutionSettings,
     read_fg_candidate_limit,
     read_fg_solver_mode,
 )
@@ -21,12 +20,10 @@ from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_legacy_view
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.inflight_utils import (
-    _build_calc_song_from_file,
     _truthy,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.song_db_context import load_prepared_song_db_context
-from gear_optimizer.solver.song_preparation import build_prepared_song_config
+from gear_optimizer.solver.song_preparation import build_prepared_song_core
 from gear_optimizer.solver.native_inflight_support import _lru_get, _lru_put
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
@@ -177,32 +174,24 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     cfg = cfg_from_dict(cfg_dict)
 
-    gpu_settings = GPUExecutionSettings.from_config(cfg)
-    gpu_mode = bool(gpu_settings.gpu_mode)
-    if not gpu_mode:
-        raise RuntimeError("GPU-native in-flight requires IterationEngine.GPU_Mode=true")
-
-    gpu_native = bool(gpu_settings.gpu_native_ga)
-    if not gpu_native:
-        raise RuntimeError("GPU-native in-flight requires IterationEngine.GPU_Native_GA=true")
-
-    calc_song = _build_calc_song_from_file(
+    prepared_core = build_prepared_song_core(
         fp=fp,
         found_song_name=found_song_name,
-        cfg=cfg,
         cfg_dict=cfg_dict,
-    )
-    meta_primary_color = str(calc_song.get("metadata", {}).get("Primary Color", "") or "")
-    meta_secondary_color = str(calc_song.get("metadata", {}).get("Secondary Color", "") or "")
-
-    prepared_config = build_prepared_song_config(
-        cfg=cfg,
-        calc_song=calc_song,
         auto_buff=bool(auto_buff),
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
+        use_evo_db=bool(use_evo_db),
+        cfg=cfg,
+        load_known_loadouts=False,
+        allow_fallback=False,
+        cache_seed_context=True,
     )
+    calc_song = prepared_core.calc_song
+    meta_primary_color = prepared_core.meta_primary_color
+    meta_secondary_color = prepared_core.meta_secondary_color
+    prepared_config = prepared_core.prepared_config
     ga_settings = prepared_config.ga_settings
     fixed_stats = prepared_config.fixed_stats
     current_gear_list = prepared_config.current_gear_list
@@ -218,18 +207,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     # Load DB seed record only; full known-loadout hydration is deferred/prefetched
     # in FG prep to avoid redundant per-song DB reads during prepare.
-    db_context = load_prepared_song_db_context(
-        found_song_name=found_song_name,
-        calc_song=calc_song,
-        cfg=cfg,
-        cfg_dict=cfg_dict,
-        use_evo_db=bool(use_evo_db),
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
-        load_known_loadouts=False,
-        allow_fallback=False,
-        cache_seed_context=True,
-    )
+    db_context = prepared_core.db_context
     db_key = db_context.db_key
     prev_record = db_context.prev_record
     db_best_score = db_context.db_best_score

@@ -307,3 +307,29 @@ def task_tuple_to_legacy_view(task: Sequence[Any]) -> LegacySongTaskView:
         context=task_tuple_to_shared_context(task),
         extras=tuple(task[LEGACY_TASK_FIXED_FIELD_COUNT:]),
     )
+
+
+def legacy_task_tuple_from_job_context(
+    job: SongJob,
+    context: SharedRunContext,
+    *extras: Any,
+) -> tuple[Any, ...]:
+    return (
+        job.file_path,
+        job.song_name,
+        job.difficulty,
+        context.cfg_dict,
+        context.paths,
+        context.ref_arrays,
+        context.all_gears,
+        context.all_minis,
+        context.gears_by_name,
+        context.minis_by_name,
+        context.use_evo_db,
+        context.auto_buff,
+        context.ga_depth,
+        context.status_queue,
+        context.parallel_workers,
+        context.fg_debug,
+        *extras,
+    )

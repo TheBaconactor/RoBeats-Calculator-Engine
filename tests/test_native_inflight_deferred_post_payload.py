@@ -52,7 +52,6 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
 
 
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_result_events as result_events
 
     calc_song = {
@@ -116,7 +115,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         db_best_fg_score=105,
     )
 
-    payload = orchestrator._build_deferred_post_payload(song, persist_pending_fg_job=True)
+    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
 
     assert payload["_deferred_post"] is True
     assert payload["_pending_fg_job"] is True
@@ -139,7 +138,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
 
 def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_result_events as result_events
 
     monkeypatch.setattr(
@@ -199,7 +197,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         db_best_fg_score=105,
     )
 
-    payload = orchestrator._build_deferred_post_payload(song, persist_pending_fg_job=True)
+    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
 
     assert payload["_pending_fg_job"] is False
     assert payload["_persist_pending_fg_job"] is False
@@ -207,7 +205,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatch):
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
@@ -239,8 +236,7 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
         fg_variants=None,
     )
 
-    assert orchestrator._score_fg_inside_ga is fg_pipeline.score_fg_inside_ga
-    orchestrator._score_fg_inside_ga(song, gpu_client=gpu_client)
+    fg_pipeline.score_fg_inside_ga(song, gpu_client=gpu_client)
 
     assert calls["gpu_client"] is gpu_client
     assert calls["post_sender"] is None
@@ -251,7 +247,6 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
 
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_result_events as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
@@ -332,7 +327,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         db_best_fg_score=0,
     )
 
-    payload = orchestrator._build_deferred_post_payload(song, persist_pending_fg_job=False)
+    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=False)
     persist_entries = build_persistence_entries(
         {
             "score": int(payload["best_data"]["Score"]),

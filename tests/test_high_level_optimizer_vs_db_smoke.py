@@ -190,7 +190,7 @@ def _run_reference_compare(
     evo_db_path: Path,
     monkeypatch,
 ) -> list[dict]:
-    from gear_optimizer.pipeline.song_processor import process_song_task
+    from gear_optimizer.legacy.song_processor_adapter import process_song_task
 
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(evo_db_path))
     rows: list[dict] = []

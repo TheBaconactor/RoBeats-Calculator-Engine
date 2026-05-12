@@ -5,6 +5,7 @@ import pytest
 from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.solver.song_db_context import PreparedSongDbContext
+from gear_optimizer.solver import song_preparation
 from gear_optimizer.solver.song_preparation import PreparedSongConfig
 
 
@@ -65,7 +66,7 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
     monkeypatch.delenv("METAFINDER_OUTER_SEARCH_ENGINE", raising=False)
     monkeypatch.delenv("OUTER_SEARCH_ENGINE", raising=False)
     monkeypatch.setattr(
-        song_processor,
+        song_preparation,
         "load_prepared_song_db_context",
         lambda *args, **kwargs: PreparedSongDbContext(
             baseline_team_buff="T5",
@@ -82,7 +83,7 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
         ),
     )
     monkeypatch.setattr(
-        song_processor,
+        song_preparation,
         "build_prepared_song_config",
         lambda *args, **kwargs: PreparedSongConfig(
             ga_settings=SimpleNamespace(multi_start=1),
@@ -122,8 +123,9 @@ def test_read_fg_solver_mode_maps_exact_dp_to_finder(legacy_mode):
 
 
 def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkeypatch):
-    from gear_optimizer.pipeline import song_processor
+    from gear_optimizer.legacy import song_processor_adapter as legacy_song_processor
 
+    song_processor = legacy_song_processor.legacy_song_processor_module()
     prepared = _patch_common(monkeypatch, song_processor)
     calls = {"ga": 0}
 
@@ -144,8 +146,9 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
 
 
 def test_process_song_task_treats_exact_dp_mode_as_finder_alias(monkeypatch):
-    from gear_optimizer.pipeline import song_processor
+    from gear_optimizer.legacy import song_processor_adapter as legacy_song_processor
 
+    song_processor = legacy_song_processor.legacy_song_processor_module()
     _patch_common(monkeypatch, song_processor)
     calls = {"ga": 0}
 

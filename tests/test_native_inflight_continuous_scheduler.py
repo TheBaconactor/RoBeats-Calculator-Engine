@@ -1,23 +1,16 @@
 import configparser
 
-import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
-    _closed_loop_bubble_kpi,
     _continuous_fg_allow_not_ready,
     _continuous_ga_should_yield_to_fg,
     _continuous_fg_should_fill_song_lanes,
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
     _continuous_ga_warm_queue_limit,
-    _default_prime_target,
-    _read_fg_static_prep_max_inflight,
-    _read_inflight_event_wait_gpu_cap_s,
-    _read_inflight_event_wait_short_spin_s,
-    _read_inflight_event_wait_timeout_s,
-    _wait_for_completion_event,
 )
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
+    _closed_loop_bubble_kpi,
     count_active_song_lanes,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
@@ -25,12 +18,14 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
     _read_inflight_target_song_lanes,
+    _default_prime_target,
     _read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
     _read_cpu_prewarm_lookahead,
     _read_cpu_prewarm_workers,
     _read_db_prefetch_workers,
+    _read_fg_static_prep_max_inflight,
     _read_inflight_worker_count,
     first_task_config,
     inflight_shutdown_debug_enabled,
@@ -38,7 +33,12 @@ from gear_optimizer.solver.native_inflight_config import (
     read_inflight_loop_observer_settings,
     read_inflight_runtime_settings,
 )
-from gear_optimizer.solver.inflight_wait import read_inflight_event_wait_timeout_s
+from gear_optimizer.solver.inflight_wait import (
+    read_inflight_event_wait_gpu_cap_s,
+    read_inflight_event_wait_short_spin_s,
+    read_inflight_event_wait_timeout_s,
+    wait_for_completion_event,
+)
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
@@ -1033,22 +1033,20 @@ def test_read_inflight_event_wait_settings_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", raising=False)
     monkeypatch.delenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", raising=False)
 
-    assert abs(_read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
     assert abs(read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
-    assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
-    assert abs(_read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
+    assert abs(read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
+    assert abs(read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
 
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "9.0")
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", "-1")
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", "100")
 
-    assert abs(_read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
     assert abs(read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
-    assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.0) < 1e-9
-    assert abs(_read_inflight_event_wait_short_spin_s() - 0.05) < 1e-9
+    assert abs(read_inflight_event_wait_gpu_cap_s() - 0.0) < 1e-9
+    assert abs(read_inflight_event_wait_short_spin_s() - 0.05) < 1e-9
 
 
-def test_wait_for_completion_event_short_timeout_uses_zero_timeout_poll(monkeypatch):
+def test_wait_for_completion_event_short_timeout_uses_zero_timeout_poll():
     class _RecordingEvent:
         def __init__(self):
             self.waits: list[float] = []
@@ -1066,10 +1064,13 @@ def test_wait_for_completion_event_short_timeout_uses_zero_timeout_poll(monkeypa
         except StopIteration:
             return 0.0040
 
-    monkeypatch.setattr(native_orch.time, "perf_counter", _fake_perf_counter)
-    monkeypatch.setattr(native_orch.time, "sleep", lambda _t: None)
-
-    done = _wait_for_completion_event(event, timeout_s=0.003, short_spin_s=0.005)
+    done = wait_for_completion_event(
+        event,
+        timeout_s=0.003,
+        short_spin_s=0.005,
+        perf_counter=_fake_perf_counter,
+        sleep=lambda _t: None,
+    )
     assert done is False
     assert event.waits
     assert all(abs(w - 0.0) < 1e-12 for w in event.waits)
@@ -1085,7 +1086,7 @@ def test_wait_for_completion_event_long_timeout_uses_direct_wait():
             return False
 
     event = _RecordingEvent()
-    done = _wait_for_completion_event(event, timeout_s=0.02, short_spin_s=0.003)
+    done = wait_for_completion_event(event, timeout_s=0.02, short_spin_s=0.003)
     assert done is False
     assert event.waits == [0.02]
 

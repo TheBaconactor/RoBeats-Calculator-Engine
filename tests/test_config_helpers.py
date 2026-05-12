@@ -183,6 +183,20 @@ def test_gpu_execution_settings_warns_false_flags_are_noops(caplog):
     assert "GPU_Native_GA=false ignored" in caplog.text
 
 
+def test_inflight_settings_ignores_multi_instance_requests(caplog):
+    from gear_optimizer.core import config as config_module
+
+    config_module._SINGLE_OWNER_FLAG_WARNED.clear()
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"InFlightInstances": "3"}})
+
+    with caplog.at_level(logging.WARNING):
+        inflight = InflightSettings.from_config(cfg)
+
+    assert inflight.instances == 1
+    assert "InFlightInstances=3 ignored" in caplog.text
+
+
 def test_repo_config_ga_search_depth_is_runtime_active():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = load_config(str(repo_root / "config.ini"))

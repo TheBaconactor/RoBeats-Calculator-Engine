@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
 from gear_optimizer.solver.gpu_executor_fg_cfg_decode import (
     decode_cfg_counts_from_max_fp_matrix,
     decode_cfg_counts_from_windows_for_gpu,
@@ -39,28 +39,22 @@ def test_decode_cfg_counts_from_max_fp_matrix_returns_none_for_invalid_shapes():
     assert out is None
 
 
-def test_gpu_executor_cfg_decode_wrappers_delegate_to_decode_owner():
+def test_decode_cfg_counts_from_windows_for_gpu_delegates_to_core_decode():
     cfg_windows = [{"base": 0, "len": 6, "caps": [1, 2]}]
 
-    assert np.array_equal(
-        GpuExecutor._decode_cfg_counts_from_windows(np.array([5]), cfg_windows, 2),
-        decode_cfg_counts_from_windows_for_gpu(np.array([5]), cfg_windows, 2),
+    out = decode_cfg_counts_from_windows_for_gpu(np.array([5]), cfg_windows, 2)
+
+    assert np.array_equal(out, decode_cfg_counts_from_windows(np.array([5]), cfg_windows, 2))
+
+
+def test_decode_cfg_counts_from_max_fp_matrix_handles_single_row():
+    out = decode_cfg_counts_from_max_fp_matrix(
+        np.array([5]),
+        np.array([1]),
+        np.array([2]),
+        np.array([[1, 2]], dtype=np.int16),
+        np.array([[1, 2]], dtype=np.int32),
+        2,
     )
-    assert np.array_equal(
-        GpuExecutor._decode_cfg_counts_from_max_fp_matrix(
-            np.array([5]),
-            np.array([1]),
-            np.array([2]),
-            np.array([[1, 2]], dtype=np.int16),
-            np.array([[1, 2]], dtype=np.int32),
-            2,
-        ),
-        decode_cfg_counts_from_max_fp_matrix(
-            np.array([5]),
-            np.array([1]),
-            np.array([2]),
-            np.array([[1, 2]], dtype=np.int16),
-            np.array([[1, 2]], dtype=np.int32),
-            2,
-        ),
-    )
+
+    assert np.array_equal(out, np.array([[1, 2]], dtype=np.int32))

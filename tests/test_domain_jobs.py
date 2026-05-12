@@ -6,6 +6,7 @@ from gear_optimizer.domain.jobs import (
     effective_task_count,
     extract_repeat_bundle,
     extract_repeat_context,
+    legacy_task_tuple_from_job_context,
     materialize_repeat_task,
     seed_plan_from_song_job,
     seed_plan_from_task_tuple,
@@ -135,6 +136,16 @@ def test_task_tuple_to_legacy_view_keeps_extras_separate_from_shared_context():
     assert view.job.song_name == "Fake Song (Hard) by Tester"
     assert view.context.ga_depth == 125
     assert view.extras == (extra, repeat_ctx)
+
+
+def test_legacy_task_tuple_from_job_context_is_single_tuple_writer():
+    repeat_ctx = {"repeat_index": 2, "repeat_total": 3, "ga_seed": 987}
+    original = _legacy_task(repeat_ctx)
+    view = task_tuple_to_legacy_view(original)
+
+    rebuilt = legacy_task_tuple_from_job_context(view.job, view.context, *view.extras)
+
+    assert rebuilt == original
 
 
 def test_repeat_helpers_are_the_single_legacy_tuple_contract():

@@ -134,6 +134,7 @@ _parse_cfg_int.__name__ = "getint"
 
 _CFG_ALIAS_WARNED: set[tuple[str, str, str]] = set()
 _GPU_FIRST_FLAG_WARNED: set[str] = set()
+_SINGLE_OWNER_FLAG_WARNED: set[str] = set()
 
 
 def _cfg_has_option(cfg: Any, section: str, key: str) -> bool:
@@ -161,6 +162,18 @@ def _warn_gpu_first_noop_flag(key: str) -> None:
         return
     _GPU_FIRST_FLAG_WARNED.add(key_s)
     logging.warning("[GPU] IterationEngine.%s=false ignored (GPU-first production policy).", key_s)
+
+
+def _warn_single_owner_noop_flag(key: str, value: Any) -> None:
+    key_s = str(key)
+    if key_s in _SINGLE_OWNER_FLAG_WARNED:
+        return
+    _SINGLE_OWNER_FLAG_WARNED.add(key_s)
+    logging.warning(
+        "[InFlight] IterationEngine.%s=%s ignored (single native GPU owner policy); using 1.",
+        key_s,
+        value,
+    )
 
 
 def cfg_get_int_alias(
@@ -600,7 +613,10 @@ class InflightSettings:
         if cfg is None:
             return cls()
         songs = cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0, clamp_min=0)
-        instances = cfg_get_int(cfg, "IterationEngine", "InFlightInstances", 1, clamp_min=1)
+        requested_instances = cfg_get_int(cfg, "IterationEngine", "InFlightInstances", 1, clamp_min=1)
+        instances = 1
+        if int(requested_instances) > 1:
+            _warn_single_owner_noop_flag("InFlightInstances", int(requested_instances))
         ram_mode = cfg_get_bool(cfg, "IterationEngine", "InFlight_RamMode", False)
         song_file_cache_max = cfg_get_int(cfg, "IterationEngine", "InFlight_SongFileCacheMax", 0, clamp_min=0)
         team_buff_calc_cache_max = cfg_get_int(

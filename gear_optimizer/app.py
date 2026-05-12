@@ -39,8 +39,11 @@ from gear_optimizer.core.memory import (
 )
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import (
+    SharedRunContext,
+    SongJob,
     effective_task_count,
     extract_repeat_context,
+    legacy_task_tuple_from_job_context,
     task_queue_label,
 )
 from gear_optimizer.data.song_io import scan_song_header
@@ -86,26 +89,6 @@ from gear_optimizer.app_inflight_runner import InflightRunner
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
-
-# Module-level worker initializer for GPU executor (must be picklable)
-def _gpu_worker_initializer(registrations, counter, lock):
-    """
-    Initialize GPU worker mode in spawned process.
-
-    Each spawned process claims a unique (worker_id, response_queue) registration.
-    """
-    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode
-
-    with lock:
-        idx = int(counter.value)
-        counter.value = idx + 1
-
-    if idx < 0 or idx >= len(registrations):
-        # Defensive fallback: disable GPU worker mode if we ran out of registrations.
-        return
-
-    worker_id, request_queue, response_queue = registrations[idx]
-    set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def __init__(self):
@@ -244,16 +227,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
-        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
-        if not gpu_mode_requested:
-            logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-            try:
-                if not cfg.has_section("IterationEngine"):
-                    cfg.add_section("IterationEngine")
-                cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception as e:
-                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-
         if bool(runtime_settings.gpu.gpu_native_ga):
             ga_multistart = max(1, int(runtime_settings.ga.multi_start))
             os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
@@ -271,10 +244,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
             inflight_req = 0
         if inflight_req <= 1:
-            return
-
-        inflight_instances = self._inflight_runner.get_effective_inflight_instances(cfg)
-        if int(inflight_instances) > 1:
             return
 
         try:
@@ -562,7 +531,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     )
                 loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
-            self._inflight_runner.apply_overrides(cfg)
             self._inflight_runner.maybe_apply_ram_mode(cfg)
             self._inflight_runner.maybe_autoset_gpu_song_slots(cfg)
 
@@ -1201,6 +1169,54 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
         parallel_workers = 1
+        run_context = SharedRunContext(
+            cfg_dict=cfg_dict,
+            paths=paths,
+            ref_arrays=ref_arrays,
+            all_gears=all_gears,
+            all_minis=all_minis,
+            gears_by_name=gears_by_name,
+            minis_by_name=minis_by_name,
+            use_evo_db=bool(use_evo_db),
+            auto_buff=bool(auto_buff),
+            ga_depth=int(ga_depth),
+            status_queue=status_queue,
+            parallel_workers=int(parallel_workers),
+            fg_debug=bool(fg_debug),
+        )
+
+        def _append_song_task(
+            fp,
+            found_song_name: str,
+            task_diff: str,
+            *,
+            repeat_ctx: dict | None = None,
+            repeat_bundle: dict | None = None,
+        ) -> None:
+            repeat_index = 0
+            repeat_total = 0
+            ga_seed = None
+            extras: list[typing.Any] = []
+            if repeat_ctx is not None:
+                repeat_index = int(repeat_ctx.get("repeat_index") or 0)
+                repeat_total = int(repeat_ctx.get("repeat_total") or 0)
+                seed_raw = repeat_ctx.get("ga_seed")
+                ga_seed = int(seed_raw) if seed_raw is not None else None
+                extras.append(repeat_ctx)
+            if repeat_bundle is not None:
+                repeat_total = int(repeat_bundle.get("repeat_total") or repeat_total or 0)
+                extras.append(repeat_bundle)
+            job = SongJob(
+                file_path=fp,
+                song_name=str(found_song_name or ""),
+                difficulty=str(task_diff or ""),
+                repeat_index=max(0, int(repeat_index)),
+                repeat_total=max(0, int(repeat_total)),
+                ga_seed=ga_seed,
+                repeat_bundle=repeat_bundle is not None,
+                queue_source="app_prepare_tasks",
+            )
+            tasks.append(legacy_task_tuple_from_job_context(job, run_context, *extras))
 
         # When GA_SEED is set, users expect reproducible A/B comparisons.
         # Historically we still generated per-repeat seeds via `secrets.randbits`,
@@ -1280,48 +1296,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 if ga_seed_base is not None:
                     # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
                     repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
-                    tasks.append(
-                        (
-                            fp,
-                            found_song_name,
-                            task_diff,
-                            cfg_dict,
-                            paths,
-                            ref_arrays,
-                            all_gears,
-                            all_minis,
-                            gears_by_name,
-                            minis_by_name,
-                            use_evo_db,
-                            auto_buff,
-                            ga_depth,
-                            status_queue,
-                            parallel_workers,
-                            fg_debug,
-                            repeat_ctx,
-                        )
-                    )
+                    _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
                 else:
-                    tasks.append(
-                        (
-                            fp,
-                            found_song_name,
-                            task_diff,
-                            cfg_dict,
-                            paths,
-                            ref_arrays,
-                            all_gears,
-                            all_minis,
-                            gears_by_name,
-                            minis_by_name,
-                            use_evo_db,
-                            auto_buff,
-                            ga_depth,
-                            status_queue,
-                            parallel_workers,
-                            fg_debug,
-                        )
-                    )
+                    _append_song_task(fp, found_song_name, task_diff)
                 continue
 
             if bundle_song_repeats:
@@ -1339,27 +1316,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     "runs": repeat_runs,
                 }
                 logger.info(f"[QUEUE] {found_song_name}")
-                tasks.append(
-                    (
-                        fp,
-                        found_song_name,
-                        task_diff,
-                        cfg_dict,
-                        paths,
-                        ref_arrays,
-                        all_gears,
-                        all_minis,
-                        gears_by_name,
-                        minis_by_name,
-                        use_evo_db,
-                        auto_buff,
-                        ga_depth,
-                        status_queue,
-                        parallel_workers,
-                        fg_debug,
-                        repeat_bundle,
-                    )
-                )
+                _append_song_task(fp, found_song_name, task_diff, repeat_bundle=repeat_bundle)
                 continue
 
             for repeat_index in range(1, repeats_for_song + 1):
@@ -1370,27 +1327,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 )
 
                 logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
-                tasks.append(
-                    (
-                        fp,
-                        found_song_name,
-                        task_diff,
-                        cfg_dict,
-                        paths,
-                        ref_arrays,
-                        all_gears,
-                        all_minis,
-                        gears_by_name,
-                        minis_by_name,
-                        use_evo_db,
-                        auto_buff,
-                        ga_depth,
-                        status_queue,
-                        parallel_workers,
-                        fg_debug,
-                        repeat_ctx,
-                    )
-                )
+                _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
         return tasks
 
     @staticmethod

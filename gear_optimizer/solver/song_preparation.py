@@ -7,7 +7,9 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+from gear_optimizer.solver.song_db_context import PreparedSongDbContext, load_prepared_song_db_context
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,19 @@ class PreparedSongConfig:
     force_greats_finder: bool
     force_greats_config: Any
     manual_force_greats: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSongCore:
+    cfg: Any
+    calc_song: dict[str, Any]
+    prepared_calc_song: PreparedCalcSong
+    prepared_config: PreparedSongConfig
+    db_context: PreparedSongDbContext
+    meta_primary_color: str
+    meta_secondary_color: str
+    setup_sec: float
+    db_load_sec: float
 
 
 def _apply_timing_envelope(calc_song: dict[str, Any]) -> Any:
@@ -127,4 +142,68 @@ def build_prepared_calc_song(
         read_sec=float(read_sec),
         timing_envelope_sec=float(timing_envelope_sec),
         timing_envelope_info=timing_envelope_info,
+    )
+
+
+def build_prepared_song_core(
+    *,
+    fp: str,
+    found_song_name: str,
+    cfg_dict: dict[str, Any],
+    auto_buff: bool,
+    paths,
+    gears_by_name: dict,
+    minis_by_name: dict,
+    use_evo_db: bool,
+    cfg: Any | None = None,
+    preloaded_calc_song: dict[str, Any] | None = None,
+    load_known_loadouts: bool,
+    allow_fallback: bool = False,
+    cache_seed_context: bool = False,
+) -> PreparedSongCore:
+    cfg_obj = cfg if cfg is not None else cfg_from_dict(cfg_dict)
+    prepared_calc_song = build_prepared_calc_song(
+        fp=fp,
+        cfg_dict=cfg_dict,
+        preloaded_calc_song=preloaded_calc_song,
+    )
+    calc_song = prepared_calc_song.calc_song
+
+    t_setup0 = time.perf_counter()
+    prepared_config = build_prepared_song_config(
+        cfg=cfg_obj,
+        calc_song=calc_song,
+        auto_buff=bool(auto_buff),
+        paths=paths,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+    )
+    setup_sec = time.perf_counter() - t_setup0
+
+    t_db0 = time.perf_counter()
+    db_context = load_prepared_song_db_context(
+        found_song_name=found_song_name,
+        calc_song=calc_song,
+        cfg=cfg_obj,
+        cfg_dict=cfg_dict,
+        use_evo_db=bool(use_evo_db),
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        load_known_loadouts=bool(load_known_loadouts),
+        allow_fallback=bool(allow_fallback),
+        cache_seed_context=bool(cache_seed_context),
+    )
+    db_load_sec = time.perf_counter() - t_db0
+
+    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    return PreparedSongCore(
+        cfg=cfg_obj,
+        calc_song=calc_song,
+        prepared_calc_song=prepared_calc_song,
+        prepared_config=prepared_config,
+        db_context=db_context,
+        meta_primary_color=str(metadata.get("Primary Color", "") or ""),
+        meta_secondary_color=str(metadata.get("Secondary Color", "") or ""),
+        setup_sec=float(setup_sec),
+        db_load_sec=float(db_load_sec),
     )

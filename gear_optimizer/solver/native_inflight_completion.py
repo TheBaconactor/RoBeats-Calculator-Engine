@@ -5,9 +5,11 @@ import threading
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Iterable, Any
+from typing import Callable, Iterable, Any
 
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
+from gear_optimizer.solver.native_inflight_result_events import build_deferred_post_payload, fg_pending_for_post
+from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 logger = logging.getLogger(__name__)
 
@@ -97,3 +99,56 @@ def mark_song_completed(
             bundle_completed_cb(key, completed_songs)
         except Exception as e:
             logger.debug(f"native_inflight_completion:mark_song_completed: {e}")
+
+
+def emit_deferred_post_payload(
+    song: _NativeSong,
+    *,
+    post: Callable[[dict], None],
+    persist_pending_fg_job: bool,
+    fg_drain_at_end: bool,
+    completed_songs: set[str],
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+    advance_bundle: Callable[..., None],
+    progress_tracker=None,
+    progress_cb=None,
+) -> bool:
+    if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
+        return False
+
+    post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
+
+    try:
+        song.runtime.post.deferred_post_emitted = True
+    except Exception as e:
+        logger.debug(f"native_inflight_completion:emit_deferred_post_payload: {e}")
+
+    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+    needs_fg_stage = bool(fg_pending_for_post(song))
+    if bundle_parent is not None and needs_fg_stage:
+        song.runtime.bundle.bundle_wait_for_fg = True
+    elif bundle_parent is not None:
+        advance_bundle(
+            bundle_parent,
+            song_name=str(song.config.song_name),
+            record_info=getattr(song.runtime.db, "record_info", None),
+            failed=False,
+        )
+    elif needs_fg_stage and bool(fg_drain_at_end):
+        try:
+            song.runtime.post.await_fg_completion_progress = True
+        except Exception as e:
+            logger.debug(f"native_inflight_completion:emit_deferred_post_payload: {e}")
+    else:
+        mark_song_completed(
+            completed_songs=completed_songs,
+            task_key=song.config.task_key,
+            song_name=song.config.song_name,
+            memory_resume_tracker=memory_resume_tracker,
+            bundle_completed_cb=bundle_completed_cb,
+        )
+        if progress_tracker is not None:
+            progress_tracker.emit_done_song_progress(progress_cb, song)
+
+    return True

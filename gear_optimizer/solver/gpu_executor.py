@@ -39,15 +39,10 @@ from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.solver import gpu_executor_fg_cfg_decode as _fg_cfg_decode
 from gear_optimizer.solver.gpu_executor_request_policy import (
     COALESCABLE_REQUEST_TYPES,
     FG_REQUEST_TYPES,
-    GA_RECOVERY_REQUEST_TYPES,
-    GA_RECOVERY_REQUEST_TYPE_VALUES,
-    NO_BATCH_REQUEST_TYPES,
-    NO_BATCH_REQUEST_TYPE_VALUES,
-    is_ga_recovery_request_type as _is_ga_recovery_request_type,
+    is_ga_recovery_request as _is_ga_recovery_request,
     is_no_batch_request_type as _is_no_batch_request_type,
 )
 from gear_optimizer.solver import gpu_executor_static_handles as _static_handles
@@ -63,7 +58,6 @@ from gear_optimizer.solver.gpu_executor_workload import (
     payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
     should_emit_workload_batch_event,
-    size_hint,
     summarize_batch,
     workload_batch_event_metrics,
     workload_window_event_metrics,
@@ -136,6 +130,10 @@ from gear_optimizer.solver.gpu_executor_dispatch import (
 from gear_optimizer.solver.gpu_executor_fg_breakpoints import (
     compute_fg_breakpoints_max_fp_matrix as _compute_fg_breakpoints_max_fp_matrix,
     execute_fg_compute_breakpoints as _execute_fg_compute_breakpoints,
+)
+from gear_optimizer.solver.gpu_executor_fg_cfg_decode import (
+    decode_cfg_counts_from_max_fp_matrix as _decode_cfg_counts_from_max_fp_matrix,
+    decode_cfg_counts_from_windows_for_gpu as _decode_cfg_counts_from_windows_for_gpu,
 )
 from gear_optimizer.solver.gpu_executor_fg_breakpoint_solve import (
     execute_fg_solve_with_breakpoints as _execute_fg_solve_with_breakpoints,
@@ -254,35 +252,6 @@ _registry_base_fixed_stats_sig = _static_handles.registry_base_fixed_stats_sig
 _registry_static_handle_entry = _static_handles.registry_static_handle_entry
 
 
-def _worker_response_queue():
-    return _worker_state.response_queue
-
-
-def _prune_pending_responses(now: float | None = None) -> None:
-    _worker_response_router.prune(now)
-
-
-def _prune_pending_responses_locked(now: float | None = None) -> None:
-    _worker_response_router.prune(now)
-
-
-def _store_pending_response(response: "GpuResponse") -> None:
-    _worker_response_router.store(response)
-
-
-def _store_pending_response_locked(response: "GpuResponse") -> None:
-    _worker_response_router.store(response)
-
-
-def _ensure_worker_response_router_started() -> None:
-    label = str(_worker_state.worker_id) if _worker_state.worker_id is not None else "?"
-    _worker_response_router.ensure_started(_worker_response_queue, label=label)
-
-
-def _wait_for_worker_response(request_id: int, timeout: float) -> "GpuResponse":
-    return _worker_response_router.wait(request_id, timeout)
-
-
 def is_gpu_worker_mode() -> bool:
     """Check if running in worker mode (should use IPC for GPU)."""
     return bool(_worker_state.enabled)
@@ -312,23 +281,6 @@ class GpuExecutor:
 
     _instance = None
     _lock = threading.Lock()
-    _FG_REQUEST_TYPES = FG_REQUEST_TYPES
-    _GA_RECOVERY_REQUEST_TYPES = GA_RECOVERY_REQUEST_TYPES
-    _COALESCABLE_REQUEST_TYPES = COALESCABLE_REQUEST_TYPES
-    _NO_BATCH_REQUEST_TYPES = NO_BATCH_REQUEST_TYPES
-    _NO_BATCH_REQUEST_TYPE_VALUES = NO_BATCH_REQUEST_TYPE_VALUES
-    _GA_RECOVERY_REQUEST_TYPE_VALUES = GA_RECOVERY_REQUEST_TYPE_VALUES
-
-    @classmethod
-    def _is_no_batch_request_type(cls, request_type: Any) -> bool:
-        return _is_no_batch_request_type(request_type)
-
-    @classmethod
-    def _is_ga_recovery_request_type(cls, request_type: Any) -> bool:
-        return _is_ga_recovery_request_type(request_type)
-
-    def _is_ga_recovery_request(self, request: "GpuRequest") -> bool:
-        return self._is_ga_recovery_request_type(getattr(request, "request_type", None))
 
     def __new__(cls):
         """Singleton pattern."""
@@ -571,23 +523,15 @@ class GpuExecutor:
         self._fg_tasks_total = stats.total
         self._fg_tasks_max = stats.max_tasks
 
-    _size_hint = staticmethod(size_hint)
-
-    def _safe_qsize(self) -> int:
-        return _safe_qsize(self._request_queue)
-
-    def _estimate_request_work_units(self, request: "GpuRequest") -> float:
-        return estimate_request_work_units(request, size_hint_fn=self._size_hint)
-
     def _summarize_batch(self, batch: list["GpuRequest"], *, plan: _BatchPlan, wait_sec: float) -> dict[str, Any]:
         return summarize_batch(
             batch,
             plan=plan,
             wait_sec=wait_sec,
             batch_id=int(self._workload_batch_seq),
-            estimate_work_units_fn=self._estimate_request_work_units,
-            coalescable_request_types=self._COALESCABLE_REQUEST_TYPES,
-            fg_request_types=self._FG_REQUEST_TYPES,
+            estimate_work_units_fn=estimate_request_work_units,
+            coalescable_request_types=COALESCABLE_REQUEST_TYPES,
+            fg_request_types=FG_REQUEST_TYPES,
         )
 
     def _record_workload_batch(self, metrics: dict[str, Any]) -> None:
@@ -648,10 +592,6 @@ class GpuExecutor:
 
     def _handle_solve_genomes_from_registry(self, request: GpuRequest) -> GpuResponse:
         return _handle_solve_genomes_from_registry(request, execute_fn=self._execute_solve_genomes_from_registry)
-
-    @staticmethod
-    def _default_song_slot_for_worker(worker_id: int) -> int:
-        return _default_song_slot_for_worker(worker_id)
 
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
@@ -1179,7 +1119,7 @@ class GpuExecutor:
                     cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
                 env_refresh_counter = (env_refresh_counter + 1) % 64
 
-                queue_depth_hint = self._safe_qsize()
+                queue_depth_hint = _safe_qsize(self._request_queue)
                 fg_burst_window_ms = int(cached_batch_settings.fg_burst_window_ms)
                 fg_burst_active = bool(int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until))
                 batch_plan = _plan_loop_batch(
@@ -1447,19 +1387,9 @@ class GpuExecutor:
             short_wait_spin_yield_rounds=int(getattr(self, "_short_wait_spin_yield_rounds", 0) or 0),
         )
 
-    @staticmethod
-    def _stamp_request_dequeue(request: "GpuRequest") -> "GpuRequest":
-        return _stamp_request_dequeue(request)
-
-    def _stage_request(self, request: "GpuRequest", *, front: bool = False) -> None:
-        _stage_request(self._staged_requests, request, front=front)
-
-    def _pop_staged_request(self, index: int = 0) -> "GpuRequest":
-        return _pop_staged_request(self._staged_requests, index=int(index))
-
     def _pop_queue_request(self, timeout: float) -> "GpuRequest":
         request = self._queue_get(timeout)
-        return self._stamp_request_dequeue(request)
+        return _stamp_request_dequeue(request)
 
     def _prefetch_ga_recovery_requests(self, *, deadline: float, batch_max_size: int) -> None:
         if not self._in_process_queues:
@@ -1476,7 +1406,7 @@ class GpuExecutor:
             return
         if _staged_ga_recovery_index(
             list(self._staged_requests),
-            is_ga_recovery_request=self._is_ga_recovery_request,
+            is_ga_recovery_request=_is_ga_recovery_request,
         ) is not None:
             return
 
@@ -1492,12 +1422,12 @@ class GpuExecutor:
             self._staged_requests.append(request)
             if request.request_type == GpuRequestType.SHUTDOWN:
                 break
-            if self._is_ga_recovery_request(request):
+            if _is_ga_recovery_request(request):
                 break
 
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
-            self._stage_request(self._pop_queue_request(timeout))
+            _stage_request(self._staged_requests, self._pop_queue_request(timeout))
 
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
 
@@ -1509,16 +1439,16 @@ class GpuExecutor:
         ):
             recovery_idx = _staged_ga_recovery_index(
                 list(self._staged_requests),
-                is_ga_recovery_request=self._is_ga_recovery_request,
+                is_ga_recovery_request=_is_ga_recovery_request,
             )
             if recovery_idx is not None:
-                return self._pop_staged_request(int(recovery_idx))
+                return _pop_staged_request(self._staged_requests, index=int(recovery_idx))
 
-        return self._pop_staged_request(0)
+        return _pop_staged_request(self._staged_requests, index=0)
 
     def _pop_followup_request(self, timeout: float) -> "GpuRequest":
         if self._staged_requests:
-            return self._pop_staged_request(0)
+            return _pop_staged_request(self._staged_requests, index=0)
         return self._pop_queue_request(timeout)
 
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
@@ -1534,7 +1464,7 @@ class GpuExecutor:
         """
         batch: list[GpuRequest] = []
         deadline = perf_counter() + (max_wait_ms / 1000.0)
-        coalescable_types = self._COALESCABLE_REQUEST_TYPES
+        coalescable_types = COALESCABLE_REQUEST_TYPES
         # In-process queues can be latency sensitive once work is in-flight, but when completely idle
         # they need a longer wait to avoid a tight poll loop on Windows.
         inproc_settings = _load_inprocess_coalesce_settings(
@@ -1587,7 +1517,7 @@ class GpuExecutor:
                         self._request_queue,
                         deadline_s=float(deadline),
                         yields_left=int(inproc_yields_left),
-                        stamp_fn=self._stamp_request_dequeue,
+                        stamp_fn=_stamp_request_dequeue,
                         perf_counter_fn=perf_counter,
                         sleep_fn=time.sleep,
                     )
@@ -1608,12 +1538,12 @@ class GpuExecutor:
 
                 # If a heavy/no-batch request arrives after we already have work, defer it to
                 # become the first item of the next batch.
-                if batch and self._is_no_batch_request_type(request.request_type):
-                    self._stage_request(request, front=True)
+                if batch and _is_no_batch_request_type(request.request_type):
+                    _stage_request(self._staged_requests, request, front=True)
                     break
 
                 batch.append(request)
-                if self._is_no_batch_request_type(request.request_type):
+                if _is_no_batch_request_type(request.request_type):
                     break
 
                 # In-process producers can enqueue follow-up work immediately after the first item.
@@ -1632,15 +1562,11 @@ class GpuExecutor:
 
         return batch
 
-    @staticmethod
-    def _payload_dict(req: "GpuRequest") -> dict[str, Any]:
-        return _payload_dict(req)
-
     def _cache_registry_payload_static(self, worker_id: int, handle: int, static_payload: dict[str, Any]) -> None:
         self._registry_payloads.cache_static(worker_id, handle, static_payload)
 
     def _resolve_registry_payload(self, request: "GpuRequest") -> tuple[dict[str, Any], str | None]:
-        payload = self._payload_dict(request)
+        payload = _payload_dict(request)
         return self._registry_payloads.resolve(request, payload)
 
     def _coalesce_fg_task_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
@@ -1758,7 +1684,7 @@ class GpuExecutor:
             segment = []
 
         for req in requests:
-            extracted = _extract_fg_task_only_request(req, self._payload_dict(req))
+            extracted = _extract_fg_task_only_request(req, _payload_dict(req))
             if extracted is not None:
                 segment.append(extracted)
                 continue
@@ -1812,7 +1738,7 @@ class GpuExecutor:
 
         coalesce_plan = _plan_fg_breakpoint_coalescing(
             requests,
-            payload_dict_fn=self._payload_dict,
+            payload_dict_fn=_payload_dict,
             limits=coalesce_limits,
         )
 
@@ -1949,10 +1875,10 @@ class GpuExecutor:
         )
         from .taichi_gem import fields as gem_fields
 
-        signature_builder = _RegistryCoalesceSignatureBuilder(ref_arrays_sig_fn=self._ref_arrays_sig)
+        signature_builder = _RegistryCoalesceSignatureBuilder(ref_arrays_sig_fn=_ref_arrays_sig)
         groups = _plan_registry_coalesce_groups(
             requests,
-            payload_dict_fn=self._payload_dict,
+            payload_dict_fn=_payload_dict,
             signature_builder=signature_builder,
         )
 
@@ -1993,7 +1919,7 @@ class GpuExecutor:
             gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
 
             ref_arrays = p0.get("ref_arrays")
-            sig = self._ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else None
+            sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else None
             if sig is None or sig != self._last_ref_arrays_sig:
                 if isinstance(ref_arrays, dict):
                     load_ref_arrays(ref_arrays)
@@ -2117,7 +2043,7 @@ class GpuExecutor:
 
         if "ref_arrays" in payload:
             ref_arrays = payload["ref_arrays"]
-            sig = self._ref_arrays_sig(ref_arrays)
+            sig = _ref_arrays_sig(ref_arrays)
             if sig is None or sig != self._last_ref_arrays_sig:
                 load_ref_arrays(ref_arrays)
                 self._last_ref_arrays_sig = sig
@@ -2135,7 +2061,7 @@ class GpuExecutor:
             and request.worker_id is not None
             and isinstance(payload.get("timeline_grid"), dict)
         ):
-            song_slot = int(self._default_song_slot_for_worker(int(request.worker_id)))
+            song_slot = int(_default_song_slot_for_worker(int(request.worker_id)))
         results = solve_genomes_from_registry(
             population_indices=payload["population_indices"],
             timeline_grid=payload["timeline_grid"],
@@ -2209,7 +2135,7 @@ class GpuExecutor:
         chunks = _plan_native_ga_batch_chunks(
             requests,
             limits=_load_native_ga_batch_limits(env_get_fn=env_get),
-            estimate_work_units_fn=self._estimate_request_work_units,
+            estimate_work_units_fn=estimate_request_work_units,
         )
         for chunk_idx, chunk in enumerate(chunks):
             if self.abort_requested():
@@ -2398,54 +2324,7 @@ class GpuExecutor:
         return _execute_fg_compute_breakpoints(
             request,
             precompute_timeline_fn=precompute_timeline_gpu,
-            compute_matrix_fn=self._compute_fg_breakpoints_max_fp_matrix,
-        )
-
-    @staticmethod
-    def _compute_fg_breakpoints_max_fp_matrix(
-        *,
-        pair_ft,
-        pair_ff,
-        base_ft,
-        base_ff,
-        n_sections: int,
-        song_slot: int,
-        gem_scale_fever: int,
-        non_fever_base_by_ff,
-        fp_cap_table,
-    ):
-        return _compute_fg_breakpoints_max_fp_matrix(
-            pair_ft=pair_ft,
-            pair_ff=pair_ff,
-            base_ft=base_ft,
-            base_ff=base_ff,
-            n_sections=n_sections,
-            song_slot=song_slot,
-            gem_scale_fever=gem_scale_fever,
-            non_fever_base_by_ff=non_fever_base_by_ff,
-            fp_cap_table=fp_cap_table,
-        )
-
-    @staticmethod
-    def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
-        return _fg_cfg_decode.decode_cfg_counts_from_windows_for_gpu(cfg_idx, cfg_windows, n_sections)
-
-    @staticmethod
-    def _decode_cfg_counts_from_max_fp_matrix(
-        cfg_idx,
-        ft_vals,
-        ff_vals,
-        max_fp_matrix,
-        ftff_pairs,
-        n_sections: int,
-    ):
-        return _fg_cfg_decode.decode_cfg_counts_from_max_fp_matrix(
-            cfg_idx,
-            ft_vals,
-            ff_vals,
-            max_fp_matrix,
-            ftff_pairs,
-            n_sections,
+            compute_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
         )
 
     def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
@@ -2488,9 +2367,9 @@ class GpuExecutor:
             in_process_queues=bool(self._in_process_queues),
             raise_if_abort_requested=self._raise_if_abort_requested,
             run_payload_fn=self._run_fg_solve_with_breakpoints_payload,
-            compute_max_fp_matrix_fn=self._compute_fg_breakpoints_max_fp_matrix,
-            decode_cfg_counts_from_max_fp_matrix_fn=self._decode_cfg_counts_from_max_fp_matrix,
-            decode_cfg_counts_from_windows_fn=self._decode_cfg_counts_from_windows,
+            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
+            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
+            decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
             download_packed_topk_batch_fn=download_packed_topk_batch,
             download_batch_max_fn=download_batch_max,
         )
@@ -2523,7 +2402,7 @@ class GpuExecutor:
 
         task_plan = _build_fg_breakpoint_tasks(
             prepared,
-            compute_max_fp_matrix_fn=self._compute_fg_breakpoints_max_fp_matrix,
+            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
         )
         fg_tasks = task_plan.fg_tasks
         cfg_windows = task_plan.cfg_windows
@@ -2585,9 +2464,9 @@ class GpuExecutor:
             fp_cap_table=fp_cap_table,
             fused_surface_pair_drops=int(fused_surface_pair_drops),
             fused_surface_pair_reduce_sec=float(fused_surface_pair_reduce_sec),
-            compute_max_fp_matrix_fn=self._compute_fg_breakpoints_max_fp_matrix,
-            decode_cfg_counts_from_max_fp_matrix_fn=self._decode_cfg_counts_from_max_fp_matrix,
-            decode_cfg_counts_from_windows_fn=self._decode_cfg_counts_from_windows,
+            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
+            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
+            decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
         )
 
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
@@ -2598,17 +2477,10 @@ class GpuExecutor:
             request,
             last_ref_arrays_sig=self._last_ref_arrays_sig,
             load_ref_arrays_fn=load_ref_arrays,
-            ref_arrays_sig_fn=self._ref_arrays_sig,
+            ref_arrays_sig_fn=_ref_arrays_sig,
         )
         self._last_ref_arrays_sig = outcome.last_ref_arrays_sig
         return outcome.response
-
-    @staticmethod
-    def _ref_arrays_sig(ref_arrays) -> bytes | None:
-        """
-        Stable content signature for `ref_arrays` dict to avoid redundant uploads.
-        """
-        return _ref_arrays_sig(ref_arrays)
 
     @property
     def is_running(self) -> bool:
@@ -2847,9 +2719,10 @@ def submit_gpu_solve_genomes_from_registry(
             payload=payload,
             submit_perf_ns=time.perf_counter_ns(),
         )
-        _ensure_worker_response_router_started()
+        label = str(_worker_state.worker_id) if _worker_state.worker_id is not None else "?"
+        _worker_response_router.ensure_started(lambda: _worker_state.response_queue, label=label)
         _worker_state.require_request_queue().put(request)
-        return _wait_for_worker_response(request_id, timeout)
+        return _worker_response_router.wait(request_id, timeout)
 
     inline_static = not bool(entry.get("registered", False))
     response = _submit_once(_build_payload(inline_static=inline_static))

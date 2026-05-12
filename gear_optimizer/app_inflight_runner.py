@@ -6,7 +6,6 @@ import sys
 from typing import Any
 
 from gear_optimizer.core.parsing import env_get, truthy
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 
 logger = logging.getLogger(__name__)
@@ -29,85 +28,6 @@ class InflightRunner:
             logger.debug(f"app_inflight_runner:get_inflight_songs_requested: {e}")
 
         return inflight_songs
-
-    def get_inflight_instances_requested(self, cfg_or_dict) -> int:
-        inflight_instances = 1
-        try:
-            if isinstance(cfg_or_dict, dict):
-                ie = cfg_or_dict.get("IterationEngine")
-                if not isinstance(ie, dict):
-                    ie = cfg_or_dict.get("iterationengine", {})
-                inflight_instances = safe_int(
-                    ie.get("inflightinstances", ie.get("InFlightInstances", 1)) if isinstance(ie, dict) else 1,
-                    1,
-                )
-            else:
-                inflight_instances = int(self._app._current_runtime_settings(cfg_or_dict).inflight.instances)
-        except Exception as e:
-            logger.debug(f"app_inflight_runner:get_inflight_instances_requested: {e}")
-            inflight_instances = 1
-
-        raw_env_instances = env_get("INFLIGHT_INSTANCES")
-        if raw_env_instances is not None and str(raw_env_instances).strip() != "":
-            inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
-
-        return max(1, min(int(inflight_instances), 8))
-
-    @staticmethod
-    def dual_process_inflight_allowed() -> bool:
-        return truthy(env_get("INFLIGHT_ALLOW_DUAL_PROCESS", "0"))
-
-    def get_effective_inflight_instances(self, cfg_or_dict) -> int:
-        requested_instances = self.get_inflight_instances_requested(cfg_or_dict)
-        if int(requested_instances) <= 1:
-            return 1
-        if self.dual_process_inflight_allowed():
-            return int(requested_instances)
-
-        if not bool(getattr(self._app, "_logged_dual_process_quarantine", False)):
-            try:
-                logger.warning(
-                    "[InFlight] Dual-process mode is quarantined on main; forcing single-process GPU ownership. "
-                    "Set INFLIGHT_ALLOW_DUAL_PROCESS=1 to re-enable the experimental path."
-                )
-            except Exception as e:
-                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
-            try:
-                emit_profile_event(
-                    component="app",
-                    event="inflight_dual_process_quarantined",
-                    metrics={"requested_instances": int(requested_instances)},
-                )
-            except Exception as e:
-                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
-            try:
-                self._app._logged_dual_process_quarantine = True
-            except Exception as e:
-                logger.debug(f"app_inflight_runner:get_effective_inflight_instances: {e}")
-
-        return 1
-
-    def apply_overrides(self, cfg) -> None:
-        """Normalize config so InFlightSongs behaves predictably."""
-        runtime_settings = self._app._current_runtime_settings(cfg)
-        inflight_songs = int(runtime_settings.inflight.songs)
-        if inflight_songs > 0:
-            if not cfg.has_section("IterationEngine"):
-                cfg.add_section("IterationEngine")
-            cfg.set("IterationEngine", "InFlightSongs", str(inflight_songs))
-
-        if inflight_songs <= 1:
-            return
-
-        gpu_mode_requested = bool(runtime_settings.gpu.gpu_mode)
-        if not gpu_mode_requested:
-            logger.warning(
-                "[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); enabling GPU_Mode for in-flight."
-            )
-            try:
-                cfg.set("IterationEngine", "GPU_Mode", "true")
-            except Exception as e:
-                logger.debug(f"app_inflight_runner:apply_overrides: {e}")
 
     def maybe_apply_ram_mode(self, cfg) -> None:
         runtime_settings = self._app._current_runtime_settings(cfg)

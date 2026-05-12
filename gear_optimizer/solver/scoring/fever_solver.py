@@ -456,12 +456,6 @@ def solve_best_fever_combination(
     s_color = calc_song["metadata"].get("Secondary Color", "")
     base_stats = initial_stats.copy()
 
-    # GPU-only policy: production behavior must rely on GPU/Taichi/Vulkan.
-    # Keep the CPU reference path available only when override_cfg explicitly disables GPU.
-    if not override_cfg and not use_gpu:
-        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-        use_gpu = True
-
     # Normalize ref arrays to float32 so CPU and GPU paths use identical numeric behavior
     # regardless of input dtype (tests may pass float64 arrays).
     #

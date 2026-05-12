@@ -1,6 +1,11 @@
 from concurrent.futures import Future
 
-from gear_optimizer.solver.native_inflight_completion import CompletionTracker, has_waitable_work, mark_song_completed
+from gear_optimizer.solver.native_inflight_completion import (
+    CompletionTracker,
+    emit_deferred_post_payload,
+    has_waitable_work,
+    mark_song_completed,
+)
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
@@ -83,3 +88,77 @@ def test_mark_song_completed_without_callback_preserves_failure_branch_behavior(
 
     assert completed == {"song-b"}
     assert memory.completed == ["Song B"]
+
+
+class _ProgressTracker:
+    def __init__(self):
+        self.done = []
+
+    def emit_done_song_progress(self, progress_cb, song):
+        self.done.append((progress_cb, song.config.task_key))
+
+
+def test_emit_deferred_post_payload_posts_once_and_marks_non_fg_song_completed():
+    song = make_native_song(song_name="Song C", task_key="song-c", force_greats_finder=False)
+    completed = set()
+    memory = _MemoryResumeTracker()
+    progress = _ProgressTracker()
+    posted = []
+    bundle_callbacks = []
+
+    emitted = emit_deferred_post_payload(
+        song,
+        post=posted.append,
+        persist_pending_fg_job=True,
+        fg_drain_at_end=True,
+        completed_songs=completed,
+        memory_resume_tracker=memory,
+        bundle_completed_cb=lambda key, done: bundle_callbacks.append((key, set(done))),
+        advance_bundle=lambda *_args, **_kwargs: None,
+        progress_tracker=progress,
+        progress_cb="progress-cb",
+    )
+    emitted_again = emit_deferred_post_payload(
+        song,
+        post=posted.append,
+        persist_pending_fg_job=True,
+        fg_drain_at_end=True,
+        completed_songs=completed,
+        memory_resume_tracker=memory,
+        bundle_completed_cb=None,
+        advance_bundle=lambda *_args, **_kwargs: None,
+        progress_tracker=progress,
+        progress_cb="progress-cb",
+    )
+
+    assert emitted is True
+    assert emitted_again is False
+    assert len(posted) == 1
+    assert posted[0]["_deferred_post"] is True
+    assert song.runtime.post.deferred_post_emitted is True
+    assert completed == {"song-c"}
+    assert memory.completed == ["Song C"]
+    assert bundle_callbacks == [("song-c", {"song-c"})]
+    assert progress.done == [("progress-cb", "song-c")]
+
+
+def test_emit_deferred_post_payload_defers_completion_when_fg_drain_is_required():
+    song = make_native_song(song_name="Song FG", task_key="song-fg", force_greats_finder=True, fg_variants=None)
+    completed = set()
+    posted = []
+
+    emitted = emit_deferred_post_payload(
+        song,
+        post=posted.append,
+        persist_pending_fg_job=False,
+        fg_drain_at_end=True,
+        completed_songs=completed,
+        advance_bundle=lambda *_args, **_kwargs: None,
+    )
+
+    assert emitted is True
+    assert len(posted) == 1
+    assert posted[0]["_pending_fg_job"] is True
+    assert posted[0]["_persist_pending_fg_job"] is False
+    assert song.runtime.post.await_fg_completion_progress is True
+    assert completed == set()

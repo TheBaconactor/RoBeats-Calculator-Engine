@@ -9,7 +9,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline import post_processor
-    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
     from gear_optimizer.solver import native_inflight_result_events as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
@@ -95,7 +94,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         db_best_fg_score=0,
     )
 
-    payload = orchestrator._build_deferred_post_payload(song, persist_pending_fg_job=False)
+    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=False)
     result_queue: queue.Queue = queue.Queue()
     worker = threading.Thread(
         target=post_processor.run_post_processor,

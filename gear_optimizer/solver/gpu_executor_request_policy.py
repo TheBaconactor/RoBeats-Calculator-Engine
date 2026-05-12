@@ -55,3 +55,7 @@ def is_no_batch_request_type(request_type: Any) -> bool:
 
 def is_ga_recovery_request_type(request_type: Any) -> bool:
     return request_type_in(request_type, GA_RECOVERY_REQUEST_TYPES, GA_RECOVERY_REQUEST_TYPE_VALUES)
+
+
+def is_ga_recovery_request(request: Any) -> bool:
+    return is_ga_recovery_request_type(getattr(request, "request_type", None))

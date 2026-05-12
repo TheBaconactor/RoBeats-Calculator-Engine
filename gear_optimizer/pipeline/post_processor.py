@@ -9,47 +9,31 @@ import time
 import sys
 from typing import Any, cast
 
-from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
-from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
-from gear_optimizer.helpers.song_helpers.persistence import (
-    ReplayContext,
-    build_db_payload,
-    canonicalize_and_assemble,
-    make_build_details_fn,
-)
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
+from gear_optimizer.pipeline.post_processor_deferred import (
+    build_deferred_post_context,
+    build_deferred_post_db_payload,
+    build_deferred_post_persist_entries,
+    build_deferred_post_print_payload,
+    build_deferred_post_result_payload,
+    should_persist_pending_fg_job,
+)
 from gear_optimizer.pipeline.post_processor_fg_variants import (
-    best_fg_improving_score_from_variants as _best_fg_improving_score_from_variants,
     best_fg_improving_score_from_persist_entries as _best_fg_improving_score_from_persist_entries,
     fg_variants_from_persist_entries as _fg_variants_from_persist_entries,
 )
 from gear_optimizer.pipeline.post_processor_fg_updates import (
     canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
 )
+from gear_optimizer.persistence.entries import filter_valid_persistence_entries
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
-
-
-def _should_persist_pending_fg_job(item: dict[str, Any]) -> bool:
-    """
-    Persist pending FG work only for explicit durable deferral.
-
-    Normal GPU-native in-flight runs already drain FG in-process. Writing every
-    in-memory FG queue item into SQLite creates large transient JSON pages that
-    SQLite keeps after delete, without improving the completed product result.
-    """
-    return (
-        bool(item.get("_pending_fg_job"))
-        and bool(item.get("_persist_pending_fg_job"))
-        and bool(item.get("use_evo_db", True))
-    )
-
 
 class _PostCpuProfiler:
     def __init__(self, *, enabled: bool, out_path: str | None) -> None:
@@ -270,9 +254,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         ref_arrays=item.get("ref_arrays"),
                         song_name=str(song_name),
                     )
-                    valid_entries = [
-                        e for e in (persisted or []) if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
-                    ]
+                    valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
                     if valid_entries:
                         if timing:
                             logger.debug(
@@ -382,113 +364,21 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             res = item
             if isinstance(item, dict) and item.get("_deferred_post"):
                 _t_build0 = time.perf_counter()
-                cfg_dict = item.get("cfg_dict") or {}
-                cfg = cfg_from_dict(cfg_dict) if cfg_dict else FallbackAwareConfigParser()
-
-                primary = str(item.get("meta_primary_color") or "")
-                secondary = str(item.get("meta_secondary_color") or "")
-                difficulty = str(item.get("difficulty") or "Unknown")
-                build_details = make_build_details_fn(primary, secondary, difficulty)
-
-                best_data = item.get("best_data") or {}
-                best_gear = item.get("best_gear") or []
-                best_minis = item.get("best_minis") or []
-                prev_record = item.get("prev_record")
-                fg_variants = item.get("fg_variants") or []
-
-                try:
-                    run_score = int(best_data.get("BaseScore") or best_data.get("Score", 0) or 0)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-                    run_score = 0
-                run_best_fg = _best_fg_improving_score_from_variants(fg_variants)
-
-                prev_best_score = 0
-                try:
-                    prev_best_score = int((prev_record or {}).get("score", 0) or 0)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-                    prev_best_score = 0
-
-                prev_best_fg = 0
-                try:
-                    prev_best_fg = int(item.get("db_best_fg_score", 0) or 0)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-                    prev_best_fg = 0
-
-                if prev_best_fg <= 0:
-                    try:
-                        prev_best_fg = int((prev_record or {}).get("fg_score", 0) or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        prev_best_fg = 0
-
-                record_improved = (run_score > prev_best_score) or (run_best_fg > prev_best_fg)
-
-                attempt_lifetime = 0
-                try:
-                    attempt_lifetime = int(item.get("attempt_lifetime", 0) or 0)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-                    attempt_lifetime = 0
-                if attempt_lifetime <= 0 and isinstance(prev_record, dict):
-                    try:
-                        attempt_lifetime = int((prev_record.get("details") or {}).get("attempt_lifetime", 0) or 0) + 1
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        attempt_lifetime = 0
-                if attempt_lifetime <= 0:
-                    attempt_lifetime = 1
-
-                prev_attempts_first = 0
-                try:
-                    prev_attempts_first = int(item.get("prev_attempts_first", 0) or 0)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-                    prev_attempts_first = 0
-                if prev_attempts_first <= 0 and isinstance(prev_record, dict):
-                    try:
-                        prev_attempts_first = int((prev_record.get("details") or {}).get("attempts_first", 0) or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        prev_attempts_first = 0
-
-                attempts_first = (
-                    1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)
-                )
-                db_best_fg_score = prev_best_fg
-
+                post_context = build_deferred_post_context(item)
                 _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
 
                 _t_dbpayload0 = time.perf_counter()
                 cpu_t0 = time.process_time()
-                db_payload = build_db_payload(
-                    best_data,
-                    best_gear,
-                    best_minis,
-                    prev_record,
-                    attempt_lifetime,
-                    attempts_first,
-                    fg_variants,
-                    build_details,
-                    db_best_fg_score=db_best_fg_score,
-                )
+                db_payload = build_deferred_post_db_payload(post_context)
                 _log_timing("build_db_payload", time.perf_counter() - _t_dbpayload0, song=item.get("song"))
                 profiler.record("build_db_payload", time.process_time() - cpu_t0)
 
                 _t_persist0 = time.perf_counter()
                 cpu_t0 = time.process_time()
-                persist_entries = canonicalize_and_assemble(
+                persist_entries = build_deferred_post_persist_entries(
+                    item,
                     db_payload=db_payload,
-                    ga_candidates=item.get("ga_candidates") or [],
-                    loadout_entries=item.get("loadout_entries"),
-                    build_details_fn=build_details,
-                    replay_ctx=ReplayContext(
-                        calc_song=item.get("calc_song"),
-                        ref_arrays=item.get("ref_arrays"),
-                        cfg_dict=item.get("cfg_dict") or {},
-                    ),
+                    context=post_context,
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
@@ -496,7 +386,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 # Durable deferred FG is opt-in. The normal in-flight queue is already
                 # drained by FG workers; persisting it here bloats the main DB with
                 # transient JSON pages and is not part of retained frontier coverage.
-                if _should_persist_pending_fg_job(item):
+                if should_persist_pending_fg_job(item):
                     try:
                         _t_upsert0 = time.perf_counter()
                         cpu_t0 = time.process_time()
@@ -519,24 +409,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 if sync_output and item.get("_pending_fg_job"):
                     song_name_for_print = item.get("song", "Unknown")
-                    pending_final_print[song_name_for_print] = {
-                        "song": song_name_for_print,
-                        "best_data": best_data,
-                        "best_gear": best_gear,
-                        "best_minis": best_minis,
-                        "prev_record": item.get("prev_record"),
-                        "current_gear": item.get("current_gear") or [],
-                        "current_minis": item.get("current_minis") or [],
-                        "enable_gear": bool(item.get("enable_gear")),
-                        "enable_mini": bool(item.get("enable_mini")),
-                        "fg_debug": bool(item.get("fg_debug")),
-                        "ref_arrays": item.get("ref_arrays"),
-                        "calc_song": item.get("calc_song"),
-                        "cfg": cfg,
-                        "use_evo_db": bool(item.get("use_evo_db", True)),
-                        "db_best_fg_score": int(item.get("db_best_fg_score", 0) or 0),
-                        "_emit": _emit,
-                    }
+                    pending_final_print[song_name_for_print] = build_deferred_post_print_payload(
+                        item,
+                        context=post_context,
+                        emit=_emit,
+                    )
                     # If the FG update arrived first (unlikely but possible), print immediately.
                     if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
                         _print_pending_final(song_name_for_print)
@@ -546,34 +423,32 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         _t_print0 = time.perf_counter()
                         print_results(
                             item.get("song", "Unknown"),
-                            best_data,
-                            best_gear,
-                            best_minis,
+                            post_context.best_data,
+                            post_context.best_gear,
+                            post_context.best_minis,
                             item.get("current_gear") or [],
                             item.get("current_minis") or [],
                             bool(item.get("enable_gear")),
                             bool(item.get("enable_mini")),
-                            fg_variants,
+                            post_context.fg_variants,
                             _emit,
                             fg_debug=bool(item.get("fg_debug")),
                             ref_arrays=item.get("ref_arrays"),
                             calc_song=item.get("calc_song"),
-                            cfg=cfg,
-                            db_best_fg_score=db_best_fg_score,
-                            prev_record=prev_record,
+                            cfg=post_context.cfg,
+                            db_best_fg_score=post_context.db_best_fg_score,
+                            prev_record=post_context.prev_record,
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
                         profiler.record("print_results", time.process_time() - cpu_t0)
                     except Exception as e:
                         logger.warning(f"post_processor:_emit: {e}")
 
-                res = {
-                    "song": item.get("song", "Unknown"),
-                    "db_key": item.get("db_key", item.get("song", "Unknown")),
-                    "db_payload": db_payload,
-                    "persist_entries": persist_entries,
-                    "log": item.get("log") or "",
-                }
+                res = build_deferred_post_result_payload(
+                    item,
+                    db_payload=db_payload,
+                    persist_entries=persist_entries,
+                )
 
             song_name = res.get("song", "Unknown")
             db_key = res.get("db_key") or song_name
@@ -582,9 +457,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             if res.get("db_payload") and item.get("use_evo_db", True):
                 persisted = res.get("persist_entries")
                 if persisted:
-                    valid_entries = [
-                        e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
-                    ]
+                    valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
                     if valid_entries:
                         cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()

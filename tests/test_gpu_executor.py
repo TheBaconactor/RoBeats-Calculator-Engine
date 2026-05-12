@@ -158,12 +158,12 @@ def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
     assert seen == [(GpuRequestType.LOAD_REF_ARRAYS, 77)]
 
 
-def test_gpu_executor_default_song_slot_for_worker_is_stable_nonzero():
-    from gear_optimizer.solver.gpu_executor import GpuExecutor
+def test_default_song_slot_for_worker_is_stable_nonzero():
+    from gear_optimizer.solver.gpu_executor_worker_state import default_song_slot_for_worker
 
-    slot_a = GpuExecutor._default_song_slot_for_worker(0)
-    slot_b = GpuExecutor._default_song_slot_for_worker(0)
-    slot_c = GpuExecutor._default_song_slot_for_worker(5)
+    slot_a = default_song_slot_for_worker(0)
+    slot_b = default_song_slot_for_worker(0)
+    slot_c = default_song_slot_for_worker(5)
 
     assert slot_a == slot_b
     assert slot_a >= 1
