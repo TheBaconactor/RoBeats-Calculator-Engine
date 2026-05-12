@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 
-from gear_optimizer.solver.dual_process_inflight import _configure_worker_vulkan_device
-from gear_optimizer.solver.dual_process_inflight import recommend_dual_process_inflight_thread_overrides
-from gear_optimizer.solver.dual_process_inflight import shard_inflight_tasks
+from gear_optimizer.legacy.dual_process_inflight import _configure_worker_vulkan_device
+from gear_optimizer.legacy.dual_process_inflight import recommend_dual_process_inflight_thread_overrides
+from gear_optimizer.legacy.dual_process_inflight import shard_inflight_tasks
 
 
 def _shard_idx(shards: list[list[tuple]], task: tuple) -> int:

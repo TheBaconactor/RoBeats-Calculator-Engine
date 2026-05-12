@@ -1,3 +1,9 @@
+"""Quarantined dual-process in-flight research helpers.
+
+Production optimizer routing is single-owner native in-flight. This module
+remains only for archived research helpers and their direct tests.
+"""
+
 from __future__ import annotations
 
 import os
