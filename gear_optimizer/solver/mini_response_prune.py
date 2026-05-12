@@ -12,12 +12,15 @@ from gear_optimizer.solver.response_envelope_prune import (
     _GRID,
     _env_active_csr,
     _fast_path_blocker,
+    _lane_aware_timing_signature_ids,
     _mini_points_have_no_pp,
+    _timing_lane_weight,
     _timeline_pack_grid,
     _timing_envelopes_for_cells,
 )
 
 MAX_LOCAL_RESPONSE_MATRIX_CELLS = 8_000_000
+MAX_TIMING_LANE_EXACT_SIGNATURE_START_CELLS = 5_000
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,7 @@ class _MiniTimingResponseIndex:
     cells: np.ndarray
     cell_to_row: np.ndarray
     env: np.ndarray
+    signature_id: np.ndarray
     needed_offsets: np.ndarray
     needed_packs: np.ndarray
     needed_requirements: np.ndarray
@@ -109,7 +113,8 @@ def prune_mini_response_envelope(
     if gp.ndim != 2 or int(gp.shape[1]) != 6 or int(gp.shape[0]) <= 0:
         return mini_points, mini_codes, mini_ids, _stats(False, "gear_points_shape_not_6d", n, n, started), None
 
-    reason = _fast_path_blocker(flags=flags, ref_arrays=ref_arrays)
+    timing_lane_active = _timing_lane_weight(flags) != 0
+    reason = _fast_path_blocker(flags=flags, ref_arrays=ref_arrays, allow_timing_lane=timing_lane_active)
     if reason:
         return mini_points, mini_codes, mini_ids, _stats(False, reason, n, n, started), None
 
@@ -127,12 +132,28 @@ def prune_mini_response_envelope(
     gear_cell_to_row = np.full(int(_GRID) * int(_GRID), -1, dtype=np.int32)
     gear_cell_to_row[gear_cells] = np.arange(gear_cells.shape[0], dtype=np.int32)
     start_cells_by_mini = _start_cells_by_mini(gear_cells=gear_cells, mini_points=mp)
+    unique_start_cells = np.unique(start_cells_by_mini.reshape(-1).astype(np.int32, copy=False))
+    if timing_lane_active and int(unique_start_cells.shape[0]) > int(MAX_TIMING_LANE_EXACT_SIGNATURE_START_CELLS):
+        return (
+            mini_points,
+            mini_codes,
+            mini_ids,
+            _stats(
+                False,
+                "timing_lane_exact_signature_too_large",
+                n,
+                n,
+                started,
+            ),
+            None,
+        )
 
     timing_started = time.perf_counter()
     timing = _build_exact_timing_response_index(
-        present_cells=np.unique(start_cells_by_mini.reshape(-1).astype(np.int32, copy=False)),
+        present_cells=unique_start_cells,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
+        flags=flags,
     )
     start_rows_by_mini = timing.cell_to_row[start_cells_by_mini]
     seconds_timing = time.perf_counter() - timing_started
@@ -255,6 +276,7 @@ def _build_exact_timing_response_index(
     present_cells: np.ndarray,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    flags: dict[str, int],
 ) -> _MiniTimingResponseIndex:
     cells = np.asarray(present_cells, dtype=np.int32)
     cell_to_row = np.full(int(_GRID) * int(_GRID), -1, dtype=np.int32)
@@ -266,11 +288,22 @@ def _build_exact_timing_response_index(
     )
     pack_count = int(pack_body_normal.shape[0])
     env = _timing_envelopes_for_cells(cells=cells, cell_pack=cell_pack, pack_count=pack_count)
+    if _timing_lane_weight(flags) != 0:
+        signature_grid, _signature_count = _lane_aware_timing_signature_ids(
+            cells=cells,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            flags=flags,
+        )
+        signature_id = signature_grid[cells].astype(np.int32, copy=False)
+    else:
+        signature_id = _env_signature_ids(env)
     needed_offsets, needed_packs, needed_requirements = _env_active_csr(env)
     return _MiniTimingResponseIndex(
         cells=cells,
         cell_to_row=cell_to_row,
         env=env,
+        signature_id=signature_id,
         needed_offsets=needed_offsets,
         needed_packs=needed_packs,
         needed_requirements=needed_requirements,
@@ -303,6 +336,7 @@ def _find_dominated_minis(
             np.asarray(start_rows_by_mini, dtype=np.int32),
             np.asarray(raw_pack_by_row, dtype=np.int32),
             timing.env,
+            timing.signature_id,
             timing.needed_offsets,
             timing.needed_packs,
             timing.needed_requirements,
@@ -326,6 +360,8 @@ def _find_dominated_minis(
             candidate_pairs += 1
             if not np.array_equal(raw_pack_by_row[start_rows_by_mini[a]], raw_pack_by_row[start_rows_by_mini[b]]):
                 continue
+            if not np.array_equal(timing.signature_id[start_rows_by_mini[a]], timing.signature_id[start_rows_by_mini[b]]):
+                continue
             if _mini_timing_matches_all_gear_cells(
                 source_rows=start_rows_by_mini[a],
                 target_rows=start_rows_by_mini[b],
@@ -346,6 +382,7 @@ def _find_dominated_minis_jit(
     start_rows_by_mini: np.ndarray,
     raw_pack_by_row: np.ndarray,
     env: np.ndarray,
+    signature_id: np.ndarray,
     needed_offsets: np.ndarray,
     needed_packs: np.ndarray,
     needed_requirements: np.ndarray,
@@ -371,6 +408,9 @@ def _find_dominated_minis_jit(
             ok = True
             for gear_idx in range(gear_cells):
                 if raw_pack_by_row[start_rows_by_mini[a, gear_idx]] != raw_pack_by_row[start_rows_by_mini[b, gear_idx]]:
+                    ok = False
+                    break
+                if signature_id[start_rows_by_mini[a, gear_idx]] != signature_id[start_rows_by_mini[b, gear_idx]]:
                     ok = False
                     break
             if not ok:
@@ -432,7 +472,10 @@ def _build_local_response_filter(
     if not np.any(non_timing_dominates):
         return None, candidate_pairs, 0, "no_local_certified_dominance"
 
-    response_ids = _env_signature_ids(timing.env)[rows]
+    timing_signature = getattr(timing, "signature_id", None)
+    if timing_signature is None:
+        timing_signature = _env_signature_ids(timing.env)
+    response_ids = np.asarray(timing_signature, dtype=np.int32)[rows]
     allowed = np.ones((int(rows.shape[1]), n), dtype=np.bool_)
     cover_hits = 0
     for gear_idx in range(int(rows.shape[1])):

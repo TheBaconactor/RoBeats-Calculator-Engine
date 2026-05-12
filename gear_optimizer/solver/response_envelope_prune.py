@@ -22,6 +22,7 @@ _STAT_GRID_SIZE = _GRID * _GRID * _GRID
 _NO_OWNER = np.int32(-1)
 _KEY_LANE_STRIDE = 65536
 _MAX_COVER_MATRIX_BYTES = 256 * 1024 * 1024
+_MAX_TIMING_LANE_EXACT_SIGNATURE_CANDIDATES = 2_000_000
 _TIMELINE_PACK_GRID_CACHE_MAX = 8
 _TIMELINE_PACK_GRID_CACHE: dict[
     tuple[Any, int],
@@ -89,9 +90,18 @@ def prune_response_envelope_pairs(
     if n <= 1:
         return pair_gear_idx, pair_mini_idx, _stats(False, "too_few_candidates", n, n, started)
 
-    reason = _fast_path_blocker(flags=flags, ref_arrays=ref_arrays)
+    timing_lane_active = _timing_lane_weight(flags) != 0
+    reason = _fast_path_blocker(flags=flags, ref_arrays=ref_arrays, allow_timing_lane=timing_lane_active)
     if reason:
         return pair_gear_idx, pair_mini_idx, _stats(False, reason, n, n, started)
+    if timing_lane_active and n > int(_MAX_TIMING_LANE_EXACT_SIGNATURE_CANDIDATES):
+        return pair_gear_idx, pair_mini_idx, _stats(
+            False,
+            "timing_lane_exact_signature_too_large",
+            n,
+            n,
+            started,
+        )
 
     state_started = time.perf_counter()
     item_stats = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
@@ -128,6 +138,62 @@ def prune_response_envelope_pairs(
             pruned=0,
             seconds_total=float(time.perf_counter() - started),
             seconds_states=float(seconds_states),
+        )
+
+    if timing_lane_active:
+        timing_started = time.perf_counter()
+        cell_signature, signature_count = _lane_aware_timing_signature_ids(
+            cells=np.unique(states.cell.astype(np.int32, copy=False)),
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            flags=flags,
+        )
+        seconds_timing = time.perf_counter() - timing_started
+
+        query_started = time.perf_counter()
+        prune_mask = _same_signature_dominance_prune(states=states, cell_signature=cell_signature)
+        seconds_query = time.perf_counter() - query_started
+
+        if not np.any(prune_mask):
+            elapsed = time.perf_counter() - started
+            return (
+                pair_gear_idx,
+                pair_mini_idx,
+                ResponseEnvelopePruneStats(
+                    enabled=True,
+                    reason="no_certified_dominance",
+                    candidates_in=n,
+                    candidates_out=n,
+                    pruned=0,
+                    seconds_total=float(elapsed),
+                    seconds_states=float(seconds_states),
+                    seconds_timing=float(seconds_timing),
+                    seconds_query=float(seconds_query),
+                    present_timing_cells=int(np.count_nonzero(cell_signature >= 0)),
+                    timing_packs=int(signature_count),
+                ),
+            )
+
+        keep = ~prune_mask
+        out_g = np.asarray(pair_gear_idx)[keep]
+        out_m = np.asarray(pair_mini_idx)[keep]
+        elapsed = time.perf_counter() - started
+        return (
+            out_g,
+            out_m,
+            ResponseEnvelopePruneStats(
+                enabled=True,
+                reason="certified_timing_lane_exact_signature",
+                candidates_in=n,
+                candidates_out=int(out_g.shape[0]),
+                pruned=int(np.count_nonzero(prune_mask)),
+                seconds_total=float(elapsed),
+                seconds_states=float(seconds_states),
+                seconds_timing=float(seconds_timing),
+                seconds_query=float(seconds_query),
+                present_timing_cells=int(np.count_nonzero(cell_signature >= 0)),
+                timing_packs=int(signature_count),
+            ),
         )
 
     timing_started = time.perf_counter()
@@ -266,10 +332,17 @@ def _lane_weight(flags: dict[str, int], stat: str, scale: int) -> int:
     return int(scale) * ((2 * int(flags.get(f"is_p_{stat}", 0))) + int(flags.get(f"is_s_{stat}", 0)))
 
 
-def _fast_path_blocker(*, flags: dict[str, int], ref_arrays: dict[str, Any]) -> str:
-    if _lane_weight(flags, "ft", GEM_STAT_TO_ELEMENT_SCALE) != 0:
+def _timing_lane_weight(flags: dict[str, int]) -> int:
+    return max(
+        _lane_weight(flags, "ft", GEM_STAT_TO_ELEMENT_SCALE),
+        _lane_weight(flags, "ff", GEM_STAT_TO_ELEMENT_SCALE),
+    )
+
+
+def _fast_path_blocker(*, flags: dict[str, int], ref_arrays: dict[str, Any], allow_timing_lane: bool = False) -> str:
+    if not bool(allow_timing_lane) and _lane_weight(flags, "ft", GEM_STAT_TO_ELEMENT_SCALE) != 0:
         return "timing_ft_affects_lane_base"
-    if _lane_weight(flags, "ff", GEM_STAT_TO_ELEMENT_SCALE) != 0:
+    if not bool(allow_timing_lane) and _lane_weight(flags, "ff", GEM_STAT_TO_ELEMENT_SCALE) != 0:
         return "timing_ff_affects_lane_base"
 
     overflow_weight = _lane_weight(flags, "ov", ELEMENTAL_GEM_SCALE)
@@ -644,6 +717,181 @@ def _timing_envelopes_for_cells(
         packs = cell_pack[final_ft, final_ff].astype(np.intp, copy=False)
         np.maximum.at(env[row], packs, spend_rem[valid])
     return env
+
+
+def _lane_aware_timing_signature_ids(
+    *,
+    cells: np.ndarray,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    flags: dict[str, int],
+) -> tuple[np.ndarray, int]:
+    cell_pack, _pack_bits, _pack_body_fever, _pack_body_normal = _timeline_pack_grid(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+    )
+    present = np.asarray(cells, dtype=np.int32).reshape(-1)
+    cell_signature = np.full(_GRID * _GRID, -1, dtype=np.int32)
+    if present.size == 0:
+        return cell_signature, 0
+
+    w_ft = _lane_weight(flags, "ft", GEM_STAT_TO_ELEMENT_SCALE)
+    w_ff = _lane_weight(flags, "ff", GEM_STAT_TO_ELEMENT_SCALE)
+    w_ov = _lane_weight(flags, "ov", ELEMENTAL_GEM_SCALE)
+
+    spends_ft: list[int] = []
+    spends_ff: list[int] = []
+    spends_rem: list[int] = []
+    spends_value: list[int] = []
+    for g_ft in range(int(TOTAL_GEM_BUDGET) + 1):
+        max_ff = int(TOTAL_GEM_BUDGET) - int(g_ft)
+        for g_ff in range(max_ff + 1):
+            rem = max_ff - g_ff
+            spends_ft.append(g_ft)
+            spends_ff.append(g_ff)
+            spends_rem.append(rem)
+            spends_value.append((int(w_ft) * g_ft) + (int(w_ff) * g_ff) + (int(w_ov) * rem))
+
+    spend_ft = np.asarray(spends_ft, dtype=np.int16)
+    spend_ff = np.asarray(spends_ff, dtype=np.int16)
+    spend_rem = np.asarray(spends_rem, dtype=np.int16)
+    spend_value = np.asarray(spends_value, dtype=np.int16)
+    d_ft = spend_ft.astype(np.int32) * int(GEM_SCALE_FEVER)
+    d_ff = spend_ff.astype(np.int32) * int(GEM_SCALE_FEVER)
+
+    signature_to_id: dict[bytes, int] = {}
+    for cell in present.tolist():
+        raw_ft = int(cell) // int(_GRID)
+        raw_ff = int(cell) % int(_GRID)
+        cap_ft = max(0, (int(MAX_STAT_INDEX) - raw_ft) // int(GEM_SCALE_FEVER))
+        cap_ff = max(0, (int(MAX_STAT_INDEX) - raw_ff) // int(GEM_SCALE_FEVER))
+        valid = (spend_ft <= cap_ft) & (spend_ff <= cap_ff)
+        final_ft = raw_ft + d_ft[valid]
+        final_ff = raw_ff + d_ff[valid]
+        packs = cell_pack[final_ft, final_ff].astype(np.int16, copy=False)
+        rem = spend_rem[valid]
+        value = spend_value[valid]
+
+        if packs.size == 0:
+            key = b""
+        else:
+            order = np.lexsort((-value.astype(np.int32), -rem.astype(np.int32), packs.astype(np.int32)))
+            triples: list[tuple[int, int, int]] = []
+            pos = 0
+            while pos < int(order.shape[0]):
+                pack = int(packs[order[pos]])
+                best_value = -1
+                while pos < int(order.shape[0]) and int(packs[order[pos]]) == pack:
+                    idx = int(order[pos])
+                    val = int(value[idx])
+                    if val > best_value:
+                        triples.append((pack, int(rem[idx]), val))
+                        best_value = val
+                    pos += 1
+            arr = np.asarray(triples, dtype=np.int16)
+            key = arr.tobytes()
+        sig_id = signature_to_id.get(key)
+        if sig_id is None:
+            sig_id = len(signature_to_id)
+            signature_to_id[key] = sig_id
+        cell_signature[int(cell)] = np.int32(sig_id)
+
+    return cell_signature, int(len(signature_to_id))
+
+
+def _same_signature_dominance_prune(*, states: _CandidateStates, cell_signature: np.ndarray) -> np.ndarray:
+    sig = np.asarray(cell_signature, dtype=np.int32)[states.cell.astype(np.int32, copy=False)]
+    valid = sig >= 0
+    prune_mask = np.zeros(int(sig.shape[0]), dtype=np.bool_)
+    if not np.any(valid):
+        return prune_mask
+
+    valid_idx = np.flatnonzero(valid).astype(np.int32, copy=False)
+    pp = states.pp.astype(np.int32, copy=False)
+    cm = states.cm.astype(np.int32, copy=False)
+    fm = states.fm.astype(np.int32, copy=False)
+    lane = states.lane.astype(np.int32, copy=False)
+    order = valid_idx[np.lexsort((-lane[valid_idx], -fm[valid_idx], -cm[valid_idx], -pp[valid_idx], sig[valid_idx]))]
+    order = order.astype(np.int32, copy=False)
+    if HAS_NUMBA:
+        _same_signature_dominance_prune_jit(sig, pp, cm, fm, lane, order, prune_mask)
+        return prune_mask
+
+    group_start = 0
+    while group_start < int(order.shape[0]):
+        group_sig = int(sig[order[group_start]])
+        group_end = group_start + 1
+        while group_end < int(order.shape[0]) and int(sig[order[group_end]]) == group_sig:
+            group_end += 1
+
+        best = np.full((_GRID, _GRID), np.iinfo(np.int32).min, dtype=np.int32)
+        for pos in range(group_start, group_end):
+            idx = int(order[pos])
+            if np.max(best[int(cm[idx]) :, int(fm[idx]) :]) > int(lane[idx]):
+                prune_mask[idx] = True
+            best[int(cm[idx]), int(fm[idx])] = max(best[int(cm[idx]), int(fm[idx])], int(lane[idx]))
+
+        group_start = group_end
+    return prune_mask
+
+
+@jit(nopython=True, cache=True)
+def _same_signature_dominance_prune_jit(
+    sig: np.ndarray,
+    pp: np.ndarray,
+    cm: np.ndarray,
+    fm: np.ndarray,
+    lane: np.ndarray,
+    order: np.ndarray,
+    prune_mask: np.ndarray,
+) -> None:
+    del pp
+    grid_n = int(MAX_STAT_INDEX) + 2
+    tree = np.empty((grid_n, grid_n), dtype=np.int32)
+    n = order.shape[0]
+    pos = 0
+    min_value = np.iinfo(np.int32).min
+    while pos < n:
+        first = order[pos]
+        group_sig = sig[first]
+        end = pos + 1
+        while end < n and sig[order[end]] == group_sig:
+            end += 1
+
+        for i in range(grid_n):
+            for j in range(grid_n):
+                tree[i, j] = min_value
+
+        cur = pos
+        while cur < end:
+            idx = order[cur]
+            cm_pos = int(MAX_STAT_INDEX) - cm[idx] + 1
+            fm_pos = int(MAX_STAT_INDEX) - fm[idx] + 1
+
+            best_lane = min_value
+            x = cm_pos
+            while x > 0:
+                y = fm_pos
+                while y > 0:
+                    if tree[x, y] > best_lane:
+                        best_lane = tree[x, y]
+                    y -= y & -y
+                x -= x & -x
+
+            if best_lane > lane[idx]:
+                prune_mask[idx] = True
+
+            x = cm_pos
+            while x < grid_n:
+                y = fm_pos
+                while y < grid_n:
+                    if lane[idx] > tree[x, y]:
+                        tree[x, y] = lane[idx]
+                    y += y & -y
+                x += x & -x
+
+            cur += 1
+        pos = end
 
 
 def _pack_dominance_matrix(

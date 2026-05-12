@@ -200,11 +200,11 @@ def test_mini_response_local_filter_threshold_is_safe_noop(monkeypatch) -> None:
     assert local_filter is None
 
 
-def test_mini_response_blocks_when_timing_gems_affect_lane_base() -> None:
+def test_mini_response_prunes_timing_lane_exact_signature_team() -> None:
     flags = _rush_primary_flags()
     flags["is_p_ft"] = 1
 
-    _out_points, _out_codes, _out_ids, stats, local_filter = prune_mini_response_envelope(
+    out_points, out_codes, out_ids, stats, local_filter = prune_mini_response_envelope(
         gear_points=np.array([[0, 0, 0, 0, 0, 0]], dtype=np.int32),
         mini_points=np.array([[0, 0, 0, 0, 10], [0, 0, 90, 0, 0]], dtype=np.int32),
         mini_codes=np.array([11, 22], dtype=np.uint64),
@@ -216,9 +216,13 @@ def test_mini_response_blocks_when_timing_gems_affect_lane_base() -> None:
         flags=flags,
     )
 
-    assert not stats.enabled
-    assert stats.reason == "timing_ft_affects_lane_base"
+    assert stats.enabled
+    assert stats.reason == "certified"
+    assert stats.pruned == 1
     assert local_filter is None
+    assert out_points.tolist() == [[0, 0, 0, 0, 10]]
+    assert out_codes.tolist() == [11]
+    assert out_ids.tolist() == [[1, 2, 3]]
 
 
 def test_mini_response_blocks_when_mini_pp_is_not_in_frontier_state() -> None:
