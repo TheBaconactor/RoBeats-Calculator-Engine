@@ -67,7 +67,6 @@ from gear_optimizer.solver.gpu_executor_workload import (
     workload_stop_summary_log_message,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
-    BatchPlan as _BatchPlan,
     batch_contains_fg_burst_work as _batch_contains_fg_burst_work,
     extend_inprocess_after_first_deadline as _extend_inprocess_after_first_deadline,
     ga_recovery_lookahead_limit as _ga_recovery_lookahead_limit,
@@ -517,17 +516,6 @@ class GpuExecutor:
         self._fg_tasks_batches = stats.batches
         self._fg_tasks_total = stats.total
         self._fg_tasks_max = stats.max_tasks
-
-    def _summarize_batch(self, batch: list["GpuRequest"], *, plan: _BatchPlan, wait_sec: float) -> dict[str, Any]:
-        return summarize_batch(
-            batch,
-            plan=plan,
-            wait_sec=wait_sec,
-            batch_id=int(self._workload_batch_seq),
-            estimate_work_units_fn=estimate_request_work_units,
-            coalescable_request_types=COALESCABLE_REQUEST_TYPES,
-            fg_request_types=FG_REQUEST_TYPES,
-        )
 
     def _record_workload_batch(self, metrics: dict[str, Any]) -> None:
         if not metrics:
@@ -1138,7 +1126,15 @@ class GpuExecutor:
 
                 if need_batch_summary:
                     self._workload_batch_seq += 1
-                    batch_metrics = self._summarize_batch(batch, plan=batch_plan, wait_sec=float(dt_wait))
+                    batch_metrics = summarize_batch(
+                        batch,
+                        plan=batch_plan,
+                        wait_sec=float(dt_wait),
+                        batch_id=int(self._workload_batch_seq),
+                        estimate_work_units_fn=estimate_request_work_units,
+                        coalescable_request_types=COALESCABLE_REQUEST_TYPES,
+                        fg_request_types=FG_REQUEST_TYPES,
+                    )
                     if trace_enabled:
                         trace_shared_kwargs = _batch_trace_context(batch_metrics)
 

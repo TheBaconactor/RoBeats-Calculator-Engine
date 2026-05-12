@@ -3,7 +3,8 @@ import queue
 import pytest
 
 import gear_optimizer.solver.gpu_executor as gpu_executor_module
-from gear_optimizer.solver.gpu_executor import _BatchPlan, GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor_batching import BatchPlan as _BatchPlan
 from gear_optimizer.solver.gpu_executor_workload import (
     batch_trace_context,
     estimate_request_work_units,
@@ -31,7 +32,6 @@ def _fresh_executor() -> GpuExecutor:
 
 
 def test_summarize_batch_reports_workload_shape():
-    ex = _fresh_executor()
     plan = _BatchPlan(wait_ms=2, max_batch=16, mode="inproc", queue_depth_hint=12, pressure_hint=0.75)
     reqs = [
         GpuRequest(
@@ -67,8 +67,7 @@ def test_summarize_batch_reports_workload_shape():
             dequeue_perf_ns=17_000_000,
         ),
     ]
-    ex._workload_batch_seq = 7
-    metrics = ex._summarize_batch(reqs, plan=plan, wait_sec=0.004)
+    metrics = summarize_batch(reqs, plan=plan, wait_sec=0.004, batch_id=7)
 
     assert metrics["batch_id"] == 7
     assert metrics["size"] == 3
@@ -162,8 +161,7 @@ def test_percentile95_handles_empty_and_sorted_samples():
     assert percentile95([1, 2, 3]) == 3.0
 
 
-def test_workload_module_summarize_batch_matches_executor_compatibility_wrapper():
-    ex = _fresh_executor()
+def test_workload_module_is_single_summarize_batch_owner():
     plan = _BatchPlan(wait_ms=1, max_batch=8, mode="compat", queue_depth_hint=2, pressure_hint=0.5)
     reqs = [
         GpuRequest(
@@ -173,15 +171,13 @@ def test_workload_module_summarize_batch_matches_executor_compatibility_wrapper(
             payload={"ftff_pairs": [(0, 0), (1, 1)]},
         )
     ]
-    ex._workload_batch_seq = 33
 
-    direct = summarize_batch(reqs, plan=plan, wait_sec=0.001, batch_id=33)
-    wrapped = ex._summarize_batch(reqs, plan=plan, wait_sec=0.001)
+    metrics = summarize_batch(reqs, plan=plan, wait_sec=0.001, batch_id=33)
 
-    assert wrapped == direct
-    assert wrapped["fg_count"] == 1
-    assert wrapped["coalescable_count"] == 1
-    assert wrapped["work_units"] == 2.0
+    assert not hasattr(GpuExecutor, "_summarize_batch")
+    assert metrics["fg_count"] == 1
+    assert metrics["coalescable_count"] == 1
+    assert metrics["work_units"] == 2.0
     assert size_hint([(0, 0), (1, 1), (2, 2)]) == 3
 
 
