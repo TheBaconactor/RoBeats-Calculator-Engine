@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
 from gear_optimizer.core.utils import cfg_from_dict
+from gear_optimizer.domain.results import PersistenceBatch
 from gear_optimizer.helpers.song_helpers.persistence import (
     ReplayContext,
     build_db_payload,
@@ -198,10 +199,10 @@ def build_deferred_post_result_payload(
     persist_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     song = item.get("song", "Unknown")
-    return {
-        "song": song,
-        "db_key": item.get("db_key", song),
-        "db_payload": db_payload,
-        "persist_entries": persist_entries,
-        "log": item.get("log") or "",
-    }
+    return PersistenceBatch(
+        song=str(song),
+        db_key=str(item.get("db_key", song)),
+        db_payload=db_payload,
+        persist_entries=persist_entries,
+        log=str(item.get("log") or ""),
+    ).as_result_payload()
