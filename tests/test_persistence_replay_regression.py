@@ -213,6 +213,101 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
     )
 
 
+def test_team_buff_replay_keeps_force_origin_when_base_duplicate_follows(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+    force_payload = {
+        "BaseScore": 100,
+        "Score": 120,
+        "BaseStats": dict(stats),
+        "GemCounts": {},
+        "Selected Element": "Rush",
+        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 120},
+    }
+    force_entry = {
+        "loadout_hash": "same-loadout",
+        "score": 100,
+        "fg_score": 120,
+        "fg_base_score": 100,
+        "gear": list(gear),
+        "minis": list(minis),
+        "details": {"Stats": dict(stats), "SelectedElement": "Rush"},
+        "force": force_payload,
+    }
+    base_duplicate = {
+        "loadout_hash": "same-loadout",
+        "score": 100,
+        "fg_score": 0,
+        "gear": list(gear),
+        "minis": list(minis),
+        "details": {"Stats": dict(stats), "SelectedElement": "Rush"},
+        "force": None,
+    }
+
+    def fake_compute_team_buff_tier_leaderboards(**_kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T5": {
+                    "base_top51": [
+                        {
+                            "loadout_hash": "same-loadout",
+                            "gear": list(gear),
+                            "minis": list(minis),
+                            "score": 100,
+                            "fg_score": 120,
+                        }
+                    ],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": "same-loadout",
+                            "gear": list(gear),
+                            "minis": list(minis),
+                            "score": 100,
+                            "fg_base_score": 100,
+                            "fg_score": 120,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        fake_compute_team_buff_tier_leaderboards,
+    )
+
+    rows = build_team_buff_tier_db_batches(
+        entries=[force_entry, base_duplicate],
+        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
+        ref_arrays={"Perfect Points": [0], "Combo Multiplier": [1], "Fever Multiplier": [1]},
+        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
+        tiers=("T5",),
+        limit=1,
+    )["T5"]
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert int(row["fg_score"]) == 120
+    assert row["force"]["ForceGreats"]["config"] == {"NonFever1": 1}
+    assert int(row["force"]["Score"]) == 120
+
+
 def test_canonicalize_baseline_persist_entries_is_noop_without_replay_context():
     from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
 

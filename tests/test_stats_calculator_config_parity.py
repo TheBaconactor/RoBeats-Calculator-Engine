@@ -55,3 +55,22 @@ def test_build_base_stats_from_config_invalid_team_color_does_not_double_count_p
     assert stats["Rush"] == 0
     assert stats["Beat"] == 0
     assert stats["Vibe"] == 0
+
+
+def test_build_base_stats_from_config_auto_mode_keeps_runtime_team_color():
+    from gear_optimizer.core.stats_calculator import build_base_stats_from_config
+
+    cfg_dict = {
+        "IterationEngine": {"AutoSelectBuffAndColor": "true"},
+        "TeamContributionBuffConstant": {
+            "TeamBuff": "T5",
+            # setup_song_config writes the song primary here before fixed stats
+            # are built; cfg-only stats construction must not discard it.
+            "TeamColor": "Rush",
+        },
+    }
+
+    stats = build_base_stats_from_config(cfg_dict)
+
+    assert stats["Perfect Points"] == 25
+    assert stats["Rush"] == 30

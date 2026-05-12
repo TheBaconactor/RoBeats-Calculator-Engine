@@ -18,6 +18,7 @@ from ...core.team_buff import (
 from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.scoring_core import lookup_reference_py
+from .fg_config import has_valid_fg_config
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
@@ -219,6 +220,16 @@ def _extract_force_config_counts(force_obj: dict) -> list[int]:
     if sum(int(x) for x in counts) <= 0:
         return []
     return counts
+
+
+def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
+    force_obj = entry.get("force")
+    has_force = 1 if isinstance(force_obj, dict) and has_valid_fg_config(force_obj) else 0
+    return (
+        has_force,
+        _safe_int(entry.get("fg_score"), 0),
+        _safe_int(entry.get("score"), 0),
+    )
 
 
 def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
@@ -805,7 +816,10 @@ def build_team_buff_tier_db_batches(
     for e in entries or []:
         if not isinstance(e, dict):
             continue
-        orig_by_key[_stable_key_from_payload(e)] = e
+        k = _stable_key_from_payload(e)
+        current = orig_by_key.get(k)
+        if not isinstance(current, dict) or _entry_origin_priority(e) > _entry_origin_priority(current):
+            orig_by_key[k] = e
 
     batches: dict[str, list[dict]] = {}
     for tier, tier_payload in (payload.get("tiers") or {}).items():

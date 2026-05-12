@@ -26,6 +26,7 @@ from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
+from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
 from gear_optimizer.solver.native_inflight_config import (
@@ -134,9 +135,45 @@ def _wait_for_completion_event(
     )
 
 
+def _fg_enabled_for_song(song: _NativeSong) -> bool:
+    return bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
+
+
+def _fg_scored_for_song(song: _NativeSong) -> bool:
+    return getattr(song.runtime.fg, "fg_variants", None) is not None
+
+
+def _fg_pending_for_post(song: _NativeSong) -> bool:
+    return bool(_fg_enabled_for_song(song) and not _fg_scored_for_song(song))
+
+
+def _score_fg_inside_ga(
+    song: _NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+) -> None:
+    if not _fg_enabled_for_song(song):
+        return
+    _run_fg_job_sync(
+        song,
+        gpu_client=gpu_client,
+        post_sender=None,
+        progress_cb=None,
+        progress_tracker=None,
+    )
+    if getattr(song.runtime.fg, "fg_variants", None) is None:
+        song.runtime.fg.fg_variants = []
+
+
 def _build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
+    pending_fg_job = _fg_pending_for_post(song)
+    fg_variants_post = (
+        compact_fg_variants(list(getattr(song.runtime.fg, "fg_variants", None) or []))
+        if _fg_scored_for_song(song)
+        else []
+    )
     candidates_for_post = (
         song.runtime.decode.ga_persistence_candidates
         if isinstance(getattr(song.runtime.decode, "ga_persistence_candidates", None), list)
@@ -180,7 +217,7 @@ def _build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: b
     # canonicalize retained rows to the same score authority used by replay/repair.
     return {
         "_deferred_post": True,
-        "_pending_fg_job": bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder),
+        "_pending_fg_job": bool(pending_fg_job),
         "song": song.config.song_name,
         "_queue_key": song.config.task_key,
         "_queue_label": song.config.task_key,
@@ -199,10 +236,10 @@ def _build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: b
         "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
         "enable_gear": bool(song.gpu_inputs.enable_gear),
         "enable_mini": bool(song.gpu_inputs.enable_mini),
-        "fg_variants": [],
+        "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
         "loadout_entries": None,
-        "_persist_pending_fg_job": bool(persist_pending_fg_job),
+        "_persist_pending_fg_job": bool(persist_pending_fg_job and pending_fg_job),
         "prev_record": _compact_prev_record(song.runtime.db.prev_record),
         "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
         "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
@@ -1005,7 +1042,7 @@ def run_native_inflight_song_pipeline(
             logger.debug(f"native_inflight_orchestrator:_emit_deferred_post_payload: {e}")
 
         bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-        needs_fg_stage = bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
+        needs_fg_stage = bool(_fg_pending_for_post(song))
         if bundle_parent is not None and needs_fg_stage:
             song.runtime.bundle.bundle_wait_for_fg = True
         elif bundle_parent is not None:
@@ -1724,25 +1761,50 @@ def run_native_inflight_song_pipeline(
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
-                if song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder:
-                    fg_pipeline.queue(song, now_s=time.monotonic())
-                    if song.runtime.fg.fg_prep_future is None:
+                if _fg_enabled_for_song(song):
+                    fg_t0 = time.perf_counter()
+                    try:
+                        _score_fg_inside_ga(song, gpu_client=gpu_client)
+                    except GpuServiceTimeoutError:
+                        raise
+                    except Exception as exc:
+                        bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+                        payload = build_error_payload(
+                            song_name=str(song.config.song_name),
+                            queue_key=str(song.config.task_key),
+                            queue_label=str(song.config.task_key),
+                            exc=exc,
+                            trace=traceback.format_exc(),
+                        )
+                        if bundle_parent is not None:
+                            payload["_suppress_progress"] = True
+                        _post(payload)
                         try:
-                            fg_pipeline.start_prep(
-                                song,
-                                _prepare_fg_job_sync,
-                                gpu_client=gpu_client,
-                                register_future=_register_completion_future,
-                            )
+                            ga_pipeline.release_slot(song, slot_pool)
                         except Exception as e:
                             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                            song.runtime.fg.fg_prep_future = None
-                else:
-                    # No FG stage for this song: release its reserved timeline slot immediately.
-                    try:
-                        ga_pipeline.release_slot(song, slot_pool)
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                        if stopping and _is_stop_abort_exception(exc):
+                            continue
+                        if bundle_parent is not None:
+                            _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
+                        else:
+                            completed_songs.add(song.config.task_key)
+                            if memory_resume_tracker:
+                                memory_resume_tracker.mark_completed(song.config.song_name)
+                        continue
+                    stage_profiler.record(
+                        "fg_run",
+                        time.perf_counter() - float(fg_t0),
+                        cpu_seconds=getattr(song.runtime.fg, "cpu_fg_run_s", None),
+                        song=song.config.task_key,
+                    )
+
+                # GA and its native FG scoring now share one result authority; release
+                # the resident timeline slot only after that combined result exists.
+                try:
+                    ga_pipeline.release_slot(song, slot_pool)
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 record_info = None
                 try:
@@ -1750,7 +1812,7 @@ def run_native_inflight_song_pipeline(
                     record_info = evaluate_progress_record_update(
                         song.runtime.decode.best_data or {},
                         {"score": int(prev_best_score)},
-                        [],
+                        getattr(song.runtime.fg, "fg_variants", None) or [],
                         db_best_fg_score=int(prev_best_fg),
                         baseline_valid=bool(baseline_valid),
                     )
@@ -1758,6 +1820,13 @@ def run_native_inflight_song_pipeline(
                         _progress_best_update(
                             song.config.db_key,
                             best_score=int(record_info.get("score", 0) or 0),
+                            best_fg=int(record_info.get("best_fg_score_run", 0) or 0),
+                            mark_valid=bool(baseline_valid),
+                        )
+                    elif isinstance(record_info, dict) and record_info.get("is_fg_better"):
+                        _progress_best_update(
+                            song.config.db_key,
+                            best_fg=int(record_info.get("best_fg_score_run", 0) or 0),
                             mark_valid=bool(baseline_valid),
                         )
                 except Exception as e:

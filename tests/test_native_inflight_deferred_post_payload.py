@@ -87,6 +87,114 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     ]
 
 
+def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
+    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "select_effective_unique_ga_candidates",
+        lambda candidates, **_kwargs: list(candidates),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "materialize_candidate_names",
+        lambda candidate, *, registry=None, mutate=False: (
+            list(candidate.get("Gear") or []),
+            list(candidate.get("Minis") or []),
+        ),
+    )
+
+    song = make_native_song(
+        song_name="pytest_native_deferred_post_inline_fg",
+        task_key="pytest_native_deferred_post_inline_fg",
+        ga_seed=321,
+        db_key="pytest_native_deferred_post_inline_fg",
+        fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
+        effective_difficulty="Hard",
+        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
+        use_evo_db=True,
+        fg_debug=False,
+        calc_song={"metadata": {}, "song_data": {}},
+        ref_arrays={"Perfect Points": []},
+        ga_candidates=[
+            {
+                "Score": 111,
+                "BaseScore": 111,
+                "Gear": ["G1"],
+                "Minis": ["M1"],
+                "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+            }
+        ],
+        best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
+        best_gear=["G1"],
+        best_minis=["M1"],
+        force_greats_finder=True,
+        fg_variants=[
+            {
+                "score": 111,
+                "base_score": 111,
+                "fg_score": 130,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        prev_record={"score": 100},
+        attempt_lifetime=3,
+        prev_attempts_first=2,
+        db_best_fg_score=105,
+    )
+
+    payload = orchestrator._build_deferred_post_payload(song, persist_pending_fg_job=True)
+
+    assert payload["_pending_fg_job"] is False
+    assert payload["_persist_pending_fg_job"] is False
+    assert int(payload["fg_variants"][0]["fg_score"]) == 130
+
+
+def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatch):
+    from gear_optimizer.solver import native_inflight_orchestrator as orchestrator
+
+    calls: dict[str, object] = {}
+    gpu_client = object()
+
+    def _fake_run_fg_job_sync(song, *, gpu_client, post_sender, progress_cb, progress_tracker):
+        calls["gpu_client"] = gpu_client
+        calls["post_sender"] = post_sender
+        calls["progress_cb"] = progress_cb
+        calls["progress_tracker"] = progress_tracker
+        song.runtime.fg.fg_variants = [
+            {
+                "score": 111,
+                "base_score": 111,
+                "fg_score": 130,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ]
+
+    monkeypatch.setattr(orchestrator, "_run_fg_job_sync", _fake_run_fg_job_sync)
+
+    song = make_native_song(
+        song_name="pytest_native_inline_fg_runner",
+        task_key="pytest_native_inline_fg_runner",
+        db_key="pytest_native_inline_fg_runner",
+        force_greats_finder=True,
+        fg_variants=None,
+    )
+
+    orchestrator._score_fg_inside_ga(song, gpu_client=gpu_client)
+
+    assert calls["gpu_client"] is gpu_client
+    assert calls["post_sender"] is None
+    assert calls["progress_cb"] is None
+    assert calls["progress_tracker"] is None
+    assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
+
+
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
     from gear_optimizer.solver import native_inflight_orchestrator as orchestrator

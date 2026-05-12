@@ -11,6 +11,7 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import score_native_ga_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update, make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _truthy
@@ -582,6 +583,23 @@ def run_fg_job_sync(
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
     if fg_solver_mode == "off":
         fg_variants = []
+    elif bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+        fg_variants = score_native_ga_force_greats(
+            loadout_entries=getattr(song.runtime.fg, "loadout_entries", None) or {},
+            ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
+            if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
+            else None,
+            calc_song=active_fg_calc_song,
+            ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
+            default_selected_color=getattr(song.gpu_inputs, "meta_primary_color", ""),
+            primary_color=getattr(song.gpu_inputs, "meta_primary_color", ""),
+            secondary_color=getattr(song.gpu_inputs, "meta_secondary_color", ""),
+            minis_by_name=getattr(song.gpu_inputs, "minis_by_name", None),
+            registry=getattr(song.gpu_inputs, "registry", None)
+            if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
+            else None,
+            search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
+        )
     else:
         fg_variants = process_force_greats(
             getattr(song.runtime.fg, "loadout_entries", None) or {},

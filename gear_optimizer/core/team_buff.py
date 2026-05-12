@@ -146,9 +146,15 @@ def resolve_team_color_from_cfg_dict(
     *,
     primary_color: str = "",
 ) -> str:
-    if _is_auto_select_buff_and_color(cfg_dict):
-        return str(primary_color or "").strip()
     sec = _get_team_section_from_cfg_dict(cfg_dict)
+    if _is_auto_select_buff_and_color(cfg_dict):
+        color = str(primary_color or "").strip()
+        if color:
+            return color
+        # Runtime auto mode writes the selected song primary into TeamColor before
+        # fixed stats are built. Preserve that authoritative color when callers
+        # only have a cfg_dict and cannot pass calc_song metadata separately.
+        return str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
     color = str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
     if not color:
         color = str(primary_color or "").strip()
