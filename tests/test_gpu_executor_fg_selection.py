@@ -1,6 +1,5 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import _fg_selection_array_sig, _fg_selection_upload_key
 from gear_optimizer.solver.gpu_executor_fg_selection import fg_selection_array_sig, fg_selection_upload_key
 
 
@@ -31,6 +30,8 @@ def test_fg_selection_upload_key_separates_topk_and_keep_mask():
     assert fg_selection_upload_key(payload, n_active=2) != fg_selection_upload_key(different_topk, n_active=2)
 
 
-def test_gpu_executor_keeps_fg_selection_compatibility_aliases():
-    assert _fg_selection_array_sig is fg_selection_array_sig
-    assert _fg_selection_upload_key is fg_selection_upload_key
+def test_gpu_executor_does_not_reexport_fg_selection_privates():
+    from gear_optimizer.solver import gpu_executor
+
+    assert not hasattr(gpu_executor, "_fg_selection_array_sig")
+    assert not hasattr(gpu_executor, "_fg_selection_upload_key")
