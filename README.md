@@ -31,9 +31,10 @@ To stop safely:
 
 The optimizer will:
 - Load all songs from Data folders (Easy/Normal/Hard)
-- Run genetic algorithm optimization for each song
-- Store results in `evolution.db` SQLite database (compact baseline-only; tiers recomputed on demand)
-- Use GPU acceleration for gem allocation (if available)
+- Run native GPU genetic optimization for each song
+- Score Force Greats inside the native optimizer pipeline
+- Store separate base and Force Greats records in `evolution.db`
+- Use one GPU owner with CPU/GPU in-flight overlap
 
 ---
 
@@ -41,9 +42,9 @@ The optimizer will:
 
 ### 🚀 Performance Optimizations
 - **JIT Compilation:** Numba-accelerated scoring functions (10-100x speedup)
-- **GPU Acceleration:** Taichi-based parallel gem allocation kernels (5-20x speedup)
-- **Batch Execution:** True batched GPU kernel dispatch (Phase 4)
-- **Parallel Processing:** Multi-process song evaluation with process pool
+- **GPU Acceleration:** Taichi/Vulkan-native GA and Force Greats scoring (5-20x speedup)
+- **Batch Execution:** Native in-flight GPU scheduling with CPU/GPU overlap
+- **Single GPU Owner:** One app coordinator owns the GPU context; CPU prep/decode work runs around it
 - **Triple-Layer Caching:** LRU caches for gem solver (5K), fever timelines (10K), force greats (2K)
 - **Memory Watchdog:** Auto-restart when RAM usage exceeds threshold with resume capability
 
@@ -356,13 +357,13 @@ RoBeats-Calculator-Engine/
 - **Fever Timeline:** CPU-side complex fever calculations ([fever_timeline.py](gear_optimizer/solver/fever_timeline.py))
 - **Gem Optimization:** GPU-accelerated greedy gem allocation ([taichi_gem/](gear_optimizer/solver/taichi_gem/))
 - **Combo Ramp:** Multiplier calculation with fever bonuses
-- **Force Greats:** Penalty simulation for gear choice analysis
+- **Force Greats:** Native scoring inside the GA pipeline with separate base/FG persistence
 - **Caching:** Triple-layer LRU caching system
 
 #### GPU Acceleration ([gpu_executor.py](gear_optimizer/solver/gpu_executor.py) + [taichi_gem/](gear_optimizer/solver/taichi_gem/))
-- **Cross-Process GPU Ownership:** Single GPU executor in main process
-- **IPC Queue Architecture:** Worker processes submit requests via multiprocessing queues
-- **Batch Coalescing:** True batched kernel execution (Phase 4)
+- **Single GPU Ownership:** One native GPU executor in the app process
+- **In-Flight Queue Architecture:** CPU preparation, GA execution, decode, FG scoring, post-processing, and DB writes overlap
+- **Native GA + FG:** Force Greats is scored inside the native optimizer surface, not as a separate production pipeline
 - **Multi-Song Grid Slots:** 8 parallel song slots for batch processing
 - **Lazy Initialization:** Deferred Taichi/Vulkan setup for faster startup
 
@@ -398,14 +399,14 @@ See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 | JIT Compilation | 10-100x | Numba @jit on scoring functions |
 | GPU Acceleration | 5-20x | Taichi gem solver + force greats kernels |
 | LRU Caching | ~100x | Triple-layer cache system (hit rate) |
-| Process Pool | ~Nx | Multi-core song parallelization (N = CPU cores) |
+| Native In-Flight Overlap | Throughput | Single GPU owner with CPU prep/decode/FG overlap |
 | Batch Execution | 2-5x | True batched GPU kernel dispatch |
 | Lazy Loading | Faster startup | Deferred Taichi/GPU initialization |
 
 ### Performance Tips
 
 1. **Memory Management:** Set `MemorySoftLimitGB` or `MemorySoftLimitPercent` (under `[IterationEngine]`) for stable operation
-2. **Worker Count:** CPU-only runs auto-parallelize songs (no config required)
+2. **Worker Count:** Production uses one GPU owner; tune `InFlightSongs` and worker knobs instead of per-song process pools
 3. **GA Depth:** Increase `GA_SearchDepth` for better solutions (slower)
 4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
 5. **Caching:** Avoid clearing `bin/numba_cache/` (JIT cache) and `bin/paths_cache.json` (data discovery cache) unless troubleshooting
