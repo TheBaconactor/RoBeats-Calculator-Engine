@@ -978,11 +978,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             ref_arrays=ctx.ref_arrays,
             flags=ctx.color_flags,
         )
-        if len(mini_prune_result) == 4:
-            mini_points, mini_codes, mini_ids, mini_response_stats = mini_prune_result
-            mini_local_filter = None
-        else:
-            mini_points, mini_codes, mini_ids, mini_response_stats, mini_local_filter = mini_prune_result
+        mini_points, mini_codes, mini_ids, mini_response_stats, mini_local_filter = mini_prune_result
         mini_response_reason = str(mini_response_stats.reason)
         for name, count in mini_response_phase_counts(mini_response_stats).items():
             phase_counts[name] = int(count)

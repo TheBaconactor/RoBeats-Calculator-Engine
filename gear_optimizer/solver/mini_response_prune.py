@@ -17,6 +17,8 @@ from gear_optimizer.solver.response_envelope_prune import (
     _timing_envelopes_for_cells,
 )
 
+MAX_LOCAL_RESPONSE_MATRIX_CELLS = 8_000_000
+
 
 @dataclass(frozen=True)
 class MiniResponsePruneStats:
@@ -37,6 +39,7 @@ class MiniResponsePruneStats:
     local_timing_cover_hits: int = 0
     local_pruned_entries: int = 0
     seconds_local_query: float = 0.0
+    local_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -151,7 +154,7 @@ def prune_mini_response_envelope(
     out_ids = np.asarray(mini_ids)[keep]
 
     local_started = time.perf_counter()
-    local_filter, local_candidate_pairs, local_cover_hits = _build_local_response_filter(
+    local_filter, local_candidate_pairs, local_cover_hits, local_reason = _build_local_response_filter(
         mini_points=mp[keep],
         start_rows_by_mini=start_rows_by_mini[keep],
         timing=timing,
@@ -187,6 +190,7 @@ def prune_mini_response_envelope(
             local_timing_cover_hits=int(local_cover_hits),
             local_pruned_entries=int(local_pruned_entries),
             seconds_local_query=float(seconds_local_query),
+            local_reason=str(local_reason),
         ),
         local_filter,
     )
@@ -216,6 +220,7 @@ def _stats(
     minis_in: int,
     minis_out: int,
     started: float,
+    local_reason: str = "",
 ) -> MiniResponsePruneStats:
     return MiniResponsePruneStats(
         enabled=bool(enabled),
@@ -224,6 +229,7 @@ def _stats(
         minis_out=int(minis_out),
         pruned=int(minis_in) - int(minis_out),
         seconds_total=float(time.perf_counter() - float(started)),
+        local_reason=str(local_reason),
     )
 
 
@@ -399,13 +405,17 @@ def _build_local_response_filter(
     timing: _MiniTimingResponseIndex,
     raw_pack_by_row: np.ndarray,
     gear_cell_to_row: np.ndarray,
-) -> tuple[MiniLocalResponseFilter | None, int, int]:
+) -> tuple[MiniLocalResponseFilter | None, int, int, str]:
     del raw_pack_by_row
     mp = np.asarray(mini_points, dtype=np.int32)
     n = int(mp.shape[0]) if mp.ndim == 2 else 0
     rows = np.asarray(start_rows_by_mini, dtype=np.int32)
     if n <= 1 or rows.ndim != 2 or int(rows.shape[0]) != n or int(rows.shape[1]) <= 0:
-        return None, 0, 0
+        return None, 0, 0, "too_small"
+
+    estimated_cells = int(n) * int(n + int(rows.shape[1]))
+    if estimated_cells > int(MAX_LOCAL_RESPONSE_MATRIX_CELLS):
+        return None, 0, 0, "local_filter_too_large"
 
     cm = mp[:, 0]
     fm = mp[:, 1]
@@ -420,7 +430,7 @@ def _build_local_response_filter(
     )
     candidate_pairs = int(np.count_nonzero(non_timing_dominates)) * int(rows.shape[1])
     if not np.any(non_timing_dominates):
-        return None, candidate_pairs, 0
+        return None, candidate_pairs, 0, "no_local_certified_dominance"
 
     response_ids = _env_signature_ids(timing.env)[rows]
     allowed = np.ones((int(rows.shape[1]), n), dtype=np.bool_)
@@ -433,11 +443,12 @@ def _build_local_response_filter(
             allowed[gear_idx, dominated] = False
             cover_hits += int(np.count_nonzero(dominated))
     if np.all(allowed):
-        return None, int(candidate_pairs), int(cover_hits)
+        return None, int(candidate_pairs), int(cover_hits), "no_local_certified_dominance"
     return (
         MiniLocalResponseFilter(cell_to_row=np.asarray(gear_cell_to_row, dtype=np.int32), allowed=allowed),
         int(candidate_pairs),
         int(cover_hits),
+        "certified",
     )
 
 

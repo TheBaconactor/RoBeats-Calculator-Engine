@@ -98,6 +98,12 @@ production version uses exact response-envelope equality as the cheap local
 certificate and applies it as a vectorized pair filter after the fixed-timing
 combined skyline, before product response pruning and exact base scoring.
 
+The local filter is explicitly bounded: if the estimated local response matrix
+would exceed `MAX_LOCAL_RESPONSE_MATRIX_CELLS`, the solver keeps the global
+mini prune result and skips the local pair filter as a safe no-op. The mini
+response contract is fixed at five return values; no compatibility branch for a
+four-tuple return remains in production.
+
 ## Safety Gates
 
 The fast certificate only runs when:

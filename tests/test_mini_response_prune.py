@@ -141,7 +141,7 @@ def test_mini_response_local_filter_deletes_only_covered_gear_cell() -> None:
         pack_count=2,
     )
 
-    local_filter, candidate_pairs, cover_hits = _build_local_response_filter(
+    local_filter, candidate_pairs, cover_hits, local_reason = _build_local_response_filter(
         mini_points=np.array([[0, 0, 0, 0, 10], [0, 0, 0, 0, 0]], dtype=np.int32),
         start_rows_by_mini=np.array([[0, 2], [0, 3]], dtype=np.int32),
         timing=timing,
@@ -151,8 +151,53 @@ def test_mini_response_local_filter_deletes_only_covered_gear_cell() -> None:
 
     assert candidate_pairs == 2
     assert cover_hits == 1
+    assert local_reason == "certified"
     assert local_filter is not None
     assert local_filter.allowed.tolist() == [[True, False], [True, True]]
+
+
+def test_mini_response_local_filter_threshold_is_safe_noop(monkeypatch) -> None:
+    import gear_optimizer.solver.mini_response_prune as mini_mod
+
+    monkeypatch.setattr(mini_mod, "MAX_LOCAL_RESPONSE_MATRIX_CELLS", 0, raising=True)
+
+    env = np.array(
+        [
+            [90, -1],
+            [-1, 90],
+            [90, -1],
+            [-1, 90],
+        ],
+        dtype=np.int8,
+    )
+    needed_offsets, needed_packs, needed_requirements = _env_active_csr(env)
+    timing = _TimingResponseIndex(
+        cells=np.array([0, 1, 2, 3], dtype=np.int32),
+        cell_to_row=np.array([0, 1, 2, 3], dtype=np.int32),
+        env=env,
+        pack_dom=np.eye(2, dtype=np.bool_),
+        pack_dom_offsets=np.array([0, 1, 2], dtype=np.int32),
+        pack_dom_targets=np.array([0, 1], dtype=np.int32),
+        best=env,
+        best_row_for_source_row=np.array([0, 1, 2, 3], dtype=np.int32),
+        needed_offsets=needed_offsets,
+        needed_packs=needed_packs,
+        needed_requirements=needed_requirements,
+        pack_count=2,
+    )
+
+    local_filter, candidate_pairs, cover_hits, local_reason = _build_local_response_filter(
+        mini_points=np.array([[0, 0, 0, 0, 10], [0, 0, 0, 0, 0]], dtype=np.int32),
+        start_rows_by_mini=np.array([[0, 2], [0, 3]], dtype=np.int32),
+        timing=timing,
+        raw_pack_by_row=np.array([0, 1, 0, 1], dtype=np.int32),
+        gear_cell_to_row=np.array([0, 1], dtype=np.int32),
+    )
+
+    assert candidate_pairs == 0
+    assert cover_hits == 0
+    assert local_reason == "local_filter_too_large"
+    assert local_filter is None
 
 
 def test_mini_response_blocks_when_timing_gems_affect_lane_base() -> None:
