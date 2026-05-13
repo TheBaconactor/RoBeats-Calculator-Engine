@@ -55,6 +55,19 @@ class NativeFGJobCompletion:
     submit_t0: float
 
 
+def count_fg_group_meta_ready(candidates: Any) -> int:
+    ready = 0
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        data = candidate.get("Data")
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("_fg_group_meta"), dict):
+            ready += 1
+    return int(ready)
+
+
 def read_native_fg_pipeline_settings(
     cfg0: Any,
     *,
@@ -611,18 +624,6 @@ def run_fg_job_sync(
     if not isinstance(active_fg_calc_song, dict):
         active_fg_calc_song = getattr(song.gpu_inputs, "calc_song", {})
 
-    def _count_fg_group_meta_ready(candidates: Any) -> int:
-        ready = 0
-        for candidate in candidates or []:
-            if not isinstance(candidate, dict):
-                continue
-            data = candidate.get("Data")
-            if not isinstance(data, dict):
-                continue
-            if isinstance(data.get("_fg_group_meta"), dict):
-                ready += 1
-        return int(ready)
-
     try:
         emit_profile_event(
             component="inflight_fg_worker",
@@ -631,7 +632,7 @@ def run_fg_job_sync(
             metrics={
                 "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
+                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
@@ -678,7 +679,7 @@ def run_fg_job_sync(
                 if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
                 else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
+                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
@@ -741,7 +742,7 @@ def run_fg_job_sync(
                 if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
                 else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(_count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
+                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
