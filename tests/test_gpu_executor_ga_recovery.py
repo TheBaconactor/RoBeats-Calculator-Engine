@@ -1,4 +1,7 @@
-from gear_optimizer.solver.gpu_executor_ga_recovery import staged_ga_recovery_index
+import queue
+from collections import deque
+
+from gear_optimizer.solver.gpu_executor_ga_recovery import prefetch_ga_recovery_requests, staged_ga_recovery_index
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 
@@ -49,3 +52,68 @@ def test_staged_ga_recovery_index_returns_none_without_recovery():
     ]
 
     assert staged_ga_recovery_index(requests, is_ga_recovery_request=lambda _req: False) is None
+
+
+def test_prefetch_ga_recovery_requests_reads_until_recovery_request():
+    staged = deque([_request(GpuRequestType.GPU_NATIVE_GA_RUN, 1)])
+    source = deque(
+        [
+            _request(GpuRequestType.GPU_NATIVE_GA_RUN, 2),
+            _request(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 3),
+            _request(GpuRequestType.GPU_NATIVE_GA_RUN, 4),
+        ]
+    )
+
+    def _pop(_timeout: float):
+        if not source:
+            raise queue.Empty
+        return source.popleft()
+
+    prefetch_ga_recovery_requests(
+        in_process_queues=True,
+        ga_owner_turn_streak=10,
+        staged_requests=staged,
+        deadline=100.0,
+        batch_max_size=8,
+        streak_cap=2,
+        lookahead_limit=8,
+        pop_queue_request=_pop,
+        perf_counter_fn=lambda: 0.0,
+        is_ga_recovery_request=lambda req: req.request_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        empty_exception=queue.Empty,
+    )
+
+    assert [req.request_id for req in staged] == [1, 2, 3]
+    assert [req.request_id for req in source] == [4]
+
+
+def test_prefetch_ga_recovery_requests_skips_when_recovery_already_staged():
+    staged = deque(
+        [
+            _request(GpuRequestType.GPU_NATIVE_GA_RUN, 1),
+            _request(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 2),
+        ]
+    )
+    pop_calls = 0
+
+    def _pop(_timeout: float):
+        nonlocal pop_calls
+        pop_calls += 1
+        raise queue.Empty
+
+    prefetch_ga_recovery_requests(
+        in_process_queues=True,
+        ga_owner_turn_streak=10,
+        staged_requests=staged,
+        deadline=100.0,
+        batch_max_size=8,
+        streak_cap=2,
+        lookahead_limit=8,
+        pop_queue_request=_pop,
+        perf_counter_fn=lambda: 0.0,
+        is_ga_recovery_request=lambda req: req.request_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        empty_exception=queue.Empty,
+    )
+
+    assert pop_calls == 0
+    assert [req.request_id for req in staged] == [1, 2]

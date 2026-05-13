@@ -183,7 +183,10 @@ from gear_optimizer.solver.gpu_executor_native_ga_batch import (
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
 )
 from gear_optimizer.solver.gpu_executor_native_ga import execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request
-from gear_optimizer.solver.gpu_executor_ga_recovery import staged_ga_recovery_index as _staged_ga_recovery_index
+from gear_optimizer.solver.gpu_executor_ga_recovery import (
+    prefetch_ga_recovery_requests as _prefetch_ga_recovery_requests,
+    staged_ga_recovery_index as _staged_ga_recovery_index,
+)
 from gear_optimizer.solver.gpu_executor_queue_wait import (
     get_with_short_wait_spin as _get_with_short_wait_spin,
     load_short_wait_spin_settings as _load_short_wait_spin_settings,
@@ -1368,38 +1371,19 @@ class GpuExecutor:
         return _stamp_request_dequeue(request)
 
     def _prefetch_ga_recovery_requests(self, *, deadline: float, batch_max_size: int) -> None:
-        if not self._in_process_queues:
-            return
-        if int(self._ga_owner_turn_streak) < int(_ga_recovery_streak_cap(env_get=_ENV_GET)):
-            return
-        if not self._staged_requests:
-            return
-        try:
-            first_request = self._staged_requests[0]
-        except (IndexError, AttributeError):
-            return
-        if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-            return
-        if _staged_ga_recovery_index(
-            list(self._staged_requests),
+        _prefetch_ga_recovery_requests(
+            in_process_queues=bool(self._in_process_queues),
+            ga_owner_turn_streak=int(self._ga_owner_turn_streak),
+            staged_requests=self._staged_requests,
+            deadline=float(deadline),
+            batch_max_size=int(batch_max_size),
+            streak_cap=int(_ga_recovery_streak_cap(env_get=_ENV_GET)),
+            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=_ENV_GET)),
+            pop_queue_request=self._pop_queue_request,
+            perf_counter_fn=perf_counter,
             is_ga_recovery_request=_is_ga_recovery_request,
-        ) is not None:
-            return
-
-        lookahead_limit = _ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=_ENV_GET)
-        while len(self._staged_requests) < int(lookahead_limit):
-            remaining = float(deadline - perf_counter())
-            if remaining <= 0.0:
-                break
-            try:
-                request = self._pop_queue_request(remaining)
-            except queue.Empty:
-                break
-            self._staged_requests.append(request)
-            if request.request_type == GpuRequestType.SHUTDOWN:
-                break
-            if _is_ga_recovery_request(request):
-                break
+            empty_exception=queue.Empty,
+        )
 
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
