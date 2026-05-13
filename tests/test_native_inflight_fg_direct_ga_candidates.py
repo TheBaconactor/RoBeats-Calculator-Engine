@@ -32,7 +32,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
-        force_greats_finder=True,
         ga_candidates=[
             {
                 "BaseScore": 99,
@@ -96,7 +95,6 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
-        force_greats_finder=True,
         ga_candidates=[{"BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         registry=None,
         fixed_stats={},

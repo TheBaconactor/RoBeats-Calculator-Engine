@@ -201,7 +201,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     fixed_stats = prepared_config.fixed_stats
     current_gear_list = prepared_config.current_gear_list
     current_mini_list = prepared_config.current_mini_list
-    force_greats_finder = prepared_config.force_greats_finder
     force_greats_config = prepared_config.force_greats_config
     manual_force_greats = prepared_config.manual_force_greats
 
@@ -284,7 +283,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     # ForceGreatsFinder runs after GA and needs per-candidate BaseStats for signature grouping.
     # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
     # GA->FG handoff does not spend CPU rebuilding data that the FG grouping path does not use.
-    cfg_data["fg_require_stats"] = bool(manual_force_greats or force_greats_finder)
+    cfg_data["fg_require_stats"] = True
 
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
 
@@ -388,7 +387,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             fixed_stats=fixed_stats,
             current_gear_list=current_gear_list,
             current_mini_list=current_mini_list,
-            force_greats_finder=bool(force_greats_finder),
             force_greats_config=force_greats_config,
             manual_force_greats=bool(manual_force_greats),
             registry=registry,

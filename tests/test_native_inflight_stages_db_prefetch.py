@@ -54,19 +54,18 @@ def test_run_cpu_prewarm_for_song_always_warms_timeline_and_fg_is_conditional(mo
         lambda *_args, **_kwargs: calls.__setitem__("fg", calls["fg"] + 1),
     )
 
-    song_no_fg = make_native_song(
+    song_manual_fg = make_native_song(
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
-        force_greats_finder=False,
+        manual_force_greats=True,
     )
-    stages.run_cpu_prewarm_for_song(song_no_fg)
+    stages.run_cpu_prewarm_for_song(song_manual_fg)
     assert calls["timeline"] == 1
     assert calls["fg"] == 0
 
     song_fg = make_native_song(
         calc_song={"metadata": {}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
-        force_greats_finder=True,
     )
     stages.run_cpu_prewarm_for_song(song_fg)
     assert calls["timeline"] == 2
@@ -136,7 +135,6 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=False,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -177,7 +175,6 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
-        force_greats_finder=True,
         db_loadouts_full=[{"score": 100}],
         db_loadouts_future=None,
         db_key="song-db-key",
@@ -213,7 +210,6 @@ def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
-        force_greats_finder=True,
         db_loadouts_full=[{"score": 100}],
         db_loadouts_future=None,
         db_key="song-db-key",
@@ -268,7 +264,6 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=True,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -331,7 +326,6 @@ def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=True,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -459,7 +453,6 @@ def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeyp
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=True,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -535,7 +528,6 @@ def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=True,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -646,7 +638,6 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=False,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -681,7 +672,6 @@ def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
         calc_song={"metadata": {"Song Name": "base"}, "song_data": {"timestamps": [0.0]}},
         fg_calc_song={"metadata": {"Song Name": "finder"}, "song_data": {"timestamps": [0.0]}},
         ref_arrays={"timeline": []},
-        force_greats_finder=True,
         cfg_dict={},
     )
 

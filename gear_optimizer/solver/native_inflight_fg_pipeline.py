@@ -352,8 +352,6 @@ class NativeFGPipeline:
     ) -> bool:
         if int(self.settings.static_prep_max_inflight) <= 0:
             return False
-        if not bool(getattr(song.gpu_inputs, "manual_force_greats", False) or getattr(song.gpu_inputs, "force_greats_finder", False)):
-            return False
         if getattr(song.runtime.fg, "fg_static_prep_future", None) is not None:
             return False
         if bool(getattr(song.runtime.fg, "fg_static_prep_done", False)):
@@ -716,7 +714,7 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
-    if bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
         fg_variants = score_native_ga_force_greats(
             loadout_entries=getattr(song.runtime.fg, "loadout_entries", None) or {},
             ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
@@ -737,7 +735,7 @@ def run_fg_job_sync(
         fg_variants = process_force_greats(
             getattr(song.runtime.fg, "loadout_entries", None) or {},
             bool(getattr(song.gpu_inputs, "manual_force_greats", False)),
-            bool(getattr(song.gpu_inputs, "force_greats_finder", False)),
+            False,
             getattr(song.gpu_inputs, "force_greats_config", None),
             active_fg_calc_song,
             getattr(song.gpu_inputs, "ref_arrays", None),

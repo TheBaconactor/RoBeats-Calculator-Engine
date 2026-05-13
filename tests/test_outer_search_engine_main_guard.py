@@ -89,7 +89,6 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
             current_gear_list=[],
             current_mini_stats={},
             current_mini_list=[],
-            force_greats_finder=False,
             force_greats_config=[],
             manual_force_greats=False,
         ),
@@ -99,6 +98,7 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
         return SimpleNamespace(registry=None)
 
     monkeypatch.setattr(song_processor, "prepare_solver_context", _fake_prepare_solver_context)
+    monkeypatch.setattr(song_processor, "process_force_greats", lambda *args, **kwargs: [])
     return prepared
 
 

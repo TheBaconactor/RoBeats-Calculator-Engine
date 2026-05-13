@@ -30,7 +30,6 @@ class PreparedSongConfig:
     current_gear_list: list[dict]
     current_mini_stats: dict[str, Any]
     current_mini_list: list[dict]
-    force_greats_finder: bool
     force_greats_config: Any
     manual_force_greats: bool
 
@@ -76,7 +75,6 @@ def build_prepared_song_config(
         current_gear_list,
         current_mini_stats,
         current_mini_list,
-        force_greats_finder,
         force_greats_config,
         manual_force_greats,
     ) = _setup_song_config(cfg, calc_song, bool(auto_buff), paths, gears_by_name, minis_by_name)
@@ -88,7 +86,6 @@ def build_prepared_song_config(
         current_gear_list=current_gear_list if isinstance(current_gear_list, list) else [],
         current_mini_stats=current_mini_stats if isinstance(current_mini_stats, dict) else {},
         current_mini_list=current_mini_list if isinstance(current_mini_list, list) else [],
-        force_greats_finder=bool(force_greats_finder),
         force_greats_config=force_greats_config,
         manual_force_greats=bool(manual_force_greats),
     )

@@ -830,7 +830,7 @@ def run_native_inflight_song_pipeline(
 
                 song.runtime.ga.ga_future = None
 
-                needs_fg_stage = bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
+                needs_fg_stage = True
                 hold_budget = int(fg_hold_budget or 0)
                 keep_slot_for_fg = False
                 if inflight_fg_hold_slots and needs_fg_stage and hold_budget > 0:
@@ -839,10 +839,7 @@ def run_native_inflight_song_pipeline(
                         for s in decode_inflight:
                             if int(getattr(s.runtime, "song_slot", 0) or 0) <= 0:
                                 continue
-                            if bool(getattr(s.gpu_inputs, "manual_force_greats", False)) or bool(
-                                getattr(s.gpu_inputs, "force_greats_finder", False)
-                            ):
-                                held_slots += 1
+                            held_slots += 1
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:

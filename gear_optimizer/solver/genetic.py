@@ -2349,15 +2349,7 @@ def solve_coevolution_genetic(
     # ForceGreatsFinder runs after GA and requires BaseStats for downstream FG batching.
     # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
-    try:
-        from ..core.config import read_iteration_engine_settings
-
-        ie = read_iteration_engine_settings(cfg)
-        fg_enabled = bool(ie.force_greats_finder) or bool(ie.manual_force_greats)
-    except Exception as e:
-        logger.debug(f"genetic:solve_coevolution_genetic: {e}")
-        fg_enabled = False
-    cfg_data["fg_require_stats"] = bool(fg_enabled)
+    cfg_data["fg_require_stats"] = True
     # PRODUCTION: modern optimizer runtime path is GPU-native.
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.

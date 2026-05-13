@@ -137,7 +137,6 @@ def _prepare_context(
         current_gear_list,
         _current_mini_stats,
         current_mini_list,
-        _force_greats_finder,
         _force_greats_config,
         _manual_force_greats,
     ) = setup_song_config(cfg, calc_song, auto_buff, load_paths_cache(), gears_by_name, minis_by_name)

@@ -503,12 +503,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             auto_buff = True
             fg_debug = bool(ie.force_greats_debug)
 
-            if ie.force_greats_finder:
-                fg_status = "Finder"
-            elif ie.manual_force_greats:
+            if ie.manual_force_greats:
                 fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
             else:
-                fg_status = "Enabled"
+                fg_status = "Finder"
 
             logger.info(f" >> [ForceGreats] {fg_status}")
 

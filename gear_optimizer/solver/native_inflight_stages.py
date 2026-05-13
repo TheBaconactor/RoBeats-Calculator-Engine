@@ -106,7 +106,7 @@ def _maybe_prewarm_fg_chart_scorer(song: NativeSong) -> None:
         # doesn't stall GA->FG readiness by default.
         if not _truthy(env_get("INFLIGHT_FG_CHART_PREWARM", "0")):
             return
-        if not bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+        if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
             return
         calc_song = resolve_active_fg_calc_song(song)
         ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
@@ -359,7 +359,7 @@ def run_cpu_prewarm_for_song(song: NativeSong) -> None:
 
     _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
 
-    if bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
         _prewarm_fg_baseline_point(calc_song, ref_arrays)
 
 
@@ -530,7 +530,7 @@ def _resolve_fg_group_meta_prime_limit(
     explicit_limit: int,
     explicit_enabled: bool,
 ) -> int:
-    if not bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+    if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
         return 0
     ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
@@ -627,7 +627,7 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
     runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
-    runtime.fg.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
+    runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
     song.runtime.fg.fg_build_details = make_build_details_fn(
         gpu_inputs.meta_primary_color,
         gpu_inputs.meta_secondary_color,
@@ -748,7 +748,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
 
     active_fg_calc_song = resolve_active_fg_calc_song(song)
 
-    if bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
         try:
             calc_song = active_fg_calc_song if isinstance(active_fg_calc_song, dict) else None
             ref_arrays = gpu_inputs.ref_arrays if isinstance(gpu_inputs.ref_arrays, dict) else None
@@ -788,7 +788,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     t_candidate_select = time.perf_counter()
     runtime.decode.ga_candidates = ga_candidates
     hydrated_fg_stats = False
-    if bool(getattr(song.gpu_inputs, "force_greats_finder", False)) and ga_candidates:
+    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)) and ga_candidates:
         hydrated_fg_stats = True
         hydrate_fg_candidate_stats(
             ga_candidates,
@@ -859,7 +859,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             gpu_inputs.meta_primary_color, gpu_inputs.meta_secondary_color, config.effective_difficulty
         )
         song.runtime.fg.fg_build_details = build_details
-    runtime.fg.fg_direct_ga_candidates = bool(gpu_inputs.force_greats_finder)
+    runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
     # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
     # only the retained GA subset is merged back into `runtime.fg.loadout_entries` after FG.
     loadout_ga_candidates = [] if bool(runtime.fg.fg_direct_ga_candidates) else list(ga_candidates or [])

@@ -99,8 +99,8 @@ class _ProgressTracker:
         self.done.append((progress_cb, song.config.task_key))
 
 
-def test_emit_deferred_post_payload_posts_once_and_marks_non_fg_song_completed():
-    song = make_native_song(song_name="Song C", task_key="song-c", force_greats_finder=False)
+def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_completed():
+    song = make_native_song(song_name="Song C", task_key="song-c", fg_variants=[])
     completed = set()
     memory = _MemoryResumeTracker()
     progress = _ProgressTracker()
@@ -144,7 +144,7 @@ def test_emit_deferred_post_payload_posts_once_and_marks_non_fg_song_completed()
 
 
 def test_emit_deferred_post_payload_defers_completion_when_fg_drain_is_required():
-    song = make_native_song(song_name="Song FG", task_key="song-fg", force_greats_finder=True, fg_variants=None)
+    song = make_native_song(song_name="Song FG", task_key="song-fg", fg_variants=None)
     completed = set()
     posted = []
 

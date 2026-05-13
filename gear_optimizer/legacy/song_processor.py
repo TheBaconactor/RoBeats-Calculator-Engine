@@ -119,7 +119,6 @@ class SongContext:
     current_gear_list: list[dict]
     current_mini_stats: dict[str, Any]
     current_mini_list: list[dict]
-    force_greats_finder: bool
     force_greats_config: Any
     manual_force_greats: bool
     baseline_team_buff: str
@@ -308,7 +307,6 @@ def _setup_song_context(
         current_gear_list=prepared_config.current_gear_list,
         current_mini_stats=prepared_config.current_mini_stats,
         current_mini_list=prepared_config.current_mini_list,
-        force_greats_finder=prepared_config.force_greats_finder,
         force_greats_config=prepared_config.force_greats_config,
         manual_force_greats=prepared_config.manual_force_greats,
         baseline_team_buff=str(db_context.baseline_team_buff or "T5"),
@@ -426,53 +424,50 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
         default=FG_CANDIDATE_LIMIT,
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
-    if ctx.manual_force_greats or ctx.force_greats_finder:
-        ga_candidates = select_fg_candidates(
-            ga_candidates,
-            limit=fg_candidate_limit,
-            primary_color=str(ctx.meta_primary_color or ""),
-            secondary_color=str(ctx.meta_secondary_color or ""),
-        )
+    ga_candidates = select_fg_candidates(
+        ga_candidates,
+        limit=fg_candidate_limit,
+        primary_color=str(ctx.meta_primary_color or ""),
+        secondary_color=str(ctx.meta_secondary_color or ""),
+    )
 
     build_details = make_build_details_fn(ctx.meta_primary_color, ctx.meta_secondary_color, ctx.effective_difficulty)
     fg_variants: list[dict[str, Any]] = []
     loadout_entries = None
     fg_wall_sec = 0.0
-    direct_ga_candidates_for_fg = bool(ctx.force_greats_finder)
+    direct_ga_candidates_for_fg = not bool(ctx.manual_force_greats)
 
-    if ctx.manual_force_greats or ctx.force_greats_finder:
-        loadout_entries = build_loadout_entries(
-            ctx.found_song_name,
-            [] if direct_ga_candidates_for_fg else ga_candidates,
-            fg_candidate_limit,
-            ctx.gears_by_name,
-            ctx.minis_by_name,
-            build_details,
-            team_buff=str(ctx.baseline_team_buff or "T5"),
-            materialize_ga_details=False,
-        )
+    loadout_entries = build_loadout_entries(
+        ctx.found_song_name,
+        [] if direct_ga_candidates_for_fg else ga_candidates,
+        fg_candidate_limit,
+        ctx.gears_by_name,
+        ctx.minis_by_name,
+        build_details,
+        team_buff=str(ctx.baseline_team_buff or "T5"),
+        materialize_ga_details=False,
+    )
 
-    if ctx.manual_force_greats or ctx.force_greats_finder:
-        fg_start = time.perf_counter()
-        fg_variants = process_force_greats(
-            loadout_entries,
-            ctx.manual_force_greats,
-            ctx.force_greats_finder,
-            ctx.force_greats_config,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.meta_primary_color,
-            build_details,
-            use_gpu=True,
-            fg_search_radius=ctx.fg_search_radius,
-            perf_timing=PERF_TIMING_ENABLED,
-            ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
-            ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
-        )
-        fg_wall_sec = time.perf_counter() - fg_start
-        if PERF_TIMING_ENABLED:
-            n_loadouts = len(loadout_entries) if loadout_entries else 0
-            print(f"[PERF] ForceGreats: {fg_wall_sec:.2f}s ({n_loadouts} loadouts, finder={ctx.force_greats_finder})")
+    fg_start = time.perf_counter()
+    fg_variants = process_force_greats(
+        loadout_entries,
+        ctx.manual_force_greats,
+        direct_ga_candidates_for_fg,
+        ctx.force_greats_config,
+        ctx.calc_song,
+        ctx.ref_arrays,
+        ctx.meta_primary_color,
+        build_details,
+        use_gpu=True,
+        fg_search_radius=ctx.fg_search_radius,
+        perf_timing=PERF_TIMING_ENABLED,
+        ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
+        ga_registry=ctx.solver_ctx.registry if direct_ga_candidates_for_fg and ctx.solver_ctx is not None else None,
+    )
+    fg_wall_sec = time.perf_counter() - fg_start
+    if PERF_TIMING_ENABLED:
+        n_loadouts = len(loadout_entries) if loadout_entries else 0
+        print(f"[PERF] ForceGreats: {fg_wall_sec:.2f}s ({n_loadouts} loadouts)")
 
     outer.ga_candidates = ga_candidates
     return FGResult(fg_variants=fg_variants, loadout_entries=loadout_entries, wall_sec=float(fg_wall_sec))

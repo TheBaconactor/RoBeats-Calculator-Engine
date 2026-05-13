@@ -1,7 +1,7 @@
 import configparser
 
 
-def test_force_greats_section_overrides_finder_setting(monkeypatch):
+def test_force_greats_section_loads_manual_config(monkeypatch):
     import gear_optimizer.helpers.song_helpers.song_config as song_config
 
     # Avoid touching filesystem-backed gear/mini lookups; not relevant for this config test.
@@ -11,7 +11,6 @@ def test_force_greats_section_overrides_finder_setting(monkeypatch):
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "ForceGreatsFinder", "true")
 
     cfg.add_section("ForceGreats")
     cfg.set("ForceGreats", "NonFever1", "0")
@@ -26,11 +25,9 @@ def test_force_greats_section_overrides_finder_setting(monkeypatch):
         _current_gear_list,
         _current_mini_stats,
         _current_mini_list,
-        force_greats_finder,
         force_greats_config,
         manual_force_greats,
     ) = song_config.setup_song_config(cfg, calc_song, auto_buff=False, paths={}, gears_by_name={}, minis_by_name={})
 
     assert force_greats_config == [0, 2]
     assert manual_force_greats is True
-    assert force_greats_finder is False

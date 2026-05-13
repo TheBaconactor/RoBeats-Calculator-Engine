@@ -59,23 +59,12 @@ def test_inflight_db_persistence_owns_prefetch_executor_submission():
 def test_inflight_db_persistence_prefetch_guards_and_submit_failure_cleanup():
     persistence = InflightDBPersistence(candidate_limit_default=99, prefetch_workers=1)
     try:
-        disabled = make_native_song(
-            task_key="disabled",
-            song_name="Disabled",
-            db_key="disabled-db",
-            manual_force_greats=False,
-            force_greats_finder=False,
-        )
-        assert persistence.maybe_submit_prefetch(disabled, lambda *_args, **_kwargs: [], register_future=lambda _future: None) is False
-        assert disabled.runtime.db.db_loadouts_future is None
-
-        persistence.shutdown_prefetch(wait=True, cancel_futures=True)
-
         song = make_native_song(
             task_key="song-b",
             song_name="Song B",
             db_key="song-b-db",
             manual_force_greats=True,
+            db_loadouts_full=[],
         )
         assert persistence.maybe_submit_prefetch(song, lambda *_args, **_kwargs: [], register_future=lambda _future: None) is False
         assert song.runtime.db.db_loadouts_future is None

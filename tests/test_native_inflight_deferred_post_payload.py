@@ -154,7 +154,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         current_gear_list=["CurrentGear"],
         current_mini_list=["CurrentMini"],
         manual_force_greats=True,
-        force_greats_finder=False,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record={"score": 100},
@@ -225,7 +224,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
         best_gear=["G1"],
         best_minis=["M1"],
-        force_greats_finder=True,
         fg_variants=[
             {
                 "score": 111,
@@ -279,7 +277,6 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
         song_name="pytest_native_inline_fg_runner",
         task_key="pytest_native_inline_fg_runner",
         db_key="pytest_native_inline_fg_runner",
-        force_greats_finder=True,
         fg_variants=None,
     )
 
@@ -362,7 +359,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         current_gear_list=[],
         current_mini_list=[],
         manual_force_greats=False,
-        force_greats_finder=False,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,

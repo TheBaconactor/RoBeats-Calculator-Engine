@@ -12,7 +12,7 @@ from gear_optimizer.solver.native_inflight_types import NativeSong
 
 
 def fg_enabled_for_song(song: NativeSong) -> bool:
-    return bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
+    return True
 
 
 def fg_scored_for_song(song: NativeSong) -> bool:

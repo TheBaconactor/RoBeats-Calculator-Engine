@@ -461,7 +461,6 @@ class IterationEngineSettings:
     Centralizing this avoids logic drift across the app, workers, and solver code.
     """
 
-    force_greats_finder: bool
     force_greats_debug: bool
     force_greats_config: list[int]
     manual_force_greats: bool
@@ -702,8 +701,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     - These are no longer config switches; they are native runtime policy.
     - A non-empty manual FG config disables finder mode (deliberate override).
     """
-    force_greats_finder = True
-
     # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
     force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False) if cfg is not None else False
 
@@ -715,12 +712,8 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
             force_greats_config = inline_cfg
 
     manual_force_greats = any(force_greats_config)
-    if manual_force_greats:
-        # Manual config remains an explicit override of finder behavior.
-        force_greats_finder = False
 
     return IterationEngineSettings(
-        force_greats_finder=force_greats_finder,
         force_greats_debug=bool(force_greats_debug),
         force_greats_config=list(force_greats_config or []),
         manual_force_greats=bool(manual_force_greats),

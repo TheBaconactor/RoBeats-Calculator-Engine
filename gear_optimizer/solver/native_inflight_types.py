@@ -40,7 +40,6 @@ class NativeSongGPUInputs:
     fixed_stats: JsonDict = field(default_factory=dict)
     current_gear_list: list[Any] = field(default_factory=list)
     current_mini_list: list[Any] = field(default_factory=list)
-    force_greats_finder: bool = False
     force_greats_config: list[Any] = field(default_factory=list)
     manual_force_greats: bool = False
     registry: ItemRegistry | None = None

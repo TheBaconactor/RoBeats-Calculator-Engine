@@ -549,18 +549,9 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         hold_slots_explicit = True
         inflight_fg_hold_slots = _truthy(raw)
 
-    try:
-        from gear_optimizer.core.config import read_iteration_engine_settings
-
-        ie = read_iteration_engine_settings(cfg0)
-        fg_enabled = bool(ie.force_greats_finder) or bool(ie.manual_force_greats)
-    except Exception as e:
-        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
-        fg_enabled = False
-
     fg_slot_reserve = read_fg_slot_reserve(
         cfg0,
-        fg_enabled=bool(fg_enabled),
+        fg_enabled=True,
         inflight_limit=int(inflight_limit),
         song_slot_limit=int(song_slot_limit),
     )
@@ -571,7 +562,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     inflight_ga_dynamic_queue = False
     try:
-        inflight_ga_dynamic_queue = bool(fg_enabled and int(in_flight_songs) > 1)
+        inflight_ga_dynamic_queue = int(in_flight_songs) > 1
     except (ValueError, TypeError):
         inflight_ga_dynamic_queue = False
     try:
@@ -628,7 +619,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     fg_hold_budget = int(ga_slack_slots)
 
-    if inflight_fg_hold_slots and fg_enabled and int(in_flight_songs) > 1:
+    if inflight_fg_hold_slots and int(in_flight_songs) > 1:
         if int(fg_hold_budget) <= 0:
             required_gpu_slots = None
             try:
@@ -719,7 +710,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_adaptive_submit_max_burst=fg_adaptive_submit_max_burst,
         inflight_fg_hold_slots=inflight_fg_hold_slots,
         hold_slots_explicit=hold_slots_explicit,
-        fg_enabled=fg_enabled,
+        fg_enabled=True,
         fg_slot_reserve=fg_slot_reserve,
         ga_queue_limit_base=ga_queue_limit_base,
         inflight_ga_dynamic_queue=inflight_ga_dynamic_queue,
