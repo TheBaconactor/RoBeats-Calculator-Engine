@@ -201,6 +201,7 @@ def score_native_ga_force_greats(
     registry: Any = None,
     search_radius: int | None = None,
     retained_limit: int = LOADOUTS_PER_SONG_LIMIT,
+    gpu_client: Any | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
@@ -245,6 +246,7 @@ def score_native_ga_force_greats(
         center_fts=center_fts,
         center_ffs=center_ffs,
         search_radius=radius_arg,
+        gpu_client=gpu_client,
     )
 
     items: list[tuple[str, dict]] = []

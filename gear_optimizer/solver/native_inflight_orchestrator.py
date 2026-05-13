@@ -875,66 +875,12 @@ def run_native_inflight_song_pipeline(
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
-                fg_t0 = time.perf_counter()
-                try:
-                    native_fg_pipeline.score_fg_inside_ga(song, gpu_client=gpu_client)
-                except GpuServiceTimeoutError:
-                    raise
-                except Exception as exc:
-                    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-                    _post(
-                        _build_native_song_error_payload(
-                            song,
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
-                    )
-                    try:
-                        ga_pipeline.release_slot(song, slot_pool)
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    if stopping and is_stop_abort_exception(exc):
-                        continue
-                    if bundle_parent is not None:
-                        _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
-                    else:
-                        mark_song_completed(
-                            completed_songs=completed_songs,
-                            task_key=song.config.task_key,
-                            song_name=song.config.song_name,
-                            memory_resume_tracker=memory_resume_tracker,
-                        )
-                    continue
-                stage_profiler.record(
-                    "fg_run",
-                    time.perf_counter() - float(fg_t0),
-                    cpu_seconds=getattr(song.runtime.fg, "cpu_fg_run_s", None),
-                    song=song.config.task_key,
-                )
-
-                # GA and its native FG scoring now share one result authority; release
-                # the resident timeline slot only after that combined result exists.
-                try:
-                    ga_pipeline.release_slot(song, slot_pool)
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
-                record_info = None
-                try:
-                    record_info = progress_tracker.evaluate_record_update(
-                        song.config.db_key,
-                        song.runtime.decode.best_data or {},
-                        getattr(song.runtime.fg, "fg_variants", None) or [],
-                    )
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    record_info = None
-                song.runtime.db.record_info = record_info
                 try:
                     song.runtime.post.deferred_post_emitted = False
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                post_emit_pending.append(song)
+                fg_pipeline.queue(song, now_s=time.monotonic())
+                did_work = True
 
             # Reap completed FG workers (capture errors).
             for fg_completion in fg_pipeline.pop_completed_jobs():

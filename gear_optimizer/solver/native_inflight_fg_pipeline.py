@@ -352,6 +352,8 @@ class NativeFGPipeline:
     ) -> bool:
         if int(self.settings.static_prep_max_inflight) <= 0:
             return False
+        if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
+            return False
         if getattr(song.runtime.fg, "fg_static_prep_future", None) is not None:
             return False
         if bool(getattr(song.runtime.fg, "fg_static_prep_done", False)):
@@ -726,6 +728,7 @@ def run_fg_job_sync(
             if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
             else None,
             search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
+            gpu_client=gpu_client,
         )
     else:
         fg_variants = process_force_greats(
@@ -764,26 +767,15 @@ def run_fg_job_sync(
     if progress_cb is not None:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
+            song.runtime.db.record_info = fg_record_info
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
             except Exception as e:
                 logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
+    else:
+        fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
+        if isinstance(fg_record_info, dict):
+            song.runtime.db.record_info = fg_record_info
 
     if post_sender is not None:
         post_sender.send(build_fg_update_payload(song, persist_entries=build_fg_persist_entries(song)))
-
-
-def score_fg_inside_ga(
-    song: NativeSong,
-    *,
-    gpu_client: GpuServiceClient,
-) -> None:
-    run_fg_job_sync(
-        song,
-        gpu_client=gpu_client,
-        post_sender=None,
-        progress_cb=None,
-        progress_tracker=None,
-    )
-    if getattr(song.runtime.fg, "fg_variants", None) is None:
-        song.runtime.fg.fg_variants = []

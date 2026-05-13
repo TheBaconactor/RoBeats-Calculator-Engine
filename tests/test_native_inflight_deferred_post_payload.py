@@ -249,18 +249,15 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
     assert int(payload["fg_variants"][0]["fg_score"]) == 130
 
 
-def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatch):
+def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     gpu_client = object()
 
-    def _fake_run_fg_job_sync(song, *, gpu_client, post_sender, progress_cb, progress_tracker):
-        calls["gpu_client"] = gpu_client
-        calls["post_sender"] = post_sender
-        calls["progress_cb"] = progress_cb
-        calls["progress_tracker"] = progress_tracker
-        song.runtime.fg.fg_variants = [
+    def _fake_score_native_ga_force_greats(**kwargs):
+        calls.update(kwargs)
+        return [
             {
                 "score": 111,
                 "base_score": 111,
@@ -271,22 +268,25 @@ def test_native_inflight_fg_inside_ga_runs_without_deferred_fg_update(monkeypatc
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "run_fg_job_sync", _fake_run_fg_job_sync)
+    monkeypatch.setattr(fg_pipeline, "score_native_ga_force_greats", _fake_score_native_ga_force_greats)
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
         task_key="pytest_native_inline_fg_runner",
         db_key="pytest_native_inline_fg_runner",
+        best_data={"BaseScore": 111},
         fg_variants=None,
+        db_best_score=100,
+        db_best_fg_score=100,
+        db_baseline_valid=True,
     )
 
-    fg_pipeline.score_fg_inside_ga(song, gpu_client=gpu_client)
+    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
     assert calls["gpu_client"] is gpu_client
-    assert calls["post_sender"] is None
-    assert calls["progress_cb"] is None
-    assert calls["progress_tracker"] is None
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
+    assert song.runtime.db.record_info["song"] == "pytest_native_inline_fg_runner"
+    assert song.runtime.db.record_info["record_update"] is True
 
 
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):

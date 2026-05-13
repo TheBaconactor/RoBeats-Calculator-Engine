@@ -10,6 +10,7 @@ from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER
 from gear_optimizer.core.utils import safe_float, safe_int
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import fp_targets_to_forced_counts
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
+from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 from gear_optimizer.solver.scoring.force_greats import _compute_force_greats_timeline
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from gear_optimizer.solver.scoring_core import lookup_reference_py
@@ -236,6 +237,7 @@ def solve_native_force_greats_gpu_batch(
     center_fts: list[int | None],
     center_ffs: list[int | None],
     search_radius: int | None,
+    gpu_client: Any | None = None,
 ) -> tuple[list[dict[str, Any] | None], dict[str, int]]:
     if not base_stats_list:
         return [], {
@@ -338,11 +340,34 @@ def solve_native_force_greats_gpu_batch(
 
     from gear_optimizer.solver.taichi_gem import fields as gem_fields
     from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
-    from gear_optimizer.solver.taichi_gem.force_greats.api import (
-        fg_download_global_best,
-        fg_reset_global_best,
-        solve_force_greats_finder_gpu,
-    )
+    if gpu_client is None:
+        from gear_optimizer.solver.taichi_gem.force_greats.api import (
+            fg_download_global_best,
+            fg_reset_global_best,
+            solve_force_greats_finder_gpu,
+        )
+
+    def _fg_solve_owner(*args: Any, **kwargs: Any) -> Any:
+        if gpu_client is None:
+            return solve_force_greats_finder_gpu(*args, **kwargs)
+        return gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future.result()
+
+    def _fg_reset_owner(n_genomes: int, *, session_slot: int) -> None:
+        if gpu_client is None:
+            fg_reset_global_best(int(n_genomes), session_slot=int(session_slot))
+            return
+        gpu_client.submit(
+            GpuRequestType.FG_RESET_GLOBAL_BEST,
+            {"n_genomes": int(n_genomes), "song_slot": int(session_slot)},
+        ).future.result()
+
+    def _fg_download_owner(n_genomes: int, *, session_slot: int) -> Any:
+        if gpu_client is None:
+            return fg_download_global_best(int(n_genomes), session_slot=int(session_slot))
+        return gpu_client.submit(
+            GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
+            {"n_genomes": int(n_genomes), "song_slot": int(session_slot)},
+        ).future.result()
 
     gpu_batches = 0
     unique_genomes = 0
@@ -404,10 +429,10 @@ def solve_native_force_greats_gpu_batch(
 
             max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 1024) or 1024)
             if len(pairs) > max_ftff:
-                fg_reset_global_best(n_chunk, session_slot=int(song_slot))
+                _fg_reset_owner(n_chunk, session_slot=int(song_slot))
                 for pair_start in range(0, len(pairs), max_ftff):
                     pair_chunk = pairs[int(pair_start) : int(pair_start) + int(max_ftff)]
-                    solve_force_greats_finder_gpu(
+                    _fg_solve_owner(
                         genome_stats,
                         timestamps,
                         song_data.get("fg_great_candidate_timestamps"),
@@ -419,10 +444,10 @@ def solve_native_force_greats_gpu_batch(
                         **solve_kwargs,
                     )
                     gpu_batches += 1
-                raw = fg_download_global_best(n_chunk, session_slot=int(song_slot))
+                raw = _fg_download_owner(n_chunk, session_slot=int(song_slot))
                 out = _materialize_raw_best_list(raw, n_chunk)
             else:
-                out = solve_force_greats_finder_gpu(
+                out = _fg_solve_owner(
                     genome_stats,
                     timestamps,
                     song_data.get("fg_great_candidate_timestamps"),
