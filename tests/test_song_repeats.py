@@ -1,10 +1,10 @@
 import configparser
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.solver.native_inflight_support import (
-    _extract_repeat_bundle,
-    _materialize_repeat_task,
-    _task_key,
+from gear_optimizer.domain.jobs import (
+    extract_repeat_bundle,
+    materialize_repeat_task,
+    task_queue_label,
 )
 
 
@@ -290,10 +290,10 @@ def test_native_repeat_bundle_materializes_logical_run_label():
         },
     )
 
-    bundle = _extract_repeat_bundle(bundle_task)
+    bundle = extract_repeat_bundle(bundle_task)
     assert bundle is not None
-    assert _task_key(bundle_task) == "Dummy Song"
+    assert task_queue_label(bundle_task) == "Dummy Song"
 
-    logical_task = _materialize_repeat_task(bundle_task, bundle["runs"][1])
-    assert _extract_repeat_bundle(logical_task) is None
-    assert _task_key(logical_task) == "Dummy Song (Run 2/3)"
+    logical_task = materialize_repeat_task(bundle_task, bundle["runs"][1])
+    assert extract_repeat_bundle(logical_task) is None
+    assert task_queue_label(logical_task) == "Dummy Song (Run 2/3)"

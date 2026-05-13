@@ -18,7 +18,7 @@ from collections import deque
 
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.domain.jobs import task_song_name
+from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
 from gear_optimizer.solver.native_inflight_config import (
@@ -75,10 +75,6 @@ from gear_optimizer.solver.native_inflight_runtime_signals import (
 from gear_optimizer.solver.native_inflight_abort_log import (
     append_native_abort_log,
     build_abort_queue_snapshot,
-)
-from gear_optimizer.solver.native_inflight_support import (
-    _extract_repeat_ctx,
-    _task_key,
 )
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.native_inflight_stages import (
@@ -174,7 +170,7 @@ def run_native_inflight_song_pipeline(
             post_sender.send(item)
         progress_tracker.emit_error_item_progress(progress_cb, item)
 
-    pending_tasks = deque(t for t in tasks if _task_key(t) not in completed_songs)
+    pending_tasks = deque(t for t in tasks if task_queue_label(t) not in completed_songs)
     prepared: deque[_NativeSong] = deque()
     pending_fg: deque[_NativeSong] = deque()
     bundle_tracker = InflightBundleTracker(
@@ -329,11 +325,11 @@ def run_native_inflight_song_pipeline(
     for _ in range(int(prime_target)):
         first = pending_tasks.popleft()
         song_name = task_song_name(first)
-        bundle_key = _task_key(first)
+        bundle_key = task_queue_label(first)
         if bundle_key in completed_songs:
             continue
         logical_task, repeat_ctx = _next_logical_task(first)
-        task_key = _task_key(logical_task)
+        task_key = task_queue_label(logical_task)
         try:
             t0 = time.perf_counter()
             prepared_song = _prepare_song(logical_task)
@@ -562,13 +558,13 @@ def run_native_inflight_song_pipeline(
                 t_submit = prep_completion.submit_t0
                 did_work = True
                 song_name = task_song_name(task)
-                bundle_key = _task_key(task)
-                task_key = _task_key(logical_task)
+                bundle_key = task_queue_label(task)
+                task_key = task_queue_label(logical_task)
                 if bundle_key in completed_songs:
                     continue
                 try:
                     prepared_song = fut.result()
-                    repeat_ctx = _extract_repeat_ctx(logical_task)
+                    repeat_ctx = extract_repeat_context(logical_task)
                     _bind_bundle_song(prepared_song, task, repeat_ctx)
                     stage_profiler.record(
                         "prep",
@@ -587,7 +583,7 @@ def run_native_inflight_song_pipeline(
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
                         continue
-                    repeat_ctx = _extract_repeat_ctx(logical_task)
+                    repeat_ctx = extract_repeat_context(logical_task)
                     payload = _build_native_task_error_payload(
                         song_name=str(song_name),
                         queue_key=str(task_key),
@@ -777,12 +773,12 @@ def run_native_inflight_song_pipeline(
                     break
                 if pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit):
                     nxt = pending_tasks.popleft()
-                    nxt_bundle_key = _task_key(nxt)
+                    nxt_bundle_key = task_queue_label(nxt)
                     if nxt_bundle_key in completed_songs:
                         did_work = True
                         continue
                     logical_nxt, repeat_ctx = _next_logical_task(nxt)
-                    nxt_key = _task_key(logical_nxt)
+                    nxt_key = task_queue_label(logical_nxt)
                     try:
                         prep_queue.submit(
                             nxt,

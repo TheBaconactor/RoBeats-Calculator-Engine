@@ -4,11 +4,11 @@ import logging
 from collections import deque
 from typing import Callable
 
-from gear_optimizer.solver.native_inflight_support import (
-    _extract_repeat_bundle,
-    _is_repeat_ctx_dict,
-    _materialize_repeat_task,
-    _task_key,
+from gear_optimizer.domain.jobs import (
+    extract_repeat_bundle,
+    is_repeat_context,
+    materialize_repeat_task,
+    task_queue_label,
 )
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
@@ -34,7 +34,7 @@ class InflightBundleTracker:
 
     @staticmethod
     def bundle_runs(task: tuple) -> list[dict]:
-        bundle = _extract_repeat_bundle(task)
+        bundle = extract_repeat_bundle(task)
         if not isinstance(bundle, dict):
             return []
         runs = bundle.get("runs")
@@ -42,7 +42,7 @@ class InflightBundleTracker:
             return []
         out: list[dict] = []
         for ctx in runs:
-            if _is_repeat_ctx_dict(ctx):
+            if is_repeat_context(ctx):
                 out.append(dict(ctx))
         return out
 
@@ -54,13 +54,13 @@ class InflightBundleTracker:
         if cursor >= len(runs):
             cursor = len(runs) - 1
         repeat_ctx = dict(runs[cursor])
-        return _materialize_repeat_task(task, repeat_ctx), repeat_ctx
+        return materialize_repeat_task(task, repeat_ctx), repeat_ctx
 
     def bind_song(self, song: _NativeSong, parent_task: tuple, repeat_ctx: dict | None) -> None:
         if repeat_ctx is None or not self.bundle_runs(parent_task):
             return
         song.runtime.bundle.bundle_parent_task = parent_task
-        song.runtime.bundle.bundle_task_key = _task_key(parent_task)
+        song.runtime.bundle.bundle_task_key = task_queue_label(parent_task)
         try:
             song.runtime.bundle.bundle_repeat_index = int(repeat_ctx.get("repeat_index") or 0)
             song.runtime.bundle.bundle_repeat_total = int(repeat_ctx.get("repeat_total") or 0)
@@ -97,7 +97,7 @@ class InflightBundleTracker:
         repeat_label = None
         try:
             ctx = runs[int(next_idx) - 1] if int(next_idx) > 0 and int(next_idx) <= len(runs) else None
-            if _is_repeat_ctx_dict(ctx):
+            if is_repeat_context(ctx):
                 ridx = int(ctx.get("repeat_index") or next_idx)
                 rtotal = int(ctx.get("repeat_total") or len(runs))
                 if ridx > 0 and rtotal > 1:
@@ -119,7 +119,7 @@ class InflightBundleTracker:
             self.pending_tasks.appendleft(parent_task)
             return True
 
-        bundle_key = _task_key(parent_task)
+        bundle_key = task_queue_label(parent_task)
         self.completed_songs.add(bundle_key)
         if self.memory_resume_tracker:
             self.memory_resume_tracker.mark_completed(song_name)
