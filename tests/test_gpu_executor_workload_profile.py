@@ -21,6 +21,7 @@ from gear_optimizer.solver.gpu_executor_workload import (
     emit_workload_batch_profile,
     emit_workload_window_profile,
     emit_workload_stop_summary,
+    maybe_emit_workload_window_profile,
     workload_batch_event_metrics,
     workload_stop_summary_metrics,
     workload_stop_summary_event_metrics,
@@ -481,6 +482,102 @@ def test_emit_workload_window_profile_skips_empty_window():
         )
         is False
     )
+
+
+def test_maybe_emit_workload_window_profile_handles_interval_and_empty_window():
+    events = []
+
+    disabled = maybe_emit_workload_window_profile(
+        enabled=False,
+        force=True,
+        now=10.0,
+        last_emit_ts=1.0,
+        interval_sec=2.0,
+        recent_batches=[{"mode": "throughput"}],
+        events_emitted=7,
+        log_enabled=True,
+        log_debug=lambda _message: None,
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+    first_seen = maybe_emit_workload_window_profile(
+        enabled=True,
+        force=False,
+        now=10.0,
+        last_emit_ts=None,
+        interval_sec=2.0,
+        recent_batches=[{"mode": "throughput"}],
+        events_emitted=7,
+        log_enabled=True,
+        log_debug=lambda _message: None,
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+    gated = maybe_emit_workload_window_profile(
+        enabled=True,
+        force=False,
+        now=11.0,
+        last_emit_ts=10.0,
+        interval_sec=2.0,
+        recent_batches=[{"mode": "throughput"}],
+        events_emitted=7,
+        log_enabled=True,
+        log_debug=lambda _message: None,
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+    empty = maybe_emit_workload_window_profile(
+        enabled=True,
+        force=True,
+        now=12.0,
+        last_emit_ts=10.0,
+        interval_sec=2.0,
+        recent_batches=[],
+        events_emitted=7,
+        log_enabled=True,
+        log_debug=lambda _message: None,
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert disabled.last_emit_ts == 1.0
+    assert disabled.events_emitted == 7
+    assert first_seen.last_emit_ts == 10.0
+    assert first_seen.events_emitted == 7
+    assert gated.last_emit_ts == 10.0
+    assert gated.events_emitted == 7
+    assert empty.last_emit_ts == 12.0
+    assert empty.events_emitted == 7
+    assert events == []
+
+
+def test_maybe_emit_workload_window_profile_emits_and_counts_event():
+    events = []
+
+    result = maybe_emit_workload_window_profile(
+        enabled=True,
+        force=True,
+        now=12.0,
+        last_emit_ts=10.0,
+        interval_sec=2.0,
+        recent_batches=[
+            {
+                "mode": "throughput",
+                "wait_ms": 10.0,
+                "exec_sec": 0.02,
+                "size": 2,
+                "fg_count": 1,
+                "work_units": 40.0,
+                "diversity_pct": 20.0,
+                "queue_depth_hint": 8,
+            }
+        ],
+        events_emitted=7,
+        log_enabled=False,
+        log_debug=lambda _message: None,
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert result.last_emit_ts == 12.0
+    assert result.events_emitted == 8
+    assert events[0]["component"] == "gpu_executor"
+    assert events[0]["event"] == "workload::window"
 
 
 def test_workload_stop_summary_metrics_shapes_profile_payload():

@@ -58,8 +58,8 @@ from gear_optimizer.solver.gpu_executor_workload import (
     payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
     emit_workload_batch_profile as _emit_workload_batch_profile,
-    emit_workload_window_profile as _emit_workload_window_profile,
     emit_workload_stop_summary as _emit_workload_stop_summary,
+    maybe_emit_workload_window_profile as _maybe_emit_workload_window_profile,
     summarize_batch,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
@@ -525,30 +525,20 @@ class GpuExecutor:
             self._maybe_emit_workload_profile()
 
     def _maybe_emit_workload_profile(self, *, force: bool = False) -> None:
-        if not self._workload_profile_enabled:
-            return
-        now = perf_counter()
-        if not force:
-            if self._workload_profile_last_emit_ts is None:
-                self._workload_profile_last_emit_ts = now
-                return
-            if (now - float(self._workload_profile_last_emit_ts)) < float(self._workload_profile_interval_sec):
-                return
-
-        window = list(self._workload_recent_batches)
-        if not window:
-            self._workload_profile_last_emit_ts = now
-            return
-
-        emitted = _emit_workload_window_profile(
-            window,
+        result = _maybe_emit_workload_window_profile(
+            enabled=bool(self._workload_profile_enabled),
+            force=bool(force),
+            now=perf_counter(),
+            last_emit_ts=self._workload_profile_last_emit_ts,
+            interval_sec=float(self._workload_profile_interval_sec),
+            recent_batches=self._workload_recent_batches,
+            events_emitted=int(self._workload_events_emitted),
             log_enabled=bool(self._profile_enabled),
             log_debug=logger.debug,
             emit_profile_event_fn=emit_profile_event,
         )
-        if emitted:
-            self._workload_events_emitted += 1
-        self._workload_profile_last_emit_ts = now
+        self._workload_profile_last_emit_ts = result.last_emit_ts
+        self._workload_events_emitted = int(result.events_emitted)
 
     def _handle_solve_genomes_from_registry(self, request: GpuRequest) -> GpuResponse:
         return _handle_solve_genomes_from_registry(request, execute_fn=self._execute_solve_genomes_from_registry)

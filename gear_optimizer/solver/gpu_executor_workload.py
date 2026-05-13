@@ -15,6 +15,12 @@ class WorkloadProfileSettings:
     interval_sec: float
 
 
+@dataclass(frozen=True)
+class WorkloadWindowEmitResult:
+    last_emit_ts: float | None
+    events_emitted: int
+
+
 def load_workload_profile_settings(
     *,
     profile_enabled: bool,
@@ -362,6 +368,42 @@ def emit_workload_window_profile(
     if log_enabled:
         log_debug(workload_window_log_message(metrics))
     return True
+
+
+def maybe_emit_workload_window_profile(
+    *,
+    enabled: bool,
+    force: bool,
+    now: float,
+    last_emit_ts: float | None,
+    interval_sec: float,
+    recent_batches: Any,
+    events_emitted: int,
+    log_enabled: bool,
+    log_debug: Callable[[str], None],
+    emit_profile_event_fn: Callable[..., None],
+) -> WorkloadWindowEmitResult:
+    if not enabled:
+        return WorkloadWindowEmitResult(last_emit_ts=last_emit_ts, events_emitted=int(events_emitted))
+
+    if not force:
+        if last_emit_ts is None:
+            return WorkloadWindowEmitResult(last_emit_ts=float(now), events_emitted=int(events_emitted))
+        if (float(now) - float(last_emit_ts)) < float(interval_sec):
+            return WorkloadWindowEmitResult(last_emit_ts=last_emit_ts, events_emitted=int(events_emitted))
+
+    window = list(recent_batches)
+    if not window:
+        return WorkloadWindowEmitResult(last_emit_ts=float(now), events_emitted=int(events_emitted))
+
+    emitted = emit_workload_window_profile(
+        window,
+        log_enabled=bool(log_enabled),
+        log_debug=log_debug,
+        emit_profile_event_fn=emit_profile_event_fn,
+    )
+    next_events_emitted = int(events_emitted) + (1 if emitted else 0)
+    return WorkloadWindowEmitResult(last_emit_ts=float(now), events_emitted=int(next_events_emitted))
 
 
 def workload_stop_summary_metrics(
