@@ -368,48 +368,6 @@ if _GPU_NATIVE_AVAILABLE:
                 topk[slot_i, k_eff:heuristic_k] = sel[-1]
         return topk
 
-    def extract_db_seed_ids(
-        *,
-        db_seed: dict | None,
-        registry: "ItemRegistry",
-        n_slots: int = 9,
-    ) -> "np.ndarray | None":
-        if not isinstance(db_seed, dict):
-            return None
-        try:
-            n_slots = int(n_slots)
-        except Exception as e:
-            logger.debug(f"genetic:extract_db_seed_ids: {e}")
-            n_slots = 9
-        if n_slots <= 0:
-            n_slots = 9
-
-        seed_ids = np.zeros((n_slots,), dtype=np.int32)
-        try:
-            gear_part = db_seed.get("gear") or db_seed.get("Gear") or []
-            minis_part = db_seed.get("minis") or db_seed.get("Minis") or []
-            for si in range(min(6, n_slots)):
-                name = ""
-                if si < len(gear_part):
-                    gi = gear_part[si]
-                    name = gi.get("Name", "") if isinstance(gi, dict) else str(gi or "")
-                if name:
-                    seed_ids[si] = int(registry.item_to_id.get((si, name), 0) or 0)
-            for j, si in enumerate(range(6, min(9, n_slots))):
-                name = ""
-                if j < len(minis_part):
-                    mi = minis_part[j]
-                    name = mi.get("Name", "") if isinstance(mi, dict) else str(mi or "")
-                if name:
-                    seed_ids[si] = int(registry.item_to_id.get((si, name), 0) or 0)
-        except Exception as e:
-            logger.debug(f"genetic:extract_db_seed_ids: {e}")
-            return None
-        if not bool(np.any(seed_ids[: min(9, n_slots)] != 0)):
-            return None
-        return seed_ids
-
-
 def _extract_fg_candidates_from_ga_snapshot(
     *,
     registry: "ItemRegistry",
@@ -1344,10 +1302,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     init_heuristic_topk: "np.ndarray | None" = None,
     init_heuristic_k: int = 0,
     init_heuristic_copies: int = 25,
-    db_seed_ids: "np.ndarray | None" = None,
-    db_seed_prob: float = 0.0,
-    db_seed_copies: int = 1,
-    db_seed_mutations: int = 1,
     elite_count: int = GA_ELITISM,
     mutation_rate: float = GA_MUTATION_RATE,
     immigrant_rate: float = 0.0,
@@ -1711,11 +1665,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             seed=int(seg_seed),
             heuristic_prob=0.0,
             heuristic_k=int(init_heuristic_k),
-            seed_prob=float(db_seed_prob or 0.0),
-            seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
-            seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
             heuristic_copies=int(init_heuristic_copies),
-            seed_ids=db_seed_ids,
         )
 
     run_start_global = 0
@@ -2189,11 +2139,9 @@ def solve_coevolution_genetic(
     fixed_gear=None,
     fixed_minis=None,
     ga_depth=75,
-    db_seed=None,
     ga_settings=None,
     status_cb=None,
     executor=None,
-    known_loadouts=None,
     song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
     ga_seed: int | None = None,
     solver_ctx: SolverContext | None = None,
@@ -2223,11 +2171,9 @@ def solve_coevolution_genetic(
         fixed_gear: Fixed gear loadout if not optimizing
         fixed_minis: Fixed minis if not optimizing
         ga_depth: Total generations across all runs
-        db_seed: Previous best loadout from database
         ga_settings: GA configuration settings
         status_cb: Optional status callback function
         executor: Optional process pool executor for parallel evaluation
-        known_loadouts: Dict of known loadouts from database
 
     Returns:
         tuple: (best_data, best_gear, best_minis, None, [], [], all_evaluated)
@@ -2399,8 +2345,6 @@ def solve_coevolution_genetic(
             except Exception as exc:
                 logger.warning(f"[GPU GA] Warning: failed to build init heuristic table: {exc}")
 
-        seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
-        have_seed = seed_ids is not None
         runs_payload = run_gpu_native_ga_runs_payload_prebuilt(
             calc_song=calc_song,
             ref_arrays=ref_arrays,
@@ -2416,10 +2360,6 @@ def solve_coevolution_genetic(
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(heuristic_k),
             init_heuristic_copies=25,
-            db_seed_ids=seed_ids if have_seed else None,
-            db_seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
-            db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if have_seed else 0,
-            db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
             elite_count=int(ga_runtime_settings.elite_count),
             mutation_rate=float(gpu_mutation_rate),
             immigrant_rate=float(gpu_immigrant_rate),

@@ -110,14 +110,12 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         baseline_team_buff="T5",
         db_key="Song",
         prev_record=None,
-        known_loadouts={},
         db_best_score=0,
         db_best_fg_score=0,
         attempt_lifetime=0,
         attempts_first=0,
         prev_attempts_first=0,
         db_baseline_valid=False,
-        allow_db_seed=False,
     )
     calls = {}
 
@@ -145,8 +143,7 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         gears_by_name={},
         minis_by_name={},
         cfg=cfg,
-        load_known_loadouts=False,
-        cache_seed_context=True,
+        cache_db_context=True,
     )
 
     assert prepared.cfg is cfg
@@ -157,5 +154,4 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
     assert prepared.meta_secondary_color == "Flow"
     assert calls["config"]["calc_song"] is prepared_calc.calc_song
     assert calls["db"]["calc_song"] is prepared_calc.calc_song
-    assert calls["db"]["load_known_loadouts"] is False
-    assert calls["db"]["cache_seed_context"] is True
+    assert calls["db"]["cache_db_context"] is True

@@ -58,10 +58,6 @@ class NativeSongGPUInputs:
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k: int = 0
     init_heuristic_copies: int = 25
-    db_seed_ids: Optional[np.ndarray] = None
-    db_seed_prob: float = 0.0
-    db_seed_copies: int = 1
-    db_seed_mutations: int = 1
 
 
 @dataclass
@@ -123,8 +119,6 @@ class NativeSongDBState:
     attempt_lifetime: int = 0
     prev_attempts_first: int = 0
     record_info: Optional[JsonDict] = None
-    db_loadouts_future: Optional[concurrent.futures.Future] = None
-    db_loadouts_full: Optional[list[JsonDict]] = None
 
 
 @dataclass

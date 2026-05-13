@@ -145,7 +145,7 @@ def run_ga_regression():
                 return float(fallback)
 
     cfg = MockCfg()
-    paths = None  # Not used by solver if db_seed is None
+    paths = None
 
     # 3. Runs Evolution
     print("\nStarting evolution...")

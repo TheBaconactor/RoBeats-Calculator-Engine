@@ -23,7 +23,6 @@ def shutdown_native_inflight_resources(
     *,
     fg_pipeline,
     decode_queue,
-    db_persistence,
     cpu_prewarm_queue,
     prep_queue,
     post_sender,
@@ -40,11 +39,6 @@ def shutdown_native_inflight_resources(
     _shutdown_step(
         "decode_executor.shutdown",
         lambda: decode_queue.shutdown(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
-    _shutdown_step(
-        "db_prefetch_executor.shutdown",
-        lambda: db_persistence.shutdown_prefetch(wait=True, cancel_futures=True),
         shutdown_debug=shutdown_debug,
     )
     _shutdown_step(

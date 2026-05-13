@@ -59,7 +59,6 @@ def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(mo
         "Song A",
         {},
         {},
-        load_known_loadouts=False,
         allow_fallback=False,
     )
 

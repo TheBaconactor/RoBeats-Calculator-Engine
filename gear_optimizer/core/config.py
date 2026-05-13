@@ -485,7 +485,7 @@ class GASettings:
     convergence_trace_every: int = 1
     convergence_trace_out_dir: str = "artifacts/ga_trace"
     convergence_trace_song_filter: str = ""
-    search_depth: int = 50
+    search_depth: int = 125
     multi_start: int = GA_MULTI_RUNS_DEFAULT
 
     @classmethod
@@ -533,7 +533,7 @@ class GASettings:
             "IterationEngine",
             "GA_SearchDepth",
             "GA_Depth",
-            50,
+            125,
             clamp_min=1,
         )
         multi_start = cfg_get_int(

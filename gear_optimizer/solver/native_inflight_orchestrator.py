@@ -47,7 +47,6 @@ from gear_optimizer.solver.native_inflight_scheduler import (
 from gear_optimizer.solver.native_inflight_prime import prime_native_inflight_prepared_queue
 from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
-from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
 from gear_optimizer.solver.native_inflight_result_events import (
     build_failed_fg_update_payload as _build_failed_fg_update_payload,
     build_native_song_error_payload as _build_native_song_error_payload,
@@ -73,7 +72,6 @@ from gear_optimizer.solver.native_inflight_runtime_signals import (
 )
 from gear_optimizer.solver.native_inflight_abort_log import log_native_abort
 from gear_optimizer.solver.native_inflight_types import NativeSong
-from gear_optimizer.solver.native_inflight_fg_db_cache import prefetch_db_loadouts_sync
 from gear_optimizer.solver.native_inflight_stages import (
     InFlightStageProfiler,
     decode_ga_payload_sync,
@@ -178,7 +176,6 @@ def run_native_inflight_song_pipeline(
         default_worker_threads=default_worker_threads,
     )
     fg_pipeline = native_fg_pipeline.NativeFGPipeline(fg_pipeline_settings)
-    db_persistence = InflightDBPersistence(prefetch_workers=int(fg_pipeline.settings.db_prefetch_workers))
     pending_fg = fg_pipeline.pending
     fg_prep_inflight = fg_pipeline.prep_inflight
     fg_futures = fg_pipeline.futures
@@ -669,14 +666,6 @@ def run_native_inflight_song_pipeline(
                     fg_pipeline.note_ga_submit()
                     if _submit_cpu_prewarm_backlog() > 0:
                         did_work = True
-
-                    # Prefetch DB loadouts early so FG prep after GA decode doesn't stall
-                    # waiting on SQLite reads (keeps the GPU fed during song boundaries).
-                    db_persistence.maybe_submit_prefetch(
-                        song,
-                        prefetch_db_loadouts_sync,
-                        register_future=completion_tracker.register,
-                    )
 
                     if _submit_fg_static_prewarm(song):
                         did_work = True
@@ -1410,7 +1399,6 @@ def run_native_inflight_song_pipeline(
         shutdown_native_inflight_resources(
             fg_pipeline=fg_pipeline,
             decode_queue=decode_queue,
-            db_persistence=db_persistence,
             cpu_prewarm_queue=cpu_prewarm_queue,
             prep_queue=prep_queue,
             post_sender=post_sender,
@@ -1419,5 +1407,5 @@ def run_native_inflight_song_pipeline(
         )
 
 
-# NOTE: `decode_ga_payload_sync`, `prefetch_db_loadouts_sync`, and `prepare_fg_job_sync`
-# are imported from their own modules to keep the orchestrator leaner.
+# NOTE: `decode_ga_payload_sync` and `prepare_fg_job_sync` are imported from
+# their own modules to keep the orchestrator leaner.

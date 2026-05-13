@@ -136,9 +136,8 @@ def build_prepared_song_core(
     minis_by_name: dict,
     cfg: Any | None = None,
     preloaded_calc_song: dict[str, Any] | None = None,
-    load_known_loadouts: bool,
     allow_fallback: bool = False,
-    cache_seed_context: bool = False,
+    cache_db_context: bool = False,
 ) -> PreparedSongCore:
     cfg_obj = cfg if cfg is not None else cfg_from_dict(cfg_dict)
     prepared_calc_song = build_prepared_calc_song(
@@ -166,9 +165,8 @@ def build_prepared_song_core(
         cfg_dict=cfg_dict,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
-        load_known_loadouts=bool(load_known_loadouts),
         allow_fallback=bool(allow_fallback),
-        cache_seed_context=bool(cache_seed_context),
+        cache_db_context=bool(cache_db_context),
     )
     db_load_sec = time.perf_counter() - t_db0
 

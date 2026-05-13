@@ -17,7 +17,7 @@ from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import 
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
-from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, build_fg_persist_entries
+from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries, ensure_fg_build_details
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload
@@ -681,11 +681,7 @@ def run_fg_job_sync(
     except Exception as e:
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
-    InflightDBPersistence.consume_ready_prefetch(song)
-
-    build_details = InflightDBPersistence.ensure_fg_build_details(song)
-
-    InflightDBPersistence.merge_prefetched_loadouts(song)
+    build_details = ensure_fg_build_details(song)
 
     try:
         emit_profile_event(

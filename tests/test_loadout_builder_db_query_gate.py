@@ -3,18 +3,7 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_has
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 
 
-def test_build_loadout_entries_can_skip_db_query(monkeypatch):
-    calls = {"n": 0}
-
-    def _fake_get_best_loadouts(*args, **kwargs):
-        calls["n"] += 1
-        return []
-
-    monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.loadout_builder.get_best_loadouts",
-        _fake_get_best_loadouts,
-    )
-
+def test_build_loadout_entries_uses_ga_candidates_only():
     ga_candidates = [
         {
             "Score": 777,
@@ -28,14 +17,11 @@ def test_build_loadout_entries_can_skip_db_query(monkeypatch):
     out = build_loadout_entries(
         found_song_name="db-query-gate-song",
         ga_candidates=ga_candidates,
-        db_loadouts_limit=51,
         gears_by_name={},
         minis_by_name={},
         build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
-        allow_db_query=False,
     )
 
-    assert calls["n"] == 0
     assert len(out) == 1
     entry = next(iter(out.values()))
     assert int(entry["score"]) == 888
@@ -66,7 +52,6 @@ def test_build_loadout_entries_can_defer_ga_details():
     out = build_loadout_entries(
         found_song_name="ga-details-deferred-song",
         ga_candidates=ga_candidates,
-        db_loadouts_limit=51,
         gears_by_name={},
         minis_by_name={},
         build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
@@ -84,42 +69,6 @@ def test_build_loadout_entries_can_defer_ga_details():
     gear_names, mini_names = materialize_entry_names(entry, mutate=True)
     assert gear_names == ["I1", "I2", "I3", "I4", "I5", "I6"]
     assert mini_names == ["I7", "I8", "I9"]
-
-
-def test_build_loadout_entries_preserves_db_effective_hash(monkeypatch):
-    def _fake_get_best_loadouts(*args, **kwargs):
-        return [
-            {
-                "loadout_hash": "effective-db-hash",
-                "score": 123,
-                "fg_score": 456,
-                "gear": ["G1"],
-                "minis": ["RepresentativeMini"],
-                "details": {"Stats": {"Perfect Points": 1}},
-                "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            }
-        ]
-
-    monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.loadout_builder.get_best_loadouts",
-        _fake_get_best_loadouts,
-    )
-
-    out = build_loadout_entries(
-        found_song_name="mini-equivalence-song",
-        ga_candidates=[],
-        db_loadouts_limit=51,
-        gears_by_name={},
-        minis_by_name={},
-        build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
-    )
-
-    assert list(out) == ["effective-db-hash"]
-    entry = out["effective-db-hash"]
-    assert entry["loadout_hash"] == "effective-db-hash"
-    assert entry_loadout_hash(entry) == "effective-db-hash"
-
-
 def test_build_loadout_entries_preserves_ga_effective_hash():
     out = build_loadout_entries(
         found_song_name="mini-equivalence-song",
@@ -132,11 +81,9 @@ def test_build_loadout_entries_preserves_ga_effective_hash():
                 "Data": {"Stats": {"Perfect Points": 7}},
             }
         ],
-        db_loadouts_limit=51,
         gears_by_name={},
         minis_by_name={},
         build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
-        allow_db_query=False,
     )
 
     assert list(out) == ["effective-ga-hash"]

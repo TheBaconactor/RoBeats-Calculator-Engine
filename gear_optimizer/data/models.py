@@ -67,10 +67,8 @@ class WarnOnce:
 
 @dataclass
 class GAEvolutionSettings:
-    """Evolution/search policy settings for GA seeding and local refinement."""
+    """Evolution/search policy settings for GA local refinement."""
 
-    db_seed_prob: float
-    fixed_seed_copies: int
     memetic_elites: int
     memetic_steps: int
     memetic_top_gear: int
@@ -78,19 +76,16 @@ class GAEvolutionSettings:
     multi_start: int
     gear_rank_max: int = 40  # Max gear items per slot in rank cache
     mini_rank_max: int = 40  # Max minis in rank cache
-    db_seed_mutations: int = 1  # Number of mutated copies to inject alongside the DB seed (diversity control)
 
     @classmethod
     def from_cfg(cls, cfg):
         """Create GAEvolutionSettings from ConfigParser object."""
-        from ..core.utils import safe_int, safe_float
+        from ..core.utils import safe_int
         from ..core.constants import GA_MULTI_RUNS_DEFAULT
 
         section = "IterationEngine"
         if not cfg:
             return cls(
-                db_seed_prob=0.5,
-                fixed_seed_copies=2,
                 memetic_elites=4,
                 memetic_steps=2,
                 memetic_top_gear=4,
@@ -98,7 +93,6 @@ class GAEvolutionSettings:
                 multi_start=GA_MULTI_RUNS_DEFAULT,
                 gear_rank_max=40,
                 mini_rank_max=40,
-                db_seed_mutations=1,
             )
 
         def get_option(option, fallback):
@@ -109,9 +103,6 @@ class GAEvolutionSettings:
                 logger.debug(f"models:get_option: {e}")
             return fallback
 
-        db_seed_prob = safe_float(get_option("GA_DBSeedProbability", "0.5"), default=0.5)
-        fixed_seed_copies = max(0, safe_int(get_option("GA_FixedSeedCopies", "2"), 2))
-        db_seed_mutations = max(0, safe_int(get_option("GA_DBSeedMutations", "1"), 1))
         memetic_elites = max(0, safe_int(get_option("GA_MemeticElites", "4"), 4))
         memetic_steps = max(0, safe_int(get_option("GA_MemeticSteps", "2"), 2))
         memetic_top_gear = max(1, safe_int(get_option("GA_MemeticTopGear", "4"), 4))
@@ -128,8 +119,6 @@ class GAEvolutionSettings:
         mini_rank_max = max(10, safe_int(get_option("MiniRankMax", "40"), 40))
 
         return cls(
-            db_seed_prob=min(1.0, max(0.0, db_seed_prob)),
-            fixed_seed_copies=fixed_seed_copies,
             memetic_elites=memetic_elites,
             memetic_steps=memetic_steps,
             memetic_top_gear=memetic_top_gear,
@@ -137,5 +126,4 @@ class GAEvolutionSettings:
             multi_start=multi_start,
             gear_rank_max=gear_rank_max,
             mini_rank_max=mini_rank_max,
-            db_seed_mutations=db_seed_mutations,
         )

@@ -61,13 +61,10 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     def _fake_build_loadout_entries(
         found_song_name,
         ga_candidates,
-        db_loadouts_limit,
         gears_by_name,
         minis_by_name,
         build_details_fn,
         team_buff="T5",
-        db_loadouts_full=None,
-        allow_db_query=True,
         materialize_ga_details=True,
         ga_registry=None,
     ):
@@ -93,8 +90,6 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
         ],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
-        db_loadouts_full=None,
-        db_loadouts_future=None,
         db_key="song-db-key",
         gears_by_name={},
         minis_by_name={},

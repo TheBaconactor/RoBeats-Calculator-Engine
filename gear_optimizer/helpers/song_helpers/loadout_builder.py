@@ -1,17 +1,9 @@
-"""
-Song Helpers - Loadout Builder - Build union of DB + GA loadouts.
-
-This module provides loadout building operations:
-- build_loadout_entries: Build union of DB + GA loadouts
-"""
+"""Song Helpers - Loadout Builder - Build GA loadout entries."""
 
 from typing import Any
 import logging
 
-from ...data.database import (
-    get_best_loadouts,
-    get_loadout_hash,
-)
+from ...data.database import get_loadout_hash
 from .ga_entry_utils import candidate_genome_ids, ga_candidate_key
 
 
@@ -66,45 +58,6 @@ def _upsert_entry(
     if ga_registry is not None:
         loadout_entries[h]["_ga_registry"] = ga_registry
     return str(h)
-
-
-def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict] | None) -> dict:
-    """Merge DB records into the working loadout map using `_upsert_entry` precedence."""
-    for rec in db_loadouts or []:
-        if not isinstance(rec, dict):
-            continue
-        stored_hash = str(rec.get("loadout_hash") or "").strip()
-        h = _upsert_entry(
-            loadout_entries,
-            gear_items=rec.get("gear", []),
-            mini_items=rec.get("minis", []),
-            score_val=rec.get("score", 0),
-            details_obj=rec.get("details", {}),
-            fg_score_val=rec.get("fg_score", 0),
-            force_obj=rec.get("force"),
-            eval_data=None,
-            entry_key=stored_hash or None,
-        )
-        entry = loadout_entries.get(str(h))
-        if isinstance(entry, dict) and stored_hash:
-            # Persisted DB hashes are effective song-context hashes. Recomputing a
-            # raw representative-name hash can split equivalent mini groups.
-            entry["loadout_hash"] = stored_hash
-            entry["_resolved_loadout_hash"] = stored_hash
-        # Preserve the paired base-score context for the best-FG payload (if present).
-        try:
-            fg_base = rec.get("fg_base_score")
-        except Exception as e:
-            logger.debug(f"loadout_builder:merge_db_loadouts_into_entries: {e}")
-            fg_base = None
-        if fg_base is not None:
-            try:
-                entry = loadout_entries.get(str(h))
-                if isinstance(entry, dict):
-                    entry["fg_base_score"] = int(fg_base or 0)
-            except Exception as e:
-                logger.debug(f"loadout_builder:merge_db_loadouts_into_entries: {e}")
-    return loadout_entries
 
 
 def refresh_ga_candidate_entries(
@@ -207,13 +160,10 @@ def refresh_ga_candidate_entries(
 def build_loadout_entries(
     found_song_name,
     ga_candidates,
-    db_loadouts_limit,
     gears_by_name,
     minis_by_name,
     build_details_fn,
     team_buff="T5",
-    db_loadouts_full=None,
-    allow_db_query=True,
     existing_entries=None,
     materialize_ga_details=True,
     ga_registry=None,
@@ -224,38 +174,16 @@ def build_loadout_entries(
     Args:
         found_song_name: Name of the song
         ga_candidates: List of GA candidate loadouts
-        db_loadouts_limit: Maximum number of DB loadouts to fetch (when db_loadouts_full is not provided)
         gears_by_name: Dictionary of gears by name
         minis_by_name: Dictionary of minis by name
         build_details_fn: Function to build details dict from data dict
-        db_loadouts_full: Optional pre-fetched DB loadouts (skips DB query when provided)
-        allow_db_query: Whether to query DB when `db_loadouts_full` is not provided
         materialize_ga_details: Whether to build GA details eagerly during loadout construction
 
     Returns:
         dict: Dictionary of loadout entries by hash
     """
+    _ = found_song_name, gears_by_name, minis_by_name, team_buff
     loadout_entries = existing_entries if isinstance(existing_entries, dict) else {}
-
-    # DB loadouts (up to the configured limit) for this song
-    db_loadouts = []
-    if db_loadouts_full is not None:
-        db_loadouts = db_loadouts_full
-    elif bool(allow_db_query):
-        try:
-            db_loadouts = get_best_loadouts(
-                found_song_name,
-                limit=db_loadouts_limit,
-                gears_by_name=gears_by_name,
-                minis_by_name=minis_by_name,
-                team_buff=str(team_buff or "T5"),
-            )
-        except Exception as e:
-            logger.debug(f"loadout_builder:build_loadout_entries: {e}")
-            db_loadouts = []
-    merge_db_loadouts_into_entries(loadout_entries, db_loadouts)
-
-    # Current GA evaluated loadouts
     refresh_ga_candidate_entries(
         loadout_entries,
         ga_candidates or [],

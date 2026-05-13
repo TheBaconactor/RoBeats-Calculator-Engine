@@ -158,8 +158,6 @@ def profile_ga_with_gpu():
 
     # GA settings matching production
     ga_settings = GASettings(
-        db_seed_prob=0.5,
-        fixed_seed_copies=2,
         memetic_elites=4,
         memetic_steps=2,
         memetic_top_gear=4,

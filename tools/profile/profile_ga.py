@@ -97,8 +97,6 @@ def run_ga():
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=10,  # Reduced for profiling
-        db_seed=None,
-        known_loadouts={},
         status_cb=None,
         ga_settings=ga_settings,
     )

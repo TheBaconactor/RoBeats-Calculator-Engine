@@ -26,7 +26,6 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_fg_db_cache import fg_db_cache_put
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
@@ -610,8 +609,7 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
 
-    Finder-mode FG consumes GA candidates directly, so `loadout_entries` can be
-    built from DB rows before GA decode finishes. The late FG prep still owns
+    Finder-mode FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
     cpu_t0 = thread_cpu_time_s()
@@ -653,44 +651,13 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
             pass
         return
 
-    db_loadouts_full = runtime.db.db_loadouts_full
-    prefetch_pending = False
-    if db_loadouts_full is None and runtime.db.db_loadouts_future is not None:
-        try:
-            fut = runtime.db.db_loadouts_future
-            if fut.done():
-                try:
-                    db_loadouts_full = fut.result(timeout=0)
-                    runtime.db.db_loadouts_full = db_loadouts_full
-                    if isinstance(db_loadouts_full, list):
-                        fg_db_cache_put(
-                            config.db_key,
-                            limit=int(fg_candidate_limit),
-                            rows=db_loadouts_full,
-                            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-                        )
-                except Exception as e:
-                    logger.debug(f"native_inflight_stages:prepare_fg_static_sync: {e}")
-                    db_loadouts_full = None
-                finally:
-                    runtime.db.db_loadouts_future = None
-            else:
-                prefetch_pending = True
-                db_loadouts_full = None
-        except Exception as e:
-            logger.debug(f"native_inflight_stages:prepare_fg_static_sync: {e}")
-            db_loadouts_full = None
-
     runtime.fg.loadout_entries = build_loadout_entries(
         config.db_key,
         [],
-        int(fg_candidate_limit),
         gpu_inputs.gears_by_name,
         gpu_inputs.minis_by_name,
         song.runtime.fg.fg_build_details,
         team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-        db_loadouts_full=db_loadouts_full,
-        allow_db_query=not bool(prefetch_pending),
         materialize_ga_details=False,
         ga_registry=gpu_inputs.registry,
     )
@@ -817,40 +784,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         group_meta_primed = prime_fg_group_meta_for_song(song, limit=int(prime_group_meta_limit))
     t_group_meta = time.perf_counter()
 
-    # Non-blocking DB prefetch: check if future is ready without blocking.
-    # If the DB read is still in progress, proceed with GA candidates only.
-    # This prevents FG worker threads from stalling on DB I/O and starving the GPU.
-    db_loadouts_full = runtime.db.db_loadouts_full
-    prefetch_pending = False
-    if db_loadouts_full is None and runtime.db.db_loadouts_future is not None:
-        try:
-            fut = runtime.db.db_loadouts_future
-            # Use done() check to avoid blocking - if DB read isn't ready, skip it
-            if fut.done():
-                try:
-                    db_loadouts_full = fut.result(timeout=0)
-                    runtime.db.db_loadouts_full = db_loadouts_full
-                    if isinstance(db_loadouts_full, list):
-                        fg_db_cache_put(
-                            config.db_key,
-                            limit=int(fg_candidate_limit),
-                            rows=db_loadouts_full,
-                            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-                        )
-                except Exception as e:
-                    logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
-                    db_loadouts_full = None
-                finally:
-                    runtime.db.db_loadouts_future = None
-            else:
-                # DB prefetch still running - proceed without it to keep GPU fed
-                if perf:
-                    logger.debug("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
-                prefetch_pending = True
-                db_loadouts_full = None
-        except Exception as e:
-            logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
-            db_loadouts_full = None
     t_db = time.perf_counter()
 
     build_details = song.runtime.fg.fg_build_details
@@ -860,21 +793,17 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         )
         song.runtime.fg.fg_build_details = build_details
     runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
-    # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
-    # only the retained GA subset is merged back into `runtime.fg.loadout_entries` after FG.
+    # GPU finder consumes GA candidates directly and only the retained GA subset
+    # is merged back into `runtime.fg.loadout_entries` after FG.
     loadout_ga_candidates = [] if bool(runtime.fg.fg_direct_ga_candidates) else list(ga_candidates or [])
     if getattr(song.runtime.fg, "loadout_entries", None) is None or not bool(runtime.fg.fg_direct_ga_candidates):
         runtime.fg.loadout_entries = build_loadout_entries(
             config.db_key,
             loadout_ga_candidates,
-            fg_candidate_limit,
             gpu_inputs.gears_by_name,
             gpu_inputs.minis_by_name,
             build_details,
             team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-            db_loadouts_full=db_loadouts_full,
-            # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
-            allow_db_query=not bool(prefetch_pending),
             # FG grouping reads eval_data/BaseStats directly; defer details materialization
             # until persistence/retained-output paths so CPU prep does not stall the GPU.
             materialize_ga_details=False,
@@ -895,12 +824,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         loadouts_n = len(runtime.fg.loadout_entries or {})
     except (TypeError, AttributeError):
         loadouts_n = 0
-    db_n = -1
-    try:
-        if isinstance(db_loadouts_full, list):
-            db_n = len(db_loadouts_full)
-    except TypeError:
-        db_n = -1
     if perf:
         logger.debug(
             "[PERF][FGPrep] "
@@ -909,8 +832,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             f"finder_warmup={finder_warmup_ms:.1f}ms chart_prewarm={chart_prewarm_ms:.1f}ms "
             f"candidate_select={candidate_select_ms:.1f}ms hydrate={hydrate_stats_ms:.1f}ms "
             f"group_meta={group_meta_ms:.1f}ms db_wait={db_wait_ms:.1f}ms "
-            f"build={build_ms:.1f}ms total={total_ms:.1f}ms "
-            f"db_prefetch={int(db_n >= 0)} db_n={db_n}"
+            f"build={build_ms:.1f}ms total={total_ms:.1f}ms"
         )
 
     try:
@@ -941,8 +863,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
         "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),
-                "db_prefetch_pending": int(bool(prefetch_pending)),
-                "db_rows": int(len(db_loadouts_full or [])) if isinstance(db_loadouts_full, list) else -1,
             },
         )
     except Exception as e:

@@ -27,8 +27,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     song = make_native_song(
         fg_prep_future=None,
         loadout_entries={},
-        db_loadouts_full=[],
-        db_loadouts_future=None,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
@@ -90,8 +88,6 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     song = make_native_song(
         fg_prep_future=None,
         loadout_entries={},
-        db_loadouts_full=[],
-        db_loadouts_future=None,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",

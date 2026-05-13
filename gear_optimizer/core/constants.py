@@ -43,7 +43,7 @@ FEVER_TIME_OFFSET = 0.15
 GA_POPULATION_SIZE = 705  # 1.5x of 470; keep moderate for diversity + speed
 GA_MUTATION_RATE = 0.35  # INCREASED: 0.275 → 0.35 (more exploration)
 GA_ELITISM = 1  # Keep 1 elite (exploitation anchor)
-GA_MULTI_RUNS_DEFAULT = 5  # INCREASED: 3 → 5 (more fresh starts)
+GA_MULTI_RUNS_DEFAULT = 3
 GA_MUTATION_RATE_MAX = 0.55  # INCREASED: 0.45 → 0.55 (allow more aggressive mutation on stagnation)
 
 # Local search constants

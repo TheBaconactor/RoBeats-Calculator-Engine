@@ -49,7 +49,6 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     cfg.set("IterationEngine", "InFlightSongs", "1")
     cfg.set("IterationEngine", "GA_SearchDepth", "5")
     cfg.set("IterationEngine", "GA_MultiStart", "1")
-    cfg.set("IterationEngine", "GA_DBSeedProbability", "0.0")
     cfg.set("IterationEngine", "FG_CandidateLimit", "10")
     cfg.set("IterationEngine", "FG_SearchRadius", "3")
 

@@ -2526,9 +2526,8 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         cfg_error = f"{type(exc).__name__}: {exc}"
 
     iteration = {
-        "GA_SearchDepth": _cfg_get_int(cfg, "IterationEngine", "GA_SearchDepth", 50),
-        "GA_MultiStart": _cfg_get_int(cfg, "IterationEngine", "GA_MultiStart", 1),
-        "GA_DBSeedProbability": _safe_float(_cfg_get_text(cfg, "IterationEngine", "GA_DBSeedProbability", "0.0"), 0.0),
+        "GA_SearchDepth": _cfg_get_int(cfg, "IterationEngine", "GA_SearchDepth", 125),
+        "GA_MultiStart": _cfg_get_int(cfg, "IterationEngine", "GA_MultiStart", 3),
         "SongRepeats": _cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1),
         "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 1),
         "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),

@@ -62,9 +62,6 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
                 "n_genomes": "128",
                 "init_heuristic_k": "9",
                 "init_heuristic_copies": "11",
-                "db_seed_prob": "0.5",
-                "db_seed_copies": "13",
-                "db_seed_mutations": "17",
                 "color_flags": {"rush": True},
                 "cfg_data": {"selected_color": "rush"},
                 "ga_seed": "123",
@@ -90,9 +87,6 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     assert calls[0]["n_genomes"] == 128
     assert calls[0]["init_heuristic_k"] == 9
     assert calls[0]["init_heuristic_copies"] == 11
-    assert calls[0]["db_seed_prob"] == 0.5
-    assert calls[0]["db_seed_copies"] == 13
-    assert calls[0]["db_seed_mutations"] == 17
     assert calls[0]["color_flags"] == {"rush": True}
     assert calls[0]["cfg_data"] == {"selected_color": "rush"}
     assert calls[0]["ga_seed"] == 123

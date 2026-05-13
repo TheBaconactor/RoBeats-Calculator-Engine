@@ -114,8 +114,6 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
     }
 
     ga_settings = GAEvolutionSettings(
-        db_seed_prob=0.0,
-        fixed_seed_copies=0,
         memetic_elites=0,
         memetic_steps=0,
         memetic_top_gear=1,
@@ -123,7 +121,6 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
         multi_start=1,
         gear_rank_max=10,
         mini_rank_max=10,
-        db_seed_mutations=0,
     )
 
     best_data, _best_gear, _best_minis, _none, _a, _b, _evaluated = solve_coevolution_genetic(
@@ -139,11 +136,9 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=2,
-        db_seed=None,
         ga_settings=ga_settings,
         status_cb=None,
         executor=None,
-        known_loadouts=None,
         song_slot=0,
         ga_seed=123,
     )

@@ -9,8 +9,6 @@ def test_ga_evolution_settings_do_not_expose_legacy_cache_hit_search_mode():
     from gear_optimizer.data.models import GAEvolutionSettings
 
     assert [field.name for field in fields(GAEvolutionSettings)] == [
-        "db_seed_prob",
-        "fixed_seed_copies",
         "memetic_elites",
         "memetic_steps",
         "memetic_top_gear",
@@ -18,5 +16,4 @@ def test_ga_evolution_settings_do_not_expose_legacy_cache_hit_search_mode():
         "multi_start",
         "gear_rank_max",
         "mini_rank_max",
-        "db_seed_mutations",
     ]

@@ -583,7 +583,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     Return a per-thread cached SQLite connection.
 
     This keeps exact query semantics while avoiding per-call reconnect + PRAGMA + migration
-    overhead on read-heavy call sites (e.g., per-song DB seed/context reads).
+    overhead on read-heavy call sites (e.g., per-song progress/context reads).
     """
     if db_path is None:
         db_path = get_evolution_db_path()
@@ -754,7 +754,7 @@ def get_song_counters(
 
     if conn is None:
         # Intentionally use a per-thread cached read-only connection for the
-        # hot-path "DB seed/context read" callers. This connection is owned by
+        # hot-path progress/context read callers. This connection is owned by
         # the cache and is closed at process exit.
         conn = get_db_connection_cached(db_path or get_evolution_db_path(), allow_fallback=allow_fallback)
 
@@ -2346,10 +2346,10 @@ def get_best_loadouts(
             mini_names = representative_mini_names(mini_groups)
             details = _json_loads(row["details_json"]) if row["details_json"] else {}
             details = _unpack_stats_after_load(details)
-            # DB seeding doesn't need large derived fields; keep the in-memory payload lightweight.
+            # Callers do not need large derived fields; keep the in-memory payload lightweight.
             details = _strip_computed_details_fields(details)
 
-            # Optional strict verifier: detect corrupted/mismatched hashes before seeding.
+            # Optional strict verifier: detect corrupted/mismatched hashes before returning rows.
             if strict_seed_hash:
                 try:
                     p_color, s_color, sel_color = extract_song_colors(details)

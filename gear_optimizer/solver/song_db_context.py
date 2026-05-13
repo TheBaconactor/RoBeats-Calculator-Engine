@@ -24,14 +24,12 @@ class PreparedSongDbContext:
     baseline_team_buff: str
     db_key: str
     prev_record: Optional[dict]
-    known_loadouts: dict
     db_best_score: int
     db_best_fg_score: int
     attempt_lifetime: int
     attempts_first: int
     prev_attempts_first: int
     db_baseline_valid: bool
-    allow_db_seed: bool
 
 
 _DB_CONTEXT_CACHE_LOCK = threading.Lock()
@@ -129,15 +127,14 @@ def load_prepared_song_db_context(
     cfg_dict: Mapping[str, Any] | None,
     gears_by_name: dict,
     minis_by_name: dict,
-    load_known_loadouts: bool,
     allow_fallback: bool,
-    cache_seed_context: bool = False,
+    cache_db_context: bool = False,
 ) -> PreparedSongDbContext:
     baseline_team_buff = resolve_database_baseline_team_buff(cfg, cfg_dict=cfg_dict)
     db_key = build_db_key(found_song_name, calc_song)
 
     cached = None
-    if cache_seed_context and not bool(load_known_loadouts):
+    if cache_db_context:
         cached = _db_context_cache_get(db_key, baseline_team_buff)
     if cached is not None:
         prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached
@@ -145,19 +142,16 @@ def load_prepared_song_db_context(
             baseline_team_buff=str(baseline_team_buff or "T5"),
             db_key=str(db_key),
             prev_record=prev_record,
-            known_loadouts={},
             db_best_score=int(db_best_score),
             db_best_fg_score=int(db_best_fg_score),
             attempt_lifetime=int(attempt_lifetime),
             attempts_first=(int(prev_attempts_first) + 1) if int(prev_attempts_first or 0) else 1,
             prev_attempts_first=int(prev_attempts_first),
             db_baseline_valid=True,
-            allow_db_seed=True,
         )
 
     (
         prev_record,
-        known_loadouts,
         db_best_score,
         db_best_fg_score,
         attempt_lifetime,
@@ -167,12 +161,11 @@ def load_prepared_song_db_context(
         db_key,
         gears_by_name,
         minis_by_name,
-        load_known_loadouts=bool(load_known_loadouts),
         allow_fallback=bool(allow_fallback),
         team_buff=str(baseline_team_buff or "T5"),
     )
 
-    if cache_seed_context and not bool(load_known_loadouts) and bool(db_baseline_valid):
+    if cache_db_context and bool(db_baseline_valid):
         _db_context_cache_put(
             db_key,
             baseline_team_buff,
@@ -187,12 +180,10 @@ def load_prepared_song_db_context(
         baseline_team_buff=str(baseline_team_buff or "T5"),
         db_key=str(db_key),
         prev_record=prev_record,
-        known_loadouts=known_loadouts if isinstance(known_loadouts, dict) else {},
         db_best_score=int(db_best_score or 0),
         db_best_fg_score=int(db_best_fg_score or 0),
         attempt_lifetime=int(attempt_lifetime or 0),
         attempts_first=(int(prev_attempts_first or 0) + 1) if int(prev_attempts_first or 0) else 1,
         prev_attempts_first=int(prev_attempts_first or 0),
         db_baseline_valid=bool(db_baseline_valid),
-        allow_db_seed=bool(db_baseline_valid),
     )

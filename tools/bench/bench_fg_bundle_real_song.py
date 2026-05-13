@@ -225,7 +225,7 @@ def main() -> int:
         team_buff=str(team_buff),
     )
     if not seeds:
-        raise SystemExit(f"No DB seeds for {found_name!r}. Run optimizer first or point EVOLUTION_DB_PATH.")
+        raise SystemExit(f"No persisted loadouts for {found_name!r}. Run optimizer first or point EVOLUTION_DB_PATH.")
 
     force_cfg = cfg_dict.get("ForceGreats", {}) if isinstance(cfg_dict, dict) else {}
 

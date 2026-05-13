@@ -177,9 +177,8 @@ def prepare_native_song(task: tuple) -> NativeSong:
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
         cfg=cfg,
-        load_known_loadouts=False,
         allow_fallback=False,
-        cache_seed_context=True,
+        cache_db_context=True,
     )
     calc_song = prepared_core.calc_song
     meta_primary_color = prepared_core.meta_primary_color
@@ -192,8 +191,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     force_greats_config = prepared_config.force_greats_config
     manual_force_greats = prepared_config.manual_force_greats
 
-    # Load DB seed record only; full known-loadout hydration is deferred/prefetched
-    # in FG prep to avoid redundant per-song DB reads during prepare.
     db_context = prepared_core.db_context
     db_key = db_context.db_key
     prev_record = db_context.prev_record
@@ -202,7 +199,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     attempt_lifetime = db_context.attempt_lifetime
     prev_attempts_first = db_context.prev_attempts_first
     db_baseline_valid = db_context.db_baseline_valid
-    allow_db_seed = db_context.allow_db_seed
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
@@ -279,7 +275,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     mutation_rate = float(ga_runtime_settings.mutation_rate)
     immigrant_rate = float(ga_runtime_settings.immigrant_rate)
 
-    db_seed = prev_record if (allow_db_seed and prev_record) else None
     num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
     if num_runs <= 0:
         num_runs = 1
@@ -300,10 +295,8 @@ def prepare_native_song(task: tuple) -> NativeSong:
     init_heuristic_k = max(0, int(init_heuristic_k))
     init_heuristic_copies = 25
 
-    db_seed_ids: Optional[np.ndarray] = None
-
     try:
-        from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk, extract_db_seed_ids
+        from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk
 
         if init_heuristic_k > 0:
             cache_key = (pool_key, int(init_heuristic_k))
@@ -332,12 +325,9 @@ def prepare_native_song(task: tuple) -> NativeSong:
                             np.asarray(init_heuristic_topk, dtype=np.int32),
                             maxsize=_INIT_HEURISTIC_CACHE_MAX,
                         )
-
-        db_seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
     except Exception as e:
         logger.debug(f"native_inflight_prepare:prepare_native_song: {e}")
         init_heuristic_topk = None
-        db_seed_ids = None
 
     if init_heuristic_topk is None or init_heuristic_k <= 0:
         init_heuristic_topk = None
@@ -393,10 +383,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(init_heuristic_k),
             init_heuristic_copies=int(init_heuristic_copies),
-            db_seed_ids=db_seed_ids,
-            db_seed_prob=float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0) if db_seed_ids is not None else 0.0,
-            db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if db_seed_ids is not None else 0,
-            db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         ),
         runtime=NativeSongRuntimeState(
             db=NativeSongDBState(

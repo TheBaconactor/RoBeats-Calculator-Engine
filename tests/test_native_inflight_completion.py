@@ -43,13 +43,6 @@ def test_has_waitable_work_detects_active_runtime_queues():
     assert has_waitable_work(["ga-song"], (), pending_fg=[]) is True
 
 
-def test_has_waitable_work_detects_pending_fg_db_prefetch_future():
-    song = make_native_song(task_key="fg-song", song_name="FG Song")
-    song.runtime.db.db_loadouts_future = Future()
-
-    assert has_waitable_work([], pending_fg=[song]) is True
-
-
 class _MemoryResumeTracker:
     def __init__(self):
         self.completed = []

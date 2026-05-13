@@ -625,11 +625,7 @@ def ga_generate_initial_populations_kernel(
     seed: ti.u32,
     heuristic_prob_fp: ti.u32,  # [0..2^32-1]
     heuristic_k: ti.i32,
-    seed_prob_fp: ti.u32,  # [0..2^32-1]
-    seed_copies: ti.i32,
-    seed_mutations: ti.i32,
     heuristic_copies: ti.i32,
-    seed_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),  # (n_slots,)
 ):
     """
     Generate initial populations directly on GPU into `ga_initial_populations`.
@@ -639,7 +635,6 @@ def ga_generate_initial_populations_kernel(
     Notes:
     - Slot pools (slot_start/slot_count) must already be uploaded (via ga_upload_item_stats).
     - If heuristic_k <= 0, heuristic sampling is disabled.
-    - If seed_ids is empty/invalid, seed injection becomes a no-op.
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
@@ -649,22 +644,10 @@ def ga_generate_initial_populations_kernel(
     ng = n_genomes
     ns = n_slots
     hk = heuristic_k
-    sc = seed_copies
 
     if nr > 0 and ng > 0 and ns > 0:
         for r, g in ti.ndrange(nr, ng):
             run_id = start + r
-
-            # Deterministic per-run gate for DB seed injection.
-            run_state = seed ^ (ti.cast(run_id, ti.u32) * ti.u32(747796405)) ^ ti.u32(2891336453)
-            if run_state == ti.u32(0):
-                run_state = ti.u32(1)
-            run_state = kernels_helpers._xorshift32(run_state)
-            allow_seed = (seed_prob_fp > ti.u32(0)) and (run_state < seed_prob_fp)
-
-            eff_seed_copies = sc if allow_seed else 0
-            eff_seed_mut = seed_mutations if allow_seed else 0
-            seed_block = eff_seed_copies + eff_seed_mut
 
             # Deterministic per-(run,genome) state derived from base seed.
             state = seed ^ (ti.cast(run_id, ti.u32) * ti.u32(747796405)) ^ (ti.cast(g, ti.u32) * ti.u32(2891336453))
@@ -673,52 +656,32 @@ def ga_generate_initial_populations_kernel(
 
             state = kernels_helpers._xorshift32(state)
 
-            if seed_block > 0 and g < seed_block:
-                for s in range(ns):
-                    kernels_helpers.ga_initial_populations[run_id, g, s] = seed_ids[s]
+            for s in range(ns):
+                pool_start = kernels_helpers.slot_start[s]
+                pool_count = kernels_helpers.slot_count[s]
+                if pool_count <= 0:
+                    kernels_helpers.ga_initial_populations[run_id, g, s] = 0
+                    continue
 
-                # Mutate DB seed copies (g >= eff_seed_copies) to inject diversity.
-                if eff_seed_mut > 0 and g >= eff_seed_copies:
+                state = kernels_helpers._xorshift32(state)
+                use_heuristic = False
+                if hk > 0:
+                    if heuristic_copies > 0 and g < heuristic_copies:
+                        use_heuristic = True
+                    elif heuristic_prob_fp > ti.u32(0) and state < heuristic_prob_fp:
+                        use_heuristic = True
+
+                if use_heuristic:
                     state = kernels_helpers._xorshift32(state)
-                    mut_slot = ti.cast(state % ti.cast(ns, ti.u32), ti.i32)
-                    pool_start = kernels_helpers.slot_start[mut_slot]
-                    pool_count = kernels_helpers.slot_count[mut_slot]
-                    if pool_count > 1:
-                        state = kernels_helpers._xorshift32(state)
-                        new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
-                        tries = 0
-                        while new_item == seed_ids[mut_slot] and tries < 4:
-                            state = kernels_helpers._xorshift32(state)
-                            new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
-                            tries += 1
-                        kernels_helpers.ga_initial_populations[run_id, g, mut_slot] = new_item
-            else:
-                for s in range(ns):
-                    pool_start = kernels_helpers.slot_start[s]
-                    pool_count = kernels_helpers.slot_count[s]
-                    if pool_count <= 0:
-                        kernels_helpers.ga_initial_populations[run_id, g, s] = 0
-                        continue
-
+                    idx = ti.cast(state % ti.cast(hk, ti.u32), ti.i32)
+                    kernels_helpers.ga_initial_populations[run_id, g, s] = kernels_helpers.ga_init_heuristic_topk[
+                        s, idx
+                    ]
+                else:
                     state = kernels_helpers._xorshift32(state)
-                    use_heuristic = False
-                    if hk > 0:
-                        if heuristic_copies > 0 and g < heuristic_copies:
-                            use_heuristic = True
-                        elif heuristic_prob_fp > ti.u32(0) and state < heuristic_prob_fp:
-                            use_heuristic = True
-
-                    if use_heuristic:
-                        state = kernels_helpers._xorshift32(state)
-                        idx = ti.cast(state % ti.cast(hk, ti.u32), ti.i32)
-                        kernels_helpers.ga_initial_populations[run_id, g, s] = kernels_helpers.ga_init_heuristic_topk[
-                            s, idx
-                        ]
-                    else:
-                        state = kernels_helpers._xorshift32(state)
-                        kernels_helpers.ga_initial_populations[run_id, g, s] = pool_start + ti.cast(
-                            state % ti.cast(pool_count, ti.u32), ti.i32
-                        )
+                    kernels_helpers.ga_initial_populations[run_id, g, s] = pool_start + ti.cast(
+                        state % ti.cast(pool_count, ti.u32), ti.i32
+                    )
 
             # Mini uniqueness repair (slots 6-8). This matches crossover/mutation semantics.
             mini_pool_start = kernels_helpers.slot_start[6]

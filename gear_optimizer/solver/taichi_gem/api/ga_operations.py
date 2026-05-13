@@ -375,11 +375,7 @@ def ga_generate_initial_populations(
     seed: int = 12345,
     heuristic_prob: float = 0.0,
     heuristic_k: int = 0,
-    seed_prob: float = 0.0,
-    seed_copies: int = 0,
-    seed_mutations: int = 0,
     heuristic_copies: int = 0,
-    seed_ids: np.ndarray | None = None,
 ) -> None:
     """
     Generate initial populations on the GPU into `fields.ga_initial_populations`.
@@ -406,11 +402,8 @@ def ga_generate_initial_populations(
 
     heuristic_prob = float(heuristic_prob)
     heuristic_prob = max(0.0, min(1.0, heuristic_prob))
-    seed_prob = float(seed_prob)
-    seed_prob = max(0.0, min(1.0, seed_prob))
 
     heuristic_prob_fp = _probability_to_u32_fp(heuristic_prob)
-    seed_prob_fp = _probability_to_u32_fp(seed_prob)
 
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
@@ -422,20 +415,8 @@ def ga_generate_initial_populations(
     else:
         heuristic_k = min(int(heuristic_k), int(k_field))
 
-    seed_copies = int(seed_copies)
-    seed_copies = max(0, min(seed_copies, n_genomes))
-    seed_mutations = int(seed_mutations)
-    seed_mutations = max(0, min(seed_mutations, n_genomes))
     heuristic_copies = int(heuristic_copies)
     heuristic_copies = max(0, min(heuristic_copies, n_genomes))
-
-    if seed_ids is None:
-        seed_ids_arr = np.zeros((n_slots,), dtype=np.int32)
-    else:
-        seed_ids_arr = np.asarray(seed_ids, dtype=np.int32).reshape(-1)
-        if seed_ids_arr.shape[0] < n_slots:
-            raise ValueError(f"seed_ids has too few entries: {seed_ids_arr.shape[0]} < {n_slots}")
-        seed_ids_arr = seed_ids_arr[:n_slots]
 
     kernels.ga_generate_initial_populations_kernel(
         int(run_idx_start),
@@ -445,11 +426,7 @@ def ga_generate_initial_populations(
         np.uint32(int(seed) & 0xFFFFFFFF),
         heuristic_prob_fp,
         int(heuristic_k),
-        seed_prob_fp,
-        int(seed_copies),
-        int(seed_mutations),
         int(heuristic_copies),
-        seed_ids_arr,
     )
 
 

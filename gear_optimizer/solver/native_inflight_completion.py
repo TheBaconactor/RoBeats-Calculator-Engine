@@ -72,13 +72,7 @@ def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = 
         except Exception as e:
             logger.debug(f"native_inflight_completion:has_waitable_work: {e}")
             continue
-    for song in pending_fg:
-        try:
-            if song.runtime.db.db_loadouts_future is not None:
-                return True
-        except Exception as e:
-            logger.debug(f"native_inflight_completion:has_waitable_work: {e}")
-            continue
+    _ = pending_fg
     return False
 
 
