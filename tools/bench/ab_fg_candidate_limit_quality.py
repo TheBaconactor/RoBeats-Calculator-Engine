@@ -108,7 +108,6 @@ def _run_one(
     song_limit: int,
     ga_seed: int,
     fg_download_topk: int | None,
-    allow_sequential: bool,
 ) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm"):
@@ -132,9 +131,6 @@ def _run_one(
     env["SONG_QUEUE_LIMIT"] = str(max(1, int(song_limit)))
     env["GA_SEED"] = str(int(ga_seed))
     env.setdefault("PYTHONHASHSEED", "0")
-
-    if allow_sequential:
-        env["ALLOW_SEQUENTIAL_PIPELINE"] = "1"
 
     # Avoid hidden quality artifacts from reduced downloads during audits unless explicitly requested.
     if fg_download_topk is not None:
@@ -222,7 +218,6 @@ def main() -> int:
         default=-1,
         help="Override InFlightSongs in generated config (-1=keep base config, 0=off).",
     )
-    ap.add_argument("--allow-sequential", action="store_true", help="Set ALLOW_SEQUENTIAL_PIPELINE=1 for determinism.")
     ap.add_argument("--fg-download-topk", type=int, default=0, help="Set FG_DOWNLOAD_TOPK (0 recommended for audits).")
     ap.add_argument("--a", type=int, default=200, help="Variant A FG_CandidateLimit.")
     ap.add_argument("--b", type=int, default=100, help="Variant B FG_CandidateLimit.")
@@ -280,7 +275,6 @@ def main() -> int:
                 song_limit=song_limit,
                 ga_seed=ga_seed,
                 fg_download_topk=int(args.fg_download_topk),
-                allow_sequential=bool(args.allow_sequential),
             )
             all_runs[v.name].append(run)
             print(f"[ab] rep={rep} variant={v.name} exit={run['exit_code']} wall_s={run['wall_s']:.1f}s songs={len(run.get('scores') or {})}")

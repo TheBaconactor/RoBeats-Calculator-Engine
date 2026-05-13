@@ -125,33 +125,11 @@ def test_inflight_instances_do_not_create_dual_process_workers(monkeypatch):
         "gear_optimizer.solver.native_inflight_orchestrator",
         types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
     )
-    monkeypatch.delenv("INFLIGHT_ALLOW_DUAL_PROCESS", raising=False)
 
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
     assert len(native_calls) == 1
     assert native_calls[0]["kwargs"]["in_flight_songs"] == 2
-
-
-def test_dual_process_allow_env_does_not_change_main_route(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
-    native_calls: list[dict] = []
-
-    def _record_run(*args, **kwargs):
-        native_calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setenv("INFLIGHT_ALLOW_DUAL_PROCESS", "1")
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
-    )
-
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-    assert len(native_calls) == 1
-    assert native_calls[0]["args"][0] == tasks
 
 
 def test_configure_execution_prewarms_native_ga(monkeypatch):
