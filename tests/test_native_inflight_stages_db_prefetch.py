@@ -3,12 +3,13 @@ import configparser
 import time
 
 import gear_optimizer.solver.native_inflight_stages as stages
+from gear_optimizer.solver import native_inflight_fg_db_cache as fg_db_cache
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def _clear_fg_db_prefetch_cache() -> None:
-    with stages._FG_DB_LOADOUTS_CACHE_LOCK:
-        stages._FG_DB_LOADOUTS_CACHE.clear()
+    with fg_db_cache._FG_DB_LOADOUTS_CACHE_LOCK:
+        fg_db_cache._FG_DB_LOADOUTS_CACHE.clear()
 
 
 def test_prefetch_db_loadouts_sync_uses_song_key_cache(monkeypatch):
@@ -31,8 +32,8 @@ def test_prefetch_db_loadouts_sync_uses_song_key_cache(monkeypatch):
 
     monkeypatch.setattr(db, "get_best_loadouts", _fake_get_best_loadouts)
 
-    a = stages._prefetch_db_loadouts_sync("song-a", limit=51, gears_by_name={}, minis_by_name={})
-    b = stages._prefetch_db_loadouts_sync("song-a", limit=51, gears_by_name={}, minis_by_name={})
+    a = fg_db_cache.prefetch_db_loadouts_sync("song-a", limit=51, gears_by_name={}, minis_by_name={})
+    b = fg_db_cache.prefetch_db_loadouts_sync("song-a", limit=51, gears_by_name={}, minis_by_name={})
 
     assert calls["n"] == 1
     assert isinstance(a, list) and isinstance(b, list)
@@ -694,7 +695,7 @@ def test_decode_ga_payload_sync_keeps_finder_work_out_of_decode(monkeypatch):
         cfg_dict={},
     )
 
-    stages._decode_ga_payload_sync(song, runs_payload=None)
+    stages.decode_ga_payload_sync(song, runs_payload=None)
 
     assert seen["calc_song"] is None
     assert seen["ref_arrays"] is None

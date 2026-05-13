@@ -74,10 +74,10 @@ from gear_optimizer.solver.native_inflight_runtime_signals import (
 )
 from gear_optimizer.solver.native_inflight_abort_log import log_native_abort
 from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_fg_db_cache import prefetch_db_loadouts_sync
 from gear_optimizer.solver.native_inflight_stages import (
-    _InFlightStageProfiler,
-    _decode_ga_payload_sync,
-    _prefetch_db_loadouts_sync,
+    InFlightStageProfiler,
+    decode_ga_payload_sync,
     prepare_fg_static_sync,
     prepare_fg_job_sync,
     run_cpu_prewarm_for_song,
@@ -144,7 +144,7 @@ def run_native_inflight_song_pipeline(
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
-    stage_profiler = _InFlightStageProfiler(enabled=icfg.stage_profile_enabled, out_path=icfg.stage_profile_path)
+    stage_profiler = InFlightStageProfiler(enabled=icfg.stage_profile_enabled, out_path=icfg.stage_profile_path)
 
     post_sender = PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
     fg_decision_debug = icfg.fg_decision_debug
@@ -732,7 +732,7 @@ def run_native_inflight_song_pipeline(
                     # waiting on SQLite reads (keeps the GPU fed during song boundaries).
                     db_persistence.maybe_submit_prefetch(
                         song,
-                        _prefetch_db_loadouts_sync,
+                        prefetch_db_loadouts_sync,
                         register_future=completion_tracker.register,
                     )
 
@@ -872,7 +872,7 @@ def run_native_inflight_song_pipeline(
                 decode_queue.submit(
                     song,
                     ga_result,
-                    _decode_ga_payload_sync,
+                    decode_ga_payload_sync,
                     register_future=completion_tracker.register,
                 )
                 try:
@@ -1573,5 +1573,5 @@ def run_native_inflight_song_pipeline(
             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
 
-# NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, and `prepare_fg_job_sync`
+# NOTE: `decode_ga_payload_sync`, `prefetch_db_loadouts_sync`, and `prepare_fg_job_sync`
 # are imported from their own modules to keep the orchestrator leaner.

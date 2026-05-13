@@ -26,7 +26,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver import native_inflight_fg_db_cache as _fg_db_cache
+from gear_optimizer.solver.native_inflight_fg_db_cache import fg_db_cache_put
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
@@ -39,10 +39,6 @@ _FG_JIT_WARMED = False
 _FG_FINDER_RUNTIME_WARMED = False
 _FG_JIT_WARM_LOCK = threading.Lock()
 _FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
-_FG_DB_LOADOUTS_CACHE = _fg_db_cache._FG_DB_LOADOUTS_CACHE
-_FG_DB_LOADOUTS_CACHE_LOCK = _fg_db_cache._FG_DB_LOADOUTS_CACHE_LOCK
-_fg_db_cache_put = _fg_db_cache.fg_db_cache_put
-_prefetch_db_loadouts_sync = _fg_db_cache.prefetch_db_loadouts_sync
 _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 
@@ -150,7 +146,7 @@ def _cfg_value_ci(section: dict, key: str, default: object = None) -> object:
     return default
 
 
-class _InFlightStageProfiler:
+class InFlightStageProfiler:
     def __init__(self, *, enabled: bool, out_path: str | None = None) -> None:
         self.enabled = bool(enabled)
         self.out_path = out_path
@@ -559,7 +555,7 @@ def prime_fg_group_meta_for_song(song: _NativeSong, *, limit: int) -> int:
     )
 
 
-def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
+def decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
@@ -571,7 +567,7 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
             metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
         )
     except Exception as e:
-        logger.debug(f"native_inflight_stages:_decode_ga_payload_sync: {e}")
+        logger.debug(f"native_inflight_stages:decode_ga_payload_sync: {e}")
     decode_cfg_data = dict(getattr(song.gpu_inputs, "cfg_data", {}) or {})
     best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
@@ -606,7 +602,7 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_stages:_decode_ga_payload_sync: {e}")
+        logger.debug(f"native_inflight_stages:decode_ga_payload_sync: {e}")
     return out
 
 
@@ -667,7 +663,7 @@ def prepare_fg_static_sync(song: _NativeSong) -> None:
                     db_loadouts_full = fut.result(timeout=0)
                     runtime.db.db_loadouts_full = db_loadouts_full
                     if isinstance(db_loadouts_full, list):
-                        _fg_db_cache_put(
+                        fg_db_cache_put(
                             config.db_key,
                             limit=int(fg_candidate_limit),
                             rows=db_loadouts_full,
@@ -836,7 +832,7 @@ def prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient
                     db_loadouts_full = fut.result(timeout=0)
                     runtime.db.db_loadouts_full = db_loadouts_full
                     if isinstance(db_loadouts_full, list):
-                        _fg_db_cache_put(
+                        fg_db_cache_put(
                             config.db_key,
                             limit=int(fg_candidate_limit),
                             rows=db_loadouts_full,
