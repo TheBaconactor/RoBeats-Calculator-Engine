@@ -19,7 +19,7 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
-from gear_optimizer.solver.native_inflight_post_sender import _PostSender
+from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
@@ -527,7 +527,7 @@ class NativeFGPipeline:
         song: _NativeSong,
         *,
         gpu_client: GpuServiceClient,
-        post_sender: _PostSender | None = None,
+        post_sender: PostSender | None = None,
         progress_cb=None,
         progress_tracker: ProgressTracker | None = None,
     ) -> None:
@@ -612,7 +612,7 @@ def run_fg_job_sync(
     song: _NativeSong,
     *,
     gpu_client: GpuServiceClient,
-    post_sender: _PostSender | None = None,
+    post_sender: PostSender | None = None,
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:

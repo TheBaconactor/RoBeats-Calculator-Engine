@@ -55,7 +55,7 @@ from gear_optimizer.solver.native_inflight_result_events import (
     fg_enabled_for_song as _fg_enabled_for_song,
 )
 from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
-from gear_optimizer.solver.native_inflight_post_sender import _PostSender
+from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     emit_deferred_post_payload as _emit_deferred_post_payload_once,
@@ -146,7 +146,7 @@ def run_native_inflight_song_pipeline(
 
     stage_profiler = _InFlightStageProfiler(enabled=icfg.stage_profile_enabled, out_path=icfg.stage_profile_path)
 
-    post_sender = _PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
+    post_sender = PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
     fg_decision_debug = icfg.fg_decision_debug
     fg_submit_debug = icfg.fg_submit_debug
 

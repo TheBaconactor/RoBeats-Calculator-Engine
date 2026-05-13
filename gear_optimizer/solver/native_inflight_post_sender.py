@@ -11,7 +11,7 @@ from gear_optimizer.core.parsing import env_flag, env_get
 logger = logging.getLogger(__name__)
 
 
-class _PostSender:
+class PostSender:
     def __init__(self, post_queue, *, stop_requested=None) -> None:
         self._post_queue = post_queue
         self._stop_requested = stop_requested

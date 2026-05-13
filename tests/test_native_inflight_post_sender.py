@@ -1,11 +1,11 @@
 import queue
 
-from gear_optimizer.solver.native_inflight_post_sender import _PostSender
+from gear_optimizer.solver.native_inflight_post_sender import PostSender
 
 
 def test_post_sender_forwards_items_to_post_queue():
     post_queue: queue.Queue[dict] = queue.Queue()
-    sender = _PostSender(post_queue)
+    sender = PostSender(post_queue)
     item = {"song": "Song A"}
     try:
         sender.send(item)
