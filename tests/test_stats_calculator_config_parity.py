@@ -61,7 +61,7 @@ def test_build_base_stats_from_config_auto_mode_keeps_runtime_team_color():
     from gear_optimizer.core.stats_calculator import build_base_stats_from_config
 
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "true"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {
             "TeamBuff": "T5",
             # setup_song_config writes the song primary here before fixed stats

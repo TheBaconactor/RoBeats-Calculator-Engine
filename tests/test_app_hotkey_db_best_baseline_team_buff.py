@@ -22,7 +22,6 @@ def test_hotkey_db_best_uses_resolved_baseline_team_buff(monkeypatch) -> None:
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "AutoSelectBuffAndColor", "false")
     cfg.add_section("TeamContributionBuffConstant")
     cfg.set("TeamContributionBuffConstant", "TeamBuff", "T10")
 

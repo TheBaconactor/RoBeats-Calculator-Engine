@@ -16,7 +16,6 @@ def _write_cfg(path: Path) -> None:
         "\n".join(
             [
                 "[IterationEngine]",
-                "AutoSelectBuffAndColor=false",
                 "",
                 "[TeamContributionBuffConstant]",
                 "TeamColor=",

@@ -51,7 +51,7 @@ def main():
     }
 
     try:
-        auto_select = bool(cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False))
+        auto_select = True
     except Exception:
         auto_select = False
 
@@ -65,7 +65,7 @@ def main():
 
     print(
         "Backfilling Stats with per-row TeamBuff tier effect "
-        f"(AutoSelectBuffAndColor={str(auto_select).lower()}, "
+        f"(auto baseline policy={str(auto_select).lower()}, "
         f"TeamColor={'song primary' if auto_select else (cfg_team_color or 'song primary (fallback)')})."
     )
 

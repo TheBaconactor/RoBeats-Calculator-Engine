@@ -127,7 +127,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
     # - TeamBuff=T5
     # - TeamColor=Primary Color
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "true"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {"TeamBuff": "T20", "TeamColor": "Rush"},
     }
 
@@ -280,7 +280,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
 
     # Auto mode => base TeamBuff is T5 + TeamColor follows Primary (Rush).
-    cfg_dict = {"IterationEngine": {"AutoSelectBuffAndColor": "true"}}
+    cfg_dict = {"IterationEngine": {}}
 
     # Stats here are intentionally loadout-only (missing base T5 effect).
     stats = {
@@ -1265,7 +1265,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         "force": None,
     }
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Vibe"},
     }
 

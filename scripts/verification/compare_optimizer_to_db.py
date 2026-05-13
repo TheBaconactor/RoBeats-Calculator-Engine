@@ -202,7 +202,7 @@ def main() -> int:
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedMutations"] = "0"
 
     ie = read_iteration_engine_settings(cfg)
-    auto_buff = bool(ie.auto_select_buff_and_color)
+    auto_buff = True
     ga_depth = 0
     try:
         ga_depth = int(cfg.get("IterationEngine", "GA_SearchDepth", fallback="50") or 50)

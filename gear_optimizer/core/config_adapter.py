@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 class TeamContributionBuffSettings:
     team_buff: str = "T5"
     team_color: str = ""
-    auto_select_buff_and_color: bool = False
 
     @classmethod
     def from_cfg_dict(cls, cfg_dict: Mapping[str, Any] | None) -> TeamContributionBuffSettings:
@@ -27,12 +26,11 @@ class TeamContributionBuffSettings:
         return cls(
             team_buff=str(team_buff),
             team_color=str(team_color),
-            auto_select_buff_and_color=True,
         )
 
     @classmethod
     def from_cfg(cls, cfg: Any) -> TeamContributionBuffSettings:
-        return cls(team_buff="T5", team_color="", auto_select_buff_and_color=True)
+        return cls(team_buff="T5", team_color="")
 
 
 @dataclass(frozen=True, slots=True)

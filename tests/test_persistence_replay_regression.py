@@ -38,7 +38,7 @@ def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_un
         if len(entries_list) == 1 and list(entries_list[0].get("gear") or []) == ["Other"]:
             return {"T10": []}
         return {
-            "T10": [
+            "T5": [
                 {
                     "gear": ["G1", "G2"],
                     "minis": ["M1"],
@@ -65,13 +65,13 @@ def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_un
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
         ref_arrays={"Perfect Points": [0]},
         cfg_dict={
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T10"},
         },
     )
 
     assert requested["limits"][0] == 2
-    assert requested["tiers"] == ("T10",)
+    assert requested["tiers"] == ("T5",)
     assert out[0]["score"] == 99
     assert out[0]["fg_score"] == 123
     assert out[0]["fg_base_score"] == 77
@@ -96,7 +96,7 @@ def test_canonicalize_baseline_persist_entries_does_not_attach_fg_score_without_
         **_kwargs,
     ):
         return {
-            "T10": [
+            "T5": [
                 {
                     "gear": ["G1", "G2"],
                     "minis": ["M1"],
@@ -122,7 +122,7 @@ def test_canonicalize_baseline_persist_entries_does_not_attach_fg_score_without_
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
         ref_arrays={"Perfect Points": [0]},
         cfg_dict={
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T10"},
         },
     )
@@ -193,7 +193,7 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
         ref_arrays={"Perfect Points": [0]},
         cfg_dict={
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5"},
         },
     )

@@ -93,7 +93,7 @@ def main() -> None:
     # Match MetaFinder runs: ignore manual gem inputs.
     _disable_inputs_to_prevent_taint(cfg)
 
-    # Match AutoSelectBuffAndColor behavior for this specific song (T5 + PrimaryColor)
+    # Match native baseline policy for this specific song (T5 + PrimaryColor).
     song_fp = "Data/Hard/Take Your Time (Hard) by Rutra.txt"
     song_data = read_song_file(song_fp)
     calc_song = {

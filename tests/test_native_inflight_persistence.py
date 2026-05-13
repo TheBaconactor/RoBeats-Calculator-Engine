@@ -25,7 +25,7 @@ def test_inflight_db_persistence_owns_prefetch_executor_submission():
             manual_force_greats=True,
             cfg_data={"fg_candidate_limit": "7"},
             cfg_dict={
-                "IterationEngine": {"AutoSelectBuffAndColor": "False"},
+                "IterationEngine": {},
                 "TeamContributionBuffConstant": {"TeamBuff": "T20"},
             },
             gears_by_name={"gear": object()},

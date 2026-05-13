@@ -202,7 +202,7 @@ def main() -> int:
         "song_data": {"timestamps": np.array(song_data["timestamps"], dtype=np.float64)},
     }
 
-    auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
+    auto_buff = True
     (
         _ga_settings,
         fixed_stats,

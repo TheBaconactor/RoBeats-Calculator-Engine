@@ -499,9 +499,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             # Config reading
             ie = runtime_settings.iteration_engine
-            meta_finder = bool(ie.meta_finder)
-            enable_auto = bool(meta_finder)
-            auto_buff = bool(ie.auto_select_buff_and_color)
+            enable_auto = True
+            auto_buff = True
             fg_debug = bool(ie.force_greats_debug)
 
             if ie.force_greats_mode:

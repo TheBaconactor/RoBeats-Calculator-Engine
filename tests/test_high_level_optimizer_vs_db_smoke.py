@@ -286,7 +286,7 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch, tmp_path):
     target_count = max(1, int(target_count))
 
     ie = read_iteration_engine_settings(cfg)
-    auto_buff = bool(ie.auto_select_buff_and_color)
+    auto_buff = True
     ga_depth = 0
     try:
         ga_depth = int(cfg.get("IterationEngine", "GA_SearchDepth", fallback="50") or 50)

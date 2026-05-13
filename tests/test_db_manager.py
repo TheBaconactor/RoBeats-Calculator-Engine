@@ -165,23 +165,23 @@ def test_get_song_catalog_defaults_to_resolved_baseline_team_buff(tmp_path: Path
     from gear_optimizer.data.database import init_db, save_loadouts_batch
     from gear_optimizer.data.db_manager import EvolutionDbManager
 
-    db_path = tmp_path / "baseline_t10.db"
+    db_path = tmp_path / "baseline_t5.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T10"},
         },
     )
     init_db()
-    save_loadouts_batch("Catalog Song", [_entry(score=4321)], team_buff="T10")
+    save_loadouts_batch("Catalog Song", [_entry(score=4321)], team_buff="T5")
 
     db = EvolutionDbManager.from_env()
     catalog = db.get_song_catalog()
 
-    assert catalog["team_buff"] == "T10"
+    assert catalog["team_buff"] == "T5"
     assert catalog["songs"] == [
         {
             "song_name": "Catalog Song",
@@ -265,20 +265,20 @@ def test_save_loadouts_batch_persists_under_explicit_baseline_team_buff(tmp_path
         conn.close()
 
 
-def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_baseline(tmp_path: Path, monkeypatch):
+def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_native_baseline(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.database import init_db, save_loadouts_batch
     from gear_optimizer.data.db_manager import EvolutionDbManager
 
-    db_path = tmp_path / "compact_t10.db"
+    db_path = tmp_path / "compact_t5.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
-    save_loadouts_batch("OnDemand Song", [_entry(score=1234)], team_buff="T10")
+    save_loadouts_batch("OnDemand Song", [_entry(score=1234)], team_buff="T5")
 
     monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T10", "TeamColor": "Rush"},
         },
     )
@@ -296,7 +296,7 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
         captured["cfg_dict"] = dict(cfg_dict)
         captured["tiers"] = tuple(tiers)
         captured["target_team_color_override"] = target_team_color_override
-        return {"tiers": {"T10": {"base_top51": [{"score": 1234, "fg_score": 1234}]}}}
+        return {"tiers": {"T5": {"base_top51": [{"score": 1234, "fg_score": 1234}]}}}
 
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
@@ -304,11 +304,11 @@ def test_db_manager_compute_team_buff_tier_leaderboards_on_demand_uses_resolved_
     )
 
     db = EvolutionDbManager.from_env()
-    out = db.compute_team_buff_tier_leaderboards_on_demand("OnDemand Song", song_file="dummy.txt", tiers=("T10",))
+    out = db.compute_team_buff_tier_leaderboards_on_demand("OnDemand Song", song_file="dummy.txt", tiers=("T5",))
 
     assert captured["entries"]
-    assert captured["tiers"] == ("T10",)
-    assert out["tiers"]["T10"]["base_top51"][0]["score"] == 1234
+    assert captured["tiers"] == ("T5",)
+    assert out["tiers"]["T5"]["base_top51"][0]["score"] == 1234
 
 
 def test_db_manager_on_demand_replay_canonicalizes_baseline_seed_rows(tmp_path: Path, monkeypatch):
@@ -320,7 +320,7 @@ def test_db_manager_on_demand_replay_canonicalizes_baseline_seed_rows(tmp_path: 
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
         },
     )
@@ -367,20 +367,20 @@ def test_db_manager_on_demand_replay_canonicalizes_baseline_seed_rows(tmp_path: 
     assert captured["entries"][0]["score"] == 64849540
 
 
-def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_path: Path, monkeypatch):
+def test_db_manager_get_leaderboard_entry_uses_native_baseline_team_buff(tmp_path: Path, monkeypatch):
     from gear_optimizer.data.database import init_db, save_loadouts_batch
     from gear_optimizer.data.db_manager import EvolutionDbManager
 
-    db_path = tmp_path / "compact_t10.db"
+    db_path = tmp_path / "compact_t5.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
-    save_loadouts_batch("Leaderboard Song", [_entry(score=2222)], team_buff="T10")
+    save_loadouts_batch("Leaderboard Song", [_entry(score=2222)], team_buff="T5")
 
     monkeypatch.setattr("gear_optimizer.core.config.load_config", lambda: object())
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T10", "TeamColor": "Rush"},
         },
     )
@@ -396,7 +396,7 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     def fake_build(*, entries, calc_song, ref_arrays, cfg_dict, limit, tiers, target_team_color_override):
         captured["entries"] = list(entries)
         captured["tiers"] = tuple(tiers)
-        return {"T10": [{"score": 2222, "fg_score": 2222}]}
+        return {"T5": [{"score": 2222, "fg_score": 2222}]}
 
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.team_buff_tiers.build_team_buff_tier_db_batches",
@@ -406,13 +406,13 @@ def test_db_manager_get_leaderboard_entry_uses_resolved_baseline_team_buff(tmp_p
     db = EvolutionDbManager.from_env()
     monkeypatch.setattr(EvolutionDbManager, "resolve_song_file", lambda self, _song_name: "dummy.txt")
 
-    out = db.get_leaderboard_entry("Leaderboard Song", tier="T10", leaderboard="base", rank=1)
+    out = db.get_leaderboard_entry("Leaderboard Song", tier="T5", leaderboard="base", rank=1)
 
     assert captured["entries"]
-    assert captured["tiers"] == ("T10",)
+    assert captured["tiers"] == ("T5",)
     assert out is not None
     assert out["song_name"] == "Leaderboard Song"
-    assert out["tier"] == "T10"
+    assert out["tier"] == "T5"
     assert out["score"] == 2222
 
 
@@ -501,7 +501,7 @@ def test_db_manager_get_leaderboard_entry_uses_fg_base_score_context(tmp_path: P
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
         },
     )
@@ -563,7 +563,7 @@ def test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible(tmp_
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
         },
     )
@@ -620,7 +620,7 @@ def test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_source_
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
         },
     )
@@ -724,7 +724,7 @@ def test_db_manager_get_leaderboard_entry_breaks_ties_by_loadout_hash(tmp_path: 
     monkeypatch.setattr(
         "gear_optimizer.core.utils.cfg_to_dict",
         lambda _cfg: {
-            "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+            "IterationEngine": {},
             "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"},
         },
     )

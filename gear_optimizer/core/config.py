@@ -465,7 +465,6 @@ class IterationEngineSettings:
     enable_fever: bool
     enable_mini: bool
     enable_gear: bool
-    auto_select_buff_and_color: bool
     force_greats_mode: bool
     force_greats_finder: bool
     force_greats_debug: bool
@@ -712,7 +711,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     enable_fever = True
     enable_mini = True
     enable_gear = True
-    auto_select_buff_and_color = True
     force_greats_mode = True
     force_greats_finder = True
 
@@ -736,7 +734,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
         enable_fever=enable_fever,
         enable_mini=enable_mini,
         enable_gear=enable_gear,
-        auto_select_buff_and_color=auto_select_buff_and_color,
         force_greats_mode=force_greats_mode,
         force_greats_finder=force_greats_finder,
         force_greats_debug=bool(force_greats_debug),

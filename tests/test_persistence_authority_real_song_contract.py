@@ -102,7 +102,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {
             "TeamBuff": str(frozen["team_buff"]),
             "TeamColor": str(frozen["primary_color"]),
@@ -232,7 +232,7 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {
             "TeamBuff": str(frozen["team_buff"]),
             "TeamColor": str(frozen["primary_color"]),
@@ -354,7 +354,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
     cfg_dict = {
-        "IterationEngine": {"AutoSelectBuffAndColor": "false"},
+        "IterationEngine": {},
         "TeamContributionBuffConstant": {
             "TeamBuff": str(frozen["team_buff"]),
             "TeamColor": str(frozen["primary_color"]),

@@ -66,7 +66,7 @@ def _prepare_light_speed_song():
     gears_by_name = {g["Name"]: g for g in all_gears}
     minis_by_name = {m["Name"]: m for m in all_minis}
     ie = read_iteration_engine_settings(cfg)
-    auto_buff = bool(ie.auto_select_buff_and_color)
+    auto_buff = True
     fg_debug = bool(ie.force_greats_debug)
     ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
     task = app._prepare_tasks(

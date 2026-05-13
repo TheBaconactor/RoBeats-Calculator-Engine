@@ -115,7 +115,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ie.enable_fever is True
     assert ie.enable_mini is True
     assert ie.enable_gear is True
-    assert ie.auto_select_buff_and_color is True
     assert ie.force_greats_mode is True
     assert ie.force_greats_finder is False
     assert ie.force_greats_debug is False

@@ -129,7 +129,7 @@ def _prepare_context(
 ) -> SolverContext:
     cfg_dict = cfg_to_dict(cfg)
     calc_song = clone_calc_song(get_base_calc_song(song_path, cfg_dict))
-    auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
+    auto_buff = True
     (
         _ga_settings,
         fixed_stats,
