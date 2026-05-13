@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.solver.gpu_executor_response_delivery import order_responses_for_requests
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
@@ -266,3 +267,114 @@ def merge_fg_breakpoint_split_results(
             raise RuntimeError("split FG request length mismatch")
         merged_results.extend(split_result)
     return merged_results
+
+
+def coalesce_fg_solve_with_breakpoints_batch_requests(
+    requests: list[GpuRequest],
+    *,
+    in_process_queues: bool,
+    execute_request: Callable[[GpuRequest], GpuResponse],
+    execute_batch: Callable[[GpuRequest], GpuResponse],
+    payload_dict_fn: Callable[[GpuRequest], dict[str, Any]],
+    warn_fallback_fn: Callable[..., None],
+    env_get_fn: Callable[[str, Any], Any] = env_get,
+) -> list[GpuResponse]:
+    if not requests:
+        return []
+
+    if not bool(in_process_queues):
+        warn_fallback_fn(
+            "gpu_executor.fg_breakpoints_coalesce",
+            "coalescing unavailable (not in-process); falling back to per-request execution",
+            context={"request_count": len(requests)},
+        )
+        return [execute_request(req) for req in requests]
+
+    coalesce_limits = load_fg_breakpoint_coalesce_limits(env_get_fn=env_get_fn)
+    max_payloads = int(coalesce_limits.max_payloads)
+    max_pairs = int(coalesce_limits.max_pairs)
+
+    fallback: list[GpuResponse] = []
+    direct: list[GpuResponse] = []
+
+    def _append_fallback(req: GpuRequest, reason: str, *, extra: dict[str, Any] | None = None) -> None:
+        context = {"request_id": int(getattr(req, "request_id", -1))}
+        if extra:
+            context.update(extra)
+        warn_fallback_fn("gpu_executor.fg_breakpoints_request", reason, context=context)
+        fallback.append(execute_request(req))
+
+    coalesce_plan = plan_fg_breakpoint_coalescing(
+        requests,
+        payload_dict_fn=payload_dict_fn,
+        limits=coalesce_limits,
+    )
+
+    for req, reason in coalesce_plan.invalid:
+        _append_fallback(req, reason)
+
+    for oversized in coalesce_plan.oversized:
+        req = oversized.entry.request
+        n_payloads = int(oversized.entry.n_payloads)
+        n_pairs = int(oversized.entry.n_pairs)
+        try:
+            split_requests = build_fg_breakpoint_split_requests(oversized)
+            split_results: list[Any] = []
+            for split_request in split_requests:
+                split_resp = execute_batch(split_request.request)
+                if not getattr(split_resp, "success", False):
+                    raise RuntimeError(f"split FG request failed: {getattr(split_resp, 'error', None)}")
+                split_results.append(getattr(split_resp, "result", None))
+            merged_results = merge_fg_breakpoint_split_results(split_requests, split_results)
+            direct.append(
+                GpuResponse(
+                    request_id=int(req.request_id),
+                    success=True,
+                    result=merged_results,
+                )
+            )
+        except Exception as exc:
+            warn_fallback_fn(
+                "gpu_executor.fg_breakpoints_request_split",
+                "failed to split oversized payload list; falling back to per-request execution",
+                context={
+                    "request_id": int(req.request_id),
+                    "payloads": n_payloads,
+                    "max_payloads": max_payloads,
+                    "pairs": int(n_pairs),
+                    "max_pairs": int(max_pairs),
+                },
+                exc=exc,
+            )
+            fallback.append(execute_request(req))
+
+    groups = coalesce_plan.groups
+
+    out: list[GpuResponse] = []
+    out.extend(direct)
+    out.extend(fallback)
+
+    if not groups:
+        return order_responses_for_requests(requests, out)
+
+    for group in groups:
+        if len(group) == 1:
+            out.append(execute_request(group[0][0]))
+            continue
+        try:
+            bundle = build_fg_breakpoint_group_bundle(group)
+            merged_resp = execute_batch(bundle.request)
+            if not getattr(merged_resp, "success", False):
+                raise RuntimeError(f"merged FG bundle failed: {merged_resp.error}")
+            out.extend(split_fg_breakpoint_group_result(bundle, getattr(merged_resp, "result", None)))
+        except Exception as exc:
+            warn_fallback_fn(
+                "gpu_executor.fg_breakpoints_group",
+                "merged coalesced group failed; falling back to per-request execution",
+                context={"group_size": len(group)},
+                exc=exc,
+            )
+            for entry in group:
+                out.append(execute_request(entry.request))
+
+    return order_responses_for_requests(requests, out)

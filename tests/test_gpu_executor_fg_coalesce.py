@@ -4,6 +4,7 @@ from gear_optimizer.solver.gpu_executor_fg_coalesce import (
     FgBreakpointCoalesceLimits,
     build_fg_breakpoint_split_requests,
     build_fg_breakpoint_group_bundle,
+    coalesce_fg_solve_with_breakpoints_batch_requests,
     fg_breakpoint_payload_pair_count,
     load_fg_breakpoint_coalesce_limits,
     merge_fg_breakpoint_split_results,
@@ -11,7 +12,7 @@ from gear_optimizer.solver.gpu_executor_fg_coalesce import (
     split_fg_breakpoint_group_result,
     split_fg_breakpoint_payloads_for_coalesce,
 )
-from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
 def _req(req_id: int, payload) -> GpuRequest:
@@ -244,3 +245,52 @@ def test_merge_fg_breakpoint_split_results_validates_and_flattens_chunks():
         assert "non-list" in str(exc)
     else:
         raise AssertionError("expected TypeError")
+
+
+def test_coalesce_fg_solve_with_breakpoints_batch_requests_merges_group():
+    direct_calls = []
+    warnings = []
+
+    responses = coalesce_fg_solve_with_breakpoints_batch_requests(
+        [
+            _req(1, {"payloads": [{"payload_idx": 0}, {"payload_idx": 1}]}),
+            _req(2, {"payloads": [{"payload_idx": 2}]}),
+        ],
+        in_process_queues=True,
+        execute_request=lambda req: direct_calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result=["direct"]),
+        execute_batch=lambda req: GpuResponse(
+            request_id=req.request_id,
+            success=True,
+            result=[payload["payload_idx"] for payload in req.payload["payloads"]],
+        ),
+        payload_dict_fn=lambda req: dict(req.payload or {}),
+        warn_fallback_fn=lambda *args, **kwargs: warnings.append((args, kwargs)),
+        env_get_fn=lambda key, default: {"FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS": "8"}.get(key, default),
+    )
+
+    assert direct_calls == []
+    assert warnings == []
+    assert [(response.request_id, response.result) for response in responses] == [(1, [0, 1]), (2, [2])]
+
+
+def test_coalesce_fg_solve_with_breakpoints_batch_requests_falls_back_when_not_inprocess():
+    direct_calls = []
+    warnings = []
+
+    responses = coalesce_fg_solve_with_breakpoints_batch_requests(
+        [_req(5, {"payloads": [{"payload_idx": 0}]})],
+        in_process_queues=False,
+        execute_request=lambda req: direct_calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result=["direct"]),
+        execute_batch=lambda req: GpuResponse(request_id=req.request_id, success=True, result=[]),
+        payload_dict_fn=lambda req: dict(req.payload or {}),
+        warn_fallback_fn=lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    assert direct_calls == [5]
+    assert responses[0].result == ["direct"]
+    assert warnings[0][0][:2] == (
+        "gpu_executor.fg_breakpoints_coalesce",
+        "coalescing unavailable (not in-process); falling back to per-request execution",
+    )
