@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from typing import Any
-import logging
 
 from gear_optimizer.domain.jobs import (
     extract_repeat_bundle,
@@ -12,8 +10,6 @@ from gear_optimizer.domain.jobs import (
     task_ga_seed,
     task_queue_label,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _is_repeat_ctx_dict(extra: Any) -> bool:
@@ -38,31 +34,3 @@ def _task_key(task: tuple) -> str:
 
 def _task_ga_seed(task: tuple) -> int | None:
     return task_ga_seed(task)
-
-
-def _lru_get(cache: OrderedDict, key: tuple) -> Any:
-    try:
-        value = cache.get(key)
-    except Exception as e:
-        logger.debug(f"native_inflight_support:_lru_get: {e}")
-        return None
-    if value is not None:
-        try:
-            cache.move_to_end(key)
-        except Exception as e:
-            logger.debug(f"native_inflight_support:_lru_get: {e}")
-    return value
-
-
-def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> None:
-    try:
-        cache[key] = value
-        cache.move_to_end(key)
-    except Exception as e:
-        logger.debug(f"native_inflight_support:_lru_put: {e}")
-        return
-    try:
-        while len(cache) > int(maxsize):
-            cache.popitem(last=False)
-    except Exception as e:
-        logger.debug(f"native_inflight_support:_lru_put: {e}")

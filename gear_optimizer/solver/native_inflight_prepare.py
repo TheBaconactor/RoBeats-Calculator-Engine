@@ -24,7 +24,6 @@ from gear_optimizer.solver.inflight_utils import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
-from gear_optimizer.solver.native_inflight_support import _lru_get, _lru_put
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
     _NativeSong,
@@ -58,6 +57,34 @@ _CACHE_STATS = {
 }
 _CACHE_STATS_LOCK = threading.Lock()
 _CACHE_STATS_LAST_EMIT = 0.0
+
+
+def _lru_get(cache: OrderedDict, key: tuple):
+    try:
+        value = cache.get(key)
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_lru_get: {e}")
+        return None
+    if value is not None:
+        try:
+            cache.move_to_end(key)
+        except Exception as e:
+            logger.debug(f"native_inflight_prepare:_lru_get: {e}")
+    return value
+
+
+def _lru_put(cache: OrderedDict, key: tuple, value, *, maxsize: int) -> None:
+    try:
+        cache[key] = value
+        cache.move_to_end(key)
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_lru_put: {e}")
+        return
+    try:
+        while len(cache) > int(maxsize):
+            cache.popitem(last=False)
+    except Exception as e:
+        logger.debug(f"native_inflight_prepare:_lru_put: {e}")
 
 
 def bump_prep_cache_limits_for_ram_mode() -> tuple[int, int, int]:
