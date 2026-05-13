@@ -145,9 +145,6 @@ def main() -> int:
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
     ie = read_iteration_engine_settings(cfg)
-    if not ie.force_greats_mode:
-        print("[DrainFG] ForceGreatsMode is disabled in config.ini; nothing to do.")
-        return 1
 
     fg_candidate_limit = read_fg_candidate_limit(cfg, default=100, min_limit=51)
     fg_search_radius = read_fg_search_radius(cfg)

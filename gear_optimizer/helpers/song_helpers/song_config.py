@@ -24,18 +24,12 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
 
     Returns:
         tuple: (ga_settings, fixed_stats, current_gear_stats, current_gear_list,
-                current_mini_stats, current_mini_list, enable_fever,
-                enable_mini, enable_gear, force_greats_mode, force_greats_finder,
+                current_mini_stats, current_mini_list, force_greats_finder,
                 force_greats_config, manual_force_greats)
     """
     ga_settings = GAEvolutionSettings.from_cfg(cfg)
 
     ie = read_iteration_engine_settings(cfg)
-    enable_fever = bool(ie.enable_fever)
-    enable_mini = bool(ie.enable_mini)
-    enable_gear = bool(ie.enable_gear)
-
-    force_greats_mode = bool(ie.force_greats_mode)
     force_greats_finder = bool(ie.force_greats_finder)
     force_greats_config = list(ie.force_greats_config or [])
     manual_force_greats = bool(ie.manual_force_greats)
@@ -62,10 +56,6 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
         current_gear_list,
         current_mini_stats,
         current_mini_list,
-        enable_fever,
-        enable_mini,
-        enable_gear,
-        force_greats_mode,
         force_greats_finder,
         force_greats_config,
         manual_force_greats,

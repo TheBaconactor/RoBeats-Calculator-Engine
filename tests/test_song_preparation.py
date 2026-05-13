@@ -66,10 +66,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
             {"mini": 3},
             [{"Name": "M"}],
             1,
-            0,
-            1,
-            0,
-            1,
             [["fg"]],
             0,
         ),
@@ -90,10 +86,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
     assert prepared.current_gear_list == [{"Name": "G"}]
     assert prepared.current_mini_stats == {"mini": 3}
     assert prepared.current_mini_list == [{"Name": "M"}]
-    assert prepared.enable_fever is True
-    assert prepared.enable_mini is False
-    assert prepared.enable_gear is True
-    assert prepared.force_greats_mode is False
     assert prepared.force_greats_finder is True
     assert prepared.force_greats_config == [["fg"]]
     assert prepared.manual_force_greats is False
@@ -114,10 +106,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         current_gear_list=[],
         current_mini_stats={},
         current_mini_list=[],
-        enable_fever=True,
-        enable_mini=True,
-        enable_gear=True,
-        force_greats_mode=True,
         force_greats_finder=True,
         force_greats_config=[],
         manual_force_greats=False,

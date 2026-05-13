@@ -124,8 +124,6 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         "best_minis": _compact_items(song.runtime.decode.best_minis),
         "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
         "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
-        "enable_gear": bool(song.gpu_inputs.enable_gear),
-        "enable_mini": bool(song.gpu_inputs.enable_mini),
         "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
         "_persist_pending_fg_job": bool(persist_pending_fg_job and pending_fg_job),

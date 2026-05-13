@@ -209,9 +209,6 @@ def main() -> int:
         _current_gear_list,
         _current_mini_stats,
         _current_mini_list,
-        _enable_fever,
-        _enable_mini,
-        _enable_gear,
         *_rest,
     ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
 

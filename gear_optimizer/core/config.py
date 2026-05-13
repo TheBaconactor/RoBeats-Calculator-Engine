@@ -461,10 +461,6 @@ class IterationEngineSettings:
     Centralizing this avoids logic drift across the app, workers, and solver code.
     """
 
-    enable_fever: bool
-    enable_mini: bool
-    enable_gear: bool
-    force_greats_mode: bool
     force_greats_finder: bool
     force_greats_debug: bool
     force_greats_config: list[int]
@@ -706,10 +702,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     - These are no longer config switches; they are native runtime policy.
     - A non-empty manual FG config disables finder mode (deliberate override).
     """
-    enable_fever = True
-    enable_mini = True
-    enable_gear = True
-    force_greats_mode = True
     force_greats_finder = True
 
     # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
@@ -728,10 +720,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
         force_greats_finder = False
 
     return IterationEngineSettings(
-        enable_fever=enable_fever,
-        enable_mini=enable_mini,
-        enable_gear=enable_gear,
-        force_greats_mode=force_greats_mode,
         force_greats_finder=force_greats_finder,
         force_greats_debug=bool(force_greats_debug),
         force_greats_config=list(force_greats_config or []),

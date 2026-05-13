@@ -40,7 +40,6 @@ from ..solver.scoring import (
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
     FG_CACHE,
-    solve_best_fever_combination,
 )
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..solver.solver_common import SolverContext, prepare_solver_context
@@ -120,10 +119,6 @@ class SongContext:
     current_gear_list: list[dict]
     current_mini_stats: dict[str, Any]
     current_mini_list: list[dict]
-    enable_fever: bool
-    enable_mini: bool
-    enable_gear: bool
-    force_greats_mode: bool
     force_greats_finder: bool
     force_greats_config: Any
     manual_force_greats: bool
@@ -313,10 +308,6 @@ def _setup_song_context(
         current_gear_list=prepared_config.current_gear_list,
         current_mini_stats=prepared_config.current_mini_stats,
         current_mini_list=prepared_config.current_mini_list,
-        enable_fever=prepared_config.enable_fever,
-        enable_mini=prepared_config.enable_mini,
-        enable_gear=prepared_config.enable_gear,
-        force_greats_mode=prepared_config.force_greats_mode,
         force_greats_finder=prepared_config.force_greats_finder,
         force_greats_config=prepared_config.force_greats_config,
         manual_force_greats=prepared_config.manual_force_greats,
@@ -339,105 +330,71 @@ def _setup_song_context(
 
 
 def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
-    if ctx.enable_gear or ctx.enable_mini:
-        try:
-            ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
-        except Exception as e:
-            logger.warning(f"song_processor:_run_outer_search: {e}")
-            ctx.gpu_song_slot = 0
-        try:
-            ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
-        except Exception as e:
-            logger.warning(f"song_processor:_run_outer_search: {e}")
-        try:
-            from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    try:
+        ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
+    except Exception as e:
+        logger.warning(f"song_processor:_run_outer_search: {e}")
+        ctx.gpu_song_slot = 0
+    try:
+        ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
+    except Exception as e:
+        logger.warning(f"song_processor:_run_outer_search: {e}")
+    try:
+        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-            gpu_fields.configure_ga_run_buffers(
-                max_runs=ctx.ga_settings.multi_start,
-                max_genomes=GA_POPULATION_SIZE,
-            )
-        except Exception as e:
-            logger.warning(f"song_processor:_run_outer_search: {e}")
-
-        ctx.solver_ctx = prepare_solver_context(
-            ctx.cfg,
-            ctx.fixed_stats,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.all_gears,
-            ctx.all_minis,
-            optimize_gear=ctx.enable_gear,
-            optimize_minis=ctx.enable_mini,
-            fixed_gear=ctx.current_gear_list,
-            fixed_minis=ctx.current_mini_list,
-            pre_prune_mode="none",
-            status_cb=lambda message: ctx.emit(message),
-            song_slot=int(ctx.gpu_song_slot),
+        gpu_fields.configure_ga_run_buffers(
+            max_runs=ctx.ga_settings.multi_start,
+            max_genomes=GA_POPULATION_SIZE,
         )
+    except Exception as e:
+        logger.warning(f"song_processor:_run_outer_search: {e}")
 
-        ga_start = time.perf_counter()
-        best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
-            ctx.cfg,
-            ctx.fixed_stats,
-            ctx.paths,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            ctx.all_gears,
-            ctx.all_minis,
-            ctx.gears_by_name,
-            ctx.minis_by_name,
-            optimize_gear=ctx.enable_gear,
-            optimize_minis=ctx.enable_mini,
-            fixed_gear=ctx.current_gear_list,
-            fixed_minis=ctx.current_mini_list,
-            ga_depth=ctx.ga_depth,
-            db_seed=ctx.prev_record if ctx.prev_record else None,
-            ga_settings=ctx.ga_settings,
-            status_cb=lambda message: ctx.emit(message),
-            executor=None,
-            known_loadouts=ctx.known_loadouts,
-            song_slot=int(ctx.gpu_song_slot),
-            ga_seed=ctx.ga_seed,
-            solver_ctx=ctx.solver_ctx,
-        )
-        wall_sec = time.perf_counter() - ga_start
-        if PERF_TIMING_ENABLED:
-            print(f"[PERF] GA: {wall_sec:.2f}s")
-        if ctx.known_loadouts:
-            ctx.known_loadouts.clear()
-    else:
-        all_evaluated = []
-        if not ctx.enable_fever:
-            print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
+    ctx.solver_ctx = prepare_solver_context(
+        ctx.cfg,
+        ctx.fixed_stats,
+        ctx.calc_song,
+        ctx.ref_arrays,
+        ctx.all_gears,
+        ctx.all_minis,
+        optimize_gear=True,
+        optimize_minis=True,
+        fixed_gear=ctx.current_gear_list,
+        fixed_minis=ctx.current_mini_list,
+        pre_prune_mode="none",
+        status_cb=lambda message: ctx.emit(message),
+        song_slot=int(ctx.gpu_song_slot),
+    )
 
-        combined_stats = ctx.fixed_stats.copy()
-        for key, value in ctx.current_gear_stats.items():
-            combined_stats[key] = combined_stats.get(key, 0) + value
-        for key, value in ctx.current_mini_stats.items():
-            combined_stats[key] = combined_stats.get(key, 0) + value
-
-        best_data = solve_best_fever_combination(
-            ctx.cfg,
-            combined_stats,
-            ctx.calc_song,
-            ctx.ref_arrays,
-            silent=ctx.enable_fever,
-            skip_optimizer=not ctx.enable_fever,
-        )
-        best_gear = ctx.current_gear_list
-        best_minis = ctx.current_mini_list
-        if best_data:
-            base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
-            all_evaluated = [
-                {
-                    "Score": base_score,
-                    "BaseScore": base_score,
-                    "Gear": best_gear,
-                    "Minis": best_minis,
-                    "Data": best_data,
-                }
-            ]
-        wall_sec = 0.0
+    ga_start = time.perf_counter()
+    best_data, best_gear, best_minis, _, _, _, all_evaluated = solve_coevolution_genetic(
+        ctx.cfg,
+        ctx.fixed_stats,
+        ctx.paths,
+        ctx.calc_song,
+        ctx.ref_arrays,
+        ctx.all_gears,
+        ctx.all_minis,
+        ctx.gears_by_name,
+        ctx.minis_by_name,
+        optimize_gear=True,
+        optimize_minis=True,
+        fixed_gear=ctx.current_gear_list,
+        fixed_minis=ctx.current_mini_list,
+        ga_depth=ctx.ga_depth,
+        db_seed=ctx.prev_record if ctx.prev_record else None,
+        ga_settings=ctx.ga_settings,
+        status_cb=lambda message: ctx.emit(message),
+        executor=None,
+        known_loadouts=ctx.known_loadouts,
+        song_slot=int(ctx.gpu_song_slot),
+        ga_seed=ctx.ga_seed,
+        solver_ctx=ctx.solver_ctx,
+    )
+    wall_sec = time.perf_counter() - ga_start
+    if PERF_TIMING_ENABLED:
+        print(f"[PERF] GA: {wall_sec:.2f}s")
+    if ctx.known_loadouts:
+        ctx.known_loadouts.clear()
 
     ga_candidates = list(all_evaluated or [])
     if best_data and best_gear and best_minis:
@@ -571,8 +528,6 @@ def _build_and_persist(
                 "best_minis": compact_item_names(outer.best_minis),
                 "current_gear": compact_item_names(ctx.current_gear_list),
                 "current_minis": compact_item_names(ctx.current_mini_list),
-                "enable_gear": bool(ctx.enable_gear),
-                "enable_mini": bool(ctx.enable_mini),
                 "fg_variants": compact_fg_variants(fg.fg_variants),
                 "ga_candidates": compact_ga_candidates(outer.ga_candidates),
                 "loadout_entries": compact_loadout_entries(fg.loadout_entries),
@@ -627,8 +582,6 @@ def _build_and_persist(
             outer.best_minis,
             ctx.current_gear_list,
             ctx.current_mini_list,
-            ctx.enable_gear,
-            ctx.enable_mini,
             fg.fg_variants,
             ctx.emit,
             fg_debug=ctx.fg_debug,

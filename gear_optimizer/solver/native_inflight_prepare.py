@@ -43,7 +43,6 @@ _PREP_CACHE_LOCK = threading.Lock()
 _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" = OrderedDict()
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
 _INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...]], int], np.ndarray]" = OrderedDict()
-_REGISTRY_GPU_FIXED_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict]]" = OrderedDict()
 
 # Optional cache hit/miss stats (helps tune CPU requirements on low-end machines).
 _CACHE_STATS = {
@@ -154,24 +153,6 @@ def _cache_stats_maybe_emit() -> None:
         logger.debug(f"native_inflight_prepare:_cache_stats_maybe_emit: {e}")
 
 
-def _fixed_registry_cache_key(
-    *,
-    pool_key: tuple[str, str, tuple[str, ...]],
-    fixed_gear: list[dict] | None,
-    fixed_minis: list[dict] | None,
-) -> tuple:
-    def _n(it: dict | None) -> str:
-        try:
-            return str((it or {}).get("Name", "") or "")
-        except Exception as e:
-            logger.debug(f"native_inflight_prepare:_n: {e}")
-            return ""
-
-    fg = tuple(_n(it) for it in (fixed_gear or [])[:6])
-    fm = tuple(sorted(_n(it) for it in (fixed_minis or [])[:3]))
-    return ("fixed", pool_key, fg, fm)
-
-
 def prepare_native_song(task: tuple) -> NativeSong:
     cpu_t0 = thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
@@ -220,8 +201,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     fixed_stats = prepared_config.fixed_stats
     current_gear_list = prepared_config.current_gear_list
     current_mini_list = prepared_config.current_mini_list
-    enable_mini = prepared_config.enable_mini
-    enable_gear = prepared_config.enable_gear
     force_greats_finder = prepared_config.force_greats_finder
     force_greats_config = prepared_config.force_greats_config
     manual_force_greats = prepared_config.manual_force_greats
@@ -263,35 +242,17 @@ def prepare_native_song(task: tuple) -> NativeSong:
         _cache_stats_inc("pools_hit")
         gear_pool, mini_pool = cached_pools
 
-    cacheable_registry = bool(enable_gear and enable_mini)
-    if cacheable_registry:
+    with _PREP_CACHE_LOCK:
+        cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
+    if cached_registry is None:
+        _cache_stats_inc("registry_miss")
+        registry = ItemRegistry(gear_pool, mini_pool, slots)
+        gpu_data = registry.to_gpu_arrays()
         with _PREP_CACHE_LOCK:
-            cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
-        if cached_registry is None:
-            _cache_stats_inc("registry_miss")
-            registry = ItemRegistry(gear_pool, mini_pool, slots)
-            gpu_data = registry.to_gpu_arrays()
-            with _PREP_CACHE_LOCK:
-                _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
-        else:
-            _cache_stats_inc("registry_hit")
-            registry, gpu_data = cached_registry
+            _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
     else:
-        fixed_gear = list(current_gear_list or [])[:6] if not enable_gear else None
-        fixed_minis = list(current_mini_list or [])[:3] if not enable_mini else None
-        cache_key = _fixed_registry_cache_key(pool_key=pool_key, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
-        cached_fixed = None
-        with _PREP_CACHE_LOCK:
-            cached_fixed = _lru_get(_REGISTRY_GPU_FIXED_CACHE, cache_key)
-        if cached_fixed is None:
-            _cache_stats_inc("registry_miss")
-            registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
-            gpu_data = registry.to_gpu_arrays()
-            with _PREP_CACHE_LOCK:
-                _lru_put(_REGISTRY_GPU_FIXED_CACHE, cache_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
-        else:
-            _cache_stats_inc("registry_hit")
-            registry, gpu_data = cached_fixed
+        _cache_stats_inc("registry_hit")
+        registry, gpu_data = cached_registry
     _cache_stats_maybe_emit()
 
     fg_candidate_limit = read_fg_candidate_limit(
@@ -358,15 +319,13 @@ def prepare_native_song(task: tuple) -> NativeSong:
         from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk, extract_db_seed_ids
 
         if init_heuristic_k > 0:
-            cache_key = None
-            if cacheable_registry:
-                cache_key = (pool_key, int(init_heuristic_k))
-                with _PREP_CACHE_LOCK:
-                    init_heuristic_topk = _lru_get(_INIT_HEURISTIC_TOPK_CACHE, cache_key)
-                if init_heuristic_topk is None:
-                    _cache_stats_inc("heur_miss")
-                else:
-                    _cache_stats_inc("heur_hit")
+            cache_key = (pool_key, int(init_heuristic_k))
+            with _PREP_CACHE_LOCK:
+                init_heuristic_topk = _lru_get(_INIT_HEURISTIC_TOPK_CACHE, cache_key)
+            if init_heuristic_topk is None:
+                _cache_stats_inc("heur_miss")
+            else:
+                _cache_stats_inc("heur_hit")
 
             if init_heuristic_topk is None:
                 init_heuristic_topk = build_ga_init_heuristic_topk(
@@ -378,7 +337,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
                     heuristic_k=int(init_heuristic_k),
                     n_slots=9,
                 )
-                if cache_key is not None and init_heuristic_topk is not None:
+                if init_heuristic_topk is not None:
                     with _PREP_CACHE_LOCK:
                         _lru_put(
                             _INIT_HEURISTIC_TOPK_CACHE,
@@ -429,8 +388,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             fixed_stats=fixed_stats,
             current_gear_list=current_gear_list,
             current_mini_list=current_mini_list,
-            enable_gear=bool(enable_gear),
-            enable_mini=bool(enable_mini),
             force_greats_finder=bool(force_greats_finder),
             force_greats_config=force_greats_config,
             manual_force_greats=bool(manual_force_greats),

@@ -503,15 +503,14 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             auto_buff = True
             fg_debug = bool(ie.force_greats_debug)
 
-            if ie.force_greats_mode:
-                if ie.force_greats_finder:
-                    fg_status = "Finder"
-                elif ie.manual_force_greats:
-                    fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
-                else:
-                    fg_status = "Enabled"
+            if ie.force_greats_finder:
+                fg_status = "Finder"
+            elif ie.manual_force_greats:
+                fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
+            else:
+                fg_status = "Enabled"
 
-                logger.info(f" >> [ForceGreats] {fg_status}")
+            logger.info(f" >> [ForceGreats] {fg_status}")
 
             # PRODUCTION: runtime flags (GA_SearchDepth, LoopForever, EvalCPUCores).
             # Evolution DB is always enabled in production.

@@ -111,10 +111,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.bundle_song_repeats is False
     assert runtime.loop_restart_wait_sec == 60.0
 
-    assert ie.enable_fever is True
-    assert ie.enable_mini is True
-    assert ie.enable_gear is True
-    assert ie.force_greats_mode is True
     assert ie.force_greats_finder is False
     assert ie.force_greats_debug is False
     assert ie.force_greats_config == [0, 3]

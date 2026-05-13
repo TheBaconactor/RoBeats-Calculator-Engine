@@ -2353,7 +2353,7 @@ def solve_coevolution_genetic(
         from ..core.config import read_iteration_engine_settings
 
         ie = read_iteration_engine_settings(cfg)
-        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
+        fg_enabled = bool(ie.force_greats_finder) or bool(ie.manual_force_greats)
     except Exception as e:
         logger.debug(f"genetic:solve_coevolution_genetic: {e}")
         fg_enabled = False

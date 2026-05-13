@@ -553,7 +553,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         from gear_optimizer.core.config import read_iteration_engine_settings
 
         ie = read_iteration_engine_settings(cfg0)
-        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
+        fg_enabled = bool(ie.force_greats_finder) or bool(ie.manual_force_greats)
     except Exception as e:
         logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
         fg_enabled = False

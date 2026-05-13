@@ -12,8 +12,6 @@ def print_results(
     best_minis,
     current_gear_list,
     current_mini_list,
-    enable_gear,
-    enable_mini,
     fg_variants,
     status_emit_fn,
     fg_debug=False,
@@ -81,8 +79,8 @@ def print_results(
     # Create a "variant" for the base result for printing.
     base_entry_run = {
         "data": best_data,
-        "gear": best_gear if enable_gear else current_gear_list,
-        "minis": best_minis if enable_mini else current_mini_list,
+        "gear": best_gear,
+        "minis": best_minis,
     }
 
     # If the DB already contains a better base record, print the persisted winner instead

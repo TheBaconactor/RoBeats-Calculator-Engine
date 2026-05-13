@@ -179,8 +179,6 @@ def build_deferred_post_print_payload(
         "prev_record": item.get("prev_record"),
         "current_gear": item.get("current_gear") or [],
         "current_minis": item.get("current_minis") or [],
-        "enable_gear": bool(item.get("enable_gear")),
-        "enable_mini": bool(item.get("enable_mini")),
         "fg_debug": bool(item.get("fg_debug")),
         "ref_arrays": item.get("ref_arrays"),
         "calc_song": item.get("calc_song"),

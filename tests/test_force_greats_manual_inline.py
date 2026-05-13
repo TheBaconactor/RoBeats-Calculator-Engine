@@ -11,7 +11,6 @@ def test_force_greats_section_overrides_finder_setting(monkeypatch):
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "ForceGreatsMode", "true")
     cfg.set("IterationEngine", "ForceGreatsFinder", "true")
 
     cfg.add_section("ForceGreats")
@@ -27,10 +26,6 @@ def test_force_greats_section_overrides_finder_setting(monkeypatch):
         _current_gear_list,
         _current_mini_stats,
         _current_mini_list,
-        _enable_fever,
-        _enable_mini,
-        _enable_gear,
-        _force_greats_mode,
         force_greats_finder,
         force_greats_config,
         manual_force_greats,

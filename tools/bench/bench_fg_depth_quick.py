@@ -151,7 +151,6 @@ def main() -> int:
                 "CalculateSong": {"Song_Name": str(args.song), "Difficulty": str(args.difficulty)},
                 "IterationEngine": {
                     "GA_SearchDepth": str(int(depth)),
-                    "ForceGreatsMode": "true",
                     "ForceGreatsFinder": "true",
                     "FG_SearchRadius": str(int(args.fg_radius)),
                     "LoopForever": "false",
