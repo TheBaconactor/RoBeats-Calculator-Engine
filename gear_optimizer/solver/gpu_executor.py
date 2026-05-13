@@ -132,20 +132,7 @@ from gear_optimizer.solver.gpu_executor_fg_cfg_decode import (
 from gear_optimizer.solver.gpu_executor_fg_breakpoint_solve import (
     execute_fg_solve_with_breakpoints as _execute_fg_solve_with_breakpoints,
     execute_fg_solve_with_breakpoints_batch as _execute_fg_solve_with_breakpoints_batch,
-)
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import (
-    maybe_precompute_fg_breakpoint_timeline as _maybe_precompute_fg_breakpoint_timeline,
-    prepare_fg_breakpoint_payload_inputs as _prepare_fg_breakpoint_payload_inputs,
-    prepare_fg_breakpoint_solve_submission as _prepare_fg_breakpoint_solve_submission,
-)
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_download import (
-    pack_or_download_fg_breakpoint_result as _pack_or_download_fg_breakpoint_result,
-)
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_result import (
-    finalize_fg_breakpoint_result as _finalize_fg_breakpoint_result,
-)
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_tasks import (
-    build_fg_breakpoint_tasks as _build_fg_breakpoint_tasks,
+    run_fg_solve_with_breakpoints_payload as _run_fg_solve_with_breakpoints_payload,
 )
 from gear_optimizer.solver.gpu_executor_fg_frontier import (
     execute_fg_select_signature_frontier_batch as _execute_fg_select_signature_frontier_batch,
@@ -1810,94 +1797,33 @@ class GpuExecutor:
     def _run_fg_solve_with_breakpoints_payload(
         self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
     ) -> Any:
-        self._raise_if_abort_requested()
-
-        prepared = _prepare_fg_breakpoint_payload_inputs(payload, env_get=_ENV_GET)
-        if prepared is None:
-            return None
-
         def precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
             from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu
 
             return _precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
 
-        _maybe_precompute_fg_breakpoint_timeline(payload, precompute_timeline_fn=precompute_timeline_gpu)
-
-        n_sections = prepared.n_sections
-        base_ft = prepared.base_ft
-        base_ff = prepared.base_ff
-        non_fever_base_by_ff = prepared.non_fever_base_by_ff
-        fp_cap_table = prepared.fp_cap_table
-        song_slot = prepared.song_slot
-        gem_scale_fever = prepared.gem_scale_fever
-        solve_kwargs_payload = prepared.solve_kwargs_payload
-        implicit_cfgs = prepared.implicit_cfgs
-
-        task_plan = _build_fg_breakpoint_tasks(
-            prepared,
-            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
-        )
-        fg_tasks = task_plan.fg_tasks
-        cfg_windows = task_plan.cfg_windows
-        fused_surface_pair_drops = int(task_plan.surface_pair_drops)
-        fused_surface_pair_reduce_sec = float(task_plan.surface_pair_reduce_sec)
-
-        if not fg_tasks:
-            return None
-
-        # Solve + accumulate + download best.
         try:
             from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
             from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
         except Exception as e:
             raise RuntimeError(f"missing FG APIs: {type(e).__name__}: {e}") from e
 
-        submission = _prepare_fg_breakpoint_solve_submission(payload, solve_kwargs_payload)
-
-        if bool(payload.get("fg_reset_before", True)):
-            fg_reset_global_best(int(submission.n_genomes), session_slot=int(song_slot))
-
-        solve_force_greats_finder_gpu_tasks(
-            submission.genome_stats_list,
-            submission.timestamps_np,
-            submission.great_candidate_timestamps_np,
-            int(submission.long_notes),
-            float(submission.last_note_time),
-            fg_tasks=fg_tasks,
-            **submission.kwargs_local,
-        )
-
         def pack_global_best_topk_to_batch(*args, **kwargs):
             from .taichi_gem.force_greats.api import fg_pack_global_best_topk_to_batch
 
             return fg_pack_global_best_topk_to_batch(*args, **kwargs)
 
-        result = _pack_or_download_fg_breakpoint_result(
+        return _run_fg_solve_with_breakpoints_payload(
             payload,
-            prepared=prepared,
-            task_plan=task_plan,
-            submission=submission,
             batch_pack_idx=batch_pack_idx,
-            pack_topk_fn=pack_global_best_topk_to_batch,
-            download_global_best_fn=fg_download_global_best,
-        )
-        if isinstance(result, dict) and result.get("_packed_batch"):
-            return result
-
-        return _finalize_fg_breakpoint_result(
-            result,
-            implicit_cfgs=bool(implicit_cfgs),
-            cfg_windows=cfg_windows,
-            n_sections=int(n_sections),
-            song_slot=int(song_slot),
-            gem_scale_fever=int(gem_scale_fever),
-            base_ft=base_ft,
-            base_ff=base_ff,
-            non_fever_base_by_ff=non_fever_base_by_ff,
-            fp_cap_table=fp_cap_table,
-            fused_surface_pair_drops=int(fused_surface_pair_drops),
-            fused_surface_pair_reduce_sec=float(fused_surface_pair_reduce_sec),
+            raise_if_abort_requested=self._raise_if_abort_requested,
+            env_get_fn=_ENV_GET,
+            precompute_timeline_fn=precompute_timeline_gpu,
             compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
+            solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
+            reset_global_best_fn=fg_reset_global_best,
+            download_global_best_fn=fg_download_global_best,
+            pack_global_best_topk_to_batch_fn=pack_global_best_topk_to_batch,
             decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
             decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
         )

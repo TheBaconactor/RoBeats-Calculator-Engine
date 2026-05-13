@@ -5,6 +5,14 @@ from collections.abc import Callable
 from typing import Any
 
 from gear_optimizer.core.parsing import env_flag, env_get
+from gear_optimizer.solver.gpu_executor_fg_breakpoint_download import pack_or_download_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import (
+    maybe_precompute_fg_breakpoint_timeline,
+    prepare_fg_breakpoint_payload_inputs,
+    prepare_fg_breakpoint_solve_submission,
+)
+from gear_optimizer.solver.gpu_executor_fg_breakpoint_result import finalize_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg_breakpoint_tasks import build_fg_breakpoint_tasks
 from gear_optimizer.solver.gpu_executor_fg_selection import fg_selection_upload_key
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
@@ -268,3 +276,94 @@ def execute_fg_solve_with_breakpoints_batch(
             error=f"FG_SOLVE_WITH_BREAKPOINTS_BATCH: {type(e).__name__}: {e}",
         )
     return GpuResponse(request_id=request.request_id, success=True, result=results)
+
+
+def run_fg_solve_with_breakpoints_payload(
+    payload: dict[str, Any],
+    *,
+    batch_pack_idx: int | None = None,
+    raise_if_abort_requested: Callable[[], None],
+    env_get_fn: Callable[..., Any],
+    precompute_timeline_fn: Callable[..., Any],
+    compute_max_fp_matrix_fn: Callable[..., Any],
+    solve_force_greats_finder_gpu_tasks_fn: Callable[..., Any],
+    reset_global_best_fn: Callable[..., Any],
+    download_global_best_fn: Callable[..., Any],
+    pack_global_best_topk_to_batch_fn: Callable[..., Any],
+    decode_cfg_counts_from_max_fp_matrix_fn: Callable[..., Any],
+    decode_cfg_counts_from_windows_fn: Callable[..., Any],
+) -> Any:
+    raise_if_abort_requested()
+
+    prepared = prepare_fg_breakpoint_payload_inputs(payload, env_get=env_get_fn)
+    if prepared is None:
+        return None
+
+    maybe_precompute_fg_breakpoint_timeline(payload, precompute_timeline_fn=precompute_timeline_fn)
+
+    n_sections = prepared.n_sections
+    base_ft = prepared.base_ft
+    base_ff = prepared.base_ff
+    non_fever_base_by_ff = prepared.non_fever_base_by_ff
+    fp_cap_table = prepared.fp_cap_table
+    song_slot = prepared.song_slot
+    gem_scale_fever = prepared.gem_scale_fever
+    solve_kwargs_payload = prepared.solve_kwargs_payload
+    implicit_cfgs = prepared.implicit_cfgs
+
+    task_plan = build_fg_breakpoint_tasks(
+        prepared,
+        compute_max_fp_matrix_fn=compute_max_fp_matrix_fn,
+    )
+    fg_tasks = task_plan.fg_tasks
+    cfg_windows = task_plan.cfg_windows
+    fused_surface_pair_drops = int(task_plan.surface_pair_drops)
+    fused_surface_pair_reduce_sec = float(task_plan.surface_pair_reduce_sec)
+
+    if not fg_tasks:
+        return None
+
+    submission = prepare_fg_breakpoint_solve_submission(payload, solve_kwargs_payload)
+
+    if bool(payload.get("fg_reset_before", True)):
+        reset_global_best_fn(int(submission.n_genomes), session_slot=int(song_slot))
+
+    solve_force_greats_finder_gpu_tasks_fn(
+        submission.genome_stats_list,
+        submission.timestamps_np,
+        submission.great_candidate_timestamps_np,
+        int(submission.long_notes),
+        float(submission.last_note_time),
+        fg_tasks=fg_tasks,
+        **submission.kwargs_local,
+    )
+
+    result = pack_or_download_fg_breakpoint_result(
+        payload,
+        prepared=prepared,
+        task_plan=task_plan,
+        submission=submission,
+        batch_pack_idx=batch_pack_idx,
+        pack_topk_fn=pack_global_best_topk_to_batch_fn,
+        download_global_best_fn=download_global_best_fn,
+    )
+    if isinstance(result, dict) and result.get("_packed_batch"):
+        return result
+
+    return finalize_fg_breakpoint_result(
+        result,
+        implicit_cfgs=bool(implicit_cfgs),
+        cfg_windows=cfg_windows,
+        n_sections=int(n_sections),
+        song_slot=int(song_slot),
+        gem_scale_fever=int(gem_scale_fever),
+        base_ft=base_ft,
+        base_ff=base_ff,
+        non_fever_base_by_ff=non_fever_base_by_ff,
+        fp_cap_table=fp_cap_table,
+        fused_surface_pair_drops=int(fused_surface_pair_drops),
+        fused_surface_pair_reduce_sec=float(fused_surface_pair_reduce_sec),
+        compute_max_fp_matrix_fn=compute_max_fp_matrix_fn,
+        decode_cfg_counts_from_max_fp_matrix_fn=decode_cfg_counts_from_max_fp_matrix_fn,
+        decode_cfg_counts_from_windows_fn=decode_cfg_counts_from_windows_fn,
+    )

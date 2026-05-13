@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from gear_optimizer.solver.gpu_executor_fg_breakpoint_solve import (
     execute_fg_solve_with_breakpoints,
     execute_fg_solve_with_breakpoints_batch,
+    run_fg_solve_with_breakpoints_payload,
 )
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
@@ -154,3 +157,74 @@ def test_execute_fg_solve_with_breakpoints_batch_decodes_missing_cfg_counts(monk
 
     assert response.success is True
     np.testing.assert_array_equal(response.result[0]["cfg_counts"], np.asarray([[1]], dtype=np.int32))
+
+
+def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypatch):
+    import gear_optimizer.solver.gpu_executor_fg_breakpoint_solve as solve_mod
+
+    calls = []
+    prepared = SimpleNamespace(
+        n_sections=1,
+        base_ft=np.asarray([0], dtype=np.int32),
+        base_ff=np.asarray([0], dtype=np.int32),
+        non_fever_base_by_ff=np.zeros((161,), dtype=np.int16),
+        fp_cap_table=np.zeros((161, 51), dtype=np.int16),
+        song_slot=3,
+        gem_scale_fever=3,
+        solve_kwargs_payload={"song_slot": 3},
+        implicit_cfgs=False,
+    )
+    task_plan = SimpleNamespace(
+        fg_tasks=[{"task": 1}],
+        cfg_windows=[[(0, 0)]],
+        surface_pair_drops=2,
+        surface_pair_reduce_sec=0.5,
+    )
+    submission = SimpleNamespace(
+        genome_stats_list=["g"],
+        timestamps_np=np.asarray([1.0], dtype=np.float32),
+        great_candidate_timestamps_np=np.asarray([1.0], dtype=np.float32),
+        long_notes=0,
+        last_note_time=1.0,
+        kwargs_local={"song_slot": 3},
+        n_genomes=1,
+    )
+
+    monkeypatch.setattr(solve_mod, "prepare_fg_breakpoint_payload_inputs", lambda payload, env_get: prepared)
+    monkeypatch.setattr(
+        solve_mod,
+        "maybe_precompute_fg_breakpoint_timeline",
+        lambda payload, precompute_timeline_fn: calls.append("precompute"),
+    )
+    monkeypatch.setattr(solve_mod, "build_fg_breakpoint_tasks", lambda prepared_arg, compute_max_fp_matrix_fn: task_plan)
+    monkeypatch.setattr(
+        solve_mod,
+        "prepare_fg_breakpoint_solve_submission",
+        lambda payload, solve_kwargs_payload: submission,
+    )
+    monkeypatch.setattr(solve_mod, "pack_or_download_fg_breakpoint_result", lambda *args, **kwargs: {"raw": True})
+    monkeypatch.setattr(
+        solve_mod,
+        "finalize_fg_breakpoint_result",
+        lambda result, **kwargs: {"final": result, "kwargs": kwargs},
+    )
+
+    out = run_fg_solve_with_breakpoints_payload(
+        {"fg_reset_before": True},
+        raise_if_abort_requested=lambda: calls.append("abort_check"),
+        env_get_fn=lambda _key, default=None: default,
+        precompute_timeline_fn=lambda *_args, **_kwargs: None,
+        compute_max_fp_matrix_fn=lambda **_kwargs: np.zeros((1, 1), dtype=np.int16),
+        solve_force_greats_finder_gpu_tasks_fn=lambda *args, **kwargs: calls.append(("solve", args, kwargs)),
+        reset_global_best_fn=lambda n_genomes, session_slot: calls.append(("reset", n_genomes, session_slot)),
+        download_global_best_fn=lambda *_args, **_kwargs: {"downloaded": True},
+        pack_global_best_topk_to_batch_fn=lambda *_args, **_kwargs: {"packed": True},
+        decode_cfg_counts_from_max_fp_matrix_fn=lambda *_args: np.asarray([[1]], dtype=np.int32),
+        decode_cfg_counts_from_windows_fn=lambda *_args: np.asarray([[2]], dtype=np.int32),
+    )
+
+    assert calls[0:3] == ["abort_check", "precompute", ("reset", 1, 3)]
+    assert calls[3][0] == "solve"
+    assert calls[3][2]["fg_tasks"] == [{"task": 1}]
+    assert out["final"] == {"raw": True}
+    assert out["kwargs"]["fused_surface_pair_drops"] == 2
