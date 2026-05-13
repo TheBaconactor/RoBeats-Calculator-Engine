@@ -55,6 +55,7 @@ from gear_optimizer.solver.native_inflight_result_events import (
     fg_enabled_for_song as _fg_enabled_for_song,
 )
 from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
+from gear_optimizer.solver.native_inflight_post_sender import _PostSender
 from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     emit_deferred_post_payload as _emit_deferred_post_payload_once,
@@ -76,7 +77,6 @@ from gear_optimizer.solver.native_inflight_abort_log import (
     build_abort_queue_snapshot,
 )
 from gear_optimizer.solver.native_inflight_support import (
-    _PostSender,
     _extract_repeat_ctx,
     _task_key,
 )
