@@ -49,6 +49,49 @@ class BubbleTracker:
             "gpu_idle": int(bool(gpu_idle)),
         }
 
+    def snapshot_from_pipeline_counts(
+        self,
+        *,
+        now_mono: float,
+        prepared_count: int,
+        ready_fg_count: int,
+        active_song_lanes: int,
+        pending_tasks_count: int,
+        prep_inflight_count: int,
+        cpu_prewarm_inflight_count: int,
+        decode_inflight_count: int,
+        pending_fg_count: int,
+        fg_prep_inflight_count: int,
+        ga_inflight_count: int,
+        fg_futures_count: int,
+        last_progress: float,
+        oldest_fg_wait_s: float = 0.0,
+        lane_fill_hold_count: int = 0,
+        target_song_lanes: int = 0,
+    ) -> dict[str, float | int]:
+        backlog_count = int(
+            prepared_count
+            + pending_tasks_count
+            + prep_inflight_count
+            + cpu_prewarm_inflight_count
+            + decode_inflight_count
+            + pending_fg_count
+            + fg_prep_inflight_count
+        )
+        gpu_idle = int(ga_inflight_count) <= 0 and int(fg_futures_count) <= 0
+        return self.snapshot(
+            now_mono=float(now_mono),
+            ready_ga_count=int(prepared_count),
+            ready_fg_count=int(ready_fg_count),
+            backlog_count=int(backlog_count),
+            active_song_lanes=int(active_song_lanes),
+            gpu_idle=bool(gpu_idle),
+            last_progress=float(last_progress),
+            oldest_fg_wait_s=float(oldest_fg_wait_s),
+            lane_fill_hold_count=int(lane_fill_hold_count),
+            target_song_lanes=int(target_song_lanes),
+        )
+
     def note(self, snapshot: dict[str, float | int], *, now_mono: float, oldest_fg_wait_s: float) -> None:
         bubble_kpi = float(snapshot.get("bubble_kpi", 0.0) or 0.0)
         if bubble_kpi > 0.0:

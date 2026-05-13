@@ -381,26 +381,19 @@ def run_native_inflight_song_pipeline(
         bubble_tracker = BubbleTracker()
 
         def _bubble_snapshot(now_mono: float, *, oldest_fg_wait_s: float = 0.0) -> dict[str, float | int]:
-            ready_ga_count = int(len(prepared))
-            ready_fg_count = int(fg_pipeline.ready_count())
-            active_song_lanes = int(_active_song_lane_count())
-            backlog_count = int(
-                len(pending_tasks)
-                + len(prepared)
-                + len(prep_inflight)
-                + len(cpu_prewarm_inflight)
-                + len(decode_inflight)
-                + len(pending_fg)
-                + len(fg_prep_inflight)
-            )
-            gpu_idle = (not ga_inflight) and (not fg_futures)
-            return bubble_tracker.snapshot(
+            return bubble_tracker.snapshot_from_pipeline_counts(
                 now_mono=float(now_mono),
-                ready_ga_count=int(ready_ga_count),
-                ready_fg_count=int(ready_fg_count),
-                backlog_count=int(backlog_count),
-                active_song_lanes=int(active_song_lanes),
-                gpu_idle=bool(gpu_idle),
+                prepared_count=len(prepared),
+                ready_fg_count=fg_pipeline.ready_count(),
+                active_song_lanes=_active_song_lane_count(),
+                pending_tasks_count=len(pending_tasks),
+                prep_inflight_count=len(prep_inflight),
+                cpu_prewarm_inflight_count=len(cpu_prewarm_inflight),
+                decode_inflight_count=len(decode_inflight),
+                pending_fg_count=len(pending_fg),
+                fg_prep_inflight_count=len(fg_prep_inflight),
+                ga_inflight_count=len(ga_inflight),
+                fg_futures_count=len(fg_futures),
                 last_progress=float(last_progress),
                 oldest_fg_wait_s=float(oldest_fg_wait_s),
                 lane_fill_hold_count=int(lane_fill_hold_count),

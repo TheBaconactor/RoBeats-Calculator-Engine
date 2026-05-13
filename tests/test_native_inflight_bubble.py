@@ -62,6 +62,38 @@ def test_bubble_tracker_note_tracks_peak_and_closes_active_window():
     assert tracker.peak_oldest_fg_wait_s == 1.25
 
 
+def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shape():
+    tracker = BubbleTracker()
+
+    snapshot = tracker.snapshot_from_pipeline_counts(
+        now_mono=15.0,
+        prepared_count=2,
+        ready_fg_count=3,
+        active_song_lanes=4,
+        pending_tasks_count=5,
+        prep_inflight_count=6,
+        cpu_prewarm_inflight_count=7,
+        decode_inflight_count=8,
+        pending_fg_count=9,
+        fg_prep_inflight_count=10,
+        ga_inflight_count=0,
+        fg_futures_count=0,
+        last_progress=12.0,
+        oldest_fg_wait_s=2.0,
+        lane_fill_hold_count=11,
+        target_song_lanes=12,
+    )
+
+    assert snapshot["ready_ga_count"] == 2
+    assert snapshot["ready_fg_count"] == 3
+    assert snapshot["active_song_lanes"] == 4
+    assert snapshot["backlog_count"] == 47
+    assert snapshot["gpu_idle"] == 1
+    assert snapshot["idle_sec"] == 3.0
+    assert snapshot["lane_fill_hold_count"] == 11
+    assert snapshot["icfg.target_song_lanes"] == 12
+
+
 def test_bubble_tracker_finish_active_before_summary():
     tracker = BubbleTracker(active_started=2.0, total_idle_s=1.0, peak_kpi=7.0)
 
