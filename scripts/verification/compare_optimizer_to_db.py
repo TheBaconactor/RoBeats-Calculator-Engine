@@ -1,6 +1,9 @@
 import json
+import multiprocessing
 import os
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -125,8 +128,7 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
         best_score = int(row[0] or 0) if row is not None else 0
 
         # `songs.best_fg_score` can reflect non-T5 tiers computed in post-processing.
-        # This verifier runs `process_song_task()` (canonical T5 tier), so compare against
-        # the T5 FG leaderboard max for an apples-to-apples check.
+        # This verifier queries the native T5 leaderboard for an apples-to-apples check.
         fg_row = conn.execute(
             """
             SELECT MAX(fg_score)
@@ -144,33 +146,125 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
         return 0, 0
 
 
-def _best_fg_score_from_payload(payload: dict) -> int:
-    """
-    NOTE:
-    - `db_payload["fg_score"]` is the FG score attached to the TOP1 base loadout (for force payload pairing).
-    - `songs.best_fg_score` is the song-level FG leaderboard max (may come from a different loadout).
+def _start_post_processor(total_tasks: int) -> tuple[multiprocessing.Queue, multiprocessing.Process]:
+    from gear_optimizer.pipeline.post_processor import run_post_processor
 
-    For comparisons against `songs.best_fg_score`, use the run's global best FG score.
-    """
+    post_queue: multiprocessing.Queue = multiprocessing.Queue()
+    post_proc = multiprocessing.Process(
+        target=run_post_processor,
+        args=(post_queue, int(total_tasks)),
+        daemon=True,
+        name="CompareOptimizerToDbPostProcessor",
+    )
+    post_proc.start()
+    return post_queue, post_proc
 
-    if not isinstance(payload, dict):
-        return 0
 
-    candidates: list[int] = []
-    for k in ("run_best_fg_score", "fg_score"):
+def _stop_post_processor(post_queue: multiprocessing.Queue, post_proc: multiprocessing.Process) -> None:
+    try:
+        post_queue.put(None, block=True, timeout=5.0)
+    except Exception:
+        pass
+    try:
+        post_proc.join(timeout=120.0)
+    except Exception:
+        pass
+    try:
+        if post_proc.is_alive():
+            post_proc.terminate()
+            post_proc.join(timeout=5.0)
+    except Exception:
+        pass
+
+
+def _load_run_scores(db_path: Path, song_name: str) -> tuple[int, int]:
+    conn = _connect_readonly_sqlite(db_path)
+    try:
+        base_row = conn.execute(
+            """
+            SELECT MAX(score)
+            FROM team_buff_loadouts
+            WHERE song_name = ? AND team_buff = 'T5'
+            """,
+            (str(song_name),),
+        ).fetchone()
+        fg_row = conn.execute(
+            """
+            SELECT MAX(fg_score)
+            FROM team_buff_fg_loadouts
+            WHERE song_name = ? AND team_buff = 'T5'
+            """,
+            (str(song_name),),
+        ).fetchone()
+    finally:
+        conn.close()
+    base_score = int(base_row[0] or 0) if (base_row is not None and base_row[0] is not None) else 0
+    fg_score = int(fg_row[0] or 0) if (fg_row is not None and fg_row[0] is not None) else 0
+    return base_score, fg_score
+
+
+def _run_native_inflight_song(
+    *,
+    fp: str,
+    song_name: str,
+    difficulty: str,
+    cfg_dict: dict,
+    paths: dict,
+    ref_arrays: dict,
+    all_gears: list,
+    all_minis: list,
+    gears_by_name: dict,
+    minis_by_name: dict,
+    ga_depth: int,
+    run_db_path: Path,
+) -> tuple[int, int]:
+    from gear_optimizer.data.database import init_db
+    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+
+    task = (
+        fp,
+        song_name,
+        difficulty,
+        cfg_dict,
+        paths,
+        ref_arrays,
+        all_gears,
+        all_minis,
+        gears_by_name,
+        minis_by_name,
+        True,
+        int(ga_depth),
+        None,
+        0,
+        False,
+        {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(env_get("GA_SEED", "1337") or 1337)},
+    )
+
+    old_db_path = os.environ.get("EVOLUTION_DB_PATH")
+    os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)
+    try:
+        init_db()
+        post_queue, post_proc = _start_post_processor(total_tasks=1)
         try:
-            candidates.append(int(payload.get(k) or 0))
-        except Exception:
-            continue
-
-    best_fg = payload.get("best_fg")
-    if isinstance(best_fg, dict):
-        try:
-            candidates.append(int(best_fg.get("score") or 0))
-        except Exception:
-            pass
-
-    return max(candidates) if candidates else 0
+            run_native_inflight_song_pipeline(
+                [task],
+                in_flight_songs=1,
+                completed_songs=set(),
+                memory_resume_tracker=None,
+                post_queue=post_queue,
+                total_tasks=1,
+                stop_requested=None,
+                progress_cb=None,
+                bundle_completed_cb=None,
+            )
+        finally:
+            _stop_post_processor(post_queue, post_proc)
+        return _load_run_scores(run_db_path, song_name)
+    finally:
+        if old_db_path is None:
+            os.environ.pop("EVOLUTION_DB_PATH", None)
+        else:
+            os.environ["EVOLUTION_DB_PATH"] = old_db_path
 
 
 def main() -> int:
@@ -180,7 +274,7 @@ def main() -> int:
         print("Reference evolution.db not present in repo root.")
         return 2
 
-    from gear_optimizer.core.config import load_config, load_paths_cache, read_iteration_engine_settings
+    from gear_optimizer.core.config import load_config, load_paths_cache
     from gear_optimizer.core.utils import cfg_to_dict
     from gear_optimizer.data.csv_parser import (
         load_all_gears_list,
@@ -188,7 +282,6 @@ def main() -> int:
         load_csv_db,
         resolve_stats_csv,
     )
-    from gear_optimizer.legacy.song_processor_adapter import process_song_task
 
     paths = load_paths_cache()
     stats_txt = str(paths.get("Stats") or "")
@@ -201,8 +294,6 @@ def main() -> int:
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedProbability"] = "1.0"
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedMutations"] = "0"
 
-    ie = read_iteration_engine_settings(cfg)
-    auto_buff = True
     ga_depth = 0
     try:
         ga_depth = int(cfg.get("IterationEngine", "GA_SearchDepth", fallback="50") or 50)
@@ -222,51 +313,46 @@ def main() -> int:
         print("No reference songs found to compare.")
         return 2
 
-    os.environ["EVOLUTION_DB_PATH"] = str(ref_db_path)
     os.environ["GA_SEED"] = str(int(env_get("GA_SEED", "1337") or 1337))
 
     print(f"[Compare] Running live optimizer for {len(songs)} song(s) (GA_SearchDepth={ga_depth}).")
     print("[Compare] Using deterministic timing-envelope analysis.")
 
     results = []
-    for item in songs:
-        song_name = item["song_name"]
-        difficulty = item["difficulty"]
-        fp = item["file_path"]
+    with tempfile.TemporaryDirectory(prefix="optimizer_db_compare_") as temp_dir:
+        run_db_path = Path(temp_dir) / "evolution_compare.db"
+        shutil.copy2(str(ref_db_path), str(run_db_path))
 
-        args = (
-            fp,
-            song_name,
-            difficulty,
-            cfg_dict,
-            paths,
-            ref_arrays,
-            all_gears,
-            all_minis,
-            gears_by_name,
-            minis_by_name,
-            auto_buff,
-            ga_depth,
-            None,  # status_queue
-            0,  # parallel_workers
-            False,  # fg_debug
-        )
+        for item in songs:
+            song_name = item["song_name"]
+            difficulty = item["difficulty"]
+            fp = item["file_path"]
 
-        result = process_song_task(args)
-        payload = result.get("db_payload") if isinstance(result, dict) else {}
-        best_score = int(payload.get("score") or 0) if isinstance(payload, dict) else 0
-        best_fg_score = _best_fg_score_from_payload(payload)
-        ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
+            best_score, best_fg_score = _run_native_inflight_song(
+                fp=fp,
+                song_name=song_name,
+                difficulty=difficulty,
+                cfg_dict=cfg_dict,
+                paths=paths,
+                ref_arrays=ref_arrays,
+                all_gears=all_gears,
+                all_minis=all_minis,
+                gears_by_name=gears_by_name,
+                minis_by_name=minis_by_name,
+                ga_depth=ga_depth,
+                run_db_path=run_db_path,
+            )
+            ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
 
-        results.append(
-            {
-                "song": song_name,
-                "score": best_score,
-                "fg_score": best_fg_score,
-                "ref_score": ref_best,
-                "ref_fg_score": ref_fg,
-            }
-        )
+            results.append(
+                {
+                    "song": song_name,
+                    "score": best_score,
+                    "fg_score": best_fg_score,
+                    "ref_score": ref_best,
+                    "ref_fg_score": ref_fg,
+                }
+            )
 
     print("")
     ok = True
