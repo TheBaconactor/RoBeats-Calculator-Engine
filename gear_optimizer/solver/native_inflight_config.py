@@ -20,12 +20,12 @@ from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_prepare import bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
-    _read_continuous_fg_adaptive_submit,
-    _read_continuous_ga_dispatch_burst,
-    _read_fg_ga_credit_budget,
-    _read_fg_scheduler_mode,
-    _read_fg_slot_reserve,
-    _read_inflight_target_song_lanes,
+    read_continuous_fg_adaptive_submit,
+    read_continuous_ga_dispatch_burst,
+    read_fg_ga_credit_budget,
+    read_fg_scheduler_mode,
+    read_fg_slot_reserve,
+    read_inflight_target_song_lanes,
 )
 
 logger = logging.getLogger(__name__)
@@ -401,7 +401,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         except (ValueError, TypeError):
             pass
 
-    target_song_lanes = _read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
+    target_song_lanes = read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
 
     ga_queue_mult = 0
     if cfg0 is not None:
@@ -488,7 +488,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     if fg_aging_hard_s > 0.0 and fg_aging_hard_s < fg_aging_trigger_s:
         fg_aging_hard_s = float(fg_aging_trigger_s)
 
-    fg_scheduler_norm = _read_fg_scheduler_mode()
+    fg_scheduler_norm = read_fg_scheduler_mode()
 
     fg_drain_at_end = True
     fg_drain_src = "default(true)"
@@ -509,12 +509,12 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_drain_at_end = _truthy(raw_env)
         fg_drain_src = f"env({raw_env})"
 
-    fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = _read_fg_ga_credit_budget(
+    fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = read_fg_ga_credit_budget(
         cfg0,
         default_budget=max(1, int(inflight_limit)),
     )
-    continuous_ga_dispatch_burst = _read_continuous_ga_dispatch_burst(cfg0, default_burst=2)
-    fg_adaptive_submit_enabled, fg_adaptive_submit_max_burst = _read_continuous_fg_adaptive_submit(cfg0)
+    continuous_ga_dispatch_burst = read_continuous_ga_dispatch_burst(cfg0, default_burst=2)
+    fg_adaptive_submit_enabled, fg_adaptive_submit_max_burst = read_continuous_fg_adaptive_submit(cfg0)
 
     try:
         msg = f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src}"
@@ -558,7 +558,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
         fg_enabled = False
 
-    fg_slot_reserve = _read_fg_slot_reserve(
+    fg_slot_reserve = read_fg_slot_reserve(
         cfg0,
         fg_enabled=bool(fg_enabled),
         inflight_limit=int(inflight_limit),

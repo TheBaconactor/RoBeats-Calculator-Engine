@@ -12,13 +12,13 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
     closed_loop_bubble_kpi,
     count_active_song_lanes,
-    _read_continuous_fg_adaptive_submit,
-    _read_continuous_ga_dispatch_burst,
-    _read_fg_ga_credit_budget,
-    _read_fg_scheduler_mode,
-    _read_fg_slot_reserve,
-    _read_inflight_target_song_lanes,
     default_prime_target,
+    read_continuous_fg_adaptive_submit,
+    read_continuous_ga_dispatch_burst,
+    read_fg_ga_credit_budget,
+    read_fg_scheduler_mode,
+    read_fg_slot_reserve,
+    read_inflight_target_song_lanes,
     read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
@@ -98,12 +98,12 @@ def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
 
 def test_read_fg_scheduler_mode_defaults_to_continuous(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_SCHEDULER", raising=False)
-    assert _read_fg_scheduler_mode() == "continuous"
+    assert read_fg_scheduler_mode() == "continuous"
 
 
 def test_read_fg_scheduler_mode_is_fixed_to_continuous(monkeypatch):
     monkeypatch.setenv("INFLIGHT_FG_SCHEDULER", "backlog")
-    assert _read_fg_scheduler_mode() == "continuous"
+    assert read_fg_scheduler_mode() == "continuous"
 
 
 def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
@@ -111,22 +111,22 @@ def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_GA_CREDIT_BUDGET", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    budget, explicit = _read_fg_ga_credit_budget(cfg, default_budget=24)
+    budget, explicit = read_fg_ga_credit_budget(cfg, default_budget=24)
     assert budget == 24
     assert explicit is False
 
     monkeypatch.setenv("INFLIGHT_GA_CREDIT_BUDGET", "88")
-    budget, explicit = _read_fg_ga_credit_budget(cfg, default_budget=24)
+    budget, explicit = read_fg_ga_credit_budget(cfg, default_budget=24)
     assert budget == 24
     assert explicit is False
 
     cfg_cfg = _cfg_with_iteration_engine(InFlight_FGGACreditBudget="77")
-    budget, explicit = _read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
+    budget, explicit = read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
     assert budget == 77
     assert explicit is True
 
     monkeypatch.setenv("INFLIGHT_FG_GA_CREDIT_BUDGET", "91")
-    budget, explicit = _read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
+    budget, explicit = read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
     assert budget == 91
     assert explicit is True
 
@@ -318,13 +318,13 @@ def test_continuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
 def test_read_continuous_ga_dispatch_burst_defaults_and_env_override(monkeypatch):
     monkeypatch.delenv("INFLIGHT_CONTINUOUS_GA_BURST", raising=False)
     cfg = _cfg_with_iteration_engine()
-    assert _read_continuous_ga_dispatch_burst(cfg, default_burst=2) == 2
+    assert read_continuous_ga_dispatch_burst(cfg, default_burst=2) == 2
 
     cfg2 = _cfg_with_iteration_engine(InFlight_ContinuousGABurst="5")
-    assert _read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 5
+    assert read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 5
 
     monkeypatch.setenv("INFLIGHT_CONTINUOUS_GA_BURST", "7")
-    assert _read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 7
+    assert read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 7
 
 
 def test_read_continuous_fg_adaptive_submit_defaults_and_overrides(monkeypatch):
@@ -332,18 +332,18 @@ def test_read_continuous_fg_adaptive_submit_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    enabled, max_burst = _read_continuous_fg_adaptive_submit(cfg)
+    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg)
     assert enabled is True
     assert max_burst == 3
 
     cfg2 = _cfg_with_iteration_engine(InFlight_FGAdaptiveSubmit="false", InFlight_FGAdaptiveMaxBurst="6")
-    enabled, max_burst = _read_continuous_fg_adaptive_submit(cfg2)
+    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg2)
     assert enabled is False
     assert max_burst == 6
 
     monkeypatch.setenv("INFLIGHT_FG_ADAPTIVE_SUBMIT", "1")
     monkeypatch.setenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", "4")
-    enabled, max_burst = _read_continuous_fg_adaptive_submit(cfg2)
+    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg2)
     assert enabled is True
     assert max_burst == 4
 
@@ -353,15 +353,15 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_SLOT_RESERVE_RATIO", raising=False)
 
     cfg_ratio = _cfg_with_iteration_engine(InFlight_FGSlotReserveRatio="0.2")
-    reserve = _read_fg_slot_reserve(cfg_ratio, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
+    reserve = read_fg_slot_reserve(cfg_ratio, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
     assert reserve == 5
 
     cfg_abs = _cfg_with_iteration_engine(InFlight_FGSlotReserve="2")
-    reserve = _read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
+    reserve = read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
     assert reserve == 2
 
     monkeypatch.setenv("INFLIGHT_FG_SLOT_RESERVE", "0")
-    reserve = _read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
+    reserve = read_fg_slot_reserve(cfg_abs, fg_enabled=True, inflight_limit=12, song_slot_limit=23)
     assert reserve == 0
 
 
@@ -560,17 +560,17 @@ def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_TARGET_SONG_LANES", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    assert _read_inflight_target_song_lanes(cfg, inflight_limit=1) == 1
-    assert _read_inflight_target_song_lanes(cfg, inflight_limit=4) == 2
+    assert read_inflight_target_song_lanes(cfg, inflight_limit=1) == 1
+    assert read_inflight_target_song_lanes(cfg, inflight_limit=4) == 2
 
     cfg2 = _cfg_with_iteration_engine(InFlight_TargetSongLanes="3")
-    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 3
+    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 3
 
     monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "9")
-    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 4
+    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 4
 
     monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "0")
-    assert _read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 1
+    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 1
 
 
 def test_continuous_fg_should_fill_song_lanes_before_fg_when_safe():
