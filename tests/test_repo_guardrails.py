@@ -15,10 +15,23 @@ Rationale:
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 from pathlib import Path
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_policy_offense_scan():
+    script = _REPO_ROOT / "tools" / "dev" / "policy_offense_scan.py"
+    spec = importlib.util.spec_from_file_location("policy_offense_scan", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _iter_python_files(root: Path, rel_dirs: list[str]):
@@ -261,3 +274,42 @@ def test_removed_user_skills_are_not_routed_from_repo_docs() -> None:
             offenders.append(f"{rel}: {', '.join(hits)}")
 
     assert not offenders, "Repo routing docs must not point at removed user skills:\n" + "\n".join(offenders)
+
+
+def test_policy_offense_scan_flags_new_active_code_fallbacks() -> None:
+    scanner = _load_policy_offense_scan()
+    diff = """diff --git a/gear_optimizer/app.py b/gear_optimizer/app.py
+--- a/gear_optimizer/app.py
++++ b/gear_optimizer/app.py
+@@ -10,0 +11,2 @@
++def broken():
++    return run_fallback_path()
+"""
+
+    offenses = scanner.scan_added_lines(diff)
+
+    assert len(offenses) == 1
+    assert offenses[0].path == "gear_optimizer/app.py"
+    assert offenses[0].line == 12
+
+
+def test_policy_offense_scan_ignores_docs_tests_and_itself() -> None:
+    scanner = _load_policy_offense_scan()
+    diff = """diff --git a/docs/example.md b/docs/example.md
+--- a/docs/example.md
++++ b/docs/example.md
+@@ -1,0 +2 @@
++fallback is discussed in policy docs
+diff --git a/tests/example_test.py b/tests/example_test.py
+--- a/tests/example_test.py
++++ b/tests/example_test.py
+@@ -1,0 +2 @@
++assert "fallback" in message
+diff --git a/tools/dev/policy_offense_scan.py b/tools/dev/policy_offense_scan.py
+--- a/tools/dev/policy_offense_scan.py
++++ b/tools/dev/policy_offense_scan.py
+@@ -1,0 +2 @@
++FORBIDDEN = "fallback"
+"""
+
+    assert scanner.scan_added_lines(diff) == []

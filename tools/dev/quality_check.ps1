@@ -30,7 +30,10 @@ Write-Host "== Gear Optimizer: Quality Check =="
 # 1. Syntax check
 Invoke-NativeStep -Label "compileall" -Executable "python" -Arguments @("-m", "compileall", "-q", "gear_optimizer", "tests")
 
-# 2. Lint
+# 2. Policy offense scan
+Invoke-NativeStep -Label "policy offense scan" -Executable "python" -Arguments @("tools/dev/policy_offense_scan.py")
+
+# 3. Lint
 if ($Fix) {
   Invoke-NativeStep -Label "ruff check --fix" -Executable "python" -Arguments @("-m", "ruff", "check", ".", "--fix")
   Invoke-NativeStep -Label "ruff format" -Executable "python" -Arguments @("-m", "ruff", "format", ".")
@@ -45,7 +48,7 @@ if ($Fix) {
 }
 
 if ($CI) {
-  # 3. CI tests (CPU-only reference)
+  # 4. CI tests (CPU-only reference)
   Write-Host "`n== Tests (CI: CPU reference only) =="
   Invoke-NativeStep -Label "pytest CI suite" -Executable "python" -Arguments @(
     "-m",
@@ -57,7 +60,7 @@ if ($CI) {
     "--tb=short"
   )
 } else {
-  # 3. Quick tests (use python -m pytest for reliable package imports)
+  # 4. Quick tests (use python -m pytest for reliable package imports)
   Write-Host "`n== Quick tests =="
   Invoke-NativeStep -Label "pytest quick suite" -Executable "python" -Arguments @(
     "-m",
