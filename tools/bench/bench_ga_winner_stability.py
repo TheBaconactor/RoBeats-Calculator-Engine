@@ -466,7 +466,7 @@ def run_single_seed_inflight(
     audit_path: Path,
     run_db_path: Path,
 ) -> dict[str, Any]:
-    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+    from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
 
     repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
     task = (
@@ -507,16 +507,18 @@ def run_single_seed_inflight(
     t0 = time.perf_counter()
     error_msg = ""
     try:
-        run_native_inflight_song_pipeline(
-            [task],
-            in_flight_songs=1,
-            completed_songs=completed_songs,
-            memory_resume_tracker=None,
-            post_queue=post_queue,
-            total_tasks=1,
-            stop_requested=None,
-            progress_cb=None,
-            bundle_completed_cb=None,
+        NativeOptimizationEngine().run(
+            NativeOptimizationRequest(
+                tasks=[task],
+                in_flight_songs=1,
+                completed_songs=completed_songs,
+                memory_resume_tracker=None,
+                post_queue=post_queue,
+                total_tasks=1,
+                stop_requested=None,
+                progress_cb=None,
+                bundle_completed_cb=None,
+            )
         )
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}"

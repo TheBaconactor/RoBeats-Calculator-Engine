@@ -219,7 +219,7 @@ def _run_native_inflight_song(
     run_db_path: Path,
 ) -> tuple[int, int]:
     from gear_optimizer.data.database import init_db
-    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+    from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
 
     task = (
         fp,
@@ -246,16 +246,18 @@ def _run_native_inflight_song(
         init_db()
         post_queue, post_proc = _start_post_processor(total_tasks=1)
         try:
-            run_native_inflight_song_pipeline(
-                [task],
-                in_flight_songs=1,
-                completed_songs=set(),
-                memory_resume_tracker=None,
-                post_queue=post_queue,
-                total_tasks=1,
-                stop_requested=None,
-                progress_cb=None,
-                bundle_completed_cb=None,
+            NativeOptimizationEngine().run(
+                NativeOptimizationRequest(
+                    tasks=[task],
+                    in_flight_songs=1,
+                    completed_songs=set(),
+                    memory_resume_tracker=None,
+                    post_queue=post_queue,
+                    total_tasks=1,
+                    stop_requested=None,
+                    progress_cb=None,
+                    bundle_completed_cb=None,
+                )
             )
         finally:
             _stop_post_processor(post_queue, post_proc)

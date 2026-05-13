@@ -11,6 +11,7 @@ from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
+from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries, valid_entry_from_db_payload
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ class TaskExecutionMixin:
             self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-            """Run the current queue through native in-flight when supported, else direct per-song processing."""
+            """Run the current queue through the native in-flight production engine."""
             if self._stop_requested_now():
                 return
             if not tasks:
@@ -144,8 +145,6 @@ class TaskExecutionMixin:
             try:
                 post_queue, post_proc = self._start_post_processor(total_tasks)
 
-                from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
-
                 self._progress_counts_driven = True
                 if self._progress is not None:
                     self._progress.update_counts(completed=0, total=int(total_tasks))
@@ -159,16 +158,18 @@ class TaskExecutionMixin:
                         new_records=int(getattr(self, "_session_new_records", 0) or 0),
                     )
                 self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
-                run_native_inflight_song_pipeline(
-                    tasks,
-                    in_flight_songs=int(inflight_songs),
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
-                    post_queue=post_queue,
-                    total_tasks=int(total_tasks),
-                    stop_requested=self._stop_requested_now,
-                    progress_cb=self._progress_event,
-                    bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
+                NativeOptimizationEngine().run(
+                    NativeOptimizationRequest(
+                        tasks=tasks,
+                        in_flight_songs=int(inflight_songs),
+                        completed_songs=completed_songs,
+                        memory_resume_tracker=memory_resume_tracker,
+                        post_queue=post_queue,
+                        total_tasks=int(total_tasks),
+                        stop_requested=self._stop_requested_now,
+                        progress_cb=self._progress_event,
+                        bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
+                    )
                 )
                 return
             except Exception as inflight_err:
