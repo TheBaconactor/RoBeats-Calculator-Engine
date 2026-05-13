@@ -136,7 +136,7 @@ class InflightDBPersistence:
         self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
-def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
+def build_fg_persist_entries(song: _NativeSong) -> list[dict]:
     entries: list[dict] = []
     build_details = InflightDBPersistence.ensure_fg_build_details(song)
     raw_loadout_entries = song.runtime.fg.loadout_entries
@@ -149,7 +149,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             try:
                 loadout_hash = entry_loadout_hash(entry)
             except Exception as e:
-                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
+                logger.debug(f"native_inflight_persistence:build_fg_persist_entries: {e}")
                 loadout_hash = None
             if not loadout_hash or not isinstance(entry, dict):
                 continue
@@ -175,7 +175,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             try:
                 gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
             except Exception as e:
-                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
+                logger.debug(f"native_inflight_persistence:build_fg_persist_entries: {e}")
                 gear_names, mini_names = [], []
         if gear_names or mini_names:
             try:
@@ -185,7 +185,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 if isinstance(candidate, dict):
                     base_entry = candidate
             except Exception as e:
-                logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
+                logger.debug(f"native_inflight_persistence:build_fg_persist_entries: {e}")
                 base_entry = None
 
         if isinstance(base_entry, dict):
@@ -216,7 +216,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 force_obj = dict(data)
                 materialize_stats_from_payload(force_obj, mutate_payload=True)
         except Exception as e:
-            logger.debug(f"native_inflight_persistence:_build_fg_persist_entries: {e}")
+            logger.debug(f"native_inflight_persistence:build_fg_persist_entries: {e}")
             force_obj = None
         if force_obj is None:
             continue

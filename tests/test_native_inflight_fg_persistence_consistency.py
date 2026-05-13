@@ -23,7 +23,7 @@ def _stats(perfect_points: int) -> dict:
 def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_consistency.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -91,7 +91,7 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
         loadout_entries={loadout_hash: {"score": 1000, "base_score": 1000, "details": base_details}},
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["score"] == 1000
     assert fg_entries[0]["fg_score"] == 1200
@@ -133,7 +133,7 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
 def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_no_force.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -199,7 +199,7 @@ def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, mo
         loadout_entries={loadout_hash: {"score": 1000, "base_score": 1000, "details": base_details}},
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries == []
 
     save_loadouts_batch(song_name, fg_entries)
@@ -232,7 +232,7 @@ def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, mo
 def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_eval_data.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -317,7 +317,7 @@ def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tm
         },
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["details"]["Stats"] == base_stats
     assert fg_entries[0]["details"]["FT"] == 0
@@ -364,7 +364,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
 
     def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0) -> dict:
@@ -491,7 +491,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
         },
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["score"] == base_score
     assert fg_entries[0]["fg_score"] == base_score + 100
@@ -525,7 +525,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
 
 
 def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     base_stats = _stats(100)
     fg_stats = _stats(999)
@@ -557,7 +557,7 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
         loadout_entries={},
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     # Fallback still prefers explicit base_score over the variant's score field.
     assert fg_entries[0]["score"] == 1000
@@ -572,7 +572,7 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
 
 def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     base_stats = _stats(100)
     expected_stats = apply_gems_to_base_fast(
@@ -613,14 +613,14 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
         loadout_entries={},
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["details"]["Stats"] == expected_stats
     assert fg_entries[0]["force"]["Stats"] == expected_stats
 
 
 def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     base_stats = _stats(100)
     force_payload = {
@@ -654,7 +654,7 @@ def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
         loadout_entries={},
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["fg_score"] == 1200
     assert (fg_entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
@@ -695,7 +695,7 @@ def test_retained_fg_variant_force_base_score_matches_paired_entry_score():
 
 def test_native_inflight_fg_persist_entries_preserves_paired_base_score_in_fg_table(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
-    from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_paired_base.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -742,7 +742,7 @@ def test_native_inflight_fg_persist_entries_preserves_paired_base_score_in_fg_ta
         },
     )
 
-    fg_entries = _build_fg_persist_entries(fake_song)
+    fg_entries = build_fg_persist_entries(fake_song)
     assert fg_entries
     assert fg_entries[0]["score"] == 1500
     assert fg_entries[0]["fg_score"] == 1200
