@@ -91,11 +91,7 @@ def test_worker_mode_detection():
 
 def test_gpu_executor_ipc_request():
     """Test a full IPC request/response cycle."""
-    from gear_optimizer.solver.gpu_executor import (
-        GpuExecutor,
-        GpuRequest,
-        GpuRequestType,
-    )
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
     import numpy as np
 
     GpuExecutor._instance = None
@@ -133,7 +129,8 @@ def test_gpu_executor_ipc_request():
 
 def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
     """Test the restored single-request dispatcher uses the request-type table."""
-    from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType, GpuResponse
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
+    from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
     executor = GpuExecutor()
     seen = []

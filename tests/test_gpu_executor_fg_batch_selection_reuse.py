@@ -3,7 +3,8 @@ import types
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 
 def test_fg_batch_pack_reuses_selection_upload_for_equivalent_arrays(monkeypatch):

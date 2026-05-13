@@ -3,7 +3,8 @@ import types
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 
 def _install_fake_taichi_deps_for_frontier_batch(monkeypatch):

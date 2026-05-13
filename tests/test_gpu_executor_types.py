@@ -6,18 +6,6 @@ from pathlib import Path
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse, build_shutdown_request
 
 
-def test_gpu_executor_reexports_request_types_for_compatibility():
-    from gear_optimizer.solver.gpu_executor import (
-        GpuRequest as ReexportedRequest,
-        GpuRequestType as ReexportedRequestType,
-        GpuResponse as ReexportedResponse,
-    )
-
-    assert ReexportedRequest is GpuRequest
-    assert ReexportedRequestType is GpuRequestType
-    assert ReexportedResponse is GpuResponse
-
-
 def test_gpu_request_envelopes_round_trip_through_pickle():
     request = GpuRequest(
         request_type=GpuRequestType.GPU_NATIVE_GA_RUN,

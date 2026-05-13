@@ -10,7 +10,7 @@ def _start_request_responder(request_q: queue.Queue, response_q: queue.Queue, *,
 
     This lets us test worker-mode IPC payload shaping without requiring Taichi/GPU.
     """
-    from gear_optimizer.solver.gpu_executor import GpuResponse
+    from gear_optimizer.solver.gpu_executor_types import GpuResponse
 
     captured = []
     stop_sentinel = object()
@@ -151,7 +151,7 @@ def test_submit_gpu_solve_genomes_from_registry_uses_static_handle_after_first_s
 
 
 def test_submit_gpu_solve_genomes_from_registry_retries_on_unknown_static_handle():
-    from gear_optimizer.solver.gpu_executor import GpuResponse
+    from gear_optimizer.solver.gpu_executor_types import GpuResponse
     from gear_optimizer.solver.gpu_executor import clear_gpu_worker_mode, set_gpu_worker_mode
 
     req_q: queue.Queue = queue.Queue()
@@ -218,7 +218,8 @@ def test_submit_gpu_solve_genomes_from_registry_retries_on_unknown_static_handle
 
 
 def test_executor_resolve_registry_payload_caches_static_parts():
-    from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
+    from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
     GpuExecutor._instance = None
     ex = GpuExecutor()

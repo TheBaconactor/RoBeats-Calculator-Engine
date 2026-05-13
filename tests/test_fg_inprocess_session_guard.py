@@ -93,7 +93,8 @@ def _run_fg_once(
     return_calc_song: bool = False,
 ) -> int | tuple[int, dict]:
     from gear_optimizer.helpers.song_helpers.force_greats.core import process_force_greats
-    from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequestType
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
+    from gear_optimizer.solver.gpu_executor_types import GpuRequestType
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
     monkeypatch.setenv("FG_ASYNC_TASKS_PER_REQUEST", str(int(tasks_per_request_env)))

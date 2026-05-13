@@ -2,7 +2,7 @@ import queue
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import GpuRequestType, GpuResponse
+from gear_optimizer.solver.gpu_executor_types import GpuRequestType, GpuResponse
 from gear_optimizer.solver.gpu_service import (
     _DEFAULT_FG_OWNER_MAX_PAIRS,
     GpuServiceClient,

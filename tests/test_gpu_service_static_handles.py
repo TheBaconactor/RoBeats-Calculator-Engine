@@ -1,6 +1,6 @@
 import queue
 
-from gear_optimizer.solver.gpu_executor import GpuRequestType
+from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 

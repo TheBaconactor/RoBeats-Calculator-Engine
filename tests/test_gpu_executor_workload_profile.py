@@ -3,7 +3,8 @@ import queue
 import pytest
 
 import gear_optimizer.solver.gpu_executor as gpu_executor_module
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 from gear_optimizer.solver.gpu_executor_batching import BatchPlan as _BatchPlan
 from gear_optimizer.solver.gpu_executor_workload import (
     batch_trace_context,

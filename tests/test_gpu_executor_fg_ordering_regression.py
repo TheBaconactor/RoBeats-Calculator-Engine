@@ -38,7 +38,8 @@ def test_gpu_executor_fg_task_then_download_ordering_regression(monkeypatch):
     Historically, `_coalesce_fg_task_requests()` executed non-task requests eagerly while
     still scanning the request list, allowing a download to read a partial global-best state.
     """
-    from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequestType
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
+    from gear_optimizer.solver.gpu_executor_types import GpuRequestType
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
     # Encourage the executor to batch multiple FG requests together.
@@ -176,4 +177,3 @@ def test_gpu_executor_fg_task_then_download_ordering_regression(monkeypatch):
             ex.stop()
         finally:
             GpuExecutor._instance = None
-

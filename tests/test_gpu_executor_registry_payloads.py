@@ -1,6 +1,7 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 from gear_optimizer.solver.gpu_executor_registry_payloads import RegistryPayloadCache, load_registry_payload_cache_settings
 
 

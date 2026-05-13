@@ -1,7 +1,8 @@
 import pytest
 
 from gear_optimizer.core.fallback_monitor import FallbackViolation
-from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType, GpuResponse
+from gear_optimizer.solver.gpu_executor import GpuExecutor
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
 def _mk_executor() -> GpuExecutor:
