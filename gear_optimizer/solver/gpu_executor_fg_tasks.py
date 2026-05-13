@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.parsing import env_flag, env_get
-from gear_optimizer.solver.gpu_executor_types import GpuRequest
+from gear_optimizer.solver.gpu_executor_response_delivery import order_responses_for_requests
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
 @dataclass(frozen=True)
@@ -114,3 +115,109 @@ def iter_fg_task_chunks(fg_tasks: Sequence[Any], task_budget: int) -> list[list[
     if int(task_budget) <= 0 or len(tasks) <= int(task_budget):
         return [tasks]
     return [tasks[j : j + int(task_budget)] for j in range(0, len(tasks), int(task_budget))]
+
+
+def coalesce_fg_task_requests(
+    requests: list[GpuRequest],
+    *,
+    in_process_queues: bool,
+    execute_request: Callable[[GpuRequest], GpuResponse],
+    payload_dict_fn: Callable[[GpuRequest], dict[str, Any]],
+    solve_force_greats_finder_gpu_tasks_fn: Callable[..., Any],
+    record_fg_tasks_batch: Callable[[int], None],
+    record_pack: Callable[[GpuRequestType, float], None],
+    perf_counter_fn: Callable[[], float],
+    env_get_fn: Callable[..., Any] = env_get,
+) -> list[GpuResponse]:
+    task_budget = load_fg_task_budget(
+        in_process_queues=bool(in_process_queues),
+        env_get_fn=env_get_fn,
+    )
+
+    def _flush_task_only_segment(seg: list[FgTaskOnlyRequest]) -> dict[int, GpuResponse]:
+        if not seg:
+            return {}
+
+        groups: dict[tuple[Any, ...], list[FgTaskOnlyRequest]] = {}
+        out_by_id: dict[int, GpuResponse] = {}
+
+        for item in seg:
+            key = fg_task_only_group_key(item.args, item.kwargs)
+            if key is None:
+                out_by_id[int(item.request.request_id)] = execute_request(item.request)
+                continue
+            groups.setdefault(key, []).append(item)
+
+        for _key, items in groups.items():
+            if not items:
+                continue
+            if len(items) == 1:
+                req0 = items[0].request
+                out_by_id[int(req0.request_id)] = execute_request(req0)
+                continue
+
+            req0 = items[0].request
+            args0 = items[0].args
+            kwargs0 = items[0].kwargs
+            genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args0
+
+            merged_tasks: list[Any] = []
+            upload_any = False
+            for item in items:
+                merged_tasks.extend(list(item.fg_tasks))
+                upload_any = upload_any or bool(item.kwargs.get("upload_genome_stats", True))
+                record_fg_tasks_batch(len(item.fg_tasks))
+
+            kwargs_local = build_merged_fg_task_kwargs(kwargs0, upload_genome_stats=upload_any)
+
+            t_pack0 = perf_counter_fn()
+            try:
+                upload_this = bool(kwargs_local.get("upload_genome_stats", True))
+                for fg_task_chunk in iter_fg_task_chunks(merged_tasks, task_budget):
+                    kwargs_local["upload_genome_stats"] = bool(upload_this)
+                    solve_force_greats_finder_gpu_tasks_fn(
+                        genome_stats_list,
+                        timestamps_np,
+                        great_candidate_timestamps_np,
+                        int(long_notes),
+                        float(last_note_time),
+                        fg_tasks=fg_task_chunk,
+                        **kwargs_local,
+                    )
+                    upload_this = False
+                record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter_fn() - t_pack0)
+                for item in items:
+                    req = item.request
+                    out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=True, result=None)
+            except Exception as exc:
+                record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter_fn() - t_pack0)
+                err = f"{type(exc).__name__}: {exc}"
+                for item in items:
+                    req = item.request
+                    out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=False, error=err)
+
+        return out_by_id
+
+    responses_by_id: dict[int, GpuResponse] = {}
+    segment: list[FgTaskOnlyRequest] = []
+
+    def _flush_segment() -> None:
+        nonlocal segment
+        if not segment:
+            return
+        seg_resps = _flush_task_only_segment(segment)
+        responses_by_id.update({int(k): v for k, v in seg_resps.items() if v is not None})
+        segment = []
+
+    for req in requests:
+        extracted = extract_fg_task_only_request(req, payload_dict_fn(req))
+        if extracted is not None:
+            segment.append(extracted)
+            continue
+
+        _flush_segment()
+        resp = execute_request(req)
+        responses_by_id[int(req.request_id)] = resp
+
+    _flush_segment()
+    return order_responses_for_requests(requests, responses_by_id.values())

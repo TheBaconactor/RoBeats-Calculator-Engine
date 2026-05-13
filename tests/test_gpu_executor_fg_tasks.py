@@ -1,11 +1,12 @@
 from gear_optimizer.solver.gpu_executor_fg_tasks import (
     build_merged_fg_task_kwargs,
+    coalesce_fg_task_requests,
     extract_fg_task_only_request,
     fg_task_only_group_key,
     iter_fg_task_chunks,
     load_fg_task_budget,
 )
-from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
 def _req(req_id: int = 1, *, payload: dict | None = None) -> GpuRequest:
@@ -134,3 +135,64 @@ def test_iter_fg_task_chunks_respects_zero_and_positive_budget():
 
     assert iter_fg_task_chunks(tasks, 0) == [tasks]
     assert iter_fg_task_chunks(tasks, 2) == [tasks[:2], tasks[2:4], tasks[4:]]
+
+
+def test_coalesce_fg_task_requests_merges_contiguous_task_only_segment():
+    args = _args()
+    reqs = [
+        _req(1, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 1}], "upload_genome_stats": True}}),
+        _req(2, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 2}, {"i": 3}], "upload_genome_stats": False}}),
+    ]
+    solved_chunks = []
+    recorded_batches = []
+    recorded_packs = []
+
+    responses = coalesce_fg_task_requests(
+        reqs,
+        in_process_queues=False,
+        execute_request=lambda req: (_ for _ in ()).throw(AssertionError(f"unexpected direct request {req.request_id}")),
+        payload_dict_fn=lambda req: req.payload,
+        solve_force_greats_finder_gpu_tasks_fn=lambda *args, **kwargs: solved_chunks.append(kwargs),
+        record_fg_tasks_batch=recorded_batches.append,
+        record_pack=lambda request_type, dt: recorded_packs.append((request_type, dt)),
+        perf_counter_fn=iter([10.0, 10.25]).__next__,
+        env_get_fn=lambda name, default=None: "2" if name == "FG_TASK_BUDGET" else default,
+    )
+
+    assert [resp.request_id for resp in responses] == [1, 2]
+    assert all(resp.success for resp in responses)
+    assert [chunk["fg_tasks"] for chunk in solved_chunks] == [[{"i": 1}, {"i": 2}], [{"i": 3}]]
+    assert [chunk["upload_genome_stats"] for chunk in solved_chunks] == [True, False]
+    assert recorded_batches == [1, 2]
+    assert recorded_packs == [(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 0.25)]
+
+
+def test_coalesce_fg_task_requests_flushes_at_barriers_and_preserves_order():
+    args = _args()
+    reqs = [
+        _req(1, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 1}]}}),
+        _req(2, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 2}]}}),
+        _req(3, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 3}], "fg_download_after": True}}),
+        _req(4, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 4}]}}),
+        _req(5, payload={"args": args, "kwargs": {"fg_tasks": [{"i": 5}]}}),
+    ]
+    solved_batches = []
+    direct_requests = []
+
+    responses = coalesce_fg_task_requests(
+        reqs,
+        in_process_queues=False,
+        execute_request=lambda req: direct_requests.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result=f"direct-{req.request_id}"),
+        payload_dict_fn=lambda req: req.payload,
+        solve_force_greats_finder_gpu_tasks_fn=lambda *args, **kwargs: solved_batches.append(list(kwargs["fg_tasks"])),
+        record_fg_tasks_batch=lambda _count: None,
+        record_pack=lambda _request_type, _dt: None,
+        perf_counter_fn=iter([1.0, 1.1, 2.0, 2.1]).__next__,
+        env_get_fn=lambda _name, default=None: default,
+    )
+
+    assert [resp.request_id for resp in responses] == [1, 2, 3, 4, 5]
+    assert [resp.result for resp in responses] == [None, None, "direct-3", None, None]
+    assert direct_requests == [3]
+    assert solved_batches == [[{"i": 1}, {"i": 2}], [{"i": 4}, {"i": 5}]]

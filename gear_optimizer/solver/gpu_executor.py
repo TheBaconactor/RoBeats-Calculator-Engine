@@ -159,12 +159,7 @@ from gear_optimizer.solver.gpu_executor_fg_solve import (
     execute_solve_force_greats_finder as _execute_solve_force_greats_finder,
 )
 from gear_optimizer.solver.gpu_executor_fg_tasks import (
-    FgTaskOnlyRequest as _FgTaskOnlyRequest,
-    build_merged_fg_task_kwargs as _build_merged_fg_task_kwargs,
-    extract_fg_task_only_request as _extract_fg_task_only_request,
-    fg_task_only_group_key as _fg_task_only_group_key,
-    iter_fg_task_chunks as _iter_fg_task_chunks,
-    load_fg_task_budget as _load_fg_task_budget,
+    coalesce_fg_task_requests as _coalesce_fg_task_requests,
 )
 from gear_optimizer.solver.gpu_executor_fg_coalesce import (
     coalesce_fg_solve_with_breakpoints_batch_requests as _coalesce_fg_solve_with_breakpoints_batch_requests,
@@ -1538,120 +1533,17 @@ class GpuExecutor:
         """
         from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
 
-        task_budget = _load_fg_task_budget(
+        return _coalesce_fg_task_requests(
+            requests,
             in_process_queues=bool(self._in_process_queues),
+            execute_request=self._execute_request,
+            payload_dict_fn=_payload_dict,
+            solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
+            record_fg_tasks_batch=self._record_fg_tasks_batch,
+            record_pack=self._record_pack,
+            perf_counter_fn=perf_counter,
             env_get_fn=env_get,
         )
-
-        def _flush_task_only_segment(
-            seg: list[_FgTaskOnlyRequest],
-        ) -> dict[int, "GpuResponse"]:
-            """
-            Execute a contiguous segment of task-only requests.
-
-            We can safely reorder within this segment because every request is task-only
-            (accumulate_global, no reset/download). Barrier requests are executed by the
-            caller outside this function in strict order.
-            """
-            if not seg:
-                return {}
-
-            groups: dict[tuple[Any, ...], list[_FgTaskOnlyRequest]] = {}
-            out_by_id: dict[int, GpuResponse] = {}
-
-            for item in seg:
-                k = _fg_task_only_group_key(item.args, item.kwargs)
-                if k is None:
-                    # Shouldn't happen for task-only, but stay robust.
-                    out_by_id[int(item.request.request_id)] = self._execute_request(item.request)
-                    continue
-                groups.setdefault(k, []).append(item)
-
-            for _k, items in groups.items():
-                if not items:
-                    continue
-                if len(items) == 1:
-                    req0 = items[0].request
-                    out_by_id[int(req0.request_id)] = self._execute_request(req0)
-                    continue
-
-                req0 = items[0].request
-                args0 = items[0].args
-                kwargs0 = items[0].kwargs
-                genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = (
-                    args0
-                )
-
-                merged_tasks: list[Any] = []
-                upload_any = False
-                for item in items:
-                    merged_tasks.extend(list(item.fg_tasks))
-                    upload_any = upload_any or bool(item.kwargs.get("upload_genome_stats", True))
-                    self._record_fg_tasks_batch(len(item.fg_tasks))
-
-                kwargs_local = _build_merged_fg_task_kwargs(kwargs0, upload_genome_stats=upload_any)
-
-                t_pack0 = perf_counter()
-                try:
-                    upload_this = bool(kwargs_local.get("upload_genome_stats", True))
-                    for fg_task_chunk in _iter_fg_task_chunks(merged_tasks, task_budget):
-                        kwargs_local["upload_genome_stats"] = bool(upload_this)
-                        solve_force_greats_finder_gpu_tasks(
-                            genome_stats_list,
-                            timestamps_np,
-                            great_candidate_timestamps_np,
-                            int(long_notes),
-                            float(last_note_time),
-                            fg_tasks=fg_task_chunk,
-                            **kwargs_local,
-                        )
-                        upload_this = False
-                    self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
-                    for item in items:
-                        req = item.request
-                        out_by_id[int(req.request_id)] = GpuResponse(
-                            request_id=req.request_id, success=True, result=None
-                        )
-                except Exception as e2:
-                    self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
-                    err = f"{type(e2).__name__}: {e2}"
-                    for item in items:
-                        req = item.request
-                        out_by_id[int(req.request_id)] = GpuResponse(
-                            request_id=req.request_id, success=False, error=err
-                        )
-
-            return out_by_id
-
-        # Execute in original request order, treating any non-task-only request as a barrier.
-        # This preserves "reset -> tasks -> download" correctness while still coalescing
-        # bursts of task-only work between barriers.
-        responses_by_id: dict[int, GpuResponse] = {}
-        segment: list[_FgTaskOnlyRequest] = []
-
-        def _flush_segment() -> None:
-            nonlocal segment
-            if not segment:
-                return
-            seg_resps = _flush_task_only_segment(segment)
-            responses_by_id.update({int(k): v for k, v in seg_resps.items() if v is not None})
-            segment = []
-
-        for req in requests:
-            extracted = _extract_fg_task_only_request(req, _payload_dict(req))
-            if extracted is not None:
-                segment.append(extracted)
-                continue
-
-            # Barrier: flush any prior coalescable task-only segment, then execute this request.
-            _flush_segment()
-            resp = self._execute_request(req)
-            responses_by_id[int(req.request_id)] = resp
-
-        _flush_segment()
-
-        # Preserve original ordering in the return list.
-        return _order_responses_for_requests(requests, responses_by_id.values())
 
     def _coalesce_fg_solve_with_breakpoints_batch_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
