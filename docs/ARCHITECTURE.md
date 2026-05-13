@@ -272,7 +272,6 @@ Layer 1: Individual Functions
 Layer 2: Song Processing
   └─ Native in-flight result-event payloads
   └─ Deferred post-processing and async DB persistence
-  └─ Legacy safe_process_song_task() remains calculate-only/quarantined
 
 Layer 3: Main Loop
   └─ Continue processing other songs on failure

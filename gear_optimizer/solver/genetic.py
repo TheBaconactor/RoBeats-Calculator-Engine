@@ -2232,7 +2232,7 @@ def solve_coevolution_genetic(
     Returns:
         tuple: (best_data, best_gear, best_minis, None, [], [], all_evaluated)
     """
-    # Caches are now cleared in process_song_task, but clearing here is safe redundancy.
+    # Native callers clear these caches before solving, but clearing here is safe redundancy.
     GEM_SOLVER_CACHE.clear()
     FG_CACHE.clear()
     FEVER_TIMELINE_CACHE.clear()

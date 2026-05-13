@@ -94,7 +94,7 @@ class GpuTiming(TypedDict, total=False):
 
 class SongResultPayload(TypedDict, total=False):
     """
-    Result payload emitted by `process_song_task()` or by in-flight/post-processing pipelines.
+    Result payload emitted by native in-flight/post-processing pipelines.
 
     This is consumed by `gear_optimizer/app.py` and/or `pipeline/post_processor.py`.
     """

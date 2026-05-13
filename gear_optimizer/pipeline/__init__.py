@@ -1,7 +1,6 @@
 """
 Pipeline package: post-processing and production pipeline glue.
 
-The legacy direct per-song processor lives behind `gear_optimizer.legacy`.
 Raw scoring math belongs in `gear_optimizer.solver`, and reusable glue belongs
 in `gear_optimizer.helpers`.
 """
