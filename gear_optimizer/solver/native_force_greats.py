@@ -10,9 +10,11 @@ from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER
 from gear_optimizer.core.utils import safe_float, safe_int
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import fp_targets_to_forced_counts
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
+from gear_optimizer.solver.candidate_solver_cache import FgCandidateCacheShard, fg_context_digest
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 from gear_optimizer.solver.scoring.force_greats import _compute_force_greats_timeline
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
+from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
 from gear_optimizer.solver.scoring_core import lookup_reference_py
 
 
@@ -249,6 +251,9 @@ def solve_native_force_greats_gpu_batch(
             "dedupe_groups": 0,
             "section_summary_cache_hits": 0,
             "section_summary_cache_misses": 0,
+            "candidate_cache_hits": 0,
+            "candidate_cache_misses": 0,
+            "candidate_cache_writes": 0,
         }
 
     song_data = calc_song.get("song_data", {}) or {}
@@ -265,6 +270,9 @@ def solve_native_force_greats_gpu_batch(
             "dedupe_groups": 0,
             "section_summary_cache_hits": 0,
             "section_summary_cache_misses": 0,
+            "candidate_cache_hits": 0,
+            "candidate_cache_misses": 0,
+            "candidate_cache_writes": 0,
         }
 
     metadata = calc_song.get("metadata", {}) or {}
@@ -336,6 +344,9 @@ def solve_native_force_greats_gpu_batch(
             "dedupe_groups": 0,
             "section_summary_cache_hits": int(section_summary_cache_hits),
             "section_summary_cache_misses": int(section_summary_cache_misses),
+            "candidate_cache_hits": 0,
+            "candidate_cache_misses": 0,
+            "candidate_cache_writes": 0,
         }
 
     from gear_optimizer.solver.taichi_gem import fields as gem_fields
@@ -373,6 +384,9 @@ def solve_native_force_greats_gpu_batch(
     unique_genomes = 0
     deduped_genomes = 0
     dedupe_groups = 0
+    candidate_cache_hits = 0
+    candidate_cache_misses = 0
+    candidate_cache_writes = 0
     max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
 
     for group in prepared_groups.values():
@@ -382,6 +396,19 @@ def solve_native_force_greats_gpu_batch(
         pairs = list(group["pairs"])
         selected_color = str(group["selected_color"] or "")
         flags = build_color_flags(primary, secondary, selected_color)
+        cache = FgCandidateCacheShard.load(
+            fg_context_digest(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                primary_color=primary,
+                secondary_color=secondary,
+                selected_color=selected_color,
+                num_sections=int(group["num_sections"]),
+                non_fever_base=int(group["non_fever_base"]),
+                search_ranges=_search_ranges_for(center_fts[indices[0]], center_ffs[indices[0]], search_radius),
+                solver_version=int(FORCE_GREATS_ALGO_VERSION),
+            )
+        )
 
         unique_stats: list[dict[str, Any]] = []
         fanout: list[list[int]] = []
@@ -400,9 +427,24 @@ def solve_native_force_greats_gpu_batch(
         deduped_genomes += int(len(stats_rows) - len(unique_stats))
         dedupe_groups += sum(1 for members in fanout if len(members) > 1)
 
-        for start in range(0, len(unique_stats), max_genomes):
-            end = min(int(start) + int(max_genomes), len(unique_stats))
-            chunk_stats = unique_stats[int(start) : int(end)]
+        miss_unique_indices: list[int] = []
+        miss_stats: list[dict[str, Any]] = []
+        for unique_idx, base_stats in enumerate(unique_stats):
+            response_key = _local_gear_response_key(base_stats, primary=primary, secondary=secondary)
+            cached = cache.get(response_key)
+            if isinstance(cached, dict):
+                candidate_cache_hits += 1
+                for original_local_idx in fanout[int(unique_idx)]:
+                    src_idx = indices[int(original_local_idx)]
+                    results[src_idx] = dict(cached)
+                continue
+            candidate_cache_misses += 1
+            miss_unique_indices.append(int(unique_idx))
+            miss_stats.append(base_stats)
+
+        for start in range(0, len(miss_stats), max_genomes):
+            end = min(int(start) + int(max_genomes), len(miss_stats))
+            chunk_stats = miss_stats[int(start) : int(end)]
             genome_stats = _genome_stats_array(chunk_stats, primary=primary, secondary=secondary)
             n_chunk = int(len(chunk_stats))
             song_slot = safe_int(calc_song.get("_gpu_song_slot", 0), 0) if isinstance(calc_song, dict) else 0
@@ -460,7 +502,7 @@ def solve_native_force_greats_gpu_batch(
                 gpu_batches += 1
 
             for local_idx, best in enumerate(out or []):
-                unique_idx = int(start) + int(local_idx)
+                unique_idx = miss_unique_indices[int(start) + int(local_idx)]
                 materialized = _materialize_best(
                     best,
                     counts=counts,
@@ -469,6 +511,12 @@ def solve_native_force_greats_gpu_batch(
                     base_stats=chunk_stats[int(local_idx)],
                     fg_scorer=fg_scorer,
                 )
+                if materialized is not None:
+                    response_key = _local_gear_response_key(
+                        chunk_stats[int(local_idx)], primary=primary, secondary=secondary
+                    )
+                    if cache.put(response_key, materialized):
+                        candidate_cache_writes += 1
                 for original_local_idx in fanout[int(unique_idx)]:
                     src_idx = indices[int(original_local_idx)]
                     results[src_idx] = dict(materialized) if materialized is not None else None
@@ -482,4 +530,7 @@ def solve_native_force_greats_gpu_batch(
         "dedupe_groups": int(dedupe_groups),
         "section_summary_cache_hits": int(section_summary_cache_hits),
         "section_summary_cache_misses": int(section_summary_cache_misses),
+        "candidate_cache_hits": int(candidate_cache_hits),
+        "candidate_cache_misses": int(candidate_cache_misses),
+        "candidate_cache_writes": int(candidate_cache_writes),
     }
