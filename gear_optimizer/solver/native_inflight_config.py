@@ -20,7 +20,7 @@ from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_prepare import bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
-    read_continuous_fg_adaptive_submit,
+    read_continuous_fg_adaptive_max_burst,
     read_continuous_ga_dispatch_burst,
     read_fg_ga_credit_budget,
     read_fg_scheduler_mode,
@@ -242,7 +242,6 @@ class InflightConfig:
     fg_drain_src: str
     fg_ga_credit_budget_cfg: int
     continuous_ga_dispatch_burst: int
-    fg_adaptive_submit_enabled: bool
     fg_adaptive_submit_max_burst: int
     inflight_fg_hold_slots: bool
     hold_slots_explicit: bool
@@ -514,14 +513,13 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         default_budget=max(1, int(inflight_limit)),
     )
     continuous_ga_dispatch_burst = read_continuous_ga_dispatch_burst(cfg0, default_burst=2)
-    fg_adaptive_submit_enabled, fg_adaptive_submit_max_burst = read_continuous_fg_adaptive_submit(cfg0)
+    fg_adaptive_submit_max_burst = read_continuous_fg_adaptive_max_burst(cfg0)
 
     try:
         msg = f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src}"
         msg += (
             f" (GA_CreditBudget={int(fg_ga_credit_budget_cfg)}, "
             f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
-            f"FG_AdaptiveSubmit={int(bool(fg_adaptive_submit_enabled))}, "
             f"FG_AdaptiveMaxBurst={int(fg_adaptive_submit_max_burst)}, "
             f"TargetSongLanes={int(target_song_lanes)}, "
             f"CPUPrewarmLookahead={int(cpu_prewarm_lookahead)}, "
@@ -706,7 +704,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_drain_src=fg_drain_src,
         fg_ga_credit_budget_cfg=fg_ga_credit_budget_cfg,
         continuous_ga_dispatch_burst=continuous_ga_dispatch_burst,
-        fg_adaptive_submit_enabled=fg_adaptive_submit_enabled,
         fg_adaptive_submit_max_burst=fg_adaptive_submit_max_burst,
         inflight_fg_hold_slots=inflight_fg_hold_slots,
         hold_slots_explicit=hold_slots_explicit,

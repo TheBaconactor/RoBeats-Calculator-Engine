@@ -13,7 +13,7 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     closed_loop_bubble_kpi,
     count_active_song_lanes,
     default_prime_target,
-    read_continuous_fg_adaptive_submit,
+    read_continuous_fg_adaptive_max_burst,
     read_continuous_ga_dispatch_burst,
     read_fg_ga_credit_budget,
     read_fg_scheduler_mode,
@@ -308,7 +308,6 @@ def testcontinuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=4,
-        adaptive_submit=False,
         adaptive_max_burst=3,
         fg_slot_reserve=1,
     )
@@ -327,25 +326,17 @@ def test_read_continuous_ga_dispatch_burst_defaults_and_env_override(monkeypatch
     assert read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 7
 
 
-def test_read_continuous_fg_adaptive_submit_defaults_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_ADAPTIVE_SUBMIT", raising=False)
+def test_read_continuous_fg_adaptive_max_burst_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg)
-    assert enabled is True
-    assert max_burst == 3
+    assert read_continuous_fg_adaptive_max_burst(cfg) == 3
 
-    cfg2 = _cfg_with_iteration_engine(InFlight_FGAdaptiveSubmit="false", InFlight_FGAdaptiveMaxBurst="6")
-    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg2)
-    assert enabled is False
-    assert max_burst == 6
+    cfg2 = _cfg_with_iteration_engine(InFlight_FGAdaptiveMaxBurst="6")
+    assert read_continuous_fg_adaptive_max_burst(cfg2) == 6
 
-    monkeypatch.setenv("INFLIGHT_FG_ADAPTIVE_SUBMIT", "1")
     monkeypatch.setenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", "4")
-    enabled, max_burst = read_continuous_fg_adaptive_submit(cfg2)
-    assert enabled is True
-    assert max_burst == 4
+    assert read_continuous_fg_adaptive_max_burst(cfg2) == 4
 
 
 def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
@@ -842,7 +833,6 @@ def testcontinuous_fg_submit_budget_fills_ready_worker_capacity():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=12,
-        adaptive_submit=False,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -861,7 +851,6 @@ def testcontinuous_fg_submit_budget_fills_ready_worker_capacity():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=12,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -882,7 +871,6 @@ def testcontinuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=12,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -903,7 +891,6 @@ def testcontinuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=16,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -911,25 +898,6 @@ def testcontinuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
 
 
 def testcontinuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
-    control_budget = continuous_fg_submit_budget(
-        pending_fg_count=16,
-        ready_fg_count=6,
-        fg_inflight_count=0,
-        fg_workers=8,
-        fg_batch_max=8,
-        no_ga_remaining=False,
-        fg_drain_at_end=True,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=16,
-        adaptive_submit=False,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert control_budget == 6
-
     adaptive_budget = continuous_fg_submit_budget(
         pending_fg_count=16,
         ready_fg_count=6,
@@ -943,7 +911,6 @@ def testcontinuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=16,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -964,7 +931,6 @@ def testcontinuous_fg_submit_budget_honors_end_of_run_drain():
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=12,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )
@@ -1012,7 +978,6 @@ def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch)
         aging_trigger_s=0.75,
         aging_hard_s=2.5,
         ga_queue_limit=12,
-        adaptive_submit=True,
         adaptive_max_burst=3,
         fg_slot_reserve=0,
     )

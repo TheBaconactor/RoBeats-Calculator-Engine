@@ -6,7 +6,6 @@ from typing import Any, Callable
 import logging
 
 from gear_optimizer.core.utils import safe_float, safe_int
-from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_types import native_song_label
 
 
@@ -233,41 +232,30 @@ def read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> i
     return max(1, min(int(burst), 32))
 
 
-def read_continuous_fg_adaptive_submit(cfg0: Any) -> tuple[bool, int]:
+def read_continuous_fg_adaptive_max_burst(cfg0: Any) -> int:
     """
-    Adaptive FG submit policy for continuous mode.
-
-    Returns:
-    - enabled: whether adaptive FG submit burst sizing is enabled
-    - max_burst: upper bound for adaptive FG submit burst size
+    Upper bound for adaptive FG submit burst size in continuous mode.
     """
-    enabled = True
     max_burst = 3
 
     try:
         if cfg0 is not None:
-            if cfg0.has_option("IterationEngine", "InFlight_FGAdaptiveSubmit"):
-                enabled = cfg0.getboolean("IterationEngine", "InFlight_FGAdaptiveSubmit", fallback=True)
             if cfg0.has_option("IterationEngine", "InFlight_FGAdaptiveMaxBurst"):
                 max_burst = safe_int(
                     cfg0.get("IterationEngine", "InFlight_FGAdaptiveMaxBurst", fallback=str(max_burst)),
                     max_burst,
                 )
     except Exception as e:
-        logger.debug(f"native_inflight_scheduler:read_continuous_fg_adaptive_submit: {e}")
-
-    raw = env_get("INFLIGHT_FG_ADAPTIVE_SUBMIT")
-    if raw is not None and str(raw).strip() != "":
-        enabled = _truthy(raw)
+        logger.debug(f"native_inflight_scheduler:read_continuous_fg_adaptive_max_burst: {e}")
 
     raw = env_get("INFLIGHT_FG_ADAPTIVE_MAX_BURST")
     if raw is not None and str(raw).strip() != "":
         try:
             max_burst = int(raw)
         except Exception as e:
-            logger.debug(f"native_inflight_scheduler:read_continuous_fg_adaptive_submit: {e}")
+            logger.debug(f"native_inflight_scheduler:read_continuous_fg_adaptive_max_burst: {e}")
 
-    return bool(enabled), max(1, min(int(max_burst), 16))
+    return max(1, min(int(max_burst), 16))
 
 
 def read_fg_slot_reserve(
@@ -567,7 +555,6 @@ def continuous_fg_submit_budget(
     aging_trigger_s: float,
     aging_hard_s: float,
     ga_queue_limit: int,
-    adaptive_submit: bool,
     adaptive_max_burst: int,
     fg_slot_reserve: int,
 ) -> int:
@@ -590,7 +577,7 @@ def continuous_fg_submit_budget(
     if bool(no_ga_remaining):
         return int(capacity) if bool(fg_drain_at_end) else 0
 
-    if bool(adaptive_submit) and int(pending_fg_count) > int(ready_fg_count):
+    if int(pending_fg_count) > int(ready_fg_count):
         burst_cap = max(1, min(int(adaptive_max_burst), int(fg_batch_max), int(fg_workers)))
         capacity = min(int(capacity), int(burst_cap))
 

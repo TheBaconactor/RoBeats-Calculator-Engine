@@ -1225,7 +1225,6 @@ def run_native_inflight_song_pipeline(
                     aging_trigger_s=float(icfg.fg_aging_trigger_s),
                     aging_hard_s=float(icfg.fg_aging_hard_s),
                     ga_queue_limit=int(ga_queue_limit_effective),
-                    adaptive_submit=bool(icfg.fg_adaptive_submit_enabled),
                     adaptive_max_burst=int(icfg.fg_adaptive_submit_max_burst),
                     fg_slot_reserve=int(icfg.fg_slot_reserve),
                 )
