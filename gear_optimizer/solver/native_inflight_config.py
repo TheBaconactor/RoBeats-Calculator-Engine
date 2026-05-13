@@ -244,7 +244,6 @@ class InflightConfig:
     continuous_ga_dispatch_burst: int
     fg_adaptive_submit_max_burst: int
     inflight_fg_hold_slots: bool
-    hold_slots_explicit: bool
     fg_enabled: bool
     fg_slot_reserve: int
     ga_queue_limit_base: int
@@ -529,23 +528,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     except (ValueError, TypeError):
         pass
 
-    inflight_fg_hold_slots = True
-    try:
-        if cfg0 is not None:
-            inflight_fg_hold_slots = cfg0.getboolean("IterationEngine", "InFlight_FGHoldSlots", fallback=True)
-    except (configparser.Error, ValueError, TypeError):
-        inflight_fg_hold_slots = True
-    hold_slots_explicit = False
-    try:
-        if cfg0 is not None:
-            hold_slots_explicit = bool(cfg0.has_option("IterationEngine", "InFlight_FGHoldSlots"))
-    except (configparser.Error, ValueError, TypeError):
-        hold_slots_explicit = False
-    raw = env_get("INFLIGHT_FG_HOLD_SLOTS")
-    if raw is not None and str(raw).strip() != "":
-        hold_slots_explicit = True
-        inflight_fg_hold_slots = _truthy(raw)
-
     fg_slot_reserve = read_fg_slot_reserve(
         cfg0,
         fg_enabled=True,
@@ -597,6 +579,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         ga_slack_slots = 0
 
     fg_hold_budget = int(ga_slack_slots)
+    inflight_fg_hold_slots = True
 
     if inflight_fg_hold_slots and int(in_flight_songs) > 1:
         if int(fg_hold_budget) <= 0:
@@ -608,7 +591,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 required_gpu_slots = None
             try:
                 msg = (
-                    "[InFlight][WARN] Slot pressure: InFlight_FGHoldSlots=true with "
+                    "[InFlight][WARN] Slot pressure: FG slot holds requested by native scheduler with "
                     f"usable_slots={int(song_slot_limit)} ga_queue_limit={int(ga_queue_limit)} slack={int(ga_slack_slots)}; "
                     "FG slot reuse is impossible with the current GA queue depth."
                 )
@@ -617,13 +600,12 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
                 logger.debug(msg)
             except (ValueError, TypeError):
                 pass
-            if not hold_slots_explicit:
-                inflight_fg_hold_slots = False
-                fg_hold_budget = 0
-                try:
-                    logger.debug("[InFlight][Auto] Disabling InFlight_FGHoldSlots (no slack song slots available).")
-                except (ValueError, TypeError):
-                    pass
+            inflight_fg_hold_slots = False
+            fg_hold_budget = 0
+            try:
+                logger.debug("[InFlight][Auto] Disabling FG slot holds (no slack song slots available).")
+            except (ValueError, TypeError):
+                pass
 
     try:
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
@@ -687,7 +669,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         continuous_ga_dispatch_burst=continuous_ga_dispatch_burst,
         fg_adaptive_submit_max_burst=fg_adaptive_submit_max_burst,
         inflight_fg_hold_slots=inflight_fg_hold_slots,
-        hold_slots_explicit=hold_slots_explicit,
         fg_enabled=True,
         fg_slot_reserve=fg_slot_reserve,
         ga_queue_limit_base=ga_queue_limit_base,
