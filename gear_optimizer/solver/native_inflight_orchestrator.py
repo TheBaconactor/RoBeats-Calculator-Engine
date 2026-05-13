@@ -78,8 +78,8 @@ from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
     _decode_ga_payload_sync,
     _prefetch_db_loadouts_sync,
-    _prepare_fg_static_sync,
-    _prepare_fg_job_sync,
+    prepare_fg_static_sync,
+    prepare_fg_job_sync,
     run_cpu_prewarm_for_song,
 )
 
@@ -243,7 +243,7 @@ def run_native_inflight_song_pipeline(
     def _submit_fg_static_prewarm(song: _NativeSong) -> bool:
         return fg_pipeline.start_static_prep(
             song,
-            _prepare_fg_static_sync,
+            prepare_fg_static_sync,
             external_song_groups=(ga_inflight, prepared, decode_inflight),
             register_future=completion_tracker.register,
         )
@@ -607,7 +607,7 @@ def run_native_inflight_song_pipeline(
             if pending_fg:
                 try:
                     started_fg_prep = fg_pipeline.start_pending_prep(
-                        _prepare_fg_job_sync,
+                        prepare_fg_job_sync,
                         gpu_client=gpu_client,
                         register_future=completion_tracker.register,
                     )
@@ -1573,5 +1573,5 @@ def run_native_inflight_song_pipeline(
             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
 
-# NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, and `_prepare_fg_job_sync`
+# NOTE: `_decode_ga_payload_sync`, `_prefetch_db_loadouts_sync`, and `prepare_fg_job_sync`
 # are imported from their own modules to keep the orchestrator leaner.

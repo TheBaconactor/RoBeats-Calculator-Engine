@@ -60,7 +60,7 @@ def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any
             target_calc_song.pop(key, None)
 
 
-def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
+def resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
     calc_song = getattr(song.gpu_inputs, "calc_song", None)
     if not isinstance(calc_song, dict):
         return None
@@ -72,7 +72,7 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
         try:
             fg_calc_song = clone_calc_song(calc_song)
         except Exception as e:
-            logger.debug(f"native_inflight_stages:_resolve_active_fg_calc_song: {e}")
+            logger.debug(f"native_inflight_stages:resolve_active_fg_calc_song: {e}")
             fg_calc_song = {
                 "metadata": dict(calc_song.get("metadata", {}) or {}),
                 "song_data": dict(calc_song.get("song_data", {}) or {}),
@@ -82,7 +82,7 @@ def _resolve_active_fg_calc_song(song: _NativeSong) -> dict | None:
 
         apply_timing_envelope(fg_calc_song)
     except Exception as e:
-        logger.debug(f"native_inflight_stages:_resolve_active_fg_calc_song: {e}")
+        logger.debug(f"native_inflight_stages:resolve_active_fg_calc_song: {e}")
         return calc_song
 
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
@@ -112,7 +112,7 @@ def _maybe_prewarm_fg_chart_scorer(song: _NativeSong) -> None:
             return
         if not bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
             return
-        calc_song = _resolve_active_fg_calc_song(song)
+        calc_song = resolve_active_fg_calc_song(song)
         ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
         if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
             return
@@ -442,7 +442,7 @@ def collect_fg_group_meta_payload(song: _NativeSong, *, limit: int, start_index:
     ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
     if not isinstance(ga_candidates, list) or not ga_candidates:
         return {}
-    calc_song = _resolve_active_fg_calc_song(song)
+    calc_song = resolve_active_fg_calc_song(song)
     if not isinstance(calc_song, dict) or not calc_song:
         return {}
 
@@ -610,7 +610,7 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
     return out
 
 
-def _prepare_fg_static_sync(song: _NativeSong) -> None:
+def prepare_fg_static_sync(song: _NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
 
@@ -637,7 +637,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
         gpu_inputs.meta_secondary_color,
         config.effective_difficulty,
     )
-    _resolve_active_fg_calc_song(song)
+    resolve_active_fg_calc_song(song)
 
     # Manual-only FG needs GA candidates merged into loadout_entries, so it stays
     # in the late prep phase. Finder-mode can use DB/static entries immediately.
@@ -674,7 +674,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
                             team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
                         )
                 except Exception as e:
-                    logger.debug(f"native_inflight_stages:_prepare_fg_static_sync: {e}")
+                    logger.debug(f"native_inflight_stages:prepare_fg_static_sync: {e}")
                     db_loadouts_full = None
                 finally:
                     runtime.db.db_loadouts_future = None
@@ -682,7 +682,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
                 prefetch_pending = True
                 db_loadouts_full = None
         except Exception as e:
-            logger.debug(f"native_inflight_stages:_prepare_fg_static_sync: {e}")
+            logger.debug(f"native_inflight_stages:prepare_fg_static_sync: {e}")
             db_loadouts_full = None
 
     runtime.fg.loadout_entries = build_loadout_entries(
@@ -706,7 +706,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
         pass
 
 
-def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
+def prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -721,13 +721,13 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         try:
             static_done = bool(static_future.done())
         except Exception as e:
-            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+            logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
             static_done = True
         if static_done:
             try:
                 static_future.result()
             except Exception as e:
-                logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+                logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
             try:
                 song.runtime.fg.fg_static_prep_future = None
             except AttributeError:
@@ -751,7 +751,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
     runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
 
-    active_fg_calc_song = _resolve_active_fg_calc_song(song)
+    active_fg_calc_song = resolve_active_fg_calc_song(song)
 
     if bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
         try:
@@ -760,7 +760,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             if calc_song and ref_arrays:
                 _warmup_fg_finder_runtime(calc_song, ref_arrays, gpu_client=gpu_client)
         except Exception as e:
-            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+            logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
     t_finder_warmup = time.perf_counter()
 
     # Prime expensive per-song FG structures early so FG dispatch doesn't stall before the first GPU submit.
@@ -843,7 +843,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                             team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
                         )
                 except Exception as e:
-                    logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+                    logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
                     db_loadouts_full = None
                 finally:
                     runtime.db.db_loadouts_future = None
@@ -854,7 +854,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
                 prefetch_pending = True
                 db_loadouts_full = None
         except Exception as e:
-            logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+            logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")
             db_loadouts_full = None
     t_db = time.perf_counter()
 
@@ -952,4 +952,4 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_stages:_prepare_fg_job_sync: {e}")
+        logger.debug(f"native_inflight_stages:prepare_fg_job_sync: {e}")

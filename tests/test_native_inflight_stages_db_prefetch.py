@@ -145,7 +145,7 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
         song_slot=1,
     )
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert seen["allow_db_query"] is False
     # Keep the future attached so FG run can consume it later if it completes.
@@ -190,7 +190,7 @@ def test_prepare_fg_static_sync_builds_finder_entries_without_ga_candidates(monk
         loadout_entries=None,
     )
 
-    stages._prepare_fg_static_sync(song)
+    stages.prepare_fg_static_sync(song)
 
     assert seen["ga_candidates"] == []
     assert song.runtime.fg.loadout_entries == {"db": {"score": 100}}
@@ -229,7 +229,7 @@ def test_prepare_fg_static_sync_builds_fg_timing_envelope_clone_without_mutating
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
     )
 
-    stages._prepare_fg_static_sync(song)
+    stages.prepare_fg_static_sync(song)
 
     assert song.runtime.fg.fg_calc_song is not None
     assert song.runtime.fg.fg_calc_song is not base_calc_song
@@ -284,7 +284,7 @@ def test_prepare_fg_job_sync_reuses_static_finder_loadout_entries(monkeypatch):
     )
     song.runtime.fg.fg_static_prep_done = True
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["build"] == 0
     assert song.runtime.fg.loadout_entries == {"static": {"score": 100}}
@@ -349,7 +349,7 @@ def test_prepare_fg_job_sync_warms_finder_runtime_without_inline_jit(monkeypatch
     )
     song.runtime.fg.fg_static_prep_done = False
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert song.runtime.fg.fg_calc_song is not None
     assert song.runtime.fg.fg_calc_song["metadata"]["TimingEnvelopeApplied"] is True
@@ -477,7 +477,7 @@ def test_prepare_fg_job_sync_primes_bounded_group_meta_runway_by_default(monkeyp
     )
     song.runtime.fg.fg_static_prep_done = False
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 8
     assert song.runtime.decode.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
@@ -554,7 +554,7 @@ def test_prepare_fg_job_sync_primes_when_explicit_limit_enabled(monkeypatch):
     )
     song.runtime.fg.fg_static_prep_done = False
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["n"] == 1
     assert song.runtime.decode.ga_candidates[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
@@ -624,7 +624,7 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
         calls["build"] += 1
         return {"rebuilt": True}
 
-    monkeypatch.setattr(stages, "_prepare_fg_static_sync", _fake_prepare_fg_static_sync)
+    monkeypatch.setattr(stages, "prepare_fg_static_sync", _fake_prepare_fg_static_sync)
     monkeypatch.setattr(stages, "_maybe_prewarm_fg_chart_scorer", lambda _song: None)
     monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
     monkeypatch.setattr(stages, "select_fg_candidates", lambda candidates, **_kwargs: list(candidates or []))
@@ -667,7 +667,7 @@ def test_prepare_fg_job_sync_does_not_block_on_pending_static_future(monkeypatch
     song.runtime.fg.fg_static_prep_future = pending_static
     song.runtime.fg.fg_static_prep_done = False
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert calls["static"] == 0
     assert calls["build"] == 1

@@ -110,7 +110,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
         song_slot=1,
     )
 
-    stages._prepare_fg_job_sync(song, gpu_client=None)
+    stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert seen["ga_n"] == 0
     assert song.runtime.fg.fg_direct_ga_candidates is True

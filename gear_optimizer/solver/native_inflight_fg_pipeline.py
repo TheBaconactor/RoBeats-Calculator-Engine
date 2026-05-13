@@ -21,7 +21,7 @@ from gear_optimizer.solver.native_inflight_persistence import InflightDBPersiste
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
-from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
+from gear_optimizer.solver.native_inflight_stages import prepare_fg_job_sync, resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
@@ -618,7 +618,7 @@ def run_fg_job_sync(
 ) -> None:
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
-    active_fg_calc_song = _resolve_active_fg_calc_song(song)
+    active_fg_calc_song = resolve_active_fg_calc_song(song)
     if not isinstance(active_fg_calc_song, dict):
         active_fg_calc_song = getattr(song.gpu_inputs, "calc_song", {})
 
@@ -661,7 +661,7 @@ def run_fg_job_sync(
             song.runtime.fg.fg_prep_future = None
 
     if getattr(song.runtime.fg, "loadout_entries", None) is None:
-        _prepare_fg_job_sync(song, gpu_client=gpu_client)
+        prepare_fg_job_sync(song, gpu_client=gpu_client)
         try:
             song.runtime.fg.fg_dynamic_prep_done = True
         except AttributeError:
