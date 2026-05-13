@@ -14,12 +14,22 @@ from gear_optimizer.helpers.song_helpers.database_context import resolve_databas
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items
-from gear_optimizer.solver.native_inflight_support import _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
 
 logger = logging.getLogger(__name__)
+
+
+def _loadout_entries_have_db_source(loadout_entries: dict | None) -> bool:
+    if not isinstance(loadout_entries, dict) or not loadout_entries:
+        return False
+    for entry in loadout_entries.values():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("_source", "") or "").strip().lower() == "db":
+            return True
+    return False
 
 
 @dataclass

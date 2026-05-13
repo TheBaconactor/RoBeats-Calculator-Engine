@@ -73,17 +73,6 @@ def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> Non
         logger.debug(f"native_inflight_support:_lru_put: {e}")
 
 
-def _loadout_entries_have_db_source(loadout_entries: dict | None) -> bool:
-    if not isinstance(loadout_entries, dict) or not loadout_entries:
-        return False
-    for entry in loadout_entries.values():
-        if not isinstance(entry, dict):
-            continue
-        if str(entry.get("_source", "") or "").strip().lower() == "db":
-            return True
-    return False
-
-
 class _PostSender:
     def __init__(self, post_queue, *, stop_requested=None) -> None:
         self._post_queue = post_queue
