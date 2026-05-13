@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
@@ -205,6 +206,15 @@ def _read_db_prefetch_workers(
     if workers <= 0:
         workers = max(1, min(int(fg_prep_workers), 4))
     return max(1, int(workers))
+
+
+def _read_ga_multi_start(cfg0: Any) -> int:
+    try:
+        settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
+        return max(1, int(settings.multi_start))
+    except Exception as e:
+        logger.debug(f"native_inflight_config:_read_ga_multi_start: {e}")
+        return 1
 
 
 @dataclass(frozen=True)
@@ -649,16 +659,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
         from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 
-        ga_runs = 1
-        try:
-            from gear_optimizer.data.models import GASettings
-
-            settings = GASettings.from_cfg(cfg0) if cfg0 is not None else GASettings.from_cfg(None)
-            ga_runs = int(settings.multi_start)
-        except Exception as e:
-            logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
-            ga_runs = 1
-
+        ga_runs = _read_ga_multi_start(cfg0)
         gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
     except Exception as e:
         logger.debug(f"native_inflight_config:parse_inflight_config: {e}")

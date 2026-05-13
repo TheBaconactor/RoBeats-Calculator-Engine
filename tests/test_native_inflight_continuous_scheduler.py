@@ -26,6 +26,7 @@ from gear_optimizer.solver.native_inflight_config import (
     _read_cpu_prewarm_workers,
     _read_db_prefetch_workers,
     _read_fg_static_prep_max_inflight,
+    _read_ga_multi_start,
     _read_inflight_worker_count,
     first_task_config,
     inflight_shutdown_debug_enabled,
@@ -128,6 +129,12 @@ def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
     budget, explicit = _read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
     assert budget == 91
     assert explicit is True
+
+
+def test_read_ga_multi_start_uses_runtime_ga_settings():
+    cfg = _cfg_with_iteration_engine(GA_MultiStart="4")
+
+    assert _read_ga_multi_start(cfg) == 4
 
 
 def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
