@@ -209,19 +209,15 @@ def mutate_genome_adaptive(genome, rate): ...
 # Configurable via GASettings
 ```
 
-### 5. **Template Method** (Song Processing)
+### 5. **Native In-Flight Orchestration** (Production Optimizer)
 ```python
-def process_song_task(args):
-    config = _parse_args(args)
-    _setup_environment(config)
+def run_native_inflight_song_pipeline(tasks, *, in_flight_songs, completed_songs, post_queue):
+    cfg = parse_inflight_config(tasks, in_flight_songs=in_flight_songs)
+    gpu_client = GpuServiceClient(get_gpu_executor())
 
-    if config.optimize:
-        result = _run_optimization(config)  # Template
-    else:
-        result = _calculate_only(config)    # Template
-
-    _persist_results(result, config)
-    return _build_payload(result)
+    # CPU prep, native GA, native FG scoring, deferred post, and async DB writes
+    # are coordinated by one native in-flight scheduler.
+    ...
 ```
 
 ## Performance Optimizations
@@ -251,11 +247,11 @@ if signature in GEM_SOLVER_CACHE:
     return GEM_SOLVER_CACHE[signature]  # ~100x faster
 ```
 
-### 3. **Process Pool** (main.py)
+### 3. **Single GPU Owner + In-Flight Overlap**
 ```python
-# Parallelize song processing across CPU cores
-with ProcessPoolExecutor(max_workers=cpu_count()) as executor:
-    results = executor.map(safe_process_song_task, song_args)
+# Keep one Taichi/Vulkan GPU owner and overlap CPU prep/decode/post work
+# around native GPU GA + native ForceGreats scoring.
+run_native_inflight_song_pipeline(tasks, in_flight_songs=in_flight_songs, ...)
 ```
 
 ### 4. **Database Optimization** (database.py)
@@ -274,9 +270,9 @@ Layer 1: Individual Functions
   └─ Return None or default on error
 
 Layer 2: Song Processing
-  └─ safe_process_song_task() wrapper
-  └─ Never raises across process boundary
-  └─ Returns error dict with traceback
+  └─ Native in-flight result-event payloads
+  └─ Deferred post-processing and async DB persistence
+  └─ Legacy safe_process_song_task() remains calculate-only/quarantined
 
 Layer 3: Main Loop
   └─ Continue processing other songs on failure
