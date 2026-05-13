@@ -242,6 +242,72 @@ def _hash_exact_eval_base_stats_for_genome(genome_idx: ti.i32) -> ti.u32:
 
 
 @ti.func
+def _base_candidate_cache_hash_for_genome(genome_idx: ti.i32) -> ti.u32:
+    h = _hash_exact_eval_base_stats_for_genome(genome_idx)
+    if h == ti.u32(0):
+        h = ti.u32(1)
+    return h
+
+
+@ti.func
+def _base_candidate_cache_key_matches(pos: ti.i32, genome_idx: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for i in ti.static(range(7)):
+        want = ti.cast(kernels_helpers.genome_base_stats[genome_idx][i], ti.i32)
+        got = ti.cast(kernels_helpers.ga_base_candidate_cache_stats[pos, i], ti.i32)
+        if got != want:
+            match = ti.i32(0)
+    return match
+
+
+@ti.func
+def _apply_base_candidate_cache_hit(pos: ti.i32, genome_idx: ti.i32) -> None:
+    score = kernels_helpers.ga_base_candidate_cache_results[pos, 0]
+    combo_idx = kernels_helpers.ga_base_candidate_cache_results[pos, 1]
+    if ti.static(not IS_METAL):
+        kernels_helpers.chunk_best_key[genome_idx] = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | ti.cast(
+            combo_idx, ti.u64
+        )
+    else:
+        kernels_helpers.chunk_best_score[genome_idx] = score
+        kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
+    kernels_helpers.chunk_best_results[genome_idx, 0] = kernels_helpers.ga_base_candidate_cache_results[pos, 2]
+    kernels_helpers.chunk_best_results[genome_idx, 1] = kernels_helpers.ga_base_candidate_cache_results[pos, 3]
+    kernels_helpers.chunk_best_results[genome_idx, 2] = kernels_helpers.ga_base_candidate_cache_results[pos, 4]
+    kernels_helpers.chunk_best_results[genome_idx, 3] = kernels_helpers.ga_base_candidate_cache_results[pos, 5]
+    kernels_helpers.ga_scores[genome_idx] = score
+
+
+@ti.kernel
+def ga_apply_base_candidate_cache_kernel(n_genomes: ti.i32):
+    """
+    Hydrate exact GA combo-search results for genomes whose aggregated 7-stat vector
+    already exists in the global candidate cache.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    mask = ti.cast(kernels_helpers.ga_base_candidate_cache_keys.shape[0] - 1, ti.u32)
+    cache_count = kernels_helpers.ga_base_candidate_cache_count[0]
+    for g in range(n_genomes):
+        kernels_helpers.ga_base_candidate_cache_hit[g] = 0
+        if cache_count > 0:
+            key = _base_candidate_cache_hash_for_genome(g)
+            pos = ti.cast(key & mask, ti.i32)
+            probe = ti.i32(0)
+            done = ti.i32(0)
+            while probe < kernels_helpers.ga_base_candidate_cache_keys.shape[0] and done == 0:
+                got_key = kernels_helpers.ga_base_candidate_cache_keys[pos]
+                if got_key == ti.u32(0):
+                    done = ti.i32(1)
+                else:
+                    if got_key == key and _base_candidate_cache_key_matches(pos, g) != 0:
+                        _apply_base_candidate_cache_hit(pos, g)
+                        kernels_helpers.ga_base_candidate_cache_hit[g] = 1
+                        done = ti.i32(1)
+                    pos = (pos + 1) & ti.cast(mask, ti.i32)
+                    probe += 1
+
+
+@ti.func
 def _exact_eval_base_stats_key_matches(pos: ti.i32, genome_idx: ti.i32) -> ti.i32:
     match = ti.i32(1)
     for i in ti.static(range(7)):

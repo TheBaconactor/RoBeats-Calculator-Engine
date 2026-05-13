@@ -552,6 +552,64 @@ def ga_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     _BASE_FIXED_STATS_CACHE = key
 
 
+def ga_upload_base_candidate_cache(
+    keys_np: np.ndarray,
+    stats_np: np.ndarray,
+    results_np: np.ndarray,
+) -> int:
+    """
+    Upload the per-song global base-candidate cache into a GPU-resident open-addressing table.
+    """
+    ensure_ready()
+    keys_src = np.asarray(keys_np, dtype=np.uint32).reshape(-1)
+    stats_src = np.asarray(stats_np, dtype=np.int16)
+    results_src = np.asarray(results_np, dtype=np.int32)
+    n_rows = int(keys_src.shape[0])
+    if n_rows == 0:
+        fields.ga_base_candidate_cache_count.from_numpy(np.asarray([0], dtype=np.int32))
+        return 0
+    if stats_src.shape != (n_rows, 7):
+        raise ValueError(f"base candidate cache stats shape mismatch: {stats_src.shape} != {(n_rows, 7)}")
+    if results_src.shape != (n_rows, 6):
+        raise ValueError(f"base candidate cache results shape mismatch: {results_src.shape} != {(n_rows, 6)}")
+
+    table_size = int(fields.GA_BASE_CANDIDATE_CACHE_HASH_SIZE)
+    max_rows = (table_size * 7) // 10
+    if n_rows > max_rows:
+        raise ValueError(f"base candidate cache shard has {n_rows} rows; GPU table limit is {max_rows}")
+
+    table_keys = np.zeros((table_size,), dtype=np.uint32)
+    table_stats = np.zeros((table_size, 7), dtype=np.int16)
+    table_results = np.zeros((table_size, 6), dtype=np.int32)
+    mask = table_size - 1
+
+    for idx in range(n_rows):
+        key = int(keys_src[idx])
+        if key == 0:
+            raise ValueError("base candidate cache row has zero hash key")
+        pos = key & mask
+        probes = 0
+        while table_keys[pos] != 0:
+            if int(table_keys[pos]) == key and np.array_equal(table_stats[pos], stats_src[idx]):
+                if not np.array_equal(table_results[pos], results_src[idx]):
+                    raise ValueError(f"base candidate cache upload conflict for stats={tuple(stats_src[idx])}")
+                break
+            pos = (pos + 1) & mask
+            probes += 1
+            if probes >= table_size:
+                raise ValueError("base candidate cache GPU table is full")
+        if table_keys[pos] == 0:
+            table_keys[pos] = np.uint32(key)
+            table_stats[pos] = stats_src[idx]
+            table_results[pos] = results_src[idx]
+
+    fields.ga_base_candidate_cache_keys.from_numpy(table_keys)
+    fields.ga_base_candidate_cache_stats.from_numpy(table_stats)
+    fields.ga_base_candidate_cache_results.from_numpy(table_results)
+    fields.ga_base_candidate_cache_count.from_numpy(np.asarray([n_rows], dtype=np.int32))
+    return n_rows
+
+
 def ga_aggregate_stats(
     n_genomes: int,
     n_slots: int = 9,
@@ -689,6 +747,8 @@ def ga_evaluate_population(
 
     if exact_genome_stats_signature_reuse:
         kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
+
+    kernels.ga_apply_base_candidate_cache_kernel(int(n_genomes))
 
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)

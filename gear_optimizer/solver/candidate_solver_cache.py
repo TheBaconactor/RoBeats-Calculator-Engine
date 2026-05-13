@@ -18,7 +18,9 @@ from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 
 FG_CACHE_SCHEMA_VERSION = 1
 FG_CACHE_SECTION_CAP = 20
+BASE_CACHE_SCHEMA_VERSION = 1
 _FG_ROW = struct.Struct("<Q7hiiiiBBBBBBBI20h20h")
+_BASE_ROW = struct.Struct("<Q7h8i")
 _PATH_LOCKS: dict[Path, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
 
@@ -65,6 +67,40 @@ class FgCandidateCacheValue:
         }
 
 
+@dataclass(frozen=True)
+class BaseCandidateCacheValue:
+    score: int
+    combo_idx: int
+    ft: int
+    ff: int
+    gems_pp: int
+    gems_cm: int
+    gems_fm: int
+    gems_ov: int
+
+    def result8(self) -> tuple[int, ...]:
+        return (
+            int(self.score),
+            int(self.combo_idx),
+            int(self.ft),
+            int(self.ff),
+            int(self.gems_pp),
+            int(self.gems_cm),
+            int(self.gems_fm),
+            int(self.gems_ov),
+        )
+
+    def gpu_result6(self) -> tuple[int, ...]:
+        return (
+            int(self.score),
+            int(self.combo_idx),
+            int(self.gems_pp),
+            int(self.gems_cm),
+            int(self.gems_fm),
+            int(self.gems_ov),
+        )
+
+
 def solver_candidate_cache_root() -> Path:
     return Path(PATHS.bin_dir) / "solver_candidate_cache"
 
@@ -74,6 +110,13 @@ def fg_cache_path(context_digest: str) -> Path:
     if len(digest) != 32:
         raise ValueError(f"invalid FG candidate cache digest: {context_digest!r}")
     return solver_candidate_cache_root() / "fg" / f"{digest}.bin"
+
+
+def base_cache_path(context_digest: str) -> Path:
+    digest = str(context_digest or "").strip()
+    if len(digest) != 32:
+        raise ValueError(f"invalid base candidate cache digest: {context_digest!r}")
+    return solver_candidate_cache_root() / "base" / f"{digest}.bin"
 
 
 def fg_context_digest(
@@ -109,6 +152,59 @@ def fg_context_digest(
     return h.hexdigest()
 
 
+def base_context_digest(
+    *,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+    color_flags: dict[str, Any],
+    total_budget: int,
+    gem_scale_fever: int,
+    max_ft_gems: int,
+    max_ff_gems: int,
+    use_exact_inner_solver: bool,
+) -> str:
+    h = hashlib.blake2b(digest_size=16)
+    h.update(f"base-cache-v{BASE_CACHE_SCHEMA_VERSION}".encode("ascii"))
+    h.update(repr(_song_timing_cache_key(calc_song)).encode("utf-8"))
+    for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate"):
+        h.update(bytes(array_sig16(np.asarray(ref_arrays[key], dtype=np.float32).reshape(-1))))
+    h.update(str(primary_color or "").encode("utf-8"))
+    h.update(b"\0")
+    h.update(str(secondary_color or "").encode("utf-8"))
+    h.update(b"\0")
+    h.update(str(selected_color or "").encode("utf-8"))
+    h.update(b"\0")
+    for key in (
+        "is_p_ft",
+        "is_s_ft",
+        "is_p_ff",
+        "is_s_ff",
+        "is_p_pp",
+        "is_s_pp",
+        "is_p_cm",
+        "is_s_cm",
+        "is_p_fm",
+        "is_s_fm",
+        "is_p_ov",
+        "is_s_ov",
+    ):
+        h.update(str(int(color_flags.get(key, 0) or 0)).encode("ascii"))
+    h.update(b"\0")
+    h.update(str(int(total_budget)).encode("ascii"))
+    h.update(b"\0")
+    h.update(str(int(gem_scale_fever)).encode("ascii"))
+    h.update(b"\0")
+    h.update(str(int(max_ft_gems)).encode("ascii"))
+    h.update(b"\0")
+    h.update(str(int(max_ff_gems)).encode("ascii"))
+    h.update(b"\0")
+    h.update(b"1" if bool(use_exact_inner_solver) else b"0")
+    return h.hexdigest()
+
+
 def stats7_key(values: tuple[int, ...] | list[int] | np.ndarray) -> tuple[int, ...]:
     out = tuple(int(v) for v in values)
     if len(out) != 7:
@@ -122,6 +218,14 @@ def stats7_key(values: tuple[int, ...] | list[int] | np.ndarray) -> tuple[int, .
 def _stats_fingerprint(stats: tuple[int, ...]) -> int:
     packed = struct.pack("<7h", *stats)
     return int.from_bytes(hashlib.blake2b(packed, digest_size=8).digest(), "little", signed=False)
+
+
+def base_stats_hash_key(stats: tuple[int, ...] | list[int] | np.ndarray) -> int:
+    out = 2166136261
+    for value in stats7_key(stats):
+        out = ((int(out) ^ (int(value) + 32769)) * 16777619) & 0xFFFFFFFF
+    key = int(out)
+    return key if key != 0 else 1
 
 
 def _path_lock(path: Path) -> threading.Lock:
@@ -229,6 +333,56 @@ def _same_value(a: FgCandidateCacheValue, b: FgCandidateCacheValue) -> bool:
     return a == b
 
 
+def _base_value_from_result8(result8: tuple[int, ...] | list[int] | np.ndarray) -> BaseCandidateCacheValue:
+    values = tuple(int(v) for v in result8)
+    if len(values) != 8:
+        raise ValueError(f"base candidate cache requires 8 result values, got {len(values)}")
+    return BaseCandidateCacheValue(
+        score=int(values[0]),
+        combo_idx=int(values[1]),
+        ft=int(values[2]),
+        ff=int(values[3]),
+        gems_pp=int(values[4]),
+        gems_cm=int(values[5]),
+        gems_fm=int(values[6]),
+        gems_ov=int(values[7]),
+    )
+
+
+def _pack_base_row(stats: tuple[int, ...], value: BaseCandidateCacheValue) -> bytes:
+    return _BASE_ROW.pack(
+        _stats_fingerprint(stats),
+        *stats,
+        int(value.score),
+        int(value.combo_idx),
+        int(value.ft),
+        int(value.ff),
+        int(value.gems_pp),
+        int(value.gems_cm),
+        int(value.gems_fm),
+        int(value.gems_ov),
+    )
+
+
+def _unpack_base_row(row: bytes) -> tuple[tuple[int, ...], BaseCandidateCacheValue]:
+    unpacked = _BASE_ROW.unpack(row)
+    fingerprint = int(unpacked[0])
+    stats = tuple(int(v) for v in unpacked[1:8])
+    if _stats_fingerprint(stats) != fingerprint:
+        raise ValueError("base candidate cache row fingerprint mismatch")
+    value = BaseCandidateCacheValue(
+        score=int(unpacked[8]),
+        combo_idx=int(unpacked[9]),
+        ft=int(unpacked[10]),
+        ff=int(unpacked[11]),
+        gems_pp=int(unpacked[12]),
+        gems_cm=int(unpacked[13]),
+        gems_fm=int(unpacked[14]),
+        gems_ov=int(unpacked[15]),
+    )
+    return stats, value
+
+
 class FgCandidateCacheShard:
     def __init__(self, path: Path, rows: dict[tuple[int, ...], FgCandidateCacheValue]) -> None:
         self.path = path
@@ -271,3 +425,63 @@ class FgCandidateCacheShard:
                 fh.write(row)
         self.rows[key] = value
         return True
+
+
+class BaseCandidateCacheShard:
+    def __init__(self, path: Path, rows: dict[tuple[int, ...], BaseCandidateCacheValue]) -> None:
+        self.path = path
+        self.rows = dict(rows)
+
+    @classmethod
+    def load(cls, context_digest: str) -> "BaseCandidateCacheShard":
+        path = base_cache_path(context_digest)
+        rows: dict[tuple[int, ...], BaseCandidateCacheValue] = {}
+        if not path.exists():
+            return cls(path, rows)
+        payload = path.read_bytes()
+        if len(payload) % _BASE_ROW.size != 0:
+            raise ValueError(f"base candidate cache file is truncated: {path}")
+        for offset in range(0, len(payload), _BASE_ROW.size):
+            stats, value = _unpack_base_row(payload[offset : offset + _BASE_ROW.size])
+            previous = rows.get(stats)
+            if previous is not None and previous != value:
+                raise ValueError(f"base candidate cache contains conflicting row for stats={stats}: {path}")
+            rows[stats] = value
+        return cls(path, rows)
+
+    def put_result8(
+        self,
+        stats: tuple[int, ...] | list[int] | np.ndarray,
+        result8: tuple[int, ...] | list[int] | np.ndarray,
+    ) -> bool:
+        key = stats7_key(stats)
+        value = _base_value_from_result8(result8)
+        if value.score < 0:
+            raise ValueError(f"base candidate cache cannot persist invalid score for stats={key}")
+        if value.combo_idx < 0:
+            raise ValueError(f"base candidate cache cannot persist invalid combo index for stats={key}")
+        existing = self.rows.get(key)
+        if existing is not None:
+            if existing != value:
+                raise ValueError(f"base candidate cache value changed for stats={key}: {self.path}")
+            return False
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        row = _pack_base_row(key, value)
+        lock = _path_lock(self.path)
+        with lock:
+            with self.path.open("ab") as fh:
+                fh.write(row)
+        self.rows[key] = value
+        return True
+
+    def gpu_rows(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not self.rows:
+            return (
+                np.zeros((0,), dtype=np.uint32),
+                np.zeros((0, 7), dtype=np.int16),
+                np.zeros((0, 6), dtype=np.int32),
+            )
+        stats_rows = np.asarray(list(self.rows.keys()), dtype=np.int16)
+        keys = np.asarray([base_stats_hash_key(tuple(row)) for row in stats_rows], dtype=np.uint32)
+        result_rows = np.asarray([value.gpu_result6() for value in self.rows.values()], dtype=np.int32)
+        return keys, stats_rows, result_rows

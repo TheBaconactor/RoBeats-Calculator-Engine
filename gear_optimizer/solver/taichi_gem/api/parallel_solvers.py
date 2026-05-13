@@ -30,6 +30,7 @@ from .initialization import (
 from .timeline import precompute_timeline_gpu
 from .ga_operations import (
     ga_upload_population_indices,
+    ga_upload_base_candidate_cache,
     ga_evaluate_population,
     ga_download_results,
 )
@@ -404,6 +405,12 @@ def solve_genomes_from_registry(
     else:
         ga_upload_population_indices(population_indices, n_slots=9)
         _t_kernel = None
+
+    ga_upload_base_candidate_cache(
+        np.zeros((0,), dtype=np.uint32),
+        np.zeros((0, 7), dtype=np.int16),
+        np.zeros((0, 6), dtype=np.int32),
+    )
 
     # GPU-native eval:
     # - Fused aggregate + best-key init

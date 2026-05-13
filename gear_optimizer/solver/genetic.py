@@ -72,10 +72,12 @@ from ..helpers.ga_helpers.redundancy_audit import (
     write_ga_redundancy_audit_record,
 )
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
+from .candidate_solver_cache import BaseCandidateCacheShard, base_context_digest
 from .item_registry import ItemRegistry
 from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
 from .gpu_tuning_policy import choose_ga_batch_runs
+from .taichi_gem.ftff_combos import ftff_combo_pairs_array
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
@@ -125,6 +127,72 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
         logger.debug(f"genetic:_resolve_ga_novelty_repair_attempts: {e}")
         attempts = 2
     return max(0, min(4, int(attempts)))
+
+
+def _base_candidate_combo_index(
+    *,
+    total_budget: int,
+    max_ft_gems: int,
+    max_ff_gems: int,
+) -> dict[tuple[int, int], int]:
+    pairs = ftff_combo_pairs_array(
+        int(total_budget),
+        max_ft_gems=int(max_ft_gems),
+        max_ff_gems=int(max_ff_gems),
+    )
+    return {(int(row[0]), int(row[1])): int(idx) for idx, row in enumerate(pairs)}
+
+
+def _record_base_candidate_cache_rows(
+    *,
+    cache: BaseCandidateCacheShard,
+    selected_payload: np.ndarray,
+    combo_index: dict[tuple[int, int], int],
+) -> int:
+    payload = np.asarray(selected_payload, dtype=np.int32)
+    if payload.ndim != 2:
+        raise ValueError(f"base candidate cache selected payload must be 2D, got ndim={payload.ndim}")
+    if int(payload.shape[0]) < 1:
+        raise ValueError("base candidate cache selected payload has no header")
+    packed_cols = 1 + 9 + 7 + 7
+    if int(payload.shape[1]) < 2 + packed_cols:
+        raise ValueError(f"base candidate cache selected payload has too few columns: {payload.shape[1]}")
+
+    selected_n = int(payload[0, 0])
+    if selected_n < 0 or selected_n > int(payload.shape[0]) - 1:
+        raise ValueError(f"base candidate cache selected count is invalid: {selected_n}")
+    if selected_n == 0:
+        return 0
+
+    writes = 0
+    packed = payload[1 : 1 + selected_n, 2 : 2 + packed_cols]
+    for row in packed:
+        score = int(row[0])
+        result = tuple(int(v) for v in row[1 + 9 : 1 + 9 + 7])
+        stats = tuple(int(v) for v in row[1 + 9 + 7 : 1 + 9 + 7 + 7])
+        if int(result[0]) != int(score):
+            raise ValueError(f"base candidate cache score drift for stats={stats}: {score} != {result[0]}")
+        ft = int(result[1])
+        ff = int(result[2])
+        combo_idx = combo_index.get((ft, ff))
+        if combo_idx is None:
+            raise ValueError(f"base candidate cache could not map FT/FF pair: {(ft, ff)}")
+        writes += int(
+            cache.put_result8(
+                stats,
+                (
+                    int(score),
+                    int(combo_idx),
+                    int(ft),
+                    int(ff),
+                    int(result[3]),
+                    int(result[4]),
+                    int(result[5]),
+                    int(result[6]),
+                ),
+            )
+        )
+    return int(writes)
 
 
 def _selected_color_stat_index(color: str) -> int:
@@ -1566,6 +1634,36 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         logger.debug(f"genetic:_restore_song_gpu_state: {e}")
         n_combos = 0
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
+
+    base_candidate_cache = BaseCandidateCacheShard.load(
+        base_context_digest(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            primary_color=str(cfg_data.get("primary_color", "") or ""),
+            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+            selected_color=str(cfg_data.get("selected_color", "") or ""),
+            color_flags=color_flags,
+            total_budget=int(total_budget),
+            gem_scale_fever=int(gem_scale_fever),
+            max_ft_gems=int(max_ft_gems_global),
+            max_ff_gems=int(max_ff_gems_global),
+            use_exact_inner_solver=True,
+        )
+    )
+    base_candidate_combo_index = _base_candidate_combo_index(
+        total_budget=int(total_budget),
+        max_ft_gems=int(max_ft_gems_global),
+        max_ff_gems=int(max_ff_gems_global),
+    )
+
+    def _upload_base_candidate_cache() -> int:
+        keys, stats, results = base_candidate_cache.gpu_rows()
+        return int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results))
+
+    t_phase = time.perf_counter()
+    base_cache_uploaded = _upload_base_candidate_cache()
+    _emit_ga_setup_phase(phase="upload_base_candidate_cache", start=t_phase, rows=int(base_cache_uploaded))
+
     batch_runs_default = choose_ga_batch_runs(
         n_genomes=int(n_genomes),
         n_combos=int(n_combos),
@@ -1696,6 +1794,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
                 gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
                 _restore_song_gpu_state()
+                _upload_base_candidate_cache()
                 _stage_segment_initial_populations(
                     run_start=int(run_start_global),
                     seg_runs=int(seg_len),
@@ -2056,6 +2155,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
                         _restore_song_gpu_state()
+                        _upload_base_candidate_cache()
                         _stage_segment_initial_populations(
                             run_start=int(run_start_global),
                             seg_runs=int(seg_len),
@@ -2081,15 +2181,19 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 )
             )
 
-        payload_segments.append(
-            gpu_api.ga_download_fg_selected_payload(
-                table_slot=int(song_slot),
-                n_runs=int(seg_len),
-                limit=int(payload_candidate_limit),
-                top_base_keep=int(top_base_keep),
-                base_budget=int(base_budget),
-                fg_budget_end=int(fg_budget_end),
-            )
+        selected_payload = gpu_api.ga_download_fg_selected_payload(
+            table_slot=int(song_slot),
+            n_runs=int(seg_len),
+            limit=int(payload_candidate_limit),
+            top_base_keep=int(top_base_keep),
+            base_budget=int(base_budget),
+            fg_budget_end=int(fg_budget_end),
+        )
+        payload_segments.append(selected_payload)
+        _record_base_candidate_cache_rows(
+            cache=base_candidate_cache,
+            selected_payload=selected_payload,
+            combo_index=base_candidate_combo_index,
         )
         run_start_global += seg_len
 

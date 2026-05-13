@@ -16,6 +16,10 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
             calls.append("aggregate")
 
         @staticmethod
+        def ga_apply_base_candidate_cache_kernel(*_args):
+            calls.append("apply_base_cache")
+
+        @staticmethod
         def ga_find_best_combo_warmstart_kernel(*_args):
             calls.append("evaluate")
 
@@ -51,7 +55,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
         gem_scale_fever=3,
         materialize_mode="update_global",
     )
-    assert calls == ["aggregate", "evaluate", "write_global"]
+    assert calls == ["aggregate", "apply_base_cache", "evaluate", "write_global"]
 
     calls.clear()
     ga_operations.ga_evaluate_population(
@@ -62,7 +66,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
         materialize_mode="results_only",
         update_global_best=True,
     )
-    assert calls == ["aggregate", "evaluate", "write_results", "update_global"]
+    assert calls == ["aggregate", "apply_base_cache", "evaluate", "write_results", "update_global"]
 
 
 def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
@@ -78,6 +82,10 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
         @staticmethod
         def ga_aggregate_and_init_best_kernel(*_args):
             calls.append("aggregate")
+
+        @staticmethod
+        def ga_apply_base_candidate_cache_kernel(*_args):
+            calls.append("apply_base_cache")
 
         @staticmethod
         def ga_find_best_combo_warmstart_kernel(*args):
@@ -110,10 +118,11 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
 
     assert calls[0] == ("build_reuse", (8, 9))
     assert calls[1] == "aggregate"
-    assert calls[2][0] == "evaluate"
-    assert calls[2][1][-1] == 1
-    assert calls[3] == ("propagate_chunk", (8,))
-    assert calls[4] == "write_results"
+    assert calls[2] == "apply_base_cache"
+    assert calls[3][0] == "evaluate"
+    assert calls[3][1][-1] == 1
+    assert calls[4] == ("propagate_chunk", (8,))
+    assert calls[5] == "write_results"
 
 
 def test_ga_write_best_results_and_update_runs_best_dispatch(monkeypatch):

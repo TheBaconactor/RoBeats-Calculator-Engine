@@ -171,6 +171,12 @@ ga_exact_eval_hash_sort_keys: ti.Field = None  # (MAX_GENOMES,) i32 hash keys fo
 ga_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome indices permuted with sort keys
 ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
 ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
+GA_BASE_CANDIDATE_CACHE_HASH_SIZE = 1_048_576
+ga_base_candidate_cache_count: ti.Field = None  # (1,) i32
+ga_base_candidate_cache_keys: ti.Field = None  # (HASH_SIZE,) u32
+ga_base_candidate_cache_stats: ti.Field = None  # (HASH_SIZE, 7) i16
+ga_base_candidate_cache_results: ti.Field = None  # (HASH_SIZE, 6) i32 [score, combo_idx, pp, cm, fm, ov]
+ga_base_candidate_cache_hit: ti.Field = None  # (MAX_GENOMES,) i32
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
@@ -303,6 +309,8 @@ def reset_fields_state() -> None:
     global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
     global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
     global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_base_candidate_cache_count, ga_base_candidate_cache_keys
+    global ga_base_candidate_cache_stats, ga_base_candidate_cache_results, ga_base_candidate_cache_hit
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -386,6 +394,11 @@ def reset_fields_state() -> None:
     ga_exact_eval_hash_sort_indices = None
     ga_exact_eval_rep_idx = None
     ga_exact_eval_unique_count = None
+    ga_base_candidate_cache_count = None
+    ga_base_candidate_cache_keys = None
+    ga_base_candidate_cache_stats = None
+    ga_base_candidate_cache_results = None
+    ga_base_candidate_cache_hit = None
     slot_start = None
     slot_count = None
     island_boundaries = None
@@ -541,6 +554,8 @@ def allocate_fields():
     global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
     global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
     global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_base_candidate_cache_count, ga_base_candidate_cache_keys
+    global ga_base_candidate_cache_stats, ga_base_candidate_cache_results, ga_base_candidate_cache_hit
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -607,6 +622,11 @@ def allocate_fields():
     ga_exact_eval_hash_sort_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
+    ga_base_candidate_cache_count = ti.field(dtype=ti.i32, shape=1)
+    ga_base_candidate_cache_keys = ti.field(dtype=ti.u32, shape=int(GA_BASE_CANDIDATE_CACHE_HASH_SIZE))
+    ga_base_candidate_cache_stats = ti.field(dtype=ti.i16, shape=(int(GA_BASE_CANDIDATE_CACHE_HASH_SIZE), 7))
+    ga_base_candidate_cache_results = ti.field(dtype=ti.i32, shape=(int(GA_BASE_CANDIDATE_CACHE_HASH_SIZE), 6))
+    ga_base_candidate_cache_hit = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
 
     # Slot pools for GPU mutation
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
@@ -893,6 +913,11 @@ def bind_fields(kernels_module):
     target.ga_exact_eval_hash_sort_indices = ga_exact_eval_hash_sort_indices
     target.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
     target.ga_exact_eval_unique_count = ga_exact_eval_unique_count
+    target.ga_base_candidate_cache_count = ga_base_candidate_cache_count
+    target.ga_base_candidate_cache_keys = ga_base_candidate_cache_keys
+    target.ga_base_candidate_cache_stats = ga_base_candidate_cache_stats
+    target.ga_base_candidate_cache_results = ga_base_candidate_cache_results
+    target.ga_base_candidate_cache_hit = ga_base_candidate_cache_hit
     target.slot_start = slot_start
     target.slot_count = slot_count
 

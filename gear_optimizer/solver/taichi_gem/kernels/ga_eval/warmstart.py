@@ -385,6 +385,8 @@ def ga_find_best_combo_warmstart_kernel(
         ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
             combo_idx: ti.i32 = combo_offset + local_c
+            if kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
+                continue
             if ti.static(reuse_exact_eval_results):
                 if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
                     continue
@@ -460,6 +462,9 @@ def ga_find_best_combo_warmstart_kernel(
         for tid in range(total_threads):
             genome_idx = tid // block_dim
             lane = tid - genome_idx * block_dim
+
+            if kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
+                continue
 
             if ti.static(reuse_exact_eval_results):
                 if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
