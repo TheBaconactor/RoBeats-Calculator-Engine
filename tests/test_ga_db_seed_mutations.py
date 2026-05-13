@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 
-def test_ga_settings_reads_db_seed_mutations():
-    from gear_optimizer.data.models import GASettings
+def test_ga_evolution_settings_reads_db_seed_mutations():
+    from gear_optimizer.data.models import GAEvolutionSettings
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
@@ -15,7 +15,7 @@ def test_ga_settings_reads_db_seed_mutations():
     cfg.set("IterationEngine", "GA_FixedSeedCopies", "2")
     cfg.set("IterationEngine", "GA_DBSeedMutations", "3")
 
-    settings = GASettings.from_cfg(cfg)
+    settings = GAEvolutionSettings.from_cfg(cfg)
     assert settings.db_seed_mutations == 3
 
 

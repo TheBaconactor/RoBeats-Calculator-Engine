@@ -5,7 +5,7 @@ This module provides configuration operations:
 - setup_song_config: Setup configuration, auto-buff, load current stats
 """
 
-from ...data.models import GASettings
+from ...data.models import GAEvolutionSettings
 from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
 from ...core.config import read_iteration_engine_settings
 
@@ -28,7 +28,7 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
                 enable_mini, enable_gear, force_greats_mode, force_greats_finder,
                 force_greats_config, manual_force_greats)
     """
-    ga_settings = GASettings.from_cfg(cfg)
+    ga_settings = GAEvolutionSettings.from_cfg(cfg)
 
     ie = read_iteration_engine_settings(cfg)
     meta_finder = bool(ie.meta_finder)

@@ -66,8 +66,8 @@ class WarnOnce:
 
 
 @dataclass
-class GASettings:
-    """Configuration settings for the Genetic Algorithm."""
+class GAEvolutionSettings:
+    """Evolution/search policy settings for GA seeding and local refinement."""
 
     db_seed_prob: float
     fixed_seed_copies: int
@@ -84,7 +84,7 @@ class GASettings:
 
     @classmethod
     def from_cfg(cls, cfg):
-        """Create GASettings from ConfigParser object."""
+        """Create GAEvolutionSettings from ConfigParser object."""
         from ..core.utils import safe_int, safe_float
         from ..core.constants import GA_MULTI_RUNS_DEFAULT
 

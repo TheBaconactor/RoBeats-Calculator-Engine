@@ -51,7 +51,7 @@ def _mk_mini(*, name: str, rng: np.random.Generator) -> dict:
 
 
 def _solve_synthetic_ga(*, song_name: str) -> dict:
-    from gear_optimizer.data.models import GASettings
+    from gear_optimizer.data.models import GAEvolutionSettings
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
 
     cfg = configparser.ConfigParser()
@@ -116,7 +116,7 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
         "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float64),
     }
 
-    ga_settings = GASettings(
+    ga_settings = GAEvolutionSettings(
         db_seed_prob=0.0,
         fixed_seed_copies=0,
         memetic_elites=0,

@@ -61,7 +61,7 @@ from .base_stats import (
 )
 from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from .scoring.stats_ops import apply_gems_to_base_stats
-from ..data.models import GASettings
+from ..data.models import GAEvolutionSettings
 from ..helpers.ga_helpers import (
     initialize_pools,
 )
@@ -2246,7 +2246,7 @@ def solve_coevolution_genetic(
     logger.info("=== STARTING GENETIC ALGORITHM SOLVER ===")
     logger.info(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
 
-    ga_settings = ga_settings or GASettings.from_cfg(cfg)
+    ga_settings = ga_settings or GAEvolutionSettings.from_cfg(cfg)
 
     if solver_ctx is None:
         p_color = calc_song["metadata"].get("Primary Color", "Rush")

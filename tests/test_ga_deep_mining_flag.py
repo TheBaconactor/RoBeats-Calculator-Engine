@@ -14,7 +14,7 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
     - cache-hit driven mutation boost (current_mutation_rate)
     """
     from gear_optimizer.helpers.ga_helpers import compute_dynamic_mutation
-    from gear_optimizer.data.models import GASettings
+    from gear_optimizer.data.models import GAEvolutionSettings
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
 
     base_mutation = 0.275
@@ -23,7 +23,7 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
     current_run_gens = gens_per_run
     cache_hits = GA_POPULATION_SIZE  # hit_ratio=1 -> exploration_boost should saturate
 
-    settings_on = GASettings(
+    settings_on = GAEvolutionSettings(
         db_seed_prob=0.5,
         fixed_seed_copies=0,
         memetic_elites=0,
@@ -33,7 +33,7 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
         multi_start=1,
         deep_mining_enabled=True,
     )
-    settings_off = GASettings(
+    settings_off = GAEvolutionSettings(
         db_seed_prob=0.5,
         fixed_seed_copies=0,
         memetic_elites=0,
