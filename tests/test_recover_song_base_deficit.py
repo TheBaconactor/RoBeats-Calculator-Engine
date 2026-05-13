@@ -18,7 +18,6 @@ Difficulty = Hard
 
 [IterationEngine]
 SongRepeats = 1
-BundleSongRepeats = false
 GA_SearchDepth = 50
 GA_MultiStart = 1
 GA_DBSeedProbability = 0.1
@@ -50,7 +49,6 @@ FG_SearchRadius = 5
     assert cfg.get("CalculateSong", "Song_Name") == "Target Song"
     assert cfg.get("CalculateSong", "Difficulty") == "Normal"
     assert cfg.get("IterationEngine", "SongRepeats") == "5"
-    assert cfg.get("IterationEngine", "BundleSongRepeats") == "true"
     assert cfg.get("IterationEngine", "SongQueueLimit") == "1"
     assert cfg.get("IterationEngine", "InFlightSongs") == "1"
     assert cfg.get("IterationEngine", "GA_SearchDepth") == "125"

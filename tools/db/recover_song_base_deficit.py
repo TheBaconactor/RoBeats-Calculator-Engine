@@ -38,7 +38,6 @@ class RecoverySettings:
     in_flight_songs: int = 1
     fg_candidate_limit: int | None = None
     fg_search_radius: int | None = None
-    bundle_song_repeats: bool = True
 
 
 def _infer_difficulty_from_song_name(song_name: str) -> str:
@@ -153,7 +152,6 @@ def _write_recovery_config(
     cfg.set("IterationEngine", "LoopForever", "false")
     cfg.set("IterationEngine", "IgnoreResumeQueue", "true")
     cfg.set("IterationEngine", "SongRepeats", str(int(settings.song_repeats)))
-    cfg.set("IterationEngine", "BundleSongRepeats", "true" if settings.bundle_song_repeats else "false")
     cfg.set("IterationEngine", "SongQueueLimit", "1")
     cfg.set("IterationEngine", "InFlightSongs", str(int(settings.in_flight_songs)))
     cfg.set("IterationEngine", "GA_SearchDepth", str(int(settings.ga_search_depth)))

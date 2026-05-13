@@ -623,7 +623,6 @@ class AppRuntimeSettings:
     song_queue_limit: int = 0
     ignore_resume_queue: bool = False
     song_repeats: int = 1
-    bundle_song_repeats: bool = False
     loop_restart_wait_sec: float = 0.0
 
     @classmethod
@@ -653,7 +652,6 @@ class AppRuntimeSettings:
         song_queue_limit = cfg_get_int(cfg, "IterationEngine", "SongQueueLimit", 0, clamp_min=0)
         ignore_resume_queue = cfg_get_bool(cfg, "IterationEngine", "IgnoreResumeQueue", False)
         song_repeats = cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1, clamp_min=1)
-        bundle_song_repeats = cfg_get_bool(cfg, "IterationEngine", "BundleSongRepeats", False)
         loop_restart_wait_sec = cfg_get_float(
             cfg,
             "IterationEngine",
@@ -674,7 +672,6 @@ class AppRuntimeSettings:
             song_queue_limit=int(song_queue_limit),
             ignore_resume_queue=bool(ignore_resume_queue),
             song_repeats=int(song_repeats),
-            bundle_song_repeats=bool(bundle_song_repeats),
             loop_restart_wait_sec=float(loop_restart_wait_sec),
         )
 

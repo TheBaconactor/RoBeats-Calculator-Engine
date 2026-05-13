@@ -244,7 +244,6 @@ def _prepare_cfg_dict(
     ie = cfg_dict["IterationEngine"]
     ie["LoopForever"] = "false"
     ie["SongRepeats"] = "1"
-    ie["BundleSongRepeats"] = "false"
     ie["GA_SearchDepth"] = str(int(ga_depth))
     ie["GA_MultiStart"] = str(int(ga_multi_start))
     ie["FG_CandidateLimit"] = str(int(fg_candidate_limit))

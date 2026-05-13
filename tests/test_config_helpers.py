@@ -44,7 +44,6 @@ def _build_config() -> configparser.ConfigParser:
                 "SongQueueLimit": "5",
                 "IgnoreResumeQueue": "true",
                 "SongRepeats": "0",
-                "BundleSongRepeats": "false",
                 "LoopRestartWaitSec": "99.5",
                 "FG_CandidateLimit": "9999",
                 "FG_SearchRadius": "",
@@ -104,7 +103,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.song_queue_limit == 5
     assert runtime.ignore_resume_queue is True
     assert runtime.song_repeats == 1
-    assert runtime.bundle_song_repeats is False
     assert runtime.loop_restart_wait_sec == 60.0
 
     assert ie.force_greats_debug is False

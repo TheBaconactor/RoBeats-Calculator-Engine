@@ -1276,13 +1276,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except (ValueError, TypeError):
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
-        bundle_song_repeats = bool(runtime_settings.bundle_song_repeats)
-        try:
-            raw_bundle = env_get("BUNDLE_SONG_REPEATS")
-            if raw_bundle is not None and str(raw_bundle).strip() != "":
-                bundle_song_repeats = truthy(raw_bundle)
-        except (ValueError, TypeError):
-            pass
         used_ga_seeds: set[int] = set()
         backend_service_mode = bool(
             getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
@@ -1338,24 +1331,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     _append_song_task(fp, found_song_name, task_diff)
                 continue
 
-            if bundle_song_repeats:
-                repeat_runs = [
-                    _build_repeat_ctx(
-                        str(found_song_name),
-                        repeat_index=int(repeat_index),
-                        repeat_total=int(repeats_for_song),
-                    )
-                    for repeat_index in range(1, repeats_for_song + 1)
-                ]
-                repeat_bundle = {
-                    "repeat_bundle": True,
-                    "repeat_total": int(repeats_for_song),
-                    "runs": repeat_runs,
-                }
-                logger.info(f"[QUEUE] {found_song_name}")
-                _append_song_task(fp, found_song_name, task_diff, repeat_bundle=repeat_bundle)
-                continue
-
             for repeat_index in range(1, repeats_for_song + 1):
                 repeat_ctx = _build_repeat_ctx(
                     str(found_song_name),
@@ -1373,7 +1348,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         Compute the logical "task" count used for progress + throughput.
 
         - Non-bundled repeats: each queued tuple is already one task => `len(tasks)`.
-        - Bundled repeats (`BundleSongRepeats=true`): each queued tuple expands into N repeat runs;
+        - Bundled repeats: each queued tuple expands into N repeat runs;
           count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
         """
         return effective_task_count(tasks)
