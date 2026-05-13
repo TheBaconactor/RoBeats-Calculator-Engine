@@ -19,8 +19,8 @@ from collections import deque
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label, task_song_name
-from gear_optimizer.solver.gpu_executor import get_gpu_executor
-from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
+from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+from gear_optimizer.solver.native_inflight_gpu_startup import start_native_inflight_gpu_client
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
     first_task_config,
@@ -112,36 +112,7 @@ def run_native_inflight_song_pipeline(
 
     slot_pool = SongSlotPool(max_song_slots=int(icfg.max_song_slots))
 
-    gpu_executor = get_gpu_executor()
-    if progress_cb is not None:
-        # Make startup visible in the TUI: Taichi/Vulkan init + warmup can take noticeable time on cold caches.
-        try:
-            progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU init (Taichi/Vulkan)"})
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
-    gpu_executor.start(in_process=True)
-    # GPU readiness includes Taichi/Vulkan init plus the configured GA/FG warmups. On cold
-    # Windows/Vulkan caches, that warmup can be minute-scale; do not let work queue behind an
-    # owner that is not accepting requests yet.
-    init_timeout = float(icfg.runtime.gpu_executor_init_timeout_sec)
-    if not gpu_executor.wait_until_ready(timeout=init_timeout):
-        err = getattr(gpu_executor, "last_init_error", None)
-        msg = "[InFlight] GPU executor Taichi init failed or timed out"
-        if err:
-            msg = f"{msg} ({err})"
-        try:
-            gpu_executor.stop()
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
-        raise RuntimeError(msg)
-    if progress_cb is not None:
-        # Executor is initialized and warm; requests submitted after this point can be processed.
-        try:
-            progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU warmup (Taichi JIT)"})
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:run_native_inflight_song_pipeline: {e}")
-    gpu_client = GpuServiceClient(gpu_executor)
-    gpu_client.start(start_executor=False)
+    gpu_executor, gpu_client = start_native_inflight_gpu_client(icfg, progress_cb=progress_cb)
 
     stage_profiler = InFlightStageProfiler(enabled=icfg.stage_profile_enabled, out_path=icfg.stage_profile_path)
 
