@@ -14,7 +14,6 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import score_native_ga_force_greats
-from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
@@ -23,7 +22,7 @@ from gear_optimizer.solver.native_inflight_persistence import InflightDBPersiste
 from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
-from gear_optimizer.solver.native_inflight_support import _PostSender, _loadout_entries_have_db_source
+from gear_optimizer.solver.native_inflight_support import _PostSender
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
@@ -699,15 +698,7 @@ def run_fg_job_sync(
         except AttributeError:
             pass
 
-    # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
-    # without rebuilding the full GA union.
-    db_loadouts_full = getattr(song.runtime.db, "db_loadouts_full", None)
-    loadout_entries = getattr(song.runtime.fg, "loadout_entries", None)
-    if db_loadouts_full is not None and not _loadout_entries_have_db_source(loadout_entries):
-        if not isinstance(loadout_entries, dict):
-            loadout_entries = {}
-            song.runtime.fg.loadout_entries = loadout_entries
-        merge_db_loadouts_into_entries(loadout_entries, db_loadouts_full)
+    InflightDBPersistence.merge_prefetched_loadouts(song)
 
     try:
         emit_profile_event(

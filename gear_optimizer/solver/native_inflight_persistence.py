@@ -11,8 +11,10 @@ from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
+from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items
+from gear_optimizer.solver.native_inflight_support import _loadout_entries_have_db_source
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 
@@ -93,6 +95,18 @@ class InflightDBPersistence:
             logger.debug(f"native_inflight_persistence:consume_ready_prefetch: {e}")
         finally:
             song.runtime.db.db_loadouts_future = None
+        return True
+
+    @staticmethod
+    def merge_prefetched_loadouts(song: _NativeSong) -> bool:
+        db_loadouts_full = getattr(song.runtime.db, "db_loadouts_full", None)
+        loadout_entries = getattr(song.runtime.fg, "loadout_entries", None)
+        if db_loadouts_full is None or _loadout_entries_have_db_source(loadout_entries):
+            return False
+        if not isinstance(loadout_entries, dict):
+            loadout_entries = {}
+            song.runtime.fg.loadout_entries = loadout_entries
+        merge_db_loadouts_into_entries(loadout_entries, db_loadouts_full)
         return True
 
     def shutdown_prefetch(self, *, wait: bool = True, cancel_futures: bool = True) -> None:

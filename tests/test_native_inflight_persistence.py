@@ -104,3 +104,43 @@ def test_inflight_db_persistence_clears_unready_prefetch_future():
     assert future.cancelled() is True
     assert song.runtime.db.db_loadouts_full is None
     assert song.runtime.db.db_loadouts_future is None
+
+
+def test_inflight_db_persistence_merges_prefetched_loadouts_once():
+    song = make_native_song(
+        loadout_entries={
+            "ga": {
+                "gear_names": ["G1"],
+                "mini_names": ["M1"],
+                "_source": "ga",
+            }
+        },
+        db_loadouts_full=[
+            {
+                "gear_names": ["G2"],
+                "mini_names": ["M2"],
+                "_source": "db",
+            }
+        ],
+    )
+
+    assert InflightDBPersistence.merge_prefetched_loadouts(song) is True
+    assert any(entry.get("_source") == "db" for entry in song.runtime.fg.loadout_entries.values())
+    assert InflightDBPersistence.merge_prefetched_loadouts(song) is False
+
+
+def test_inflight_db_persistence_materializes_loadout_entries_for_prefetched_rows():
+    song = make_native_song(
+        loadout_entries=None,
+        db_loadouts_full=[
+            {
+                "gear_names": ["G2"],
+                "mini_names": ["M2"],
+                "_source": "db",
+            }
+        ],
+    )
+
+    assert InflightDBPersistence.merge_prefetched_loadouts(song) is True
+    assert isinstance(song.runtime.fg.loadout_entries, dict)
+    assert any(entry.get("_source") == "db" for entry in song.runtime.fg.loadout_entries.values())
