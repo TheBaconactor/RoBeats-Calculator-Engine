@@ -22,15 +22,15 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
-    _read_cpu_prewarm_lookahead,
-    _read_cpu_prewarm_workers,
-    _read_db_prefetch_workers,
-    _read_fg_static_prep_max_inflight,
-    _read_ga_multi_start,
-    _read_inflight_worker_count,
     first_task_config,
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
+    read_cpu_prewarm_lookahead,
+    read_cpu_prewarm_workers,
+    read_db_prefetch_workers,
+    read_fg_static_prep_max_inflight,
+    read_ga_multi_start,
+    read_inflight_worker_count,
     read_inflight_loop_observer_settings,
     read_inflight_runtime_settings,
 )
@@ -134,7 +134,7 @@ def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
 def test_read_ga_multi_start_uses_runtime_ga_settings():
     cfg = _cfg_with_iteration_engine(GA_MultiStart="4")
 
-    assert _read_ga_multi_start(cfg) == 4
+    assert read_ga_multi_start(cfg) == 4
 
 
 def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
@@ -369,14 +369,14 @@ def test_read_cpu_prewarm_lookahead_defaults_to_five_and_honors_overrides(monkey
     monkeypatch.delenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    assert _read_cpu_prewarm_lookahead(cfg, prep_limit=12) == 5
-    assert _read_cpu_prewarm_lookahead(cfg, prep_limit=3) == 3
+    assert read_cpu_prewarm_lookahead(cfg, prep_limit=12) == 5
+    assert read_cpu_prewarm_lookahead(cfg, prep_limit=3) == 3
 
     cfg_explicit = _cfg_with_iteration_engine(InFlight_CPUPrewarmLookahead="7")
-    assert _read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 7
+    assert read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 7
 
     monkeypatch.setenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", "2")
-    assert _read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 2
+    assert read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 2
 
 
 def test_first_task_config_extracts_legacy_task_config():
@@ -393,7 +393,7 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
     cfg = _cfg_with_iteration_engine(InFlight_PrepWorkers="3")
 
     assert (
-        _read_inflight_worker_count(
+        read_inflight_worker_count(
             cfg,
             config_key="InFlight_PrepWorkers",
             env_key="INFLIGHT_PREP_WORKERS",
@@ -405,7 +405,7 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
 
     monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "5")
     assert (
-        _read_inflight_worker_count(
+        read_inflight_worker_count(
             cfg,
             config_key="InFlight_PrepWorkers",
             env_key="INFLIGHT_PREP_WORKERS",
@@ -417,7 +417,7 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
 
     monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "0")
     assert (
-        _read_inflight_worker_count(
+        read_inflight_worker_count(
             _cfg_with_iteration_engine(),
             config_key="InFlight_PrepWorkers",
             env_key="INFLIGHT_PREP_WORKERS",
@@ -432,26 +432,26 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
 def test_read_cpu_prewarm_workers_respects_lookahead_and_env(monkeypatch):
     monkeypatch.delenv("INFLIGHT_CPU_PREWARM_WORKERS", raising=False)
 
-    assert _read_cpu_prewarm_workers(_cfg_with_iteration_engine(), inflight_limit=8, cpu_prewarm_lookahead=0) == 0
+    assert read_cpu_prewarm_workers(_cfg_with_iteration_engine(), inflight_limit=8, cpu_prewarm_lookahead=0) == 0
 
     cfg = _cfg_with_iteration_engine(InFlight_CPUPrewarmWorkers="6")
-    assert _read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 3
+    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 3
 
     monkeypatch.setenv("INFLIGHT_CPU_PREWARM_WORKERS", "4")
-    assert _read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 4
+    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 4
 
 
 def test_read_db_prefetch_workers_defaults_from_fg_prep_and_honors_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_DB_PREFETCH_WORKERS", raising=False)
 
-    assert _read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=2) == 2
-    assert _read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=9) == 4
+    assert read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=2) == 2
+    assert read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=9) == 4
 
     cfg = _cfg_with_iteration_engine(InFlight_DBPrefetchWorkers="6")
-    assert _read_db_prefetch_workers(cfg, fg_prep_workers=2) == 6
+    assert read_db_prefetch_workers(cfg, fg_prep_workers=2) == 6
 
     monkeypatch.setenv("INFLIGHT_DB_PREFETCH_WORKERS", "7")
-    assert _read_db_prefetch_workers(cfg, fg_prep_workers=2) == 7
+    assert read_db_prefetch_workers(cfg, fg_prep_workers=2) == 7
 
 
 def test_read_inflight_loop_observer_settings_reads_env_values():
@@ -515,7 +515,7 @@ def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_
 
     cfg = _cfg_with_iteration_engine()
     assert (
-        _read_fg_static_prep_max_inflight(
+        read_fg_static_prep_max_inflight(
             cfg,
             fg_prep_workers=4,
             inflight_limit=16,
@@ -524,7 +524,7 @@ def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_
         == 4
     )
     assert (
-        _read_fg_static_prep_max_inflight(
+        read_fg_static_prep_max_inflight(
             cfg,
             fg_prep_workers=4,
             inflight_limit=16,
@@ -535,7 +535,7 @@ def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_
 
     cfg_explicit = _cfg_with_iteration_engine(InFlight_FGStaticPrepMaxInflight="3")
     assert (
-        _read_fg_static_prep_max_inflight(
+        read_fg_static_prep_max_inflight(
             cfg_explicit,
             fg_prep_workers=4,
             inflight_limit=16,
@@ -546,7 +546,7 @@ def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_
 
     monkeypatch.setenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", "2")
     assert (
-        _read_fg_static_prep_max_inflight(
+        read_fg_static_prep_max_inflight(
             cfg_explicit,
             fg_prep_workers=4,
             inflight_limit=16,

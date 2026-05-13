@@ -18,7 +18,7 @@ from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, build_fg_persist_entries
-from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
+from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
@@ -118,13 +118,13 @@ def read_native_fg_pipeline_settings(
     if fg_prep_workers <= 0:
         fg_prep_workers = default_worker_threads(inflight_limit=inflight_limit_i, kind="fg_prep")
     fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
-    static_prep_max_inflight = _read_fg_static_prep_max_inflight(
+    static_prep_max_inflight = read_fg_static_prep_max_inflight(
         cfg0,
         fg_prep_workers=int(fg_prep_workers),
         inflight_limit=int(inflight_limit_i),
         cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
     )
-    db_prefetch_workers = _read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
+    db_prefetch_workers = read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
 
     return NativeFGPipelineSettings(
         workers=int(fg_workers),

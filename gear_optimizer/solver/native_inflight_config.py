@@ -31,7 +31,7 @@ from gear_optimizer.solver.native_inflight_scheduler import (
 logger = logging.getLogger(__name__)
 
 
-def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
+def default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     """
     Choose conservative default worker counts for low-end CPUs.
 
@@ -58,7 +58,7 @@ def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     return max(1, min(inflight_limit, int(base)))
 
 
-def _read_fg_static_prep_max_inflight(
+def read_fg_static_prep_max_inflight(
     cfg0: Any,
     *,
     fg_prep_workers: int,
@@ -99,7 +99,7 @@ def _read_fg_static_prep_max_inflight(
     return max(0, min(int(limit), int(fg_prep_workers), int(inflight_limit), 8))
 
 
-def _read_cpu_prewarm_lookahead(
+def read_cpu_prewarm_lookahead(
     cfg0: Any,
     *,
     prep_limit: int,
@@ -133,7 +133,7 @@ def _read_cpu_prewarm_lookahead(
     return max(0, min(int(lookahead), int(prep_limit), 32))
 
 
-def _read_inflight_worker_count(
+def read_inflight_worker_count(
     cfg0: Any,
     *,
     config_key: str,
@@ -157,11 +157,11 @@ def _read_inflight_worker_count(
     if workers <= 0:
         if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
             return 1
-        workers = _default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
+        workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
     return max(1, int(workers))
 
 
-def _read_cpu_prewarm_workers(
+def read_cpu_prewarm_workers(
     cfg0: Any,
     *,
     inflight_limit: int,
@@ -182,11 +182,11 @@ def _read_cpu_prewarm_workers(
         except (ValueError, TypeError):
             pass
     if workers <= 0:
-        workers = min(2, max(1, _default_worker_threads(inflight_limit=int(inflight_limit), kind="prep")))
+        workers = min(2, max(1, default_worker_threads(inflight_limit=int(inflight_limit), kind="prep")))
     return max(1, min(int(workers), int(cpu_prewarm_lookahead), 4))
 
 
-def _read_db_prefetch_workers(
+def read_db_prefetch_workers(
     cfg0: Any,
     *,
     fg_prep_workers: int,
@@ -208,12 +208,12 @@ def _read_db_prefetch_workers(
     return max(1, int(workers))
 
 
-def _read_ga_multi_start(cfg0: Any) -> int:
+def read_ga_multi_start(cfg0: Any) -> int:
     try:
         settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
         return max(1, int(settings.multi_start))
     except Exception as e:
-        logger.debug(f"native_inflight_config:_read_ga_multi_start: {e}")
+        logger.debug(f"native_inflight_config:read_ga_multi_start: {e}")
         return 1
 
 
@@ -437,9 +437,9 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         prep_buffer_mult = 12 if inflight_ram_mode else 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
-    cpu_prewarm_lookahead = _read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
+    cpu_prewarm_lookahead = read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
     ga_seed = str(env_get("GA_SEED") or "").strip()
-    prep_workers = _read_inflight_worker_count(
+    prep_workers = read_inflight_worker_count(
         cfg0,
         config_key="InFlight_PrepWorkers",
         env_key="INFLIGHT_PREP_WORKERS",
@@ -447,12 +447,12 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         kind="prep",
         ga_seed=ga_seed,
     )
-    cpu_prewarm_workers = _read_cpu_prewarm_workers(
+    cpu_prewarm_workers = read_cpu_prewarm_workers(
         cfg0,
         inflight_limit=int(inflight_limit),
         cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
     )
-    decode_workers = _read_inflight_worker_count(
+    decode_workers = read_inflight_worker_count(
         cfg0,
         config_key="InFlight_DecodeWorkers",
         env_key="INFLIGHT_DECODE_WORKERS",
@@ -659,7 +659,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
         from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 
-        ga_runs = _read_ga_multi_start(cfg0)
+        ga_runs = read_ga_multi_start(cfg0)
         gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
     except Exception as e:
         logger.debug(f"native_inflight_config:parse_inflight_config: {e}")

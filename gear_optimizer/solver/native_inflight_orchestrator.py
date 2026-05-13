@@ -22,7 +22,7 @@ from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label,
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
 from gear_optimizer.solver.native_inflight_config import (
-    _default_worker_threads,
+    default_worker_threads,
     first_task_config,
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
@@ -204,7 +204,7 @@ def run_native_inflight_song_pipeline(
         inflight_limit=int(icfg.inflight_limit),
         ga_credit_budget_cfg=int(icfg.fg_ga_credit_budget_cfg),
         cpu_prewarm_lookahead=int(icfg.cpu_prewarm_lookahead),
-        default_worker_threads=_default_worker_threads,
+        default_worker_threads=default_worker_threads,
     )
     fg_pipeline = native_fg_pipeline.NativeFGPipeline(fg_pipeline_settings)
     db_persistence = InflightDBPersistence(prefetch_workers=int(fg_pipeline.settings.db_prefetch_workers))
