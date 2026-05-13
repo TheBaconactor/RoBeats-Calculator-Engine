@@ -564,7 +564,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             # Config reading
             ie = runtime_settings.iteration_engine
-            enable_auto = True
             auto_buff = True
             fg_debug = bool(ie.force_greats_debug)
 
@@ -593,9 +592,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 
-            # CRITICAL FIX: Prevent DB tainting by disabling inputs in auto mode
-            if enable_auto:
-                self._disable_inputs_to_prevent_taint(cfg)
+            # CRITICAL FIX: Prevent DB tainting by disabling manual input fields.
+            self._disable_inputs_to_prevent_taint(cfg)
 
             ref_arrays = self._preload_ref_arrays(stats_table)
             all_gears = load_all_gears_list(paths)
