@@ -66,7 +66,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
             {"mini": 3},
             [{"Name": "M"}],
             1,
-            1,
             0,
             1,
             0,
@@ -91,7 +90,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
     assert prepared.current_gear_list == [{"Name": "G"}]
     assert prepared.current_mini_stats == {"mini": 3}
     assert prepared.current_mini_list == [{"Name": "M"}]
-    assert prepared.meta_finder is True
     assert prepared.enable_fever is True
     assert prepared.enable_mini is False
     assert prepared.enable_gear is True
@@ -116,7 +114,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         current_gear_list=[],
         current_mini_stats={},
         current_mini_list=[],
-        meta_finder=True,
         enable_fever=True,
         enable_mini=True,
         enable_gear=True,

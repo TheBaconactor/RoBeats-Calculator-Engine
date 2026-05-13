@@ -111,7 +111,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.bundle_song_repeats is False
     assert runtime.loop_restart_wait_sec == 60.0
 
-    assert ie.meta_finder is True
     assert ie.enable_fever is True
     assert ie.enable_mini is True
     assert ie.enable_gear is True
@@ -178,7 +177,7 @@ class TestExtendsChain:
         parent = tmp_path / "base.ini"
         parent.write_text(
             "[IterationEngine]\n"
-            "MetaFinder = true\n"
+            "LoopForever = true\n"
             "SongQueueLimit = 10\n"
             "GA_SearchDepth = 500\n",
             encoding="utf-8",
@@ -191,7 +190,7 @@ class TestExtendsChain:
             encoding="utf-8",
         )
         cfg = load_config(str(child))
-        assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+        assert cfg.getboolean("IterationEngine", "LoopForever") is True
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 3
         assert cfg.getint("IterationEngine", "GA_SearchDepth") == 500
 
@@ -199,7 +198,7 @@ class TestExtendsChain:
         grandparent = tmp_path / "root.ini"
         grandparent.write_text(
             "[IterationEngine]\n"
-            "MetaFinder = true\n"
+            "LoopForever = true\n"
             "GA_SearchDepth = 100\n"
             "SongQueueLimit = 50\n",
             encoding="utf-8",
@@ -221,7 +220,7 @@ class TestExtendsChain:
         cfg = load_config(str(child))
         assert cfg.getint("IterationEngine", "GA_SearchDepth") == 200
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 5
-        assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+        assert cfg.getboolean("IterationEngine", "LoopForever") is True
 
     def test_extends_cycle_stops(self, tmp_path):
         a = tmp_path / "a.ini"
@@ -234,7 +233,7 @@ class TestExtendsChain:
 
     def test_extends_key_removed_from_result(self, tmp_path):
         parent = tmp_path / "base.ini"
-        parent.write_text("[IterationEngine]\nMetaFinder=true\n", encoding="utf-8")
+        parent.write_text("[IterationEngine]\nLoopForever=true\n", encoding="utf-8")
         child = tmp_path / "child.ini"
         child.write_text("[IterationEngine]\n_extends = base.ini\nSongQueueLimit=3\n", encoding="utf-8")
         cfg = load_config(str(child))
@@ -244,7 +243,7 @@ class TestExtendsChain:
         parent = tmp_path / "base.ini"
         parent.write_text(
             "[IterationEngine]\n"
-            "MetaFinder = true\n"
+            "LoopForever = true\n"
             "SongQueueLimit = 10\n\n"
             "[TeamContributionBuffConstant]\n"
             "TeamBuff = T5\n"
@@ -268,11 +267,11 @@ class TestExtendsChain:
     def test_no_extends_loads_normally(self, tmp_path):
         single = tmp_path / "standalone.ini"
         single.write_text(
-            "[IterationEngine]\nMetaFinder = true\n",
+            "[IterationEngine]\nLoopForever = true\n",
             encoding="utf-8",
         )
         cfg = load_config(str(single))
-        assert cfg.getboolean("IterationEngine", "MetaFinder") is True
+        assert cfg.getboolean("IterationEngine", "LoopForever") is True
 
     def test_extends_missing_parent_raises(self, tmp_path):
         child = tmp_path / "child.ini"
@@ -289,7 +288,7 @@ class TestExtendsChain:
         parent = tmp_path / "base.ini"
         parent.write_text(
             "[IterationEngine]\n"
-            "MetaFinder = true\n",
+            "LoopForever = true\n",
             encoding="utf-8",
         )
         mid = tmp_path / "mid.ini"

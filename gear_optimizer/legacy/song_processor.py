@@ -120,7 +120,6 @@ class SongContext:
     current_gear_list: list[dict]
     current_mini_stats: dict[str, Any]
     current_mini_list: list[dict]
-    meta_finder: bool
     enable_fever: bool
     enable_mini: bool
     enable_gear: bool
@@ -314,7 +313,6 @@ def _setup_song_context(
         current_gear_list=prepared_config.current_gear_list,
         current_mini_stats=prepared_config.current_mini_stats,
         current_mini_list=prepared_config.current_mini_list,
-        meta_finder=prepared_config.meta_finder,
         enable_fever=prepared_config.enable_fever,
         enable_mini=prepared_config.enable_mini,
         enable_gear=prepared_config.enable_gear,

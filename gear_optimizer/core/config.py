@@ -461,7 +461,6 @@ class IterationEngineSettings:
     Centralizing this avoids logic drift across the app, workers, and solver code.
     """
 
-    meta_finder: bool
     enable_fever: bool
     enable_mini: bool
     enable_gear: bool
@@ -707,7 +706,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     - These are no longer config switches; they are native runtime policy.
     - A non-empty manual FG config disables finder mode (deliberate override).
     """
-    meta_finder = True
     enable_fever = True
     enable_mini = True
     enable_gear = True
@@ -730,7 +728,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
         force_greats_finder = False
 
     return IterationEngineSettings(
-        meta_finder=meta_finder,
         enable_fever=enable_fever,
         enable_mini=enable_mini,
         enable_gear=enable_gear,

@@ -30,7 +30,6 @@ class PreparedSongConfig:
     current_gear_list: list[dict]
     current_mini_stats: dict[str, Any]
     current_mini_list: list[dict]
-    meta_finder: bool
     enable_fever: bool
     enable_mini: bool
     enable_gear: bool
@@ -81,7 +80,6 @@ def build_prepared_song_config(
         current_gear_list,
         current_mini_stats,
         current_mini_list,
-        meta_finder,
         enable_fever,
         enable_mini,
         enable_gear,
@@ -98,7 +96,6 @@ def build_prepared_song_config(
         current_gear_list=current_gear_list if isinstance(current_gear_list, list) else [],
         current_mini_stats=current_mini_stats if isinstance(current_mini_stats, dict) else {},
         current_mini_list=current_mini_list if isinstance(current_mini_list, list) else [],
-        meta_finder=bool(meta_finder),
         enable_fever=bool(enable_fever),
         enable_mini=bool(enable_mini),
         enable_gear=bool(enable_gear),

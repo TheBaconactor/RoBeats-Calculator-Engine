@@ -89,7 +89,6 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
             current_gear_list=[],
             current_mini_stats={},
             current_mini_list=[],
-            meta_finder=True,
             enable_fever=True,
             enable_mini=True,
             enable_gear=True,

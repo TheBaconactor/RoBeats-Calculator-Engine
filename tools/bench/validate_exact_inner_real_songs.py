@@ -137,7 +137,6 @@ def _prepare_context(
         current_gear_list,
         _current_mini_stats,
         current_mini_list,
-        _meta_finder,
         _enable_fever,
         enable_mini,
         enable_gear,

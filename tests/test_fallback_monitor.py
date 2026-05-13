@@ -9,7 +9,7 @@ def test_config_missing_option_emits_fallback_warning(tmp_path, monkeypatch, cap
     monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
 
     cfg_path = Path(tmp_path) / "config.ini"
-    cfg_path.write_text("[IterationEngine]\nMetaFinder=true\n", encoding="utf-8")
+    cfg_path.write_text("[IterationEngine]\nLoopForever=true\n", encoding="utf-8")
 
     from gear_optimizer.core.config import load_config
 
@@ -28,19 +28,19 @@ def test_config_invalid_boolean_emits_fallback_warning(tmp_path, monkeypatch, ca
     monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
 
     cfg_path = Path(tmp_path) / "config.ini"
-    cfg_path.write_text("[IterationEngine]\nMetaFinder=not_a_bool\n", encoding="utf-8")
+    cfg_path.write_text("[IterationEngine]\nLoopForever=not_a_bool\n", encoding="utf-8")
 
     from gear_optimizer.core.config import load_config
 
     cfg = load_config(str(cfg_path))
     capsys.readouterr()
 
-    value = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
+    value = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
     captured = capsys.readouterr().err
 
     assert value is False
     assert "[FALLBACK][config.getboolean.invalid]" in captured
-    assert "MetaFinder" in captured
+    assert "LoopForever" in captured
 
 
 def test_env_invalid_int_graceful_return(monkeypatch):

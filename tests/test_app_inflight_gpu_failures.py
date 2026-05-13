@@ -30,7 +30,7 @@ def _build_tasks(*, inflight_songs: int = 2, inflight_instances: int = 1, count:
 
 
 def _build_calc_only_tasks(*, count: int = 1):
-    cfg = {"IterationEngine": {"inflightsongs": 1, "MetaFinder": "false"}}
+    cfg = {"IterationEngine": {"inflightsongs": 1}}
     return [(f"song-{idx}", f"Calc Song {idx}", "Hard", cfg, None, None) for idx in range(count)]
 
 
@@ -56,7 +56,7 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
     assert calls[0]["kwargs"]["total_tasks"] == 1
 
 
-def test_meta_finder_flag_does_not_bypass_native_inflight_pipeline(monkeypatch):
+def test_legacy_short_task_still_uses_native_inflight_pipeline(monkeypatch):
     app = _make_minimal_app()
     tasks = _build_calc_only_tasks(count=1)
     native_calls: list[dict] = []

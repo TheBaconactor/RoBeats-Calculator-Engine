@@ -180,9 +180,8 @@ def main() -> int:
     cfg = configparser.ConfigParser()
     cfg.read("config.ini", encoding="utf-8")
 
-    # Mirror app.py behavior in auto-mode: prevent DB tainting from manual gems.
-    if cfg.getboolean("IterationEngine", "MetaFinder", fallback=False):
-        _disable_inputs_to_prevent_taint(cfg)
+    # Mirror app.py behavior: prevent DB tainting from manual gems.
+    _disable_inputs_to_prevent_taint(cfg)
 
     # Load paths + data tables
     paths = load_paths_cache()
@@ -210,7 +209,6 @@ def main() -> int:
         _current_gear_list,
         _current_mini_stats,
         _current_mini_list,
-        _meta_finder,
         _enable_fever,
         _enable_mini,
         _enable_gear,
