@@ -67,6 +67,34 @@ class InflightDBPersistence:
             song.runtime.db.db_loadouts_future = None
             return False
 
+    @staticmethod
+    def consume_ready_prefetch(song: _NativeSong) -> bool:
+        if getattr(song.runtime.db, "db_loadouts_full", None) is not None:
+            return False
+        if getattr(song.runtime.db, "db_loadouts_future", None) is None:
+            return False
+
+        fut = getattr(song.runtime.db, "db_loadouts_future", None)
+        try:
+            if fut.done():
+                try:
+                    db_rows = fut.result(timeout=0)
+                    if isinstance(db_rows, list):
+                        song.runtime.db.db_loadouts_full = db_rows
+                except Exception as e:
+                    logger.debug(f"native_inflight_persistence:consume_ready_prefetch: {e}")
+                    song.runtime.db.db_loadouts_full = None
+            else:
+                try:
+                    fut.cancel()
+                except Exception as e:
+                    logger.debug(f"native_inflight_persistence:consume_ready_prefetch: {e}")
+        except Exception as e:
+            logger.debug(f"native_inflight_persistence:consume_ready_prefetch: {e}")
+        finally:
+            song.runtime.db.db_loadouts_future = None
+        return True
+
     def shutdown_prefetch(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
         self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 

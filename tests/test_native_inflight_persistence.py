@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
+
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
 from gear_optimizer.solver.native_inflight_types import make_native_song
@@ -82,3 +84,23 @@ def test_inflight_db_persistence_prefetch_guards_and_submit_failure_cleanup():
         assert song.runtime.db.db_loadouts_future is None
     finally:
         persistence.shutdown_prefetch(wait=True, cancel_futures=True)
+
+
+def test_inflight_db_persistence_consumes_ready_prefetch_future():
+    future = Future()
+    future.set_result([{"score": 100}])
+    song = make_native_song(db_loadouts_full=None, db_loadouts_future=future)
+
+    assert InflightDBPersistence.consume_ready_prefetch(song) is True
+    assert song.runtime.db.db_loadouts_full == [{"score": 100}]
+    assert song.runtime.db.db_loadouts_future is None
+
+
+def test_inflight_db_persistence_clears_unready_prefetch_future():
+    future = Future()
+    song = make_native_song(db_loadouts_full=None, db_loadouts_future=future)
+
+    assert InflightDBPersistence.consume_ready_prefetch(song) is True
+    assert future.cancelled() is True
+    assert song.runtime.db.db_loadouts_full is None
+    assert song.runtime.db.db_loadouts_future is None

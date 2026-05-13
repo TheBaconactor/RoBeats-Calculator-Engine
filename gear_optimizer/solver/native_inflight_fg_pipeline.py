@@ -19,7 +19,7 @@ from gear_optimizer.helpers.song_helpers.persistence import make_build_details_f
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
-from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
+from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, _build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
@@ -685,30 +685,7 @@ def run_fg_job_sync(
     except Exception as e:
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
-    # Late non-blocking DB prefetch consume:
-    # - If FG prep skipped DB rows because prefetch was still in-flight, harvest now if ready.
-    # - Never block FG worker threads on SQLite here.
-    if getattr(song.runtime.db, "db_loadouts_full", None) is None and getattr(song.runtime.db, "db_loadouts_future", None) is not None:
-        fut = getattr(song.runtime.db, "db_loadouts_future", None)
-        try:
-            if fut.done():
-                try:
-                    db_rows = fut.result(timeout=0)
-                    if isinstance(db_rows, list):
-                        song.runtime.db.db_loadouts_full = db_rows
-                except Exception as e:
-                    logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
-                    song.runtime.db.db_loadouts_full = None
-            else:
-                # Best effort: avoid keeping stale prefetch work around if FG is already running.
-                try:
-                    fut.cancel()
-                except Exception as e:
-                    logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
-        except Exception as e:
-            logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
-        finally:
-            song.runtime.db.db_loadouts_future = None
+    InflightDBPersistence.consume_ready_prefetch(song)
 
     build_details = song.runtime.fg.fg_build_details
     if not callable(build_details):
