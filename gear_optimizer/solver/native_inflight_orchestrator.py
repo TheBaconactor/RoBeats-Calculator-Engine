@@ -72,10 +72,7 @@ from gear_optimizer.solver.native_inflight_runtime_signals import (
     GpuAbortRequester,
     is_stop_abort_exception,
 )
-from gear_optimizer.solver.native_inflight_abort_log import (
-    append_native_abort_log,
-    build_abort_queue_snapshot,
-)
+from gear_optimizer.solver.native_inflight_abort_log import log_native_abort
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
@@ -292,22 +289,6 @@ def run_native_inflight_song_pipeline(
                 dispatch_burst=int(icfg.continuous_ga_dispatch_burst),
             )
         )
-
-    def _log_abort(exc: Exception) -> None:
-        try:
-            snapshot = build_abort_queue_snapshot(
-                pending_tasks=len(pending_tasks),
-                prepared=len(prepared),
-                prep_inflight=len(prep_inflight),
-                ga_inflight=len(ga_inflight),
-                decode_inflight=len(decode_inflight),
-                pending_fg=len(pending_fg),
-                fg_prep=len(fg_prep_inflight),
-                fg_futures=len(fg_futures),
-            )
-            append_native_abort_log(exc, snapshot=snapshot, trace=traceback.format_exc())
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_log_abort: {e}")
 
     # Prime the pipeline: pre-prepare a backlog synchronously so the GPU queue
     # doesn't starve on early song boundaries while prep workers spin up.
@@ -1507,7 +1488,18 @@ def run_native_inflight_song_pipeline(
                     stage_profiler.record("main_sleep", time.perf_counter() - t_sleep)
 
     except Exception as exc:
-        _log_abort(exc)
+        log_native_abort(
+            exc,
+            pending_tasks=len(pending_tasks),
+            prepared=len(prepared),
+            prep_inflight=len(prep_inflight),
+            ga_inflight=len(ga_inflight),
+            decode_inflight=len(decode_inflight),
+            pending_fg=len(pending_fg),
+            fg_prep=len(fg_prep_inflight),
+            fg_futures=len(fg_futures),
+            trace=traceback.format_exc(),
+        )
         raise
     finally:
         try:

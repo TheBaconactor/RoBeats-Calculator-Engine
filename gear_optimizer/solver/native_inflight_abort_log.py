@@ -57,3 +57,35 @@ def append_native_abort_log(
     except Exception as e:
         logger.debug(f"native_inflight_abort_log:append_native_abort_log: {e}")
         return False
+
+
+def log_native_abort(
+    exc: Exception,
+    *,
+    pending_tasks: int,
+    prepared: int,
+    prep_inflight: int,
+    ga_inflight: int,
+    decode_inflight: int,
+    pending_fg: int,
+    fg_prep: int,
+    fg_futures: int,
+    trace: str,
+    path: str | Path | None = None,
+    timestamp: str | None = None,
+) -> bool:
+    try:
+        snapshot = build_abort_queue_snapshot(
+            pending_tasks=pending_tasks,
+            prepared=prepared,
+            prep_inflight=prep_inflight,
+            ga_inflight=ga_inflight,
+            decode_inflight=decode_inflight,
+            pending_fg=pending_fg,
+            fg_prep=fg_prep,
+            fg_futures=fg_futures,
+        )
+        return append_native_abort_log(exc, snapshot=snapshot, trace=trace, path=path, timestamp=timestamp)
+    except Exception as e:
+        logger.debug(f"native_inflight_abort_log:log_native_abort: {e}")
+        return False
