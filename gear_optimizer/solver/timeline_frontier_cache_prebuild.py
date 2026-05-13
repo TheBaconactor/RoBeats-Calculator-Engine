@@ -47,7 +47,6 @@ class TimelineFrontierCachePrebuildSummary:
 
 @dataclass(frozen=True)
 class TimelineFrontierCachePrebuildSettings:
-    enabled: bool = True
     scope: str = "pool"
     workers: int = 0
     max_songs: int = 0
@@ -79,7 +78,7 @@ class TimelineFrontierCachePrebuilder:
         self.completed_results: list[TimelineFrontierCacheBuildResult] = []
 
     def start(self) -> None:
-        if not self.settings.enabled or not self.song_paths:
+        if not self.song_paths:
             return
         worker_count = _resolve_prebuild_worker_count(self.settings.workers)
         self._executor = _build_prebuild_executor(
@@ -110,7 +109,7 @@ class TimelineFrontierCachePrebuilder:
         )
 
     def run_to_completion(self) -> TimelineFrontierCachePrebuildSummary:
-        if not self.settings.enabled or not self.song_paths:
+        if not self.song_paths:
             self.summary = TimelineFrontierCachePrebuildSummary(total=0)
             return self.summary
         worker_count = _resolve_prebuild_worker_count(self.settings.workers)
@@ -271,18 +270,12 @@ def ordered_timeline_frontier_cache_paths(
 
 
 def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCachePrebuildSettings:
-    enabled = True
     scope = "pool"
     workers = 0
     max_songs = 0
     executor = "process"
 
     if cfg is not None:
-        try:
-            enabled = cfg.getboolean("IterationEngine", "TimelineFrontierCachePrebuild", fallback=True)
-        except Exception as e:
-            logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
-            enabled = True
         try:
             scope = str(cfg.get("IterationEngine", "TimelineFrontierCachePrebuildScope", fallback="pool") or "pool")
         except Exception as e:
@@ -306,9 +299,6 @@ def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCache
             logger.debug(f"timeline_frontier_cache_prebuild:read_timeline_frontier_cache_prebuild_settings: {e}")
             executor = "process"
 
-    raw_enabled = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD")
-    if raw_enabled is not None and str(raw_enabled).strip() != "":
-        enabled = str(raw_enabled).strip().lower() not in {"0", "false", "no", "off"}
     raw_scope = env_get("TIMELINE_FRONTIER_CACHE_PREBUILD_SCOPE")
     if raw_scope is not None and str(raw_scope).strip() != "":
         scope = str(raw_scope).strip()
@@ -323,10 +313,7 @@ def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCache
         executor = str(raw_executor).strip()
 
     scope_key = str(scope or "pool").strip().lower()
-    if scope_key in {"0", "false", "no", "off", "disabled"}:
-        enabled = False
-        scope_key = "off"
-    if scope_key not in {"queue", "pool", "all", "off"}:
+    if scope_key not in {"queue", "pool", "all"}:
         scope_key = "pool"
 
     executor_key = str(executor or "process").strip().lower()
@@ -334,7 +321,6 @@ def read_timeline_frontier_cache_prebuild_settings(cfg) -> TimelineFrontierCache
         executor_key = "process"
 
     return TimelineFrontierCachePrebuildSettings(
-        enabled=bool(enabled and scope_key != "off"),
         scope=scope_key,
         workers=int(workers),
         max_songs=max(0, int(max_songs or 0)),
@@ -442,8 +428,6 @@ def _timeline_frontier_prebuild_paths(
     data_root: str | os.PathLike[str] | None = None,
 ) -> tuple[TimelineFrontierCachePrebuildSettings, list[str]]:
     settings = read_timeline_frontier_cache_prebuild_settings(cfg)
-    if not settings.enabled:
-        return settings, []
     queue_paths = [str(item[0]) for item in song_queue if isinstance(item, tuple) and item]
     paths = ordered_timeline_frontier_cache_paths(
         queue_paths=queue_paths,
@@ -464,7 +448,7 @@ def run_timeline_frontier_cache_prebuild(
 ) -> TimelineFrontierCachePrebuildSummary:
     t0 = time.perf_counter()
     settings, paths = _timeline_frontier_prebuild_paths(cfg=cfg, song_queue=song_queue, data_root=data_root)
-    if not settings.enabled or not paths:
+    if not paths:
         return TimelineFrontierCachePrebuildSummary(total=0)
 
     manifest_plan = build_manifest_plan(paths, ref_arrays)
@@ -540,8 +524,6 @@ def start_timeline_frontier_cache_prebuild(
     data_root: str | os.PathLike[str] | None = None,
 ) -> TimelineFrontierCachePrebuilder | None:
     settings, paths = _timeline_frontier_prebuild_paths(cfg=cfg, song_queue=song_queue, data_root=data_root)
-    if not settings.enabled:
-        return None
     if not paths:
         return None
     manifest_plan = build_manifest_plan(paths, ref_arrays)

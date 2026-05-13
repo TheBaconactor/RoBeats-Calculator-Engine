@@ -242,7 +242,6 @@ def test_cleanup_stale_tmp_cache_files(tmp_path: Path) -> None:
 def _prebuild_cfg(*, executor: str = "thread") -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "TimelineFrontierCachePrebuild", "true")
     cfg.set("IterationEngine", "TimelineFrontierCachePrebuildScope", "queue")
     cfg.set("IterationEngine", "TimelineFrontierCachePrebuildWorkers", "1")
     cfg.set("IterationEngine", "TimelineFrontierCachePrebuildExecutor", str(executor))
