@@ -1,5 +1,6 @@
 from gear_optimizer.solver.gpu_executor_fused_coalesce import (
     build_ga_fg_fused_batch_requests,
+    coalesce_ga_fg_fused_requests,
     unwrap_ga_fg_fused_batch_response,
 )
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
@@ -50,4 +51,52 @@ def test_unwrap_ga_fg_fused_batch_response_reports_fallback_reasons():
     assert (
         unwrap_ga_fg_fused_batch_response(req, GpuResponse(request_id=4, success=True, result=[]))[1]
         == "unexpected coalesced result shape"
+    )
+
+
+def test_coalesce_ga_fg_fused_requests_routes_through_batch_handler():
+    fallback_warnings = []
+    direct_calls = []
+
+    responses = coalesce_ga_fg_fused_requests(
+        [_req(10, {"a": 1}), _req(11, {"b": 2})],
+        in_process_queues=True,
+        execute_request=lambda req: direct_calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result={"direct": req.request_id}),
+        coalesce_fg_breakpoint_batch=lambda reqs: [
+            GpuResponse(request_id=reqs[0].request_id, success=True, result=[{"score": 10}]),
+            GpuResponse(request_id=reqs[1].request_id, success=True, result=[{"score": 11}]),
+        ],
+        warn_fallback_fn=lambda *args, **kwargs: fallback_warnings.append((args, kwargs)),
+    )
+
+    assert direct_calls == []
+    assert fallback_warnings == []
+    assert [response.request_id for response in responses] == [10, 11]
+    assert [response.result for response in responses] == [{"score": 10}, {"score": 11}]
+
+
+def test_coalesce_ga_fg_fused_requests_falls_back_for_bad_batch_result():
+    fallback_warnings = []
+    direct_calls = []
+
+    responses = coalesce_ga_fg_fused_requests(
+        [_req(20, {"a": 1}), _req(21, {"b": 2})],
+        in_process_queues=True,
+        execute_request=lambda req: direct_calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result={"direct": req.request_id}),
+        coalesce_fg_breakpoint_batch=lambda reqs: [
+            GpuResponse(request_id=reqs[0].request_id, success=True, result=[]),
+            GpuResponse(request_id=reqs[1].request_id, success=True, result=[{"score": 21}]),
+        ],
+        warn_fallback_fn=lambda *args, **kwargs: fallback_warnings.append((args, kwargs)),
+    )
+
+    assert direct_calls == [20]
+    assert [response.request_id for response in responses] == [20, 21]
+    assert responses[0].result == {"direct": 20}
+    assert responses[1].result == {"score": 21}
+    assert fallback_warnings[0][0][:2] == (
+        "gpu_executor.ga_fg_fused_coalesce.request",
+        "coalesced fused request fallback to per-request execution",
     )

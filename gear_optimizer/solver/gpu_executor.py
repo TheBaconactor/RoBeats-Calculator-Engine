@@ -175,8 +175,7 @@ from gear_optimizer.solver.gpu_executor_fg_coalesce import (
     split_fg_breakpoint_group_result as _split_fg_breakpoint_group_result,
 )
 from gear_optimizer.solver.gpu_executor_fused_coalesce import (
-    build_ga_fg_fused_batch_requests as _build_ga_fg_fused_batch_requests,
-    unwrap_ga_fg_fused_batch_response as _unwrap_ga_fg_fused_batch_response,
+    coalesce_ga_fg_fused_requests as _coalesce_ga_fg_fused_requests,
 )
 from gear_optimizer.solver.gpu_executor_native_ga_batch import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
@@ -1778,46 +1777,13 @@ class GpuExecutor:
         Each request payload matches `FG_SOLVE_WITH_BREAKPOINTS` input. We pack request payloads
         into one synthetic `FG_SOLVE_WITH_BREAKPOINTS_BATCH` call and then split outputs.
         """
-        if not requests:
-            return []
-        if not self._in_process_queues or len(requests) <= 1:
-            return [self._execute_request(req) for req in requests]
-
-        plan = _build_ga_fg_fused_batch_requests(requests)
-        synthetic_batch_requests = plan.synthetic_batch_requests
-        fallback_ids: set[int] = set(plan.fallback_reason_by_id)
-        fallback_reason_by_id: dict[int, str] = dict(plan.fallback_reason_by_id)
-
-        def _mark_fallback(req_id: int, reason: str) -> None:
-            rid = int(req_id)
-            fallback_ids.add(rid)
-            if rid not in fallback_reason_by_id:
-                fallback_reason_by_id[rid] = str(reason)
-
-        out: list[GpuResponse] = []
-        if synthetic_batch_requests:
-            batch_responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(synthetic_batch_requests)
-            for req, resp in zip(synthetic_batch_requests, batch_responses):
-                unwrapped, fallback_reason = _unwrap_ga_fg_fused_batch_response(req, resp)
-                if fallback_reason is not None:
-                    _mark_fallback(int(req.request_id), fallback_reason)
-                    continue
-                out.append(unwrapped)
-
-        if fallback_ids:
-            for req in requests:
-                if int(req.request_id) in fallback_ids:
-                    warn_fallback(
-                        "gpu_executor.ga_fg_fused_coalesce.request",
-                        "coalesced fused request fallback to per-request execution",
-                        context={
-                            "request_id": int(req.request_id),
-                            "reason": fallback_reason_by_id.get(int(req.request_id), "unknown"),
-                        },
-                    )
-                    out.append(self._execute_request(req))
-
-        return _order_responses_for_requests(requests, out)
+        return _coalesce_ga_fg_fused_requests(
+            requests,
+            in_process_queues=bool(self._in_process_queues),
+            execute_request=self._execute_request,
+            coalesce_fg_breakpoint_batch=self._coalesce_fg_solve_with_breakpoints_batch_requests,
+            warn_fallback_fn=warn_fallback,
+        )
 
     def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
