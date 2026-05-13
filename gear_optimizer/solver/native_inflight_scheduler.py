@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GAQueueLimitController:
-    dynamic_enabled: bool
     base_limit: int
     pressure_window_s: float
     extra_free_on_slot_pressure: int
@@ -35,9 +34,6 @@ class GAQueueLimitController:
         self._cache_value = int(self.base_limit)
 
     def effective_limit(self, *, last_slot_block_t: float | None) -> int:
-        if not bool(self.dynamic_enabled):
-            return int(self.base_limit)
-
         extra_free = 0
         slot_pressure_active = False
 

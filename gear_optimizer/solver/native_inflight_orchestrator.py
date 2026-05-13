@@ -221,7 +221,6 @@ def run_native_inflight_song_pipeline(
     last_ga_queue_limit_effective: int | None = None
     completion_tracker = CompletionTracker()
     ga_queue_limit_controller = GAQueueLimitController(
-        dynamic_enabled=bool(icfg.inflight_ga_dynamic_queue),
         base_limit=int(ga_queue_limit_base),
         pressure_window_s=float(icfg.ga_queue_pressure_window_s),
         extra_free_on_slot_pressure=int(icfg.ga_queue_extra_free_on_slot_pressure),

@@ -52,7 +52,6 @@ def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
 def test_ga_queue_limit_controller_reserves_slots_and_applies_slot_pressure_window():
     now_box = {"now": 10.0}
     controller = GAQueueLimitController(
-        dynamic_enabled=True,
         base_limit=12,
         pressure_window_s=2.0,
         extra_free_on_slot_pressure=2,
@@ -66,20 +65,6 @@ def test_ga_queue_limit_controller_reserves_slots_and_applies_slot_pressure_wind
 
     now_box["now"] = 12.5
     assert controller.effective_limit(last_slot_block_t=9.0) == 4
-
-
-def test_ga_queue_limit_controller_disabled_returns_base_limit():
-    controller = GAQueueLimitController(
-        dynamic_enabled=False,
-        base_limit=12,
-        pressure_window_s=2.0,
-        extra_free_on_slot_pressure=2,
-        fg_slot_reserve=4,
-        song_slot_limit=5,
-    )
-
-    assert controller.effective_limit(last_slot_block_t=0.0) == 12
-
 
 def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
     ga_song = make_native_song(task_key="song-a", song_name="Song A")

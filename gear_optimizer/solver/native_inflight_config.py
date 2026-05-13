@@ -248,7 +248,6 @@ class InflightConfig:
     fg_enabled: bool
     fg_slot_reserve: int
     ga_queue_limit_base: int
-    inflight_ga_dynamic_queue: bool
     ga_queue_extra_free_on_slot_pressure: int
     ga_queue_pressure_window_s: float
     ga_slack_slots: int
@@ -558,24 +557,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     ga_queue_limit_base = int(ga_queue_limit)
 
-    inflight_ga_dynamic_queue = False
-    try:
-        inflight_ga_dynamic_queue = int(in_flight_songs) > 1
-    except (ValueError, TypeError):
-        inflight_ga_dynamic_queue = False
-    try:
-        if cfg0 is not None:
-            inflight_ga_dynamic_queue = cfg0.getboolean(
-                "IterationEngine",
-                "InFlight_GA_DynamicQueue",
-                fallback=bool(inflight_ga_dynamic_queue),
-            )
-    except (configparser.Error, ValueError, TypeError):
-        pass
-    raw = env_get("INFLIGHT_GA_DYNAMIC_QUEUE")
-    if raw is not None and str(raw).strip() != "":
-        inflight_ga_dynamic_queue = _truthy(raw)
-
     ga_queue_extra_free_on_slot_pressure = 1
     try:
         if cfg0 is not None:
@@ -710,7 +691,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_enabled=True,
         fg_slot_reserve=fg_slot_reserve,
         ga_queue_limit_base=ga_queue_limit_base,
-        inflight_ga_dynamic_queue=inflight_ga_dynamic_queue,
         ga_queue_extra_free_on_slot_pressure=ga_queue_extra_free_on_slot_pressure,
         ga_queue_pressure_window_s=ga_queue_pressure_window_s,
         ga_slack_slots=ga_slack_slots,
