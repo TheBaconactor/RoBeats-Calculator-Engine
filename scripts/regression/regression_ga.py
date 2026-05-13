@@ -122,8 +122,6 @@ def run_ga_regression():
                     return 0  # Disable memetic for faster regression
                 if option == "MultiStartRuns":
                     return 1
-                if option == "DeepMining":
-                    return False
             return fallback
 
         def getboolean(self, section, option, fallback=False):

@@ -1,9 +1,8 @@
 """
-GA Diversity - Diversity metrics and dynamic mutation.
+GA Diversity - stagnation handling for reference GA helpers.
 
 This module provides diversity and stagnation handling:
 - update_mutation_and_diversity: Track diversity and adjust mutation dynamically
-- compute_dynamic_mutation: Compute adaptive mutation rate based on stagnation
 """
 
 import random
@@ -167,56 +166,3 @@ def update_mutation_and_diversity(
         last_improvement_gen = generation
 
     return population, mutation_rate, last_improvement_gen
-
-
-def compute_dynamic_mutation(
-    mutation_rate,
-    cache_hits_in_run,
-    generation,
-    current_run_gens,
-    gens_per_run,
-    ga_settings,
-):
-    """
-    Compute dynamic mutation rate and generation limit based on cache hits.
-
-    Implements "deep mining" - extends search when cache hits indicate known territory
-    and increases mutation rate to explore more aggressively.
-
-    Args:
-        mutation_rate: Base mutation rate
-        cache_hits_in_run: Number of cache hits in current run
-        generation: Current generation number
-        current_run_gens: Current generation limit for this run
-        gens_per_run: Base generations per run
-        ga_settings: GA configuration settings
-
-    Returns:
-        tuple: (current_mutation_rate, updated_current_run_gens)
-    """
-    # Update dynamic generation limit
-    # "run longer about 1 gen for each hit"
-    # We add the hits to the base limit.
-    if ga_settings.deep_mining_enabled:
-        current_run_gens = gens_per_run + cache_hits_in_run
-
-    # "increase the exploration"
-    # If we have many cache hits, we are in known territory. Increase mutation.
-    # Base mutation is ~0.275. Max is 0.45.
-    # If we have > 10% cache hits in the run, boost mutation.
-    # Let's calculate a dynamic boost based on hit density.
-    total_evals_so_far = generation * GA_POPULATION_SIZE
-    hit_ratio = cache_hits_in_run / max(1, total_evals_so_far)
-
-    # Boost mutation by up to 0.2 if hit ratio is high
-    exploration_boost = min(0.2, hit_ratio * 0.5)
-    if not ga_settings.deep_mining_enabled:
-        # DeepMining disabled => do not apply cache-hit driven mutation boosts.
-        exploration_boost = 0.0
-    current_mutation_rate = min(0.6, mutation_rate + exploration_boost)  # Allow going slightly higher than normal max
-
-    # Cap the extension to avoid infinite loops (e.g. max 5000 gens)
-    if current_run_gens > 5000:
-        current_run_gens = 5000
-
-    return current_mutation_rate, current_run_gens

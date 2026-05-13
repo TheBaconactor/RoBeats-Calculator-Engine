@@ -76,8 +76,6 @@ class GAEvolutionSettings:
     memetic_top_gear: int
     memetic_top_minis: int
     multi_start: int
-    deep_mining_enabled: bool
-    allow_3_swap: bool = True  # Enable expensive 3-swap polish (~15s extra)
     gear_rank_max: int = 40  # Max gear items per slot in rank cache
     mini_rank_max: int = 40  # Max minis in rank cache
     db_seed_mutations: int = 1  # Number of mutated copies to inject alongside the DB seed (diversity control)
@@ -98,8 +96,6 @@ class GAEvolutionSettings:
                 memetic_top_gear=4,
                 memetic_top_minis=12,
                 multi_start=GA_MULTI_RUNS_DEFAULT,
-                deep_mining_enabled=True,
-                allow_3_swap=True,
                 gear_rank_max=40,
                 mini_rank_max=40,
                 db_seed_mutations=1,
@@ -112,14 +108,6 @@ class GAEvolutionSettings:
             except Exception as e:
                 logger.debug(f"models:get_option: {e}")
             return fallback
-
-        def get_bool_option(option, fallback):
-            try:
-                if hasattr(cfg, "has_option") and cfg.has_option(section, option):
-                    return bool(cfg.getboolean(section, option, fallback=bool(fallback)))
-            except Exception as e:
-                logger.debug(f"models:get_bool_option: {e}")
-            return bool(fallback)
 
         db_seed_prob = safe_float(get_option("GA_DBSeedProbability", "0.5"), default=0.5)
         fixed_seed_copies = max(0, safe_int(get_option("GA_FixedSeedCopies", "2"), 2))
@@ -135,9 +123,6 @@ class GAEvolutionSettings:
                 GA_MULTI_RUNS_DEFAULT,
             ),
         )
-        deep_mining = get_bool_option("DeepMining", True)
-        allow_3_swap = get_bool_option("GA_Allow3Swap", True)
-
         # Read rank sizes from [IterationEngine] section
         gear_rank_max = max(10, safe_int(get_option("GearRankMax", "40"), 40))
         mini_rank_max = max(10, safe_int(get_option("MiniRankMax", "40"), 40))
@@ -150,8 +135,6 @@ class GAEvolutionSettings:
             memetic_top_gear=memetic_top_gear,
             memetic_top_minis=memetic_top_minis,
             multi_start=multi_start,
-            deep_mining_enabled=deep_mining,
-            allow_3_swap=allow_3_swap,
             gear_rank_max=gear_rank_max,
             mini_rank_max=mini_rank_max,
             db_seed_mutations=db_seed_mutations,

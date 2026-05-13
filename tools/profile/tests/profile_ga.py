@@ -121,8 +121,6 @@ def setup_ga_test_data():
                     return 0
                 if option == "MultiStartRuns":
                     return 1
-                if option == "DeepMining":
-                    return False
             return fallback
 
         def getboolean(self, section, option, fallback=False):

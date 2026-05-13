@@ -132,8 +132,6 @@ def profile_ga_with_gpu():
                     return 0
                 if option == "MultiStartRuns":
                     return 6  # Match production
-                if option == "DeepMining":
-                    return False
             return fallback
 
         def getboolean(self, section, option, fallback=False):
@@ -167,8 +165,6 @@ def profile_ga_with_gpu():
         memetic_top_gear=4,
         memetic_top_minis=12,
         multi_start=6,  # Match production
-        deep_mining_enabled=False,
-        allow_3_swap=True,
         gear_rank_max=40,
         mini_rank_max=40,
     )

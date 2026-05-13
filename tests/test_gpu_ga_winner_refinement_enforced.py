@@ -121,8 +121,6 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
         memetic_top_gear=1,
         memetic_top_minis=1,
         multi_start=1,
-        deep_mining_enabled=False,
-        allow_3_swap=False,
         gear_rank_max=10,
         mini_rank_max=10,
         db_seed_mutations=0,
