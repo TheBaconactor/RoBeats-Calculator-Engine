@@ -95,3 +95,36 @@ def test_export_game_data_gear_minis_runs_as_direct_script(tmp_path: Path) -> No
     assert completed.returncode == 0, completed.stderr
     assert "Direct Script Shirt" in gears_out.read_text(encoding="utf-8")
     assert "Direct Script Mini" in minis_out.read_text(encoding="utf-8")
+
+
+def test_checked_in_optimizer_csvs_match_exported_game_data(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script = repo_root / "tools" / "data" / "export_game_data_gear_minis.py"
+    exported_data = repo_root / "Data" / "exported_game_data.json"
+    gears_out = tmp_path / "Gears.csv"
+    minis_out = tmp_path / "Minis.csv"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--input",
+            str(exported_data),
+            "--gears-out",
+            str(gears_out),
+            "--minis-out",
+            str(minis_out),
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert gears_out.read_text(encoding="utf-8") == (repo_root / "Data" / "Gear" / "Gears.csv").read_text(
+        encoding="utf-8"
+    )
+    assert minis_out.read_text(encoding="utf-8") == (repo_root / "Data" / "Gear" / "Minis.csv").read_text(
+        encoding="utf-8"
+    )

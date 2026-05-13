@@ -140,6 +140,16 @@ def _sync_optimizer_csvs_from_exported_data(repo_root: Path) -> None:
     subprocess.run(cmd, check=True, cwd=str(repo_root))
 
 
+def sync_data() -> int:
+    common_init()
+    try:
+        _sync_optimizer_csvs_from_exported_data(REPO_ROOT)
+        return 0
+    except Exception as e:
+        print(f"Fatal Error: {e}")
+        return 1
+
+
 def meta() -> int:
     common_init()
     print("=" * 60)
@@ -149,7 +159,6 @@ def meta() -> int:
     try:
         from general_meta import export_general_meta_json, run_general_meta
 
-        _sync_optimizer_csvs_from_exported_data(REPO_ROOT)
         find_and_cache_paths()
         cfg = load_config(get_config_path(str(REPO_ROOT / "config.ini")))
         paths = load_paths_cache()
@@ -187,6 +196,7 @@ def create_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Run optimizer.")
     sub.add_parser("meta", help="Run GeneralMeta analysis.")
+    sub.add_parser("sync-data", help="Regenerate Data/Gear CSVs from Data/exported_game_data.json.")
     inv = sub.add_parser("inventory", help="Run inventory coverage CLI.")
     inv.add_argument("inventory_args", nargs=argparse.REMAINDER, help="Args forwarded to inventory CLI.")
     return parser
@@ -199,7 +209,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run()
     if args.command == "meta":
         return meta()
+    if args.command == "sync-data":
+        return sync_data()
     if args.command == "inventory":
         return inventory(getattr(args, "inventory_args", []) or [])
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
