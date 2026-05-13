@@ -295,7 +295,7 @@ class RoBeatsMetaOptimizerApi:
 
         # Backend-special behavior: keep the optimizer in continuous service mode.
         # Queue selection is controlled by pending song IDs from the API bridge.
-        cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
+        cfg.set("CalculateSong", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
         cfg.set("IterationEngine", "SongRepeats", str(_DEFAULT_SONG_REPEATS))
         cfg.set("IterationEngine", "InFlightSongs", str(_DEFAULT_INFLIGHT_SONGS))
 

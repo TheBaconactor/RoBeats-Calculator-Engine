@@ -594,6 +594,7 @@ class CalculateSongSettings:
     song_name: str = ""
     target_primary: str = ""
     target_secondary: str = ""
+    loop_forever: bool = False
 
     @classmethod
     def from_config(cls, cfg: Any) -> "CalculateSongSettings":
@@ -603,11 +604,13 @@ class CalculateSongSettings:
         song_name = cfg_get(cfg, "CalculateSong", "Song_Name", str, "")
         target_primary = cfg_get(cfg, "CalculateSong", "TargetPrimary", str, "")
         target_secondary = cfg_get(cfg, "CalculateSong", "TargetSecondary", str, "")
+        loop_forever = cfg_get_bool(cfg, "CalculateSong", "LoopForever", False)
         return cls(
             difficulty=str(difficulty or "All"),
             song_name=str(song_name or ""),
             target_primary=str(target_primary or ""),
             target_secondary=str(target_secondary or ""),
+            loop_forever=bool(loop_forever),
         )
 
 
@@ -642,12 +645,7 @@ class AppRuntimeSettings:
         ga = GASettings.from_config(cfg)
         inflight = InflightSettings.from_config(cfg)
 
-        loop_forever = cfg_get_bool(
-            cfg,
-            "CalculateSong",
-            "LoopForever",
-            cfg_get_bool(cfg, "IterationEngine", "LoopForever", False),
-        )
+        loop_forever = bool(calculate_song.loop_forever)
         eval_cpu_cores = cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0, clamp_min=0)
         song_queue_limit = cfg_get_int(cfg, "IterationEngine", "SongQueueLimit", 0, clamp_min=0)
         ignore_resume_queue = cfg_get_bool(cfg, "IterationEngine", "IgnoreResumeQueue", False)

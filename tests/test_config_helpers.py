@@ -39,7 +39,6 @@ def _build_config() -> configparser.ConfigParser:
                 "InFlightSongs": "-3",
                 "InFlight_SongFileCacheMax": "-1",
                 "TeamBuff_BaseCalcSongCacheMax": "5",
-                "LoopForever": "true",
                 "EvalCPUCores": "-1",
                 "SongQueueLimit": "5",
                 "IgnoreResumeQueue": "true",
@@ -53,6 +52,7 @@ def _build_config() -> configparser.ConfigParser:
                 "Song_Name": "pytest song",
                 "TargetPrimary": "",
                 "TargetSecondary": "Rush",
+                "LoopForever": "true",
             },
             "ForceGreats": {
                 "NonFever1": "0",
@@ -152,12 +152,23 @@ def test_repo_config_keeps_only_song_selection_and_loop_flag():
     }
 
 
+def test_loop_forever_is_owned_by_calculate_song_only():
+    cfg = configparser.ConfigParser()
+    cfg.read_dict({"IterationEngine": {"LoopForever": "true"}})
+
+    assert AppRuntimeSettings.from_config(cfg).loop_forever is False
+
+    cfg.read_dict({"CalculateSong": {"LoopForever": "true"}})
+    assert AppRuntimeSettings.from_config(cfg).loop_forever is True
+
+
 class TestExtendsChain:
     def test_extends_layering_child_overrides_parent(self, tmp_path):
         parent = tmp_path / "base.ini"
         parent.write_text(
-            "[IterationEngine]\n"
+            "[CalculateSong]\n"
             "LoopForever = true\n"
+            "[IterationEngine]\n"
             "SongQueueLimit = 10\n"
             "GA_SearchDepth = 500\n",
             encoding="utf-8",
@@ -170,15 +181,16 @@ class TestExtendsChain:
             encoding="utf-8",
         )
         cfg = load_config(str(child))
-        assert cfg.getboolean("IterationEngine", "LoopForever") is True
+        assert cfg.getboolean("CalculateSong", "LoopForever") is True
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 3
         assert cfg.getint("IterationEngine", "GA_SearchDepth") == 500
 
     def test_extends_grandparent_layered(self, tmp_path):
         grandparent = tmp_path / "root.ini"
         grandparent.write_text(
-            "[IterationEngine]\n"
+            "[CalculateSong]\n"
             "LoopForever = true\n"
+            "[IterationEngine]\n"
             "GA_SearchDepth = 100\n"
             "SongQueueLimit = 50\n",
             encoding="utf-8",
@@ -200,7 +212,7 @@ class TestExtendsChain:
         cfg = load_config(str(child))
         assert cfg.getint("IterationEngine", "GA_SearchDepth") == 200
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 5
-        assert cfg.getboolean("IterationEngine", "LoopForever") is True
+        assert cfg.getboolean("CalculateSong", "LoopForever") is True
 
     def test_extends_cycle_stops(self, tmp_path):
         a = tmp_path / "a.ini"
@@ -213,7 +225,7 @@ class TestExtendsChain:
 
     def test_extends_key_removed_from_result(self, tmp_path):
         parent = tmp_path / "base.ini"
-        parent.write_text("[IterationEngine]\nLoopForever=true\n", encoding="utf-8")
+        parent.write_text("[CalculateSong]\nLoopForever=true\n", encoding="utf-8")
         child = tmp_path / "child.ini"
         child.write_text("[IterationEngine]\n_extends = base.ini\nSongQueueLimit=3\n", encoding="utf-8")
         cfg = load_config(str(child))
@@ -223,8 +235,9 @@ class TestExtendsChain:
         parent = tmp_path / "base.ini"
         parent.write_text(
             "[IterationEngine]\n"
-            "LoopForever = true\n"
             "SongQueueLimit = 10\n\n"
+            "[CalculateSong]\n"
+            "LoopForever = true\n\n"
             "[TeamContributionBuffConstant]\n"
             "TeamBuff = T5\n"
             "TeamColor = Rush\n",
@@ -247,11 +260,11 @@ class TestExtendsChain:
     def test_no_extends_loads_normally(self, tmp_path):
         single = tmp_path / "standalone.ini"
         single.write_text(
-            "[IterationEngine]\nLoopForever = true\n",
+            "[CalculateSong]\nLoopForever = true\n",
             encoding="utf-8",
         )
         cfg = load_config(str(single))
-        assert cfg.getboolean("IterationEngine", "LoopForever") is True
+        assert cfg.getboolean("CalculateSong", "LoopForever") is True
 
     def test_extends_missing_parent_raises(self, tmp_path):
         child = tmp_path / "child.ini"
@@ -267,7 +280,7 @@ class TestExtendsChain:
     def test_extends_chain_missing_mid_parent_raises(self, tmp_path):
         parent = tmp_path / "base.ini"
         parent.write_text(
-            "[IterationEngine]\n"
+            "[CalculateSong]\n"
             "LoopForever = true\n",
             encoding="utf-8",
         )

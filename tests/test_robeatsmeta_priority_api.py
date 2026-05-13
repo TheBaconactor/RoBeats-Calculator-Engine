@@ -390,7 +390,7 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     changed = api.apply_service_defaults(cfg)
 
     assert changed is True
-    assert cfg.get("IterationEngine", "LoopForever") == "true"
+    assert cfg.get("CalculateSong", "LoopForever") == "true"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
     assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
@@ -456,7 +456,8 @@ def test_service_defaults_env_zero_keeps_service_mode_without_overrides(monkeypa
     )
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "LoopForever", "false")
+    cfg.add_section("CalculateSong")
+    cfg.set("CalculateSong", "LoopForever", "false")
     cfg.set("IterationEngine", "SongRepeats", "2")
 
     changed = api.apply_service_defaults(cfg)
@@ -464,7 +465,7 @@ def test_service_defaults_env_zero_keeps_service_mode_without_overrides(monkeypa
     assert api.backend_mode_enabled() is True
     assert api.service_defaults_enabled() is False
     assert changed is False
-    assert cfg.get("IterationEngine", "LoopForever") == "false"
+    assert cfg.get("CalculateSong", "LoopForever") == "false"
     assert cfg.get("IterationEngine", "SongRepeats") == "2"
 
 
@@ -491,7 +492,7 @@ def test_service_benchmark_mode_keeps_defaults_but_forces_bounded_loop(monkeypat
     assert api.service_defaults_enabled() is True
     assert api.benchmark_mode_enabled() is True
     assert changed is True
-    assert cfg.get("IterationEngine", "LoopForever") == "false"
+    assert cfg.get("CalculateSong", "LoopForever") == "false"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
     assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
