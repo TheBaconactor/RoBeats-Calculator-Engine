@@ -24,8 +24,8 @@ def _make_minimal_app() -> GearOptimizerApp:
     return app
 
 
-def _build_tasks(*, inflight_songs: int = 2, inflight_instances: int = 1, count: int = 2):
-    cfg = {"IterationEngine": {"inflightsongs": inflight_songs, "inflightinstances": inflight_instances}}
+def _build_tasks(*, inflight_songs: int = 2, count: int = 2):
+    cfg = {"IterationEngine": {"inflightsongs": inflight_songs}}
     return [
         (
             f"song-{idx}.txt",
@@ -124,26 +124,6 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
 
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-
-def test_inflight_instances_do_not_change_single_coordinator_route(monkeypatch):
-    app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
-    native_calls: list[dict] = []
-
-    def _record_run(*args, **kwargs):
-        native_calls.append({"args": args, "kwargs": kwargs})
-
-    monkeypatch.setitem(
-        sys.modules,
-        "gear_optimizer.solver.native_inflight_orchestrator",
-        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
-    )
-
-    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-    assert len(native_calls) == 1
-    assert native_calls[0]["kwargs"]["in_flight_songs"] == 2
 
 
 def test_configure_execution_prewarms_native_ga(monkeypatch):

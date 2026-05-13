@@ -334,7 +334,6 @@ def main() -> int:
             "song_repeats_override": song_repeats,
             "seed_db": str(seed_db_path) if seed_db_path is not None else "",
             "inflight_songs_override": inflight_songs,
-            "allow_sequential": bool(args.allow_sequential),
             "fg_download_topk": int(args.fg_download_topk),
             "variants": [{"name": v.name, "FG_CandidateLimit": int(v.fg_candidate_limit)} for v in variants],
         },

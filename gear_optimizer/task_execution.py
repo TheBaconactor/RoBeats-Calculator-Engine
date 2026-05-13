@@ -124,16 +124,13 @@ class TaskExecutionMixin:
             if inflight_songs <= 0:
                 inflight_songs = min(12, max(1, song_task_count))
                 try:
-                    logger.debug(f"[InFlight] Sequential pipeline removed; defaulting InFlightSongs={int(inflight_songs)}.")
+                    logger.debug(f"[InFlight] Defaulting native InFlightSongs={int(inflight_songs)}.")
                 except Exception as e:
                     logger.debug(f"task_execution:_run_sequential: {e}")
             elif song_task_count > 1 and int(inflight_songs) < 2:
                 inflight_songs = min(12, max(2, song_task_count))
                 try:
-                    logger.debug(
-                        "[InFlight] Sequential pipeline removed; "
-                        f"raising InFlightSongs to {int(inflight_songs)} for multi-song queue."
-                    )
+                    logger.debug(f"[InFlight] Raising native InFlightSongs to {int(inflight_songs)} for multi-song queue.")
                 except Exception as e:
                     logger.debug(f"task_execution:_run_sequential: {e}")
 

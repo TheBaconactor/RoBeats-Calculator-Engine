@@ -90,7 +90,7 @@ class _PostCpuProfiler:
 
 def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     """
-    Background post-processor for sequential pipeline mode.
+    Background post-processor for native in-flight optimizer results.
 
     Consumes per-run compute payloads (songs may be repeated) and performs CPU-heavy work:
     - Build DB payload + persistence entries
