@@ -364,6 +364,55 @@ def _write_invalid_materialized_result(genome_idx: ti.i32):
 
 
 @ti.func
+def _refresh_live_score_from_chunk_state(
+    genome_idx: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
+):
+    combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
+    if combo_idx < 0:
+        kernels_helpers.ga_scores[genome_idx] = -1
+    elif kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
+        result_stats = _materialize_best_combo_stats(
+            genome_idx,
+            combo_idx,
+            total_budget,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            use_exact_inner_solver,
+        )
+        _write_materialized_result(genome_idx, combo_idx, result_stats)
+    else:
+        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+
+
+@ti.func
 def _write_run_best_payload_row(
     run_idx: ti.i32,
     n_slots: ti.i32,
@@ -539,7 +588,25 @@ def ga_refresh_scores_and_update_runs_best_kernel(
     n_total = n_runs * n_genomes_per_run
 
     for genome_idx in range(n_total):
-        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+        _refresh_live_score_from_chunk_state(
+            genome_idx,
+            total_budget,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            use_exact_inner_solver,
+        )
 
     for r in range(n_runs):
         start_offset: ti.i32 = r * n_genomes_per_run

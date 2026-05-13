@@ -18,7 +18,7 @@ from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 
 FG_CACHE_SCHEMA_VERSION = 1
 FG_CACHE_SECTION_CAP = 20
-BASE_CACHE_SCHEMA_VERSION = 1
+BASE_CACHE_SCHEMA_VERSION = 4
 _FG_ROW = struct.Struct("<Q7hiiiiBBBBBBBI20h20h")
 _BASE_ROW = struct.Struct("<Q7h8i")
 _PATH_LOCKS: dict[Path, threading.Lock] = {}
@@ -337,8 +337,10 @@ def _base_value_from_result8(result8: tuple[int, ...] | list[int] | np.ndarray) 
     values = tuple(int(v) for v in result8)
     if len(values) != 8:
         raise ValueError(f"base candidate cache requires 8 result values, got {len(values)}")
+    if int(values[0]) < 0:
+        raise ValueError("base candidate cache cannot persist invalid score")
     return BaseCandidateCacheValue(
-        score=int(values[0]),
+        score=0,
         combo_idx=int(values[1]),
         ft=int(values[2]),
         ff=int(values[3]),
@@ -456,14 +458,15 @@ class BaseCandidateCacheShard:
     ) -> bool:
         key = stats7_key(stats)
         value = _base_value_from_result8(result8)
-        if value.score < 0:
-            raise ValueError(f"base candidate cache cannot persist invalid score for stats={key}")
         if value.combo_idx < 0:
             raise ValueError(f"base candidate cache cannot persist invalid combo index for stats={key}")
         existing = self.rows.get(key)
         if existing is not None:
             if existing != value:
-                raise ValueError(f"base candidate cache value changed for stats={key}: {self.path}")
+                raise ValueError(
+                    "base candidate cache value changed "
+                    f"for stats={key}: existing={existing.result8()} new={value.result8()} path={self.path}"
+                )
             return False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         row = _pack_base_row(key, value)

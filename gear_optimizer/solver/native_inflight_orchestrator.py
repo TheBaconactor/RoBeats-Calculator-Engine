@@ -727,6 +727,18 @@ def run_native_inflight_song_pipeline(
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
+                    try:
+                        emit_profile_event(
+                            component="inflight_ga",
+                            event="future_error",
+                            song_key=str(song.config.task_key),
+                            metrics={
+                                "exc_type": type(exc).__name__,
+                                "exc": str(exc),
+                            },
+                        )
+                    except Exception as e:
+                        logger.debug(f"native_inflight_orchestrator:ga_future_error_event: {e}")
                     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
                     if not (stopping and is_stop_abort_exception(exc)):
                         _post(

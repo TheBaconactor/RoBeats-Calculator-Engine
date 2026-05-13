@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import get_selected_element, safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
 from gear_optimizer.helpers.song_helpers.force_greats.entry_resolution import entry_base_score
@@ -238,7 +239,7 @@ def score_native_ga_force_greats(
         center_ffs = [int(rec["center_ff"]) for rec in records]
         radius_arg = search_radius
 
-    fg_results, _batch_stats = solve_native_force_greats_gpu_batch(
+    fg_results, batch_stats = solve_native_force_greats_gpu_batch(
         base_stats_list=[dict(rec["base_stats"]) for rec in records],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -247,6 +248,15 @@ def score_native_ga_force_greats(
         center_ffs=center_ffs,
         search_radius=radius_arg,
         gpu_client=gpu_client,
+    )
+    meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+    song_diff = str(meta.get("Difficulty") or "").strip()
+    emit_profile_event(
+        component="native_fg",
+        event="candidate_cache_stats",
+        song_key=f"{song_name} ({song_diff})" if song_name and song_diff else song_name or None,
+        metrics=dict(batch_stats or {}),
     )
 
     items: list[tuple[str, dict]] = []

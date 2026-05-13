@@ -63,10 +63,11 @@ def test_base_candidate_cache_round_trips_compact_rows(tmp_path, monkeypatch):
     keys, stats_rows, result_rows = reloaded.gpu_rows()
     assert keys.tolist() == [candidate_solver_cache.base_stats_hash_key(stats)]
     assert stats_rows.tolist() == [list(stats)]
-    assert result_rows.tolist() == [[1234, 2, 3, 4, 5, 6]]
+    assert result_rows.tolist() == [[0, 2, 3, 4, 5, 6]]
 
+    assert not reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
     with pytest.raises(ValueError, match="value changed"):
-        reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
+        reloaded.put_result8(stats, (1235, 3, 0, 2, 3, 4, 5, 6))
 
 
 def test_selected_payload_records_base_candidate_cache_rows(tmp_path, monkeypatch):
@@ -94,8 +95,8 @@ def test_selected_payload_records_base_candidate_cache_rows(tmp_path, monkeypatc
     _keys, stats_rows, result_rows = reloaded.gpu_rows()
     assert stats_rows.tolist() == [[10, 20, 30, 40, 50, 60, 70], [11, 21, 31, 41, 51, 61, 71]]
     assert result_rows.tolist() == [
-        [3000, combo_index[(0, 2)], 3, 4, 5, 6],
-        [3100, combo_index[(1, 1)], 7, 8, 9, 10],
+        [0, combo_index[(0, 2)], 3, 4, 5, 6],
+        [0, combo_index[(1, 1)], 7, 8, 9, 10],
     ]
 
 

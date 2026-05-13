@@ -25,8 +25,8 @@ IS_METAL = sys.platform == "darwin"
 from . import kernels_helpers
 from .ga_eval.write_results import (
     _best_combo_idx_from_chunk_state,
-    _best_score_from_chunk_state,
     _materialize_best_combo_stats,
+    _refresh_live_score_from_chunk_state,
     _write_run_best_payload_row,
 )
 
@@ -2075,7 +2075,25 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     n_total: ti.i32 = n_runs_i * n_genomes_per_run_i
 
     for genome_idx in range(n_total):
-        kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
+        _refresh_live_score_from_chunk_state(
+            genome_idx,
+            total_budget,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            use_exact_inner_solver,
+        )
 
     for r in range(n_runs_i):
         start_offset: ti.i32 = r * n_genomes_per_run_i
