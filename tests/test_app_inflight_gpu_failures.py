@@ -1,4 +1,5 @@
 import configparser
+import os
 import sys
 import types
 
@@ -55,24 +56,14 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
     assert calls[0]["kwargs"]["total_tasks"] == 1
 
 
-def test_calculate_only_skips_native_inflight_pipeline(monkeypatch):
+def test_meta_finder_flag_does_not_bypass_native_inflight_pipeline(monkeypatch):
     app = _make_minimal_app()
     tasks = _build_calc_only_tasks(count=1)
     native_calls: list[dict] = []
-    consumed: list[dict] = []
 
     def _record_run(*args, **kwargs):
         native_calls.append({"args": args, "kwargs": kwargs})
 
-    def _fake_safe_process(task):
-        return {"song": task[1], "_queue_key": task[0], "_queue_label": task[1]}
-
-    def _consume(results_iter, **_kwargs):
-        consumed.extend(list(results_iter))
-
-    app._consume_results = _consume
-
-    monkeypatch.setattr("gear_optimizer.legacy.song_processor_adapter.safe_process_song_task", _fake_safe_process)
     monkeypatch.setitem(
         sys.modules,
         "gear_optimizer.solver.native_inflight_orchestrator",
@@ -81,8 +72,8 @@ def test_calculate_only_skips_native_inflight_pipeline(monkeypatch):
 
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
-    assert native_calls == []
-    assert consumed == [{"song": "Calc Song 0", "_queue_key": "song-0", "_queue_label": "Calc Song 0"}]
+    assert len(native_calls) == 1
+    assert native_calls[0]["args"][0] == tasks
 
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
@@ -163,14 +154,15 @@ def test_dual_process_allow_env_does_not_change_main_route(monkeypatch):
     assert native_calls[0]["args"][0] == tasks
 
 
-def test_configure_execution_does_not_mutate_gpu_mode_flag():
+def test_configure_execution_prewarms_native_ga(monkeypatch):
     app = object.__new__(GearOptimizerApp)
+    monkeypatch.delenv("GPU_NATIVE_GA_MAX_RUNS", raising=False)
     cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"GPU_Mode": "false", "GPU_Native_GA": "true", "InFlightSongs": "0"}})
+    cfg.read_dict({"IterationEngine": {"InFlightSongs": "0", "GA_MultiStart": "3"}})
 
     app._configure_execution_and_prewarm(cfg)
 
-    assert cfg.get("IterationEngine", "GPU_Mode") == "false"
+    assert os.environ["GPU_NATIVE_GA_MAX_RUNS"] == "3"
 
 
 def test_request_stop_requests_gpu_abort(monkeypatch):

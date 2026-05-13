@@ -55,10 +55,7 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
 
     cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {
-        "GPU_Mode": "true",
-        "GPU_Native_GA": "true",
-    }
+    cfg["IterationEngine"] = {}
     cfg["UserInputStatsGems"] = {
         "fever_time": "0",
         "fever_fill": "0",

@@ -2533,7 +2533,6 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 1),
         "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),
         "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
-        "UseEvolutionDB": _cfg_get_bool(cfg, "IterationEngine", "UseEvolutionDB", True),
     }
     tracked_env = (
         "METAFINDER_CONFIG_PATH",

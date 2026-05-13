@@ -475,8 +475,6 @@ class IterationEngineSettings:
 
 @dataclass(frozen=True, slots=True)
 class GPUExecutionSettings:
-    gpu_mode: bool = True
-    gpu_native_ga: bool = True
     gpu_song_slots: int = 0
     ga_queue_mult: int = 0
 
@@ -486,10 +484,7 @@ class GPUExecutionSettings:
             return cls()
         gpu_song_slots = cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0, clamp_min=0)
         ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
-        # GPU-first policy: runtime executes with GPU enabled (not config-switchable).
         return cls(
-            gpu_mode=True,
-            gpu_native_ga=True,
             gpu_song_slots=int(gpu_song_slots),
             ga_queue_mult=int(ga_queue_mult),
         )
@@ -789,28 +784,6 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     if not raw:
         return None
     return safe_int(raw, -1)
-
-
-def _canon_outer_search_engine(raw: Any) -> str:
-    value = str(raw or "").strip().lower().replace("-", "_")
-    value = "_".join(part for part in value.split("_") if part)
-    if not value:
-        return ""
-    if value in {"ga", "genetic", "genetic_algorithm", "geneticalgorithm"}:
-        return "ga"
-    return value
-
-
-def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
-    """Production routing is GA-only (not config-switchable)."""
-
-    return "ga"
-
-
-def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
-    """Production FG solver mode is finder-only (not config-switchable)."""
-
-    return "finder"
 
 
 def find_and_cache_paths():

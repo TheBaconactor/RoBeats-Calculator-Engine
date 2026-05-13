@@ -48,7 +48,7 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
-from ..core.config import GASettings as GARuntimeSettings, GPUExecutionSettings, read_fg_candidate_limit
+from ..core.config import GASettings as GARuntimeSettings, read_fg_candidate_limit
 from ..core.gem_defs import UserGemsSettings, build_gem_counts, build_gem_details
 from ..core.color_flags import build_color_flags
 from ..core.profile_events import emit_profile_event
@@ -2280,11 +2280,6 @@ def solve_coevolution_genetic(
         mini_pool = solver_ctx.mini_pool
         whitelisted_minis = []
 
-    # Build configuration data
-    gpu_settings = GPUExecutionSettings.from_config(cfg)
-    use_gpu_mode = bool(gpu_settings.gpu_mode)
-    use_gpu_native = bool(gpu_settings.gpu_native_ga)
-
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA is required (GPU-only policy) but taichi_gem dependencies are unavailable.")
 
@@ -2302,8 +2297,7 @@ def solve_coevolution_genetic(
 
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
-    if use_gpu_mode:
-        logger.info(f"[GPU] Native GA enabled: {use_gpu_native}")
+    logger.info("[GPU] Native GA enabled")
 
     ga_runtime_settings = GARuntimeSettings.from_config(cfg)
     user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
@@ -2316,8 +2310,7 @@ def solve_coevolution_genetic(
             "selected_color": selected_color,
             "primary_color": str(p_color or ""),
             "secondary_color": str(s_color or ""),
-            "use_gpu": use_gpu_mode,
-            "use_gpu_native": use_gpu_native,
+            "use_gpu": True,
             "fg_candidate_limit": read_fg_candidate_limit(
                 cfg,
                 default=FG_CANDIDATE_LIMIT,
@@ -2335,8 +2328,7 @@ def solve_coevolution_genetic(
     cfg_data["selected_color"] = selected_color
     cfg_data["primary_color"] = str(p_color or "")
     cfg_data["secondary_color"] = str(s_color or "")
-    cfg_data["use_gpu"] = use_gpu_mode
-    cfg_data["use_gpu_native"] = use_gpu_native
+    cfg_data["use_gpu"] = True
     cfg_data["fg_candidate_limit"] = int(
         cfg_data.get(
             "fg_candidate_limit",
@@ -2358,13 +2350,10 @@ def solve_coevolution_genetic(
     # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
     try:
-        from ..core.config import read_fg_solver_mode, read_iteration_engine_settings
+        from ..core.config import read_iteration_engine_settings
 
         ie = read_iteration_engine_settings(cfg)
-        fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
-        fg_enabled = bool(fg_solver_mode == "exact_dp") or (
-            bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
-        )
+        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
     except Exception as e:
         logger.debug(f"genetic:solve_coevolution_genetic: {e}")
         fg_enabled = False
@@ -2372,7 +2361,7 @@ def solve_coevolution_genetic(
     # PRODUCTION: modern optimizer runtime path is GPU-native.
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.
-    if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
+    if _GPU_NATIVE_AVAILABLE:
         logger.info("=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
         logger.info(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
 

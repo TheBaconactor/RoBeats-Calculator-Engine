@@ -25,7 +25,6 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
 )
 from ...core.color_flags import build_color_flags
-from ...core.config import GPUExecutionSettings
 from ...core.gem_defs import UserGemsSettings, build_gem_counts
 
 from ..fever_timeline import (
@@ -450,7 +449,7 @@ def solve_best_fever_combination(
         user_cm = int(user_gems.combo_multiplier)
         user_fm = int(user_gems.fever_multiplier)
         static_elem_input = int(user_gems.static_element)
-        use_gpu = bool(GPUExecutionSettings.from_config(cfg).gpu_mode)
+        use_gpu = True
 
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")

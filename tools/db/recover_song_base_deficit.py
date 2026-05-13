@@ -150,10 +150,7 @@ def _write_recovery_config(
     cfg.set("CalculateSong", "TargetPrimary", "All")
     cfg.set("CalculateSong", "TargetSecondary", "All")
 
-    cfg.set("IterationEngine", "GPU_Mode", "true")
-    cfg.set("IterationEngine", "GPU_Native_GA", "true")
     cfg.set("IterationEngine", "LoopForever", "false")
-    cfg.set("IterationEngine", "UseEvolutionDB", "true")
     cfg.set("IterationEngine", "IgnoreResumeQueue", "true")
     cfg.set("IterationEngine", "SongRepeats", str(int(settings.song_repeats)))
     cfg.set("IterationEngine", "BundleSongRepeats", "true" if settings.bundle_song_repeats else "false")

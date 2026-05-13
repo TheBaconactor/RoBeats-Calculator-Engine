@@ -230,7 +230,6 @@ def _prepare_cfg_dict(
     difficulty: str,
     ga_depth: int,
     ga_multi_start: int,
-    use_evo_db: bool,
     fg_candidate_limit: int,
     fg_search_radius: int,
 ) -> dict[str, Any]:
@@ -245,12 +244,9 @@ def _prepare_cfg_dict(
     calc["Difficulty"] = str(difficulty)
 
     ie = cfg_dict["IterationEngine"]
-    ie["GPU_Mode"] = "true"
-    ie["GPU_Native_GA"] = "true"
     ie["LoopForever"] = "false"
     ie["SongRepeats"] = "1"
     ie["BundleSongRepeats"] = "false"
-    ie["UseEvolutionDB"] = "true" if use_evo_db else "false"
     ie["GA_SearchDepth"] = str(int(ga_depth))
     ie["GA_MultiStart"] = str(int(ga_multi_start))
     ie["FG_CandidateLimit"] = str(int(fg_candidate_limit))
@@ -467,7 +463,6 @@ def run_single_seed_direct(
     all_minis: list[Any],
     gears_by_name: dict[str, Any],
     minis_by_name: dict[str, Any],
-    use_evo_db: bool,
     ga_depth: int,
     ga_seed: int,
     audit_path: Path,
@@ -487,7 +482,6 @@ def run_single_seed_direct(
         all_minis,
         gears_by_name,
         minis_by_name,
-        bool(use_evo_db),
         True,
         int(ga_depth),
         None,
@@ -565,7 +559,6 @@ def run_single_seed_inflight(
     all_minis: list[Any],
     gears_by_name: dict[str, Any],
     minis_by_name: dict[str, Any],
-    use_evo_db: bool,
     ga_depth: int,
     ga_seed: int,
     audit_path: Path,
@@ -585,7 +578,6 @@ def run_single_seed_inflight(
         all_minis,
         gears_by_name,
         minis_by_name,
-        bool(use_evo_db),
         True,
         int(ga_depth),
         None,
@@ -700,14 +692,12 @@ def run_benchmark(
         for depth in depths:
             rows: list[dict[str, Any]] = []
             for seed in seeds:
-                use_evo_db_for_run = True if pipeline == "inflight" else bool(use_db)
                 cfg_dict = _prepare_cfg_dict(
                     base_cfg_dict=base_cfg_dict,
                     song_name=str(song_name),
                     difficulty=str(difficulty),
                     ga_depth=int(depth),
                     ga_multi_start=int(ga_multi_start),
-                    use_evo_db=bool(use_evo_db_for_run),
                     fg_candidate_limit=int(fg_candidate_limit),
                     fg_search_radius=int(fg_search_radius),
                 )
@@ -729,7 +719,6 @@ def run_benchmark(
                         all_minis=all_minis,
                         gears_by_name=gears_by_name,
                         minis_by_name=minis_by_name,
-                        use_evo_db=bool(use_evo_db_for_run),
                         ga_depth=int(depth),
                         ga_seed=int(seed),
                         audit_path=audit_path,
@@ -747,7 +736,6 @@ def run_benchmark(
                         all_minis=all_minis,
                         gears_by_name=gears_by_name,
                         minis_by_name=minis_by_name,
-                        use_evo_db=bool(use_evo_db_for_run),
                         ga_depth=int(depth),
                         ga_seed=int(seed),
                         audit_path=audit_path,

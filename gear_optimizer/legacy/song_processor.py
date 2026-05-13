@@ -32,11 +32,8 @@ from ..core.constants import (
 )
 
 from ..core.config import (
-    GPUExecutionSettings,
     read_fg_candidate_limit,
     read_fg_search_radius,
-    read_fg_solver_mode,
-    read_outer_search_engine,
 )
 from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
@@ -105,7 +102,6 @@ class SongContext:
     all_minis: list[dict]
     gears_by_name: dict[str, Any]
     minis_by_name: dict[str, Any]
-    use_evo_db: bool
     auto_buff: bool
     ga_depth: int
     status_queue: Any
@@ -144,9 +140,7 @@ class SongContext:
     db_baseline_valid: bool
     outer_engine: str = "ga"
     pre_prune_mode: str = "auto"
-    fg_solver_mode: str = "finder"
     fg_search_radius: int | None = None
-    gpu_mode: bool = True
     gpu_song_slot: int = 0
     ga_seed: int | None = None
     solver_ctx: SolverContext | None = None
@@ -236,7 +230,6 @@ def _setup_song_context(
     all_minis: list[dict],
     gears_by_name: dict[str, Any],
     minis_by_name: dict[str, Any],
-    use_evo_db: bool,
     auto_buff: bool,
     ga_depth: int,
     status_queue: Any,
@@ -257,13 +250,11 @@ def _setup_song_context(
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
-        use_evo_db=bool(use_evo_db),
         preloaded_calc_song=preloaded_calc_song,
         load_known_loadouts=True,
         allow_fallback=False,
     )
     cfg = prepared_core.cfg
-    gpu_mode = bool(GPUExecutionSettings.from_config(cfg).gpu_mode)
     calc_song = prepared_core.calc_song
     prepared_config = prepared_core.prepared_config
     db_context = prepared_core.db_context
@@ -290,10 +281,7 @@ def _setup_song_context(
 
     outer_engine = "ga"
     pre_prune_mode = "none"
-    fg_solver_mode = read_fg_solver_mode(cfg, default="finder")
     fg_search_radius = read_fg_search_radius(cfg)
-    if prepared_config.enable_gear or prepared_config.enable_mini:
-        outer_engine = read_outer_search_engine(cfg, default="ga")
 
     return SongContext(
         fp=fp,
@@ -308,7 +296,6 @@ def _setup_song_context(
         all_minis=all_minis,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
-        use_evo_db=bool(use_evo_db),
         auto_buff=bool(auto_buff),
         ga_depth=int(ga_depth),
         status_queue=status_queue,
@@ -347,9 +334,7 @@ def _setup_song_context(
         db_baseline_valid=bool(db_context.db_baseline_valid),
         outer_engine=outer_engine,
         pre_prune_mode=pre_prune_mode,
-        fg_solver_mode=fg_solver_mode,
         fg_search_radius=fg_search_radius,
-        gpu_mode=bool(gpu_mode),
         gpu_song_slot=int(calc_song.get("_gpu_song_slot", 0) or 0),
         ga_seed=ga_seed,
     )
@@ -357,25 +342,24 @@ def _setup_song_context(
 
 def _run_outer_search(ctx: SongContext) -> OuterSearchResult:
     if ctx.enable_gear or ctx.enable_mini:
-        if ctx.gpu_mode:
-            try:
-                ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
-            except Exception as e:
-                logger.warning(f"song_processor:_run_outer_search: {e}")
-                ctx.gpu_song_slot = 0
-            try:
-                ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
-            except Exception as e:
-                logger.warning(f"song_processor:_run_outer_search: {e}")
-            try:
-                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+        try:
+            ctx.gpu_song_slot = int(ctx.calc_song.get("_gpu_song_slot", 0) or 0)
+        except Exception as e:
+            logger.warning(f"song_processor:_run_outer_search: {e}")
+            ctx.gpu_song_slot = 0
+        try:
+            ctx.calc_song["_gpu_song_slot"] = int(ctx.gpu_song_slot)
+        except Exception as e:
+            logger.warning(f"song_processor:_run_outer_search: {e}")
+        try:
+            from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-                gpu_fields.configure_ga_run_buffers(
-                    max_runs=ctx.ga_settings.multi_start,
-                    max_genomes=GA_POPULATION_SIZE,
-                )
-            except Exception as e:
-                logger.warning(f"song_processor:_run_outer_search: {e}")
+            gpu_fields.configure_ga_run_buffers(
+                max_runs=ctx.ga_settings.multi_start,
+                max_genomes=GA_POPULATION_SIZE,
+            )
+        except Exception as e:
+            logger.warning(f"song_processor:_run_outer_search: {e}")
 
         ctx.solver_ctx = prepare_solver_context(
             ctx.cfg,
@@ -499,12 +483,11 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
     fg_variants: list[dict[str, Any]] = []
     loadout_entries = None
     fg_wall_sec = 0.0
-    direct_ga_candidates_for_fg = bool(ctx.outer_engine == "ga" and ctx.force_greats_finder and ctx.gpu_mode)
+    direct_ga_candidates_for_fg = bool(ctx.force_greats_finder)
 
-    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
+    if ctx.manual_force_greats or ctx.force_greats_finder:
         loadout_entries = build_loadout_entries(
             ctx.found_song_name,
-            ctx.use_evo_db,
             [] if direct_ga_candidates_for_fg else ga_candidates,
             fg_candidate_limit,
             ctx.gears_by_name,
@@ -514,7 +497,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             materialize_ga_details=False,
         )
 
-    if ctx.fg_solver_mode in {"finder", "manual"} and (ctx.manual_force_greats or ctx.force_greats_finder):
+    if ctx.manual_force_greats or ctx.force_greats_finder:
         fg_start = time.perf_counter()
         fg_variants = process_force_greats(
             loadout_entries,
@@ -525,7 +508,7 @@ def _run_force_greats(ctx: SongContext, outer: OuterSearchResult) -> FGResult:
             ctx.ref_arrays,
             ctx.meta_primary_color,
             build_details,
-            use_gpu=ctx.gpu_mode,
+            use_gpu=True,
             fg_search_radius=ctx.fg_search_radius,
             perf_timing=PERF_TIMING_ENABLED,
             ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
@@ -582,7 +565,6 @@ def _build_and_persist(
                 "db_key": ctx.db_key,
                 "file_path": ctx.fp,
                 "difficulty": ctx.effective_difficulty,
-                "use_evo_db": bool(ctx.use_evo_db),
                 "cfg_dict": ctx.cfg_dict,
                 "ref_arrays": ctx.ref_arrays,
                 "calc_song": ctx.calc_song,
@@ -731,7 +713,7 @@ def process_song_task(args) -> SongResultPayload:
     Args:
         args: Tuple of (fp, song_name, difficulty, cfg_dict, paths, ref_arrays,
                         all_gears, all_minis, gears_by_name, minis_by_name,
-                        use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers)
+                        auto_buff, ga_depth, status_queue, parallel_workers)
 
     Returns:
         dict: Result with song, db_key, db_payload, best_data, persist_entries, log
@@ -758,7 +740,6 @@ def process_song_task(args) -> SongResultPayload:
     all_minis = run_context.all_minis
     gears_by_name = run_context.gears_by_name
     minis_by_name = run_context.minis_by_name
-    use_evo_db = run_context.use_evo_db
     auto_buff = run_context.auto_buff
     ga_depth = run_context.ga_depth
     status_queue = run_context.status_queue
@@ -845,7 +826,6 @@ def process_song_task(args) -> SongResultPayload:
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            use_evo_db=use_evo_db,
             auto_buff=auto_buff,
             ga_depth=ga_depth,
             status_queue=status_queue,

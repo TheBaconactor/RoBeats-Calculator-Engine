@@ -192,7 +192,6 @@ def main():
     # Create a minimal config
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "GPU_Mode", "false")
     cfg.add_section("UserInputStatsGems")
     cfg.add_section("ElementalGems")
     cfg.add_section("TeamContributionBuffConstant")

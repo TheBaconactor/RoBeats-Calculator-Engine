@@ -329,7 +329,6 @@ def dual_process_inflight_worker_main(
             all_minis,
             gears_by_name,
             minis_by_name,
-            use_evo_db,
             auto_buff,
             ga_depth,
             parallel_workers,
@@ -344,7 +343,6 @@ def dual_process_inflight_worker_main(
         all_minis = None
         gears_by_name = None
         minis_by_name = None
-        use_evo_db = True
         auto_buff = False
         ga_depth = 1
         parallel_workers = 1
@@ -376,7 +374,6 @@ def dual_process_inflight_worker_main(
                     all_minis,
                     gears_by_name,
                     minis_by_name,
-                    use_evo_db,
                     auto_buff,
                     ga_depth,
                     None,  # status_queue (unused in native in-flight)

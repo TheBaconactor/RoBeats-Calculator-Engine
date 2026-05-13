@@ -225,16 +225,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
-        if bool(runtime_settings.gpu.gpu_native_ga):
-            ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
-            try:
-                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+        ga_multistart = max(1, int(runtime_settings.ga.multi_start))
+        os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
+        os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
+        try:
+            from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-                gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-            except Exception as e:
-                logger.warning(f"app:_configure_execution_and_prewarm: {e}")
+            gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+        except Exception as e:
+            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
 
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)

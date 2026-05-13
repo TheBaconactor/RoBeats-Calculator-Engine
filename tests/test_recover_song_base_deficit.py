@@ -57,7 +57,6 @@ FG_SearchRadius = 5
     assert cfg.get("IterationEngine", "GA_MultiStart") == "5"
     assert cfg.get("IterationEngine", "GA_DBSeedProbability") == "1.0"
     assert cfg.get("IterationEngine", "IgnoreResumeQueue") == "true"
-    assert cfg.get("IterationEngine", "UseEvolutionDB") == "true"
 
 
 def test_resolve_song_target_prefers_exact_match_and_requested_difficulty(tmp_path: Path) -> None:

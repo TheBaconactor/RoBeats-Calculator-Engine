@@ -51,12 +51,8 @@ def _write_profile_config(project_root_dir: str) -> str:
     cfg.set("IterationEngine", "GA_MultiStart", "5")
     cfg.set("IterationEngine", "SongQueueLimit", "32")
     cfg.set("IterationEngine", "LoopForever", "false")
-    cfg.set("IterationEngine", "GPU_Mode", "true")
-    cfg.set("IterationEngine", "GPU_Native_GA", cfg.get("IterationEngine", "GPU_Native_GA", fallback="true"))
 
-    # Force-greats path is what was crashing; keep it enabled for profiling.
-    cfg.set("IterationEngine", "ForceGreatsMode", cfg.get("IterationEngine", "ForceGreatsMode", fallback="true"))
-    cfg.set("IterationEngine", "ForceGreatsFinder", cfg.get("IterationEngine", "ForceGreatsFinder", fallback="true"))
+    # Force-greats path is what was crashing; keep debug output enabled for profiling.
     cfg.set("IterationEngine", "ForceGreatsDebug", "true")
 
     tmp_dir = Path(project_root_dir) / "bin"

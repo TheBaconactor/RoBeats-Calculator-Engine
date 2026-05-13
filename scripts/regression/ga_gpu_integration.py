@@ -119,8 +119,6 @@ def run_ga_gpu_test():
             if section == "ElementalGems":
                 return 0
             if section == "IterationEngine":
-                if option == "GPU_Mode":
-                    return True  # Enable GPU!
                 if option in ["MemeticElites", "MemeticSteps", "MemeticTopGear", "MemeticTopMinis"]:
                     return 0
                 if option == "MultiStartRuns":

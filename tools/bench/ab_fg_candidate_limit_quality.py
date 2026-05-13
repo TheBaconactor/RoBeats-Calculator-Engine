@@ -53,7 +53,6 @@ def _write_variant_config(
     out_config_path: Path,
     fg_candidate_limit: int,
     song_repeats: int | None,
-    use_evo_db: bool | None,
     inflight_songs: int | None,
 ) -> None:
     cfg = configparser.ConfigParser()
@@ -66,8 +65,6 @@ def _write_variant_config(
     cfg.set("IterationEngine", "IgnoreResumeQueue", "true")
     if song_repeats is not None:
         cfg.set("IterationEngine", "SongRepeats", str(int(song_repeats)))
-    if use_evo_db is not None:
-        cfg.set("IterationEngine", "UseEvolutionDB", "true" if use_evo_db else "false")
     if inflight_songs is not None:
         cfg.set("IterationEngine", "InFlightSongs", str(int(inflight_songs)))
 
@@ -218,12 +215,6 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--ga-seed", type=int, default=1337)
     ap.add_argument("--song-repeats", type=int, default=1, help="Override SongRepeats in generated configs.")
-    ap.add_argument(
-        "--use-evo-db",
-        choices=["keep", "true", "false"],
-        default="keep",
-        help="Override IterationEngine.UseEvolutionDB in generated configs (default: keep base config).",
-    )
     ap.add_argument("--seed-db", default="", help="Optional seed DB to copy into each run's EVOLUTION_DB_PATH.")
     ap.add_argument(
         "--inflight-songs",
@@ -246,12 +237,6 @@ def main() -> int:
     song_limit = max(1, int(args.song_limit))
     ga_seed = int(args.ga_seed)
     song_repeats = max(1, int(args.song_repeats)) if int(args.song_repeats) > 0 else None
-    use_evo_db = None
-    if str(args.use_evo_db).strip().lower() == "true":
-        use_evo_db = True
-    elif str(args.use_evo_db).strip().lower() == "false":
-        use_evo_db = False
-
     seed_db_path = None
     if str(args.seed_db or "").strip():
         seed_db_path = Path(str(args.seed_db).strip())
@@ -283,7 +268,6 @@ def main() -> int:
                 out_config_path=cfg_path,
                 fg_candidate_limit=int(v.fg_candidate_limit),
                 song_repeats=song_repeats,
-                use_evo_db=use_evo_db,
                 inflight_songs=inflight_songs,
             )
 
@@ -354,7 +338,6 @@ def main() -> int:
             "reps": reps,
             "ga_seed": ga_seed,
             "song_repeats_override": song_repeats,
-            "use_evo_db_override": use_evo_db,
             "seed_db": str(seed_db_path) if seed_db_path is not None else "",
             "inflight_songs_override": inflight_songs,
             "allow_sequential": bool(args.allow_sequential),

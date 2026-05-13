@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from gear_optimizer.core.config import read_fg_solver_mode, read_outer_search_engine
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.solver.song_db_context import PreparedSongDbContext
 from gear_optimizer.solver import song_preparation
@@ -12,8 +11,6 @@ from gear_optimizer.solver.song_preparation import PreparedSongConfig
 def _common_cfg(**iteration_engine: str) -> dict:
     return {
         "IterationEngine": {
-            "GPU_Mode": "true",
-            "GPU_Native_GA": "true",
             **iteration_engine,
         },
         "UserInputStatsGems": {
@@ -110,19 +107,7 @@ def _patch_common(monkeypatch, song_processor) -> dict[str, object]:
     return prepared
 
 
-@pytest.mark.parametrize("requested_mode", ["ga", "genetic", "genetic_algorithm", "geneticalgorithm", "unsupported"])
-def test_read_outer_search_engine_forces_ga_on_main(requested_mode):
-    cfg = cfg_from_dict(_common_cfg(OuterSearchEngine=requested_mode))
-    assert read_outer_search_engine(cfg, default="ga") == "ga"
-
-
-@pytest.mark.parametrize("legacy_mode", ["exact_dp", "dp", "exact"])
-def test_read_fg_solver_mode_maps_exact_dp_to_finder(legacy_mode):
-    cfg = cfg_from_dict(_common_cfg(FG_SolverMode=legacy_mode))
-    assert read_fg_solver_mode(cfg, default="finder") == "finder"
-
-
-def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkeypatch):
+def test_process_song_task_uses_canonical_ga_route_and_pre_prune(monkeypatch):
     from gear_optimizer.legacy import song_processor_adapter as legacy_song_processor
 
     song_processor = legacy_song_processor.legacy_song_processor_module()
@@ -136,7 +121,7 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
 
-    cfg = _common_cfg(OuterSearchEngine="unsupported", PrePruneMode="marginal")
+    cfg = _common_cfg(PrePruneMode="marginal")
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest main guard"))
 
     assert calls["ga"] == 1
@@ -145,7 +130,7 @@ def test_process_song_task_ignores_unsupported_outer_engine_and_pre_prune(monkey
     assert (result.get("best_data") or {}).get("BaseScore") == 123
 
 
-def test_process_song_task_treats_exact_dp_mode_as_finder_alias(monkeypatch):
+def test_process_song_task_routes_fg_through_finder(monkeypatch):
     from gear_optimizer.legacy import song_processor_adapter as legacy_song_processor
 
     song_processor = legacy_song_processor.legacy_song_processor_module()
@@ -167,7 +152,7 @@ def test_process_song_task_treats_exact_dp_mode_as_finder_alias(monkeypatch):
 
     monkeypatch.setattr(song_processor, "solve_coevolution_genetic", _fake_ga)
 
-    cfg = _common_cfg(OuterSearchEngine="ga", FG_SolverMode="exact_dp")
+    cfg = _common_cfg()
     result = song_processor.process_song_task(_common_args(cfg, song_name="pytest ga exact-fg routing"))
 
     assert calls["ga"] == 1

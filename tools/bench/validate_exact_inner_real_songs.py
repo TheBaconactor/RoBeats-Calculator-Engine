@@ -102,8 +102,6 @@ def _build_ref_arrays(paths: dict[str, Any]) -> dict[str, np.ndarray]:
 def _force_gpu(cfg: Any) -> None:
     if not cfg.has_section("IterationEngine"):
         cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "GPU_Mode", "true")
-    cfg.set("IterationEngine", "GPU_Native_GA", "true")
 
 
 def _resolve_default_song_paths(paths: dict[str, Any]) -> list[str]:

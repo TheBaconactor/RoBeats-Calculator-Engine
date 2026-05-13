@@ -13,8 +13,6 @@ from gear_optimizer.core.config import (
     load_config,
     read_fg_candidate_limit,
     read_fg_search_radius,
-    read_fg_solver_mode,
-    read_outer_search_engine,
     read_iteration_engine_settings,
 )
 
@@ -78,8 +76,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     runtime = AppRuntimeSettings.from_config(cfg)
     ie = read_iteration_engine_settings(cfg)
 
-    assert gpu.gpu_mode is True
-    assert gpu.gpu_native_ga is True
     assert gpu.gpu_song_slots == 4
     assert gpu.ga_queue_mult == 7
 
@@ -128,8 +124,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
 
     assert read_fg_candidate_limit(cfg, default=51, min_limit=1) == 5000
     assert read_fg_search_radius(cfg) is None
-    assert read_outer_search_engine(cfg, default="ga") == "ga"
-    assert read_fg_solver_mode(cfg, default="finder") == "finder"
 
 
 def test_ga_settings_uses_canonical_ga_search_depth_over_legacy_alias(caplog):

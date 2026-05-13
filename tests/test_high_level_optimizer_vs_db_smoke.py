@@ -209,7 +209,6 @@ def _run_reference_compare(
             all_minis,
             gears_by_name,
             minis_by_name,
-            True,  # use_evo_db
             auto_buff,
             ga_depth,
             None,  # status_queue

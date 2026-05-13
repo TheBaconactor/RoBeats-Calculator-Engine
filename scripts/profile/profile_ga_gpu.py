@@ -124,11 +124,9 @@ def profile_ga_with_gpu():
         "Fever Time": np.linspace(1.0, 2.5, rows),
     }
 
-    # Mock config that enables GPU
+    # Mock config for GA profiling.
     class MockCfg:
         def get(self, section, option, fallback=None):
-            if option == "GPU_Mode":
-                return "True"
             if section == "IterationEngine":
                 if option in ["MemeticElites", "MemeticSteps", "MemeticTopGear", "MemeticTopMinis"]:
                     return 0
@@ -139,8 +137,6 @@ def profile_ga_with_gpu():
             return fallback
 
         def getboolean(self, section, option, fallback=False):
-            if option == "GPU_Mode":
-                return True
             val = self.get(section, option, fallback)
             if isinstance(val, bool):
                 return val

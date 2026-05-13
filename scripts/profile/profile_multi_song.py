@@ -75,9 +75,6 @@ def profile_multi_song():
     # Override for faster profiling
     cfg_dict["IterationEngine"] = cfg_dict.get("IterationEngine", {})
     cfg_dict["IterationEngine"]["GA_SearchDepth"] = "10"  # Very short for profiling
-    cfg_dict["IterationEngine"]["MetaFinder"] = "true"
-    cfg_dict["IterationEngine"]["GPU_Mode"] = "true"
-    cfg_dict["IterationEngine"]["ForceGreatsFinder"] = "true"
 
     tasks = []
     for song_file in songs:
@@ -93,7 +90,6 @@ def profile_multi_song():
             all_minis,
             gears_by_name,
             minis_by_name,
-            False,  # use_evo_db
             True,  # auto_buff
             10,  # ga_depth (reduced)
             None,  # status_queue

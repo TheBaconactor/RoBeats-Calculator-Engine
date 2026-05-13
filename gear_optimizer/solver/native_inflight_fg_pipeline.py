@@ -705,22 +705,18 @@ def run_fg_job_sync(
     except Exception as e:
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
-    fg_solver_mode = str((getattr(song.gpu_inputs, "cfg_data", None) or {}).get("fg_solver_mode") or "finder").strip().lower()
     try:
         emit_profile_event(
             component="inflight_fg_worker",
             event="dispatch_start",
             song_key=song_key,
             metrics={
-                "solver_mode": str(fg_solver_mode),
                 "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
             },
         )
     except Exception as e:
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
-    if fg_solver_mode == "off":
-        fg_variants = []
-    elif bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
+    if bool(getattr(song.gpu_inputs, "force_greats_finder", False)):
         fg_variants = score_native_ga_force_greats(
             loadout_entries=getattr(song.runtime.fg, "loadout_entries", None) or {},
             ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
@@ -767,7 +763,6 @@ def run_fg_job_sync(
             song_key=song_key,
             metrics={
                 "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
-                "solver_mode": str(fg_solver_mode),
             },
         )
     except Exception as e:

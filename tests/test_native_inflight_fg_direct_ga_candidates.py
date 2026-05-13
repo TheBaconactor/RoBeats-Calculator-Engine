@@ -100,7 +100,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
         ga_candidates=[{"BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         registry=None,
         fixed_stats={},
-        cfg_data={"selected_color": "Rush", "fg_solver_mode": "exact_dp"},
+        cfg_data={"selected_color": "Rush"},
         ref_arrays={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,

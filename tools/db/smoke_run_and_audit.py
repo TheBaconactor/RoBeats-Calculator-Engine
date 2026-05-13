@@ -42,13 +42,8 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     cfg.set("CalculateSong", "TargetPrimary", "All")
     cfg.set("CalculateSong", "TargetSecondary", "All")
 
-    # Keep GPU on (GPU-only policy).
-    cfg.set("IterationEngine", "GPU_Mode", "true")
-    cfg.set("IterationEngine", "GPU_Native_GA", "true")
-
     # Make it fast.
     cfg.set("IterationEngine", "LoopForever", "false")
-    cfg.set("IterationEngine", "UseEvolutionDB", "true")
     cfg.set("IterationEngine", "SongRepeats", "1")
     cfg.set("IterationEngine", "SongQueueLimit", "1")
     cfg.set("IterationEngine", "InFlightSongs", "1")

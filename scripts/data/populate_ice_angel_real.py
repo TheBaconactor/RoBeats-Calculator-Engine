@@ -87,7 +87,6 @@ def run_real_solver():
         all_minis,
         gears_by_name,
         minis_by_name,
-        True,  # use_evo_db=True (CRITICAL)
         True,  # auto_buff
         5,  # ga_depth
         None,  # status_queue
