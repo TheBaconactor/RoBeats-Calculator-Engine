@@ -43,7 +43,7 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _continuous_fg_submit_budget,
     _continuous_ga_warm_queue_limit,
     count_active_song_lanes,
-    _read_prime_target,
+    read_prime_target,
 )
 from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
@@ -297,7 +297,7 @@ def run_native_inflight_song_pipeline(
     # can still leave the GPU idle while CPU prep catches up. Default to priming up to
     # a modest 4-8 song backlog on smaller in-flight runs, but allow override via env
     # var/config for experimentation.
-    prime_target = _read_prime_target(
+    prime_target = read_prime_target(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
         prep_limit=int(icfg.prep_limit),

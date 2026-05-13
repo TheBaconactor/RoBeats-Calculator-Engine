@@ -18,8 +18,8 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
     _read_inflight_target_song_lanes,
-    _default_prime_target,
-    _read_prime_target,
+    default_prime_target,
+    read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
     first_task_config,
@@ -972,32 +972,32 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
 
 
 def test_default_prime_target_scales_small_inflight_runs_without_exceeding_buffers():
-    assert _default_prime_target(inflight_limit=1, prep_limit=4, pending_count=20) == 4
-    assert _default_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
-    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=20) == 8
-    assert _default_prime_target(inflight_limit=8, prep_limit=32, pending_count=20) == 8
+    assert default_prime_target(inflight_limit=1, prep_limit=4, pending_count=20) == 4
+    assert default_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
+    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=20) == 8
+    assert default_prime_target(inflight_limit=8, prep_limit=32, pending_count=20) == 8
 
 
 def test_default_prime_target_clamps_to_pending_and_prep_limits():
-    assert _default_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
-    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=3) == 3
-    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
+    assert default_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
+    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=3) == 3
+    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
 
 
 def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_PRIME_TARGET", raising=False)
 
     cfg = _cfg_with_iteration_engine()
-    assert _read_prime_target(cfg, inflight_limit=2, prep_limit=8, pending_count=20) == 4
+    assert read_prime_target(cfg, inflight_limit=2, prep_limit=8, pending_count=20) == 4
 
     cfg_explicit = _cfg_with_iteration_engine(InFlight_PrimeTarget="6")
-    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 6
+    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 6
 
     monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "9")
-    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 8
+    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 8
 
     monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "0")
-    assert _read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
+    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
 
     budget_no_drain = _continuous_fg_submit_budget(
         pending_fg_count=5,

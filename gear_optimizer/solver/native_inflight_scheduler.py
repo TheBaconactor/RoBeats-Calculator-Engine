@@ -98,7 +98,7 @@ def count_active_song_lanes(
     return int(len(keys))
 
 
-def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
+def default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
     """
     Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
 
@@ -109,17 +109,17 @@ def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count
     try:
         inflight_limit = int(inflight_limit)
     except Exception as e:
-        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
+        logger.debug(f"native_inflight_scheduler:default_prime_target: {e}")
         inflight_limit = 1
     try:
         prep_limit = int(prep_limit)
     except Exception as e:
-        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
+        logger.debug(f"native_inflight_scheduler:default_prime_target: {e}")
         prep_limit = 1
     try:
         pending_count = int(pending_count)
     except Exception as e:
-        logger.debug(f"native_inflight_scheduler:_default_prime_target: {e}")
+        logger.debug(f"native_inflight_scheduler:default_prime_target: {e}")
         pending_count = 0
 
     inflight_limit = max(1, inflight_limit)
@@ -132,7 +132,7 @@ def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count
     return max(1, min(target, prep_limit, pending_count))
 
 
-def _read_prime_target(
+def read_prime_target(
     cfg0: Any,
     *,
     inflight_limit: int,
@@ -144,7 +144,7 @@ def _read_prime_target(
         if cfg0 is not None:
             target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
     except Exception as e:
-        logger.debug(f"native_inflight_scheduler:_read_prime_target: {e}")
+        logger.debug(f"native_inflight_scheduler:read_prime_target: {e}")
         target = 0
 
     raw = env_get("INFLIGHT_PRIME_TARGET")
@@ -152,10 +152,10 @@ def _read_prime_target(
         try:
             target = int(raw)
         except Exception as e:
-            logger.debug(f"native_inflight_scheduler:_read_prime_target: {e}")
+            logger.debug(f"native_inflight_scheduler:read_prime_target: {e}")
 
     if int(target) <= 0:
-        return _default_prime_target(
+        return default_prime_target(
             inflight_limit=int(inflight_limit),
             prep_limit=int(prep_limit),
             pending_count=int(pending_count),
