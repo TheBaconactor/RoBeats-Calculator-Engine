@@ -18,6 +18,7 @@ from gear_optimizer.solver.gpu_executor_workload import (
 from gear_optimizer.solver.gpu_executor_workload import (
     should_emit_workload_batch_event,
     record_workload_batch_state,
+    emit_workload_window_profile,
     emit_workload_stop_summary,
     workload_batch_event_metrics,
     workload_stop_summary_metrics,
@@ -387,6 +388,63 @@ def test_workload_window_log_message_preserves_profile_format():
         "[GpuExecutor][WORKLOAD] window_batches=2 busy=66.7% avg_batch=3.00 "
         "avg_units=30.0 fg_share=50.0% qdepth~=8.0 diversity=15.0% "
         "modes=[throughput:1,fg_recovery:1]"
+    )
+
+
+def test_emit_workload_window_profile_logs_and_emits_profile_event():
+    logs = []
+    events = []
+
+    emitted = emit_workload_window_profile(
+        [
+            {
+                "mode": "throughput",
+                "wait_ms": 10.0,
+                "exec_sec": 0.02,
+                "size": 2,
+                "fg_count": 1,
+                "work_units": 40.0,
+                "diversity_pct": 20.0,
+                "queue_depth_hint": 8,
+            }
+        ],
+        log_enabled=True,
+        log_debug=lambda message: logs.append(message),
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert emitted is True
+    assert logs == [
+        "[GpuExecutor][WORKLOAD] window_batches=1 busy=66.7% avg_batch=2.00 "
+        "avg_units=40.0 fg_share=50.0% qdepth~=8.0 diversity=20.0% modes=[throughput:1]"
+    ]
+    assert events == [
+        {
+            "component": "gpu_executor",
+            "event": "workload::window",
+            "metrics": {
+                "batches": 1,
+                "busy_pct": 66.66666666666666,
+                "avg_batch": 2.0,
+                "avg_work_units": 40.0,
+                "avg_diversity_pct": 20.0,
+                "avg_queue_depth_hint": 8.0,
+                "fg_share_pct": 50.0,
+                "mode_top": "throughput:1",
+            },
+        }
+    ]
+
+
+def test_emit_workload_window_profile_skips_empty_window():
+    assert (
+        emit_workload_window_profile(
+            [],
+            log_enabled=True,
+            log_debug=lambda _message: None,
+            emit_profile_event_fn=lambda **_kwargs: None,
+        )
+        is False
     )
 
 

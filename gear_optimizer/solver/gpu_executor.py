@@ -57,12 +57,11 @@ from gear_optimizer.solver.gpu_executor_workload import (
     load_workload_profile_settings as _load_workload_profile_settings,
     payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
+    emit_workload_window_profile as _emit_workload_window_profile,
     emit_workload_stop_summary as _emit_workload_stop_summary,
     should_emit_workload_batch_event,
     summarize_batch,
     workload_batch_event_metrics,
-    workload_window_event_metrics,
-    workload_window_log_message,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     batch_contains_fg_burst_work as _batch_contains_fg_burst_work,
@@ -558,18 +557,15 @@ class GpuExecutor:
             self._workload_profile_last_emit_ts = now
             return
 
-        metrics = workload_window_event_metrics(window)
-
-        emit_profile_event(
-            component="gpu_executor",
-            event="workload::window",
-            metrics=metrics,
+        emitted = _emit_workload_window_profile(
+            window,
+            log_enabled=bool(self._profile_enabled),
+            log_debug=logger.debug,
+            emit_profile_event_fn=emit_profile_event,
         )
-        self._workload_events_emitted += 1
+        if emitted:
+            self._workload_events_emitted += 1
         self._workload_profile_last_emit_ts = now
-
-        if self._profile_enabled:
-            logger.debug(workload_window_log_message(metrics))
 
     def _handle_solve_genomes_from_registry(self, request: GpuRequest) -> GpuResponse:
         return _handle_solve_genomes_from_registry(request, execute_fn=self._execute_solve_genomes_from_registry)

@@ -332,6 +332,27 @@ def workload_window_log_message(metrics: dict[str, Any]) -> str:
     )
 
 
+def emit_workload_window_profile(
+    window: list[dict[str, Any]],
+    *,
+    log_enabled: bool,
+    log_debug: Callable[[str], None],
+    emit_profile_event_fn: Callable[..., None],
+) -> bool:
+    metrics = workload_window_event_metrics(window)
+    if not metrics:
+        return False
+
+    emit_profile_event_fn(
+        component="gpu_executor",
+        event="workload::window",
+        metrics=metrics,
+    )
+    if log_enabled:
+        log_debug(workload_window_log_message(metrics))
+    return True
+
+
 def workload_stop_summary_metrics(
     window: list[dict[str, Any]],
     *,
