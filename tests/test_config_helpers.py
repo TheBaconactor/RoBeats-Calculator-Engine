@@ -24,13 +24,7 @@ def _build_config() -> configparser.ConfigParser:
     cfg.read_dict(
         {
             "IterationEngine": {
-                "MetaFinder": "true",
-                "AutoSelectBuffAndColor": "false",
-                "ForceGreatsMode": "true",
-                "ForceGreatsFinder": "true",
                 "ForceGreatsDebug": "false",
-                "GPU_Mode": "true",
-                "GPU_Native_GA": "true",
                 "GPU_SongSlots": "4",
                 "InFlight_GA_QueueMult": "7",
                 "GPU_GA_TournamentK": "9",
@@ -49,7 +43,6 @@ def _build_config() -> configparser.ConfigParser:
                 "InFlight_RamMode": "true",
                 "InFlight_SongFileCacheMax": "-1",
                 "TeamBuff_BaseCalcSongCacheMax": "5",
-                "UseEvolutionDB": "false",
                 "LoopForever": "true",
                 "EvalCPUCores": "-1",
                 "SongQueueLimit": "5",
@@ -59,8 +52,6 @@ def _build_config() -> configparser.ConfigParser:
                 "LoopRestartWaitSec": "99.5",
                 "FG_CandidateLimit": "9999",
                 "FG_SearchRadius": "",
-                "OuterSearchEngine": "unsupported",
-                "FG_SolverMode": "exact_dp",
             },
             "CalculateSong": {
                 "Difficulty": "",
@@ -116,7 +107,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert calc.target_primary == ""
     assert calc.target_secondary == "Rush"
 
-    assert runtime.use_evolution_db is False
     assert runtime.loop_forever is True
     assert runtime.eval_cpu_cores == 0
     assert runtime.song_queue_limit == 5
@@ -129,7 +119,7 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ie.enable_fever is True
     assert ie.enable_mini is True
     assert ie.enable_gear is True
-    assert ie.auto_select_buff_and_color is False
+    assert ie.auto_select_buff_and_color is True
     assert ie.force_greats_mode is True
     assert ie.force_greats_finder is False
     assert ie.force_greats_debug is False
@@ -167,22 +157,6 @@ def test_ga_settings_accepts_legacy_ga_depth_with_warning(caplog):
     assert "GA_Depth is deprecated; use IterationEngine.GA_SearchDepth" in caplog.text
 
 
-def test_gpu_execution_settings_warns_false_flags_are_noops(caplog):
-    from gear_optimizer.core import config as config_module
-
-    config_module._GPU_FIRST_FLAG_WARNED.clear()
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"GPU_Mode": "false", "GPU_Native_GA": "false"}})
-
-    with caplog.at_level(logging.WARNING):
-        gpu = GPUExecutionSettings.from_config(cfg)
-
-    assert gpu.gpu_mode is True
-    assert gpu.gpu_native_ga is True
-    assert "GPU_Mode=false ignored" in caplog.text
-    assert "GPU_Native_GA=false ignored" in caplog.text
-
-
 def test_inflight_settings_ignores_multi_instance_requests(caplog):
     from gear_optimizer.core import config as config_module
 
@@ -197,26 +171,13 @@ def test_inflight_settings_ignores_multi_instance_requests(caplog):
     assert "InFlightInstances=3 ignored" in caplog.text
 
 
-def test_repo_config_ga_search_depth_is_runtime_active():
+def test_repo_config_keeps_only_song_selection_and_loop_flag():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = load_config(str(repo_root / "config.ini"))
 
-    assert cfg.has_option("IterationEngine", "GA_SearchDepth")
-    assert GASettings.from_config(cfg).search_depth == cfg.getint("IterationEngine", "GA_SearchDepth")
-
-
-def test_read_iteration_engine_settings_warns_on_invalid_boolean(monkeypatch, capsys):
-    monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
-
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"MetaFinder": "not-a-bool"}})
-
-    capsys.readouterr()
-    settings = read_iteration_engine_settings(cfg)
-    captured = capsys.readouterr().err
-
-    assert settings.meta_finder is False
-    assert "[FALLBACK][config.getboolean.invalid]" in captured
+    assert set(cfg.sections()) == {"CalculateSong", "IterationEngine"}
+    assert set(cfg.options("CalculateSong")) == {"song_name", "difficulty", "targetprimary", "targetsecondary"}
+    assert set(cfg.options("IterationEngine")) == {"loopforever"}
 
 
 class TestExtendsChain:

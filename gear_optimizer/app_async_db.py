@@ -87,7 +87,7 @@ def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
     Resolve the baseline TeamBuff tier used by the optimizer for this run.
 
     This matches runtime semantics:
-    - AutoSelectBuffAndColor => TeamBuff=T5 (auto/default tier)
+    - runtime baseline TeamBuff tier => T5
     - Otherwise => TeamContributionBuffConstant.TeamBuff (fallback T5)
     """
     try:

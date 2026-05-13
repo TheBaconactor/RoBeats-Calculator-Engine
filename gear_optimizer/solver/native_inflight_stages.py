@@ -683,7 +683,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
 
     runtime.fg.loadout_entries = build_loadout_entries(
         config.db_key,
-        bool(config.use_evo_db),
         [],
         int(fg_candidate_limit),
         gpu_inputs.gears_by_name,
@@ -867,7 +866,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     if getattr(song.runtime.fg, "loadout_entries", None) is None or not bool(runtime.fg.fg_direct_ga_candidates):
         runtime.fg.loadout_entries = build_loadout_entries(
             config.db_key,
-            bool(config.use_evo_db),
             loadout_ga_candidates,
             fg_candidate_limit,
             gpu_inputs.gears_by_name,

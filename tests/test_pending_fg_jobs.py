@@ -72,12 +72,9 @@ def test_upsert_pending_fg_job_empty_deletes(db_path):
 def test_deferred_post_pending_fg_storage_requires_explicit_deferral_flag():
     normal_drain_item = {
         "_pending_fg_job": True,
-        "use_evo_db": True,
         "ga_candidates": [{"Score": 1, "Gear": ["G1"], "Minis": ["M1"]}],
     }
     explicit_defer_item = dict(normal_drain_item, _persist_pending_fg_job=True)
-    disabled_db_item = dict(explicit_defer_item, use_evo_db=False)
 
     assert not should_persist_pending_fg_job(normal_drain_item)
     assert should_persist_pending_fg_job(explicit_defer_item)
-    assert not should_persist_pending_fg_job(disabled_db_item)

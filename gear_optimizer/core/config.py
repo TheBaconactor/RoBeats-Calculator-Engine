@@ -133,7 +133,6 @@ _parse_cfg_int.__name__ = "getint"
 
 
 _CFG_ALIAS_WARNED: set[tuple[str, str, str]] = set()
-_GPU_FIRST_FLAG_WARNED: set[str] = set()
 _SINGLE_OWNER_FLAG_WARNED: set[str] = set()
 
 
@@ -156,24 +155,12 @@ def _warn_legacy_cfg_alias(section: str, legacy_key: str, canonical_key: str) ->
     )
 
 
-def _warn_gpu_first_noop_flag(key: str) -> None:
-    key_s = str(key)
-    if key_s in _GPU_FIRST_FLAG_WARNED:
-        return
-    _GPU_FIRST_FLAG_WARNED.add(key_s)
-    logging.warning("[GPU] IterationEngine.%s=false ignored (GPU-first production policy).", key_s)
-
-
 def _warn_single_owner_noop_flag(key: str, value: Any) -> None:
     key_s = str(key)
     if key_s in _SINGLE_OWNER_FLAG_WARNED:
         return
     _SINGLE_OWNER_FLAG_WARNED.add(key_s)
-    logging.warning(
-        "[InFlight] IterationEngine.%s=%s ignored (single native GPU owner policy); using 1.",
-        key_s,
-        value,
-    )
+    logging.warning("[InFlight] IterationEngine.%s=%s ignored (single native GPU owner policy); using 1.", key_s, value)
 
 
 def cfg_get_int_alias(
@@ -497,15 +484,9 @@ class GPUExecutionSettings:
     def from_config(cls, cfg: Any) -> "GPUExecutionSettings":
         if cfg is None:
             return cls()
-        gpu_mode_requested = cfg_get_bool(cfg, "IterationEngine", "GPU_Mode", True)
-        gpu_native_requested = cfg_get_bool(cfg, "IterationEngine", "GPU_Native_GA", True)
-        if not gpu_mode_requested:
-            _warn_gpu_first_noop_flag("GPU_Mode")
-        if not gpu_native_requested:
-            _warn_gpu_first_noop_flag("GPU_Native_GA")
         gpu_song_slots = cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0, clamp_min=0)
         ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
-        # GPU-first policy: runtime executes with GPU enabled.
+        # GPU-first policy: runtime executes with GPU enabled (not config-switchable).
         return cls(
             gpu_mode=True,
             gpu_native_ga=True,
@@ -667,7 +648,6 @@ class AppRuntimeSettings:
     gpu: GPUExecutionSettings
     ga: GASettings
     inflight: InflightSettings
-    use_evolution_db: bool = True
     loop_forever: bool = False
     eval_cpu_cores: int = 0
     song_queue_limit: int = 0
@@ -693,7 +673,6 @@ class AppRuntimeSettings:
         ga = GASettings.from_config(cfg)
         inflight = InflightSettings.from_config(cfg)
 
-        use_evolution_db = cfg_get_bool(cfg, "IterationEngine", "UseEvolutionDB", True)
         loop_forever = cfg_get_bool(cfg, "IterationEngine", "LoopForever", False)
         eval_cpu_cores = cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0, clamp_min=0)
         song_queue_limit = cfg_get_int(cfg, "IterationEngine", "SongQueueLimit", 0, clamp_min=0)
@@ -715,7 +694,6 @@ class AppRuntimeSettings:
             gpu=gpu,
             ga=ga,
             inflight=inflight,
-            use_evolution_db=bool(use_evolution_db),
             loop_forever=bool(loop_forever),
             eval_cpu_cores=int(eval_cpu_cores),
             song_queue_limit=int(song_queue_limit),
@@ -728,64 +706,44 @@ class AppRuntimeSettings:
 
 def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     """
-    Read and normalize `[IterationEngine]` behavior flags.
+    Read and normalize `[IterationEngine]` behavior settings.
 
     Important semantics:
-    - `MetaFinder` gates the optimizer family (fever/mini/gear).
-    - `ForceGreatsFinder` is only active when `ForceGreatsMode` is enabled.
-    - A non-empty manual FG config disables `ForceGreatsFinder` (deliberate override).
+    - Production optimizer mode is always active.
+    - These are no longer config switches; they are native runtime policy.
+    - A non-empty manual FG config disables finder mode (deliberate override).
     """
-    if cfg is None:
-        return IterationEngineSettings(
-            meta_finder=False,
-            enable_fever=False,
-            enable_mini=False,
-            enable_gear=False,
-            auto_select_buff_and_color=False,
-            force_greats_mode=False,
-            force_greats_finder=False,
-            force_greats_debug=False,
-            force_greats_config=[],
-            manual_force_greats=False,
-        )
-
-    # PRODUCTION: core runtime flags (MetaFinder, AutoSelectBuffAndColor, ForceGreatsMode, ForceGreatsFinder).
-    meta_finder = cfg_get_bool(cfg, "IterationEngine", "MetaFinder", False)
-
-    enable_fever = enable_mini = enable_gear = bool(meta_finder)
-
-    auto_select_buff_and_color = cfg_get_bool(cfg, "IterationEngine", "AutoSelectBuffAndColor", False)
-    force_greats_mode = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsMode", False)
-    force_greats_finder = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsFinder", False)
+    meta_finder = True
+    enable_fever = True
+    enable_mini = True
+    enable_gear = True
+    auto_select_buff_and_color = True
+    force_greats_mode = True
+    force_greats_finder = True
 
     # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
-    force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False)
-
-    # ForceGreatsMode must be enabled for ForceGreatsFinder to work.
-    if not force_greats_mode:
-        force_greats_finder = False
+    force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False) if cfg is not None else False
 
     # Prefer explicit [ForceGreats] section; fall back to inline config if section is absent/empty.
-    force_greats_config = load_force_greats_config(cfg)
-    if not force_greats_config:
+    force_greats_config = load_force_greats_config(cfg) if cfg is not None else []
+    if not force_greats_config and cfg is not None:
         inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
         if inline_cfg:
             force_greats_config = inline_cfg
 
-    manual_force_greats = bool(force_greats_mode) and any(force_greats_config)
+    manual_force_greats = any(force_greats_config)
     if manual_force_greats:
-        # Manual config is a deliberate override; allow it to work regardless of
-        # ForceGreatsFinder setting by disabling finder when manual values are provided.
+        # Manual config remains an explicit override of finder behavior.
         force_greats_finder = False
 
     return IterationEngineSettings(
-        meta_finder=bool(meta_finder),
-        enable_fever=bool(enable_fever),
-        enable_mini=bool(enable_mini),
-        enable_gear=bool(enable_gear),
-        auto_select_buff_and_color=bool(auto_select_buff_and_color),
-        force_greats_mode=bool(force_greats_mode),
-        force_greats_finder=bool(force_greats_finder),
+        meta_finder=meta_finder,
+        enable_fever=enable_fever,
+        enable_mini=enable_mini,
+        enable_gear=enable_gear,
+        auto_select_buff_and_color=auto_select_buff_and_color,
+        force_greats_mode=force_greats_mode,
+        force_greats_finder=force_greats_finder,
         force_greats_debug=bool(force_greats_debug),
         force_greats_config=list(force_greats_config or []),
         manual_force_greats=bool(manual_force_greats),
@@ -844,52 +802,15 @@ def _canon_outer_search_engine(raw: Any) -> str:
 
 
 def read_outer_search_engine(cfg: Any, *, default: str = "ga") -> str:
-    """Read `[IterationEngine].OuterSearchEngine` for mainline production routing."""
+    """Production routing is GA-only (not config-switchable)."""
 
-    default_c = "ga"
-    raw_env = env_str("METAFINDER_OUTER_SEARCH_ENGINE", "")
-    if not raw_env:
-        raw_env = env_str("OUTER_SEARCH_ENGINE", "")
-    raw = raw_env or cfg_get(cfg, "IterationEngine", "OuterSearchEngine", str, default_c)
-    value = _canon_outer_search_engine(raw)
-    if value == "ga":
-        return value
-    if not value:
-        return default_c
-    warn_fallback(
-        "config.outer_search_engine.invalid",
-        "invalid OuterSearchEngine; using default",
-        context={"value": str(raw), "default": default_c},
-    )
-    return default_c
+    return "ga"
 
 
 def read_fg_solver_mode(cfg: Any, *, default: str = "finder") -> str:
-    """Read the canonical `[IterationEngine].FG_SolverMode` value."""
+    """Production FG solver mode is finder-only (not config-switchable)."""
 
-    def _canon(raw: Any) -> str:
-        value = str(raw or "").strip().lower().replace("-", "_")
-        value = "_".join(part for part in value.split("_") if part)
-        if not value:
-            return ""
-        if value in {"finder", "manual", "off"}:
-            return value
-        return value
-
-    default_c = _canon(default) or "finder"
-    raw = cfg_get(cfg, "IterationEngine", "FG_SolverMode", str, "")
-    value = _canon(raw)
-    if value in {"finder", "manual", "off"}:
-        return value
-    if value:
-        warn_fallback(
-            "config.fg_solver_mode.invalid",
-            "invalid FG_SolverMode; using default",
-            context={"value": str(raw), "default": default_c},
-        )
-        return default_c
-
-    return default_c
+    return "finder"
 
 
 def find_and_cache_paths():

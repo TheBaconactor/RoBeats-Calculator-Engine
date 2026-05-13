@@ -57,9 +57,6 @@ def _prepare_light_speed_song():
     cfg.read(repo_root / "config.ini", encoding="utf-8")
     if not cfg.has_section("IterationEngine"):
         cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "UseEvolutionDB", "false")
-    cfg.set("IterationEngine", "GPU_Mode", "true")
-
     app = GearOptimizerApp()
     paths = load_paths_cache()
     stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)

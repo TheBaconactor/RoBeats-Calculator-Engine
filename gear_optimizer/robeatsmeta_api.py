@@ -297,7 +297,6 @@ class RoBeatsMetaOptimizerApi:
         # Queue selection is controlled by pending song IDs from the API bridge.
         cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
         cfg.set("IterationEngine", "SongRepeats", str(_DEFAULT_SONG_REPEATS))
-        cfg.set("IterationEngine", "UseEvolutionDB", "true")
         cfg.set("IterationEngine", "InFlightSongs", str(_DEFAULT_INFLIGHT_SONGS))
 
         # Keep broad discovery here; the backend pending-song filter narrows execution

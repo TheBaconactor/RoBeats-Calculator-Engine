@@ -61,7 +61,6 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
 
     def _fake_build_loadout_entries(
         found_song_name,
-        use_evo_db,
         ga_candidates,
         db_loadouts_limit,
         gears_by_name,
@@ -98,7 +97,6 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
         db_loadouts_full=None,
         db_loadouts_future=None,
         db_key="song-db-key",
-        use_evo_db=True,
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",

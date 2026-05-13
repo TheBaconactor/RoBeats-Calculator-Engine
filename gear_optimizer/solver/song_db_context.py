@@ -35,7 +35,7 @@ class PreparedSongDbContext:
 
 
 _DB_CONTEXT_CACHE_LOCK = threading.Lock()
-_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, bool, str], tuple[float, Optional[dict], int, int, int, int]]" = OrderedDict()
+_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, str], tuple[float, Optional[dict], int, int, int, int]]" = OrderedDict()
 
 
 def _db_context_cache_max() -> int:
@@ -58,17 +58,16 @@ def _db_context_cache_ttl_s() -> float:
     return 1.0
 
 
-def _cache_key(db_key: str, use_evo_db: bool, team_buff: str) -> tuple[str, bool, str]:
-    return (str(db_key or "").strip(), bool(use_evo_db), str(team_buff or "T5").strip().upper() or "T5")
+def _cache_key(db_key: str, team_buff: str) -> tuple[str, str]:
+    return (str(db_key or "").strip(), str(team_buff or "T5").strip().upper() or "T5")
 
 
 def _db_context_cache_get(
     db_key: str,
-    use_evo_db: bool,
     team_buff: str,
 ) -> tuple[Optional[dict], int, int, int, int] | None:
-    key = _cache_key(db_key, use_evo_db, team_buff)
-    if not key[0] or not key[1]:
+    key = _cache_key(db_key, team_buff)
+    if not key[0]:
         return None
     ttl_s = float(_db_context_cache_ttl_s())
     try:
@@ -90,7 +89,6 @@ def _db_context_cache_get(
 
 def _db_context_cache_put(
     db_key: str,
-    use_evo_db: bool,
     team_buff: str,
     prev_record: Optional[dict],
     db_best_score: int,
@@ -98,8 +96,8 @@ def _db_context_cache_put(
     attempt_lifetime: int,
     prev_attempts_first: int,
 ) -> None:
-    key = _cache_key(db_key, use_evo_db, team_buff)
-    if not key[0] or not key[1]:
+    key = _cache_key(db_key, team_buff)
+    if not key[0]:
         return
     try:
         record_copy = compact_prev_record(prev_record, drop_empty_item_names=True) if isinstance(prev_record, dict) else None
@@ -129,7 +127,6 @@ def load_prepared_song_db_context(
     calc_song: dict | None,
     cfg: Any | None,
     cfg_dict: Mapping[str, Any] | None,
-    use_evo_db: bool,
     gears_by_name: dict,
     minis_by_name: dict,
     load_known_loadouts: bool,
@@ -141,7 +138,7 @@ def load_prepared_song_db_context(
 
     cached = None
     if cache_seed_context and not bool(load_known_loadouts):
-        cached = _db_context_cache_get(db_key, bool(use_evo_db), baseline_team_buff)
+        cached = _db_context_cache_get(db_key, baseline_team_buff)
     if cached is not None:
         prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached
         return PreparedSongDbContext(
@@ -168,7 +165,6 @@ def load_prepared_song_db_context(
         db_baseline_valid,
     ) = load_database_progress_baseline(
         db_key,
-        bool(use_evo_db),
         gears_by_name,
         minis_by_name,
         load_known_loadouts=bool(load_known_loadouts),
@@ -179,7 +175,6 @@ def load_prepared_song_db_context(
     if cache_seed_context and not bool(load_known_loadouts) and bool(db_baseline_valid):
         _db_context_cache_put(
             db_key,
-            bool(use_evo_db),
             baseline_team_buff,
             prev_record,
             int(db_best_score),

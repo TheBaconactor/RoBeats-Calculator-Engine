@@ -5,7 +5,7 @@ from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
 
-LEGACY_TASK_FIXED_FIELD_COUNT = 16
+LEGACY_TASK_FIXED_FIELD_COUNT = 15
 
 
 class LegacyTaskIndex(IntEnum):
@@ -19,12 +19,11 @@ class LegacyTaskIndex(IntEnum):
     ALL_MINIS = 7
     GEARS_BY_NAME = 8
     MINIS_BY_NAME = 9
-    USE_EVO_DB = 10
-    AUTO_BUFF = 11
-    GA_DEPTH = 12
-    STATUS_QUEUE = 13
-    PARALLEL_WORKERS = 14
-    FG_DEBUG = 15
+    AUTO_BUFF = 10
+    GA_DEPTH = 11
+    STATUS_QUEUE = 12
+    PARALLEL_WORKERS = 13
+    FG_DEBUG = 14
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +55,6 @@ class SharedRunContext:
     all_minis: Any
     gears_by_name: Mapping[str, Any] | None
     minis_by_name: Mapping[str, Any] | None
-    use_evo_db: bool
     auto_buff: bool
     ga_depth: int
     status_queue: Any
@@ -290,7 +288,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
         all_minis=task[int(LegacyTaskIndex.ALL_MINIS)],
         gears_by_name=task[int(LegacyTaskIndex.GEARS_BY_NAME)],
         minis_by_name=task[int(LegacyTaskIndex.MINIS_BY_NAME)],
-        use_evo_db=bool(task[int(LegacyTaskIndex.USE_EVO_DB)]),
         auto_buff=bool(task[int(LegacyTaskIndex.AUTO_BUFF)]),
         ga_depth=ga_depth,
         status_queue=task[int(LegacyTaskIndex.STATUS_QUEUE)],
@@ -325,7 +322,6 @@ def legacy_task_tuple_from_job_context(
         context.all_minis,
         context.gears_by_name,
         context.minis_by_name,
-        context.use_evo_db,
         context.auto_buff,
         context.ga_depth,
         context.status_queue,

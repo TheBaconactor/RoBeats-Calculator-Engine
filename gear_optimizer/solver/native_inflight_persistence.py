@@ -54,8 +54,6 @@ class InflightDBPersistence:
     ) -> bool:
         if not (song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder):
             return False
-        if not song.config.use_evo_db:
-            return False
         if song.runtime.db.db_loadouts_future is not None or song.runtime.db.db_loadouts_full is not None:
             return False
 

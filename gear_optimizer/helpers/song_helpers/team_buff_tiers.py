@@ -12,7 +12,6 @@ from ...core.team_buff import (
     resolve_baseline_team_buff_from_cfg_dict,
     resolve_team_color_from_cfg_dict,
     team_buff_effect,
-    _is_auto_select_buff_and_color,
     _get_team_section_from_cfg_dict,
 )
 from ...core.utils import safe_int as _safe_int
@@ -126,7 +125,7 @@ def _representative_mini_names_from_any(minis: object) -> list[str]:
 
 
 def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
-    return _is_auto_select_buff_and_color(cfg_dict)
+    return True
 
 
 def _resolve_team_section(cfg_dict: dict) -> dict:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gear_optimizer.domain.jobs import task_queue_label
 
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def maybe_mark_robeatsmeta_song_batch_computed(
 
     for task in tasks:
         try:
-            task_label = app._task_queue_label(task)
+            task_label = task_queue_label(task)
         except Exception as e:
             logger.debug(f"api_integration:maybe_mark_robeatsmeta_song_batch_computed: {e}")
             continue

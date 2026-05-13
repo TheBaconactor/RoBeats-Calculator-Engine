@@ -206,7 +206,6 @@ def refresh_ga_candidate_entries(
 
 def build_loadout_entries(
     found_song_name,
-    use_evo_db,
     ga_candidates,
     db_loadouts_limit,
     gears_by_name,
@@ -224,7 +223,6 @@ def build_loadout_entries(
 
     Args:
         found_song_name: Name of the song
-        use_evo_db: Whether to use evolution database
         ga_candidates: List of GA candidate loadouts
         db_loadouts_limit: Maximum number of DB loadouts to fetch (when db_loadouts_full is not provided)
         gears_by_name: Dictionary of gears by name
@@ -241,21 +239,20 @@ def build_loadout_entries(
 
     # DB loadouts (up to the configured limit) for this song
     db_loadouts = []
-    if use_evo_db:
-        if db_loadouts_full is not None:
-            db_loadouts = db_loadouts_full
-        elif bool(allow_db_query):
-            try:
-                db_loadouts = get_best_loadouts(
-                    found_song_name,
-                    limit=db_loadouts_limit,
-                    gears_by_name=gears_by_name,
-                    minis_by_name=minis_by_name,
-                    team_buff=str(team_buff or "T5"),
-                )
-            except Exception as e:
-                logger.debug(f"loadout_builder:build_loadout_entries: {e}")
-                db_loadouts = []
+    if db_loadouts_full is not None:
+        db_loadouts = db_loadouts_full
+    elif bool(allow_db_query):
+        try:
+            db_loadouts = get_best_loadouts(
+                found_song_name,
+                limit=db_loadouts_limit,
+                gears_by_name=gears_by_name,
+                minis_by_name=minis_by_name,
+                team_buff=str(team_buff or "T5"),
+            )
+        except Exception as e:
+            logger.debug(f"loadout_builder:build_loadout_entries: {e}")
+            db_loadouts = []
     merge_db_loadouts_into_entries(loadout_entries, db_loadouts)
 
     # Current GA evaluated loadouts

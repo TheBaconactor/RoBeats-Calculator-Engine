@@ -22,7 +22,6 @@ class NativeSongConfig:
     cfg_dict: JsonDict = field(default_factory=dict)
     cfg: configparser.ConfigParser | None = None
     paths: dict[str, Any] | None = None
-    use_evo_db: bool = True
     auto_buff: bool = False
     ga_depth: int = 0
     fg_debug: bool = False

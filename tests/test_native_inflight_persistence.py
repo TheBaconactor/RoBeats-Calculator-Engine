@@ -23,7 +23,6 @@ def test_inflight_db_persistence_owns_prefetch_executor_submission():
             song_name="Song A",
             db_key="song-a-db",
             manual_force_greats=True,
-            use_evo_db=True,
             cfg_data={"fg_candidate_limit": "7"},
             cfg_dict={
                 "IterationEngine": {"AutoSelectBuffAndColor": "False"},
@@ -51,7 +50,7 @@ def test_inflight_db_persistence_owns_prefetch_executor_submission():
             "limit": 7,
             "gears": ("gear",),
             "minis": ("mini",),
-            "team_buff": "T20",
+            "team_buff": "T5",
         }
     finally:
         persistence.shutdown_prefetch(wait=True, cancel_futures=True)
@@ -66,7 +65,6 @@ def test_inflight_db_persistence_prefetch_guards_and_submit_failure_cleanup():
             db_key="disabled-db",
             manual_force_greats=False,
             force_greats_finder=False,
-            use_evo_db=True,
         )
         assert persistence.maybe_submit_prefetch(disabled, lambda *_args, **_kwargs: [], register_future=lambda _future: None) is False
         assert disabled.runtime.db.db_loadouts_future is None
@@ -78,7 +76,6 @@ def test_inflight_db_persistence_prefetch_guards_and_submit_failure_cleanup():
             song_name="Song B",
             db_key="song-b-db",
             manual_force_greats=True,
-            use_evo_db=True,
         )
         assert persistence.maybe_submit_prefetch(song, lambda *_args, **_kwargs: [], register_future=lambda _future: None) is False
         assert song.runtime.db.db_loadouts_future is None

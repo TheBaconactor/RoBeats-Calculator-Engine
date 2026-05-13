@@ -7,7 +7,7 @@ import time
 
 from gear_optimizer.core.constants import BIN_DIR
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_get, truthy
+from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
@@ -110,24 +110,6 @@ class TaskExecutionMixin:
                 return
 
             cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
-            ie0 = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
-            raw_meta_finder = ie0.get("MetaFinder", ie0.get("metafinder", True)) if isinstance(ie0, dict) else True
-            meta_finder_enabled = str(raw_meta_finder).strip().lower() in TRUTHY_ENV_VALUES
-
-            if not bool(meta_finder_enabled):
-                from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task
-
-                logger.info(
-                    "[InFlight] Native pipeline skipped: calculate-only / gem-only mode keeps the direct per-song path."
-                )
-                self._consume_results(
-                    (safe_process_song_task(task) for task in tasks),
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
-                    total_tasks=self._effective_total_tasks(tasks if isinstance(tasks, list) else []),
-                )
-                return
-
             song_task_count = max(0, int(len(tasks)))
             total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
             inflight_songs = 0

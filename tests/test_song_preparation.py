@@ -164,7 +164,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         paths={},
         gears_by_name={},
         minis_by_name={},
-        use_evo_db=True,
         cfg=cfg,
         load_known_loadouts=False,
         cache_seed_context=True,

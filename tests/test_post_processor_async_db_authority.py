@@ -67,7 +67,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         fp="Data/Hard/pytest_post_processor_exact_authority.txt",
         effective_difficulty="Hard",
         cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        use_evo_db=True,
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -187,7 +186,6 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
             "_fg_update": True,
             "song": "pytest_post_processor_fg_update_authority",
             "db_key": "pytest_post_processor_fg_update_authority",
-            "use_evo_db": True,
             "file_path": "Data/Easy/pytest_post_processor_fg_update_authority.txt",
             "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
             "persist_entries": [

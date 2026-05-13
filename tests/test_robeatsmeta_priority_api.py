@@ -392,7 +392,6 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     assert changed is True
     assert cfg.get("IterationEngine", "LoopForever") == "true"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
-    assert cfg.get("IterationEngine", "UseEvolutionDB") == "true"
     assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
     assert cfg.get("CalculateSong", "Song_Name") == ""
@@ -565,8 +564,8 @@ def test_app_marks_song_batch_computed_only_after_final_task(tmp_path, monkeypat
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     app._robeatsmeta_api = api
     app._run_tasks_ref = [
-        ("alpha_easy.txt", "Alpha (Easy) by Artist", "Easy", {}, None, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 1, "repeat_total": 2, "ga_seed": 1}),
-        ("alpha_easy_again.txt", "Alpha (Easy) by Artist", "Easy", {}, None, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 2, "repeat_total": 2, "ga_seed": 2}),
+        ("alpha_easy.txt", "Alpha (Easy) by Artist", "Easy", {}, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 1, "repeat_total": 2, "ga_seed": 1}),
+        ("alpha_easy_again.txt", "Alpha (Easy) by Artist", "Easy", {}, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 2, "repeat_total": 2, "ga_seed": 2}),
     ]
     completed = {"Alpha (Easy) by Artist (Run 1/2)"}
     app._run_completed_ref = completed

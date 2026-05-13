@@ -106,7 +106,6 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
         "fg_debug": True,
         "ref_arrays": ref_arrays,
         "calc_song": calc_song,
-        "use_evo_db": False,
         "db_best_fg_score": "123",
     }
 
@@ -127,7 +126,6 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
         "ref_arrays": ref_arrays,
         "calc_song": calc_song,
         "cfg": context.cfg,
-        "use_evo_db": False,
         "db_best_fg_score": 123,
         "_emit": emit,
     }

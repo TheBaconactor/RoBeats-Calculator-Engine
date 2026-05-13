@@ -507,17 +507,17 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             if ie.force_greats_mode:
                 if ie.force_greats_finder:
-                    fg_status = "ForceGreatsFinder"
+                    fg_status = "Finder"
                 elif ie.manual_force_greats:
                     fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
                 else:
-                    fg_status = "Enabled but inactive (no manual config; ForceGreatsFinder=false)"
+                    fg_status = "Enabled"
 
                 logger.info(f" >> [ForceGreats] {fg_status}")
 
-            # PRODUCTION: runtime / persistence flags (GA_SearchDepth, UseEvolutionDB, LoopForever, EvalCPUCores).
+            # PRODUCTION: runtime flags (GA_SearchDepth, LoopForever, EvalCPUCores).
+            # Evolution DB is always enabled in production.
             ga_depth = int(runtime_settings.ga.search_depth)
-            use_evo_db = bool(runtime_settings.use_evolution_db)
             loop_forever = bool(runtime_settings.loop_forever)
             if self._profiling_mode_enabled(cfg):
                 if loop_forever:
@@ -544,7 +544,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             gears_by_name = {g["Name"]: g for g in all_gears}
             minis_by_name = {m["Name"]: m for m in all_minis}
 
-            song_queue = self._build_song_queue(cfg, paths, use_evo_db)
+            song_queue = self._build_song_queue(cfg, paths)
             queued_songs = len(song_queue)
             try:
                 logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
@@ -582,7 +582,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 all_minis,
                 gears_by_name,
                 minis_by_name,
-                use_evo_db,
                 auto_buff,
                 ga_depth,
                 status_queue,
@@ -822,7 +821,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             target_secondary_colors=target_secondary_colors,
         )
 
-    def _build_song_queue(self, cfg, paths, use_evo_db):
+    def _build_song_queue(self, cfg, paths):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
         backend_service_mode = bool(
             getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
@@ -894,32 +893,22 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             resume_seed_queue = load_memory_guard_resume_queue(resume_context)
             if resume_seed_queue:
                 logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
-                if use_evo_db:
-                    try:
-                        resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
-                        if resume_names_present:
-                            resume_missing: list[tuple[str, str, str]] = []
-                            resume_existing: list[tuple[str, str, str]] = []
-                            for item in resume_seed_queue:
-                                (resume_existing if item[1] in resume_names_present else resume_missing).append(item)
-                            resume_seed_queue = resume_missing + resume_existing
-                            if backend_service_mode:
-                                self._backend_priority_song_names.update(
-                                    str(item[1] or "").strip() for item in resume_missing
-                                )
-                    except Exception as exc:
-                        logging.warning(
-                            f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
-                        )
-                else:
-                    # Optional deterministic limit (useful for benchmarks / iteration), even in resume mode.
-                    song_queue_limit = _read_song_queue_limit()
-                    if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
-                        resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
-                        logger.info(
-                            f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)"
-                        )
-                    return resume_seed_queue
+                try:
+                    resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
+                    if resume_names_present:
+                        resume_missing: list[tuple[str, str, str]] = []
+                        resume_existing: list[tuple[str, str, str]] = []
+                        for item in resume_seed_queue:
+                            (resume_existing if item[1] in resume_names_present else resume_missing).append(item)
+                        resume_seed_queue = resume_missing + resume_existing
+                        if backend_service_mode:
+                            self._backend_priority_song_names.update(
+                                str(item[1] or "").strip() for item in resume_missing
+                            )
+                except Exception as exc:
+                    logging.warning(
+                        f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
+                    )
 
         pending_song_ids = _pending_backend_song_ids()
         pending_set = set(pending_song_ids)
@@ -1035,24 +1024,23 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
         song_names_present_in_db: set[str] = set()
         song_names_present_loaded = False
-        if use_evo_db:
-            try:
-                song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
-                song_names_present_loaded = True
-                if song_names_present_in_db:
-                    missing: list[tuple[str, str, str]] = []
-                    existing: list[tuple[str, str, str]] = []
-                    for item in song_queue:
-                        (existing if item[1] in song_names_present_in_db else missing).append(item)
-                    song_queue = missing + existing
-                    if backend_service_mode:
-                        self._backend_priority_song_names.update(str(item[1] or "").strip() for item in missing)
-            except Exception as exc:
-                logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
+        try:
+            song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
+            song_names_present_loaded = True
+            if song_names_present_in_db:
+                missing: list[tuple[str, str, str]] = []
+                existing: list[tuple[str, str, str]] = []
+                for item in song_queue:
+                    (existing if item[1] in song_names_present_in_db else missing).append(item)
+                song_queue = missing + existing
+                if backend_service_mode:
+                    self._backend_priority_song_names.update(str(item[1] or "").strip() for item in missing)
+        except Exception as exc:
+            logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
         # Optional deterministic limit (useful for benchmarks / iteration).
         # If resuming with DB priority, apply the limit after merging new-missing + resume.
-        apply_limit = not (resume_seed_queue and use_evo_db)
+        apply_limit = not resume_seed_queue
         if apply_limit:
             song_queue_limit = _read_song_queue_limit()
             if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
@@ -1067,24 +1055,18 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 # Keep DB-missing songs at the front even when a queue limit is active.
                 # Without this, sorting the entire queue before truncation can drop newly
                 # added songs from the limited slice.
-                if use_evo_db:
-                    present = song_names_present_in_db if song_names_present_loaded else set()
-                    if present:
-                        missing: list[tuple[str, str, str]] = []
-                        existing: list[tuple[str, str, str]] = []
-                        for item in song_queue:
-                            (existing if item[1] in present else missing).append(item)
-                        try:
-                            missing = sorted(missing, key=_queue_sort_key)
-                            existing = sorted(existing, key=_queue_sort_key)
-                        except (ValueError, TypeError):
-                            pass
-                        song_queue = missing + existing
-                    else:
-                        try:
-                            song_queue = sorted(song_queue, key=_queue_sort_key)
-                        except (ValueError, TypeError):
-                            pass
+                present = song_names_present_in_db if song_names_present_loaded else set()
+                if present:
+                    missing: list[tuple[str, str, str]] = []
+                    existing: list[tuple[str, str, str]] = []
+                    for item in song_queue:
+                        (existing if item[1] in present else missing).append(item)
+                    try:
+                        missing = sorted(missing, key=_queue_sort_key)
+                        existing = sorted(existing, key=_queue_sort_key)
+                    except (ValueError, TypeError):
+                        pass
+                    song_queue = missing + existing
                 else:
                     try:
                         song_queue = sorted(song_queue, key=_queue_sort_key)
@@ -1093,7 +1075,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 song_queue = song_queue[: int(song_queue_limit)]
                 logger.info(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
 
-        if resume_seed_queue and use_evo_db:
+        if resume_seed_queue:
             new_missing: list[tuple[str, str, str]] = []
             try:
                 if song_names_present_loaded:
@@ -1158,7 +1140,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         all_minis,
         gears_by_name,
         minis_by_name,
-        use_evo_db,
         auto_buff,
         ga_depth,
         status_queue,
@@ -1175,7 +1156,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            use_evo_db=bool(use_evo_db),
             auto_buff=bool(auto_buff),
             ga_depth=int(ga_depth),
             status_queue=status_queue,

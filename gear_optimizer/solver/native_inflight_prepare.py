@@ -194,7 +194,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     all_minis = run_context.all_minis
     gears_by_name = run_context.gears_by_name
     minis_by_name = run_context.minis_by_name
-    use_evo_db = run_context.use_evo_db
     auto_buff = run_context.auto_buff
     ga_depth = run_context.ga_depth
     fg_debug = run_context.fg_debug
@@ -209,7 +208,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
-        use_evo_db=bool(use_evo_db),
         cfg=cfg,
         load_known_loadouts=False,
         allow_fallback=False,
@@ -228,9 +226,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     force_greats_finder = prepared_config.force_greats_finder
     force_greats_config = prepared_config.force_greats_config
     manual_force_greats = prepared_config.manual_force_greats
-
-    if not (enable_gear or enable_mini):
-        raise RuntimeError("GPU-native in-flight currently requires MetaFinder (enable gear or minis).")
 
     # Load DB seed record only; full known-loadout hydration is deferred/prefetched
     # in FG prep to avoid redundant per-song DB reads during prepare.
@@ -423,7 +418,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             cfg_dict=cfg_dict,
             cfg=cfg,
             paths=paths,
-            use_evo_db=bool(use_evo_db),
             auto_buff=bool(auto_buff),
             ga_depth=int(ga_depth),
             fg_debug=bool(fg_debug),

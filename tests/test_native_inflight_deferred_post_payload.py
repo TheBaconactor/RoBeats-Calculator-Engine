@@ -64,7 +64,6 @@ def test_failed_fg_update_payload_uses_result_event_owner_shape():
         db_key="failed-fg-db",
         fp="Data/Hard/failed_fg_song.txt",
         cfg_dict=cfg_dict,
-        use_evo_db=True,
     )
 
     payload = build_failed_fg_update_payload(song)
@@ -73,7 +72,6 @@ def test_failed_fg_update_payload_uses_result_event_owner_shape():
         "_fg_update": True,
         "song": "Failed FG Song",
         "db_key": "failed-fg-db",
-        "use_evo_db": True,
         "persist_entries": [],
         "file_path": "Data/Hard/failed_fg_song.txt",
         "cfg_dict": cfg_dict,
@@ -89,7 +87,6 @@ def test_fg_update_payload_uses_shared_result_event_shape():
         db_key="fg-db",
         fp="Data/Hard/fg_song.txt",
         cfg_dict=cfg_dict,
-        use_evo_db=True,
     )
 
     payload = build_fg_update_payload(song, persist_entries=entries)
@@ -98,7 +95,6 @@ def test_fg_update_payload_uses_shared_result_event_shape():
         "_fg_update": True,
         "song": "FG Song",
         "db_key": "fg-db",
-        "use_evo_db": True,
         "persist_entries": entries,
         "file_path": "Data/Hard/fg_song.txt",
         "cfg_dict": cfg_dict,
@@ -148,7 +144,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         fp="Data/Hard/pytest_native_deferred_post.txt",
         effective_difficulty="Hard",
         cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        use_evo_db=True,
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -217,7 +212,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
         effective_difficulty="Hard",
         cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        use_evo_db=True,
         fg_debug=False,
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={"Perfect Points": []},
@@ -355,7 +349,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         fp="Data/Hard/pytest_native_deferred_post_exact_authority.txt",
         effective_difficulty="Hard",
         cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        use_evo_db=True,
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,

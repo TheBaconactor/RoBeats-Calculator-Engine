@@ -27,7 +27,6 @@ def test_build_loadout_entries_can_skip_db_query(monkeypatch):
 
     out = build_loadout_entries(
         found_song_name="db-query-gate-song",
-        use_evo_db=True,
         ga_candidates=ga_candidates,
         db_loadouts_limit=51,
         gears_by_name={},
@@ -66,7 +65,6 @@ def test_build_loadout_entries_can_defer_ga_details():
 
     out = build_loadout_entries(
         found_song_name="ga-details-deferred-song",
-        use_evo_db=False,
         ga_candidates=ga_candidates,
         db_loadouts_limit=51,
         gears_by_name={},
@@ -109,7 +107,6 @@ def test_build_loadout_entries_preserves_db_effective_hash(monkeypatch):
 
     out = build_loadout_entries(
         found_song_name="mini-equivalence-song",
-        use_evo_db=True,
         ga_candidates=[],
         db_loadouts_limit=51,
         gears_by_name={},
@@ -126,7 +123,6 @@ def test_build_loadout_entries_preserves_db_effective_hash(monkeypatch):
 def test_build_loadout_entries_preserves_ga_effective_hash():
     out = build_loadout_entries(
         found_song_name="mini-equivalence-song",
-        use_evo_db=False,
         ga_candidates=[
             {
                 "loadout_hash": "effective-ga-hash",

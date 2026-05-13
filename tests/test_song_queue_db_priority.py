@@ -80,6 +80,6 @@ def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
     cfg.set("IterationEngine", "SongQueueLimit", "2")
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(cfg, {"Hard": str(hard_dir)}, use_evo_db=True)
+    queue = app._build_song_queue(cfg, {"Hard": str(hard_dir)})
 
     assert [item[1] for item in queue] == [song_missing_a, song_missing_b]

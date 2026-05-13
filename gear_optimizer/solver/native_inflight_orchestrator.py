@@ -1,7 +1,7 @@
 """
 GPU-native in-flight multi-song orchestrator (single process, single GPU owner thread).
 
-This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mode by:
+This pipeline is designed to keep the GPU continuously busy in native GA mode by:
 - Preparing the next songs' CPU-only data while the GPU runs the current song.
 - Executing GPU-native GA on the Taichi/Vulkan owner thread (GpuExecutor) via an in-process
   request queue (no per-song process overhead, minimal transfers).

@@ -4,9 +4,8 @@ import logging
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
 
-We persist/load baseline candidates under a single TeamBuff tier per run. In auto mode
-(`AutoSelectBuffAndColor=true`), runtime semantics force TeamBuff=T5 regardless of the
-configured TeamContributionBuffConstant.TeamBuff value.
+We persist/load baseline candidates under a single TeamBuff tier per run. Runtime
+semantics force the baseline TeamBuff tier to T5.
 
 This module centralizes:
 - tier normalization
@@ -15,12 +14,6 @@ This module centralizes:
 """
 
 from typing import Any, Mapping, Sequence
-
-import configparser
-
-from .config import read_iteration_engine_settings
-from .parsing import truthy
-
 
 logger = logging.getLogger(__name__)
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
@@ -124,16 +117,6 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     return out
 
 
-def _is_auto_select_buff_and_color(cfg_dict: Mapping[str, Any] | None) -> bool:
-    if not isinstance(cfg_dict, Mapping):
-        return False
-    ie = cfg_dict.get("IterationEngine") or cfg_dict.get("iterationengine") or {}
-    if not isinstance(ie, Mapping):
-        return False
-    raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
-    return truthy(raw)
-
-
 def _get_team_section_from_cfg_dict(cfg_dict: Mapping[str, Any] | None) -> Mapping[str, Any]:
     if not isinstance(cfg_dict, Mapping):
         return {}
@@ -147,17 +130,9 @@ def resolve_team_color_from_cfg_dict(
     primary_color: str = "",
 ) -> str:
     sec = _get_team_section_from_cfg_dict(cfg_dict)
-    if _is_auto_select_buff_and_color(cfg_dict):
-        color = str(primary_color or "").strip()
-        if color:
-            return color
-        # Runtime auto mode writes the selected song primary into TeamColor before
-        # fixed stats are built. Preserve that authoritative color when callers
-        # only have a cfg_dict and cannot pass calc_song metadata separately.
-        return str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
-    color = str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
+    color = str(primary_color or "").strip()
     if not color:
-        color = str(primary_color or "").strip()
+        color = str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
     return color
 
 
@@ -165,34 +140,13 @@ def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None,
     """
     Resolve the baseline TeamBuff tier for a run from cfg_dict.
 
-    - AutoSelectBuffAndColor => TeamBuff=T5 (runtime semantics)
-    - Otherwise => TeamContributionBuffConstant.TeamBuff (fallback default)
+    Runtime baseline persistence always uses T5.
     """
-    if _is_auto_select_buff_and_color(cfg_dict):
-        return "T5"
-    sec = _get_team_section_from_cfg_dict(cfg_dict)
-    if isinstance(sec, Mapping) and sec:
-        raw = sec.get("TeamBuff", sec.get("teambuff", default))
-        return normalize_team_buff(raw, default=default)
-    return normalize_team_buff(default)
+    return "T5"
 
 
 def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
     """
     Resolve the baseline TeamBuff tier for a run from a configparser-like object.
     """
-    auto = False
-    try:
-        auto = bool(read_iteration_engine_settings(cfg).auto_select_buff_and_color)
-    except Exception as e:
-        logger.debug(f"team_buff:resolve_baseline_team_buff_from_cfg: {e}")
-        auto = False
-    if auto:
-        return "T5"
-
-    raw = default
-    try:
-        raw = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback=default)
-    except (AttributeError, TypeError, ValueError, configparser.Error):
-        raw = default
-    return normalize_team_buff(raw, default=default)
+    return "T5"

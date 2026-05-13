@@ -2303,7 +2303,7 @@ def solve_coevolution_genetic(
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:
-        logger.info(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
+        logger.info(f"[GPU] Native GA enabled: {use_gpu_native}")
 
     ga_runtime_settings = GARuntimeSettings.from_config(cfg)
     user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)

@@ -5,10 +5,8 @@ from typing import Any, Mapping
 import logging
 
 from .team_buff import (
-    normalize_team_buff,
     resolve_baseline_team_buff_from_cfg_dict,
     resolve_team_color_from_cfg_dict,
-    _is_auto_select_buff_and_color,
 )
 
 
@@ -24,45 +22,17 @@ class TeamContributionBuffSettings:
     def from_cfg_dict(cls, cfg_dict: Mapping[str, Any] | None) -> TeamContributionBuffSettings:
         if not isinstance(cfg_dict, Mapping):
             return cls()
-        auto = _is_auto_select_buff_and_color(cfg_dict)
         team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
         team_color = resolve_team_color_from_cfg_dict(cfg_dict)
         return cls(
             team_buff=str(team_buff),
             team_color=str(team_color),
-            auto_select_buff_and_color=bool(auto),
+            auto_select_buff_and_color=True,
         )
 
     @classmethod
     def from_cfg(cls, cfg: Any) -> TeamContributionBuffSettings:
-        from .config import read_iteration_engine_settings
-        try:
-            ie = read_iteration_engine_settings(cfg)
-        except Exception as e:
-            logger.debug(f"config_adapter:from_cfg: {e}")
-            ie = None
-        auto = bool(getattr(ie, "auto_select_buff_and_color", False))
-        if auto:
-            return cls(team_buff="T5", team_color="", auto_select_buff_and_color=True)
-        raw_buff = "T5"
-        raw_color = ""
-        try:
-            raw_buff = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback="T5")
-        except Exception as e:
-            logger.debug(f"config_adapter:from_cfg: {e}")
-            raw_buff = "T5"
-        try:
-            raw_color = cfg.get("TeamContributionBuffConstant", "TeamColor", fallback="")
-        except Exception as e:
-            logger.debug(f"config_adapter:from_cfg: {e}")
-            raw_color = ""
-        team_buff = normalize_team_buff(raw_buff, default="T5")
-        team_color = str(raw_color or "").strip()
-        return cls(
-            team_buff=str(team_buff),
-            team_color=str(team_color),
-            auto_select_buff_and_color=bool(auto),
-        )
+        return cls(team_buff="T5", team_color="", auto_select_buff_and_color=True)
 
 
 @dataclass(frozen=True, slots=True)

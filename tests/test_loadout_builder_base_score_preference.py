@@ -27,7 +27,6 @@ def test_build_loadout_entries_prefers_base_score_over_score():
 
     out = build_loadout_entries(
         found_song_name="Loadout Builder BaseScore Song",
-        use_evo_db=False,
         ga_candidates=ga_candidates,
         db_loadouts_limit=0,
         gears_by_name={},

@@ -29,7 +29,6 @@ def should_persist_pending_fg_job(item: dict[str, Any]) -> bool:
     return (
         bool(item.get("_pending_fg_job"))
         and bool(item.get("_persist_pending_fg_job"))
-        and bool(item.get("use_evo_db", True))
     )
 
 
@@ -186,7 +185,6 @@ def build_deferred_post_print_payload(
         "ref_arrays": item.get("ref_arrays"),
         "calc_song": item.get("calc_song"),
         "cfg": context.cfg,
-        "use_evo_db": bool(item.get("use_evo_db", True)),
         "db_best_fg_score": int(item.get("db_best_fg_score", 0) or 0),
         "_emit": emit,
     }

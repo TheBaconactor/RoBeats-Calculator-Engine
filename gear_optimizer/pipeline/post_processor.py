@@ -240,53 +240,50 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 db_key = item.get("db_key") or song_name
                 valid_entries: list[dict] = []
 
-                if item.get("use_evo_db", True):
-                    persisted = item.get("persist_entries") or []
-                    persisted = _canonicalize_fg_update_entries(
-                        persisted,
-                        file_path=str(item.get("file_path") or ""),
-                        cfg_dict=item.get("cfg_dict") or {},
-                        ref_arrays=item.get("ref_arrays"),
-                        song_name=str(song_name),
-                    )
-                    valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
-                    if valid_entries:
-                        if timing:
-                            logger.debug(
-                                "[POST][FG] Saving %s FG variant(s) for %s...",
-                                len(valid_entries),
-                                song_name,
-                            )
-                        cpu_t0 = time.process_time()
-                        _t_db0 = time.perf_counter()
-
-                        # Offload SQLite work + counter updates so the post-process loop
-                        # keeps draining `result_queue` (prevents GPU starvation via backpressure).
-                        async_db.submit(
+                persisted = item.get("persist_entries") or []
+                persisted = _canonicalize_fg_update_entries(
+                    persisted,
+                    file_path=str(item.get("file_path") or ""),
+                    cfg_dict=item.get("cfg_dict") or {},
+                    ref_arrays=item.get("ref_arrays"),
+                    song_name=str(song_name),
+                )
+                valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
+                if valid_entries:
+                    if timing:
+                        logger.debug(
+                            "[POST][FG] Saving %s FG variant(s) for %s...",
+                            len(valid_entries),
                             song_name,
-                            valid_entries,
-                            meta={
-                                "db_key": db_key,
-                                "_processed_run": False,  # FG-only update: do NOT increment attempts
-                                "file_path": item.get("file_path"),
-                                "cfg_dict": item.get("cfg_dict") or {},
-                                "ref_arrays": item.get("ref_arrays"),
-                            },
                         )
-                        _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
-                        profiler.record("fg_save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
-                    else:
-                        if persisted:
-                            logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
+                    cpu_t0 = time.process_time()
+                    _t_db0 = time.perf_counter()
 
-                    try:
-                        _t_del0 = time.perf_counter()
-                        cpu_t0 = time.process_time()
-                        async_db.delete_pending_fg_job(db_key)
-                        _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
-                        profiler.record("fg_delete_pending_job_enqueue", time.process_time() - cpu_t0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
+                    # Offload SQLite work + counter updates so the post-process loop
+                    # keeps draining `result_queue` (prevents GPU starvation via backpressure).
+                    async_db.submit(
+                        song_name,
+                        valid_entries,
+                        meta={
+                            "db_key": db_key,
+                            "_processed_run": False,  # FG-only update: do NOT increment attempts
+                            "cfg_dict": item.get("cfg_dict") or {},
+                        },
+                    )
+                    _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
+                    profiler.record("fg_save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
+                else:
+                    if persisted:
+                        logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
+
+                try:
+                    _t_del0 = time.perf_counter()
+                    cpu_t0 = time.process_time()
+                    async_db.delete_pending_fg_job(db_key)
+                    _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
+                    profiler.record("fg_delete_pending_job_enqueue", time.process_time() - cpu_t0)
+                except Exception as e:
+                    logger.warning(f"post_processor:_print_pending_final: {e}")
 
                 fg_state = build_fg_update_state(pending_fg_summary.get(song_name), valid_entries)
                 pending_fg_summary[song_name] = fg_state
@@ -443,7 +440,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             db_key = res.get("db_key") or song_name
 
             # DB save
-            if res.get("db_payload") and item.get("use_evo_db", True):
+            if res.get("db_payload"):
                 persisted = res.get("persist_entries")
                 if persisted:
                     valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
@@ -458,9 +455,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             meta={
                                 "db_key": db_key,
                                 "_processed_run": True,
-                                "file_path": item.get("file_path"),
                                 "cfg_dict": item.get("cfg_dict") or {},
-                                "ref_arrays": item.get("ref_arrays"),
                             },
                         )
                         _log_timing("save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
@@ -475,9 +470,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                                 meta={
                                     "db_key": db_key,
                                     "_processed_run": True,
-                                    "file_path": item.get("file_path"),
                                     "cfg_dict": item.get("cfg_dict") or {},
-                                    "ref_arrays": item.get("ref_arrays"),
                                 },
                             )
                         except Exception as e:
