@@ -283,7 +283,7 @@ Controls used for this declaration runset:
 
 - workload: `SONG_QUEUE_LIMIT=50`
 - determinism: fixed `GA_SEED` per cohort, `HumanHitSim.Seed=12345`, `PYTHONHASHSEED=0`
-- pipeline: sequential (`InFlightSongs=0` + `ALLOW_SEQUENTIAL_PIPELINE=1`)
+- pipeline: native in-flight single coordinator
 - audit safety: `FG_DOWNLOAD_TOPK=0` (avoid reduced-download artifacts during quality audits)
 
 Runset summary:

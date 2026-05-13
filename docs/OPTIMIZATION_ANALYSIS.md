@@ -40,7 +40,7 @@ The codebase is **production-ready** with strong architecture and excellent perf
 | Function | Module | Lines | Status |
 |----------|--------|-------|--------|
 | `solve_coevolution_genetic()` | genetic.py | 377 | Still large despite helpers |
-| `process_song_task()` | song_processor.py | 393 | Still large despite helpers |
+| `run_native_inflight_song_pipeline()` | native_inflight_orchestrator.py | large | Production orchestration remains broad |
 | `solve_best_fever_combination()` | scoring.py | 323 | Complex algorithm, hard to split |
 
 **Analysis:** The helper extraction reduced complexity but the main orchestration functions are still quite large (300-400 lines).
@@ -104,9 +104,9 @@ Functions by size:
 
 ### Priority 1: Further Refactor Main Orchestration Functions
 
-**Target:** Reduce `process_song_task()` and `solve_coevolution_genetic()` to < 200 lines each.
+**Target:** Reduce native in-flight orchestration surfaces and `solve_coevolution_genetic()` to smaller owned stages.
 
-#### process_song_task() (393 lines → target 150 lines)
+#### Native In-Flight Orchestration
 
 **Additional helpers to extract:**
 
@@ -122,7 +122,7 @@ Functions by size:
    - Cleanup logic (buffer closing, executor shutdown, GC)
    - Separates cleanup concerns
 
-**Expected result:** Main function ~150 lines (orchestration only)
+**Expected result:** Native engine entrypoints stay orchestration-only, with prep, scheduling, FG, and finalization owned by smaller modules.
 
 #### solve_coevolution_genetic() (377 lines → target 180 lines)
 
@@ -226,7 +226,7 @@ Extract:
 None - codebase is already well-optimized
 
 ### Should Do (Medium Impact, Medium Effort)
-1. Extract additional helpers from `process_song_task()` (reduce to ~150 lines)
+1. Continue splitting native in-flight orchestration into smaller owned stages
 2. Extract additional helpers from `solve_coevolution_genetic()` (reduce to ~180 lines)
 
 ### Nice to Have (Low Impact, High Effort)

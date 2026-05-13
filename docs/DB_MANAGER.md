@@ -117,8 +117,7 @@ catalog = db.get_song_catalog(max_rank=51)
 Returns a JSON-friendly dict:
 
 - `team_buff`: the baseline tier queried
-  - when omitted, this is resolved from the current config (`AutoSelectBuffAndColor` => `T5`, otherwise the configured
-    `TeamContributionBuffConstant.TeamBuff`)
+  - when omitted, this resolves to the native baseline tier (`T5`)
 - `songs`: list of:
   - `song_name`
   - `difficulty`: inferred `Easy`, `Normal`, or `Hard`

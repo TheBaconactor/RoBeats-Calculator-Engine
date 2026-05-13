@@ -345,14 +345,12 @@ diff baseline_scores.txt refactored_scores.txt
 
 ### Configuration
 ```ini
-[IterationEngine]
-MetaFinder = True
-ForceGreatsMode = False
-GA_MultiStart = 3
-MemorySoftLimitPercent = 50.0
-
-[Paths]
-StatusFilePath = /path/to/status.json
+[CalculateSong]
+Song_Name =
+Difficulty =
+TargetPrimary = All
+TargetSecondary = All
+LoopForever = true
 ```
 
 ## Future Improvements
