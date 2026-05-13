@@ -42,9 +42,7 @@ from gear_optimizer.domain.jobs import (
     SharedRunContext,
     SongJob,
     effective_task_count,
-    extract_repeat_context,
     legacy_task_tuple_from_job_context,
-    task_queue_label,
 )
 from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.data.csv_parser import (
@@ -1331,10 +1329,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return tasks
 
     @staticmethod
-    def _extract_repeat_ctx(task) -> dict | None:
-        return extract_repeat_context(task)
-
-    @staticmethod
     def _effective_total_tasks(tasks: list) -> int:
         """
         Compute the logical "task" count used for progress + throughput.
@@ -1344,9 +1338,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
           count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
         """
         return effective_task_count(tasks)
-
-    def _task_queue_label(self, task) -> str:
-        return task_queue_label(task)
 
     def _fatal_gpu_errors_enabled(self) -> bool:
         raw = str(env_get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()

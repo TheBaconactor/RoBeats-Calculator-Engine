@@ -3,6 +3,7 @@ import configparser
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import (
     extract_repeat_bundle,
+    extract_repeat_context,
     materialize_repeat_task,
     task_queue_label,
 )
@@ -38,7 +39,7 @@ def test_prepare_tasks_song_repeats_expands_queue():
 
     assert len(tasks) == 3
     assert all(len(t) == 17 for t in tasks)
-    assert [app._task_queue_label(t) for t in tasks] == [
+    assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
@@ -72,8 +73,8 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
 
     assert len(tasks) == 1
     assert len(tasks[0]) == 16
-    assert app._extract_repeat_ctx(tasks[0]) is None
-    assert app._task_queue_label(tasks[0]) == "Dummy Song"
+    assert extract_repeat_context(tasks[0]) is None
+    assert task_queue_label(tasks[0]) == "Dummy Song"
 
 
 def test_prepare_tasks_bundle_song_repeats_keeps_single_queue_item():
@@ -99,8 +100,8 @@ def test_prepare_tasks_bundle_song_repeats_keeps_single_queue_item():
     )
 
     assert len(tasks) == 1
-    assert app._extract_repeat_ctx(tasks[0]) is None
-    assert app._task_queue_label(tasks[0]) == "Dummy Song"
+    assert extract_repeat_context(tasks[0]) is None
+    assert task_queue_label(tasks[0]) == "Dummy Song"
     bundle = tasks[0][16]
     assert bundle["repeat_bundle"] is True
     assert int(bundle["repeat_total"]) == 3
@@ -143,7 +144,7 @@ def test_prepare_tasks_backend_priority_new_songs_use_song_repeats_by_default(mo
     )
 
     assert len(tasks) == 25
-    assert app._task_queue_label(tasks[-1]) == "New Song (Run 25/25)"
+    assert task_queue_label(tasks[-1]) == "New Song (Run 25/25)"
 
 
 def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeypatch, tmp_path):
@@ -177,7 +178,7 @@ def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeyp
     )
 
     assert len(tasks) == 40
-    assert app._task_queue_label(tasks[-1]) == "New Song (Run 40/40)"
+    assert task_queue_label(tasks[-1]) == "New Song (Run 40/40)"
 
 
 def test_prepare_tasks_does_not_collapse_song_repeats():
@@ -202,7 +203,7 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
     )
 
     assert len(tasks) == 25
-    assert [app._task_queue_label(t) for t in tasks] == [
+    assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/25)",
         "Dummy Song (Run 2/25)",
         "Dummy Song (Run 3/25)",
@@ -254,7 +255,7 @@ def test_prepare_tasks_bundle_song_repeats_keeps_one_physical_task():
     )
 
     assert len(tasks) == 1
-    assert app._task_queue_label(tasks[0]) == "Dummy Song"
+    assert task_queue_label(tasks[0]) == "Dummy Song"
     bundle = tasks[0][16]
     assert bundle["repeat_bundle"] is True
     assert int(bundle["repeat_total"]) == 25
