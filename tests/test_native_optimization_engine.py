@@ -6,6 +6,27 @@ import types
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
 
 
+def _task() -> tuple:
+    return (
+        "fp",
+        "song",
+        "Hard",
+        {"IterationEngine": {}},
+        {},
+        {},
+        [],
+        [],
+        {},
+        {},
+        True,
+        1,
+        None,
+        0,
+        False,
+        {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123},
+    )
+
+
 def test_native_optimization_engine_delegates_to_native_inflight(monkeypatch):
     calls = []
 
@@ -19,7 +40,7 @@ def test_native_optimization_engine_delegates_to_native_inflight(monkeypatch):
     )
 
     completed: set[str] = set()
-    task = ("fp", "song", "Hard")
+    task = _task()
     NativeOptimizationEngine().run(
         NativeOptimizationRequest(
             tasks=[task],
@@ -44,3 +65,14 @@ def test_native_optimization_engine_delegates_to_native_inflight(monkeypatch):
             },
         )
     ]
+
+
+def test_native_optimization_engine_rejects_invalid_task_tuple():
+    try:
+        NativeOptimizationEngine().run(
+            NativeOptimizationRequest(tasks=[("too", "short")], in_flight_songs=1, completed_songs=set())
+        )
+    except ValueError as exc:
+        assert "legacy song task" in str(exc)
+    else:
+        raise AssertionError("expected invalid native task tuple to fail at engine boundary")

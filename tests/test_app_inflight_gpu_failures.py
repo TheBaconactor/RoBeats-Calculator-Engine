@@ -26,12 +26,26 @@ def _make_minimal_app() -> GearOptimizerApp:
 
 def _build_tasks(*, inflight_songs: int = 2, inflight_instances: int = 1, count: int = 2):
     cfg = {"IterationEngine": {"inflightsongs": inflight_songs, "inflightinstances": inflight_instances}}
-    return [(f"song-{idx}", None, None, cfg, None, None) for idx in range(count)]
-
-
-def _build_calc_only_tasks(*, count: int = 1):
-    cfg = {"IterationEngine": {"inflightsongs": 1}}
-    return [(f"song-{idx}", f"Calc Song {idx}", "Hard", cfg, None, None) for idx in range(count)]
+    return [
+        (
+            f"song-{idx}.txt",
+            f"Song {idx}",
+            "Hard",
+            cfg,
+            {},
+            {},
+            [],
+            [],
+            {},
+            {},
+            True,
+            1,
+            None,
+            0,
+            False,
+        )
+        for idx in range(count)
+    ]
 
 
 def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
@@ -56,9 +70,9 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
     assert calls[0]["kwargs"]["total_tasks"] == 1
 
 
-def test_legacy_short_task_still_uses_native_inflight_pipeline(monkeypatch):
+def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
     app = _make_minimal_app()
-    tasks = _build_calc_only_tasks(count=1)
+    tasks = _build_tasks(inflight_songs=1, count=1)
     native_calls: list[dict] = []
 
     def _record_run(*args, **kwargs):

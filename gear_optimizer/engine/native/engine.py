@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
+from gear_optimizer.domain.jobs import legacy_task_tuple_from_job_context, task_tuple_to_legacy_view
+
 
 @dataclass(frozen=True, slots=True)
 class NativeOptimizationRequest:
@@ -23,8 +25,9 @@ class NativeOptimizationEngine:
     def run(self, request: NativeOptimizationRequest) -> None:
         from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
+        tasks = [self._canonical_task_tuple(task) for task in request.tasks]
         run_native_inflight_song_pipeline(
-            list(request.tasks),
+            tasks,
             in_flight_songs=int(request.in_flight_songs),
             completed_songs=request.completed_songs,
             memory_resume_tracker=request.memory_resume_tracker,
@@ -34,3 +37,8 @@ class NativeOptimizationEngine:
             progress_cb=request.progress_cb,
             bundle_completed_cb=request.bundle_completed_cb,
         )
+
+    @staticmethod
+    def _canonical_task_tuple(task: tuple) -> tuple[Any, ...]:
+        view = task_tuple_to_legacy_view(task)
+        return legacy_task_tuple_from_job_context(view.job, view.context, *view.extras)
