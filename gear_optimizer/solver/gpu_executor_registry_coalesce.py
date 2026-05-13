@@ -9,7 +9,8 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_types import GpuRequest
+from gear_optimizer.solver.gpu_executor_response_delivery import order_responses_for_requests
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,13 @@ class PackedRegistryPopulationChunk:
     ok: bool
 
 
+@dataclass(frozen=True)
+class RegistryCoalesceResult:
+    responses: list[GpuResponse]
+    last_ref_arrays_sig: bytes | None
+    staging_buffer: Any
+
+
 def registry_population_indices(payload: dict[str, Any]) -> np.ndarray | None:
     pop_arr = np.asarray(payload.get("population_indices"), dtype=np.int32)
     if pop_arr.ndim != 2 or int(pop_arr.shape[1]) != 9:
@@ -257,4 +265,176 @@ def pack_registry_population_chunk(
         spans=spans,
         cur=int(cur),
         ok=bool(ok),
+    )
+
+
+def coalesce_solve_genomes_from_registry(
+    requests: list[GpuRequest],
+    *,
+    payload_dict_fn: Callable[[GpuRequest], dict[str, Any]],
+    resolve_payload_fn: Callable[[GpuRequest], tuple[dict[str, Any], str | None]],
+    execute_request_fn: Callable[[GpuRequest], GpuResponse],
+    ref_arrays_sig_fn: Callable[[Any], bytes | None],
+    last_ref_arrays_sig: bytes | None,
+    registry_coalesce_staging: Any,
+    max_genomes: int,
+    load_ref_arrays_fn: Callable[[dict[str, Any]], Any],
+    ga_upload_item_stats_fn: Callable[..., Any],
+    ga_upload_base_fixed_stats_fn: Callable[..., Any],
+    solve_genomes_from_registry_fn: Callable[..., Any],
+    record_pack_fn: Callable[[GpuRequestType, float], None],
+    warn_fallback_fn: Callable[..., Any],
+    perf_counter_fn: Callable[[], float],
+) -> RegistryCoalesceResult:
+    signature_builder = RegistryCoalesceSignatureBuilder(ref_arrays_sig_fn=ref_arrays_sig_fn)
+    groups = plan_registry_coalesce_groups(
+        requests,
+        payload_dict_fn=payload_dict_fn,
+        signature_builder=signature_builder,
+    )
+
+    out: list[GpuResponse] = []
+    max_genomes = int(max_genomes or 4096)
+    resolved_payload_cache: dict[int, dict[str, Any]] = {}
+    current_ref_arrays_sig = last_ref_arrays_sig
+    current_staging = registry_coalesce_staging
+
+    def _resolved_payload(req: GpuRequest) -> tuple[dict[str, Any], str | None]:
+        rid = int(getattr(req, "request_id", 0) or 0)
+        cached = resolved_payload_cache.get(rid)
+        if cached is not None:
+            return cached, None
+        resolved, err = resolve_payload_fn(req)
+        if err is None:
+            resolved_payload_cache[rid] = resolved
+        return resolved, err
+
+    for group in groups:
+        if not group:
+            continue
+        if len(group) == 1:
+            out.append(execute_request_fn(group[0]))
+            continue
+
+        p0, err0 = _resolved_payload(group[0])
+        if err0:
+            for req in group:
+                out.append(
+                    GpuResponse(
+                        request_id=req.request_id,
+                        success=False,
+                        error=err0,
+                    )
+                )
+            continue
+        song_slot = int(p0.get("song_slot", 0) or 0)
+        total_budget = int(p0.get("total_budget", 90) or 90)
+        gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
+
+        ref_arrays = p0.get("ref_arrays")
+        sig = ref_arrays_sig_fn(ref_arrays) if isinstance(ref_arrays, dict) else None
+        if sig is None or sig != current_ref_arrays_sig:
+            if isinstance(ref_arrays, dict):
+                load_ref_arrays_fn(ref_arrays)
+            current_ref_arrays_sig = sig
+
+        if "item_stats" in p0 and "slot_start" in p0 and "slot_count" in p0:
+            ga_upload_item_stats_fn(p0["item_stats"], p0["slot_start"], p0["slot_count"])
+        if "base_fixed_stats" in p0:
+            ga_upload_base_fixed_stats_fn(p0["base_fixed_stats"])
+
+        i = 0
+        while i < len(group):
+            chunk: list[GpuRequest] = []
+            n_total = 0
+            while i < len(group):
+                p, perr = _resolved_payload(group[i])
+                if perr:
+                    out.append(
+                        GpuResponse(
+                            request_id=group[i].request_id,
+                            success=False,
+                            error=perr,
+                        )
+                    )
+                    i += 1
+                    continue
+                pop_arr = registry_population_indices(p)
+                if pop_arr is None:
+                    break
+                n = int(pop_arr.shape[0])
+                if n_total + n > max_genomes and chunk:
+                    break
+                if n_total + n > max_genomes and not chunk:
+                    out.append(execute_request_fn(group[i]))
+                    i += 1
+                    continue
+                chunk.append(group[i])
+                n_total += n
+                i += 1
+
+            if not chunk:
+                break
+
+            current_staging = ensure_registry_population_staging_buffer(
+                current_staging,
+                n_total=int(n_total),
+                max_genomes=int(max_genomes),
+            )
+            staging = current_staging[: int(n_total), :]
+            t_pack0 = perf_counter_fn()
+            packed = pack_registry_population_chunk(
+                chunk,
+                staging=staging,
+                resolved_payload_fn=_resolved_payload,
+            )
+
+            if not packed.ok or packed.cur <= 0:
+                warn_fallback_fn(
+                    "gpu_executor.registry_coalesce.chunk",
+                    "registry coalescing chunk pack failed; falling back to per-request execution",
+                    context={"chunk_size": int(len(chunk)), "cur": int(packed.cur)},
+                )
+                for req in chunk:
+                    out.append(execute_request_fn(req))
+                continue
+
+            try:
+                t_kernel0 = perf_counter_fn()
+                merged = solve_genomes_from_registry_fn(
+                    population_indices=packed.staging,
+                    timeline_grid=p0["timeline_grid"],
+                    is_p_ft=p0["is_p_ft"],
+                    is_s_ft=p0["is_s_ft"],
+                    is_p_ff=p0["is_p_ff"],
+                    is_s_ff=p0["is_s_ff"],
+                    is_p_pp=p0["is_p_pp"],
+                    is_s_pp=p0["is_s_pp"],
+                    is_p_cm=p0["is_p_cm"],
+                    is_s_cm=p0["is_s_cm"],
+                    is_p_fm=p0["is_p_fm"],
+                    is_s_fm=p0["is_s_fm"],
+                    is_p_ov=p0["is_p_ov"],
+                    is_s_ov=p0["is_s_ov"],
+                    ref_arrays=p0["ref_arrays"],
+                    total_budget=total_budget,
+                    gem_scale_fever=gem_scale_fever,
+                    song_slot=song_slot,
+                    use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 1)),
+                )
+                dt_kernel = perf_counter_fn() - t_kernel0
+                dt_total = perf_counter_fn() - t_pack0
+                record_pack_fn(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, max(0.0, dt_total - dt_kernel))
+                for req, (a, b) in zip(chunk, packed.spans):
+                    out.append(GpuResponse(request_id=req.request_id, success=True, result=merged[a:b]))
+            except Exception as exc:
+                record_pack_fn(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, perf_counter_fn() - t_pack0)
+                err = f"{type(exc).__name__}: {exc}"
+                for req in chunk:
+                    out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
+
+    return RegistryCoalesceResult(
+        responses=order_responses_for_requests(requests, out),
+        last_ref_arrays_sig=current_ref_arrays_sig,
+        staging_buffer=current_staging,
     )

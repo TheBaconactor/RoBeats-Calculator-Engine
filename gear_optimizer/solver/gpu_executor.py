@@ -109,7 +109,6 @@ from gear_optimizer.solver.gpu_executor_worker_state import (
 )
 from gear_optimizer.solver.gpu_executor_response_delivery import (
     ResponseDeliveryTracker,
-    order_responses_for_requests as _order_responses_for_requests,
 )
 from gear_optimizer.solver.gpu_executor_registry_payloads import (
     RegistryPayloadCache,
@@ -186,11 +185,7 @@ from gear_optimizer.solver.gpu_executor_registry_solve import (
     handle_solve_genomes_from_registry as _handle_solve_genomes_from_registry,
 )
 from gear_optimizer.solver.gpu_executor_registry_coalesce import (
-    RegistryCoalesceSignatureBuilder as _RegistryCoalesceSignatureBuilder,
-    ensure_registry_population_staging_buffer as _ensure_registry_population_staging_buffer,
-    pack_registry_population_chunk as _pack_registry_population_chunk,
-    plan_registry_coalesce_groups as _plan_registry_coalesce_groups,
-    registry_population_indices as _registry_population_indices,
+    coalesce_solve_genomes_from_registry as _coalesce_solve_genomes_from_registry,
 )
 from gear_optimizer.solver.gpu_executor_registry_submit import (
     build_registry_solve_request_payload as _build_registry_solve_request_payload,
@@ -1597,154 +1592,26 @@ class GpuExecutor:
         )
         from .taichi_gem import fields as gem_fields
 
-        signature_builder = _RegistryCoalesceSignatureBuilder(ref_arrays_sig_fn=_ref_arrays_sig)
-        groups = _plan_registry_coalesce_groups(
+        result = _coalesce_solve_genomes_from_registry(
             requests,
             payload_dict_fn=_payload_dict,
-            signature_builder=signature_builder,
+            resolve_payload_fn=self._resolve_registry_payload,
+            execute_request_fn=self._execute_request,
+            ref_arrays_sig_fn=_ref_arrays_sig,
+            last_ref_arrays_sig=self._last_ref_arrays_sig,
+            registry_coalesce_staging=self._registry_coalesce_staging,
+            max_genomes=int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096),
+            load_ref_arrays_fn=load_ref_arrays,
+            ga_upload_item_stats_fn=ga_upload_item_stats,
+            ga_upload_base_fixed_stats_fn=ga_upload_base_fixed_stats,
+            solve_genomes_from_registry_fn=solve_genomes_from_registry,
+            record_pack_fn=self._record_pack,
+            warn_fallback_fn=warn_fallback,
+            perf_counter_fn=perf_counter,
         )
-
-        out: list[GpuResponse] = []
-        max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
-        resolved_payload_cache: dict[int, dict[str, Any]] = {}
-
-        def _resolved_payload(req: GpuRequest) -> tuple[dict[str, Any], str | None]:
-            rid = int(getattr(req, "request_id", 0) or 0)
-            cached = resolved_payload_cache.get(rid)
-            if cached is not None:
-                return cached, None
-            resolved, err = self._resolve_registry_payload(req)
-            if err is None:
-                resolved_payload_cache[rid] = resolved
-            return resolved, err
-
-        for group in groups:
-            if not group:
-                continue
-            if len(group) == 1:
-                out.append(self._execute_request(group[0]))
-                continue
-
-            p0, err0 = _resolved_payload(group[0])
-            if err0:
-                for req in group:
-                    out.append(
-                        GpuResponse(
-                            request_id=req.request_id,
-                            success=False,
-                            error=err0,
-                        )
-                    )
-                continue
-            song_slot = int(p0.get("song_slot", 0) or 0)
-            total_budget = int(p0.get("total_budget", 90) or 90)
-            gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
-
-            ref_arrays = p0.get("ref_arrays")
-            sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else None
-            if sig is None or sig != self._last_ref_arrays_sig:
-                if isinstance(ref_arrays, dict):
-                    load_ref_arrays(ref_arrays)
-                self._last_ref_arrays_sig = sig
-
-            if "item_stats" in p0 and "slot_start" in p0 and "slot_count" in p0:
-                ga_upload_item_stats(p0["item_stats"], p0["slot_start"], p0["slot_count"])
-            if "base_fixed_stats" in p0:
-                ga_upload_base_fixed_stats(p0["base_fixed_stats"])
-
-            i = 0
-            while i < len(group):
-                chunk: list[GpuRequest] = []
-                n_total = 0
-                while i < len(group):
-                    p, perr = _resolved_payload(group[i])
-                    if perr:
-                        out.append(
-                            GpuResponse(
-                                request_id=group[i].request_id,
-                                success=False,
-                                error=perr,
-                            )
-                        )
-                        i += 1
-                        continue
-                    pop_arr = _registry_population_indices(p)
-                    if pop_arr is None:
-                        break
-                    n = int(pop_arr.shape[0])
-                    if n_total + n > max_genomes and chunk:
-                        break
-                    if n_total + n > max_genomes and not chunk:
-                        out.append(self._execute_request(group[i]))
-                        i += 1
-                        continue
-                    chunk.append(group[i])
-                    n_total += n
-                    i += 1
-
-                if not chunk:
-                    break
-
-                # Reuse a persistent scratch buffer to reduce allocator churn in hot coalescing loops.
-                staging_buf = _ensure_registry_population_staging_buffer(
-                    self._registry_coalesce_staging,
-                    n_total=int(n_total),
-                    max_genomes=int(max_genomes),
-                )
-                self._registry_coalesce_staging = staging_buf
-                staging = staging_buf[: int(n_total), :]
-                t_pack0 = perf_counter()
-                packed = _pack_registry_population_chunk(
-                    chunk,
-                    staging=staging,
-                    resolved_payload_fn=_resolved_payload,
-                )
-
-                if not packed.ok or packed.cur <= 0:
-                    warn_fallback(
-                        "gpu_executor.registry_coalesce.chunk",
-                        "registry coalescing chunk pack failed; falling back to per-request execution",
-                        context={"chunk_size": int(len(chunk)), "cur": int(packed.cur)},
-                    )
-                    for req in chunk:
-                        out.append(self._execute_request(req))
-                    continue
-
-                try:
-                    t_kernel0 = perf_counter()
-                    merged = solve_genomes_from_registry(
-                        population_indices=packed.staging,
-                        timeline_grid=p0["timeline_grid"],
-                        is_p_ft=p0["is_p_ft"],
-                        is_s_ft=p0["is_s_ft"],
-                        is_p_ff=p0["is_p_ff"],
-                        is_s_ff=p0["is_s_ff"],
-                        is_p_pp=p0["is_p_pp"],
-                        is_s_pp=p0["is_s_pp"],
-                        is_p_cm=p0["is_p_cm"],
-                        is_s_cm=p0["is_s_cm"],
-                        is_p_fm=p0["is_p_fm"],
-                        is_s_fm=p0["is_s_fm"],
-                        is_p_ov=p0["is_p_ov"],
-                        is_s_ov=p0["is_s_ov"],
-                        ref_arrays=p0["ref_arrays"],
-                        total_budget=total_budget,
-                        gem_scale_fever=gem_scale_fever,
-                        song_slot=song_slot,
-                        use_exact_inner_solver=bool(p0.get("use_exact_inner_solver", 1)),
-                    )
-                    dt_kernel = perf_counter() - t_kernel0
-                    dt_total = perf_counter() - t_pack0
-                    self._record_pack(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, max(0.0, dt_total - dt_kernel))
-                    for req, (a, b) in zip(chunk, packed.spans):
-                        out.append(GpuResponse(request_id=req.request_id, success=True, result=merged[a:b]))
-                except Exception as e2:
-                    self._record_pack(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, perf_counter() - t_pack0)
-                    err = f"{type(e2).__name__}: {e2}"
-                    for req in chunk:
-                        out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
-
-        return _order_responses_for_requests(requests, out)
+        self._last_ref_arrays_sig = result.last_ref_arrays_sig
+        self._registry_coalesce_staging = result.staging_buffer
+        return result.responses
 
     def _execute_solve_genomes_from_registry(self, request: GpuRequest, song_slot: int = 0) -> GpuResponse:
         """Execute solve_genomes_from_registry on GPU (GPU-resident stat aggregation path)."""
