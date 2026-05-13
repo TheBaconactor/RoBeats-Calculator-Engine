@@ -37,7 +37,6 @@ def _legacy_task(*extras):
         ("mini",),
         {"gear": object()},
         {"mini": object()},
-        False,
         125,
         "status-queue",
         6,
@@ -119,7 +118,6 @@ def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
     assert ctx.ref_arrays == ("ref",)
     assert ctx.all_gears == ("gear",)
     assert ctx.all_minis == ("mini",)
-    assert ctx.auto_buff is False
     assert ctx.ga_depth == 125
     assert ctx.status_queue == "status-queue"
     assert ctx.parallel_workers == 6

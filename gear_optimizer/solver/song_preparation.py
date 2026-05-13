@@ -53,17 +53,16 @@ def _apply_timing_envelope(calc_song: dict[str, Any]) -> Any:
     return apply_timing_envelope(calc_song)
 
 
-def _setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name):
+def _setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
     from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 
-    return setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+    return setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name)
 
 
 def build_prepared_song_config(
     *,
     cfg,
     calc_song: dict[str, Any],
-    auto_buff: bool,
     paths,
     gears_by_name: dict,
     minis_by_name: dict,
@@ -77,7 +76,7 @@ def build_prepared_song_config(
         current_mini_list,
         force_greats_config,
         manual_force_greats,
-    ) = _setup_song_config(cfg, calc_song, bool(auto_buff), paths, gears_by_name, minis_by_name)
+    ) = _setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name)
 
     return PreparedSongConfig(
         ga_settings=ga_settings,
@@ -132,7 +131,6 @@ def build_prepared_song_core(
     fp: str,
     found_song_name: str,
     cfg_dict: dict[str, Any],
-    auto_buff: bool,
     paths,
     gears_by_name: dict,
     minis_by_name: dict,
@@ -154,7 +152,6 @@ def build_prepared_song_core(
     prepared_config = build_prepared_song_config(
         cfg=cfg_obj,
         calc_song=calc_song,
-        auto_buff=bool(auto_buff),
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,

@@ -164,7 +164,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     all_minis = run_context.all_minis
     gears_by_name = run_context.gears_by_name
     minis_by_name = run_context.minis_by_name
-    auto_buff = run_context.auto_buff
     ga_depth = run_context.ga_depth
     fg_debug = run_context.fg_debug
 
@@ -174,7 +173,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         fp=fp,
         found_song_name=found_song_name,
         cfg_dict=cfg_dict,
-        auto_buff=bool(auto_buff),
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
@@ -361,7 +359,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             cfg_dict=cfg_dict,
             cfg=cfg,
             paths=paths,
-            auto_buff=bool(auto_buff),
             ga_depth=int(ga_depth),
             fg_debug=bool(fg_debug),
         ),

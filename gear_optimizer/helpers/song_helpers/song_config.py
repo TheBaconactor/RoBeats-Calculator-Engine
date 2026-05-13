@@ -2,7 +2,7 @@
 Song Helpers - Song Config - Song configuration setup.
 
 This module provides configuration operations:
-- setup_song_config: Setup configuration, auto-buff, load current stats
+- setup_song_config: Setup configuration, load current stats
 """
 
 from ...data.models import GAEvolutionSettings
@@ -10,14 +10,13 @@ from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_confi
 from ...core.config import read_iteration_engine_settings
 
 
-def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name):
+def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
     """
     Setup configuration, auto-buff, load current stats.
 
     Args:
         cfg: Configuration object
         calc_song: Song calculation data
-        auto_buff: Whether to enable auto buff
         paths: Path configuration
         gears_by_name: Dictionary of gears by name
         minis_by_name: Dictionary of minis by name
@@ -33,14 +32,12 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
     force_greats_config = list(ie.force_greats_config or [])
     manual_force_greats = bool(ie.manual_force_greats)
 
-    # --- Auto Select Buff & Color Logic ---
-    if auto_buff:
-        p_col = calc_song["metadata"].get("Primary Color", "Rush")
-        if not cfg.has_section("TeamContributionBuffConstant"):
-            cfg.add_section("TeamContributionBuffConstant")
-        cfg.set("TeamContributionBuffConstant", "TeamColor", p_col)
-        cfg.set("TeamContributionBuffConstant", "TeamBuff", "T5")
-        # Keep auto-buff selection silent so the UI stays clean.
+    p_col = calc_song["metadata"].get("Primary Color", "Rush")
+    if not cfg.has_section("TeamContributionBuffConstant"):
+        cfg.add_section("TeamContributionBuffConstant")
+    cfg.set("TeamContributionBuffConstant", "TeamColor", p_col)
+    cfg.set("TeamContributionBuffConstant", "TeamBuff", "T5")
+    # Keep auto-buff selection silent so the UI stays clean.
 
     fixed_stats = get_fixed_stats(cfg)
 

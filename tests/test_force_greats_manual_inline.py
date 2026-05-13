@@ -27,7 +27,7 @@ def test_force_greats_section_loads_manual_config(monkeypatch):
         _current_mini_list,
         force_greats_config,
         manual_force_greats,
-    ) = song_config.setup_song_config(cfg, calc_song, auto_buff=False, paths={}, gears_by_name={}, minis_by_name={})
+    ) = song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
 
     assert force_greats_config == [0, 2]
     assert manual_force_greats is True

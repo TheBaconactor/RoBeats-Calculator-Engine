@@ -129,7 +129,6 @@ def _prepare_context(
 ) -> SolverContext:
     cfg_dict = cfg_to_dict(cfg)
     calc_song = clone_calc_song(get_base_calc_song(song_path, cfg_dict))
-    auto_buff = True
     (
         _ga_settings,
         fixed_stats,
@@ -139,7 +138,7 @@ def _prepare_context(
         current_mini_list,
         _force_greats_config,
         _manual_force_greats,
-    ) = setup_song_config(cfg, calc_song, auto_buff, load_paths_cache(), gears_by_name, minis_by_name)
+    ) = setup_song_config(cfg, calc_song, load_paths_cache(), gears_by_name, minis_by_name)
 
     ctx = prepare_solver_context(
         cfg,

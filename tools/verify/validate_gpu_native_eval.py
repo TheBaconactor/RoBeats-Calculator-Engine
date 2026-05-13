@@ -201,7 +201,6 @@ def main() -> int:
         "song_data": {"timestamps": np.array(song_data["timestamps"], dtype=np.float64)},
     }
 
-    auto_buff = True
     (
         _ga_settings,
         fixed_stats,
@@ -210,7 +209,7 @@ def main() -> int:
         _current_mini_stats,
         _current_mini_list,
         *_rest,
-    ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+    ) = setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name)
 
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     p_color = calc_song["metadata"].get("Primary Color", "Rush")

@@ -564,7 +564,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             # Config reading
             ie = runtime_settings.iteration_engine
-            auto_buff = True
             fg_debug = bool(ie.force_greats_debug)
 
             if ie.manual_force_greats:
@@ -639,7 +638,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 all_minis,
                 gears_by_name,
                 minis_by_name,
-                auto_buff,
                 ga_depth,
                 status_queue,
                 fg_debug,
@@ -1197,7 +1195,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         all_minis,
         gears_by_name,
         minis_by_name,
-        auto_buff,
         ga_depth,
         status_queue,
         fg_debug,
@@ -1213,7 +1210,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            auto_buff=bool(auto_buff),
             ga_depth=int(ga_depth),
             status_queue=status_queue,
             parallel_workers=int(parallel_workers),

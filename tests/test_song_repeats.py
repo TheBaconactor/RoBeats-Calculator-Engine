@@ -30,21 +30,20 @@ def test_prepare_tasks_song_repeats_expands_queue():
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        auto_buff="",
         ga_depth=1,
         status_queue=None,
         fg_debug=False,
     )
 
     assert len(tasks) == 3
-    assert all(len(t) == 16 for t in tasks)
+    assert all(len(t) == 15 for t in tasks)
     assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
     ]
 
-    seeds = [t[15]["ga_seed"] for t in tasks]
+    seeds = [t[14]["ga_seed"] for t in tasks]
     assert len(seeds) == 3
     assert len(set(seeds)) == 3
 
@@ -63,14 +62,13 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        auto_buff="",
         ga_depth=1,
         status_queue=None,
         fg_debug=False,
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == 15
+    assert len(tasks[0]) == 14
     assert extract_repeat_context(tasks[0]) is None
     assert task_queue_label(tasks[0]) == "Dummy Song"
 
@@ -98,7 +96,6 @@ def test_prepare_tasks_backend_priority_new_songs_use_song_repeats_by_default(mo
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        auto_buff="",
         ga_depth=1,
         status_queue=None,
         fg_debug=False,
@@ -131,7 +128,6 @@ def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeyp
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        auto_buff="",
         ga_depth=1,
         status_queue=None,
         fg_debug=False,
@@ -155,7 +151,6 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        auto_buff="",
         ga_depth=1,
         status_queue=None,
         fg_debug=False,
