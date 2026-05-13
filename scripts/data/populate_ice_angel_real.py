@@ -72,8 +72,6 @@ def run_real_solver():
     cfg_dict = cfg_to_dict(cfg)
     # Ensure optimized settings for quick run but valid results
     cfg_dict["IterationEngine"]["GA_SearchDepth"] = "10"
-    cfg_dict["IterationEngine"]["MetaFinder"] = "true"  # Enable FG batching
-    cfg_dict["IterationEngine"]["ForceGreatsFinder"] = "true"  # Explicitly enable FG optimization
     # Force Greats needs to be enabled? It defaults to TRUE usually.
 
     args = (

@@ -76,17 +76,10 @@ Song_Name = Aether
 Difficulty = All
 
 [IterationEngine]
-; Main optimizer toggles
-MetaFinder = true
-
-; Legacy GPU flags: production is GPU-first; false values are ignored with a warning.
-GPU_Mode = true
-GPU_Native_GA = true
+LoopForever = false
 InFlightSongs = 0
 
-; Force Greats
-ForceGreatsMode = true
-ForceGreatsFinder = true
+; Force Greats tuning
 FG_CandidateLimit = 200
 FG_SearchRadius = 5
 
