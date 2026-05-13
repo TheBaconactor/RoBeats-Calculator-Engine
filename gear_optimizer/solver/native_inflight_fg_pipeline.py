@@ -15,10 +15,10 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import score_native_ga_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
-from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update, make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_progress import ProgressTracker
+from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
 from gear_optimizer.solver.native_inflight_persistence import _build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_config import _read_db_prefetch_workers, _read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
@@ -816,40 +816,8 @@ def run_fg_job_sync(
         logger.debug(f"native_inflight_fg_pipeline:_count_fg_group_meta_ready: {e}")
 
     if progress_cb is not None:
-        fg_record_info = None
-        try:
-            key = str(getattr(song.config, "db_key", "") or "").strip()
-            prev_best_score = safe_int(getattr(song.runtime.db, "db_best_score", 0), 0)
-            prev_best_fg = safe_int(getattr(song.runtime.db, "db_best_fg_score", 0), 0)
-            baseline_valid = bool(getattr(song.runtime.db, "db_baseline_valid", True))
-            if progress_tracker is not None and key:
-                prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
-
-            fg_record_info = evaluate_progress_record_update(
-                getattr(song.runtime.decode, "best_data", None) or {},
-                {"score": int(prev_best_score)},
-                getattr(song.runtime.fg, "fg_variants", None) or [],
-                db_best_fg_score=int(prev_best_fg),
-                baseline_valid=bool(baseline_valid),
-                fg_only=True,
-            )
-        except (ValueError, TypeError, KeyError):
-            fg_record_info = None
+        fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
-            fg_record_info = dict(fg_record_info)
-            if fg_record_info.get("is_fg_better") and progress_tracker is not None:
-                try:
-                    best_fg_new = safe_int(fg_record_info.get("best_fg_score_run", 0), 0)
-                except (ValueError, TypeError):
-                    best_fg_new = 0
-                if best_fg_new > 0:
-                    key = str(getattr(song.config, "db_key", "") or "").strip()
-                    if key:
-                        progress_tracker.update(
-                            key,
-                            best_fg=best_fg_new,
-                            mark_valid=bool(baseline_valid),
-                        )
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
             except Exception as e:

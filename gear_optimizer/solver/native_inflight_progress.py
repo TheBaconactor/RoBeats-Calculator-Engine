@@ -6,6 +6,7 @@ from typing import Any, Callable
 import logging
 
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
+from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.native_inflight_types import native_song_label
 
 
@@ -219,3 +220,40 @@ class ActiveRuntimeProgressReporter:
             failed_delta=0,
             record_info={"song": self.active_label, "status": "RUNNING"},
         )
+
+
+def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict | None:
+    try:
+        key = str(getattr(song.config, "db_key", "") or "").strip()
+        prev_best_score = safe_int(getattr(song.runtime.db, "db_best_score", 0), 0)
+        prev_best_fg = safe_int(getattr(song.runtime.db, "db_best_fg_score", 0), 0)
+        baseline_valid = bool(getattr(song.runtime.db, "db_baseline_valid", True))
+        if progress_tracker is not None and key:
+            prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
+
+        record_info = evaluate_progress_record_update(
+            getattr(song.runtime.decode, "best_data", None) or {},
+            {"score": int(prev_best_score)},
+            getattr(song.runtime.fg, "fg_variants", None) or [],
+            db_best_fg_score=int(prev_best_fg),
+            baseline_valid=bool(baseline_valid),
+            fg_only=True,
+        )
+    except (ValueError, TypeError, KeyError):
+        return None
+
+    if not isinstance(record_info, dict):
+        return None
+
+    record_info = dict(record_info)
+    if record_info.get("is_fg_better") and progress_tracker is not None:
+        best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0)
+        if best_fg_new > 0:
+            key = str(getattr(song.config, "db_key", "") or "").strip()
+            if key:
+                progress_tracker.update(
+                    key,
+                    best_fg=best_fg_new,
+                    mark_valid=bool(baseline_valid),
+                )
+    return record_info

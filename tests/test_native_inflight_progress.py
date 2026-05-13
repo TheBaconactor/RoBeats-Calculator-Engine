@@ -1,4 +1,8 @@
-from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
+from gear_optimizer.solver.native_inflight_progress import (
+    ActiveRuntimeProgressReporter,
+    ProgressTracker,
+    evaluate_fg_progress_record_update,
+)
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
@@ -126,6 +130,31 @@ def test_progress_tracker_evaluate_record_update_updates_fg_session_best():
         {"BaseScore": 1000},
         [{"base_score": 1000, "fg_score": 1050, "data": {"ForceGreats": {"config": {"a": 1}}}}],
     )
+
+    assert isinstance(record_info, dict)
+    assert record_info["is_fg_better"] is True
+    assert tracker.snapshot("song-a") == (1000, 1050, True)
+
+
+def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg_best():
+    tracker = ProgressTracker()
+    tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)
+    song = make_native_song(
+        db_key="song-a",
+        best_data={"BaseScore": 1000},
+        fg_variants=[
+            {
+                "base_score": 1000,
+                "fg_score": 1050,
+                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+        db_best_score=1,
+        db_best_fg_score=1,
+        db_baseline_valid=False,
+    )
+
+    record_info = evaluate_fg_progress_record_update(song, tracker)
 
     assert isinstance(record_info, dict)
     assert record_info["is_fg_better"] is True
