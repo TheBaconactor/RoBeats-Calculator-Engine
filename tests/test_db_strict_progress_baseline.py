@@ -30,6 +30,23 @@ def test_get_db_connection_cached_strict_does_not_create_fallback(tmp_path, monk
     assert getattr(db._DB_TLS, "fallback_conn", None) is None
 
 
+def test_cached_db_connection_does_not_use_cross_thread_registry(tmp_path, caplog):
+    db_path = tmp_path / "registry.db"
+    db_path.write_text("", encoding="utf-8")
+    _clear_db_tls()
+    try:
+        with caplog.at_level("WARNING"):
+            conn = db.get_db_connection_cached(str(db_path))
+
+        assert "database:_register_db_conn" not in caplog.text
+        assert "database:_close_all_registered_db_conns" not in caplog.text
+    finally:
+        conn = getattr(db._DB_TLS, "conns", {}).pop(str(db_path), None)
+        if conn is not None:
+            conn.close()
+        _clear_db_tls()
+
+
 def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(monkeypatch):
     monkeypatch.setattr(database_context, "load_database_context", lambda *args, **kwargs: (None, {}))
 
@@ -40,7 +57,6 @@ def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(mo
 
     result = database_context.load_database_progress_baseline(
         "Song A",
-        True,
         {},
         {},
         load_known_loadouts=False,

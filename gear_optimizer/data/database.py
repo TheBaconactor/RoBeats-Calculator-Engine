@@ -9,8 +9,6 @@ import os
 import sqlite3
 import time
 import threading
-import atexit
-import weakref
 import warnings
 from collections.abc import Iterable
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -580,35 +578,6 @@ def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float 
 # Perf: thread-local DB connections for read-heavy paths
 # ---------------------------------------------------------------------------
 _DB_TLS = threading.local()
-_DB_CONN_REGISTRY: "weakref.WeakSet[sqlite3.Connection]" = weakref.WeakSet()
-_DB_CONN_REGISTRY_LOCK = threading.Lock()
-
-
-def _register_db_conn(conn: sqlite3.Connection) -> None:
-    try:
-        with _DB_CONN_REGISTRY_LOCK:
-            _DB_CONN_REGISTRY.add(conn)
-    except Exception as e:
-        logger.warning(f"database:_register_db_conn: {e}")
-
-
-def _close_all_registered_db_conns() -> None:
-    try:
-        with _DB_CONN_REGISTRY_LOCK:
-            conns = list(_DB_CONN_REGISTRY)
-    except Exception as e:
-        logger.warning(f"database:_close_all_registered_db_conns: {e}")
-        conns = []
-    for c in conns:
-        try:
-            c.close()
-        except Exception as e:
-            logger.warning(f"database:_close_all_registered_db_conns: {e}")
-
-
-atexit.register(_close_all_registered_db_conns)
-
-
 def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: bool = True) -> sqlite3.Connection:
     """
     Return a per-thread cached SQLite connection.
@@ -723,7 +692,6 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
                 except Exception as e:
                     logger.warning(f"database:get_db_connection_cached: {e}")
                 setattr(_DB_TLS, "fallback_conn", fallback)
-                _register_db_conn(fallback)
             except Exception as e:
                 # Last resort: re-raise so callers can handle it.
                 logger.warning(f"database:get_db_connection_cached: {e}")
@@ -736,7 +704,6 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
         setattr(_DB_TLS, "ro_next_retry_ts", 0.0)
     except Exception as e:
         logger.warning(f"database:get_db_connection_cached: {e}")
-    _register_db_conn(conn)
     return conn
 
 
