@@ -162,9 +162,14 @@ def test_repo_config_keeps_only_song_selection_and_loop_flag():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = load_config(str(repo_root / "config.ini"))
 
-    assert set(cfg.sections()) == {"CalculateSong", "IterationEngine"}
-    assert set(cfg.options("CalculateSong")) == {"song_name", "difficulty", "targetprimary", "targetsecondary"}
-    assert set(cfg.options("IterationEngine")) == {"loopforever"}
+    assert set(cfg.sections()) == {"CalculateSong"}
+    assert set(cfg.options("CalculateSong")) == {
+        "song_name",
+        "difficulty",
+        "targetprimary",
+        "targetsecondary",
+        "loopforever",
+    }
 
 
 class TestExtendsChain:

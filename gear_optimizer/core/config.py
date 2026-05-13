@@ -661,7 +661,12 @@ class AppRuntimeSettings:
         ga = GASettings.from_config(cfg)
         inflight = InflightSettings.from_config(cfg)
 
-        loop_forever = cfg_get_bool(cfg, "IterationEngine", "LoopForever", False)
+        loop_forever = cfg_get_bool(
+            cfg,
+            "CalculateSong",
+            "LoopForever",
+            cfg_get_bool(cfg, "IterationEngine", "LoopForever", False),
+        )
         eval_cpu_cores = cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0, clamp_min=0)
         song_queue_limit = cfg_get_int(cfg, "IterationEngine", "SongQueueLimit", 0, clamp_min=0)
         ignore_resume_queue = cfg_get_bool(cfg, "IterationEngine", "IgnoreResumeQueue", False)
