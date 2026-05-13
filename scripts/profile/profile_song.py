@@ -21,7 +21,8 @@ def profile_real_song():
     import configparser
     import numpy as np
 
-    from gear_optimizer.pipeline.song_processor import process_song_task, read_song_file
+    from gear_optimizer.data.song_io import read_song_file
+    from gear_optimizer.legacy.song_processor_adapter import process_song_task
     from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
     from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
     from gear_optimizer.core.config import load_paths_cache

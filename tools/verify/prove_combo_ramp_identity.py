@@ -45,7 +45,7 @@ from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
 from gear_optimizer.core.config import load_config
 from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from gear_optimizer.core.utils import cfg_to_dict
-from gear_optimizer.pipeline.song_processor import get_base_calc_song
+from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.scoring_core import lookup_reference_py
 
 

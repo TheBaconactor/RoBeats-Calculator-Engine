@@ -468,7 +468,7 @@ def run_single_seed_direct(
     audit_path: Path,
     run_db_path: Path,
 ) -> dict[str, Any]:
-    from gear_optimizer.pipeline.song_processor import safe_process_song_task
+    from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task
 
     repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
     task = (

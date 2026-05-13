@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import _unpack_stats_after_load
-from gear_optimizer.pipeline.song_processor import get_base_calc_song
+from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
 from gear_optimizer.data.db_manager import _build_song_index_for_difficulty

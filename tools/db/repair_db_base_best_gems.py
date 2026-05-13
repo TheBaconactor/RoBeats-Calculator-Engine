@@ -129,7 +129,7 @@ def _best_base_for_loadout(
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.core.constants import SKIP_ITEM_KEYS
     from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-    from gear_optimizer.pipeline.song_processor import get_base_calc_song
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
 
     fp = _song_file_from_name(PROJECT_ROOT, song_name)

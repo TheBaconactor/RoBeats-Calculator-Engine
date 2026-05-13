@@ -75,7 +75,7 @@ def _load_ref_arrays() -> dict[str, np.ndarray]:
 
 
 def _read_song(fp: str) -> dict:
-    from gear_optimizer.pipeline.song_processor import read_song_file
+    from gear_optimizer.data.song_io import read_song_file
 
     song = read_song_file(fp)
     details = song.get("song_details", {}) or {}

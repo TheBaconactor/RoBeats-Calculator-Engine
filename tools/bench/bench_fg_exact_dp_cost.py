@@ -112,7 +112,7 @@ def main() -> None:
     args = ap.parse_args()
 
     from gear_optimizer.core.config import load_config
-    from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.fg_exact_dp import solve_force_greats_exact_dp
 
     cfg = load_config()

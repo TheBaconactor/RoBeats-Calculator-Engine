@@ -40,7 +40,7 @@ from gear_optimizer.data.database import (
     get_evolution_db_path,
     save_loadouts_batch,
 )
-from gear_optimizer.pipeline.song_processor import read_song_file
+from gear_optimizer.data.song_io import read_song_file
 from gear_optimizer.solver.scoring import (
     FEVER_TIMELINE_CACHE,
     FG_CACHE,

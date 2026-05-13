@@ -36,7 +36,7 @@ from gear_optimizer.core.constants import (
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.helpers.song_helpers import setup_song_config
-from gear_optimizer.pipeline.song_processor import read_song_file
+from gear_optimizer.data.song_io import read_song_file
 from gear_optimizer.helpers.ga_helpers import initialize_pools
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.taichi_gem import api as gpu_api

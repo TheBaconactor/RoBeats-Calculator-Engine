@@ -164,7 +164,7 @@ def main() -> int:
     from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
     from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
     from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
-    from gear_optimizer.pipeline.song_processor import get_base_calc_song
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
     cfg = load_config()

@@ -6,7 +6,7 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gear_optimizer.pipeline.song_processor import process_song_task
+from gear_optimizer.legacy.song_processor_adapter import process_song_task
 from gear_optimizer.data.database import get_db_connection, get_evolution_db_path, init_db
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS

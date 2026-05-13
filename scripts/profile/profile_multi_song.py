@@ -26,7 +26,7 @@ def profile_multi_song():
     import numpy as np
     import glob
 
-    from gear_optimizer.pipeline.song_processor import process_song_task, safe_process_song_task
+    from gear_optimizer.legacy.song_processor_adapter import process_song_task, safe_process_song_task
     from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
     from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
     from gear_optimizer.core.config import load_paths_cache

@@ -69,7 +69,7 @@ def _iter_song_files(limit: int, difficulty: str | None) -> list[Path]:
 
 
 def _calc_song_from_file(path: Path) -> dict:
-    from gear_optimizer.pipeline.song_processor import read_song_file
+    from gear_optimizer.data.song_io import read_song_file
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     data = read_song_file(str(path))

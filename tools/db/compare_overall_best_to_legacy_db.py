@@ -123,7 +123,7 @@ def _best_base_rescored_legacy(
         return {"best": 0, "hash": ""}
 
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.pipeline.song_processor import get_base_calc_song
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = calc_song_cache.get(song)
@@ -259,7 +259,7 @@ def _best_fg_rescored_legacy(
         return {"best": 0, "hash": ""}
 
     from gear_optimizer.data.database import _base_details_from_force_payload, _unpack_stats_after_load
-    from gear_optimizer.pipeline.song_processor import get_base_calc_song
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
 
     rows = conn.execute(

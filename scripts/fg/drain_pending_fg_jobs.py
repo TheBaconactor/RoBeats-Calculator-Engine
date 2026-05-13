@@ -40,7 +40,7 @@ from gear_optimizer.helpers.song_helpers import (
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
 from gear_optimizer.helpers.song_helpers.persistence import build_db_payload
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
-from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song, scan_song_header
+from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song, scan_song_header
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 

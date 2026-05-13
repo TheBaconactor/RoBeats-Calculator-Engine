@@ -177,7 +177,7 @@ def _query_best_loadout(db_path: str, *, song_name: str) -> _DbLoadout | None:
 
 
 def _read_calc_song(song_path: str) -> dict:
-    from gear_optimizer.pipeline.song_processor import read_song_file
+    from gear_optimizer.data.song_io import read_song_file
 
     song = read_song_file(str(song_path))
     details = song.get("song_details", {}) or {}

@@ -31,7 +31,7 @@ from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET, TOT
 from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.helpers.song_helpers import setup_song_config
-from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 from gear_optimizer.solver.solver_common import SolverContext, prepare_solver_context
 
