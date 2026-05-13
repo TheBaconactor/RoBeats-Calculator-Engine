@@ -27,6 +27,7 @@ def add_db_payload_priority_entries(
     append_entry: AppendEntryFn,
 ) -> None:
     add_top_base_entry(db_payload, append_entry)
+    add_fg_entries(db_payload.get("fg_entries"), loadout_entries, append_entry)
     add_best_fg_entry(db_payload.get("best_fg"), loadout_entries, append_entry)
 
 
@@ -61,6 +62,13 @@ def add_best_fg_entry(best_fg: dict | None, loadout_entries: dict | None, append
         best_fg.get("score", 0),
         best_fg_force,
     )
+
+
+def add_fg_entries(fg_entries: list[dict] | None, loadout_entries: dict | None, append_entry: AppendEntryFn) -> None:
+    if not fg_entries:
+        return
+    for fg_entry in fg_entries:
+        add_best_fg_entry(fg_entry, loadout_entries, append_entry)
 
 
 def add_ga_candidate_entries(

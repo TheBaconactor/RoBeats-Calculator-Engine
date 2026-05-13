@@ -171,3 +171,81 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
     assert retained_stats
     assert int(retained["score"]) == int(score_stats_exact(retained_stats, calc_song, ref_arrays))
     assert int(retained["score"]) != int(inflated_score)
+
+
+def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload():
+    from gear_optimizer.helpers.song_helpers.persistence import build_db_payload
+
+    build_details = make_build_details_fn("Rush", "Flow", "Hard")
+    best_data = {
+        "BaseScore": 1000,
+        "Score": 1000,
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {},
+        "Stats": _stats(10),
+        "Selected Element": "Rush",
+    }
+    best_gear = ["G_top"]
+    best_minis = ["M_top"]
+    fg_variants = [
+        {
+            "gear": ["G_top"],
+            "minis": ["M_top"],
+            "base_score": 1000,
+            "fg_score": 1100,
+            "data": {
+                "BaseScore": 1000,
+                "Stats": _stats(10),
+                "ForceGreats": {"config": {"NonFever1": 1}},
+            },
+        },
+        {
+            "gear": ["G_second"],
+            "minis": ["M_second"],
+            "base_score": 900,
+            "fg_score": 1200,
+            "data": {
+                "BaseScore": 900,
+                "Stats": _stats(9),
+                "ForceGreats": {"config": {"NonFever1": 2}},
+            },
+        },
+        {
+            "gear": ["G_third"],
+            "minis": ["M_third"],
+            "base_score": 850,
+            "fg_score": 950,
+            "data": {
+                "BaseScore": 850,
+                "Stats": _stats(8),
+                "ForceGreats": {"config": {"NonFever1": 3}},
+            },
+        },
+    ]
+
+    payload = build_db_payload(
+        best_data,
+        best_gear,
+        best_minis,
+        prev_record=None,
+        attempt_lifetime=1,
+        attempts_first=1,
+        fg_variants=fg_variants,
+        build_details_fn=build_details,
+        db_best_fg_score=0,
+    )
+
+    persist_entries = build_persistence_entries(
+        payload,
+        ga_candidates=[],
+        loadout_entries=None,
+        build_details_fn=build_details,
+    )
+
+    fg_rows = [entry for entry in persist_entries if int(entry.get("fg_score", 0) or 0) > int(entry.get("score", 0) or 0)]
+    assert {tuple(row.get("gear") or []) for row in fg_rows} == {
+        ("G_top",),
+        ("G_second",),
+        ("G_third",),
+    }

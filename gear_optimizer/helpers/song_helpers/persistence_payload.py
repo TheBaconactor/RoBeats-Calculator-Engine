@@ -265,6 +265,7 @@ def build_db_payload(
             }
         )
 
+    updated_payload["fg_entries"] = list(current_run_fg_candidates)
     updated_payload.pop("second", None)
 
     # Find FG result for TOP1's specific loadout (not global best)
