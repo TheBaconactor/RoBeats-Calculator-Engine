@@ -182,6 +182,7 @@ from gear_optimizer.solver.gpu_executor_queue_wait import (
     safe_qsize as _safe_qsize,
 )
 from gear_optimizer.solver.gpu_executor_registry_solve import (
+    execute_solve_genomes_from_registry as _execute_solve_genomes_from_registry,
     handle_solve_genomes_from_registry as _handle_solve_genomes_from_registry,
 )
 from gear_optimizer.solver.gpu_executor_registry_coalesce import (
@@ -1622,62 +1623,21 @@ class GpuExecutor:
             solve_genomes_from_registry,
         )
 
-        payload, resolve_err = self._resolve_registry_payload(request)
-        if resolve_err:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=resolve_err,
-            )
-
-        if "ref_arrays" in payload:
-            ref_arrays = payload["ref_arrays"]
-            sig = _ref_arrays_sig(ref_arrays)
-            if sig is None or sig != self._last_ref_arrays_sig:
-                load_ref_arrays(ref_arrays)
-                self._last_ref_arrays_sig = sig
-
-        if "item_stats" in payload and "slot_start" in payload and "slot_count" in payload:
-            ga_upload_item_stats(payload["item_stats"], payload["slot_start"], payload["slot_count"])
-
-        if "base_fixed_stats" in payload:
-            ga_upload_base_fixed_stats(payload["base_fixed_stats"])
-
-        song_slot = int(payload.get("song_slot", song_slot) or 0)
-        if (
-            song_slot == 0
-            and (not self._in_process_queues)
-            and request.worker_id is not None
-            and isinstance(payload.get("timeline_grid"), dict)
-        ):
-            song_slot = int(_default_song_slot_for_worker(int(request.worker_id)))
-        results = solve_genomes_from_registry(
-            population_indices=payload["population_indices"],
-            timeline_grid=payload["timeline_grid"],
-            is_p_ft=payload["is_p_ft"],
-            is_s_ft=payload["is_s_ft"],
-            is_p_ff=payload["is_p_ff"],
-            is_s_ff=payload["is_s_ff"],
-            is_p_pp=payload["is_p_pp"],
-            is_s_pp=payload["is_s_pp"],
-            is_p_cm=payload["is_p_cm"],
-            is_s_cm=payload["is_s_cm"],
-            is_p_fm=payload["is_p_fm"],
-            is_s_fm=payload["is_s_fm"],
-            is_p_ov=payload["is_p_ov"],
-            is_s_ov=payload["is_s_ov"],
-            ref_arrays=payload["ref_arrays"],
-            total_budget=payload.get("total_budget", 90),
-            gem_scale_fever=payload.get("gem_scale_fever", 3),
-            song_slot=song_slot,
-            use_exact_inner_solver=bool(payload.get("use_exact_inner_solver", 1)),
+        result = _execute_solve_genomes_from_registry(
+            request,
+            song_slot=int(song_slot),
+            in_process_queues=bool(self._in_process_queues),
+            last_ref_arrays_sig=self._last_ref_arrays_sig,
+            resolve_payload_fn=self._resolve_registry_payload,
+            ref_arrays_sig_fn=_ref_arrays_sig,
+            default_song_slot_for_worker_fn=_default_song_slot_for_worker,
+            load_ref_arrays_fn=load_ref_arrays,
+            ga_upload_item_stats_fn=ga_upload_item_stats,
+            ga_upload_base_fixed_stats_fn=ga_upload_base_fixed_stats,
+            solve_genomes_from_registry_fn=solve_genomes_from_registry,
         )
-
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=results,
-        )
+        self._last_ref_arrays_sig = result.last_ref_arrays_sig
+        return result.response
 
     def _execute_solve_force_greats_finder(self, request: GpuRequest) -> GpuResponse:
         """Execute solve_force_greats_finder_gpu on GPU."""
