@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
-import contextlib
 import copy
-import io
 import json
 import multiprocessing
 import os
@@ -451,102 +449,6 @@ def _query_team_buff_bests(db_path: Path, song_name: str, *, team_buff: str = "T
     return out
 
 
-def run_single_seed_direct(
-    *,
-    fp: str,
-    song_name: str,
-    difficulty: str,
-    cfg_dict: dict[str, Any],
-    paths: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    all_gears: list[Any],
-    all_minis: list[Any],
-    gears_by_name: dict[str, Any],
-    minis_by_name: dict[str, Any],
-    ga_depth: int,
-    ga_seed: int,
-    audit_path: Path,
-    run_db_path: Path,
-) -> dict[str, Any]:
-    from gear_optimizer.legacy.song_processor_adapter import safe_process_song_task
-
-    repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
-    task = (
-        fp,
-        song_name,
-        difficulty,
-        cfg_dict,
-        paths,
-        ref_arrays,
-        all_gears,
-        all_minis,
-        gears_by_name,
-        minis_by_name,
-        True,
-        int(ga_depth),
-        None,
-        1,
-        False,
-        repeat_ctx,
-    )
-
-    old_audit = env_get("GA_REDUNDANCY_AUDIT")
-    old_audit_path = env_get("GA_REDUNDANCY_AUDIT_PATH")
-    old_db_path = env_get("EVOLUTION_DB_PATH")
-    os.environ["GA_REDUNDANCY_AUDIT"] = "1"
-    os.environ["GA_REDUNDANCY_AUDIT_PATH"] = str(audit_path)
-    os.environ["EVOLUTION_DB_PATH"] = str(run_db_path)
-    pending_fg_before = _count_pending_fg_jobs_for_song(run_db_path, song_name)
-    t0 = time.perf_counter()
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            res = safe_process_song_task(task)
-    finally:
-        if old_audit is None:
-            os.environ.pop("GA_REDUNDANCY_AUDIT", None)
-        else:
-            os.environ["GA_REDUNDANCY_AUDIT"] = old_audit
-        if old_audit_path is None:
-            os.environ.pop("GA_REDUNDANCY_AUDIT_PATH", None)
-        else:
-            os.environ["GA_REDUNDANCY_AUDIT_PATH"] = old_audit_path
-        if old_db_path is None:
-            os.environ.pop("EVOLUTION_DB_PATH", None)
-        else:
-            os.environ["EVOLUTION_DB_PATH"] = old_db_path
-    elapsed = time.perf_counter() - t0
-
-    if not isinstance(res, dict):
-        return {"seed": int(ga_seed), "error": "non-dict-result", "elapsed_wall_sec": float(elapsed)}
-
-    best_data = res.get("best_data") if isinstance(res.get("best_data"), dict) else {}
-    base_hash, fg_hash = _extract_top_hashes(res.get("persist_entries") or [], minis_by_name=minis_by_name)
-    record = res.get("_record") if isinstance(res.get("_record"), dict) else {}
-    audit_record = _read_last_audit_record(audit_path, song_name)
-    pending_fg_after = _count_pending_fg_jobs_for_song(run_db_path, song_name)
-
-    return {
-        "seed": int(ga_seed),
-        "elapsed_wall_sec": float(elapsed),
-        "best_score": _safe_int(best_data.get("BaseScore", best_data.get("Score", 0)), 0),
-        "best_fg_score": _safe_int(record.get("best_fg_score_run", 0), 0),
-        "base_hash": base_hash,
-        "fg_hash": fg_hash,
-        "stage_timing": dict(res.get("_stage_timing") or {}),
-        "gpu_timing": dict(res.get("_gpu_timing") or {}),
-        "duplicate_genome_ratio": None
-        if audit_record is None
-        else _safe_float(audit_record.get("duplicate_genome_ratio", 0.0), 0.0),
-        "duplicate_signature_ratio": None
-        if audit_record is None
-        else _safe_float(audit_record.get("duplicate_signature_ratio", 0.0), 0.0),
-        "pending_fg_jobs_song_before": int(pending_fg_before),
-        "pending_fg_jobs_song_after": int(pending_fg_after),
-        "pending_fg_jobs_song_delta": int(pending_fg_after - pending_fg_before),
-        "error": str(res.get("_error", "") or ""),
-    }
-
-
 def run_single_seed_inflight(
     *,
     fp: str,
@@ -668,23 +570,16 @@ def run_benchmark(
     depths: list[int],
     seeds: list[int],
     ga_multi_start: int,
-    use_db: bool,
     fg_candidate_limit: int,
     fg_search_radius: int,
-    pipeline: str = "inflight",
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    pipeline = str(pipeline or "").strip().lower()
-    if pipeline not in {"direct", "inflight"}:
-        raise ValueError(f"Unknown pipeline: {pipeline}")
-
     base_cfg_dict = _load_cfg_dict(config_path)
     paths, ref_arrays, all_gears, all_minis, gears_by_name, minis_by_name = _load_runtime_inputs()
     fp = _resolve_song_file(paths, str(difficulty), str(song_name))
 
     explicit_db_path = bool(db_path and str(db_path).strip())
-    allow_db_source = bool(explicit_db_path or use_db)
-    db_source_path = _resolve_db_source_path(db_path if explicit_db_path else None) if allow_db_source else None
+    db_source_path = _resolve_db_source_path(db_path if explicit_db_path else None)
     all_depth_runs: dict[str, list[dict[str, Any]]] = {}
     temp_root = Path(tempfile.mkdtemp(prefix="ga_stability_"))
     try:
@@ -707,40 +602,22 @@ def run_benchmark(
                     depth=int(depth),
                     ga_seed=int(seed),
                 )
-                if pipeline == "direct":
-                    row = run_single_seed_direct(
-                        fp=fp,
-                        song_name=str(song_name),
-                        difficulty=str(difficulty),
-                        cfg_dict=cfg_dict,
-                        paths=paths,
-                        ref_arrays=ref_arrays,
-                        all_gears=all_gears,
-                        all_minis=all_minis,
-                        gears_by_name=gears_by_name,
-                        minis_by_name=minis_by_name,
-                        ga_depth=int(depth),
-                        ga_seed=int(seed),
-                        audit_path=audit_path,
-                        run_db_path=run_db_path,
-                    )
-                else:
-                    row = run_single_seed_inflight(
-                        fp=fp,
-                        song_name=str(song_name),
-                        difficulty=str(difficulty),
-                        cfg_dict=cfg_dict,
-                        paths=paths,
-                        ref_arrays=ref_arrays,
-                        all_gears=all_gears,
-                        all_minis=all_minis,
-                        gears_by_name=gears_by_name,
-                        minis_by_name=minis_by_name,
-                        ga_depth=int(depth),
-                        ga_seed=int(seed),
-                        audit_path=audit_path,
-                        run_db_path=run_db_path,
-                    )
+                row = run_single_seed_inflight(
+                    fp=fp,
+                    song_name=str(song_name),
+                    difficulty=str(difficulty),
+                    cfg_dict=cfg_dict,
+                    paths=paths,
+                    ref_arrays=ref_arrays,
+                    all_gears=all_gears,
+                    all_minis=all_minis,
+                    gears_by_name=gears_by_name,
+                    minis_by_name=minis_by_name,
+                    ga_depth=int(depth),
+                    ga_seed=int(seed),
+                    audit_path=audit_path,
+                    run_db_path=run_db_path,
+                )
                 rows.append(row)
             all_depth_runs[str(depth)] = rows
     finally:
@@ -748,14 +625,13 @@ def run_benchmark(
 
     summary = {depth: summarize_depth_runs(rows) for depth, rows in all_depth_runs.items()}
     return {
-        "pipeline": str(pipeline),
+        "pipeline": "inflight",
         "song_name": str(song_name),
         "difficulty": str(difficulty),
         "config_path": str(config_path),
         "depths": [int(d) for d in depths],
         "seeds": [int(s) for s in seeds],
         "ga_multi_start": int(ga_multi_start),
-        "use_db": bool(use_db),
         "fg_candidate_limit": int(fg_candidate_limit),
         "fg_search_radius": int(fg_search_radius),
         "db_source_path": "" if db_source_path is None else str(db_source_path),
@@ -772,14 +648,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--config", default="config.ini")
     ap.add_argument("--depths", default="6,12,18,24")
     ap.add_argument("--seeds", default="1337,1338,1339,1340,1341")
-    ap.add_argument(
-        "--pipeline",
-        default="inflight",
-        choices=["inflight", "direct"],
-        help="Execution pipeline: inflight matches production main.py; direct calls safe_process_song_task.",
-    )
     ap.add_argument("--ga-multi-start", type=int, default=3)
-    ap.add_argument("--use-db", action="store_true", help="Enable EvolutionDB reads during the run.")
     ap.add_argument("--fg-candidate-limit", type=int, default=51)
     ap.add_argument("--fg-search-radius", type=int, default=5)
     ap.add_argument(
@@ -819,10 +688,8 @@ def main(argv: list[str] | None = None) -> int:
         depths=depths,
         seeds=seeds,
         ga_multi_start=int(args.ga_multi_start),
-        use_db=bool(args.use_db),
         fg_candidate_limit=int(args.fg_candidate_limit),
         fg_search_radius=int(args.fg_search_radius),
-        pipeline=str(args.pipeline),
         db_path=str(args.db_path or ""),
     )
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
