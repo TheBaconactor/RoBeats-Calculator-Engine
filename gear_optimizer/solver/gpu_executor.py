@@ -57,11 +57,10 @@ from gear_optimizer.solver.gpu_executor_workload import (
     load_workload_profile_settings as _load_workload_profile_settings,
     payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
+    emit_workload_batch_profile as _emit_workload_batch_profile,
     emit_workload_window_profile as _emit_workload_window_profile,
     emit_workload_stop_summary as _emit_workload_stop_summary,
-    should_emit_workload_batch_event,
     summarize_batch,
-    workload_batch_event_metrics,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     batch_contains_fg_burst_work as _batch_contains_fg_burst_work,
@@ -532,12 +531,7 @@ class GpuExecutor:
         )
 
         if self._workload_profile_enabled:
-            if should_emit_workload_batch_event(metrics):
-                emit_profile_event(
-                    component="gpu_executor",
-                    event="workload::batch",
-                    metrics=workload_batch_event_metrics(metrics),
-                )
+            if _emit_workload_batch_profile(metrics, emit_profile_event_fn=emit_profile_event):
                 self._workload_events_emitted += 1
             self._maybe_emit_workload_profile()
 

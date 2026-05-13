@@ -18,6 +18,7 @@ from gear_optimizer.solver.gpu_executor_workload import (
 from gear_optimizer.solver.gpu_executor_workload import (
     should_emit_workload_batch_event,
     record_workload_batch_state,
+    emit_workload_batch_profile,
     emit_workload_window_profile,
     emit_workload_stop_summary,
     workload_batch_event_metrics,
@@ -307,6 +308,40 @@ def test_workload_batch_event_policy_and_payload_shape():
         "wait_ms": 1.25,
         "exec_ms": 4.0,
     }
+
+
+def test_emit_workload_batch_profile_applies_policy_and_emits_event():
+    events = []
+    metrics = {
+        "batch_id": 1,
+        "mode": "throughput",
+        "size": 2,
+        "types": "gpu_native_ga_run:2",
+        "dominant_type": "gpu_native_ga_run",
+        "dominant_share_pct": 100.0,
+        "diversity_pct": 0.0,
+        "work_units": 120.0,
+        "queue_depth_hint": 8,
+        "avg_submit_age_ms": 4.0,
+        "wait_ms": 2.0,
+        "exec_sec": 0.025,
+    }
+
+    assert emit_workload_batch_profile(metrics, emit_profile_event_fn=lambda **kwargs: events.append(kwargs)) is True
+    assert events == [
+        {
+            "component": "gpu_executor",
+            "event": "workload::batch",
+            "metrics": workload_batch_event_metrics(metrics),
+        }
+    ]
+    assert (
+        emit_workload_batch_profile(
+            dict(metrics, batch_id=63, mode="compat", pressure_hint=0.25),
+            emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+        )
+        is False
+    )
 
 
 def test_batch_trace_context_preserves_trace_field_shape():

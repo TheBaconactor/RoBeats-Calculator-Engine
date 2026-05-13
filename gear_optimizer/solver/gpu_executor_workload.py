@@ -241,6 +241,17 @@ def workload_batch_event_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def emit_workload_batch_profile(metrics: dict[str, Any], *, emit_profile_event_fn: Callable[..., None]) -> bool:
+    if not should_emit_workload_batch_event(metrics):
+        return False
+    emit_profile_event_fn(
+        component="gpu_executor",
+        event="workload::batch",
+        metrics=workload_batch_event_metrics(metrics),
+    )
+    return True
+
+
 def batch_trace_context(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "planner_mode": str(metrics.get("mode", "")),
