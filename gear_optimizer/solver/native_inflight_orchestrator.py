@@ -24,7 +24,6 @@ from gear_optimizer.solver.native_inflight_gpu_startup import start_native_infli
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
     first_task_config,
-    inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
     parse_inflight_config,
 )
@@ -81,6 +80,7 @@ from gear_optimizer.solver.native_inflight_stages import (
     prepare_fg_job_sync,
     run_cpu_prewarm_for_song,
 )
+from gear_optimizer.solver.native_inflight_shutdown import shutdown_native_inflight_resources
 
 logger = logging.getLogger(__name__)
 
@@ -1430,63 +1430,16 @@ def run_native_inflight_song_pipeline(
             stage_profiler.emit()
         except Exception as e:
             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        shutdown_debug = inflight_shutdown_debug_enabled()
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] fg_executor.shutdown")
-            fg_pipeline.shutdown_fg(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] decode_executor.shutdown")
-            decode_queue.shutdown(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] db_prefetch_executor.shutdown")
-            db_persistence.shutdown_prefetch(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
-            fg_pipeline.shutdown_prep(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] cpu_prewarm_executor.shutdown")
-            cpu_prewarm_queue.shutdown(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] prep_executor.shutdown")
-            prep_queue.shutdown(wait=True, cancel_futures=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if post_sender is not None:
-                if shutdown_debug:
-                    logger.debug("[InFlight][SHUTDOWN] post_sender.close")
-                post_sender.close(timeout=10.0)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if shutdown_debug:
-                logger.debug("[InFlight][SHUTDOWN] gpu_client.close")
-            gpu_client.close(timeout=2.0)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-        try:
-            if gpu_executor.is_running:
-                if shutdown_debug:
-                    logger.debug("[InFlight][SHUTDOWN] gpu_executor.stop")
-                gpu_executor.stop()
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+        shutdown_native_inflight_resources(
+            fg_pipeline=fg_pipeline,
+            decode_queue=decode_queue,
+            db_persistence=db_persistence,
+            cpu_prewarm_queue=cpu_prewarm_queue,
+            prep_queue=prep_queue,
+            post_sender=post_sender,
+            gpu_client=gpu_client,
+            gpu_executor=gpu_executor,
+        )
 
 
 # NOTE: `decode_ga_payload_sync`, `prefetch_db_loadouts_sync`, and `prepare_fg_job_sync`
