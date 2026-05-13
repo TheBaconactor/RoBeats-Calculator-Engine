@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from gear_optimizer.solver.native_inflight_scheduler import _closed_loop_bubble_kpi
+from gear_optimizer.solver.native_inflight_scheduler import closed_loop_bubble_kpi
 
 
 @dataclass
@@ -30,7 +30,7 @@ class BubbleTracker:
         target_song_lanes: int = 0,
     ) -> dict[str, float | int]:
         idle_sec = max(0.0, float(now_mono) - float(last_progress)) if gpu_idle else 0.0
-        bubble_kpi = _closed_loop_bubble_kpi(
+        bubble_kpi = closed_loop_bubble_kpi(
             idle_sec=float(idle_sec),
             ready_ga_count=int(ready_ga_count),
             ready_fg_count=int(ready_fg_count),

@@ -10,7 +10,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
 )
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
-    _closed_loop_bubble_kpi,
+    closed_loop_bubble_kpi,
     count_active_song_lanes,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
@@ -1099,14 +1099,14 @@ def test_wait_for_completion_event_long_timeout_uses_direct_wait():
 
 
 def test_closed_loop_bubble_kpi_increases_with_ready_work_and_fg_wait():
-    quiet = _closed_loop_bubble_kpi(
+    quiet = closed_loop_bubble_kpi(
         idle_sec=0.5,
         ready_ga_count=1,
         ready_fg_count=0,
         backlog_count=2,
         oldest_fg_wait_s=0.0,
     )
-    pressured = _closed_loop_bubble_kpi(
+    pressured = closed_loop_bubble_kpi(
         idle_sec=0.5,
         ready_ga_count=2,
         ready_fg_count=1,

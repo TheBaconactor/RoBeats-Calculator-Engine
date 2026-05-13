@@ -597,7 +597,7 @@ def _continuous_fg_submit_budget(
     return int(capacity)
 
 
-def _closed_loop_bubble_kpi(
+def closed_loop_bubble_kpi(
     *,
     idle_sec: float,
     ready_ga_count: int,
