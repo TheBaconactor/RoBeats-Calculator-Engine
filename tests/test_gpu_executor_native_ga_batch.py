@@ -1,9 +1,11 @@
 from gear_optimizer.solver.gpu_executor_native_ga_batch import (
     NativeGaBatchLimits,
+    execute_gpu_native_ga_run_batch,
+    execute_gpu_native_ga_run_chunk,
     load_native_ga_batch_limits,
     plan_native_ga_batch_chunks,
 )
-from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 
 def _req(req_id: int) -> GpuRequest:
@@ -68,3 +70,43 @@ def test_plan_native_ga_batch_chunks_clamps_request_work_units_to_one():
     )
 
     assert [[req.request_id for req in chunk] for chunk in chunks] == [[1, 2], [3]]
+
+
+def test_execute_gpu_native_ga_run_chunk_aborts_remaining_requests():
+    requests = [_req(1), _req(2), _req(3)]
+    calls = []
+
+    def _abort_requested() -> bool:
+        return len(calls) >= 1
+
+    responses = execute_gpu_native_ga_run_chunk(
+        requests,
+        abort_requested=_abort_requested,
+        aborted_response=lambda req: GpuResponse(request_id=req.request_id, success=False, error="aborted"),
+        execute_single=lambda req: calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True),
+    )
+
+    assert calls == [1]
+    assert [response.request_id for response in responses] == [1, 2, 3]
+    assert responses[0].success is True
+    assert [response.error for response in responses[1:]] == ["aborted", "aborted"]
+
+
+def test_execute_gpu_native_ga_run_batch_uses_planned_chunks():
+    requests = [_req(1), _req(2), _req(3), _req(4), _req(5)]
+    chunks_seen = []
+
+    responses = execute_gpu_native_ga_run_batch(
+        requests,
+        abort_requested=lambda: False,
+        aborted_response=lambda req: GpuResponse(request_id=req.request_id, success=False),
+        execute_single=lambda req: GpuResponse(request_id=req.request_id, success=True),
+        execute_chunk=lambda chunk: chunks_seen.append([req.request_id for req in chunk])
+        or [GpuResponse(request_id=req.request_id, success=True) for req in chunk],
+        env_get_fn=lambda key, default: {"GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS": "2"}.get(key, default),
+        estimate_work_units_fn=lambda _req: 1.0,
+    )
+
+    assert chunks_seen == [[1, 2], [3, 4], [5]]
+    assert [response.request_id for response in responses] == [1, 2, 3, 4, 5]

@@ -179,8 +179,8 @@ from gear_optimizer.solver.gpu_executor_fused_coalesce import (
     unwrap_ga_fg_fused_batch_response as _unwrap_ga_fg_fused_batch_response,
 )
 from gear_optimizer.solver.gpu_executor_native_ga_batch import (
-    load_native_ga_batch_limits as _load_native_ga_batch_limits,
-    plan_native_ga_batch_chunks as _plan_native_ga_batch_chunks,
+    execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
+    execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
 )
 from gear_optimizer.solver.gpu_executor_native_ga import execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request
 from gear_optimizer.solver.gpu_executor_ga_recovery import staged_ga_recovery_index as _staged_ga_recovery_index
@@ -2102,40 +2102,23 @@ class GpuExecutor:
 
         This keeps request dispatch in one executor pass and reduces per-request routing overhead.
         """
-        if not requests:
-            return []
-        if len(requests) == 1:
-            return [self._execute_gpu_native_ga_run(requests[0])]
-
-        out: list[GpuResponse] = []
-        chunks = _plan_native_ga_batch_chunks(
+        return _execute_gpu_native_ga_run_batch(
             requests,
-            limits=_load_native_ga_batch_limits(env_get_fn=env_get),
+            abort_requested=self.abort_requested,
+            aborted_response=self._aborted_response,
+            execute_single=self._execute_gpu_native_ga_run,
+            execute_chunk=self._execute_gpu_native_ga_run_chunk,
+            env_get_fn=env_get,
             estimate_work_units_fn=estimate_request_work_units,
         )
-        for chunk_idx, chunk in enumerate(chunks):
-            if self.abort_requested():
-                pending = [pending_req for pending_chunk in chunks[chunk_idx:] for pending_req in pending_chunk]
-                out.extend(self._aborted_response(pending_req) for pending_req in pending)
-                return out
-            out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
-            if self.abort_requested():
-                pending = [pending_req for pending_chunk in chunks[chunk_idx + 1 :] for pending_req in pending_chunk]
-                out.extend(self._aborted_response(pending_req) for pending_req in pending)
-                return out
-
-        return out
 
     def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        if not requests:
-            return []
-        out: list[GpuResponse] = []
-        for idx, req in enumerate(requests):
-            if self.abort_requested():
-                out.extend(self._aborted_response(pending_req) for pending_req in requests[idx:])
-                break
-            out.append(self._execute_gpu_native_ga_run(req))
-        return out
+        return _execute_gpu_native_ga_run_chunk(
+            requests,
+            abort_requested=self.abort_requested,
+            aborted_response=self._aborted_response,
+            execute_single=self._execute_gpu_native_ga_run,
+        )
 
     def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """

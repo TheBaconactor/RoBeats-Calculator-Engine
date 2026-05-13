@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.parsing import env_get
-from gear_optimizer.solver.gpu_executor_types import GpuRequest
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
 
 @dataclass(frozen=True)
@@ -59,3 +59,56 @@ def plan_native_ga_batch_chunks(
     if chunk:
         chunks.append(chunk)
     return chunks
+
+
+def execute_gpu_native_ga_run_chunk(
+    requests: list[GpuRequest],
+    *,
+    abort_requested: Callable[[], bool],
+    aborted_response: Callable[[GpuRequest], GpuResponse],
+    execute_single: Callable[[GpuRequest], GpuResponse],
+) -> list[GpuResponse]:
+    if not requests:
+        return []
+    out: list[GpuResponse] = []
+    for idx, req in enumerate(requests):
+        if abort_requested():
+            out.extend(aborted_response(pending_req) for pending_req in requests[idx:])
+            break
+        out.append(execute_single(req))
+    return out
+
+
+def execute_gpu_native_ga_run_batch(
+    requests: list[GpuRequest],
+    *,
+    abort_requested: Callable[[], bool],
+    aborted_response: Callable[[GpuRequest], GpuResponse],
+    execute_single: Callable[[GpuRequest], GpuResponse],
+    execute_chunk: Callable[[list[GpuRequest]], list[GpuResponse]],
+    env_get_fn: Callable[[str, Any], Any] = env_get,
+    estimate_work_units_fn: Callable[[GpuRequest], float],
+) -> list[GpuResponse]:
+    if not requests:
+        return []
+    if len(requests) == 1:
+        return [execute_single(requests[0])]
+
+    out: list[GpuResponse] = []
+    chunks = plan_native_ga_batch_chunks(
+        requests,
+        limits=load_native_ga_batch_limits(env_get_fn=env_get_fn),
+        estimate_work_units_fn=estimate_work_units_fn,
+    )
+    for chunk_idx, chunk in enumerate(chunks):
+        if abort_requested():
+            pending = [pending_req for pending_chunk in chunks[chunk_idx:] for pending_req in pending_chunk]
+            out.extend(aborted_response(pending_req) for pending_req in pending)
+            return out
+        out.extend(execute_chunk(chunk))
+        if abort_requested():
+            pending = [pending_req for pending_chunk in chunks[chunk_idx + 1 :] for pending_req in pending_chunk]
+            out.extend(aborted_response(pending_req) for pending_req in pending)
+            return out
+
+    return out
