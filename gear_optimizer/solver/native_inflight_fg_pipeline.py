@@ -14,7 +14,6 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import score_native_ga_force_greats
-from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
@@ -686,17 +685,7 @@ def run_fg_job_sync(
 
     InflightDBPersistence.consume_ready_prefetch(song)
 
-    build_details = song.runtime.fg.fg_build_details
-    if not callable(build_details):
-        build_details = make_build_details_fn(
-            getattr(song.gpu_inputs, "meta_primary_color", ""),
-            getattr(song.gpu_inputs, "meta_secondary_color", ""),
-            getattr(song.config, "effective_difficulty", ""),
-        )
-        try:
-            song.runtime.fg.fg_build_details = build_details
-        except AttributeError:
-            pass
+    build_details = InflightDBPersistence.ensure_fg_build_details(song)
 
     InflightDBPersistence.merge_prefetched_loadouts(song)
 

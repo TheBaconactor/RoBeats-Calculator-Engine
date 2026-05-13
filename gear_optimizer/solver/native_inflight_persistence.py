@@ -109,20 +109,26 @@ class InflightDBPersistence:
         merge_db_loadouts_into_entries(loadout_entries, db_loadouts_full)
         return True
 
-    def shutdown_prefetch(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
-        self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-
-
-def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
-    entries: list[dict] = []
-    build_details = song.runtime.fg.fg_build_details
-    if not callable(build_details):
+    @staticmethod
+    def ensure_fg_build_details(song: _NativeSong) -> Callable:
+        build_details = song.runtime.fg.fg_build_details
+        if callable(build_details):
+            return build_details
         build_details = make_build_details_fn(
             getattr(song.gpu_inputs, "meta_primary_color", ""),
             getattr(song.gpu_inputs, "meta_secondary_color", ""),
             getattr(song.config, "effective_difficulty", ""),
         )
         song.runtime.fg.fg_build_details = build_details
+        return build_details
+
+    def shutdown_prefetch(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
+        self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
+def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
+    entries: list[dict] = []
+    build_details = InflightDBPersistence.ensure_fg_build_details(song)
     raw_loadout_entries = song.runtime.fg.loadout_entries
     loadout_entries = raw_loadout_entries if isinstance(raw_loadout_entries, dict) else {}
     loadout_hash_index: dict[str, dict] = {}
