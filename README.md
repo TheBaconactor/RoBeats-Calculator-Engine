@@ -53,7 +53,6 @@ The optimizer will:
 - **Memetic Search:** Local search hill-climbing after crossover for elite solutions
 - **Multi-Start Restarts:** Escape local optima with fresh populations (3-30 restarts)
 - **Pareto Pruning:** Remove dominated gear to reduce search space
-- **Deep Mining:** Iterative refinement of best-known solutions from database
 - **Adaptive Mutation:** Dynamic mutation rate (0.35-0.55) based on stagnation
 
 ### 💾 Data Management
