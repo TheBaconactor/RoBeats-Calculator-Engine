@@ -7,14 +7,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from gear_optimizer.solver.native_inflight_types import _NativeSong, native_song_label
+from gear_optimizer.solver.native_inflight_types import NativeSong, native_song_label
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class CpuPrewarmCompletion:
-    song: _NativeSong
+    song: NativeSong
     submit_t0: float
     label: str
     error: Exception | None = None
@@ -26,8 +26,8 @@ class CpuPrewarmQueue:
         *,
         max_workers: int,
         lookahead: int,
-        prewarm_fn: Callable[[_NativeSong], None],
-        label_for_song: Callable[[_NativeSong], str] | None = None,
+        prewarm_fn: Callable[[NativeSong], None],
+        label_for_song: Callable[[NativeSong], str] | None = None,
     ) -> None:
         self.executor = (
             concurrent.futures.ThreadPoolExecutor(
@@ -40,7 +40,7 @@ class CpuPrewarmQueue:
         self.lookahead = max(0, int(lookahead))
         self.prewarm_fn = prewarm_fn
         self.label_for_song = label_for_song or self.default_label_for_song
-        self.inflight: deque[tuple[_NativeSong, concurrent.futures.Future, float, str]] = deque()
+        self.inflight: deque[tuple[NativeSong, concurrent.futures.Future, float, str]] = deque()
         self.submitted: set[str] = set()
 
     def __len__(self) -> int:
@@ -50,12 +50,12 @@ class CpuPrewarmQueue:
         return bool(self.inflight)
 
     @staticmethod
-    def default_label_for_song(song: _NativeSong) -> str:
+    def default_label_for_song(song: NativeSong) -> str:
         return native_song_label(song, fallback_id=True)
 
     def submit(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         *,
         label: str | None = None,
         register_future: Callable[[concurrent.futures.Future | None], None],
@@ -89,7 +89,7 @@ class CpuPrewarmQueue:
         prepared,
         *,
         register_future: Callable[[concurrent.futures.Future | None], None],
-        extra_submit: Callable[[_NativeSong], bool] | None = None,
+        extra_submit: Callable[[NativeSong], bool] | None = None,
     ) -> int:
         if int(self.lookahead) <= 0:
             return 0

@@ -14,7 +14,7 @@ from gear_optimizer.helpers.song_helpers.database_context import resolve_databas
 from gear_optimizer.helpers.song_helpers.loadout_builder import merge_db_loadouts_into_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 
 
@@ -47,7 +47,7 @@ class InflightDBPersistence:
 
     def maybe_submit_prefetch(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         prefetch_fn: Callable,
         *,
         register_future: Callable,
@@ -80,7 +80,7 @@ class InflightDBPersistence:
             return False
 
     @staticmethod
-    def consume_ready_prefetch(song: _NativeSong) -> bool:
+    def consume_ready_prefetch(song: NativeSong) -> bool:
         if getattr(song.runtime.db, "db_loadouts_full", None) is not None:
             return False
         if getattr(song.runtime.db, "db_loadouts_future", None) is None:
@@ -108,7 +108,7 @@ class InflightDBPersistence:
         return True
 
     @staticmethod
-    def merge_prefetched_loadouts(song: _NativeSong) -> bool:
+    def merge_prefetched_loadouts(song: NativeSong) -> bool:
         db_loadouts_full = getattr(song.runtime.db, "db_loadouts_full", None)
         loadout_entries = getattr(song.runtime.fg, "loadout_entries", None)
         if db_loadouts_full is None or _loadout_entries_have_db_source(loadout_entries):
@@ -120,7 +120,7 @@ class InflightDBPersistence:
         return True
 
     @staticmethod
-    def ensure_fg_build_details(song: _NativeSong) -> Callable:
+    def ensure_fg_build_details(song: NativeSong) -> Callable:
         build_details = song.runtime.fg.fg_build_details
         if callable(build_details):
             return build_details
@@ -136,7 +136,7 @@ class InflightDBPersistence:
         self.prefetch_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
-def build_fg_persist_entries(song: _NativeSong) -> list[dict]:
+def build_fg_persist_entries(song: NativeSong) -> list[dict]:
     entries: list[dict] = []
     build_details = InflightDBPersistence.ensure_fg_build_details(song)
     raw_loadout_entries = song.runtime.fg.loadout_entries

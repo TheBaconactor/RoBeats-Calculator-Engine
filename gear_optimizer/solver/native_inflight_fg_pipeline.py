@@ -23,7 +23,7 @@ from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import prepare_fg_job_sync, resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class NativeFGPipelineSettings:
 
 @dataclass(frozen=True)
 class NativeFGPrepCompletion:
-    song: _NativeSong
+    song: NativeSong
     submit_t0: float | None
     cpu_seconds: float | None
     error: Exception | None = None
@@ -48,7 +48,7 @@ class NativeFGPrepCompletion:
 
 @dataclass(frozen=True)
 class NativeFGJobCompletion:
-    song: _NativeSong
+    song: NativeSong
     future: concurrent.futures.Future
     submit_t0: float
 
@@ -146,9 +146,9 @@ class NativeFGPipeline:
 
     def __init__(self, settings: NativeFGPipelineSettings) -> None:
         self.settings = settings
-        self.pending: deque[_NativeSong] = deque()
-        self.prep_inflight: deque[_NativeSong] = deque()
-        self.futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
+        self.pending: deque[NativeSong] = deque()
+        self.prep_inflight: deque[NativeSong] = deque()
+        self.futures: deque[tuple[NativeSong, concurrent.futures.Future, float]] = deque()
         self.ga_credit_budget = max(1, int(settings.ga_credit_budget))
         self.ga_credit = int(self.ga_credit_budget)
         self.executor = concurrent.futures.ThreadPoolExecutor(
@@ -172,7 +172,7 @@ class NativeFGPipeline:
     def prep_workers(self) -> int:
         return int(self.settings.prep_workers)
 
-    def queue(self, song: _NativeSong, *, now_s: float | None = None) -> None:
+    def queue(self, song: NativeSong, *, now_s: float | None = None) -> None:
         runtime = getattr(song, 'runtime', song)
         self.pending.append(song)
         try:
@@ -186,12 +186,12 @@ class NativeFGPipeline:
         except (KeyError, TypeError, ValueError):
             pass
 
-    def requeue_front(self, song: _NativeSong) -> None:
+    def requeue_front(self, song: NativeSong) -> None:
         self.pending.appendleft(song)
 
     def start_prep(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         prep_fn: Callable[..., Any],
         *,
         gpu_client: GpuServiceClient | None,
@@ -299,11 +299,11 @@ class NativeFGPipeline:
             )
         return completions
 
-    def active_static_prep_count(self, *external_song_groups: Iterable[_NativeSong]) -> int:
+    def active_static_prep_count(self, *external_song_groups: Iterable[NativeSong]) -> int:
         active = 0
         seen_ids: set[int] = set()
 
-        def _track(song: _NativeSong) -> None:
+        def _track(song: NativeSong) -> None:
             nonlocal active
             try:
                 song_id = int(id(song))
@@ -344,10 +344,10 @@ class NativeFGPipeline:
 
     def start_static_prep(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         prep_fn: Callable[..., Any],
         *,
-        external_song_groups: Iterable[Iterable[_NativeSong]] = (),
+        external_song_groups: Iterable[Iterable[NativeSong]] = (),
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
         if int(self.settings.static_prep_max_inflight) <= 0:
@@ -425,7 +425,7 @@ class NativeFGPipeline:
             register_future(fut)
         return fut
 
-    def pop_next(self, *, allow_not_ready: bool) -> _NativeSong | None:
+    def pop_next(self, *, allow_not_ready: bool) -> NativeSong | None:
         """
         Pick a song for FG submission.
 
@@ -505,7 +505,7 @@ class NativeFGPipeline:
     def submit_job(
         self,
         run_fn: Callable[..., Any],
-        song: _NativeSong,
+        song: NativeSong,
         *,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
         **kwargs: Any,
@@ -524,7 +524,7 @@ class NativeFGPipeline:
 
     def run_job_sync(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         *,
         gpu_client: GpuServiceClient,
         post_sender: PostSender | None = None,
@@ -539,13 +539,13 @@ class NativeFGPipeline:
             progress_tracker=progress_tracker,
         )
 
-    def replace_futures(self, futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]]) -> None:
+    def replace_futures(self, futures: deque[tuple[NativeSong, concurrent.futures.Future, float]]) -> None:
         self.futures.clear()
         self.futures.extend(futures)
 
     def pop_completed_jobs(self) -> list[NativeFGJobCompletion]:
         completions: list[NativeFGJobCompletion] = []
-        still_pending: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
+        still_pending: deque[tuple[NativeSong, concurrent.futures.Future, float]] = deque()
         for song, future, submit_t0 in list(self.futures):
             try:
                 done = future.done()
@@ -601,7 +601,7 @@ class NativeFGPipeline:
         self.prep_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
     @staticmethod
-    def _song_key(song: _NativeSong) -> str:
+    def _song_key(song: NativeSong) -> str:
         try:
             return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
         except (KeyError, TypeError, ValueError):
@@ -609,7 +609,7 @@ class NativeFGPipeline:
 
 
 def run_fg_job_sync(
-    song: _NativeSong,
+    song: NativeSong,
     *,
     gpu_client: GpuServiceClient,
     post_sender: PostSender | None = None,
@@ -786,7 +786,7 @@ def run_fg_job_sync(
 
 
 def score_fg_inside_ga(
-    song: _NativeSong,
+    song: NativeSong,
     *,
     gpu_client: GpuServiceClient,
 ) -> None:

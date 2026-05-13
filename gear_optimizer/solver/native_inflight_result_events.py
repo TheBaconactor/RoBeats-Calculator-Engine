@@ -8,23 +8,23 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candi
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
 from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
 from gear_optimizer.solver.native_inflight_post_candidates import build_ga_candidates_for_post
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 
-def fg_enabled_for_song(song: _NativeSong) -> bool:
+def fg_enabled_for_song(song: NativeSong) -> bool:
     return bool(song.gpu_inputs.manual_force_greats or song.gpu_inputs.force_greats_finder)
 
 
-def fg_scored_for_song(song: _NativeSong) -> bool:
+def fg_scored_for_song(song: NativeSong) -> bool:
     return getattr(song.runtime.fg, "fg_variants", None) is not None
 
 
-def fg_pending_for_post(song: _NativeSong) -> bool:
+def fg_pending_for_post(song: NativeSong) -> bool:
     return bool(fg_enabled_for_song(song) and not fg_scored_for_song(song))
 
 
 def build_native_song_error_payload(
-    song: _NativeSong,
+    song: NativeSong,
     *,
     exc: Exception,
     trace: str,
@@ -64,7 +64,7 @@ def build_native_task_error_payload(
     return payload
 
 
-def build_fg_update_payload(song: _NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
+def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
     return {
         "_fg_update": True,
         "song": song.config.song_name,
@@ -76,11 +76,11 @@ def build_fg_update_payload(song: _NativeSong, *, persist_entries: list[dict]) -
     }
 
 
-def build_failed_fg_update_payload(song: _NativeSong) -> dict[str, Any]:
+def build_failed_fg_update_payload(song: NativeSong) -> dict[str, Any]:
     return build_fg_update_payload(song, persist_entries=[])
 
 
-def build_deferred_post_payload(song: _NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
+def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
     pending_fg_job = fg_pending_for_post(song)

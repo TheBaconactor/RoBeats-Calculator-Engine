@@ -10,7 +10,7 @@ from gear_optimizer.domain.jobs import (
     materialize_repeat_task,
     task_queue_label,
 )
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class InflightBundleTracker:
         repeat_ctx = dict(runs[cursor])
         return materialize_repeat_task(task, repeat_ctx), repeat_ctx
 
-    def bind_song(self, song: _NativeSong, parent_task: tuple, repeat_ctx: dict | None) -> None:
+    def bind_song(self, song: NativeSong, parent_task: tuple, repeat_ctx: dict | None) -> None:
         if repeat_ctx is None or not self.bundle_runs(parent_task):
             return
         song.runtime.bundle.bundle_parent_task = parent_task

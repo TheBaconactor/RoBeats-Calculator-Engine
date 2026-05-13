@@ -73,7 +73,7 @@ from gear_optimizer.solver.native_inflight_runtime_signals import (
     is_stop_abort_exception,
 )
 from gear_optimizer.solver.native_inflight_abort_log import log_native_abort
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 from gear_optimizer.solver.native_inflight_fg_db_cache import prefetch_db_loadouts_sync
 from gear_optimizer.solver.native_inflight_stages import (
     InFlightStageProfiler,
@@ -168,8 +168,8 @@ def run_native_inflight_song_pipeline(
         progress_tracker.emit_error_item_progress(progress_cb, item)
 
     pending_tasks = deque(t for t in tasks if task_queue_label(t) not in completed_songs)
-    prepared: deque[_NativeSong] = deque()
-    pending_fg: deque[_NativeSong] = deque()
+    prepared: deque[NativeSong] = deque()
+    pending_fg: deque[NativeSong] = deque()
     bundle_tracker = InflightBundleTracker(
         pending_tasks=pending_tasks,
         completed_songs=completed_songs,
@@ -212,7 +212,7 @@ def run_native_inflight_song_pipeline(
     fg_prep_inflight = fg_pipeline.prep_inflight
     fg_futures = fg_pipeline.futures
     active_runtime_reporter = ActiveRuntimeProgressReporter(_emit_progress)
-    post_emit_pending: deque[_NativeSong] = deque()
+    post_emit_pending: deque[NativeSong] = deque()
     fg_workers = int(fg_pipeline.workers)
     fg_batch_max = int(fg_pipeline.batch_max)
 
@@ -240,7 +240,7 @@ def run_native_inflight_song_pipeline(
             fg_active_keys=fg_pipeline.active_song_keys(),
         )
 
-    def _submit_fg_static_prewarm(song: _NativeSong) -> bool:
+    def _submit_fg_static_prewarm(song: NativeSong) -> bool:
         return fg_pipeline.start_static_prep(
             song,
             prepare_fg_static_sync,
@@ -343,7 +343,7 @@ def run_native_inflight_song_pipeline(
 
     _submit_cpu_prewarm_backlog()
 
-    def _emit_deferred_post_payload(song: _NativeSong) -> None:
+    def _emit_deferred_post_payload(song: NativeSong) -> None:
         _emit_deferred_post_payload_once(
             song,
             post=_post,

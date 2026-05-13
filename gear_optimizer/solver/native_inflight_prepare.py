@@ -26,11 +26,11 @@ from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
-    _NativeSong,
-    _NativeSongConfig,
-    _NativeSongGPUInputs,
-    _NativeSongDBState,
-    _NativeSongRuntimeState,
+    NativeSong,
+    NativeSongConfig,
+    NativeSongGPUInputs,
+    NativeSongDBState,
+    NativeSongRuntimeState,
 )
 
 from gear_optimizer.core.parsing import env_get
@@ -173,7 +173,7 @@ def _fixed_registry_cache_key(
     return ("fixed", pool_key, fg, fm)
 
 
-def prepare_native_song(task: tuple) -> _NativeSong:
+def prepare_native_song(task: tuple) -> NativeSong:
     cpu_t0 = thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
@@ -412,8 +412,8 @@ def prepare_native_song(task: tuple) -> _NativeSong:
 
     elite_count = max(0, int(ga_runtime_settings.elite_count))
 
-    song = _NativeSong(
-        config=_NativeSongConfig(
+    song = NativeSong(
+        config=NativeSongConfig(
             fp=str(fp),
             song_name=str(found_song_name),
             task_key=str(task_key),
@@ -428,7 +428,7 @@ def prepare_native_song(task: tuple) -> _NativeSong:
             ga_depth=int(ga_depth),
             fg_debug=bool(fg_debug),
         ),
-        gpu_inputs=_NativeSongGPUInputs(
+        gpu_inputs=NativeSongGPUInputs(
             ref_arrays=ref_arrays,
             all_gears=all_gears,
             all_minis=all_minis,
@@ -467,8 +467,8 @@ def prepare_native_song(task: tuple) -> _NativeSong:
             db_seed_copies=int(getattr(ga_settings, "fixed_seed_copies", 1) or 0) if db_seed_ids is not None else 0,
             db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         ),
-        runtime=_NativeSongRuntimeState(
-            db=_NativeSongDBState(
+        runtime=NativeSongRuntimeState(
+            db=NativeSongDBState(
                 prev_record=prev_record,
                 db_best_score=int(db_best_score),
                 attempt_lifetime=int(attempt_lifetime),

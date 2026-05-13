@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 import logging
 
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 
 
@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class GADecodeCompletion:
-    song: _NativeSong
+    song: NativeSong
     future: concurrent.futures.Future
     submit_t0: float | None
 
 
 @dataclass(frozen=True)
 class GARunCompletion:
-    song: _NativeSong
+    song: NativeSong
     future: concurrent.futures.Future
 
 
@@ -33,13 +33,13 @@ class GADecodeQueue:
             max_workers=max(1, int(max_workers)),
             thread_name_prefix="GADecode",
         )
-        self.inflight: deque[_NativeSong] = deque()
+        self.inflight: deque[NativeSong] = deque()
 
     def submit(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         ga_result: Any,
-        decode_fn: Callable[[_NativeSong, Any], Any],
+        decode_fn: Callable[[NativeSong, Any], Any],
         *,
         register_future: Callable[[concurrent.futures.Future | None], None],
     ) -> concurrent.futures.Future:
@@ -89,10 +89,10 @@ class InflightGAPipeline:
     """Owns GA request payload assembly and per-song GPU slot bookkeeping."""
 
     def __init__(self) -> None:
-        self.inflight: deque[_NativeSong] = deque()
+        self.inflight: deque[NativeSong] = deque()
 
     @staticmethod
-    def reserve_slot(song: _NativeSong, slot_pool: Any) -> int:
+    def reserve_slot(song: NativeSong, slot_pool: Any) -> int:
         if int(song.runtime.song_slot or 0) <= 0:
             song.runtime.song_slot = int(slot_pool.acquire())
         try:
@@ -102,7 +102,7 @@ class InflightGAPipeline:
         return int(song.runtime.song_slot)
 
     @staticmethod
-    def release_slot(song: _NativeSong, slot_pool: Any) -> None:
+    def release_slot(song: NativeSong, slot_pool: Any) -> None:
         song_slot = int(song.runtime.song_slot or 0)
         if song_slot > 0:
             slot_pool.release(song_slot)
@@ -114,12 +114,12 @@ class InflightGAPipeline:
             logger.debug(f"native_inflight_ga_pipeline:release_slot: {e}")
 
     @staticmethod
-    def prepare_submit(song: _NativeSong) -> None:
+    def prepare_submit(song: NativeSong) -> None:
         song.runtime.ga.outer_engine = "ga"
         song.runtime.ga.ga_submit_t0 = time.perf_counter()
 
     @staticmethod
-    def build_payload(song: _NativeSong) -> dict[str, Any]:
+    def build_payload(song: NativeSong) -> dict[str, Any]:
         return {
             "calc_song": song.gpu_inputs.calc_song,
             "ref_arrays": song.gpu_inputs.ref_arrays,
@@ -149,13 +149,13 @@ class InflightGAPipeline:
         }
 
     @staticmethod
-    def mark_submitted(song: _NativeSong, future: Any) -> None:
+    def mark_submitted(song: NativeSong, future: Any) -> None:
         song.runtime.ga.ga_future = future
         song.runtime.ga.ga_initial_populations = None
 
     def track_submitted(
         self,
-        song: _NativeSong,
+        song: NativeSong,
         future: concurrent.futures.Future,
         *,
         register_future: Callable[[concurrent.futures.Future | None], None],
@@ -182,7 +182,7 @@ class InflightGAPipeline:
         return completions
 
     @staticmethod
-    def store_decode_result(song: _NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:
+    def store_decode_result(song: NativeSong, decode_result: tuple[Any, Any, Any, Any]) -> None:
         best_data, best_gear, best_minis, ga_candidates = decode_result
         song.runtime.decode.best_data = best_data
         song.runtime.decode.best_gear = best_gear

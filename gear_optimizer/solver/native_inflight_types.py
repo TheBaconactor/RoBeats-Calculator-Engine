@@ -12,7 +12,7 @@ from gear_optimizer.solver.item_registry import ItemRegistry
 
 
 @dataclass
-class _NativeSongConfig:
+class NativeSongConfig:
     fp: str = ""
     song_name: str = ""
     task_key: str = ""
@@ -29,7 +29,7 @@ class _NativeSongConfig:
 
 
 @dataclass
-class _NativeSongGPUInputs:
+class NativeSongGPUInputs:
     ref_arrays: RefArrays = field(default_factory=dict)
     all_gears: list[Any] = field(default_factory=list)
     all_minis: list[Any] = field(default_factory=list)
@@ -70,7 +70,7 @@ class _NativeSongGPUInputs:
 
 
 @dataclass
-class _NativeSongPrepState:
+class NativeSongPrepState:
     cpu_prewarm_future: Optional[concurrent.futures.Future] = None
     cpu_prewarm_s: float = 0.0
     cpu_prewarm_submit_t0: float | None = None
@@ -79,7 +79,7 @@ class _NativeSongPrepState:
 
 
 @dataclass
-class _NativeSongGAState:
+class NativeSongGAState:
     ga_future: Optional[concurrent.futures.Future] = None
     ga_submit_t0: float | None = None
     ga_initial_populations: Optional[list[Any]] = None
@@ -87,7 +87,7 @@ class _NativeSongGAState:
 
 
 @dataclass
-class _NativeSongDecodeState:
+class NativeSongDecodeState:
     decode_future: Optional[concurrent.futures.Future] = None
     decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
@@ -99,7 +99,7 @@ class _NativeSongDecodeState:
 
 
 @dataclass
-class _NativeSongFGState:
+class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
     fg_candidate_limit: int = 0
     fg_search_radius: Optional[int] = None
@@ -120,7 +120,7 @@ class _NativeSongFGState:
 
 
 @dataclass
-class _NativeSongDBState:
+class NativeSongDBState:
     prev_record: Optional[JsonDict] = None
     db_best_score: int = 0
     db_best_fg_score: int = 0
@@ -133,7 +133,7 @@ class _NativeSongDBState:
 
 
 @dataclass
-class _NativeSongBundleState:
+class NativeSongBundleState:
     bundle_parent_task: Any | None = None
     bundle_task_key: str = ""
     bundle_repeat_index: int = 0
@@ -142,21 +142,21 @@ class _NativeSongBundleState:
 
 
 @dataclass
-class _NativeSongPostState:
+class NativeSongPostState:
     deferred_post_emitted: bool = False
     await_fg_completion_progress: bool = False
 
 
 @dataclass
-class _NativeSongRuntimeState:
+class NativeSongRuntimeState:
     song_slot: int = 0
-    prep: _NativeSongPrepState = field(default_factory=_NativeSongPrepState)
-    ga: _NativeSongGAState = field(default_factory=_NativeSongGAState)
-    decode: _NativeSongDecodeState = field(default_factory=_NativeSongDecodeState)
-    fg: _NativeSongFGState = field(default_factory=_NativeSongFGState)
-    db: _NativeSongDBState = field(default_factory=_NativeSongDBState)
-    bundle: _NativeSongBundleState = field(default_factory=_NativeSongBundleState)
-    post: _NativeSongPostState = field(default_factory=_NativeSongPostState)
+    prep: NativeSongPrepState = field(default_factory=NativeSongPrepState)
+    ga: NativeSongGAState = field(default_factory=NativeSongGAState)
+    decode: NativeSongDecodeState = field(default_factory=NativeSongDecodeState)
+    fg: NativeSongFGState = field(default_factory=NativeSongFGState)
+    db: NativeSongDBState = field(default_factory=NativeSongDBState)
+    bundle: NativeSongBundleState = field(default_factory=NativeSongBundleState)
+    post: NativeSongPostState = field(default_factory=NativeSongPostState)
 
 
 def _field_names(cls: type) -> tuple[str, ...]:
@@ -164,24 +164,24 @@ def _field_names(cls: type) -> tuple[str, ...]:
 
 
 _FIELD_PATH_BY_NAME = {
-    **{field_name: ("config",) for field_name in _field_names(_NativeSongConfig)},
-    **{field_name: ("gpu_inputs",) for field_name in _field_names(_NativeSongGPUInputs)},
+    **{field_name: ("config",) for field_name in _field_names(NativeSongConfig)},
+    **{field_name: ("gpu_inputs",) for field_name in _field_names(NativeSongGPUInputs)},
     "song_slot": ("runtime",),
-    **{field_name: ("runtime", "prep") for field_name in _field_names(_NativeSongPrepState)},
-    **{field_name: ("runtime", "ga") for field_name in _field_names(_NativeSongGAState)},
-    **{field_name: ("runtime", "decode") for field_name in _field_names(_NativeSongDecodeState)},
-    **{field_name: ("runtime", "fg") for field_name in _field_names(_NativeSongFGState)},
-    **{field_name: ("runtime", "db") for field_name in _field_names(_NativeSongDBState)},
-    **{field_name: ("runtime", "bundle") for field_name in _field_names(_NativeSongBundleState)},
-    **{field_name: ("runtime", "post") for field_name in _field_names(_NativeSongPostState)},
+    **{field_name: ("runtime", "prep") for field_name in _field_names(NativeSongPrepState)},
+    **{field_name: ("runtime", "ga") for field_name in _field_names(NativeSongGAState)},
+    **{field_name: ("runtime", "decode") for field_name in _field_names(NativeSongDecodeState)},
+    **{field_name: ("runtime", "fg") for field_name in _field_names(NativeSongFGState)},
+    **{field_name: ("runtime", "db") for field_name in _field_names(NativeSongDBState)},
+    **{field_name: ("runtime", "bundle") for field_name in _field_names(NativeSongBundleState)},
+    **{field_name: ("runtime", "post") for field_name in _field_names(NativeSongPostState)},
 }
 
 
 @dataclass
-class _NativeSong:
-    config: _NativeSongConfig
-    gpu_inputs: _NativeSongGPUInputs
-    runtime: _NativeSongRuntimeState
+class NativeSong:
+    config: NativeSongConfig
+    gpu_inputs: NativeSongGPUInputs
+    runtime: NativeSongRuntimeState
 
 
 def _resolve_owner(root: object | None, path: tuple[str, ...]) -> object | None:
@@ -231,11 +231,11 @@ def native_song_label(song: object, *, fallback_id: bool = False) -> str:
     return str(id(song)) if bool(fallback_id) else ""
 
 
-def make_native_song(**kwargs) -> _NativeSong:
-    """Build a _NativeSong from flat keyword args, distributing to the correct sub-struct."""
-    config = _NativeSongConfig()
-    gpu_inputs = _NativeSongGPUInputs()
-    runtime = _NativeSongRuntimeState()
+def make_native_song(**kwargs) -> NativeSong:
+    """Build a NativeSong from flat keyword args, distributing to the correct sub-struct."""
+    config = NativeSongConfig()
+    gpu_inputs = NativeSongGPUInputs()
+    runtime = NativeSongRuntimeState()
     roots = {
         "config": config,
         "gpu_inputs": gpu_inputs,
@@ -264,4 +264,4 @@ def make_native_song(**kwargs) -> _NativeSong:
         )
     for owner, key, value in pending_assignments:
         setattr(owner, key, value)
-    return _NativeSong(config=config, gpu_inputs=gpu_inputs, runtime=runtime)
+    return NativeSong(config=config, gpu_inputs=gpu_inputs, runtime=runtime)

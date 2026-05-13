@@ -3,17 +3,17 @@ import pytest
 from dataclasses import fields
 
 from gear_optimizer.solver.native_inflight_types import (
-    _NativeSong,
-    _NativeSongConfig,
-    _NativeSongBundleState,
-    _NativeSongDBState,
-    _NativeSongDecodeState,
-    _NativeSongGPUInputs,
-    _NativeSongFGState,
-    _NativeSongGAState,
-    _NativeSongPrepState,
-    _NativeSongPostState,
-    _NativeSongRuntimeState,
+    NativeSong,
+    NativeSongConfig,
+    NativeSongBundleState,
+    NativeSongDBState,
+    NativeSongDecodeState,
+    NativeSongGPUInputs,
+    NativeSongFGState,
+    NativeSongGAState,
+    NativeSongPrepState,
+    NativeSongPostState,
+    NativeSongRuntimeState,
     _FIELD_PATH_BY_NAME,
     make_native_song,
     native_song_get,
@@ -24,10 +24,10 @@ from gear_optimizer.solver.native_inflight_types import (
 
 
 def test_native_song_groups_keep_pipeline_fields_explicit():
-    song = _NativeSong(
-        config=_NativeSongConfig(fp="file.txt", song_name="demo", task_key="task"),
-        gpu_inputs=_NativeSongGPUInputs(meta_primary_color="Rush"),
-        runtime=_NativeSongRuntimeState(song_slot=3),
+    song = NativeSong(
+        config=NativeSongConfig(fp="file.txt", song_name="demo", task_key="task"),
+        gpu_inputs=NativeSongGPUInputs(meta_primary_color="Rush"),
+        runtime=NativeSongRuntimeState(song_slot=3),
     )
 
     assert song.config.fp == "file.txt"
@@ -47,10 +47,10 @@ def test_native_song_groups_keep_pipeline_fields_explicit():
 
 
 def test_native_song_get_set_delegate_to_nested_groups():
-    song = _NativeSong(
-        config=_NativeSongConfig(fp="file.txt"),
-        gpu_inputs=_NativeSongGPUInputs(meta_primary_color="Rush"),
-        runtime=_NativeSongRuntimeState(song_slot=3),
+    song = NativeSong(
+        config=NativeSongConfig(fp="file.txt"),
+        gpu_inputs=NativeSongGPUInputs(meta_primary_color="Rush"),
+        runtime=NativeSongRuntimeState(song_slot=3),
     )
 
     assert native_song_get(song, "fp") == "file.txt"
@@ -73,10 +73,10 @@ def test_native_song_get_set_delegate_to_nested_groups():
 
 
 def test_native_song_helpers_reject_unknown_fields():
-    song = _NativeSong(
-        config=_NativeSongConfig(fp="file.txt"),
-        gpu_inputs=_NativeSongGPUInputs(meta_primary_color="Rush"),
-        runtime=_NativeSongRuntimeState(song_slot=3),
+    song = NativeSong(
+        config=NativeSongConfig(fp="file.txt"),
+        gpu_inputs=NativeSongGPUInputs(meta_primary_color="Rush"),
+        runtime=NativeSongRuntimeState(song_slot=3),
     )
 
     assert native_song_get(song, "missing") is None
@@ -105,14 +105,14 @@ def test_native_song_field_path_map_matches_runtime_substate_definitions():
         target = tuple(path)
         return {field_name for field_name, field_path in _FIELD_PATH_BY_NAME.items() if field_path == target}
 
-    assert {field.name for field in fields(_NativeSongConfig)} == mapped_fields("config")
-    assert {field.name for field in fields(_NativeSongGPUInputs)} == mapped_fields("gpu_inputs")
-    assert {field.name for field in fields(_NativeSongRuntimeState)} == {"song_slot", "prep", "ga", "decode", "fg", "db", "bundle", "post"}
-    assert {field.name for field in fields(_NativeSongPrepState)} == mapped_fields("runtime", "prep")
-    assert {field.name for field in fields(_NativeSongGAState)} == mapped_fields("runtime", "ga")
-    assert {field.name for field in fields(_NativeSongDecodeState)} == mapped_fields("runtime", "decode")
-    assert {field.name for field in fields(_NativeSongFGState)} == mapped_fields("runtime", "fg")
-    assert {field.name for field in fields(_NativeSongDBState)} == mapped_fields("runtime", "db")
-    assert {field.name for field in fields(_NativeSongBundleState)} == mapped_fields("runtime", "bundle")
-    assert {field.name for field in fields(_NativeSongPostState)} == mapped_fields("runtime", "post")
+    assert {field.name for field in fields(NativeSongConfig)} == mapped_fields("config")
+    assert {field.name for field in fields(NativeSongGPUInputs)} == mapped_fields("gpu_inputs")
+    assert {field.name for field in fields(NativeSongRuntimeState)} == {"song_slot", "prep", "ga", "decode", "fg", "db", "bundle", "post"}
+    assert {field.name for field in fields(NativeSongPrepState)} == mapped_fields("runtime", "prep")
+    assert {field.name for field in fields(NativeSongGAState)} == mapped_fields("runtime", "ga")
+    assert {field.name for field in fields(NativeSongDecodeState)} == mapped_fields("runtime", "decode")
+    assert {field.name for field in fields(NativeSongFGState)} == mapped_fields("runtime", "fg")
+    assert {field.name for field in fields(NativeSongDBState)} == mapped_fields("runtime", "db")
+    assert {field.name for field in fields(NativeSongBundleState)} == mapped_fields("runtime", "bundle")
+    assert {field.name for field in fields(NativeSongPostState)} == mapped_fields("runtime", "post")
     assert _FIELD_PATH_BY_NAME["song_slot"] == ("runtime",)

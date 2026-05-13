@@ -9,7 +9,7 @@ from typing import Callable, Iterable, Any
 
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
 from gear_optimizer.solver.native_inflight_result_events import build_deferred_post_payload, fg_pending_for_post
-from gear_optimizer.solver.native_inflight_types import _NativeSong
+from gear_optimizer.solver.native_inflight_types import NativeSong
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def mark_song_completed(
 
 
 def emit_deferred_post_payload(
-    song: _NativeSong,
+    song: NativeSong,
     *,
     post: Callable[[dict], None],
     persist_pending_fg_job: bool,
@@ -155,7 +155,7 @@ def emit_deferred_post_payload(
 
 
 def finish_deferred_fg_completion(
-    song: _NativeSong,
+    song: NativeSong,
     *,
     fg_failed: bool,
     completed_songs: set[str],
