@@ -24,7 +24,7 @@ from gear_optimizer.solver.inflight_utils import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
-from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
     _NativeSong,
     _NativeSongConfig,
@@ -174,7 +174,7 @@ def _fixed_registry_cache_key(
 
 
 def prepare_native_song(task: tuple) -> _NativeSong:
-    cpu_t0 = _thread_cpu_time_s()
+    cpu_t0 = thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
@@ -479,7 +479,7 @@ def prepare_native_song(task: tuple) -> _NativeSong:
         ),
     )
     try:
-        song.runtime.prep.cpu_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+        song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except Exception as e:
         logger.debug(f"native_inflight_prepare:prepare_native_song: {e}")
     return song

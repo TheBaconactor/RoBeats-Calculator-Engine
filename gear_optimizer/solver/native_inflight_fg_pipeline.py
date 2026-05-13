@@ -22,7 +22,7 @@ from gear_optimizer.solver.native_inflight_config import read_db_prefetch_worker
 from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
 from gear_optimizer.solver.native_inflight_stages import _prepare_fg_job_sync, _resolve_active_fg_calc_song
-from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 
 logger = logging.getLogger(__name__)
@@ -616,7 +616,7 @@ def run_fg_job_sync(
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
-    cpu_t0 = _thread_cpu_time_s()
+    cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
     active_fg_calc_song = _resolve_active_fg_calc_song(song)
     if not isinstance(active_fg_calc_song, dict):
@@ -757,7 +757,7 @@ def run_fg_job_sync(
 
     song.runtime.fg.fg_variants = list(fg_variants or [])
     try:
-        song.runtime.fg.cpu_fg_run_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+        song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except AttributeError:
         pass
     try:

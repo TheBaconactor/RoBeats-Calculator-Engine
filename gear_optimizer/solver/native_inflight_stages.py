@@ -27,6 +27,7 @@ from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_so
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver import native_inflight_fg_db_cache as _fg_db_cache
+from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
@@ -47,18 +48,6 @@ _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 def _truthy(raw: Any) -> bool:
     return truthy(raw)
-
-
-def _thread_cpu_time_s() -> float:
-    """
-    Best-effort per-thread CPU timer for CPU-only profiling.
-
-    Uses `time.thread_time()` when available (Python 3.7+). Returns 0.0 on unsupported platforms.
-    """
-    try:
-        return float(time.thread_time())
-    except (ValueError, OSError):
-        return 0.0
 
 
 def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any) -> None:
@@ -571,7 +560,7 @@ def prime_fg_group_meta_for_song(song: _NativeSong, *, limit: int) -> int:
 
 
 def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
-    cpu_t0 = _thread_cpu_time_s()
+    cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
     try:
@@ -601,7 +590,7 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
     )
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:
-        cpu_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+        cpu_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         song.runtime.decode.cpu_decode_s = cpu_s
     except (AttributeError, TypeError, ValueError):
         cpu_s = None
@@ -629,7 +618,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
     built from DB rows before GA decode finishes. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
-    cpu_t0 = _thread_cpu_time_s()
+    cpu_t0 = thread_cpu_time_s()
     config = getattr(song, 'config', song)
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -655,7 +644,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
     if not bool(runtime.fg.fg_direct_ga_candidates):
         try:
             song.runtime.fg.fg_static_prep_done = True
-            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
@@ -663,7 +652,7 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
     if getattr(song.runtime.fg, "loadout_entries", None) is not None:
         try:
             song.runtime.fg.fg_static_prep_done = True
-            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
@@ -712,13 +701,13 @@ def _prepare_fg_static_sync(song: _NativeSong) -> None:
     )
     try:
         song.runtime.fg.fg_static_prep_done = True
-        song.runtime.fg.cpu_fg_static_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+        song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except AttributeError:
         pass
 
 
 def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
-    cpu_t0 = _thread_cpu_time_s()
+    cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
     wall_t0 = time.perf_counter()
@@ -931,7 +920,7 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
         )
 
     try:
-        song.runtime.fg.cpu_fg_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
+        song.runtime.fg.cpu_fg_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except (AttributeError, TypeError, ValueError):
         pass
     try:
