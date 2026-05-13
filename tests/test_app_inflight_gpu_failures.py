@@ -112,7 +112,7 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
 
-def test_inflight_instances_do_not_create_dual_process_workers(monkeypatch):
+def test_inflight_instances_do_not_change_single_coordinator_route(monkeypatch):
     app = _make_minimal_app()
     tasks = _build_tasks(inflight_songs=2, inflight_instances=2, count=2)
     native_calls: list[dict] = []
