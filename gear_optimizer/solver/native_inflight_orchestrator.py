@@ -16,7 +16,6 @@ import time
 import traceback
 from collections import deque
 
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import task_song_name
@@ -215,10 +214,7 @@ def run_native_inflight_song_pipeline(
         default_worker_threads=_default_worker_threads,
     )
     fg_pipeline = native_fg_pipeline.NativeFGPipeline(fg_pipeline_settings)
-    db_persistence = InflightDBPersistence(
-        candidate_limit_default=FG_CANDIDATE_LIMIT,
-        prefetch_workers=int(fg_pipeline.settings.db_prefetch_workers),
-    )
+    db_persistence = InflightDBPersistence(prefetch_workers=int(fg_pipeline.settings.db_prefetch_workers))
     pending_fg = fg_pipeline.pending
     fg_prep_inflight = fg_pipeline.prep_inflight
     fg_futures = fg_pipeline.futures

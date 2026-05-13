@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
 from gear_optimizer.solver.native_inflight_types import make_native_song
+
+
+def test_inflight_db_persistence_owns_default_candidate_limit():
+    persistence = InflightDBPersistence(prefetch_workers=1)
+    try:
+        assert persistence.candidate_limit_default == FG_CANDIDATE_LIMIT
+    finally:
+        persistence.shutdown_prefetch(wait=True, cancel_futures=True)
 
 
 def test_inflight_db_persistence_owns_prefetch_executor_submission():
