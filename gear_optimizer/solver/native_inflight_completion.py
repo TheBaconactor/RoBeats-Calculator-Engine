@@ -106,7 +106,6 @@ def emit_deferred_post_payload(
     *,
     post: Callable[[dict], None],
     persist_pending_fg_job: bool,
-    fg_drain_at_end: bool,
     completed_songs: set[str],
     memory_resume_tracker=None,
     bundle_completed_cb=None,
@@ -135,7 +134,7 @@ def emit_deferred_post_payload(
             record_info=getattr(song.runtime.db, "record_info", None),
             failed=False,
         )
-    elif needs_fg_stage and bool(fg_drain_at_end):
+    elif needs_fg_stage:
         try:
             song.runtime.post.await_fg_completion_progress = True
         except Exception as e:

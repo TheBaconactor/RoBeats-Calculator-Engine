@@ -11,16 +11,12 @@ from gear_optimizer.solver.native_inflight_post_candidates import build_ga_candi
 from gear_optimizer.solver.native_inflight_types import NativeSong
 
 
-def fg_enabled_for_song(song: NativeSong) -> bool:
-    return True
-
-
 def fg_scored_for_song(song: NativeSong) -> bool:
     return getattr(song.runtime.fg, "fg_variants", None) is not None
 
 
 def fg_pending_for_post(song: NativeSong) -> bool:
-    return bool(fg_enabled_for_song(song) and not fg_scored_for_song(song))
+    return bool(not fg_scored_for_song(song))
 
 
 def build_native_song_error_payload(

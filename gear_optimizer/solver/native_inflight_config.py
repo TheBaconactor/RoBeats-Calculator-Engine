@@ -236,13 +236,10 @@ class InflightConfig:
     fg_aging_trigger_s: float
     fg_aging_hard_s: float
     fg_scheduler_norm: str
-    fg_drain_at_end: bool
-    fg_drain_src: str
     fg_ga_credit_budget_cfg: int
     continuous_ga_dispatch_burst: int
     fg_adaptive_submit_max_burst: int
     inflight_fg_hold_slots: bool
-    fg_enabled: bool
     fg_slot_reserve: int
     ga_queue_limit_base: int
     ga_queue_extra_free_on_slot_pressure: int
@@ -466,25 +463,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     fg_scheduler_norm = read_fg_scheduler_mode()
 
-    fg_drain_at_end = True
-    fg_drain_src = "default(true)"
-    try:
-        if cfg0 is not None and cfg0.has_option("IterationEngine", "FG_DrainAtEnd"):
-            raw = str(cfg0.get("IterationEngine", "FG_DrainAtEnd", fallback="") or "").strip()
-            fg_drain_at_end = _truthy(raw)
-            fg_drain_src = f"config({raw})"
-        elif cfg0 is not None:
-            fg_drain_src = "config(missing->false)"
-    except (configparser.Error, ValueError, TypeError) as exc:
-        fg_drain_at_end = False
-        fg_drain_src = f"config_error({type(exc).__name__})"
-    raw_env = env_get("INFLIGHT_FG_DRAIN_AT_END")
-    if raw_env is None or str(raw_env).strip() == "":
-        raw_env = env_get("FG_DRAIN_AT_END")
-    if raw_env is not None and str(raw_env).strip() != "":
-        fg_drain_at_end = _truthy(raw_env)
-        fg_drain_src = f"env({raw_env})"
-
     fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = read_fg_ga_credit_budget(
         cfg0,
         default_budget=max(1, int(inflight_limit)),
@@ -493,7 +471,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     fg_adaptive_submit_max_burst = read_continuous_fg_adaptive_max_burst(cfg0)
 
     try:
-        msg = f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src}"
+        msg = f"[InFlight][FG] scheduler={fg_scheduler_norm}"
         msg += (
             f" (GA_CreditBudget={int(fg_ga_credit_budget_cfg)}, "
             f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
@@ -509,7 +487,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     fg_slot_reserve = read_fg_slot_reserve(
         cfg0,
-        fg_enabled=True,
         inflight_limit=int(inflight_limit),
         song_slot_limit=int(song_slot_limit),
     )
@@ -641,13 +618,10 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_aging_trigger_s=fg_aging_trigger_s,
         fg_aging_hard_s=fg_aging_hard_s,
         fg_scheduler_norm=fg_scheduler_norm,
-        fg_drain_at_end=fg_drain_at_end,
-        fg_drain_src=fg_drain_src,
         fg_ga_credit_budget_cfg=fg_ga_credit_budget_cfg,
         continuous_ga_dispatch_burst=continuous_ga_dispatch_burst,
         fg_adaptive_submit_max_burst=fg_adaptive_submit_max_burst,
         inflight_fg_hold_slots=inflight_fg_hold_slots,
-        fg_enabled=True,
         fg_slot_reserve=fg_slot_reserve,
         ga_queue_limit_base=ga_queue_limit_base,
         ga_queue_extra_free_on_slot_pressure=ga_queue_extra_free_on_slot_pressure,

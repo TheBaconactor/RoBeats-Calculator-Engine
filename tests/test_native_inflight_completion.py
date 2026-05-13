@@ -111,7 +111,6 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
         song,
         post=posted.append,
         persist_pending_fg_job=True,
-        fg_drain_at_end=True,
         completed_songs=completed,
         memory_resume_tracker=memory,
         bundle_completed_cb=lambda key, done: bundle_callbacks.append((key, set(done))),
@@ -123,7 +122,6 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
         song,
         post=posted.append,
         persist_pending_fg_job=True,
-        fg_drain_at_end=True,
         completed_songs=completed,
         memory_resume_tracker=memory,
         bundle_completed_cb=None,
@@ -143,7 +141,7 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     assert progress.done == [("progress-cb", "song-c")]
 
 
-def test_emit_deferred_post_payload_defers_completion_when_fg_drain_is_required():
+def test_emit_deferred_post_payload_defers_completion_when_fg_is_pending():
     song = make_native_song(song_name="Song FG", task_key="song-fg", fg_variants=None)
     completed = set()
     posted = []
@@ -152,7 +150,6 @@ def test_emit_deferred_post_payload_defers_completion_when_fg_drain_is_required(
         song,
         post=posted.append,
         persist_pending_fg_job=False,
-        fg_drain_at_end=True,
         completed_songs=completed,
         advance_bundle=lambda *_args, **_kwargs: None,
     )

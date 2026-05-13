@@ -20,7 +20,7 @@ from gear_optimizer.solver.native_inflight_progress import ProgressTracker, eval
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence, build_fg_persist_entries
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
 from gear_optimizer.solver.native_inflight_post_sender import PostSender
-from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload, fg_enabled_for_song
+from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload
 from gear_optimizer.solver.native_inflight_stages import prepare_fg_job_sync, resolve_active_fg_calc_song
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import NativeSong
@@ -783,8 +783,6 @@ def score_fg_inside_ga(
     *,
     gpu_client: GpuServiceClient,
 ) -> None:
-    if not fg_enabled_for_song(song):
-        return
     run_fg_job_sync(
         song,
         gpu_client=gpu_client,

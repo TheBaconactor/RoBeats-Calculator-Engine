@@ -257,7 +257,6 @@ def read_continuous_fg_adaptive_max_burst(cfg0: Any) -> int:
 def read_fg_slot_reserve(
     cfg0: Any,
     *,
-    fg_enabled: bool,
     inflight_limit: int,
     song_slot_limit: int,
 ) -> int:
@@ -267,7 +266,7 @@ def read_fg_slot_reserve(
     This prevents GA from consuming all song slots and creating slot-pressure oscillation
     when FG submissions need to acquire slots.
     """
-    if (not fg_enabled) or int(inflight_limit) <= 1 or int(song_slot_limit) <= 1:
+    if int(inflight_limit) <= 1 or int(song_slot_limit) <= 1:
         return 0
 
     reserve = 1
@@ -352,7 +351,6 @@ def continuous_ga_warm_queue_limit(
     *,
     ga_queue_limit: int,
     inflight_limit: int,
-    fg_enabled: bool,
     prepared_count: int,
     prep_inflight_count: int,
     decode_inflight_count: int,
@@ -378,7 +376,7 @@ def continuous_ga_warm_queue_limit(
     """
     limit = max(1, int(ga_queue_limit))
     inflight_limit = max(1, int(inflight_limit))
-    if (not fg_enabled) or inflight_limit <= 1:
+    if inflight_limit <= 1:
         return limit
 
     target_lanes = max(1, min(int(target_song_lanes), int(inflight_limit)))
@@ -449,8 +447,6 @@ def continuous_fg_should_fill_song_lanes(
 
 def continuous_ga_should_yield_to_fg(
     *,
-    fg_enabled: bool,
-    fg_drain_at_end: bool,
     pending_fg_count: int,
     ready_fg_count: int,
     fg_prep_inflight_count: int,
@@ -469,11 +465,6 @@ def continuous_ga_should_yield_to_fg(
     adds more GA jobs once FG is ready. Active-but-unready FG prep is not a
     runnable GPU lane, so it must not stop GA admission by itself.
     """
-    if not bool(fg_enabled):
-        return False
-    if (not bool(fg_drain_at_end)) and (not bool(blocked_on_slot)):
-        return False
-
     pending = max(0, int(pending_fg_count))
     ready = max(0, int(ready_fg_count))
     prep = max(0, int(fg_prep_inflight_count))
@@ -500,7 +491,6 @@ def continuous_fg_should_start(
     oldest_wait_s: float,
     blocked_on_slot: bool,
     no_ga_remaining: bool,
-    fg_drain_at_end: bool,
     aging_trigger_s: float,
     aging_hard_s: float,
     ga_queue_limit: int,
@@ -509,7 +499,7 @@ def continuous_fg_should_start(
     if int(pending_fg_count) <= 0:
         return False
     if bool(no_ga_remaining):
-        return bool(fg_drain_at_end)
+        return True
     if bool(blocked_on_slot):
         return True
     # Treat `ready_fg_count` as a hint, not a hard gate. The conveyor's real
@@ -523,7 +513,6 @@ def continuous_fg_allow_not_ready(
     *,
     blocked_on_slot: bool,
     no_ga_remaining: bool,
-    fg_drain_at_end: bool,
 ) -> bool:
     """
     Decide whether a pending FG song may be handed to a worker before prep is done.
@@ -534,7 +523,7 @@ def continuous_fg_allow_not_ready(
     """
     if bool(blocked_on_slot):
         return True
-    return bool(no_ga_remaining) and bool(fg_drain_at_end)
+    return bool(no_ga_remaining)
 
 
 def continuous_fg_submit_budget(
@@ -545,7 +534,6 @@ def continuous_fg_submit_budget(
     fg_workers: int,
     fg_batch_max: int,
     no_ga_remaining: bool,
-    fg_drain_at_end: bool,
     blocked_on_slot: bool,
     oldest_wait_s: float,
     aging_trigger_s: float,
@@ -571,7 +559,7 @@ def continuous_fg_submit_budget(
         return 0
 
     if bool(no_ga_remaining):
-        return int(capacity) if bool(fg_drain_at_end) else 0
+        return int(capacity)
 
     if int(pending_fg_count) > int(ready_fg_count):
         burst_cap = max(1, min(int(adaptive_max_burst), int(fg_batch_max), int(fg_workers)))
