@@ -38,7 +38,6 @@ def _build_config() -> configparser.ConfigParser:
                 "GA_MultiStart": "0",
                 "InFlightSongs": "-3",
                 "InFlightInstances": "0",
-                "InFlight_RamMode": "true",
                 "InFlight_SongFileCacheMax": "-1",
                 "TeamBuff_BaseCalcSongCacheMax": "5",
                 "LoopForever": "true",
@@ -93,7 +92,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
 
     assert inflight.songs == 0
     assert inflight.instances == 1
-    assert inflight.ram_mode is True
     assert inflight.song_file_cache_max == 0
     assert inflight.team_buff_calc_cache_max == 5
     assert inflight.ga_queue_mult == 7

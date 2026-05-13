@@ -85,16 +85,6 @@ def _lru_put(cache: OrderedDict, key: tuple, value, *, maxsize: int) -> None:
         logger.debug(f"native_inflight_prepare:_lru_put: {e}")
 
 
-def bump_prep_cache_limits_for_ram_mode() -> tuple[int, int, int]:
-    # Allow more caching when the user explicitly opts into higher RAM usage.
-    global _POOL_CACHE_MAX, _REGISTRY_CACHE_MAX, _INIT_HEURISTIC_CACHE_MAX
-
-    _POOL_CACHE_MAX = max(int(_POOL_CACHE_MAX), 128)
-    _REGISTRY_CACHE_MAX = max(int(_REGISTRY_CACHE_MAX), 128)
-    _INIT_HEURISTIC_CACHE_MAX = max(int(_INIT_HEURISTIC_CACHE_MAX), 256)
-    return int(_POOL_CACHE_MAX), int(_REGISTRY_CACHE_MAX), int(_INIT_HEURISTIC_CACHE_MAX)
-
-
 def _cache_stats_enabled() -> bool:
     return _truthy(env_get("INFLIGHT_CACHE_STATS", "0"))
 

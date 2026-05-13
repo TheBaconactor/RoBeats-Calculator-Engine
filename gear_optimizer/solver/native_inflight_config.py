@@ -18,7 +18,6 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.solver.inflight_utils import _truthy
-from gear_optimizer.solver.native_inflight_prepare import bump_prep_cache_limits_for_ram_mode
 from gear_optimizer.solver.native_inflight_scheduler import (
     read_continuous_fg_adaptive_max_burst,
     read_continuous_ga_dispatch_burst,
@@ -219,7 +218,6 @@ def read_ga_multi_start(cfg0: Any) -> int:
 
 @dataclass(frozen=True)
 class InflightConfig:
-    inflight_ram_mode: bool
     pool_cache_max: int
     registry_cache_max: int
     init_heur_cache_max: int
@@ -335,28 +333,9 @@ def read_inflight_loop_observer_settings(
 def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
     cfg0 = first_task_config(tasks)
 
-    inflight_ram_mode = False
-    try:
-        raw_env = env_get("INFLIGHT_RAM_MODE")
-        if raw_env is not None and str(raw_env).strip() != "":
-            inflight_ram_mode = _truthy(raw_env)
-        elif cfg0 is not None:
-            inflight_ram_mode = cfg0.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
-    except (configparser.Error, ValueError, TypeError):
-        inflight_ram_mode = False
-
     pool_cache_max = 0
     registry_cache_max = 0
     init_heur_cache_max = 0
-    if inflight_ram_mode:
-        pool_cache_max, registry_cache_max, init_heur_cache_max = bump_prep_cache_limits_for_ram_mode()
-        try:
-            logger.debug(
-                "[InFlight][RAM] enabled: default InFlight_GA_QueueMult=4 InFlight_PrepBufferMult=12 "
-                f"cache_max={{pool:{int(pool_cache_max)} registry:{int(registry_cache_max)} heur:{int(init_heur_cache_max)}}}"
-            )
-        except (ValueError, TypeError):
-            pass
 
     requested_inflight = max(1, int(in_flight_songs))
     inflight_limit = min(int(requested_inflight), len(tasks))
@@ -413,7 +392,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         except (ValueError, TypeError):
             pass
     if ga_queue_mult <= 0:
-        ga_queue_mult = 4 if inflight_ram_mode else 2
+        ga_queue_mult = 2
     ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
     ga_queue_limit = max(1, int(inflight_limit) * int(ga_queue_mult))
     ga_queue_limit = min(int(ga_queue_limit), int(song_slot_limit))
@@ -431,7 +410,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         except (ValueError, TypeError):
             pass
     if prep_buffer_mult <= 0:
-        prep_buffer_mult = 12 if inflight_ram_mode else 4
+        prep_buffer_mult = 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
     cpu_prewarm_lookahead = read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
@@ -644,7 +623,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     loop_observer = read_inflight_loop_observer_settings()
 
     return InflightConfig(
-        inflight_ram_mode=inflight_ram_mode,
         pool_cache_max=pool_cache_max,
         registry_cache_max=registry_cache_max,
         init_heur_cache_max=init_heur_cache_max,

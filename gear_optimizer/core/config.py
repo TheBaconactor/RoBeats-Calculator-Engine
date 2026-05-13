@@ -572,7 +572,6 @@ class GASettings:
 class InflightSettings:
     songs: int = 0
     instances: int = 1
-    ram_mode: bool = False
     song_file_cache_max: int = 0
     team_buff_calc_cache_max: int = 0
     ga_queue_mult: int = 0
@@ -586,7 +585,6 @@ class InflightSettings:
         instances = 1
         if int(requested_instances) > 1:
             _warn_single_owner_noop_flag("InFlightInstances", int(requested_instances))
-        ram_mode = cfg_get_bool(cfg, "IterationEngine", "InFlight_RamMode", False)
         song_file_cache_max = cfg_get_int(cfg, "IterationEngine", "InFlight_SongFileCacheMax", 0, clamp_min=0)
         team_buff_calc_cache_max = cfg_get_int(
             cfg,
@@ -599,7 +597,6 @@ class InflightSettings:
         return cls(
             songs=int(songs),
             instances=int(instances),
-            ram_mode=bool(ram_mode),
             song_file_cache_max=int(song_file_cache_max),
             team_buff_calc_cache_max=int(team_buff_calc_cache_max),
             ga_queue_mult=int(ga_queue_mult),

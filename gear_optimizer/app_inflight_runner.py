@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Any
 
-from gear_optimizer.core.parsing import env_get, truthy
+from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import safe_int
 
 logger = logging.getLogger(__name__)
@@ -28,43 +28,6 @@ class InflightRunner:
             logger.debug(f"app_inflight_runner:get_inflight_songs_requested: {e}")
 
         return inflight_songs
-
-    def maybe_apply_ram_mode(self, cfg) -> None:
-        runtime_settings = self._app._current_runtime_settings(cfg)
-        inflight_songs = int(runtime_settings.inflight.songs)
-        if int(inflight_songs) <= 1:
-            return
-
-        raw_env = env_get("INFLIGHT_RAM_MODE")
-        env_set = raw_env is not None and str(raw_env).strip() != ""
-        ram_mode = truthy(raw_env) if env_set else bool(runtime_settings.inflight.ram_mode)
-
-        if not ram_mode:
-            return
-
-        os.environ.setdefault("INFLIGHT_RAM_MODE", "1")
-
-        if env_get("INFLIGHT_SONG_FILE_CACHE_MAX") in {None, ""}:
-            cache_max = int(runtime_settings.inflight.song_file_cache_max)
-            if cache_max <= 0:
-                cache_max = 2048
-            os.environ["INFLIGHT_SONG_FILE_CACHE_MAX"] = str(cache_max)
-
-        if env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX") in {None, ""}:
-            tb_cache = int(runtime_settings.inflight.team_buff_calc_cache_max)
-            if tb_cache <= 0:
-                tb_cache = 256
-            os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(tb_cache)
-
-        try:
-            logger.debug(
-                "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
-                    env_get("INFLIGHT_SONG_FILE_CACHE_MAX"),
-                    env_get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
-                )
-            )
-        except Exception as e:
-            logger.debug(f"app_inflight_runner:maybe_apply_ram_mode: {e}")
 
     def maybe_autoset_gpu_song_slots(self, cfg) -> None:
         raw = env_get("GPU_SONG_SLOTS")
@@ -104,12 +67,7 @@ class InflightRunner:
             except Exception as e:
                 logger.debug(f"app_inflight_runner:maybe_autoset_gpu_song_slots: {e}")
         if ga_queue_mult <= 0:
-            raw_env = env_get("INFLIGHT_RAM_MODE")
-            if raw_env is not None and str(raw_env).strip() != "":
-                ram_mode = truthy(raw_env)
-            else:
-                ram_mode = bool(runtime_settings.inflight.ram_mode)
-            ga_queue_mult = 4 if ram_mode else 2
+            ga_queue_mult = 2
         ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
 
         required = int(inflight_songs) * int(ga_queue_mult) + 2

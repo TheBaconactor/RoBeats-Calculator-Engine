@@ -524,7 +524,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     )
                 loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
-            self._inflight_runner.maybe_apply_ram_mode(cfg)
             self._inflight_runner.maybe_autoset_gpu_song_slots(cfg)
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
