@@ -44,6 +44,7 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     count_active_song_lanes,
     read_prime_target,
 )
+from gear_optimizer.solver.native_inflight_prime import prime_native_inflight_prepared_queue
 from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
 from gear_optimizer.solver.native_inflight_persistence import InflightDBPersistence
@@ -271,43 +272,19 @@ def run_native_inflight_song_pipeline(
         prep_limit=int(icfg.prep_limit),
         pending_count=len(pending_tasks),
     )
-    for _ in range(int(prime_target)):
-        first = pending_tasks.popleft()
-        song_name = task_song_name(first)
-        bundle_key = task_queue_label(first)
-        if bundle_key in completed_songs:
-            continue
-        logical_task, repeat_ctx = _next_logical_task(first)
-        task_key = task_queue_label(logical_task)
-        try:
-            t0 = time.perf_counter()
-            prepared_song = prepare_native_song(logical_task)
-            _bind_bundle_song(prepared_song, first, repeat_ctx)
-            prepared.append(prepared_song)
-            stage_profiler.record(
-                "prep",
-                time.perf_counter() - t0,
-                cpu_seconds=getattr(prepared_song.runtime.prep, "cpu_prep_s", None),
-                song=task_key,
-            )
-        except Exception as exc:
-            payload = _build_native_task_error_payload(
-                song_name=str(song_name),
-                queue_key=str(task_key),
-                exc=exc,
-                trace=traceback.format_exc(),
-                suppress_progress=repeat_ctx is not None,
-            )
-            _post(payload)
-            if repeat_ctx is not None:
-                _advance_bundle(first, song_name=str(song_name), failed=True)
-            else:
-                mark_song_completed(
-                    completed_songs=completed_songs,
-                    task_key=task_key,
-                    song_name=song_name,
-                    memory_resume_tracker=memory_resume_tracker,
-                )
+    prime_native_inflight_prepared_queue(
+        prime_target=int(prime_target),
+        pending_tasks=pending_tasks,
+        prepared=prepared,
+        completed_songs=completed_songs,
+        next_logical_task=_next_logical_task,
+        bind_bundle_song=_bind_bundle_song,
+        prepare_song=prepare_native_song,
+        post=_post,
+        advance_bundle=_advance_bundle,
+        stage_profiler=stage_profiler,
+        memory_resume_tracker=memory_resume_tracker,
+    )
 
     _submit_cpu_prewarm_backlog()
 
