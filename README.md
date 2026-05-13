@@ -68,45 +68,20 @@ The optimizer will:
 
 ### Basic Configuration
 
-Edit `config.ini` to customize behavior:
+Edit `config.ini` for song targeting only:
 
 ```ini
 [CalculateSong]
-Song_Name = Aether
+; Leave Song_Name blank to scan the queue.
+Song_Name =
 Difficulty = All
-
-[IterationEngine]
-LoopForever = false
-InFlightSongs = 0
-
-; Force Greats tuning
-FG_CandidateLimit = 200
-FG_SearchRadius = 5
-
-; GA settings
-GA_SearchDepth = 500
-GA_MultiStart = 35
-
-; Resource limits
-EvalCPUCores = 0
-MemorySoftLimitGB = 7
-MemorySoftLimitPercent = 0
-
-[Gear]
-; Leave blank to let GA choose a starting point
-Hat =
-Neck =
-Face =
-Shirt =
-Back =
-Pant =
-
-[Minis]
-; Leave blank to let GA choose a starting point
-1 =
-2 =
-3 =
+TargetPrimary = All
+TargetSecondary = All
+LoopForever = true
 ```
+
+Production optimizer behavior is native GPU GA plus native FG-inside-GA with Evolution DB persistence. Those are not
+user-selectable config switches.
 
 ### Advanced Configuration
 
@@ -157,7 +132,7 @@ RoBeats-Calculator-Engine/
 ```
 RoBeats-Calculator-Engine/
 ├── main.py                           # Entry point → GearOptimizerApp
-├── config.ini                        # User configuration (GA, memory, paths)
+├── config.ini                        # User song targeting configuration
 ├── requirements.txt                  # Runtime dependencies
 ├── requirements-dev.txt              # Dev/test dependencies
 ├── evolution.db                      # SQLite results database
@@ -338,7 +313,7 @@ RoBeats-Calculator-Engine/
 
 #### Genetic Algorithm ([genetic.py](gear_optimizer/solver/genetic.py))
 - **Population:** 705 individuals (configurable)
-- **Generations:** 75 (configurable via `GA_SearchDepth`)
+- **Generations:** Runtime GA settings determine search depth
 - **Multi-Start:** 3-30 restarts to escape local optima
 - **Selection:** Tournament selection (k=3)
 - **Crossover:** Single-point crossover
@@ -399,9 +374,9 @@ See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 
 ### Performance Tips
 
-1. **Memory Management:** Set `MemorySoftLimitGB` or `MemorySoftLimitPercent` (under `[IterationEngine]`) for stable operation
-2. **Worker Count:** Production uses one GPU owner; tune `InFlightSongs` and worker knobs instead of per-song process pools
-3. **GA Depth:** Increase `GA_SearchDepth` for better solutions (slower)
+1. **Memory Management:** Use maintained profile/bench configs or env overrides for memory guard experiments
+2. **Worker Count:** Production uses one GPU owner; tune profile configs instead of per-song process pools
+3. **GA Depth:** Increase profile GA depth for better solutions (slower)
 4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
 5. **Caching:** Avoid clearing `bin/numba_cache/` (JIT cache) and `bin/paths_cache.json` (data discovery cache) unless troubleshooting
 6. **Dual-GPU (experimental):** Set `GPU_EXECUTOR_SECONDARY_WORKERS=<n>` and `GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE=<idx>` to split workers across two Vulkan devices (multi-process Taichi)
@@ -482,7 +457,7 @@ By default, private/scratch scripts (for example `_tmp_*`, underscore-prefixed f
 - Delete `bin/paths_cache.json` and re-run `python main.py` to regenerate it automatically
 
 **"Memory limit exceeded"**
-- Increase `MemorySoftLimitGB` / `MemorySoftLimitPercent` in `config.ini` or reduce GA depth / multi-start
+- Use a lower-depth profile or memory-guard profile before re-running
 
 **"No module named 'numba'" or "No module named 'taichi'"**
 - Install dependencies: `pip install -r requirements.txt`
