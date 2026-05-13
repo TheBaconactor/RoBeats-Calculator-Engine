@@ -57,7 +57,7 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
 
 
 def test_failed_fg_update_payload_uses_result_event_owner_shape():
-    cfg_dict = {"IterationEngine": {"ForceGreatsFinder": True}}
+    cfg_dict = {"IterationEngine": {}}
     song = make_native_song(
         song_name="Failed FG Song",
         task_key="failed-fg-song",
@@ -79,7 +79,7 @@ def test_failed_fg_update_payload_uses_result_event_owner_shape():
 
 
 def test_fg_update_payload_uses_shared_result_event_shape():
-    cfg_dict = {"IterationEngine": {"ForceGreatsFinder": True}}
+    cfg_dict = {"IterationEngine": {}}
     entries = [{"score": 101, "fg_score": 111}]
     song = make_native_song(
         song_name="FG Song",
