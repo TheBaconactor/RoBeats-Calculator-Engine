@@ -40,7 +40,6 @@ def test_process_force_greats_gpu_failure_raises_without_cpu_fallback(monkeypatc
         core.process_force_greats(
             loadout_entries={},
             manual_force_greats=False,
-            force_greats_finder=True,
             force_greats_config=[],
             calc_song={"metadata": {}, "song_data": {}},
             ref_arrays={},
@@ -100,7 +99,6 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
         gears_by_name={},
         minis_by_name={},
         effective_difficulty="Hard",
-        force_greats_finder=True,
         registry=None,
         fixed_stats={},
         cfg_data={},
@@ -125,7 +123,6 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
 
     def _fake_gpu_finder(
         loadout_entries,
-        force_greats_finder,
         calc_song,
         ref_arrays,
         meta_primary_color,
@@ -139,7 +136,7 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
     ):
         _ = (
             loadout_entries,
-            force_greats_finder,
+            calc_song,
             ref_arrays,
             meta_primary_color,
             use_gpu,
@@ -177,7 +174,6 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
     out = core.process_force_greats(
         loadout_entries={},
         manual_force_greats=False,
-        force_greats_finder=True,
         force_greats_config=[],
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},

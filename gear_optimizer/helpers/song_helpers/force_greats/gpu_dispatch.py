@@ -22,7 +22,6 @@ from .entry_utils import (
     expected_selected_element,
     fg_group_meta_from_eval_data,
 )
-from ..ga_entry_utils import materialize_entry_names
 from .entry_resolution import (
     build_direct_ga_entry_items as _build_direct_ga_entry_items,
     entry_base_score,
@@ -102,7 +101,6 @@ __all__ = [
 
 def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     loadout_entries,
-    force_greats_finder,
     calc_song,
     ref_arrays,
     meta_primary_color,
@@ -797,25 +795,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     for _entry_key, entry in entry_items:
         cached_force = entry.get("force")
         expected_sel = expected_selected_element(entry, meta_primary_color)
-
-        # Keep cache reuse behavior for non-finder only. Finder recomputes for correctness.
-        if cached_force and (entry.get("fg_score") or cached_force.get("Score")) and (not force_greats_finder):
-            # Preserve base score when reusing cached FG
-            base_score = entry_base_score(entry)
-            cached_fg_score = entry.get("fg_score", 0) or cached_force.get("Score", 0)
-            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-
-            fg_variants.append(
-                {
-                    "data": cached_force,
-                    "gear": gear_names,
-                    "minis": mini_names,
-                    "score": base_score,  # Keep base score
-                    "fg_score": cached_fg_score,  # Store FG score separately
-                    "_is_ga": str(entry.get("_source") or "") == "ga",
-                }
-            )
-            continue
 
         eval_data = eval_data_from_entry(entry, meta_primary_color)
         if not eval_data:

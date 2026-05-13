@@ -126,7 +126,6 @@ def _run_fg_once(
         _ = process_force_greats(
             entries,
             False,  # manual_force_greats
-            True,  # force_greats_finder
             [],  # force_greats_config
             calc_song,
             ref_arrays,

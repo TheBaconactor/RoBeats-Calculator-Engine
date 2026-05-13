@@ -251,7 +251,6 @@ def main() -> int:
                         fg_variants = process_force_greats(
                             loadout_entries,
                             ie.manual_force_greats,
-                            not ie.manual_force_greats,
                             ie.force_greats_config,
                             calc_song,
                             ref_arrays,
@@ -265,7 +264,6 @@ def main() -> int:
                 fg_variants = process_force_greats(
                     loadout_entries,
                     ie.manual_force_greats,
-                    not ie.manual_force_greats,
                     ie.force_greats_config,
                     calc_song,
                     ref_arrays,

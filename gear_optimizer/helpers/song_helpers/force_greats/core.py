@@ -123,7 +123,7 @@ def _process_force_greats_cpu(
     *,
     loadout_entries,
     manual_counts,
-    force_greats_finder,
+    use_finder: bool,
     calc_song,
     ref_arrays,
     meta_primary_color,
@@ -172,7 +172,7 @@ def _process_force_greats_cpu(
             calc_song,
             ref_arrays,
             manual_counts=manual_counts,
-            use_finder=force_greats_finder,
+            use_finder=bool(use_finder),
             use_gpu=bool(use_gpu) and (gpu_client is None),
         )
         computed += 1
@@ -205,7 +205,6 @@ def _process_force_greats_cpu(
 def process_force_greats(
     loadout_entries,
     manual_force_greats,
-    force_greats_finder,
     force_greats_config,
     calc_song,
     ref_arrays,
@@ -231,7 +230,7 @@ def process_force_greats(
         )
         return loadout_entries_map
 
-    if gpu_client is None and bool(use_gpu) and bool(force_greats_finder):
+    if gpu_client is None and bool(use_gpu) and not bool(manual_force_greats):
         if env_flag("FG_INPROCESS_EXECUTOR", "1"):
             gpu_client = _get_inprocess_gpu_client()
             if gpu_client is None:
@@ -241,7 +240,7 @@ def process_force_greats(
                     fatal=False,
                 )
 
-    manual_counts = force_greats_config if (manual_force_greats and not force_greats_finder) else []
+    manual_counts = force_greats_config if manual_force_greats else []
     try:
         total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
     except Exception as e:
@@ -249,7 +248,7 @@ def process_force_greats(
         total_entries = len(loadout_entries or {})
     logger.debug("[ForceGreats] Processing %s candidate loadouts (DB + GA)...", total_entries)
 
-    if use_gpu and force_greats_finder:
+    if use_gpu and not manual_force_greats:
         auto_slot_assigned = False
         auto_slot_id = None
         had_gpu_slot = False
@@ -282,7 +281,6 @@ def process_force_greats(
         try:
             return process_force_greats_gpu_finder(
                 loadout_entries,
-                force_greats_finder,
                 calc_song,
                 ref_arrays,
                 meta_primary_color,
@@ -317,7 +315,7 @@ def process_force_greats(
     return _process_force_greats_cpu(
         loadout_entries=loadout_entries,
         manual_counts=manual_counts,
-        force_greats_finder=force_greats_finder,
+        use_finder=not bool(manual_force_greats),
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         meta_primary_color=meta_primary_color,

@@ -735,7 +735,6 @@ def run_fg_job_sync(
         fg_variants = process_force_greats(
             getattr(song.runtime.fg, "loadout_entries", None) or {},
             bool(getattr(song.gpu_inputs, "manual_force_greats", False)),
-            False,
             getattr(song.gpu_inputs, "force_greats_config", None),
             active_fg_calc_song,
             getattr(song.gpu_inputs, "ref_arrays", None),

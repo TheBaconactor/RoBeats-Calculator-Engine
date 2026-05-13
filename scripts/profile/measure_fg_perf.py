@@ -119,7 +119,6 @@ def run_measurement():
         results = process_force_greats(
             loadout_entries=loadout_entries,
             manual_force_greats=False,
-            force_greats_finder=True,
             force_greats_config=[],
             calc_song=calc_song,
             ref_arrays=ref_arrays,

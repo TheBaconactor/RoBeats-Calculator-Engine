@@ -7,7 +7,7 @@ time *between* FG GPU jobs when many FG jobs are queued.
 This script:
   - Loads a real song .txt chart (calc_song) + ref arrays.
   - Pulls FG seed loadouts from the DB (team_buff_* tables when present).
-  - Runs `process_force_greats(..., force_greats_finder=True, use_gpu=True)` for N jobs.
+  - Runs `process_force_greats(..., use_gpu=True)` for N jobs.
   - Optionally runs jobs concurrently to stress the GPU request queue and coalescing.
   - Writes a GPU executor trace CSV and prints a gap/utilization summary.
 
@@ -252,7 +252,6 @@ def main() -> int:
         process_force_greats(
             entries,
             False,
-            True,
             force_cfg,
             calc_song,
             ref_arrays,
