@@ -141,6 +141,7 @@ def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg
     tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)
     song = make_native_song(
         db_key="song-a",
+        task_key="Song A (Hard)",
         best_data={"BaseScore": 1000},
         fg_variants=[
             {
@@ -158,6 +159,7 @@ def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg
 
     assert isinstance(record_info, dict)
     assert record_info["is_fg_better"] is True
+    assert record_info["song"] == "Song A (Hard)"
     assert tracker.snapshot("song-a") == (1000, 1050, True)
 
 

@@ -1,5 +1,7 @@
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.helpers.song_helpers.persistence import RECORD_UPDATE_SCORE_EPSILON
+from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
+from gear_optimizer.solver.native_inflight_types import make_native_song
 
 
 def _make_minimal_app() -> GearOptimizerApp:
@@ -65,3 +67,29 @@ def test_new_counter_dedupes_song_runs_by_normalized_song_name():
 
     assert app._session_new_records == 1
     assert app._session_new_record_keys == {"Gamma Song"}
+
+
+def test_new_counter_counts_native_fg_record_event_before_tracker_advances():
+    app = _make_minimal_app()
+    tracker = ProgressTracker()
+    tracker.seed_valid_baseline("fg-song", best_score=1000, best_fg=900, baseline_valid=True)
+    song = make_native_song(
+        db_key="fg-song",
+        task_key="FG Song (Hard)",
+        best_data={"BaseScore": 1000},
+        fg_variants=[
+            {
+                "base_score": 1000,
+                "fg_score": 1050,
+                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+        db_best_score=1000,
+        db_best_fg_score=900,
+    )
+
+    info = evaluate_fg_progress_record_update(song, tracker)
+    app._progress_event(completed_delta=0, record_info=info)
+
+    assert app._session_new_records == 1
+    assert app._session_new_record_keys == {"FG Song (Hard)"}

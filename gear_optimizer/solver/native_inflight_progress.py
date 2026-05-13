@@ -246,6 +246,7 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
         return None
 
     record_info = dict(record_info)
+    record_info.setdefault("song", native_song_label(song))
     if record_info.get("is_fg_better") and progress_tracker is not None:
         best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0)
         if best_fg_new > 0:
