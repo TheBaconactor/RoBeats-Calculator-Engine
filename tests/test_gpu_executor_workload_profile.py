@@ -18,6 +18,7 @@ from gear_optimizer.solver.gpu_executor_workload import (
 from gear_optimizer.solver.gpu_executor_workload import (
     should_emit_workload_batch_event,
     record_workload_batch_state,
+    emit_workload_stop_summary,
     workload_batch_event_metrics,
     workload_stop_summary_metrics,
     workload_stop_summary_event_metrics,
@@ -478,6 +479,76 @@ def test_workload_stop_summary_log_message_preserves_profile_format():
         "[GpuExecutor][WORKLOAD][SUMMARY] batches=2 avg_units=30.0 p95_units=30.0 "
         "avg_diversity=15.0% p95_diversity=25.0% avg_qdepth=8.0 p95_qdepth=10.0 "
         "avg_submit_age=3.00ms p95_submit_age=5.00ms events=7 modes=[throughput:3, fg_recovery:2]"
+    )
+
+
+def test_emit_workload_stop_summary_logs_and_emits_profile_event():
+    logs = []
+    events = []
+
+    emitted = emit_workload_stop_summary(
+        [
+            {
+                "mode": "throughput",
+                "work_units": 40.0,
+                "diversity_pct": 20.0,
+                "queue_depth_hint": 10,
+                "avg_submit_age_ms": 2.0,
+            }
+        ],
+        age_ms_samples=[2.0],
+        units_samples=[40.0],
+        diversity_samples=[20.0],
+        queue_depth_samples=[10.0],
+        mode_counts={"throughput": 1},
+        events_emitted=3,
+        last_mode="throughput",
+        log_debug=lambda message: logs.append(message),
+        emit_profile_event_fn=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert emitted is True
+    assert logs == [
+        "[GpuExecutor][WORKLOAD][SUMMARY] batches=1 avg_units=40.0 p95_units=40.0 "
+        "avg_diversity=20.0% p95_diversity=20.0% avg_qdepth=10.0 p95_qdepth=10.0 "
+        "avg_submit_age=2.00ms p95_submit_age=2.00ms events=3 modes=[throughput:1]"
+    ]
+    assert events == [
+        {
+            "component": "gpu_executor",
+            "event": "workload::summary",
+            "metrics": {
+                "batches": 1,
+                "avg_work_units": 40.0,
+                "p95_work_units": 40.0,
+                "avg_diversity_pct": 20.0,
+                "p95_diversity_pct": 20.0,
+                "avg_queue_depth_hint": 10.0,
+                "p95_queue_depth_hint": 10.0,
+                "avg_submit_age_ms": 2.0,
+                "p95_submit_age_ms": 2.0,
+                "events_emitted": 3,
+                "last_mode": "throughput",
+            },
+        }
+    ]
+
+
+def test_emit_workload_stop_summary_skips_empty_window():
+    assert (
+        emit_workload_stop_summary(
+            [],
+            age_ms_samples=[],
+            units_samples=[],
+            diversity_samples=[],
+            queue_depth_samples=[],
+            mode_counts={},
+            events_emitted=0,
+            last_mode="",
+            log_debug=lambda _message: None,
+            emit_profile_event_fn=lambda **_kwargs: None,
+        )
+        is False
     )
 
 

@@ -57,14 +57,12 @@ from gear_optimizer.solver.gpu_executor_workload import (
     load_workload_profile_settings as _load_workload_profile_settings,
     payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
+    emit_workload_stop_summary as _emit_workload_stop_summary,
     should_emit_workload_batch_event,
     summarize_batch,
     workload_batch_event_metrics,
     workload_window_event_metrics,
     workload_window_log_message,
-    workload_stop_summary_metrics,
-    workload_stop_summary_event_metrics,
-    workload_stop_summary_log_message,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     batch_contains_fg_burst_work as _batch_contains_fg_burst_work,
@@ -799,7 +797,7 @@ class GpuExecutor:
             try:
                 if self._workload_recent_batches:
                     window = list(self._workload_recent_batches)
-                    metrics = workload_stop_summary_metrics(
+                    _emit_workload_stop_summary(
                         window,
                         age_ms_samples=self._workload_age_ms_samples,
                         units_samples=self._workload_units_samples,
@@ -808,12 +806,8 @@ class GpuExecutor:
                         mode_counts=self._workload_mode_counts,
                         events_emitted=int(self._workload_events_emitted),
                         last_mode=str(self._last_batch_plan_mode),
-                    )
-                    logger.debug(workload_stop_summary_log_message(metrics))
-                    emit_profile_event(
-                        component="gpu_executor",
-                        event="workload::summary",
-                        metrics=workload_stop_summary_event_metrics(metrics),
+                        log_debug=logger.debug,
+                        emit_profile_event_fn=emit_profile_event,
                     )
             except (ValueError, TypeError, KeyError, AttributeError):
                 pass

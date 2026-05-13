@@ -390,3 +390,38 @@ def workload_stop_summary_log_message(metrics: dict[str, Any]) -> str:
 
 def workload_stop_summary_event_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in metrics.items() if key != "mode_top"}
+
+
+def emit_workload_stop_summary(
+    window: list[dict[str, Any]],
+    *,
+    age_ms_samples: Any,
+    units_samples: Any,
+    diversity_samples: Any,
+    queue_depth_samples: Any,
+    mode_counts: Any,
+    events_emitted: int,
+    last_mode: str,
+    log_debug: Callable[[str], None],
+    emit_profile_event_fn: Callable[..., None],
+) -> bool:
+    metrics = workload_stop_summary_metrics(
+        window,
+        age_ms_samples=age_ms_samples,
+        units_samples=units_samples,
+        diversity_samples=diversity_samples,
+        queue_depth_samples=queue_depth_samples,
+        mode_counts=mode_counts,
+        events_emitted=int(events_emitted),
+        last_mode=str(last_mode),
+    )
+    if not metrics:
+        return False
+
+    log_debug(workload_stop_summary_log_message(metrics))
+    emit_profile_event_fn(
+        component="gpu_executor",
+        event="workload::summary",
+        metrics=workload_stop_summary_event_metrics(metrics),
+    )
+    return True
