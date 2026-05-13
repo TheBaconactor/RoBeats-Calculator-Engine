@@ -33,7 +33,7 @@ from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_gpu_cap_s,
     read_inflight_event_wait_short_spin_s,
 )
-from gear_optimizer.solver.native_inflight_prepare import _prepare_song
+from gear_optimizer.solver.native_inflight_prepare import prepare_native_song
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
     continuous_fg_allow_not_ready,
@@ -186,7 +186,7 @@ def run_native_inflight_song_pipeline(
     ga_pipeline = InflightGAPipeline()
     ga_inflight = ga_pipeline.inflight
 
-    prep_queue = SongPrepQueue(max_workers=int(icfg.prep_workers), prep_fn=_prepare_song)
+    prep_queue = SongPrepQueue(max_workers=int(icfg.prep_workers), prep_fn=prepare_native_song)
     prep_inflight = prep_queue.inflight
 
     cpu_prewarm_queue = CpuPrewarmQueue(
@@ -313,7 +313,7 @@ def run_native_inflight_song_pipeline(
         task_key = task_queue_label(logical_task)
         try:
             t0 = time.perf_counter()
-            prepared_song = _prepare_song(logical_task)
+            prepared_song = prepare_native_song(logical_task)
             _bind_bundle_song(prepared_song, first, repeat_ctx)
             prepared.append(prepared_song)
             stage_profiler.record(

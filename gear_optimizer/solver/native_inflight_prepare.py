@@ -173,7 +173,7 @@ def _fixed_registry_cache_key(
     return ("fixed", pool_key, fg, fm)
 
 
-def _prepare_song(task: tuple) -> _NativeSong:
+def prepare_native_song(task: tuple) -> _NativeSong:
     cpu_t0 = _thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
@@ -357,7 +357,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
     try:
         init_heuristic_k = int(str(env_get("GPU_GA_INIT_HEURISTIC_K", "64") or "64"))
     except Exception as e:
-        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
+        logger.debug(f"native_inflight_prepare:prepare_native_song: {e}")
         init_heuristic_k = 64
     init_heuristic_k = max(0, int(init_heuristic_k))
     init_heuristic_copies = 25
@@ -399,7 +399,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
         db_seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
     except Exception as e:
-        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
+        logger.debug(f"native_inflight_prepare:prepare_native_song: {e}")
         init_heuristic_topk = None
         db_seed_ids = None
 
@@ -481,5 +481,5 @@ def _prepare_song(task: tuple) -> _NativeSong:
     try:
         song.runtime.prep.cpu_prep_s = max(0.0, _thread_cpu_time_s() - float(cpu_t0))
     except Exception as e:
-        logger.debug(f"native_inflight_prepare:_prepare_song: {e}")
+        logger.debug(f"native_inflight_prepare:prepare_native_song: {e}")
     return song
