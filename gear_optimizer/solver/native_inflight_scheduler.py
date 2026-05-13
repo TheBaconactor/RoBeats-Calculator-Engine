@@ -364,7 +364,7 @@ def read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
     return max(1, min(int(target), int(inflight_limit_i)))
 
 
-def _continuous_ga_warm_queue_limit(
+def continuous_ga_warm_queue_limit(
     *,
     ga_queue_limit: int,
     inflight_limit: int,
@@ -425,7 +425,7 @@ def _continuous_ga_warm_queue_limit(
     return int(limit)
 
 
-def _continuous_fg_should_fill_song_lanes(
+def continuous_fg_should_fill_song_lanes(
     *,
     target_song_lanes: int,
     active_song_lanes: int,
@@ -463,7 +463,7 @@ def _continuous_fg_should_fill_song_lanes(
     return True
 
 
-def _continuous_ga_should_yield_to_fg(
+def continuous_ga_should_yield_to_fg(
     *,
     fg_enabled: bool,
     fg_drain_at_end: bool,
@@ -508,7 +508,7 @@ def _continuous_ga_should_yield_to_fg(
     return False
 
 
-def _continuous_fg_should_start(
+def continuous_fg_should_start(
     *,
     pending_fg_count: int,
     ready_fg_count: int,
@@ -535,7 +535,7 @@ def _continuous_fg_should_start(
     return True
 
 
-def _continuous_fg_allow_not_ready(
+def continuous_fg_allow_not_ready(
     *,
     blocked_on_slot: bool,
     no_ga_remaining: bool,
@@ -553,7 +553,7 @@ def _continuous_fg_allow_not_ready(
     return bool(no_ga_remaining) and bool(fg_drain_at_end)
 
 
-def _continuous_fg_submit_budget(
+def continuous_fg_submit_budget(
     *,
     pending_fg_count: int,
     ready_fg_count: int,

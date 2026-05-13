@@ -1,12 +1,12 @@
 import configparser
 
 from gear_optimizer.solver.native_inflight_orchestrator import (
-    _continuous_fg_allow_not_ready,
-    _continuous_ga_should_yield_to_fg,
-    _continuous_fg_should_fill_song_lanes,
-    _continuous_fg_submit_budget,
-    _continuous_fg_should_start,
-    _continuous_ga_warm_queue_limit,
+    continuous_fg_allow_not_ready,
+    continuous_ga_should_yield_to_fg,
+    continuous_fg_should_fill_song_lanes,
+    continuous_fg_submit_budget,
+    continuous_fg_should_start,
+    continuous_ga_warm_queue_limit,
 )
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
@@ -137,9 +137,9 @@ def test_read_ga_multi_start_uses_runtime_ga_settings():
     assert read_ga_multi_start(cfg) == 4
 
 
-def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
+def testcontinuous_fg_should_start_on_ready_fg_or_slot_pressure():
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=3,
             ready_fg_count=1,
             ga_credit=0,
@@ -155,7 +155,7 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
         is True
     )
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=3,
             ready_fg_count=1,
             ga_credit=9,
@@ -171,7 +171,7 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
         is True
     )
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=3,
             ready_fg_count=1,
             ga_credit=9,
@@ -187,7 +187,7 @@ def test_continuous_fg_should_start_on_ready_fg_or_slot_pressure():
         is True
     )
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=1,
             ready_fg_count=0,
             ga_credit=9,
@@ -217,13 +217,13 @@ def test_continuous_fg_should_probe_pending_fg_while_ga_can_continue():
         "fg_slot_reserve": 0,
     }
 
-    assert _continuous_fg_should_start(**base, ga_credit=0, oldest_wait_s=0.0) is True
-    assert _continuous_fg_should_start(**base, ga_credit=9, oldest_wait_s=3.0) is True
+    assert continuous_fg_should_start(**base, ga_credit=0, oldest_wait_s=0.0) is True
+    assert continuous_fg_should_start(**base, ga_credit=9, oldest_wait_s=3.0) is True
 
 
 def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=0,
             ready_fg_count=0,
             ga_credit=0,
@@ -242,7 +242,7 @@ def test_continuous_fg_should_not_start_without_pending_or_drain_disabled():
 
 def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
     assert (
-        _continuous_fg_allow_not_ready(
+        continuous_fg_allow_not_ready(
             blocked_on_slot=False,
             no_ga_remaining=True,
             fg_drain_at_end=True,
@@ -250,7 +250,7 @@ def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
         is True
     )
     assert (
-        _continuous_fg_allow_not_ready(
+        continuous_fg_allow_not_ready(
             blocked_on_slot=True,
             no_ga_remaining=False,
             fg_drain_at_end=True,
@@ -258,7 +258,7 @@ def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
         is True
     )
     assert (
-        _continuous_fg_allow_not_ready(
+        continuous_fg_allow_not_ready(
             blocked_on_slot=False,
             no_ga_remaining=True,
             fg_drain_at_end=False,
@@ -266,7 +266,7 @@ def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
         is False
     )
     assert (
-        _continuous_fg_allow_not_ready(
+        continuous_fg_allow_not_ready(
             blocked_on_slot=False,
             no_ga_remaining=False,
             fg_drain_at_end=True,
@@ -275,9 +275,9 @@ def test_continuous_fg_allows_unready_jobs_only_for_drain_or_slot_pressure():
     )
 
 
-def test_continuous_fg_should_start_when_reserved_capacity_has_ready_fg():
+def testcontinuous_fg_should_start_when_reserved_capacity_has_ready_fg():
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=3,
             ready_fg_count=1,
             ga_credit=9,
@@ -294,8 +294,8 @@ def test_continuous_fg_should_start_when_reserved_capacity_has_ready_fg():
     )
 
 
-def test_continuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
-    budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
+    budget = continuous_fg_submit_budget(
         pending_fg_count=3,
         ready_fg_count=1,
         fg_inflight_count=0,
@@ -573,9 +573,9 @@ def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):
     assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 1
 
 
-def test_continuous_fg_should_fill_song_lanes_before_fg_when_safe():
+def testcontinuous_fg_should_fill_song_lanes_before_fg_when_safe():
     assert (
-        _continuous_fg_should_fill_song_lanes(
+        continuous_fg_should_fill_song_lanes(
             target_song_lanes=2,
             active_song_lanes=1,
             ready_ga_count=1,
@@ -588,7 +588,7 @@ def test_continuous_fg_should_fill_song_lanes_before_fg_when_safe():
     )
 
 
-def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
+def testcontinuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
     base = {
         "target_song_lanes": 2,
         "active_song_lanes": 1,
@@ -609,12 +609,12 @@ def test_continuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
     ):
         args = dict(base)
         args.update(override)
-        assert _continuous_fg_should_fill_song_lanes(**args) is False
+        assert continuous_fg_should_fill_song_lanes(**args) is False
 
 
 def test_continuous_fg_lane_fill_yields_to_ready_fg_backlog():
     assert (
-        _continuous_fg_should_fill_song_lanes(
+        continuous_fg_should_fill_song_lanes(
             target_song_lanes=2,
             active_song_lanes=1,
             ready_ga_count=1,
@@ -632,7 +632,7 @@ def test_continuous_fg_lane_fill_yields_to_ready_fg_backlog():
 
 def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_lags():
     assert (
-        _continuous_fg_should_fill_song_lanes(
+        continuous_fg_should_fill_song_lanes(
             target_song_lanes=2,
             active_song_lanes=1,
             ready_ga_count=1,
@@ -650,7 +650,7 @@ def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_la
 
 def test_continuous_ga_yields_to_ready_fg_before_more_ga():
     assert (
-        _continuous_ga_should_yield_to_fg(
+        continuous_ga_should_yield_to_fg(
             fg_enabled=True,
             fg_drain_at_end=True,
             pending_fg_count=2,
@@ -669,7 +669,7 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
 
 def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
     assert (
-        _continuous_ga_should_yield_to_fg(
+        continuous_ga_should_yield_to_fg(
             fg_enabled=True,
             fg_drain_at_end=True,
             pending_fg_count=4,
@@ -688,7 +688,7 @@ def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
 
 def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
     assert (
-        _continuous_ga_should_yield_to_fg(
+        continuous_ga_should_yield_to_fg(
             fg_enabled=False,
             fg_drain_at_end=True,
             pending_fg_count=3,
@@ -704,7 +704,7 @@ def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
         is False
     )
     assert (
-        _continuous_ga_should_yield_to_fg(
+        continuous_ga_should_yield_to_fg(
             fg_enabled=True,
             fg_drain_at_end=False,
             pending_fg_count=3,
@@ -723,7 +723,7 @@ def test_continuous_ga_yield_respects_fg_disabled_and_drain_disabled():
 
 def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
     assert (
-        _continuous_ga_should_yield_to_fg(
+        continuous_ga_should_yield_to_fg(
             fg_enabled=True,
             fg_drain_at_end=True,
             pending_fg_count=8,
@@ -740,8 +740,8 @@ def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
     )
 
 
-def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():
-    limit = _continuous_ga_warm_queue_limit(
+def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():
+    limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
         fg_enabled=True,
@@ -758,8 +758,8 @@ def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started
     assert limit == 2
 
 
-def test_continuous_ga_warm_queue_limit_stays_shallow_during_decode_handoff_before_fg_owner_turn():
-    limit = _continuous_ga_warm_queue_limit(
+def testcontinuous_ga_warm_queue_limit_stays_shallow_during_decode_handoff_before_fg_owner_turn():
+    limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
         fg_enabled=True,
@@ -776,8 +776,8 @@ def test_continuous_ga_warm_queue_limit_stays_shallow_during_decode_handoff_befo
     assert limit == 4
 
 
-def test_continuous_ga_warm_queue_limit_restores_full_limit_once_fg_owner_turn_is_active():
-    limit = _continuous_ga_warm_queue_limit(
+def testcontinuous_ga_warm_queue_limit_restores_full_limit_once_fg_owner_turn_is_active():
+    limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
         fg_enabled=True,
@@ -794,8 +794,8 @@ def test_continuous_ga_warm_queue_limit_restores_full_limit_once_fg_owner_turn_i
     assert limit == 12
 
 
-def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_disabled_or_staging_is_below_conveyor():
-    disabled_limit = _continuous_ga_warm_queue_limit(
+def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_fg_disabled_or_staging_is_below_conveyor():
+    disabled_limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
         fg_enabled=False,
@@ -811,7 +811,7 @@ def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_disabled_or_sta
     )
     assert disabled_limit == 12
 
-    shallow_limit = _continuous_ga_warm_queue_limit(
+    shallow_limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
         fg_enabled=True,
@@ -828,8 +828,8 @@ def test_continuous_ga_warm_queue_limit_keeps_full_limit_when_fg_disabled_or_sta
     assert shallow_limit == 12
 
 
-def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
-    control_budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_fills_ready_worker_capacity():
+    control_budget = continuous_fg_submit_budget(
         pending_fg_count=8,
         ready_fg_count=8,
         fg_inflight_count=0,
@@ -848,7 +848,7 @@ def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
     )
     assert control_budget == 4
 
-    adaptive_budget = _continuous_fg_submit_budget(
+    adaptive_budget = continuous_fg_submit_budget(
         pending_fg_count=8,
         ready_fg_count=8,
         fg_inflight_count=0,
@@ -868,8 +868,8 @@ def test_continuous_fg_submit_budget_fills_ready_worker_capacity():
     assert adaptive_budget == 4
 
 
-def test_continuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
-    budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
+    budget = continuous_fg_submit_budget(
         pending_fg_count=8,
         ready_fg_count=0,
         fg_inflight_count=0,
@@ -889,8 +889,8 @@ def test_continuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
     assert budget == 1
 
 
-def test_continuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
-    budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
+    budget = continuous_fg_submit_budget(
         pending_fg_count=16,
         ready_fg_count=16,
         fg_inflight_count=0,
@@ -910,8 +910,8 @@ def test_continuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
     assert budget == 8
 
 
-def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
-    control_budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
+    control_budget = continuous_fg_submit_budget(
         pending_fg_count=16,
         ready_fg_count=6,
         fg_inflight_count=0,
@@ -930,7 +930,7 @@ def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists()
     )
     assert control_budget == 6
 
-    adaptive_budget = _continuous_fg_submit_budget(
+    adaptive_budget = continuous_fg_submit_budget(
         pending_fg_count=16,
         ready_fg_count=6,
         fg_inflight_count=0,
@@ -950,8 +950,8 @@ def test_continuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists()
     assert adaptive_budget == 3
 
 
-def test_continuous_fg_submit_budget_honors_end_of_run_drain():
-    budget = _continuous_fg_submit_budget(
+def testcontinuous_fg_submit_budget_honors_end_of_run_drain():
+    budget = continuous_fg_submit_budget(
         pending_fg_count=5,
         ready_fg_count=0,
         fg_inflight_count=0,
@@ -999,7 +999,7 @@ def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch)
     monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "0")
     assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
 
-    budget_no_drain = _continuous_fg_submit_budget(
+    budget_no_drain = continuous_fg_submit_budget(
         pending_fg_count=5,
         ready_fg_count=0,
         fg_inflight_count=0,
@@ -1018,7 +1018,7 @@ def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch)
     )
     assert budget_no_drain == 0
     assert (
-        _continuous_fg_should_start(
+        continuous_fg_should_start(
             pending_fg_count=3,
             ready_fg_count=0,
             ga_credit=5,

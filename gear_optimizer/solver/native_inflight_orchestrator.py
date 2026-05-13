@@ -36,12 +36,12 @@ from gear_optimizer.solver.inflight_wait import (
 from gear_optimizer.solver.native_inflight_prepare import _prepare_song
 from gear_optimizer.solver.native_inflight_scheduler import (
     GAQueueLimitController,
-    _continuous_fg_allow_not_ready,
-    _continuous_ga_should_yield_to_fg,
-    _continuous_fg_should_fill_song_lanes,
-    _continuous_fg_should_start,
-    _continuous_fg_submit_budget,
-    _continuous_ga_warm_queue_limit,
+    continuous_fg_allow_not_ready,
+    continuous_ga_should_yield_to_fg,
+    continuous_fg_should_fill_song_lanes,
+    continuous_fg_should_start,
+    continuous_fg_submit_budget,
+    continuous_ga_warm_queue_limit,
     count_active_song_lanes,
     read_prime_target,
 )
@@ -274,7 +274,7 @@ def run_native_inflight_song_pipeline(
 
     def _current_ga_queue_limit() -> int:
         return int(
-            _continuous_ga_warm_queue_limit(
+            continuous_ga_warm_queue_limit(
                 ga_queue_limit=ga_queue_limit_controller.effective_limit(last_slot_block_t=last_slot_block_t),
                 inflight_limit=int(icfg.inflight_limit),
                 fg_enabled=bool(icfg.fg_enabled),
@@ -658,7 +658,7 @@ def run_native_inflight_song_pipeline(
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
                 ready_fg_for_ga_admission = fg_pipeline.ready_count() if pending_fg else 0
-                if _continuous_ga_should_yield_to_fg(
+                if continuous_ga_should_yield_to_fg(
                     fg_enabled=bool(icfg.fg_enabled),
                     fg_drain_at_end=bool(icfg.fg_drain_at_end),
                     pending_fg_count=len(pending_fg),
@@ -1147,7 +1147,7 @@ def run_native_inflight_song_pipeline(
 
             ga_queue_limit_effective = _current_ga_queue_limit()
             ready_ga_for_lane_fill = len(prepared) if len(ga_inflight) < int(ga_queue_limit_effective) else 0
-            if _continuous_fg_should_fill_song_lanes(
+            if continuous_fg_should_fill_song_lanes(
                 target_song_lanes=int(icfg.target_song_lanes),
                 active_song_lanes=int(_active_song_lane_count()),
                 ready_ga_count=int(ready_ga_for_lane_fill),
@@ -1162,7 +1162,7 @@ def run_native_inflight_song_pipeline(
                 lane_fill_hold_count += 1
                 should_start_fg = False
             else:
-                should_start_fg = _continuous_fg_should_start(
+                should_start_fg = continuous_fg_should_start(
                     pending_fg_count=len(pending_fg),
                     ready_fg_count=int(ready_fg_count),
                     ga_credit=int(fg_pipeline.ga_credit),
@@ -1215,7 +1215,7 @@ def run_native_inflight_song_pipeline(
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
-                submit_budget = _continuous_fg_submit_budget(
+                submit_budget = continuous_fg_submit_budget(
                     pending_fg_count=len(pending_fg),
                     ready_fg_count=int(ready_fg_count),
                     fg_inflight_count=len(fg_futures),
@@ -1236,7 +1236,7 @@ def run_native_inflight_song_pipeline(
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
                     # Process pending FG jobs (up to worker + batch budget).
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
-                        allow_not_ready = _continuous_fg_allow_not_ready(
+                        allow_not_ready = continuous_fg_allow_not_ready(
                             blocked_on_slot=bool(blocked_on_slot_acquire),
                             no_ga_remaining=bool(no_ga_remaining),
                             fg_drain_at_end=bool(icfg.fg_drain_at_end),
