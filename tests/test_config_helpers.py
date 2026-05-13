@@ -37,7 +37,6 @@ def _build_config() -> configparser.ConfigParser:
                 "GA_SearchDepth": "0",
                 "GA_MultiStart": "0",
                 "InFlightSongs": "-3",
-                "InFlightInstances": "0",
                 "InFlight_SongFileCacheMax": "-1",
                 "TeamBuff_BaseCalcSongCacheMax": "5",
                 "LoopForever": "true",
@@ -91,7 +90,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ga.multi_start == 1
 
     assert inflight.songs == 0
-    assert inflight.instances == 1
     assert inflight.song_file_cache_max == 0
     assert inflight.team_buff_calc_cache_max == 5
     assert inflight.ga_queue_mult == 7
@@ -140,20 +138,6 @@ def test_ga_settings_accepts_legacy_ga_depth_with_warning(caplog):
 
     assert ga.search_depth == 12
     assert "GA_Depth is deprecated; use IterationEngine.GA_SearchDepth" in caplog.text
-
-
-def test_inflight_settings_ignores_multi_instance_requests(caplog):
-    from gear_optimizer.core import config as config_module
-
-    config_module._SINGLE_OWNER_FLAG_WARNED.clear()
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"InFlightInstances": "3"}})
-
-    with caplog.at_level(logging.WARNING):
-        inflight = InflightSettings.from_config(cfg)
-
-    assert inflight.instances == 1
-    assert "InFlightInstances=3 ignored" in caplog.text
 
 
 def test_repo_config_keeps_only_song_selection_and_loop_flag():
