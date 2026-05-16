@@ -307,6 +307,109 @@ def ga_apply_base_candidate_cache_kernel(n_genomes: ti.i32):
                     probe += 1
 
 
+@ti.kernel
+def ga_insert_base_candidate_cache_results_kernel(
+    n_genomes: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    use_exact_inner_solver: ti.template(),
+    reuse_exact_eval_results: ti.template(),
+):
+    """
+    Persist every cold GA base-stat evaluation into the GPU cache, not just the
+    downstream-selected GA->FG payload. Delta rows are compactly staged for disk append.
+    """
+    kernels_helpers.ga_base_candidate_cache_delta_count[0] = 0
+    mask = ti.cast(kernels_helpers.ga_base_candidate_cache_keys.shape[0] - 1, ti.u32)
+    ti.loop_config(serialize=True)
+    for g in range(n_genomes):
+        should_insert = ti.i32(1)
+        if kernels_helpers.ga_base_candidate_cache_hit[g] != 0:
+            should_insert = ti.i32(0)
+        if ti.static(reuse_exact_eval_results):
+            if kernels_helpers.ga_exact_eval_rep_idx[g] != g:
+                should_insert = ti.i32(0)
+        if should_insert != 0:
+            combo_idx = _best_combo_idx_from_chunk_state(g)
+            if combo_idx >= 0:
+                result_stats = _materialize_best_combo_stats(
+                    g,
+                    combo_idx,
+                    total_budget,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                    use_exact_inner_solver,
+                )
+                score = _best_score_from_chunk_state(g)
+                if score >= 0 and result_stats[0] >= 0:
+                    key = _base_candidate_cache_hash_for_genome(g)
+                    pos = ti.cast(key & mask, ti.i32)
+                    probe = ti.i32(0)
+                    done = ti.i32(0)
+                    while probe < kernels_helpers.ga_base_candidate_cache_keys.shape[0] and done == 0:
+                        got_key = kernels_helpers.ga_base_candidate_cache_keys[pos]
+                        if got_key == ti.u32(0):
+                            kernels_helpers.ga_base_candidate_cache_keys[pos] = key
+                            for i in ti.static(range(7)):
+                                kernels_helpers.ga_base_candidate_cache_stats[pos, i] = kernels_helpers.genome_base_stats[g][i]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 0] = score
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 1] = combo_idx
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 2] = result_stats[3]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 3] = result_stats[4]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 4] = result_stats[5]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 5] = result_stats[6]
+                            ti.atomic_add(kernels_helpers.ga_base_candidate_cache_count[0], 1)
+
+                            delta_idx = ti.atomic_add(kernels_helpers.ga_base_candidate_cache_delta_count[0], 1)
+                            if delta_idx < kernels_helpers.ga_base_candidate_cache_delta_rows.shape[0]:
+                                for i in ti.static(range(7)):
+                                    kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, i] = ti.cast(
+                                        kernels_helpers.genome_base_stats[g][i], ti.i32
+                                    )
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 7] = score
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 8] = combo_idx
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 9] = result_stats[3]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 10] = result_stats[4]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 11] = result_stats[5]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 12] = result_stats[6]
+
+                            _apply_base_candidate_cache_hit(pos, g)
+                            kernels_helpers.ga_base_candidate_cache_hit[g] = 1
+                            done = ti.i32(1)
+                        else:
+                            if got_key == key and _base_candidate_cache_key_matches(pos, g) != 0:
+                                _apply_base_candidate_cache_hit(pos, g)
+                                kernels_helpers.ga_base_candidate_cache_hit[g] = 1
+                                done = ti.i32(1)
+                            pos = (pos + 1) & ti.cast(mask, ti.i32)
+                            probe += 1
+
+
 @ti.func
 def _exact_eval_base_stats_key_matches(pos: ti.i32, genome_idx: ti.i32) -> ti.i32:
     match = ti.i32(1)
@@ -602,6 +705,7 @@ def ga_propagate_exact_eval_reuse_chunk_best_kernel(n_genomes: ti.i32):
                 kernels_helpers.chunk_best_idx[g] = kernels_helpers.chunk_best_idx[rep]
             for i in ti.static(range(4)):
                 kernels_helpers.chunk_best_results[g, i] = kernels_helpers.chunk_best_results[rep, i]
+            kernels_helpers.ga_base_candidate_cache_hit[g] = kernels_helpers.ga_base_candidate_cache_hit[rep]
 
 
 @ti.kernel

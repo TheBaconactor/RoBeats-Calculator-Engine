@@ -110,6 +110,8 @@ ga_base_candidate_cache_keys = None  # (HASH_SIZE,) u32
 ga_base_candidate_cache_stats = None  # (HASH_SIZE, 7) i16
 ga_base_candidate_cache_results = None  # (HASH_SIZE, 6) i32 [score, combo_idx, pp, cm, fm, ov]
 ga_base_candidate_cache_hit = None  # (MAX_GENOMES,) i32
+ga_base_candidate_cache_delta_count = None  # (1,) i32
+ga_base_candidate_cache_delta_rows = None  # (MAX_GENOMES, 13) i32 [stats7, score, combo_idx, pp, cm, fm, ov]
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
 

@@ -11,18 +11,44 @@ import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.utils import safe_int
+from gear_optimizer.core.utils import safe_int, timing_envelope_timing_context
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
-from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 
 
 FG_CACHE_SCHEMA_VERSION = 1
 FG_CACHE_SECTION_CAP = 20
-BASE_CACHE_SCHEMA_VERSION = 4
+BASE_CACHE_SCHEMA_VERSION = 5
 _FG_ROW = struct.Struct("<Q7hiiiiBBBBBBBI20h20h")
 _BASE_ROW = struct.Struct("<Q7h8i")
 _PATH_LOCKS: dict[Path, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _song_timing_cache_key(calc_song: dict) -> tuple:
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    cached = calc_song.get("_gpu_timing_cache_key_frontier", None)
+    if isinstance(cached, tuple) and len(cached) == 11:
+        return cached
+    chart_ts = song_data.get("chart_timestamps", None)
+    timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+    ts_sig = song_data.get("_chart_timestamps_sig", None)
+    if not isinstance(ts_sig, (bytes, bytearray, memoryview)) or len(ts_sig) != 16:
+        ts_sig = array_sig16(timestamps)
+    nt_sig = song_data.get("_note_types_sig", None)
+    if not isinstance(nt_sig, (bytes, bytearray, memoryview)) or len(nt_sig) != 16:
+        nt_sig = array_sig16(song_data.get("note_types"))
+    key = (
+        str(meta.get("Song Name", "")),
+        str(meta.get("Difficulty", "")),
+        int(len(timestamps)),
+        float(meta.get("Last Note Time", 0) or 0),
+        int(meta.get("Long Notes", 0) or 0),
+        bytes(ts_sig),
+        bytes(nt_sig),
+    ) + timing_envelope_timing_context(calc_song)
+    calc_song["_gpu_timing_cache_key_frontier"] = key
+    return key
 
 
 @dataclass(frozen=True)
@@ -340,7 +366,7 @@ def _base_value_from_result8(result8: tuple[int, ...] | list[int] | np.ndarray) 
     if int(values[0]) < 0:
         raise ValueError("base candidate cache cannot persist invalid score")
     return BaseCandidateCacheValue(
-        score=0,
+        score=int(values[0]),
         combo_idx=int(values[1]),
         ft=int(values[2]),
         ff=int(values[3]),
@@ -476,6 +502,55 @@ class BaseCandidateCacheShard:
                 fh.write(row)
         self.rows[key] = value
         return True
+
+    def put_result8_rows(
+        self,
+        stats_rows: np.ndarray,
+        result8_rows: np.ndarray,
+    ) -> int:
+        stats_arr = np.asarray(stats_rows)
+        result_arr = np.asarray(result8_rows)
+        if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
+            raise ValueError(f"base candidate cache batch stats shape mismatch: {stats_arr.shape} != (n, 7)")
+        if result_arr.ndim != 2 or int(result_arr.shape[1]) != 8:
+            raise ValueError(f"base candidate cache batch result shape mismatch: {result_arr.shape} != (n, 8)")
+        if int(stats_arr.shape[0]) != int(result_arr.shape[0]):
+            raise ValueError(
+                "base candidate cache batch row count mismatch: "
+                f"{stats_arr.shape[0]} != {result_arr.shape[0]}"
+            )
+
+        pending: dict[tuple[int, ...], BaseCandidateCacheValue] = {}
+        for stats_raw, result_raw in zip(stats_arr, result_arr, strict=True):
+            key = stats7_key(stats_raw)
+            value = _base_value_from_result8(result_raw)
+            if value.combo_idx < 0:
+                raise ValueError(f"base candidate cache cannot persist invalid combo index for stats={key}")
+            existing = self.rows.get(key)
+            if existing is None:
+                existing = pending.get(key)
+            if existing is not None:
+                if existing != value:
+                    raise ValueError(
+                        "base candidate cache value changed "
+                        f"for stats={key}: existing={existing.result8()} new={value.result8()} path={self.path}"
+                    )
+                continue
+            pending[key] = value
+
+        if not pending:
+            return 0
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = bytearray()
+        for key, value in pending.items():
+            payload.extend(_pack_base_row(key, value))
+        lock = _path_lock(self.path)
+        with lock:
+            with self.path.open("ab") as fh:
+                fh.write(payload)
+        self.rows.update(pending)
+        return int(len(pending))
 
     def gpu_rows(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if not self.rows:

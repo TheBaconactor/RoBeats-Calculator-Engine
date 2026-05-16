@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 from itertools import product
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -349,8 +351,14 @@ def solve_native_force_greats_gpu_batch(
             "candidate_cache_writes": 0,
         }
 
-    from gear_optimizer.solver.taichi_gem import fields as gem_fields
-    from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
+    try:
+        gem_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
+        fg_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.force_greats.fields")
+    except ModuleNotFoundError as exc:
+        if exc.name != "taichi" or gpu_client is None:
+            raise
+        gem_fields = SimpleNamespace(MAX_GENOMES=4096)
+        fg_fields = SimpleNamespace(FG_MAX_FTFF=1024)
     if gpu_client is None:
         from gear_optimizer.solver.taichi_gem.force_greats.api import (
             fg_download_global_best,

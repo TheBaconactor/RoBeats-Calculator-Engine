@@ -14,93 +14,12 @@ from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
     optimize_core_device_refined as optimize_core_device,
-    score_solution_from_gems_preloaded,
 )
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
 # Small populations are faster with a serial scan than a fully contended atomic reduction.
 GA_GLOBAL_BEST_SERIAL_THRESHOLD = 512
-
-
-@ti.func
-def _score_cached_combo_from_gems(
-    genome_idx: ti.i32,
-    ft: ti.i32,
-    ff: ti.i32,
-    pp_gems: ti.i32,
-    cm_gems: ti.i32,
-    fm_gems: ti.i32,
-    ov_gems: ti.i32,
-    gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
-    song_slot: ti.i32,
-) -> ti.i32:
-    MAX_STAT: ti.i32 = 160
-
-    stats = kernels_helpers.genome_base_stats[genome_idx]
-    base_pp: ti.i32 = stats[0]
-    base_cm: ti.i32 = stats[1]
-    base_fm: ti.i32 = stats[2]
-    base_p_val: ti.i32 = stats[3]
-    base_s_val: ti.i32 = stats[4]
-    base_ft_stat: ti.i32 = stats[5]
-    base_ff_stat: ti.i32 = stats[6]
-
-    ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-    ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-    ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-    ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-
-    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-    head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-
-    return score_solution_from_gems_preloaded(
-        ft,
-        ff,
-        pp_gems,
-        cm_gems,
-        fm_gems,
-        ov_gems,
-        base_pp,
-        base_cm,
-        base_fm,
-        base_p_val,
-        base_s_val,
-        base_ft_stat,
-        base_ff_stat,
-        gem_scale_fever,
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        song_slot,
-        ft_idx,
-        ff_idx,
-        head_len,
-        count_fever,
-        count_normal,
-    )
 
 
 @ti.func
@@ -251,7 +170,6 @@ def _materialize_best_combo_stats(
 ) -> ti.types.vector(7, ti.i32):
     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
     ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
-    budget: ti.i32 = total_budget - ft - ff
 
     score: ti.i32 = -1
     pp_gems: ti.i32 = 0
@@ -259,64 +177,12 @@ def _materialize_best_combo_stats(
     fm_gems: ti.i32 = 0
     ov_gems: ti.i32 = 0
 
-    if ti.static(not IS_METAL):
+    if kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
+        score = _best_score_from_chunk_state(genome_idx)
         pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
         cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
         fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
         ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-
-        cached_sum: ti.i32 = pp_gems + cm_gems + fm_gems + ov_gems
-        if cached_sum == budget and pp_gems >= 0 and cm_gems >= 0 and fm_gems >= 0 and ov_gems >= 0:
-            score = _score_cached_combo_from_gems(
-                genome_idx,
-                ft,
-                ff,
-                pp_gems,
-                cm_gems,
-                fm_gems,
-                ov_gems,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-            )
-        else:
-            uncached = _solve_best_combo_uncached(
-                genome_idx,
-                ft,
-                ff,
-                total_budget,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-                use_exact_inner_solver,
-            )
-            score = uncached[0]
-            pp_gems = uncached[1]
-            cm_gems = uncached[2]
-            fm_gems = uncached[3]
-            ov_gems = uncached[4]
     else:
         uncached = _solve_best_combo_uncached(
             genome_idx,
@@ -386,28 +252,6 @@ def _refresh_live_score_from_chunk_state(
     combo_idx = _best_combo_idx_from_chunk_state(genome_idx)
     if combo_idx < 0:
         kernels_helpers.ga_scores[genome_idx] = -1
-    elif kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
-        result_stats = _materialize_best_combo_stats(
-            genome_idx,
-            combo_idx,
-            total_budget,
-            gem_scale_fever,
-            is_p_ft,
-            is_s_ft,
-            is_p_ff,
-            is_s_ff,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
-            song_slot,
-            use_exact_inner_solver,
-        )
-        _write_materialized_result(genome_idx, combo_idx, result_stats)
     else:
         kernels_helpers.ga_scores[genome_idx] = _best_score_from_chunk_state(genome_idx)
 

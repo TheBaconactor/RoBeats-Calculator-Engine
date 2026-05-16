@@ -179,6 +179,9 @@ class _FakeGpuApi:
     def ga_download_fg_selected_payload(self, *_args, **_kwargs):
         return np.zeros((1, 26), dtype=np.int32)
 
+    def ga_download_base_candidate_cache_delta(self):
+        return np.zeros((0, 13), dtype=np.int32)
+
 
 def _ref_arrays() -> dict[str, np.ndarray]:
     return {

@@ -24,6 +24,10 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
             calls.append("evaluate")
 
         @staticmethod
+        def ga_insert_base_candidate_cache_results_kernel(*_args):
+            calls.append("insert_base_cache")
+
+        @staticmethod
         def ga_propagate_exact_eval_reuse_chunk_best_kernel(*args):
             calls.append(("propagate_chunk", args))
 
@@ -45,6 +49,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
     monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_stats_signature_reuse_enabled", lambda: 0)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_eval_results_reuse_enabled", lambda: 0)
     monkeypatch.setattr(ga_operations, "_GA_PLATEAU_PRUNE_ENABLED", 0, raising=False)
 
@@ -55,7 +60,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
         gem_scale_fever=3,
         materialize_mode="update_global",
     )
-    assert calls == ["aggregate", "apply_base_cache", "evaluate", "write_global"]
+    assert calls == ["aggregate", "apply_base_cache", "evaluate", "insert_base_cache", "write_global"]
 
     calls.clear()
     ga_operations.ga_evaluate_population(
@@ -66,7 +71,14 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
         materialize_mode="results_only",
         update_global_best=True,
     )
-    assert calls == ["aggregate", "apply_base_cache", "evaluate", "write_results", "update_global"]
+    assert calls == [
+        "aggregate",
+        "apply_base_cache",
+        "evaluate",
+        "insert_base_cache",
+        "write_results",
+        "update_global",
+    ]
 
 
 def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
@@ -92,6 +104,10 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
             calls.append(("evaluate", args))
 
         @staticmethod
+        def ga_insert_base_candidate_cache_results_kernel(*args):
+            calls.append(("insert_base_cache", args))
+
+        @staticmethod
         def ga_propagate_exact_eval_reuse_chunk_best_kernel(*args):
             calls.append(("propagate_chunk", args))
 
@@ -105,6 +121,7 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
     monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_stats_signature_reuse_enabled", lambda: 0)
     monkeypatch.setattr(ga_operations, "_ga_exact_genome_eval_results_reuse_enabled", lambda: 1)
     monkeypatch.setattr(ga_operations, "_GA_PLATEAU_PRUNE_ENABLED", 0, raising=False)
 
@@ -121,8 +138,10 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
     assert calls[2] == "apply_base_cache"
     assert calls[3][0] == "evaluate"
     assert calls[3][1][-1] == 1
-    assert calls[4] == ("propagate_chunk", (8,))
-    assert calls[5] == "write_results"
+    assert calls[4][0] == "insert_base_cache"
+    assert calls[4][1][-1] == 1
+    assert calls[5] == ("propagate_chunk", (8,))
+    assert calls[6] == "write_results"
 
 
 def test_ga_write_best_results_and_update_runs_best_dispatch(monkeypatch):

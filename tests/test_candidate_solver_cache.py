@@ -6,8 +6,6 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver import candidate_solver_cache
-from gear_optimizer.solver import genetic
-from gear_optimizer.solver import native_force_greats
 
 
 def _result(score: int = 1234) -> dict:
@@ -63,44 +61,39 @@ def test_base_candidate_cache_round_trips_compact_rows(tmp_path, monkeypatch):
     keys, stats_rows, result_rows = reloaded.gpu_rows()
     assert keys.tolist() == [candidate_solver_cache.base_stats_hash_key(stats)]
     assert stats_rows.tolist() == [list(stats)]
-    assert result_rows.tolist() == [[0, 2, 3, 4, 5, 6]]
+    assert result_rows.tolist() == [[1234, 2, 3, 4, 5, 6]]
 
-    assert not reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
+    with pytest.raises(ValueError, match="value changed"):
+        reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
     with pytest.raises(ValueError, match="value changed"):
         reloaded.put_result8(stats, (1235, 3, 0, 2, 3, 4, 5, 6))
 
 
-def test_selected_payload_records_base_candidate_cache_rows(tmp_path, monkeypatch):
+def test_base_candidate_cache_records_gpu_delta_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(candidate_solver_cache, "solver_candidate_cache_root", lambda: tmp_path)
     shard = candidate_solver_cache.BaseCandidateCacheShard.load("c" * 32)
-    combo_index = genetic._base_candidate_combo_index(total_budget=2, max_ft_gems=2, max_ff_gems=2)
 
-    payload = np.zeros((3, 26), dtype=np.int32)
-    payload[0, 0] = 2
-    payload[1, 2] = 3000
-    payload[1, 2 + 1 + 9 : 2 + 1 + 9 + 7] = [3000, 0, 2, 3, 4, 5, 6]
-    payload[1, 2 + 1 + 9 + 7 : 2 + 1 + 9 + 7 + 7] = [10, 20, 30, 40, 50, 60, 70]
-    payload[2, 2] = 3100
-    payload[2, 2 + 1 + 9 : 2 + 1 + 9 + 7] = [3100, 1, 1, 7, 8, 9, 10]
-    payload[2, 2 + 1 + 9 + 7 : 2 + 1 + 9 + 7 + 7] = [11, 21, 31, 41, 51, 61, 71]
-
-    writes = genetic._record_base_candidate_cache_rows(
-        cache=shard,
-        selected_payload=payload,
-        combo_index=combo_index,
+    stats_rows = np.asarray(
+        [[10, 20, 30, 40, 50, 60, 70], [11, 21, 31, 41, 51, 61, 71]],
+        dtype=np.int32,
     )
+    result8_rows = np.asarray(
+        [[3000, 0, 0, 2, 3, 4, 5, 6], [3100, 1, 1, 1, 7, 8, 9, 10]],
+        dtype=np.int32,
+    )
+
+    writes = shard.put_result8_rows(stats_rows, result8_rows)
 
     assert writes == 2
     reloaded = candidate_solver_cache.BaseCandidateCacheShard.load("c" * 32)
     _keys, stats_rows, result_rows = reloaded.gpu_rows()
     assert stats_rows.tolist() == [[10, 20, 30, 40, 50, 60, 70], [11, 21, 31, 41, 51, 61, 71]]
-    assert result_rows.tolist() == [
-        [0, combo_index[(0, 2)], 3, 4, 5, 6],
-        [0, combo_index[(1, 1)], 7, 8, 9, 10],
-    ]
+    assert result_rows.tolist() == [[3000, 0, 3, 4, 5, 6], [3100, 1, 7, 8, 9, 10]]
 
 
 def test_native_fg_solver_reuses_global_candidate_cache(tmp_path, monkeypatch):
+    from gear_optimizer.solver import native_force_greats
+
     monkeypatch.setattr(candidate_solver_cache, "solver_candidate_cache_root", lambda: tmp_path)
     monkeypatch.setattr(native_force_greats, "_section_summary", lambda *_args, **_kwargs: (1, 10))
     monkeypatch.setattr(native_force_greats, "_materialize_best", lambda best, **_kwargs: _result(best["final_score"]))

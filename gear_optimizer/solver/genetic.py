@@ -12,7 +12,7 @@ from helpers.ga_helpers for improved modularity and maintainability.
 import logging
 import random
 import time
-import importlib.util
+import importlib
 
 import numpy as np
 
@@ -77,7 +77,6 @@ from .item_registry import ItemRegistry
 from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
 from .gpu_tuning_policy import choose_ga_batch_runs
-from .taichi_gem.ftff_combos import ftff_combo_pairs_array
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
@@ -90,10 +89,17 @@ except Exception as e:
 def _require_gpu_api():
     # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
     try:
-        from .taichi_gem import api as gpu_api  # type: ignore[no-redef]
+        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
     return gpu_api
+
+
+def _require_gpu_fields():
+    try:
+        return importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
+    except Exception as exc:
+        raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
 
 
 def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
@@ -129,70 +135,55 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     return max(0, min(4, int(attempts)))
 
 
-def _base_candidate_combo_index(
-    *,
+def _ftff_combo_pairs_array(
     total_budget: int,
-    max_ft_gems: int,
-    max_ff_gems: int,
-) -> dict[tuple[int, int], int]:
-    pairs = ftff_combo_pairs_array(
-        int(total_budget),
-        max_ft_gems=int(max_ft_gems),
-        max_ff_gems=int(max_ff_gems),
-    )
-    return {(int(row[0]), int(row[1])): int(idx) for idx, row in enumerate(pairs)}
+    *,
+    max_ft_gems: int | None = None,
+    max_ff_gems: int | None = None,
+) -> np.ndarray:
+    budget = max(0, int(total_budget))
+    cap_ft = budget if max_ft_gems is None else max(0, min(budget, int(max_ft_gems)))
+    cap_ff = budget if max_ff_gems is None else max(0, min(budget, int(max_ff_gems)))
+    ft_tri, total = np.triu_indices(budget + 1)
+    ft = ft_tri.astype(np.int32, copy=False)
+    ff = (total - ft_tri).astype(np.int32, copy=False)
+    if cap_ft < budget or cap_ff < budget:
+        keep = (ft <= cap_ft) & (ff <= cap_ff)
+        ft = ft[keep]
+        ff = ff[keep]
+    return np.ascontiguousarray(np.column_stack((ft, ff)), dtype=np.int32)
 
 
-def _record_base_candidate_cache_rows(
+def _record_base_candidate_cache_delta_rows(
     *,
     cache: BaseCandidateCacheShard,
-    selected_payload: np.ndarray,
-    combo_index: dict[tuple[int, int], int],
+    delta_rows: np.ndarray,
+    combo_pairs: np.ndarray,
 ) -> int:
-    payload = np.asarray(selected_payload, dtype=np.int32)
-    if payload.ndim != 2:
-        raise ValueError(f"base candidate cache selected payload must be 2D, got ndim={payload.ndim}")
-    if int(payload.shape[0]) < 1:
-        raise ValueError("base candidate cache selected payload has no header")
-    packed_cols = 1 + 9 + 7 + 7
-    if int(payload.shape[1]) < 2 + packed_cols:
-        raise ValueError(f"base candidate cache selected payload has too few columns: {payload.shape[1]}")
-
-    selected_n = int(payload[0, 0])
-    if selected_n < 0 or selected_n > int(payload.shape[0]) - 1:
-        raise ValueError(f"base candidate cache selected count is invalid: {selected_n}")
-    if selected_n == 0:
+    rows = np.asarray(delta_rows, dtype=np.int32)
+    if rows.size == 0:
         return 0
 
-    writes = 0
-    packed = payload[1 : 1 + selected_n, 2 : 2 + packed_cols]
-    for row in packed:
-        score = int(row[0])
-        result = tuple(int(v) for v in row[1 + 9 : 1 + 9 + 7])
-        stats = tuple(int(v) for v in row[1 + 9 + 7 : 1 + 9 + 7 + 7])
-        if int(result[0]) != int(score):
-            raise ValueError(f"base candidate cache score drift for stats={stats}: {score} != {result[0]}")
-        ft = int(result[1])
-        ff = int(result[2])
-        combo_idx = combo_index.get((ft, ff))
-        if combo_idx is None:
-            raise ValueError(f"base candidate cache could not map FT/FF pair: {(ft, ff)}")
-        writes += int(
-            cache.put_result8(
-                stats,
-                (
-                    int(score),
-                    int(combo_idx),
-                    int(ft),
-                    int(ff),
-                    int(result[3]),
-                    int(result[4]),
-                    int(result[5]),
-                    int(result[6]),
-                ),
-            )
-        )
-    return int(writes)
+    if rows.ndim != 2 or int(rows.shape[1]) != 13:
+        raise ValueError(f"base candidate cache delta rows must be shaped (n, 13), got {rows.shape}")
+    pairs = np.asarray(combo_pairs, dtype=np.int32)
+    if pairs.ndim != 2 or int(pairs.shape[1]) < 2:
+        raise ValueError(f"base candidate cache combo pairs must be shaped (n, >=2), got {pairs.shape}")
+
+    combo_idx = rows[:, 8]
+    if combo_idx.size:
+        lo = int(combo_idx.min())
+        hi = int(combo_idx.max())
+        if lo < 0 or hi >= int(pairs.shape[0]):
+            raise ValueError(f"base candidate cache delta has combo index outside combo table: [{lo}, {hi}]")
+
+    result8 = np.empty((int(rows.shape[0]), 8), dtype=np.int32)
+    result8[:, 0] = rows[:, 7]
+    result8[:, 1] = combo_idx
+    result8[:, 2] = pairs[combo_idx, 0]
+    result8[:, 3] = pairs[combo_idx, 1]
+    result8[:, 4:8] = rows[:, 9:13]
+    return int(cache.put_result8_rows(rows[:, :7], result8))
 
 
 def _selected_color_stat_index(color: str) -> int:
@@ -1413,8 +1404,10 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             seed_base = 42
 
     try:
-        from .taichi_gem.api import ensure_ready, precompute_timeline_gpu
-        from .taichi_gem import fields as gpu_fields
+        gpu_api_module = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
+        ensure_ready = gpu_api_module.ensure_ready
+        precompute_timeline_gpu = gpu_api_module.precompute_timeline_gpu
+        gpu_fields = _require_gpu_fields()
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
 
@@ -1650,7 +1643,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             use_exact_inner_solver=True,
         )
     )
-    base_candidate_combo_index = _base_candidate_combo_index(
+    base_candidate_combo_pairs = _ftff_combo_pairs_array(
         total_budget=int(total_budget),
         max_ft_gems=int(max_ft_gems_global),
         max_ff_gems=int(max_ff_gems_global),
@@ -1659,6 +1652,14 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     def _upload_base_candidate_cache() -> int:
         keys, stats, results = base_candidate_cache.gpu_rows()
         return int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results))
+
+    def _drain_base_candidate_cache_delta() -> int:
+        delta_rows = gpu_api.ga_download_base_candidate_cache_delta()
+        return _record_base_candidate_cache_delta_rows(
+            cache=base_candidate_cache,
+            delta_rows=delta_rows,
+            combo_pairs=base_candidate_combo_pairs,
+        )
 
     t_phase = time.perf_counter()
     base_cache_uploaded = _upload_base_candidate_cache()
@@ -1862,7 +1863,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             max_ff_gems_global=int(max_ff_gems_global),
                             materialize_mode="none",
                         )
+                        t_cache = time.perf_counter() if phase_timing else 0.0
                         _sync()
+                        base_cache_writes = _drain_base_candidate_cache_delta()
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA evaluate generation {int(gen)}"
                         )
@@ -1876,6 +1879,16 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 use_hints=0,
                                 combos=int(n_combos),
                             )
+                            if t_cache and base_cache_writes:
+                                _log_phase(
+                                    phase="persist_base_candidate_cache_delta",
+                                    ms=(time.perf_counter() - t_cache) * 1000.0,
+                                    runs=int(batch_len),
+                                    pop=int(n_genomes),
+                                    gen=int(gen),
+                                    use_hints=0,
+                                    combos=int(base_cache_writes),
+                                )
 
                         # Keep selection scores exact every generation, but only write full per-genome
                         # result rows when tracing needs them. Row 0 stays exact in both paths.
@@ -2190,11 +2203,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             fg_budget_end=int(fg_budget_end),
         )
         payload_segments.append(selected_payload)
-        _record_base_candidate_cache_rows(
-            cache=base_candidate_cache,
-            selected_payload=selected_payload,
-            combo_index=base_candidate_combo_index,
-        )
         run_start_global += seg_len
 
     if not payload_segments:
@@ -2428,7 +2436,7 @@ def solve_coevolution_genetic(
         gpu_immigrant_rate = float(ga_runtime_settings.immigrant_rate)
 
         try:
-            from .taichi_gem import fields as gpu_fields
+            gpu_fields = _require_gpu_fields()
         except Exception as e:
             logger.debug(f"genetic:solve_coevolution_genetic: {e}")
             gpu_fields = None

@@ -626,7 +626,7 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
     cached = calc_song.get("_gpu_timing_cache_key_frontier", None)
-    if isinstance(cached, tuple) and len(cached) == 12:
+    if isinstance(cached, tuple) and len(cached) == 11:
         return cached
     chart_ts = song_data.get("chart_timestamps", None)
     timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())

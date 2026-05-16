@@ -20,17 +20,39 @@ from __future__ import annotations
 
 import time
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 
 from gear_optimizer.core.parsing import env_flag
 
-from .. import fields
-from ..fields import MAX_EVALS_PER_DISPATCH
-from ..ga_chunking import compute_ga_combo_chunk
-from ..kernel_loader import get_kernels
+try:
+    from .. import fields
+    from ..fields import MAX_EVALS_PER_DISPATCH
+    from ..kernel_loader import get_kernels
+    from .initialization import ensure_ready, _ensure_ftff_combo_tables
+except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test path
+    if exc.name != "taichi":
+        raise
+    fields = SimpleNamespace(
+        MAX_EVALS_PER_DISPATCH=4_194_304,
+        MAX_GENOMES=4096,
+        MAX_GA_RUNS=128,
+        MAX_GA_RUN_GENOMES=1024,
+        ITEM_STAT_DIM=10,
+    )
+    MAX_EVALS_PER_DISPATCH = int(fields.MAX_EVALS_PER_DISPATCH)
 
-from .initialization import ensure_ready, _ensure_ftff_combo_tables
+    def ensure_ready(*_args, **_kwargs):
+        raise RuntimeError("Taichi is not installed")
+
+    def _ensure_ftff_combo_tables(*_args, **_kwargs):
+        raise RuntimeError("Taichi is not installed")
+
+    def get_kernels():
+        return SimpleNamespace()
+
+from ..ga_chunking import compute_ga_combo_chunk
 
 # Cache environment variables at module load time to avoid per-call overhead.
 #
@@ -134,7 +156,7 @@ def _ga_exact_genome_stats_signature_reuse_enabled() -> int:
         return int(_GA_EXACT_STATS_REUSE_ENABLED)
 
     _GA_EXACT_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
+    if raw_norm in {"0", "false", "no", "off"}:
         _GA_EXACT_STATS_REUSE_ENABLED = 0
     else:
         _GA_EXACT_STATS_REUSE_ENABLED = 1
@@ -566,7 +588,9 @@ def ga_upload_base_candidate_cache(
     results_src = np.asarray(results_np, dtype=np.int32)
     n_rows = int(keys_src.shape[0])
     if n_rows == 0:
+        fields.ga_base_candidate_cache_keys.fill(0)
         fields.ga_base_candidate_cache_count.from_numpy(np.asarray([0], dtype=np.int32))
+        fields.ga_base_candidate_cache_delta_count.from_numpy(np.asarray([0], dtype=np.int32))
         return 0
     if stats_src.shape != (n_rows, 7):
         raise ValueError(f"base candidate cache stats shape mismatch: {stats_src.shape} != {(n_rows, 7)}")
@@ -607,7 +631,24 @@ def ga_upload_base_candidate_cache(
     fields.ga_base_candidate_cache_stats.from_numpy(table_stats)
     fields.ga_base_candidate_cache_results.from_numpy(table_results)
     fields.ga_base_candidate_cache_count.from_numpy(np.asarray([n_rows], dtype=np.int32))
+    fields.ga_base_candidate_cache_delta_count.from_numpy(np.asarray([0], dtype=np.int32))
     return n_rows
+
+
+def ga_download_base_candidate_cache_delta() -> np.ndarray:
+    """
+    Download compact cache rows inserted by the last GA evaluation.
+
+    Columns are `[stats7, score, combo_idx, pp, cm, fm, ov]`.
+    """
+    ensure_ready()
+    n_rows = int(fields.ga_base_candidate_cache_delta_count.to_numpy()[0])
+    n_rows = max(0, min(n_rows, int(fields.MAX_GENOMES)))
+    if n_rows == 0:
+        return np.zeros((0, 13), dtype=np.int32)
+    rows = np.asarray(fields.ga_base_candidate_cache_delta_rows.to_numpy()[:n_rows, :13], dtype=np.int32).copy()
+    fields.ga_base_candidate_cache_delta_count.from_numpy(np.asarray([0], dtype=np.int32))
+    return rows
 
 
 def ga_aggregate_stats(
@@ -815,6 +856,27 @@ def ga_evaluate_population(
             int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
         )
         offset += int(chunk_len)
+
+    kernels.ga_insert_base_candidate_cache_results_kernel(
+        int(n_genomes),
+        total_budget_i,
+        gem_scale_fever_i,
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        song_slot_i,
+        use_exact_inner_solver_i,
+        int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
+    )
 
     if exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse:
         kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
