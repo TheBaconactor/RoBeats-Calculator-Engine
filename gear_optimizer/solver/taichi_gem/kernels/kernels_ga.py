@@ -365,8 +365,8 @@ def ga_insert_base_candidate_cache_results_kernel(
                     song_slot,
                     use_exact_inner_solver,
                 )
-                score = _best_score_from_chunk_state(g)
-                if score >= 0 and result_stats[0] >= 0:
+                score = result_stats[0]
+                if score >= 0:
                     key = _base_candidate_cache_hash_for_genome(g)
                     pos = ti.cast(key & mask, ti.i32)
                     probe = ti.i32(0)

@@ -14,6 +14,7 @@ from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
     optimize_core_device_refined as optimize_core_device,
+    score_solution_from_gems_preloaded,
 )
 
 # Platform detection for atomic operations
@@ -144,7 +145,44 @@ def _solve_best_combo_uncached(
             ft_idx,
             ff_idx,
         )
-    return ti.Vector([res_vec[0], res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
+
+    score: ti.i32 = -1
+    if res_vec[0] >= 0:
+        score = score_solution_from_gems_preloaded(
+            ft,
+            ff,
+            res_vec[1],
+            res_vec[2],
+            res_vec[3],
+            res_vec[4],
+            base_pp,
+            base_cm,
+            base_fm,
+            base_p_val,
+            base_s_val,
+            base_ft_stat,
+            base_ff_stat,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            ft_idx,
+            ff_idx,
+            head_len,
+            count_fever,
+            count_normal,
+        )
+    return ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
 
 
 @ti.func

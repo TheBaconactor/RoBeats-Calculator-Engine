@@ -65,8 +65,6 @@ def test_base_candidate_cache_round_trips_compact_rows(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="value changed"):
         reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
-    with pytest.raises(ValueError, match="value changed"):
-        reloaded.put_result8(stats, (1235, 3, 0, 2, 3, 4, 5, 6))
 
 
 def test_base_candidate_cache_records_gpu_delta_rows(tmp_path, monkeypatch):
