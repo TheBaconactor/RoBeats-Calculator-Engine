@@ -14,6 +14,4 @@ def test_ga_evolution_settings_do_not_expose_legacy_cache_hit_search_mode():
         "memetic_top_gear",
         "memetic_top_minis",
         "multi_start",
-        "gear_rank_max",
-        "mini_rank_max",
     ]

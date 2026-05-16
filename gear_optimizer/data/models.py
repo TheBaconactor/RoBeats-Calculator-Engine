@@ -74,8 +74,6 @@ class GAEvolutionSettings:
     memetic_top_gear: int
     memetic_top_minis: int
     multi_start: int
-    gear_rank_max: int = 40  # Max gear items per slot in rank cache
-    mini_rank_max: int = 40  # Max minis in rank cache
 
     @classmethod
     def from_cfg(cls, cfg):
@@ -91,8 +89,6 @@ class GAEvolutionSettings:
                 memetic_top_gear=4,
                 memetic_top_minis=12,
                 multi_start=GA_MULTI_RUNS_DEFAULT,
-                gear_rank_max=40,
-                mini_rank_max=40,
             )
 
         def get_option(option, fallback):
@@ -114,9 +110,6 @@ class GAEvolutionSettings:
                 GA_MULTI_RUNS_DEFAULT,
             ),
         )
-        # Read rank sizes from [IterationEngine] section
-        gear_rank_max = max(10, safe_int(get_option("GearRankMax", "40"), 40))
-        mini_rank_max = max(10, safe_int(get_option("MiniRankMax", "40"), 40))
 
         return cls(
             memetic_elites=memetic_elites,
@@ -124,6 +117,4 @@ class GAEvolutionSettings:
             memetic_top_gear=memetic_top_gear,
             memetic_top_minis=memetic_top_minis,
             multi_start=multi_start,
-            gear_rank_max=gear_rank_max,
-            mini_rank_max=mini_rank_max,
         )

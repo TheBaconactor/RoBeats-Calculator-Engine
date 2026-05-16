@@ -119,8 +119,6 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
         memetic_top_gear=1,
         memetic_top_minis=1,
         multi_start=1,
-        gear_rank_max=10,
-        mini_rank_max=10,
     )
 
     best_data, _best_gear, _best_minis, _none, _a, _b, _evaluated = solve_coevolution_genetic(

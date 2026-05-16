@@ -163,8 +163,6 @@ def profile_ga_with_gpu():
         memetic_top_gear=4,
         memetic_top_minis=12,
         multi_start=6,  # Match production
-        gear_rank_max=40,
-        mini_rank_max=40,
     )
 
     print(f"  Gear items: {len(all_gears)} ({len(all_gears) // 6} per slot)")
