@@ -161,6 +161,58 @@ def test_ga_evaluate_population_reuses_exact_eval_results(monkeypatch):
     assert calls[7] == "write_results"
 
 
+def test_ga_evaluate_population_can_disable_base_candidate_cache(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
+
+    calls = []
+
+    class _Kernels:
+        @staticmethod
+        def ga_aggregate_and_init_best_kernel(*_args):
+            calls.append("aggregate")
+
+        @staticmethod
+        def ga_apply_base_candidate_cache_kernel(*_args):
+            calls.append("apply_base_cache")
+
+        @staticmethod
+        def ga_find_best_combo_warmstart_kernel(*_args):
+            calls.append("evaluate")
+
+        @staticmethod
+        def ga_finalize_warmstart_lane_best_kernel(*_args):
+            calls.append("finalize_warmstart")
+
+        @staticmethod
+        def ga_insert_base_candidate_cache_results_kernel(*_args):
+            calls.append("insert_base_cache")
+
+        @staticmethod
+        def ga_write_best_results_from_key_kernel(*_args):
+            calls.append("write_results")
+
+    monkeypatch.setattr(ga_operations, "ensure_ready", lambda: None)
+    monkeypatch.setattr(ga_operations, "kernels", _Kernels())
+    monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
+    monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_stats_signature_reuse_enabled", lambda: 0)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_eval_results_reuse_enabled", lambda: 0)
+    monkeypatch.setattr(ga_operations, "_GA_PLATEAU_PRUNE_ENABLED", 0, raising=False)
+
+    ga_operations.ga_evaluate_population(
+        n_genomes=8,
+        n_slots=9,
+        total_budget=90,
+        gem_scale_fever=3,
+        materialize_mode="results_only",
+        use_base_candidate_cache=False,
+    )
+
+    assert calls == ["aggregate", "evaluate", "finalize_warmstart", "write_results"]
+
+
 def test_ga_write_best_results_and_update_runs_best_dispatch(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import ga_operations
 

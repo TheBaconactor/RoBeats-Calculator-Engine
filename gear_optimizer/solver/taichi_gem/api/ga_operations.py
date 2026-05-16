@@ -731,6 +731,7 @@ def ga_evaluate_population(
     max_ff_gems_global: int | None = None,
     materialize_mode: str = "none",
     update_global_best: bool = False,
+    use_base_candidate_cache: bool = True,
 ) -> None:
     """
     GPU-native population evaluation: aggregate stats + evaluate + copy scores.
@@ -792,7 +793,9 @@ def ga_evaluate_population(
     if exact_genome_stats_signature_reuse:
         kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
 
-    kernels.ga_apply_base_candidate_cache_kernel(int(n_genomes))
+    use_base_candidate_cache_i = int(bool(use_base_candidate_cache))
+    if use_base_candidate_cache_i:
+        kernels.ga_apply_base_candidate_cache_kernel(int(n_genomes))
 
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)
@@ -861,26 +864,27 @@ def ga_evaluate_population(
         kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
         offset += int(chunk_len)
 
-    kernels.ga_insert_base_candidate_cache_results_kernel(
-        int(n_genomes),
-        total_budget_i,
-        gem_scale_fever_i,
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        song_slot_i,
-        use_exact_inner_solver_i,
-        int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
-    )
+    if use_base_candidate_cache_i:
+        kernels.ga_insert_base_candidate_cache_results_kernel(
+            int(n_genomes),
+            total_budget_i,
+            gem_scale_fever_i,
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            song_slot_i,
+            use_exact_inner_solver_i,
+            int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
+        )
 
     if exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse:
         kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))

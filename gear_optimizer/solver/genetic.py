@@ -1628,32 +1628,55 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         n_combos = 0
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
 
-    base_candidate_cache = BaseCandidateCacheShard.load(
-        base_context_digest(
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            primary_color=str(cfg_data.get("primary_color", "") or ""),
-            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
-            selected_color=str(cfg_data.get("selected_color", "") or ""),
-            color_flags=color_flags,
+    base_candidate_cache_enabled = bool(env_flag("GPU_NATIVE_GA_BASE_CANDIDATE_CACHE", "1"))
+    base_candidate_cache = (
+        BaseCandidateCacheShard.load(
+            base_context_digest(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                primary_color=str(cfg_data.get("primary_color", "") or ""),
+                secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+                selected_color=str(cfg_data.get("selected_color", "") or ""),
+                color_flags=color_flags,
+                total_budget=int(total_budget),
+                gem_scale_fever=int(gem_scale_fever),
+                max_ft_gems=int(max_ft_gems_global),
+                max_ff_gems=int(max_ff_gems_global),
+                use_exact_inner_solver=True,
+            )
+        )
+        if base_candidate_cache_enabled
+        else None
+    )
+    base_candidate_combo_pairs = (
+        _ftff_combo_pairs_array(
             total_budget=int(total_budget),
-            gem_scale_fever=int(gem_scale_fever),
             max_ft_gems=int(max_ft_gems_global),
             max_ff_gems=int(max_ff_gems_global),
-            use_exact_inner_solver=True,
         )
-    )
-    base_candidate_combo_pairs = _ftff_combo_pairs_array(
-        total_budget=int(total_budget),
-        max_ft_gems=int(max_ft_gems_global),
-        max_ff_gems=int(max_ff_gems_global),
+        if base_candidate_cache_enabled
+        else np.zeros((0, 2), dtype=np.int32)
     )
 
     def _upload_base_candidate_cache() -> int:
+        if not base_candidate_cache_enabled:
+            return int(
+                gpu_api.ga_upload_base_candidate_cache(
+                    np.zeros((0,), dtype=np.uint32),
+                    np.zeros((0, 7), dtype=np.int16),
+                    np.zeros((0, 6), dtype=np.int32),
+                )
+            )
+        if base_candidate_cache is None:
+            raise RuntimeError("base candidate cache enabled but shard is not loaded")
         keys, stats, results = base_candidate_cache.gpu_rows()
         return int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results))
 
     def _drain_base_candidate_cache_delta() -> int:
+        if not base_candidate_cache_enabled:
+            return 0
+        if base_candidate_cache is None:
+            raise RuntimeError("base candidate cache enabled but shard is not loaded")
         delta_rows = gpu_api.ga_download_base_candidate_cache_delta()
         return _record_base_candidate_cache_delta_rows(
             cache=base_candidate_cache,
@@ -1862,6 +1885,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             max_ft_gems_global=int(max_ft_gems_global),
                             max_ff_gems_global=int(max_ff_gems_global),
                             materialize_mode="none",
+                            use_base_candidate_cache=base_candidate_cache_enabled,
                         )
                         _sync()
                         _raise_if_abort_requested(
