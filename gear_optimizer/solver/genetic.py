@@ -1863,9 +1863,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             max_ff_gems_global=int(max_ff_gems_global),
                             materialize_mode="none",
                         )
-                        t_cache = time.perf_counter() if phase_timing else 0.0
                         _sync()
-                        base_cache_writes = _drain_base_candidate_cache_delta()
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA evaluate generation {int(gen)}"
                         )
@@ -1879,16 +1877,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 use_hints=0,
                                 combos=int(n_combos),
                             )
-                            if t_cache and base_cache_writes:
-                                _log_phase(
-                                    phase="persist_base_candidate_cache_delta",
-                                    ms=(time.perf_counter() - t_cache) * 1000.0,
-                                    runs=int(batch_len),
-                                    pop=int(n_genomes),
-                                    gen=int(gen),
-                                    use_hints=0,
-                                    combos=int(base_cache_writes),
-                                )
 
                         # Keep selection scores exact every generation, but only write full per-genome
                         # result rows when tracing needs them. Row 0 stays exact in both paths.
@@ -2202,6 +2190,18 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             base_budget=int(base_budget),
             fg_budget_end=int(fg_budget_end),
         )
+        t_cache = time.perf_counter() if phase_timing else 0.0
+        base_cache_writes = _drain_base_candidate_cache_delta()
+        if t_cache and base_cache_writes:
+            _log_phase(
+                phase="persist_base_candidate_cache_delta",
+                ms=(time.perf_counter() - t_cache) * 1000.0,
+                runs=int(seg_len),
+                pop=int(n_genomes),
+                gen=int(n_generations),
+                use_hints=0,
+                combos=int(base_cache_writes),
+            )
         payload_segments.append(selected_payload)
         run_start_global += seg_len
 

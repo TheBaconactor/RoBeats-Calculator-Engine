@@ -144,6 +144,7 @@ from .ga_eval import (
     ga_island_migration_kernel,
     ga_island_migration_runs_kernel,
     # Exact GA evaluation
+    ga_finalize_warmstart_lane_best_kernel,
     ga_find_best_combo_warmstart_kernel,
     # FUSED kernels
     ga_write_best_and_update_global_kernel,
@@ -272,6 +273,7 @@ __all__ = [
     "ga_find_island_elites_kernel",
     # Exact GA evaluation
     "ga_find_best_combo_warmstart_kernel",
+    "ga_finalize_warmstart_lane_best_kernel",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",

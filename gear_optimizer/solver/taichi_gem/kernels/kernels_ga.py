@@ -25,6 +25,7 @@ IS_METAL = sys.platform == "darwin"
 from . import kernels_helpers
 from .ga_eval.write_results import (
     _best_combo_idx_from_chunk_state,
+    _best_score_from_chunk_state,
     _materialize_best_combo_stats,
     _refresh_live_score_from_chunk_state,
     _write_run_best_payload_row,
@@ -332,7 +333,6 @@ def ga_insert_base_candidate_cache_results_kernel(
     Persist every cold GA base-stat evaluation into the GPU cache, not just the
     downstream-selected GA->FG payload. Delta rows are compactly staged for disk append.
     """
-    kernels_helpers.ga_base_candidate_cache_delta_count[0] = 0
     mask = ti.cast(kernels_helpers.ga_base_candidate_cache_keys.shape[0] - 1, ti.u32)
     ti.loop_config(serialize=True)
     for g in range(n_genomes):
@@ -345,27 +345,7 @@ def ga_insert_base_candidate_cache_results_kernel(
         if should_insert != 0:
             combo_idx = _best_combo_idx_from_chunk_state(g)
             if combo_idx >= 0:
-                result_stats = _materialize_best_combo_stats(
-                    g,
-                    combo_idx,
-                    total_budget,
-                    gem_scale_fever,
-                    is_p_ft,
-                    is_s_ft,
-                    is_p_ff,
-                    is_s_ff,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    song_slot,
-                    use_exact_inner_solver,
-                )
-                score = result_stats[0]
+                score = _best_score_from_chunk_state(g)
                 if score >= 0:
                     key = _base_candidate_cache_hash_for_genome(g)
                     pos = ti.cast(key & mask, ti.i32)
@@ -379,10 +359,10 @@ def ga_insert_base_candidate_cache_results_kernel(
                                 kernels_helpers.ga_base_candidate_cache_stats[pos, i] = kernels_helpers.genome_base_stats[g][i]
                             kernels_helpers.ga_base_candidate_cache_results[pos, 0] = score
                             kernels_helpers.ga_base_candidate_cache_results[pos, 1] = combo_idx
-                            kernels_helpers.ga_base_candidate_cache_results[pos, 2] = result_stats[3]
-                            kernels_helpers.ga_base_candidate_cache_results[pos, 3] = result_stats[4]
-                            kernels_helpers.ga_base_candidate_cache_results[pos, 4] = result_stats[5]
-                            kernels_helpers.ga_base_candidate_cache_results[pos, 5] = result_stats[6]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 2] = kernels_helpers.chunk_best_results[g, 0]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 3] = kernels_helpers.chunk_best_results[g, 1]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 4] = kernels_helpers.chunk_best_results[g, 2]
+                            kernels_helpers.ga_base_candidate_cache_results[pos, 5] = kernels_helpers.chunk_best_results[g, 3]
                             ti.atomic_add(kernels_helpers.ga_base_candidate_cache_count[0], 1)
 
                             delta_idx = ti.atomic_add(kernels_helpers.ga_base_candidate_cache_delta_count[0], 1)
@@ -393,10 +373,10 @@ def ga_insert_base_candidate_cache_results_kernel(
                                     )
                                 kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 7] = score
                                 kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 8] = combo_idx
-                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 9] = result_stats[3]
-                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 10] = result_stats[4]
-                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 11] = result_stats[5]
-                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 12] = result_stats[6]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 9] = kernels_helpers.chunk_best_results[g, 0]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 10] = kernels_helpers.chunk_best_results[g, 1]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 11] = kernels_helpers.chunk_best_results[g, 2]
+                                kernels_helpers.ga_base_candidate_cache_delta_rows[delta_idx, 12] = kernels_helpers.chunk_best_results[g, 3]
 
                             _apply_base_candidate_cache_hit(pos, g)
                             kernels_helpers.ga_base_candidate_cache_hit[g] = 1

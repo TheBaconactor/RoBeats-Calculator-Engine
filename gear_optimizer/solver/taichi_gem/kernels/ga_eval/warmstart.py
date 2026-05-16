@@ -447,8 +447,10 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: use deterministic logical lanes from the loop index and
-        # combine per-lane maxima via atomic_max on the packed key only.
+        # Vulkan: use deterministic logical lanes from the loop index and stage
+        # per-lane winners. A separate finalize kernel reduces those staged rows
+        # into chunk_best_key/chunk_best_results so cold cache insertion can
+        # persist the exact winning gem payload without re-solving the best combo.
         #
         # This keeps combo coverage complete even when Taichi remaps loop
         # iterations to physical invocations, and it avoids carrying cached
@@ -463,12 +465,17 @@ def ga_find_best_combo_warmstart_kernel(
             genome_idx = tid // block_dim
             lane = tid - genome_idx * block_dim
 
+            kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = ti.u64(0)
+            for i in ti.static(range(4)):
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, i] = 0
+
+            skip_row = ti.i32(0)
             if kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
-                continue
+                skip_row = ti.i32(1)
 
             if ti.static(reuse_exact_eval_results):
                 if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
-                    continue
+                    skip_row = ti.i32(1)
 
             # Hoist per-genome values out of the per-combo loop to reduce memory traffic.
             stats = kernels_helpers.genome_base_stats[genome_idx]
@@ -490,8 +497,12 @@ def ga_find_best_combo_warmstart_kernel(
                 max_ff_gems = total_budget
 
             local_best_key = ti.u64(0)
+            local_best_pp: ti.i32 = 0
+            local_best_cm: ti.i32 = 0
+            local_best_fm: ti.i32 = 0
+            local_best_ov: ti.i32 = 0
             local_c: ti.i32 = lane
-            while local_c < combo_count:
+            while skip_row == 0 and local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
                 res_vec = _solve_combo_warmstart_preloaded(
                     genome_idx,
@@ -530,7 +541,35 @@ def ga_find_best_combo_warmstart_kernel(
                     key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
                     if key > local_best_key:
                         local_best_key = key
+                        local_best_pp = res_vec[1]
+                        local_best_cm = res_vec[2]
+                        local_best_fm = res_vec[3]
+                        local_best_ov = res_vec[4]
                 local_c += block_dim
 
             if local_best_key != ti.u64(0):
-                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)
+                kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = local_best_key
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 0] = local_best_pp
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 1] = local_best_cm
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 2] = local_best_fm
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 3] = local_best_ov
+
+
+@ti.kernel
+def ga_finalize_warmstart_lane_best_kernel(n_genomes: ti.i32):
+    if ti.static(not IS_METAL):
+        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+        for g in range(n_genomes):
+            best_key = kernels_helpers.chunk_best_key[g]
+            best_lane = ti.i32(-1)
+            for lane in ti.static(range(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)):
+                key = kernels_helpers.ga_warmstart_lane_best_key[g, lane]
+                if key > best_key:
+                    best_key = key
+                    best_lane = lane
+            if best_lane >= 0:
+                kernels_helpers.chunk_best_key[g] = best_key
+                for i in ti.static(range(4)):
+                    kernels_helpers.chunk_best_results[g, i] = kernels_helpers.ga_warmstart_lane_best_results[
+                        g, best_lane, i
+                    ]

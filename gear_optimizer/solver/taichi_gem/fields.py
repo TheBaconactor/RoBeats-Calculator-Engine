@@ -172,13 +172,16 @@ ga_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome in
 ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
 ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
 GA_BASE_CANDIDATE_CACHE_HASH_SIZE = 4_194_304
+GA_BASE_CANDIDATE_CACHE_DELTA_CAP = 262_144
 ga_base_candidate_cache_count: ti.Field = None  # (1,) i32
 ga_base_candidate_cache_keys: ti.Field = None  # (HASH_SIZE,) u32
 ga_base_candidate_cache_stats: ti.Field = None  # (HASH_SIZE, 7) i16
 ga_base_candidate_cache_results: ti.Field = None  # (HASH_SIZE, 6) i32 [score, combo_idx, pp, cm, fm, ov]
 ga_base_candidate_cache_hit: ti.Field = None  # (MAX_GENOMES,) i32
 ga_base_candidate_cache_delta_count: ti.Field = None  # (1,) i32
-ga_base_candidate_cache_delta_rows: ti.Field = None  # (MAX_GENOMES, 13) i32 [stats7, score, combo_idx, pp, cm, fm, ov]
+ga_base_candidate_cache_delta_rows: ti.Field = None  # (DELTA_CAP, 13) i32 [stats7, score, combo_idx, pp, cm, fm, ov]
+ga_warmstart_lane_best_key: ti.Field = None  # (MAX_GENOMES, REDUCE_BLOCK_DIM) u64 chunk-local lane winners
+ga_warmstart_lane_best_results: ti.Field = None  # (MAX_GENOMES, REDUCE_BLOCK_DIM, 4) i32 [pp, cm, fm, ov]
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
@@ -314,6 +317,7 @@ def reset_fields_state() -> None:
     global ga_base_candidate_cache_count, ga_base_candidate_cache_keys
     global ga_base_candidate_cache_stats, ga_base_candidate_cache_results, ga_base_candidate_cache_hit
     global ga_base_candidate_cache_delta_count, ga_base_candidate_cache_delta_rows
+    global ga_warmstart_lane_best_key, ga_warmstart_lane_best_results
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -404,6 +408,8 @@ def reset_fields_state() -> None:
     ga_base_candidate_cache_hit = None
     ga_base_candidate_cache_delta_count = None
     ga_base_candidate_cache_delta_rows = None
+    ga_warmstart_lane_best_key = None
+    ga_warmstart_lane_best_results = None
     slot_start = None
     slot_count = None
     island_boundaries = None
@@ -562,6 +568,7 @@ def allocate_fields():
     global ga_base_candidate_cache_count, ga_base_candidate_cache_keys
     global ga_base_candidate_cache_stats, ga_base_candidate_cache_results, ga_base_candidate_cache_hit
     global ga_base_candidate_cache_delta_count, ga_base_candidate_cache_delta_rows
+    global ga_warmstart_lane_best_key, ga_warmstart_lane_best_results
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -634,7 +641,12 @@ def allocate_fields():
     ga_base_candidate_cache_results = ti.field(dtype=ti.i32, shape=(int(GA_BASE_CANDIDATE_CACHE_HASH_SIZE), 6))
     ga_base_candidate_cache_hit = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_base_candidate_cache_delta_count = ti.field(dtype=ti.i32, shape=1)
-    ga_base_candidate_cache_delta_rows = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 13))
+    ga_base_candidate_cache_delta_rows = ti.field(dtype=ti.i32, shape=(int(GA_BASE_CANDIDATE_CACHE_DELTA_CAP), 13))
+    ga_warmstart_lane_best_key = ti.field(dtype=ti.u64, shape=(MAX_GENOMES, int(GA_FTFF_REDUCE_BLOCK_DIM)))
+    ga_warmstart_lane_best_results = ti.field(
+        dtype=ti.i32,
+        shape=(MAX_GENOMES, int(GA_FTFF_REDUCE_BLOCK_DIM), 4),
+    )
 
     # Slot pools for GPU mutation
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
@@ -928,6 +940,8 @@ def bind_fields(kernels_module):
     target.ga_base_candidate_cache_hit = ga_base_candidate_cache_hit
     target.ga_base_candidate_cache_delta_count = ga_base_candidate_cache_delta_count
     target.ga_base_candidate_cache_delta_rows = ga_base_candidate_cache_delta_rows
+    target.ga_warmstart_lane_best_key = ga_warmstart_lane_best_key
+    target.ga_warmstart_lane_best_results = ga_warmstart_lane_best_results
     target.slot_start = slot_start
     target.slot_count = slot_count
 

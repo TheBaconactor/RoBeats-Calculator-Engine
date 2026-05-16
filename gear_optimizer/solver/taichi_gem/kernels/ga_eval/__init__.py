@@ -18,7 +18,7 @@ from .payload import (
     ga_store_runs_payload_snapshot_segmented_kernel,
     ga_update_runs_best_kernel,
 )
-from .warmstart import ga_find_best_combo_warmstart_kernel
+from .warmstart import ga_finalize_warmstart_lane_best_kernel, ga_find_best_combo_warmstart_kernel
 from .write_results import (
     ga_refresh_scores_and_update_runs_best_kernel,
     ga_write_best_and_update_global_kernel,
@@ -49,6 +49,7 @@ __all__ = [
     "ga_copy_fg_selected_payload_to_download_staging_kernel",
     "ga_find_island_elites_kernel",
     "ga_find_best_combo_warmstart_kernel",
+    "ga_finalize_warmstart_lane_best_kernel",
     "ga_island_migration_kernel",
     "ga_island_migration_runs_kernel",
 ]

@@ -642,8 +642,11 @@ def ga_download_base_candidate_cache_delta() -> np.ndarray:
     Columns are `[stats7, score, combo_idx, pp, cm, fm, ov]`.
     """
     ensure_ready()
-    n_rows = int(fields.ga_base_candidate_cache_delta_count.to_numpy()[0])
-    n_rows = max(0, min(n_rows, int(fields.MAX_GENOMES)))
+    raw_rows = int(fields.ga_base_candidate_cache_delta_count.to_numpy()[0])
+    cap = int(fields.GA_BASE_CANDIDATE_CACHE_DELTA_CAP)
+    if raw_rows > cap:
+        raise RuntimeError(f"base candidate cache delta buffer overflow: {raw_rows} rows > cap {cap}")
+    n_rows = max(0, int(raw_rows))
     if n_rows == 0:
         return np.zeros((0, 13), dtype=np.int32)
     rows = np.asarray(fields.ga_base_candidate_cache_delta_rows.to_numpy()[:n_rows, :13], dtype=np.int32).copy()
@@ -855,6 +858,7 @@ def ga_evaluate_population(
             use_exact_inner_solver_i,
             int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
         )
+        kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
         offset += int(chunk_len)
 
     kernels.ga_insert_base_candidate_cache_results_kernel(
