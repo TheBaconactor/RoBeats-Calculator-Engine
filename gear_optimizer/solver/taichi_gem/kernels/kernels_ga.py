@@ -262,6 +262,17 @@ def _base_candidate_cache_key_matches(pos: ti.i32, genome_idx: ti.i32) -> ti.i32
 
 
 @ti.func
+def _base_candidate_cache_upload_key_matches(pos: ti.i32, upload_idx: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for i in ti.static(range(7)):
+        want = ti.cast(kernels_helpers.ga_base_candidate_cache_upload_stats[upload_idx, i], ti.i32)
+        got = ti.cast(kernels_helpers.ga_base_candidate_cache_stats[pos, i], ti.i32)
+        if got != want:
+            match = ti.i32(0)
+    return match
+
+
+@ti.func
 def _apply_base_candidate_cache_hit(pos: ti.i32, genome_idx: ti.i32) -> None:
     score = kernels_helpers.ga_base_candidate_cache_results[pos, 0]
     combo_idx = kernels_helpers.ga_base_candidate_cache_results[pos, 1]
@@ -277,6 +288,45 @@ def _apply_base_candidate_cache_hit(pos: ti.i32, genome_idx: ti.i32) -> None:
     kernels_helpers.chunk_best_results[genome_idx, 2] = kernels_helpers.ga_base_candidate_cache_results[pos, 4]
     kernels_helpers.chunk_best_results[genome_idx, 3] = kernels_helpers.ga_base_candidate_cache_results[pos, 5]
     kernels_helpers.ga_scores[genome_idx] = score
+
+
+@ti.kernel
+def ga_insert_base_candidate_cache_upload_rows_kernel(n_rows: ti.i32):
+    """
+    Insert compact upload rows into the resident open-addressing table.
+
+    The Python API validates row shape, capacity, non-zero keys, duplicate
+    conflicts, and same-batch duplicates before staging rows here. This kernel
+    owns placement so relevant persistent hits can be appended without clearing
+    rows inserted by earlier cold solves in the same GA run.
+    """
+    mask = ti.cast(kernels_helpers.ga_base_candidate_cache_keys.shape[0] - 1, ti.u32)
+    ti.loop_config(serialize=True)
+    for upload_idx in range(n_rows):
+        key = kernels_helpers.ga_base_candidate_cache_upload_keys[upload_idx]
+        if key != ti.u32(0):
+            pos = ti.cast(key & mask, ti.i32)
+            probe = ti.i32(0)
+            done = ti.i32(0)
+            while probe < kernels_helpers.ga_base_candidate_cache_keys.shape[0] and done == 0:
+                got_key = kernels_helpers.ga_base_candidate_cache_keys[pos]
+                if got_key == ti.u32(0):
+                    kernels_helpers.ga_base_candidate_cache_keys[pos] = key
+                    for i in ti.static(range(7)):
+                        kernels_helpers.ga_base_candidate_cache_stats[pos, i] = (
+                            kernels_helpers.ga_base_candidate_cache_upload_stats[upload_idx, i]
+                        )
+                    for i in ti.static(range(6)):
+                        kernels_helpers.ga_base_candidate_cache_results[pos, i] = (
+                            kernels_helpers.ga_base_candidate_cache_upload_results[upload_idx, i]
+                        )
+                    ti.atomic_add(kernels_helpers.ga_base_candidate_cache_count[0], 1)
+                    done = ti.i32(1)
+                else:
+                    if got_key == key and _base_candidate_cache_upload_key_matches(pos, upload_idx) != 0:
+                        done = ti.i32(1)
+                    pos = (pos + 1) & ti.cast(mask, ti.i32)
+                    probe += 1
 
 
 @ti.kernel

@@ -578,60 +578,75 @@ def ga_upload_base_candidate_cache(
     keys_np: np.ndarray,
     stats_np: np.ndarray,
     results_np: np.ndarray,
+    *,
+    clear: bool = True,
 ) -> int:
     """
-    Upload the per-song global base-candidate cache into a GPU-resident open-addressing table.
+    Upload compact base-candidate cache rows into the GPU-resident open-addressing table.
     """
     ensure_ready()
     keys_src = np.asarray(keys_np, dtype=np.uint32).reshape(-1)
     stats_src = np.asarray(stats_np, dtype=np.int16)
     results_src = np.asarray(results_np, dtype=np.int32)
     n_rows = int(keys_src.shape[0])
-    if n_rows == 0:
+    if bool(clear):
         fields.ga_base_candidate_cache_keys.fill(0)
         fields.ga_base_candidate_cache_count.from_numpy(np.asarray([0], dtype=np.int32))
         fields.ga_base_candidate_cache_delta_count.from_numpy(np.asarray([0], dtype=np.int32))
+    if n_rows == 0:
         return 0
     if stats_src.shape != (n_rows, 7):
         raise ValueError(f"base candidate cache stats shape mismatch: {stats_src.shape} != {(n_rows, 7)}")
     if results_src.shape != (n_rows, 6):
         raise ValueError(f"base candidate cache results shape mismatch: {results_src.shape} != {(n_rows, 6)}")
+    if bool(np.any(keys_src == np.uint32(0))):
+        raise ValueError("base candidate cache row has zero hash key")
 
     table_size = int(fields.GA_BASE_CANDIDATE_CACHE_HASH_SIZE)
     max_rows = (table_size * 7) // 10
     if n_rows > max_rows:
         raise ValueError(f"base candidate cache shard has {n_rows} rows; GPU table limit is {max_rows}")
+    if not bool(clear):
+        existing_rows = int(fields.ga_base_candidate_cache_count.to_numpy()[0])
+        if existing_rows + n_rows > max_rows:
+            raise ValueError(
+                "base candidate cache append would exceed GPU table limit: "
+                f"{existing_rows} existing + {n_rows} new > {max_rows}"
+            )
 
-    table_keys = np.zeros((table_size,), dtype=np.uint32)
-    table_stats = np.zeros((table_size, 7), dtype=np.int16)
-    table_results = np.zeros((table_size, 6), dtype=np.int32)
-    mask = table_size - 1
-
+    seen: dict[tuple[int, tuple[int, ...]], tuple[int, ...]] = {}
     for idx in range(n_rows):
         key = int(keys_src[idx])
-        if key == 0:
-            raise ValueError("base candidate cache row has zero hash key")
-        pos = key & mask
-        probes = 0
-        while table_keys[pos] != 0:
-            if int(table_keys[pos]) == key and np.array_equal(table_stats[pos], stats_src[idx]):
-                if not np.array_equal(table_results[pos], results_src[idx]):
-                    raise ValueError(f"base candidate cache upload conflict for stats={tuple(stats_src[idx])}")
-                break
-            pos = (pos + 1) & mask
-            probes += 1
-            if probes >= table_size:
-                raise ValueError("base candidate cache GPU table is full")
-        if table_keys[pos] == 0:
-            table_keys[pos] = np.uint32(key)
-            table_stats[pos] = stats_src[idx]
-            table_results[pos] = results_src[idx]
+        stats_key = tuple(int(v) for v in stats_src[idx])
+        result_key = tuple(int(v) for v in results_src[idx])
+        existing = seen.get((key, stats_key))
+        if existing is not None:
+            if existing != result_key:
+                raise ValueError(f"base candidate cache upload conflict for stats={stats_key}")
+            raise ValueError(f"base candidate cache upload duplicate for stats={stats_key}")
+        seen[(key, stats_key)] = result_key
 
-    fields.ga_base_candidate_cache_keys.from_numpy(table_keys)
-    fields.ga_base_candidate_cache_stats.from_numpy(table_stats)
-    fields.ga_base_candidate_cache_results.from_numpy(table_results)
-    fields.ga_base_candidate_cache_count.from_numpy(np.asarray([n_rows], dtype=np.int32))
-    fields.ga_base_candidate_cache_delta_count.from_numpy(np.asarray([0], dtype=np.int32))
+    chunk_cap = int(fields.GA_BASE_CANDIDATE_CACHE_UPLOAD_CHUNK)
+    if chunk_cap <= 0:
+        raise ValueError(f"base candidate cache upload chunk must be positive, got {chunk_cap}")
+
+    upload_keys = np.zeros((chunk_cap,), dtype=np.uint32)
+    upload_stats = np.zeros((chunk_cap, 7), dtype=np.int16)
+    upload_results = np.zeros((chunk_cap, 6), dtype=np.int32)
+    for start in range(0, n_rows, chunk_cap):
+        end = min(start + chunk_cap, n_rows)
+        chunk_len = int(end - start)
+        upload_keys[:chunk_len] = keys_src[start:end]
+        upload_stats[:chunk_len, :] = stats_src[start:end]
+        upload_results[:chunk_len, :] = results_src[start:end]
+        if chunk_len < chunk_cap:
+            upload_keys[chunk_len:] = 0
+            upload_stats[chunk_len:, :] = 0
+            upload_results[chunk_len:, :] = 0
+        fields.ga_base_candidate_cache_upload_keys.from_numpy(upload_keys)
+        fields.ga_base_candidate_cache_upload_stats.from_numpy(upload_stats)
+        fields.ga_base_candidate_cache_upload_results.from_numpy(upload_results)
+        kernels.ga_insert_base_candidate_cache_upload_rows_kernel(chunk_len)
     return n_rows
 
 
@@ -707,6 +722,72 @@ def ga_aggregate_stats(
     )
 
 
+def ga_prepare_population_base_stats(
+    n_genomes: int,
+    n_slots: int = 9,
+    *,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+) -> None:
+    """
+    Aggregate the active population into `genome_base_stats` and initialize exact-eval state.
+    """
+    ensure_ready()
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
+    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
+    exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
+
+    if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
+        kernels.ga_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
+
+    kernels.ga_aggregate_and_init_best_kernel(
+        n_genomes,
+        n_slots,
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(exact_genome_base_stats_reuse),
+    )
+
+    if exact_genome_base_stats_reuse:
+        kernels.ga_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
+
+    if exact_genome_stats_signature_reuse:
+        kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
+
+
+def ga_download_population_base_stats(*, n_genomes: int) -> np.ndarray:
+    """
+    Download the active population's aggregated 7-stat signatures.
+    """
+    ensure_ready()
+    n = max(0, min(int(n_genomes), int(fields.MAX_GENOMES)))
+    if n == 0:
+        return np.zeros((0, 7), dtype=np.int16)
+    return np.asarray(fields.genome_base_stats.to_numpy()[:n, :7], dtype=np.int16).copy()
+
+
 def ga_evaluate_population(
     n_genomes: int,
     n_slots: int = 9,
@@ -733,13 +814,82 @@ def ga_evaluate_population(
     update_global_best: bool = False,
     use_base_candidate_cache: bool = True,
 ) -> None:
+    ga_prepare_population_base_stats(
+        n_genomes=n_genomes,
+        n_slots=n_slots,
+        is_p_ft=is_p_ft,
+        is_s_ft=is_s_ft,
+        is_p_ff=is_p_ff,
+        is_s_ff=is_s_ff,
+        is_p_pp=is_p_pp,
+        is_s_pp=is_s_pp,
+        is_p_cm=is_p_cm,
+        is_s_cm=is_s_cm,
+        is_p_fm=is_p_fm,
+        is_s_fm=is_s_fm,
+        is_p_ov=is_p_ov,
+        is_s_ov=is_s_ov,
+    )
+    ga_evaluate_prepared_population(
+        n_genomes=n_genomes,
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        is_p_ft=is_p_ft,
+        is_s_ft=is_s_ft,
+        is_p_ff=is_p_ff,
+        is_s_ff=is_s_ff,
+        is_p_pp=is_p_pp,
+        is_s_pp=is_s_pp,
+        is_p_cm=is_p_cm,
+        is_s_cm=is_s_cm,
+        is_p_fm=is_p_fm,
+        is_s_fm=is_s_fm,
+        is_p_ov=is_p_ov,
+        is_s_ov=is_s_ov,
+        use_exact_inner_solver=use_exact_inner_solver,
+        max_ft_gems_global=max_ft_gems_global,
+        max_ff_gems_global=max_ff_gems_global,
+        materialize_mode=materialize_mode,
+        update_global_best=update_global_best,
+        use_base_candidate_cache=use_base_candidate_cache,
+    )
+
+
+def ga_evaluate_prepared_population(
+    n_genomes: int,
+    n_slots: int = 9,
+    *,
+    total_budget: int,
+    gem_scale_fever: int = 3,
+    song_slot: int = 0,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    use_exact_inner_solver: bool = True,
+    max_ft_gems_global: int | None = None,
+    max_ff_gems_global: int | None = None,
+    materialize_mode: str = "none",
+    update_global_best: bool = False,
+    use_base_candidate_cache: bool = True,
+) -> None:
     """
-    GPU-native population evaluation: aggregate stats + evaluate + copy scores.
+    Evaluate a population whose `genome_base_stats` were already aggregated.
 
     This is the main GA evaluation function for GPU-native mode. It:
-    1. Aggregates item stats → genome_base_stats (ga_aggregate_genome_stats_kernel)
-    2. Evaluates all (ft, ff) combos → genome_result_stats (solve_genomes_with_ftff_kernel)
-    3. Copies scores to ga_scores for selection (ga_copy_scores_kernel)
+    This intentionally starts after `ga_prepare_population_base_stats()` so the
+    native GA runner can query the durable base-candidate shard for only the
+    current population's stat signatures before cache application.
 
     PREREQUISITES:
     - Call ga_upload_population_indices() with encoded population
@@ -759,39 +909,8 @@ def ga_evaluate_population(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
-    exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
     exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
-    # Stronger exact reduction: collapse rows that share the same aggregated score-relevant
-    # base stat vector, even when the underlying loadout IDs differ.
     exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
-
-    if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
-        kernels.ga_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
-
-    # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
-    kernels.ga_aggregate_and_init_best_kernel(
-        n_genomes,
-        n_slots,
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(exact_genome_base_stats_reuse),
-    )
-
-    if exact_genome_base_stats_reuse:
-        kernels.ga_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
-
-    if exact_genome_stats_signature_reuse:
-        kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
 
     use_base_candidate_cache_i = int(bool(use_base_candidate_cache))
     if use_base_candidate_cache_i:

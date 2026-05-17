@@ -552,14 +552,39 @@ class BaseCandidateCacheShard:
         self.rows.update(pending)
         return int(len(pending))
 
-    def gpu_rows(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if not self.rows:
+    def gpu_rows_for_stats(self, stats_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        stats_arr = np.asarray(stats_rows)
+        if stats_arr.size == 0:
             return (
                 np.zeros((0,), dtype=np.uint32),
                 np.zeros((0, 7), dtype=np.int16),
                 np.zeros((0, 6), dtype=np.int32),
             )
-        stats_rows = np.asarray(list(self.rows.keys()), dtype=np.int16)
-        keys = np.asarray([base_stats_hash_key(tuple(row)) for row in stats_rows], dtype=np.uint32)
-        result_rows = np.asarray([value.gpu_result6() for value in self.rows.values()], dtype=np.int32)
-        return keys, stats_rows, result_rows
+        if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
+            raise ValueError(f"base candidate cache lookup stats shape mismatch: {stats_arr.shape} != (n, 7)")
+
+        selected_stats: list[tuple[int, ...]] = []
+        selected_values: list[BaseCandidateCacheValue] = []
+        seen: set[tuple[int, ...]] = set()
+        for row in stats_arr:
+            key = stats7_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            value = self.rows.get(key)
+            if value is None:
+                continue
+            selected_stats.append(key)
+            selected_values.append(value)
+
+        if not selected_stats:
+            return (
+                np.zeros((0,), dtype=np.uint32),
+                np.zeros((0, 7), dtype=np.int16),
+                np.zeros((0, 6), dtype=np.int32),
+            )
+
+        out_stats = np.asarray(selected_stats, dtype=np.int16)
+        keys = np.asarray([base_stats_hash_key(stats) for stats in selected_stats], dtype=np.uint32)
+        results = np.asarray([value.gpu_result6() for value in selected_values], dtype=np.int32)
+        return keys, out_stats, results

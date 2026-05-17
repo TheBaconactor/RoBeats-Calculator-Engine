@@ -72,7 +72,7 @@ from ..helpers.ga_helpers.redundancy_audit import (
     write_ga_redundancy_audit_record,
 )
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
-from .candidate_solver_cache import BaseCandidateCacheShard, base_context_digest
+from .candidate_solver_cache import BaseCandidateCacheShard, base_context_digest, stats7_key
 from .item_registry import ItemRegistry
 from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
@@ -1658,19 +1658,41 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         else np.zeros((0, 2), dtype=np.int32)
     )
 
-    def _upload_base_candidate_cache() -> int:
-        if not base_candidate_cache_enabled:
-            return int(
-                gpu_api.ga_upload_base_candidate_cache(
-                    np.zeros((0,), dtype=np.uint32),
-                    np.zeros((0, 7), dtype=np.int16),
-                    np.zeros((0, 6), dtype=np.int32),
-                )
+    base_cache_uploaded_stats: set[tuple[int, ...]] = set()
+
+    def _clear_base_candidate_cache() -> int:
+        base_cache_uploaded_stats.clear()
+        return int(
+            gpu_api.ga_upload_base_candidate_cache(
+                np.zeros((0,), dtype=np.uint32),
+                np.zeros((0, 7), dtype=np.int16),
+                np.zeros((0, 6), dtype=np.int32),
+                clear=True,
             )
+        )
+
+    def _upload_relevant_base_candidate_cache(stats_rows: np.ndarray) -> int:
+        if not base_candidate_cache_enabled:
+            return 0
         if base_candidate_cache is None:
             raise RuntimeError("base candidate cache enabled but shard is not loaded")
-        keys, stats, results = base_candidate_cache.gpu_rows()
-        return int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results))
+        if not base_candidate_cache.rows:
+            return 0
+        stats_arr = np.asarray(stats_rows)
+        if stats_arr.size == 0:
+            return 0
+        if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
+            raise ValueError(f"base candidate cache current stats shape mismatch: {stats_arr.shape} != (n, 7)")
+        missing_rows = [row for row in stats_arr if stats7_key(row) not in base_cache_uploaded_stats]
+        if not missing_rows:
+            return 0
+        keys, stats, results = base_candidate_cache.gpu_rows_for_stats(np.asarray(missing_rows, dtype=np.int16))
+        if int(keys.shape[0]) == 0:
+            return 0
+        uploaded = int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results, clear=False))
+        for row in stats:
+            base_cache_uploaded_stats.add(stats7_key(row))
+        return uploaded
 
     def _drain_base_candidate_cache_delta() -> int:
         if not base_candidate_cache_enabled:
@@ -1685,8 +1707,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
 
     t_phase = time.perf_counter()
-    base_cache_uploaded = _upload_base_candidate_cache()
-    _emit_ga_setup_phase(phase="upload_base_candidate_cache", start=t_phase, rows=int(base_cache_uploaded))
+    base_cache_uploaded = _clear_base_candidate_cache()
+    _emit_ga_setup_phase(phase="clear_base_candidate_cache", start=t_phase, rows=int(base_cache_uploaded))
 
     batch_runs_default = choose_ga_batch_runs(
         n_genomes=int(n_genomes),
@@ -1818,7 +1840,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
                 gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
                 _restore_song_gpu_state()
-                _upload_base_candidate_cache()
+                _clear_base_candidate_cache()
                 _stage_segment_initial_populations(
                     run_start=int(run_start_global),
                     seg_runs=int(seg_len),
@@ -1864,7 +1886,43 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     for gen in range(int(n_generations)):
                         _raise_if_abort_requested(abort_requested, f"before GPU-native GA generation {int(gen)}")
                         t0 = time.perf_counter() if phase_timing else 0.0
-                        gpu_api.ga_evaluate_population(
+                        gpu_api.ga_prepare_population_base_stats(
+                            n_genomes=n_total,
+                            n_slots=int(n_slots),
+                            is_p_ft=is_p_ft,
+                            is_s_ft=is_s_ft,
+                            is_p_ff=is_p_ff,
+                            is_s_ff=is_s_ff,
+                            is_p_pp=is_p_pp,
+                            is_s_pp=is_s_pp,
+                            is_p_cm=is_p_cm,
+                            is_s_cm=is_s_cm,
+                            is_p_fm=is_p_fm,
+                            is_s_fm=is_s_fm,
+                            is_p_ov=is_p_ov,
+                            is_s_ov=is_s_ov,
+                        )
+                        should_seed_persistent_base_cache = (
+                            int(gen) == 0
+                            and base_candidate_cache_enabled
+                            and base_candidate_cache is not None
+                            and bool(base_candidate_cache.rows)
+                        )
+                        if should_seed_persistent_base_cache:
+                            t_cache = time.perf_counter() if phase_timing else 0.0
+                            stats_rows = gpu_api.ga_download_population_base_stats(n_genomes=int(n_total))
+                            base_cache_hits = _upload_relevant_base_candidate_cache(stats_rows)
+                            if t_cache:
+                                _log_phase(
+                                    phase="upload_relevant_base_candidate_cache",
+                                    ms=(time.perf_counter() - t_cache) * 1000.0,
+                                    runs=int(batch_len),
+                                    pop=int(n_genomes),
+                                    gen=int(gen),
+                                    use_hints=0,
+                                    combos=int(base_cache_hits),
+                                )
+                        gpu_api.ga_evaluate_prepared_population(
                             n_genomes=n_total,
                             n_slots=int(n_slots),
                             total_budget=total_budget,
@@ -2180,7 +2238,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
                         _restore_song_gpu_state()
-                        _upload_base_candidate_cache()
+                        _clear_base_candidate_cache()
                         _stage_segment_initial_populations(
                             run_start=int(run_start_global),
                             seg_runs=int(seg_len),
