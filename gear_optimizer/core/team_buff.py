@@ -4,9 +4,8 @@ import logging
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
 
-We persist/load baseline candidates under a single TeamBuff tier per run. The
-selected tier comes from TeamContributionBuffConstant.TeamBuff; absent or
-invalid settings resolve to T5.
+We persist/load native baseline candidates under T5. Display-only DB views may
+read the selected TeamContributionBuffConstant.TeamBuff tier explicitly.
 
 This module centralizes:
 - tier normalization
@@ -137,9 +136,9 @@ def resolve_team_color_from_cfg_dict(
     return color
 
 
-def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
+def resolve_selected_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
-    Resolve the baseline TeamBuff tier for a run from cfg_dict.
+    Resolve the selected TeamBuff tier from cfg_dict for display/read-only views.
     """
     sec = _get_team_section_from_cfg_dict(cfg_dict)
     raw = sec.get("TeamBuff", sec.get("teambuff", "")) if sec else ""
@@ -148,9 +147,9 @@ def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None,
     return normalize_team_buff(raw, default=default)
 
 
-def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
+def resolve_selected_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
     """
-    Resolve the baseline TeamBuff tier for a run from a configparser-like object.
+    Resolve the selected TeamBuff tier from a configparser-like object for display/read-only views.
     """
     raw = ""
     try:
@@ -159,3 +158,19 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     except (AttributeError, TypeError, ValueError):
         raw = ""
     return normalize_team_buff(raw, default=default)
+
+
+def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
+    """
+    Resolve the native baseline TeamBuff tier for persistence/replay.
+    """
+    _ = cfg_dict, default
+    return "T5"
+
+
+def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
+    """
+    Resolve the native baseline TeamBuff tier for persistence/replay.
+    """
+    _ = cfg, default
+    return "T5"

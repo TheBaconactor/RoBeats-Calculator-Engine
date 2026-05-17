@@ -9,7 +9,7 @@ import threading
 import time
 
 from gear_optimizer.core.config import load_config
-from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
+from gear_optimizer.core.team_buff import resolve_selected_team_buff_from_cfg
 from gear_optimizer.data.database import get_best_loadouts, get_song_counters
 from gear_optimizer.domain.jobs import task_difficulty
 from gear_optimizer.helpers.song_helpers.persistence import (
@@ -658,7 +658,7 @@ class RuntimeUiMixin:
                 self._emit_block(["\x1b[91m[DB]\x1b[0m No current song yet."])
                 return
             try:
-                baseline_team_buff = resolve_baseline_team_buff_from_cfg(load_config(), default="T5")
+                baseline_team_buff = resolve_selected_team_buff_from_cfg(load_config(), default="T5")
                 rows = get_best_loadouts(
                     label,
                     limit=3,

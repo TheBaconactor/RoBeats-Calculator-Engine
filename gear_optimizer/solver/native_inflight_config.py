@@ -32,20 +32,24 @@ def read_continuous_fg_adaptive_max_burst(cfg0: Any) -> int:
     return _inflight_lifecycle_module().read_continuous_fg_adaptive_max_burst(cfg0)
 
 
-def read_continuous_ga_dispatch_burst(cfg0: Any) -> int:
-    return _inflight_lifecycle_module().read_continuous_ga_dispatch_burst(cfg0)
+def read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> int:
+    return _inflight_lifecycle_module().read_continuous_ga_dispatch_burst(cfg0, default_burst=int(default_burst))
 
 
-def read_fg_ga_credit_budget(cfg0: Any) -> int:
-    return _inflight_lifecycle_module().read_fg_ga_credit_budget(cfg0)
+def read_fg_ga_credit_budget(cfg0: Any, *, default_budget: int) -> tuple[int, bool]:
+    return _inflight_lifecycle_module().read_fg_ga_credit_budget(cfg0, default_budget=int(default_budget))
 
 
-def read_fg_scheduler_mode(cfg0: Any) -> str:
-    return _inflight_lifecycle_module().read_fg_scheduler_mode(cfg0)
+def read_fg_scheduler_mode() -> str:
+    return _inflight_lifecycle_module().read_fg_scheduler_mode()
 
 
-def read_fg_slot_reserve(cfg0: Any) -> int:
-    return _inflight_lifecycle_module().read_fg_slot_reserve(cfg0)
+def read_fg_slot_reserve(cfg0: Any, *, inflight_limit: int, song_slot_limit: int) -> int:
+    return _inflight_lifecycle_module().read_fg_slot_reserve(
+        cfg0,
+        inflight_limit=int(inflight_limit),
+        song_slot_limit=int(song_slot_limit),
+    )
 
 
 def read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
