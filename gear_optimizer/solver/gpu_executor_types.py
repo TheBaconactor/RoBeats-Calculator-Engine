@@ -12,7 +12,6 @@ class GpuRequestType(Enum):
 
     SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
     LOAD_REF_ARRAYS = "load_ref_arrays"
-    PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"

@@ -34,12 +34,12 @@ def _record(song: str, *, prev_overall: int, best_overall: int, record_update: b
     }
 
 
-def test_new_counter_counts_authoritative_song_once_across_progress_paths():
+def test_new_counter_counts_authoritative_song_once_for_duplicate_progress_events():
     app = _make_minimal_app()
     info = _record("Alpha Song (Run 1/2)", prev_overall=1000, best_overall=1400)
 
     app._progress_event(completed_delta=0, record_info=info)
-    app._progress_on_result({"_record": dict(info), "_queue_label": "Alpha Song (Run 1/2)"}, completed=1, total=1)
+    app._progress_event(completed_delta=1, record_info=dict(info))
 
     assert app._session_new_records == 1
     assert app._session_new_record_keys == {"Alpha Song"}

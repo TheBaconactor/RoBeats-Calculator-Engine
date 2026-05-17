@@ -107,9 +107,5 @@ class UserGemSettings:
         )
 
 
-def read_team_contribution_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None) -> TeamContributionBuffSettings:
-    return TeamContributionBuffSettings.from_cfg_dict(cfg_dict)
 
 
-def read_user_gem_settings_from_cfg_dict(cfg_dict: Mapping[str, Any] | None) -> UserGemSettings:
-    return UserGemSettings.from_cfg_dict(cfg_dict)

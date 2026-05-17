@@ -76,13 +76,10 @@ from gear_optimizer.solver.gpu_executor_batching import (
 from gear_optimizer.solver.gpu_executor_abort import ExecutorAbortState
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
-    apply_vulkan_visible_device as _apply_vulkan_visible_device,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
     build_warmup_sentinel_payload as _build_warmup_sentinel_payload,
-    configure_executor_server_state as _configure_executor_server_state,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
     executor_auto_stop_enabled as _executor_auto_stop_enabled,
-    executor_visible_device_label as _executor_visible_device_label,
     ga_light_warmup_enabled as _ga_light_warmup_enabled,
     load_executor_start_settings as _load_executor_start_settings,
     load_executor_stop_profiler_settings as _load_executor_stop_profiler_settings,
@@ -90,10 +87,8 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
     report_gpu_profiler as _report_gpu_profiler,
     send_shutdown_request as _send_shutdown_request,
-    start_executor_ready_signal_thread as _start_executor_ready_signal_thread,
     stop_executor_if_running as _stop_executor_if_running,
     system_timer_override_allowed as _system_timer_override_allowed,
-    try_send_shutdown_request as _try_send_shutdown_request,
     warmup_sentinel_path as _warmup_sentinel_path,
     warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
     write_warmup_sentinel_payload as _write_warmup_sentinel_payload,
@@ -211,11 +206,15 @@ from gear_optimizer.solver.gpu_executor_staging import (
     stage_request as _stage_request,
     stamp_request_dequeue as _stamp_request_dequeue,
 )
-from gear_optimizer.solver.gpu_executor_timeline import execute_precompute_timeline as _execute_precompute_timeline
-
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
+
+
+def _precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
+    from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu_fn
+
+    return _precompute_timeline_gpu_fn(calc_song, ref_arrays, song_slot=song_slot)
 
 
 def is_gpu_worker_mode() -> bool:
@@ -385,7 +384,6 @@ class GpuExecutor:
         self._dispatch = {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
-            GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
@@ -1484,8 +1482,6 @@ class GpuExecutor:
 
         return batch
 
-    def _cache_registry_payload_static(self, worker_id: int, handle: int, static_payload: dict[str, Any]) -> None:
-        self._registry_payloads.cache_static(worker_id, handle, static_payload)
 
     def _resolve_registry_payload(self, request: "GpuRequest") -> tuple[dict[str, Any], str | None]:
         payload = _payload_dict(request)
@@ -1625,26 +1621,15 @@ class GpuExecutor:
             solve_force_greats_finder_gpu_tasks,
         )
 
-        def precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
-            from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu
-
-            return _precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-
         return _execute_solve_force_greats_finder(
             request,
             solve_fn=solve_force_greats_finder_gpu,
             tasks_fn=solve_force_greats_finder_gpu_tasks,
             reset_global_best_fn=fg_reset_global_best,
             download_global_best_fn=fg_download_global_best,
-            precompute_timeline_fn=precompute_timeline_gpu,
+            precompute_timeline_fn=_precompute_timeline_gpu,
             record_tasks_batch_fn=self._record_fg_tasks_batch,
         )
-
-    def _execute_precompute_timeline(self, request: GpuRequest) -> GpuResponse:
-        """Execute precompute_timeline_gpu on GPU (for slot warmup/prefetch)."""
-        from .taichi_gem.api.timeline import precompute_timeline_gpu
-
-        return _execute_precompute_timeline(request, precompute_fn=precompute_timeline_gpu)
 
     def _execute_gpu_native_ga_run_batch(self, requests: list[GpuRequest]) -> list[GpuResponse]:
         """
@@ -1736,14 +1721,9 @@ class GpuExecutor:
         Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
         Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
         """
-        def precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
-            from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu
-
-            return _precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-
         return _execute_fg_compute_breakpoints(
             request,
-            precompute_timeline_fn=precompute_timeline_gpu,
+            precompute_timeline_fn=_precompute_timeline_gpu,
             compute_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
         )
 
@@ -1797,11 +1777,6 @@ class GpuExecutor:
     def _run_fg_solve_with_breakpoints_payload(
         self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
     ) -> Any:
-        def precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
-            from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu
-
-            return _precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-
         try:
             from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
             from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
@@ -1818,7 +1793,7 @@ class GpuExecutor:
             batch_pack_idx=batch_pack_idx,
             raise_if_abort_requested=self._raise_if_abort_requested,
             env_get_fn=_ENV_GET,
-            precompute_timeline_fn=precompute_timeline_gpu,
+            precompute_timeline_fn=_precompute_timeline_gpu,
             compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
             solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
             reset_global_best_fn=fg_reset_global_best,
@@ -1858,8 +1833,6 @@ class GpuExecutor:
     def abort_requested(self) -> bool:
         return self._abort_state.requested()
 
-    def _abort_error_message(self) -> str:
-        return self._abort_state.error_message()
 
     def _raise_if_abort_requested(self) -> None:
         self._abort_state.raise_if_requested()
@@ -1924,66 +1897,8 @@ def _auto_stop_gpu_executor_at_exit() -> None:
 atexit.register(_auto_stop_gpu_executor_at_exit)
 
 
-def send_gpu_executor_shutdown(request_queue) -> None:
-    """
-    Best-effort helper to stop a GPU executor loop using its request queue.
-
-    Intended for out-of-process GPU executor servers, where the owner process needs a simple
-    "poke" to request shutdown without holding a `GpuExecutor` instance.
-    """
-    _try_send_shutdown_request(request_queue)
 
 
-def run_gpu_executor_server(
-    request_queue,
-    response_queues: dict[int, multiprocessing.Queue],
-    *,
-    ready_event=None,
-    ready_queue=None,
-    vulkan_visible_device: Optional[str] = None,
-    label: str = "Server",
-) -> None:
-    """
-    Run a dedicated GPU-owner loop in a separate process.
-
-    This is used to own a second Vulkan device (e.g., iGPU) in parallel with the primary executor.
-    Taichi's Vulkan backend is single-device per process, so multi-GPU requires multi-process.
-
-    Args:
-        request_queue: Shared request queue (multiprocessing.Queue).
-        response_queues: worker_id -> response queue mapping (multiprocessing.Queue).
-        ready_event: Optional multiprocessing.Event set after Taichi init completes (success or fail).
-        vulkan_visible_device: If provided, sets `TAICHI_VULKAN_VISIBLE_DEVICE` for this process before init.
-        label: Log label for this server instance.
-    """
-    _apply_vulkan_visible_device(vulkan_visible_device, environ=os.environ)
-
-    ex = get_gpu_executor()
-
-    _configure_executor_server_state(
-        ex,
-        request_queue=request_queue,
-        response_queues=response_queues,
-    )
-
-    _start_executor_ready_signal_thread(
-        ready_event=ready_event,
-        ready_queue=ready_queue,
-        label=label,
-        wait_fn=ex._ready_event.wait,
-        ready_state_fn=lambda: bool(getattr(ex, "_taichi_ready", False)),
-        init_error_fn=lambda: getattr(ex, "_last_init_error", None),
-    )
-
-    try:
-        logger.debug(
-            f"[GpuExecutor][{label}] Starting server loop "
-            f"(TAICHI_VULKAN_VISIBLE_DEVICE={_executor_visible_device_label(env_get_fn=env_get)})"
-        )
-    except Exception as e:
-        logger.debug(f"gpu_executor:_signal_ready: {e}")
-
-    ex._executor_loop()
 
 
 def submit_gpu_solve_genomes_from_registry(

@@ -6,7 +6,6 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 - ga_seed_rng: Seed per-genome RNG state
 - ga_upload_item_stats: Upload item stats and slot pools
 - ga_upload_base_fixed_stats: Upload fixed base stats
-- ga_aggregate_stats: Aggregate item stats into genome stats on GPU
 - ga_evaluate_population: Full GPU-native evaluation pipeline
 - ga_set_scores: Manually set scores for custom evaluation
 - ga_next_generation: Tournament selection + crossover + mutation + elitism
@@ -669,57 +668,6 @@ def ga_download_base_candidate_cache_delta() -> np.ndarray:
     return rows
 
 
-def ga_aggregate_stats(
-    n_genomes: int,
-    n_slots: int = 9,
-    *,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-) -> None:
-    """
-    Aggregate item stats into genome_base_stats on GPU.
-
-    For each genome, sums base_fixed_stats + item_stats[population_indices[g, s]]
-    across all slots, then computes p_val/s_val from color flags.
-
-    PREREQUISITES:
-    - Call ga_upload_population_indices() first
-    - Call ga_upload_item_stats() first
-    - Call ga_upload_base_fixed_stats() first
-
-    Args:
-        n_genomes: Number of genomes to aggregate
-        n_slots: Number of slots per genome (default 9)
-        is_p_*: Primary color contribution flags (0 or 1)
-        is_s_*: Secondary color contribution flags (0 or 1)
-    """
-    ensure_ready()
-    kernels.ga_aggregate_genome_stats_kernel(
-        int(n_genomes),
-        int(n_slots),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-    )
 
 
 def ga_prepare_population_base_stats(
@@ -1524,7 +1472,7 @@ def ga_next_generation_fused(
     FULLY FUSED next generation: 2 kernel launches instead of 4.
 
     This combines:
-    1. ga_next_generation_full_islands_kernel: select + crossover + mutate + island elites (computed on-the-fly)
+    1. ga_next_generation_full_kernel / ga_next_generation_full_runs_kernel: fused next-gen paths
     2. ga_swap_population_kernel: swap
 
     Args:

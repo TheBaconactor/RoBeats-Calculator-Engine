@@ -54,17 +54,23 @@ def test_base_candidate_cache_round_trips_compact_rows(tmp_path, monkeypatch):
     stats = (1, 2, 3, 4, 5, 6, 7)
     result8 = (1234, 2, 0, 2, 3, 4, 5, 6)
 
-    assert shard.put_result8(stats, result8)
-    assert not shard.put_result8(stats, result8)
+    stats_rows = np.asarray([stats], dtype=np.int32)
+    result_rows = np.asarray([result8], dtype=np.int32)
+
+    assert shard.put_result8_rows(stats_rows, result_rows) == 1
+    assert shard.put_result8_rows(stats_rows, result_rows) == 0
 
     reloaded = candidate_solver_cache.BaseCandidateCacheShard.load("b" * 32)
-    keys, stats_rows, result_rows = reloaded.gpu_rows()
+    keys, stats_rows, result_rows = reloaded.gpu_rows_for_stats(np.asarray([stats], dtype=np.int32))
     assert keys.tolist() == [candidate_solver_cache.base_stats_hash_key(stats)]
     assert stats_rows.tolist() == [list(stats)]
     assert result_rows.tolist() == [[1234, 2, 3, 4, 5, 6]]
 
     with pytest.raises(ValueError, match="value changed"):
-        reloaded.put_result8(stats, (1235, 2, 0, 2, 3, 4, 5, 6))
+        reloaded.put_result8_rows(
+            np.asarray([stats], dtype=np.int32),
+            np.asarray([(1235, 2, 0, 2, 3, 4, 5, 6)], dtype=np.int32),
+        )
 
 
 def test_base_candidate_cache_records_gpu_delta_rows(tmp_path, monkeypatch):
@@ -84,7 +90,7 @@ def test_base_candidate_cache_records_gpu_delta_rows(tmp_path, monkeypatch):
 
     assert writes == 2
     reloaded = candidate_solver_cache.BaseCandidateCacheShard.load("c" * 32)
-    _keys, stats_rows, result_rows = reloaded.gpu_rows()
+    _keys, stats_rows, result_rows = reloaded.gpu_rows_for_stats(stats_rows)
     assert stats_rows.tolist() == [[10, 20, 30, 40, 50, 60, 70], [11, 21, 31, 41, 51, 61, 71]]
     assert result_rows.tolist() == [[3000, 0, 3, 4, 5, 6], [3100, 1, 7, 8, 9, 10]]
 

@@ -701,7 +701,7 @@ def test_prioritize_song_queue_honors_pending_family_key_in_song_mode(tmp_path):
     ]
 
 
-def test_app_pending_song_queue_uses_cached_song_path_index_without_rescan():
+def test_app_pending_song_queue_uses_cached_song_path_index_without_rescan(monkeypatch):
     from gear_optimizer.app import GearOptimizerApp
 
     app = GearOptimizerApp.__new__(GearOptimizerApp)
@@ -726,11 +726,11 @@ def test_app_pending_song_queue_uses_cached_song_path_index_without_rescan():
 
     scans = {"count": 0}
 
-    def _never_scan(_roots):
+    def _never_scan(*_args, **_kwargs):
         scans["count"] += 1
         return {}
 
-    app._scan_song_paths_for_index = _never_scan
+    monkeypatch.setattr("gear_optimizer.song_queue.scan_song_paths_for_index", _never_scan)
 
     first_queue, first_unresolved = app._build_song_queue_from_pending_ids(
         ["Alpha (Hard) by Artist"],

@@ -34,10 +34,6 @@ class TimelineFrontierCacheManifestPlan:
     def hit_count(self) -> int:
         return int(len(self.hit_paths))
 
-    @property
-    def miss_count(self) -> int:
-        return int(len(self.missing_paths))
-
 
 def _frontier_cache_dir() -> Path:
     from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir

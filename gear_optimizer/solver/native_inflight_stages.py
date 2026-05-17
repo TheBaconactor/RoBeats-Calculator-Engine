@@ -10,7 +10,7 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import truthy
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
@@ -24,7 +24,6 @@ from gear_optimizer.data.song_io import clone_calc_song
 
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
-from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import NativeSong
@@ -34,9 +33,7 @@ from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
-_FG_JIT_WARMED = False
 _FG_FINDER_RUNTIME_WARMED = False
-_FG_JIT_WARM_LOCK = threading.Lock()
 _FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
 _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
@@ -121,28 +118,8 @@ def _maybe_prewarm_fg_chart_scorer(song: NativeSong) -> None:
         return
 
 
-def _cfg_section_ci(cfg_dict: dict, name: str) -> dict:
-    if not isinstance(cfg_dict, dict):
-        return {}
-    if name in cfg_dict and isinstance(cfg_dict.get(name), dict):
-        return cfg_dict.get(name) or {}
-    target = str(name).lower()
-    for key, value in cfg_dict.items():
-        if str(key).lower() == target and isinstance(value, dict):
-            return value
-    return {}
 
 
-def _cfg_value_ci(section: dict, key: str, default: object = None) -> object:
-    if not isinstance(section, dict):
-        return default
-    if key in section:
-        return section.get(key, default)
-    target = str(key).lower()
-    for cur_key, cur_value in section.items():
-        if str(cur_key).lower() == target:
-            return cur_value
-    return default
 
 
 class InFlightStageProfiler:
@@ -308,26 +285,6 @@ class InFlightStageProfiler:
             pass
 
 
-def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
-    global _FG_JIT_WARMED
-    if _FG_JIT_WARMED:
-        return
-    if not calc_song or not ref_arrays:
-        return
-    with _FG_JIT_WARM_LOCK:
-        if _FG_JIT_WARMED:
-            return
-        try:
-            fg_baseline_params({"Fever Time": 0, "Fever Fill Rate": 0}, calc_song, ref_arrays, prefer_grid=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_stages:_warmup_fg_jit: {e}")
-        try:
-            grid = get_song_timeline_grid(calc_song, ref_arrays)
-            grid.get_timeline(0, int(TOTAL_ROWS))
-            grid.to_gpu_arrays_minimal()
-        except Exception as e:
-            logger.debug(f"native_inflight_stages:_warmup_fg_jit: {e}")
-        _FG_JIT_WARMED = True
 
 
 def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:

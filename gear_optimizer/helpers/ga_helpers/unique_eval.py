@@ -84,19 +84,6 @@ class GlobalUniqueEvalTable(Generic[PayloadT]):
             return True
         return False
 
-    def upsert_candidate(self, candidate: Any, *, exact: bool = True) -> bool:
-        if not isinstance(candidate, dict):
-            return False
-        genome_ids = candidate.get("GenomeIDs")
-        if genome_ids is None:
-            data = candidate.get("Data")
-            if isinstance(data, dict):
-                genome_ids = data.get("GenomeIDs")
-        score = candidate.get("BaseScore")
-        if score is None:
-            score = candidate.get("Score", 0)
-        return self.upsert(genome_ids=genome_ids, score=int(score or 0), payload=candidate, exact=exact)
-
     def ordered_payloads(self) -> list[PayloadT]:
         return [self._entries[key].payload for key in self._order]
 

@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import heapq
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
-from gear_optimizer.solver.scoring import solve_best_fever_combination
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +63,6 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
     }
 
 
-def build_solver_override_cfg(cfg_data: dict[str, Any], *, p_color: str, selected_color: str) -> dict[str, Any]:
-    return {
-        "user_ft": int(cfg_data.get("user_ft", 0) or 0),
-        "user_ff": int(cfg_data.get("user_ff", 0) or 0),
-        "user_pp": int(cfg_data.get("user_pp", 0) or 0),
-        "user_cm": int(cfg_data.get("user_cm", 0) or 0),
-        "user_fm": int(cfg_data.get("user_fm", 0) or 0),
-        "selected_color": str(cfg_data.get("selected_color", "") or selected_color or p_color or ""),
-        "static_elem_input": int(cfg_data.get("static_elem_input", 0) or 0),
-        "use_gpu": True,
-    }
 
 
 def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> dict[str, Any]:
@@ -91,99 +77,8 @@ def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> di
     return merged
 
 
-def build_candidate_payload(
-    *,
-    cfg: Any,
-    base_stats_fixed: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    genome: list[dict],
-    override_cfg: dict[str, Any],
-    gpu_client: Any | None = None,
-) -> dict[str, Any]:
-    merged = _add_genome_item_stats(base_stats_fixed, genome)
-    refined = solve_best_fever_combination(
-        cfg,
-        merged,
-        calc_song,
-        ref_arrays,
-        silent=True,
-        override_cfg=override_cfg,
-        gpu_client=gpu_client,
-    )
-    out = dict(refined or {})
-    out["Genome"] = list(genome)
-    out["Gear"] = list(genome[:6])
-    out["Minis"] = list(genome[6:9])
-    out["GearNames"] = [g.get("Name", "None") for g in out["Gear"]]
-    out["MiniNames"] = [m.get("Name", "None") for m in out["Minis"]]
-    if out.get("BaseScore") is None:
-        out["BaseScore"] = int(out.get("Score", 0) or 0)
-    return out
 
 
-def batched_registry_eval(
-    *,
-    gpu_arrays: dict[str, np.ndarray],
-    base_fixed_stats_arr: np.ndarray,
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    flags: dict[str, int],
-    song_slot: int,
-    candidate_total: int,
-    candidate_batches: Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]],
-    keep_top_k: int,
-    gpu_client: Any | None = None,
-    status_cb: Callable[[str], None] | None = None,
-    status_label: str = "solver",
-    status_every: int = 65536,
-) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
-    best_ids: np.ndarray | None = None
-    best_score = -1
-    heap: list[tuple[int, int, int]] = []
-    done = 0
-
-    for batch_ids, batch_gear_codes, batch_mini_codes in candidate_batches:
-        if batch_ids.size == 0:
-            continue
-        req = RegistrySolveRequest(
-            population_indices=batch_ids.copy(),
-            item_stats=gpu_arrays["item_stats"],
-            slot_start=gpu_arrays["slot_start"],
-            slot_count=gpu_arrays["slot_count"],
-            base_fixed_stats=base_fixed_stats_arr,
-            timeline_grid=calc_song,
-            ref_arrays=ref_arrays,
-            flags=flags,
-            total_budget=TOTAL_GEM_BUDGET,
-            gem_scale_fever=GEM_SCALE_FEVER,
-            song_slot=int(song_slot),
-            use_exact_inner_solver=True,
-        )
-        results = dispatch_registry_solve(req, gpu_client=gpu_client)
-        for idx, result in enumerate(results):
-            try:
-                score = int(result[0] or 0)
-            except Exception as e:
-                logger.debug(f"solver_common:batched_registry_eval: {e}")
-                score = 0
-            gear_code = int(batch_gear_codes[idx])
-            mini_code = int(batch_mini_codes[idx])
-            if score > best_score:
-                best_score = score
-                best_ids = batch_ids[idx].copy()
-            if keep_top_k > 0:
-                if len(heap) < keep_top_k:
-                    heapq.heappush(heap, (score, gear_code, mini_code))
-                elif score > heap[0][0]:
-                    heapq.heapreplace(heap, (score, gear_code, mini_code))
-
-        done += int(batch_ids.shape[0])
-        if status_cb is not None and (done == int(candidate_total) or done % int(status_every) == 0):
-            status_cb(f"{status_label}: scored {done}/{int(candidate_total)} candidates")
-
-    heap.sort(reverse=True)
-    return best_ids, heap
 
 
 def _apply_fixed_pool_constraints(

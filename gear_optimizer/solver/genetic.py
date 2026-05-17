@@ -359,13 +359,11 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
         raise RuntimeError(f"GpuExecutor aborted: {where}")
 
 
-# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS.
+# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS.
 _PERF_TIMING = env_flag("PERF_TIMING", "0")
-_GPU_NATIVE_GA_LOG_ISLAND_MODEL = env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
 _GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
 _GPU_NATIVE_GA_VULKAN_RETRIES = env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
 _GPU_NATIVE_GA_BATCH_RUNS = env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
-_GPU_NATIVE_GA_LOG_PROGRESS = env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
 # Prune FT/FF combo tables to globally feasible caps derived from base-stat ceilings.
 _GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
 
@@ -427,136 +425,6 @@ if _GPU_NATIVE_AVAILABLE:
                 topk[slot_i, k_eff:heuristic_k] = sel[-1]
         return topk
 
-def _extract_fg_candidates_from_ga_snapshot(
-    *,
-    registry: "ItemRegistry",
-    cfg_data: dict,
-    base_stats_fixed: dict,
-    pop_snapshot: "np.ndarray",
-    results: "np.ndarray",
-    scores: "np.ndarray",
-    n_genomes: int,
-    candidate_limit: int,
-) -> list:
-    """
-    Extract top unique genomes from a GA run snapshot to seed the Force Greats solver.
-
-    This mirrors the vectorized extraction logic used in `_run_gpu_native_ga`, but is
-    factored out so the multi-start loop can run fully GPU-side (no per-run readbacks)
-    and do candidate extraction after a single download at end-of-song.
-    """
-    all_evaluated: list = []
-    if pop_snapshot is None or results is None or scores is None:
-        return all_evaluated
-
-    n_genomes = int(n_genomes)
-    if n_genomes <= 0:
-        return all_evaluated
-
-    candidate_limit = int(candidate_limit)
-    if candidate_limit <= 0:
-        return all_evaluated
-
-    # NOTE: We scan the full final population here to maximize unique candidate
-    # coverage for downstream ForceGreats evaluation. With the GPU-native GA the
-    # population often converges, so looking only at a small top-K window can
-    # yield too few unique genomes.
-    limit = n_genomes
-
-    # Map selected color to stat index for overflow gem contribution
-    sel_color = cfg_data.get("selected_color", "")
-    sel_color_idx = _selected_color_stat_index(sel_color)
-
-    # Build base stats array for vectorized computation
-    base_stats_arr = build_stats_array(base_stats_fixed)
-
-    # VECTORIZED: Get top-K indices, item stats, and gem contributions in one call
-    top_indices, item_stats_sum, gem_contributions = registry.batch_decode_stats_numpy(
-        pop_snapshot,
-        results,
-        scores,
-        base_stats_arr,
-        limit,
-        gem_scale_normal=GEM_SCALE_NORMAL,
-        gem_scale_fever=GEM_SCALE_FEVER,
-        gem_stat_to_element=GEM_STAT_TO_ELEMENT_SCALE,
-        elemental_gem_scale=ELEMENTAL_GEM_SCALE,
-        sel_color_idx=sel_color_idx,
-    )
-
-    # OPTIMIZATION: Two-pass lazy evaluation
-    # Pass 1: Filter unique genomes by ID tuple (fast, no decode_genome)
-    # Pass 2: Decode and construct dicts only for unique candidates
-    seen_id_hashes = set()
-    unique_candidate_indices = []  # Indices into top_indices
-
-    for i, idx in enumerate(top_indices):
-        score_val = int(scores[idx])
-        if score_val <= 0:
-            continue
-
-        genome_ids = pop_snapshot[idx]
-        # Canonicalize minis (order-invariant) so mini permutations don't consume
-        # candidate budget or downstream decode work.
-        try:
-            gear_ids = tuple(int(x) for x in genome_ids[:6])
-            mini_ids = tuple(sorted(int(x) for x in genome_ids[6:9]))
-            id_hash = gear_ids + mini_ids
-        except Exception as e:
-            logger.debug(f"genetic:_extract_fg_candidates_from_ga_snapshot: {e}")
-            id_hash = tuple(int(x) for x in genome_ids[:9])
-
-        if id_hash not in seen_id_hashes:
-            seen_id_hashes.add(id_hash)
-            unique_candidate_indices.append(i)
-
-            # Keep scanning the full final population to maximize diversity for downstream
-            # ForceGreats evaluation; the final funnel size is selected later.
-
-    # Pass 2: Decode and build dicts only for unique candidates
-    for i in unique_candidate_indices:
-        idx = top_indices[i]
-        score_val = int(scores[idx])
-
-        genome_ids = pop_snapshot[idx]
-        genome = registry.decode_genome(genome_ids)
-
-        # Get gem allocations from results array
-        res_row = results[idx]
-        g_ft, g_ff = int(res_row[1]), int(res_row[2])
-        g_pp, g_cm, g_fm, g_ov = int(res_row[3]), int(res_row[4]), int(res_row[5]), int(res_row[6])
-
-        # Compute final stats: base + item_stats + gem_contributions
-        final_stats = base_stats_arr + item_stats_sum[i] + gem_contributions[i]
-
-        # Build stats dict from numpy array (fast)
-        current_stats = build_stats_dict(final_stats)
-        data_obj = _build_candidate_data_obj(
-            score=score_val,
-            selected_color=sel_color,
-            g_ft=g_ft,
-            g_ff=g_ff,
-            g_pp=g_pp,
-            g_cm=g_cm,
-            g_fm=g_fm,
-            g_ov=g_ov,
-            stats=current_stats,
-        )
-
-        cand_data = {
-            "Score": score_val,
-            "BaseScore": score_val,
-            "Genome": genome,
-            "Gear": genome[:6],
-            "Minis": genome[6:9],
-            "GearNames": [g.get("Name", "None") for g in genome[:6]],
-            "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
-            "Data": data_obj,
-            "Details": build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
-        }
-        all_evaluated.append(cand_data)
-
-    return all_evaluated
 
 
 def _promote_best_candidate_over_header(

@@ -412,18 +412,6 @@ class NativeFGPipeline:
                 started += 1
         return int(started)
 
-    def submit_warmup(
-        self,
-        warmup_fn: Callable[..., Any],
-        calc_song: dict,
-        ref_arrays: dict,
-        *,
-        register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
-    ) -> concurrent.futures.Future:
-        fut = self.prep_executor.submit(warmup_fn, calc_song, ref_arrays)
-        if register_future is not None:
-            register_future(fut)
-        return fut
 
     def pop_next(self, *, allow_not_ready: bool) -> NativeSong | None:
         """
@@ -522,22 +510,6 @@ class NativeFGPipeline:
         self.note_fg_submit()
         return future
 
-    def run_job_sync(
-        self,
-        song: NativeSong,
-        *,
-        gpu_client: GpuServiceClient,
-        post_sender: PostSender | None = None,
-        progress_cb=None,
-        progress_tracker: ProgressTracker | None = None,
-    ) -> None:
-        run_fg_job_sync(
-            song,
-            gpu_client=gpu_client,
-            post_sender=post_sender,
-            progress_cb=progress_cb,
-            progress_tracker=progress_tracker,
-        )
 
     def replace_futures(self, futures: deque[tuple[NativeSong, concurrent.futures.Future, float]]) -> None:
         self.futures.clear()

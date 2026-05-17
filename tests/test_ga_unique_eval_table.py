@@ -56,9 +56,9 @@ def test_global_unique_eval_table_merges_candidate_dicts_by_canonical_genome():
     candidate_b = {"GenomeIDs": [1, 2, 3, 4, 5, 6, 7, 8, 9], "BaseScore": 140, "Tag": "b"}
     candidate_c = {"GenomeIDs": [10, 2, 3, 4, 5, 6, 7, 8, 9], "BaseScore": 130, "Tag": "c"}
 
-    table.upsert_candidate(candidate_a, exact=True)
-    table.upsert_candidate(candidate_c, exact=True)
-    table.upsert_candidate(candidate_b, exact=True)
+    table.upsert(genome_ids=candidate_a["GenomeIDs"], score=candidate_a["BaseScore"], payload=candidate_a, exact=True)
+    table.upsert(genome_ids=candidate_c["GenomeIDs"], score=candidate_c["BaseScore"], payload=candidate_c, exact=True)
+    table.upsert(genome_ids=candidate_b["GenomeIDs"], score=candidate_b["BaseScore"], payload=candidate_b, exact=True)
 
     merged = table.ordered_payloads()
 

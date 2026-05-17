@@ -8,12 +8,10 @@ import pytest
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     GA_WARMUP_PROFILE,
     WARMUP_SENTINEL_SCHEMA,
-    apply_vulkan_visible_device,
     build_taichi_init_failure_report,
     build_warmup_sentinel_payload,
     configure_executor_server_state,
     executor_auto_stop_enabled,
-    executor_visible_device_label,
     ga_light_warmup_enabled,
     load_executor_start_settings,
     load_executor_stop_profiler_settings,
@@ -21,7 +19,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     report_gpu_profiler,
     send_shutdown_request,
     signal_executor_ready,
-    start_executor_ready_signal_thread,
     stop_executor_if_running,
     try_send_shutdown_request,
     warmup_sentinel_path,
@@ -280,31 +277,6 @@ def test_configure_executor_server_state_tolerates_ready_event_clear_failure():
     assert executor._last_init_error is None
 
 
-def test_apply_vulkan_visible_device_sets_taichi_device_env_vars():
-    environ: dict[str, str] = {}
-
-    assert apply_vulkan_visible_device(None, environ=environ) is None
-    assert apply_vulkan_visible_device(" ", environ=environ) is None
-    assert environ == {}
-
-    assert apply_vulkan_visible_device(" 1 ", environ=environ) == "1"
-    assert environ == {
-        "TAICHI_VULKAN_VISIBLE_DEVICE": "1",
-        "TI_VISIBLE_DEVICE": "1",
-    }
-
-
-def test_executor_visible_device_label_reports_env_or_default():
-    assert executor_visible_device_label(env_get_fn=lambda _name, _default: "2") == "2"
-    assert executor_visible_device_label(env_get_fn=lambda _name, _default: "") == "default"
-    assert (
-        executor_visible_device_label(
-            env_get_fn=lambda _name, _default: (_ for _ in ()).throw(TypeError("bad env")),
-        )
-        == "default"
-    )
-
-
 def test_signal_executor_ready_sets_event_and_puts_status():
     calls: list[str] = []
     payloads: list[dict] = []
@@ -354,66 +326,6 @@ def test_signal_executor_ready_still_signals_after_wait_or_queue_failures():
         )
 
     assert calls == ["set"]
-
-
-def test_start_executor_ready_signal_thread_skips_without_ready_event():
-    thread_calls = []
-
-    assert (
-        start_executor_ready_signal_thread(
-            ready_event=None,
-            ready_queue=None,
-            label="Server",
-            wait_fn=lambda: None,
-            ready_state_fn=lambda: True,
-            init_error_fn=lambda: None,
-            thread_factory=lambda **kwargs: thread_calls.append(kwargs),
-        )
-        is False
-    )
-    assert thread_calls == []
-
-
-def test_start_executor_ready_signal_thread_starts_named_daemon_bridge():
-    calls: list[str] = []
-    payloads: list[dict] = []
-    threads: list[tuple[str, bool]] = []
-
-    class _Event:
-        @staticmethod
-        def set():
-            calls.append("set")
-
-    class _Queue:
-        @staticmethod
-        def put(payload):
-            payloads.append(payload)
-
-    class _Thread:
-        def __init__(self, *, target, name: str, daemon: bool) -> None:
-            self._target = target
-            threads.append((name, daemon))
-
-        def start(self) -> None:
-            calls.append("start")
-            self._target()
-
-    assert (
-        start_executor_ready_signal_thread(
-            ready_event=_Event(),
-            ready_queue=_Queue(),
-            label="FG",
-            wait_fn=lambda: calls.append("wait"),
-            ready_state_fn=lambda: True,
-            init_error_fn=lambda: None,
-            thread_factory=_Thread,
-        )
-        is True
-    )
-
-    assert threads == [("GpuExecutorReady[FG]", True)]
-    assert calls == ["start", "wait", "set"]
-    assert payloads == [{"ok": True, "error": None}]
 
 
 def test_build_warmup_sentinel_payload_uses_lifecycle_schema_and_profile():

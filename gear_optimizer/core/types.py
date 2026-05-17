@@ -137,37 +137,5 @@ class SongResultPayload(TypedDict, total=False):
 BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
 
 
-class SolveGenomesFromRegistryPayload(TypedDict, total=False):
-    """Payload for `GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY`."""
-
-    population_indices: np.ndarray
-    timeline_grid: np.ndarray
-    ref_arrays: RefArrays
-    song_slot: int
-    total_budget: int
-    gem_scale_fever: int
-    item_stats: np.ndarray
-    slot_start: np.ndarray
-    slot_count: np.ndarray
-    base_fixed_stats: np.ndarray
-
-    # color/stat flags (p/s x {ft,ff,pp,cm,fm,ov})
-    is_p_ft: bool
-    is_s_ft: bool
-    is_p_ff: bool
-    is_s_ff: bool
-    is_p_pp: bool
-    is_s_pp: bool
-    is_p_cm: bool
-    is_s_cm: bool
-    is_p_fm: bool
-    is_s_fm: bool
-    is_p_ov: bool
-    is_s_ov: bool
 
 
-class SolveForceGreatsFinderPayload(TypedDict, total=False):
-    """Payload for `GpuRequestType.SOLVE_FORCE_GREATS_FINDER`."""
-
-    args: Tuple[Any, ...]
-    kwargs: JsonDict

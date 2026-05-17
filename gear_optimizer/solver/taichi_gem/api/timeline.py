@@ -804,30 +804,6 @@ def _get_or_build_ceiling_frontier_payload_with_source(
     return payload, "built"
 
 
-def _get_or_build_ceiling_frontier_payload(
-    song_key: tuple,
-    *,
-    song_slot: int,
-    total_notes: int,
-    long_notes: int,
-    last_note_time: float,
-    song_profile_key: str | None = None,
-    group_payload: dict,
-    ref_ft: np.ndarray,
-    ref_ff: np.ndarray,
-) -> TimelineFrontierGridPayload:
-    payload, _source = _get_or_build_ceiling_frontier_payload_with_source(
-        song_key,
-        song_slot=song_slot,
-        total_notes=total_notes,
-        long_notes=long_notes,
-        last_note_time=last_note_time,
-        song_profile_key=song_profile_key,
-        group_payload=group_payload,
-        ref_ft=ref_ft,
-        ref_ff=ref_ff,
-    )
-    return payload
 
 
 def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: bytes | None = None) -> dict:

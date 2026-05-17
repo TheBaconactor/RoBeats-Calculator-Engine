@@ -77,32 +77,7 @@ class EvolutionDbDAL:
     def get_song_names_present_in_db(self, song_names: Iterable[str]) -> set[str]:
         return database.get_song_names_present_in_db(song_names, db_path=self.db_path)
 
-    def fetch_peak_candidates(self) -> tuple[dict[str, list[Any]], list[str]]:
-        from inventory_optimizer.db import fetch_peak_candidates_allow_missing
 
-        conn = self.get_connection(readonly=True)
-        try:
-            return fetch_peak_candidates_allow_missing(conn)
-        finally:
-            conn.close()
-
-    def fetch_candidates_within_delta(
-        self,
-        *,
-        score_delta: int,
-        limit_per_song: int,
-    ) -> tuple[dict[str, list[Any]], list[str]]:
-        from inventory_optimizer.db import fetch_candidates_within_delta_allow_missing
-
-        conn = self.get_connection(readonly=True)
-        try:
-            return fetch_candidates_within_delta_allow_missing(
-                conn,
-                score_delta=int(score_delta),
-                limit_per_song=int(limit_per_song),
-            )
-        finally:
-            conn.close()
 
     def fetch_song_names(self) -> list[str]:
         from inventory_optimizer.db import fetch_song_names

@@ -56,15 +56,6 @@ GEM_KEYS: tuple[str, ...] = (
     GemKey.ELEMENT.value,
 )
 
-CONFIG_GEM_KEYS: tuple[str, ...] = (
-    "perfect_points",
-    "combo_multiplier",
-    "fever_multiplier",
-    "fever_fill",
-    "fever_time",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class GemTotals:
     pp: int = 0

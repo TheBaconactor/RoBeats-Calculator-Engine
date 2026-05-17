@@ -119,12 +119,6 @@ def task_song_name(task: Sequence[Any] | Any) -> str:
     return str(task[int(LegacyTaskIndex.SONG_NAME)] or "").strip()
 
 
-def task_file_path(task: Sequence[Any] | Any) -> Any:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.FILE_PATH):
-        return ""
-    return task[int(LegacyTaskIndex.FILE_PATH)]
-
-
 def task_difficulty(task: Sequence[Any] | Any) -> str:
     if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.DIFFICULTY):
         return ""
@@ -136,26 +130,6 @@ def task_cfg_dict(task: Sequence[Any] | Any) -> dict:
         return {}
     cfg_dict = task[int(LegacyTaskIndex.CFG_DICT)]
     return cfg_dict if isinstance(cfg_dict, dict) else {}
-
-
-def task_ref_arrays(task: Sequence[Any] | Any) -> Any:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.REF_ARRAYS):
-        return None
-    return task[int(LegacyTaskIndex.REF_ARRAYS)]
-
-
-def task_extras(task: Sequence[Any] | Any) -> tuple[Any, ...]:
-    if not _is_task_sequence(task) or len(task) <= LEGACY_TASK_FIXED_FIELD_COUNT:
-        return ()
-    return tuple(task[LEGACY_TASK_FIXED_FIELD_COUNT:])
-
-
-def task_with_status_queue(task: Sequence[Any], status_queue: Any) -> tuple[Any, ...]:
-    if not _is_task_sequence(task) or len(task) < LEGACY_TASK_FIXED_FIELD_COUNT:
-        raise ValueError("legacy song task must contain the 16-field production prefix")
-    out = list(task)
-    out[int(LegacyTaskIndex.STATUS_QUEUE)] = status_queue
-    return tuple(out)
 
 
 def task_queue_label(task: Sequence[Any] | Any) -> str:
@@ -199,10 +173,6 @@ def seed_plan_from_song_job(job: SongJob) -> PreparedSongSeedPlan:
         repeat_total=repeat_total,
         ga_seed=job.ga_seed,
     )
-
-
-def seed_plan_from_task_tuple(task: Sequence[Any]) -> PreparedSongSeedPlan:
-    return seed_plan_from_song_job(task_tuple_to_song_job(task))
 
 
 def effective_task_count(tasks: list[Any]) -> int:

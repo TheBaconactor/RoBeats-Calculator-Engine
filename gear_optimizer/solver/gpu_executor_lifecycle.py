@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import importlib
 import json
@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import logging
 import queue
-import threading
 import traceback
 from typing import Any
 
@@ -194,29 +193,6 @@ def configure_executor_server_state(
         return False
 
 
-def apply_vulkan_visible_device(
-    vulkan_visible_device: Any,
-    *,
-    environ: MutableMapping[str, str],
-) -> str | None:
-    if vulkan_visible_device is None:
-        return None
-    visible_device = str(vulkan_visible_device).strip()
-    if not visible_device:
-        return None
-    environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = visible_device
-    environ["TI_VISIBLE_DEVICE"] = visible_device
-    return visible_device
-
-
-def executor_visible_device_label(env_get_fn: Callable[..., Any] = env_get) -> str:
-    try:
-        visible_device = str(env_get_fn("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
-    except (ValueError, TypeError):
-        visible_device = ""
-    return visible_device or "default"
-
-
 def build_taichi_init_failure_report(
     exc: BaseException,
     *,
@@ -268,36 +244,6 @@ def signal_executor_ready(
                 )
             except Exception as e:
                 logger.debug(f"gpu_executor_lifecycle:signal_executor_ready: {e}")
-
-
-def start_executor_ready_signal_thread(
-    *,
-    ready_event: Any | None,
-    ready_queue: Any | None,
-    label: str,
-    wait_fn: Callable[[], Any],
-    ready_state_fn: Callable[[], bool],
-    init_error_fn: Callable[[], Any],
-    thread_factory: Callable[..., Any] = threading.Thread,
-) -> bool:
-    if ready_event is None:
-        return False
-
-    def _signal_ready() -> None:
-        signal_executor_ready(
-            ready_event=ready_event,
-            ready_queue=ready_queue,
-            wait_fn=wait_fn,
-            ready_state_fn=ready_state_fn,
-            init_error_fn=init_error_fn,
-        )
-
-    thread_factory(
-        target=_signal_ready,
-        name=f"GpuExecutorReady[{label}]",
-        daemon=True,
-    ).start()
-    return True
 
 
 def build_warmup_sentinel_payload(

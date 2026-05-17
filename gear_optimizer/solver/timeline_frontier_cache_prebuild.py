@@ -516,20 +516,3 @@ def run_timeline_frontier_cache_prebuild(
     return combined
 
 
-def start_timeline_frontier_cache_prebuild(
-    *,
-    cfg,
-    song_queue: Iterable[tuple],
-    ref_arrays: dict,
-    data_root: str | os.PathLike[str] | None = None,
-) -> TimelineFrontierCachePrebuilder | None:
-    settings, paths = _timeline_frontier_prebuild_paths(cfg=cfg, song_queue=song_queue, data_root=data_root)
-    if not paths:
-        return None
-    manifest_plan = build_manifest_plan(paths, ref_arrays)
-    missing_paths = list(manifest_plan.missing_paths)
-    if not missing_paths:
-        return None
-    prebuilder = TimelineFrontierCachePrebuilder(settings=settings, song_paths=missing_paths, ref_arrays=ref_arrays)
-    prebuilder.start()
-    return prebuilder

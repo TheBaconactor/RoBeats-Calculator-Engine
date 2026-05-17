@@ -182,33 +182,6 @@ def _resolve_owner(root: object | None, path: tuple[str, ...]) -> object | None:
     return current
 
 
-def native_song_get(song: object, field_name: str, default=None):
-    path = _FIELD_PATH_BY_NAME.get(str(field_name))
-    if path is None:
-        return default
-    owner = _resolve_owner(song, path)
-    if owner is None:
-        return default
-    return getattr(owner, str(field_name), default)
-
-
-def native_song_group(song: object, group_name: str):
-    group = _resolve_owner(song, tuple(str(group_name).split(".")))
-    if group is None:
-        raise AttributeError(f"Unknown native song group: {group_name}")
-    return group
-
-
-def native_song_set(song: object, field_name: str, value) -> None:
-    path = _FIELD_PATH_BY_NAME.get(str(field_name))
-    if path is None:
-        raise AttributeError(f"Unknown native song field: {field_name}")
-    owner = _resolve_owner(song, path)
-    if owner is None:
-        raise AttributeError(f"Unknown native song field owner for: {field_name}")
-    setattr(owner, str(field_name), value)
-
-
 def native_song_label(song: object, *, fallback_id: bool = False) -> str:
     try:
         config = getattr(song, "config", None)

@@ -40,15 +40,12 @@ from ..core.team_buff import (
     team_buff_query_values,
 )
 from ..core.parsing import env_int
-from ..core.types import PersistenceEntry
 from .database import (
     get_db_connection_with_timeout,
     get_db_connection_readonly,
     get_evolution_db_path,
     get_evolution_overlay_db_path,
     get_best_loadouts,
-    save_loadouts_batch,
-    save_team_buff_loadouts_batch,
     update_song_counters,
 )
 
@@ -247,19 +244,7 @@ class EvolutionDbManager:
         """Open a read-only connection (never runs migrations/PRAGMAs)."""
         return get_db_connection_readonly(self.db_path, timeout=timeout)
 
-    def connect_overlay(self, *, timeout: float = 30.0) -> sqlite3.Connection:
-        """
-        Open a connection to `overlay_db_path` if set; otherwise connects to `db_path`.
-        """
-        return get_db_connection_with_timeout(self.overlay_db_path or self.db_path, timeout=timeout)
 
-    def init_schema(self) -> None:
-        """Ensure migrations/schema exist for `db_path`."""
-        conn = self.connect()
-        try:
-            conn.commit()
-        finally:
-            conn.close()
 
     # ---------------------------------------------------------------------
     # Queueing (on-demand compute)
@@ -614,42 +599,7 @@ class EvolutionDbManager:
             "tiers": {tier_i: {"base_top50": base_rows, "fg_top50": fg_rows}},
         }
 
-    def save_baseline_loadouts(
-        self,
-        song_name: str,
-        entries: Sequence[PersistenceEntry],
-        *,
-        team_buff: str = "T5",
-    ) -> None:
-        """
-        Persist baseline-tier leaderboards for a song into `team_buff_loadouts` and `team_buff_fg_loadouts`.
 
-        This is the canonical write surface for the compact DB workflow.
-        """
-        save_loadouts_batch(str(song_name), list(entries), db_path=self.db_path, team_buff=str(team_buff))
-
-    def save_team_buff_tier_loadouts(
-        self,
-        song_name: str,
-        team_buff: str,
-        entries: Sequence[Mapping[str, Any]],
-        *,
-        commit: bool = True,
-        conn: Optional[sqlite3.Connection] = None,
-    ) -> None:
-        """
-        Persist already-scored rows for a specific TeamBuff tier key.
-
-        This is mainly intended for optional tier materialization workflows.
-        """
-        save_team_buff_loadouts_batch(
-            str(song_name),
-            str(team_buff),
-            entries,
-            conn=conn,
-            commit=commit,
-            db_path=self.db_path,
-        )
 
     def get_best_loadouts(
         self,

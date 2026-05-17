@@ -2113,66 +2113,6 @@ def _optimize_core_device_refined_from_hint_preloaded_bits_impl(
 
 
 @ti.func
-def optimize_core_device_refined_from_hint(
-    budget: ti.i32,
-    cur_pp: ti.i32,
-    cur_cm: ti.i32,
-    cur_fm: ti.i32,
-    cur_p_val: ti.i32,
-    cur_s_val: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-    song_slot: ti.i32,
-    ft_idx: ti.i32,
-    ff_idx: ti.i32,
-    hint_pp: ti.i32,
-    hint_cm: ti.i32,
-    hint_fm: ti.i32,
-    hint_ov: ti.i32,
-) -> ti.types.vector(7, ti.i32):
-    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-    return _optimize_core_device_refined_from_hint_preloaded_bits_impl(
-        budget,
-        cur_pp,
-        cur_cm,
-        cur_fm,
-        cur_p_val,
-        cur_s_val,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        m0,
-        m1,
-        m2,
-        m3,
-        head_len,
-        count_fever,
-        count_normal,
-        hint_pp,
-        hint_cm,
-        hint_fm,
-        hint_ov,
-    )
-
-
-@ti.func
 def optimize_core_device_refined(
     budget: ti.i32,
     cur_pp: ti.i32,

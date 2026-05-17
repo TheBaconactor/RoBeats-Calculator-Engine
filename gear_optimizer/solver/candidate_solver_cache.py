@@ -477,32 +477,6 @@ class BaseCandidateCacheShard:
             rows[stats] = value
         return cls(path, rows)
 
-    def put_result8(
-        self,
-        stats: tuple[int, ...] | list[int] | np.ndarray,
-        result8: tuple[int, ...] | list[int] | np.ndarray,
-    ) -> bool:
-        key = stats7_key(stats)
-        value = _base_value_from_result8(result8)
-        if value.combo_idx < 0:
-            raise ValueError(f"base candidate cache cannot persist invalid combo index for stats={key}")
-        existing = self.rows.get(key)
-        if existing is not None:
-            if existing != value:
-                raise ValueError(
-                    "base candidate cache value changed "
-                    f"for stats={key}: existing={existing.result8()} new={value.result8()} path={self.path}"
-                )
-            return False
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        row = _pack_base_row(key, value)
-        lock = _path_lock(self.path)
-        with lock:
-            with self.path.open("ab") as fh:
-                fh.write(row)
-        self.rows[key] = value
-        return True
-
     def put_result8_rows(
         self,
         stats_rows: np.ndarray,

@@ -28,7 +28,6 @@ except ImportError:
 
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
 from .env_config import ENV
-from .parsing import env_flag
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
@@ -51,20 +50,6 @@ def memory_release_requested():
     return MEMORY_WATCHDOG_EVENT.is_set()
 
 
-def log_memory_usage(label=""):
-    """Log current memory usage for leak tracking."""
-    # This runs on hot per-song paths; keep it opt-in to avoid throughput regressions.
-    if not env_flag("METAFINDER_MEMORY_LOG"):
-        return
-    if psutil is None:
-        return
-    try:
-        process = psutil.Process(os.getpid())
-        rss_gb = process.memory_info().rss / (1024**3)
-        percent = process.memory_percent()
-        print(f"[MEMORY] {label}: {rss_gb:.2f} GB ({percent:.1f}%)")
-    except (OSError, ValueError, AttributeError):
-        logging.debug("[MEMORY] Failed to read memory usage", exc_info=True)
 
 
 def trigger_memory_release(reason):

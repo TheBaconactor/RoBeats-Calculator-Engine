@@ -6,6 +6,5 @@ useful for pool construction and reference-only tuning logic.
 """
 
 from .pool_initialization import initialize_pools
-from .diversity import update_mutation_and_diversity
 
-__all__ = ["initialize_pools", "update_mutation_and_diversity"]
+__all__ = ["initialize_pools"]

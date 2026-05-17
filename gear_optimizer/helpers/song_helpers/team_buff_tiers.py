@@ -7,12 +7,10 @@ import logging
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
-    TEAM_BUFF_ELEMENTS,
     normalize_team_buff_sequence,
     resolve_baseline_team_buff_from_cfg_dict,
     resolve_team_color_from_cfg_dict,
     team_buff_effect,
-    _get_team_section_from_cfg_dict,
 )
 from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
@@ -22,7 +20,6 @@ from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
 logger = logging.getLogger(__name__)
-_ELEMENTS = TEAM_BUFF_ELEMENTS
 
 
 def _norm_text(v: object) -> str:
@@ -124,12 +121,8 @@ def _representative_mini_names_from_any(minis: object) -> list[str]:
     return representative_mini_names(groups) if groups else []
 
 
-def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
-    return True
 
 
-def _resolve_team_section(cfg_dict: dict) -> dict:
-    return dict(_get_team_section_from_cfg_dict(cfg_dict))
 
 
 def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:

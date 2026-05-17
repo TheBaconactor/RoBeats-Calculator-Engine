@@ -1,7 +1,7 @@
 import configparser
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.data.database import get_db_connection, prioritize_song_queue_missing_db
+from gear_optimizer.data.database import get_db_connection, get_song_names_present_in_db
 
 
 def _write_song_stub(path, song_name: str):
@@ -20,7 +20,7 @@ def _write_song_stub(path, song_name: str):
     )
 
 
-def test_prioritize_song_queue_missing_db_places_new_songs_first():
+def test_get_song_names_present_in_db_returns_only_existing_rows():
     song_in_db = "Already In DB (Hard)"
     song_missing = "Not In DB Yet (Hard)"
 
@@ -34,13 +34,8 @@ def test_prioritize_song_queue_missing_db_places_new_songs_first():
     finally:
         conn.close()
 
-    song_queue = [
-        ("path_existing.txt", song_in_db, "Hard"),
-        ("path_missing.txt", song_missing, "Hard"),
-    ]
-
-    prioritized = prioritize_song_queue_missing_db(song_queue)
-    assert [item[1] for item in prioritized] == [song_missing, song_in_db]
+    present = get_song_names_present_in_db([song_in_db, song_missing])
+    assert present == {song_in_db}
 
 
 def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):

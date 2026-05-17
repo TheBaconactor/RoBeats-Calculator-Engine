@@ -13,7 +13,6 @@ full non-dominated surface set is retained for exact scoring.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
 import time
 from typing import Iterable
 
@@ -21,7 +20,6 @@ import numpy as np
 
 from gear_optimizer.core.profile_events import emit_profile_event
 
-from .timing_envelope import prepare_perfect_timing_envelope
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
 _CARRY_L = -40
@@ -855,102 +853,6 @@ def _exit_trace_certifies_d_ms(
         if exits != entry.exits:
             return False
     return True
-
-
-def build_exact_timeline_frontier_from_grouped_windows(
-    total_notes: int,
-    *,
-    group_starts: np.ndarray,
-    group_ends: np.ndarray,
-    group_base_t_ms: np.ndarray,
-    group_low_ms: np.ndarray,
-    group_high_ms: np.ndarray,
-    note_group_idx: np.ndarray,
-    fill_count: int,
-    d_ms: int,
-) -> TimelineFrontierPack:
-    ctx = _build_grouped_timeline_context(
-        total_notes,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-    )
-    return _build_exact_timeline_frontier_from_context(ctx, fill_count=fill_count, d_ms=d_ms)
-
-
-def build_exact_timeline_frontier(
-    chart_timestamps: np.ndarray,
-    note_types: np.ndarray,
-    *,
-    long_notes: int,
-    last_note_time: float,
-    ff_factor: float,
-    ft_factor: float,
-    perfect_lower_ms: int = -20,
-    perfect_upper_ms: int = 40,
-    held_tail_type: int = 3,
-    held_tail_time_multiplier: int = 2,
-    quantize_ms: bool = True,
-) -> TimelineFrontierPack:
-    ts = np.asarray(chart_timestamps, dtype=np.float32).reshape(-1)
-    nt = np.asarray(note_types, dtype=np.int16).reshape(-1)
-    n = int(ts.shape[0])
-    if n <= 0:
-        return build_exact_timeline_frontier_from_grouped_windows(
-            0,
-            group_starts=np.zeros((0,), dtype=np.int32),
-            group_ends=np.zeros((0,), dtype=np.int32),
-            group_base_t_ms=np.zeros((0,), dtype=np.int32),
-            group_low_ms=np.zeros((0,), dtype=np.int32),
-            group_high_ms=np.zeros((0,), dtype=np.int32),
-            note_group_idx=np.zeros((0,), dtype=np.int32),
-            fill_count=1,
-            d_ms=0,
-        )
-
-    non_fever_cas = float(max(0, n - int(long_notes))) * 0.333
-    fill_count = int(ceil(non_fever_cas * float(ff_factor)))
-    fill_count = max(1, int(fill_count))
-
-    fever_time_cas = float(last_note_time) * 0.15 + 0.15
-    d_ms = int(ceil(float(fever_time_cas * float(ft_factor) * 1000.0)))
-    d_ms = max(0, int(d_ms))
-
-    prepared = prepare_perfect_timing_envelope(
-        ts,
-        nt,
-        perfect_lower_ms=int(perfect_lower_ms),
-        perfect_upper_ms=int(perfect_upper_ms),
-        held_tail_type=int(held_tail_type),
-        held_tail_time_multiplier=int(held_tail_time_multiplier),
-        quantize_ms=bool(quantize_ms),
-    )
-    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32).reshape(-1)
-    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32).reshape(-1)
-    group_base = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32).reshape(-1)
-    group_low = np.asarray(prepared.get("group_low", ()), dtype=np.int32).reshape(-1)
-    group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
-    note_group_idx = np.full(n, -1, dtype=np.int32)
-    for g in range(int(group_starts.shape[0])):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        if e > s:
-            note_group_idx[s:e] = int(g)
-
-    return build_exact_timeline_frontier_from_grouped_windows(
-        n,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base,
-        group_low_ms=group_low,
-        group_high_ms=group_high,
-        note_group_idx=note_group_idx,
-        fill_count=fill_count,
-        d_ms=d_ms,
-    )
 
 
 def build_timeline_frontier_grid_payload(

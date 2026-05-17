@@ -2541,29 +2541,6 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
     return present
 
 
-def prioritize_song_queue_missing_db(
-    song_queue: list[tuple[str, str, str]],
-    db_path: Optional[str] = None,
-) -> list[tuple[str, str, str]]:
-    """
-    Reorder a discovered song queue so songs not in the DB run first.
-
-    Stable partition: preserves relative order within each group.
-    """
-    if not song_queue:
-        return []
-
-    present = get_song_names_present_in_db((item[1] for item in song_queue), db_path=db_path)
-    if not present:
-        return song_queue
-
-    missing: list[tuple[str, str, str]] = []
-    existing: list[tuple[str, str, str]] = []
-    for item in song_queue:
-        (existing if item[1] in present else missing).append(item)
-    return missing + existing
-
-
 def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> None:
     """
     Persist a crash-safe pending ForceGreats job for a song.

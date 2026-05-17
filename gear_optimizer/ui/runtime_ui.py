@@ -14,7 +14,6 @@ from gear_optimizer.data.database import get_best_loadouts, get_song_counters
 from gear_optimizer.domain.jobs import task_difficulty
 from gear_optimizer.helpers.song_helpers.persistence import (
     RECORD_UPDATE_SCORE_EPSILON,
-    evaluate_progress_record_update,
 )
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
@@ -722,92 +721,3 @@ class RuntimeUiMixin:
                 stream.flush()
             except Exception as e:
                 logger.debug(f"runtime_ui:_print_banner: {e}")
-
-    def _extract_record_info(self, res: dict | None) -> dict | None:
-            if not isinstance(res, dict):
-                return None
-            record_info = res.get("_record")
-            if not record_info:
-                db_payload = res.get("db_payload")
-                if isinstance(db_payload, dict):
-                    record_info = db_payload.get("_record")
-            if record_info:
-                return record_info
-            best_data = res.get("best_data")
-            prev_record = res.get("prev_record")
-            fg_variants = res.get("fg_variants")
-            db_best_fg_score = res.get("db_best_fg_score")
-            if isinstance(best_data, dict) and (prev_record is not None or fg_variants):
-                try:
-                    return evaluate_progress_record_update(
-                        best_data,
-                        prev_record,
-                        fg_variants,
-                        db_best_fg_score=db_best_fg_score,
-                        baseline_valid=bool(res.get("db_baseline_valid", True)),
-                    )
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_extract_record_info: {e}")
-                    return None
-            return None
-
-    def _progress_on_result(
-            self,
-            res: dict | None,
-            *,
-            completed: int,
-            total: int,
-            failed_delta: int = 0,
-        ) -> None:
-            try:
-                if isinstance(res, dict):
-                    song_label = (
-                        res.get("_queue_label") or res.get("_queue_key") or res.get("song") or res.get("_song_name")
-                    )
-                else:
-                    song_label = None
-            except Exception as e:
-                logger.debug(f"runtime_ui:_progress_on_result: {e}")
-                song_label = None
-            record_info = None if failed_delta else self._extract_record_info(res)
-            self._apply_authoritative_new_record(record_info)
-            if song_label:
-                try:
-                    self._run_current_song_label = str(song_label)
-                    if self._progress is not None:
-                        self._progress.set_status(str(song_label), "FAILED" if failed_delta else "DONE")
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_progress_on_result: {e}")
-            if failed_delta:
-                self._runtime_failed_count = int(self._runtime_failed_count or 0) + int(failed_delta or 0)
-                if self._progress is not None:
-                    self._progress.add_failed(failed_delta)
-            self._set_runtime_progress_counts(
-                completed=int(completed or 0),
-                total=int(total or 0),
-                failed=int(self._runtime_failed_count or 0),
-            )
-            self._runtime_status_name = "failed" if failed_delta else "done"
-            if self._progress is not None:
-                self._progress.update_counts(completed=completed, total=total)
-            else:
-                try:
-                    current_song = str(song_label or self._run_current_song_label or "").strip()
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_progress_on_result: {e}")
-                    current_song = ""
-                self._tui_publish(
-                    song=current_song,
-                    status=str(self._runtime_status_name or ""),
-                    completed=int(completed or 0),
-                    total=int(total or 0),
-                    failed=int(self._runtime_failed_count or 0),
-                    new_records=int(self._session_new_records or 0),
-                )
-            self._update_robeatsmeta_runtime_status(
-                status=self._runtime_status_name,
-                current_song=str(song_label or self._run_current_song_label or ""),
-                completed=int(self._runtime_completed_count or 0),
-                total=int(self._runtime_total_count or 0),
-                failed=int(self._runtime_failed_count or 0),
-            )

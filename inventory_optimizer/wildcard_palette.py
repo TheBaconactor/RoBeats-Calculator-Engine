@@ -8,7 +8,6 @@ import numpy as np
 from gear_optimizer.core.utils import ceil_div
 
 from .keys import OV_INDEX, STAT_KEYS
-from .variant_space import build_variant_offset_tables
 
 
 @dataclass(frozen=True)
@@ -171,61 +170,10 @@ def learn_wildcard_palette(
     return WildcardPalette(vecs=vecs, freq=counts, meta=meta)
 
 
-def learn_wildcard_palette_from_offsets(
-    offsets_np: np.ndarray,
-    *,
-    palette_size: int,
-    min_count: int = 2,
-) -> WildcardPalette:
-    """
-    Learn a wildcard palette directly from witness offsets (OV==0 vectors).
-
-    This aligns the palette with the current witness generation strategy by
-    sampling the actual per-slot vectors used in the offset pool.
-    """
-    palette_size = int(palette_size)
-    if palette_size <= 0:
-        return WildcardPalette(vecs=np.zeros((0, 5), dtype=np.int32), freq=np.zeros((0,), dtype=np.int32), meta={})
-    min_count = int(min_count)
-    if min_count < 1:
-        min_count = 1
-
-    offsets_np = np.asarray(offsets_np, dtype=np.int32)
-    if offsets_np.ndim != 3 or offsets_np.shape[2] != 6:
-        raise ValueError("offsets_np must have shape (S,K,6).")
-
-    offset_gems, _ = build_variant_offset_tables()
-    flat = offsets_np.reshape(-1)
-    vecs = offset_gems[flat]
-    wild_mask = vecs[:, OV_INDEX] == 0
-    wild_vecs = vecs[wild_mask][:, :5]
-
-    if wild_vecs.size == 0:
-        return WildcardPalette(vecs=np.zeros((0, 5), dtype=np.int32), freq=np.zeros((0,), dtype=np.int32), meta={})
-
-    uniq, counts = np.unique(wild_vecs, axis=0, return_counts=True)
-    items = [(uniq[i], int(counts[i])) for i in range(int(uniq.shape[0])) if int(counts[i]) >= int(min_count)]
-    items.sort(key=lambda kv: (-int(kv[1]), tuple(int(x) for x in kv[0])))
-    items = items[: int(palette_size)]
-
-    vecs_out = np.zeros((len(items), 5), dtype=np.int32)
-    counts_out = np.zeros((len(items),), dtype=np.int32)
-    for i, (v, c) in enumerate(items):
-        vecs_out[i, :] = np.asarray(v, dtype=np.int32)
-        counts_out[i] = int(c)
-
-    meta = {
-        "wildcard_samples": int(wild_vecs.shape[0]),
-        "unique_wildcards": int(uniq.shape[0]),
-        "min_count": int(min_count),
-        "palette_size": int(vecs_out.shape[0]),
-    }
-    return WildcardPalette(vecs=vecs_out, freq=counts_out, meta=meta)
 
 
 __all__ = [
     "WildcardPalette",
     "learn_wildcard_palette",
-    "learn_wildcard_palette_from_offsets",
     "wildcard_offset_from_vec",
 ]

@@ -71,7 +71,6 @@ from gear_optimizer.song_queue import (
     build_song_queue_from_pending_ids,
     ensure_song_path_index,
     infer_song_difficulty_from_path,
-    scan_song_paths_for_index,
     song_index_roots,
 )
 from gear_optimizer.ui.progress import (
@@ -842,13 +841,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _song_index_roots(self) -> list[str]:
         return song_index_roots(data_root=PATHS.data_dir, script_dir=SCRIPT_DIR)
-
-    def _scan_song_paths_for_index(self, roots: typing.Sequence[str]) -> dict[str, list[dict[str, str]]]:
-        return scan_song_paths_for_index(
-            roots,
-            stop_requested=self._stop_requested_now,
-            scan_song_header=scan_song_header,
-        )
 
     def _ensure_song_path_index(self, *, force: bool = False) -> None:
         roots = tuple(self._song_index_roots())

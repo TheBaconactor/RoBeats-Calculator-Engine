@@ -126,27 +126,3 @@ def merge_persist_entry(
             existing["fg_base_score"] = new_entry.get("fg_base_score")
 
 
-def canonicalize_retained_entries(
-    entries_to_normalize: list[dict],
-    *,
-    calc_song: dict | None,
-    ref_arrays: dict | None,
-    cfg_dict: dict | None,
-) -> list[dict]:
-    if not entries_to_normalize:
-        return entries_to_normalize
-    if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
-        return entries_to_normalize
-
-    try:
-        from .baseline_replay import canonicalize_baseline_persist_entries
-
-        return canonicalize_baseline_persist_entries(
-            entries_to_normalize,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            cfg_dict=cfg_dict,
-        )
-    except Exception as e:
-        logger.warning(f"persistence_entry_merge:canonicalize_retained_entries: {e}")
-        return entries_to_normalize

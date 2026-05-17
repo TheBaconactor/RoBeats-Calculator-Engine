@@ -9,7 +9,6 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _enumerate_first_exit_boundary_intervals_from_activation_band,
     _enumerate_first_exit_boundary_intervals_from_context,
     _exit_trace_certifies_d_ms,
-    build_exact_timeline_frontier_from_grouped_windows,
     reduce_timeline_frontier,
 )
 
@@ -51,7 +50,7 @@ def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
     group_high_ms = np.array([10, 10, 10], dtype=np.int32)
     note_group_idx = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
 
-    pack_a = build_exact_timeline_frontier_from_grouped_windows(
+    ctx = _build_grouped_timeline_context(
         6,
         group_starts=group_starts,
         group_ends=group_ends,
@@ -59,20 +58,9 @@ def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
         group_low_ms=group_low_ms,
         group_high_ms=group_high_ms,
         note_group_idx=note_group_idx,
-        fill_count=1,
-        d_ms=0,
     )
-    pack_b = build_exact_timeline_frontier_from_grouped_windows(
-        6,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-        fill_count=1,
-        d_ms=0,
-    )
+    pack_a = _build_exact_timeline_frontier_from_context(ctx, fill_count=1, d_ms=0)
+    pack_b = _build_exact_timeline_frontier_from_context(ctx, fill_count=1, d_ms=0)
 
     assert pack_a == pack_b
     assert len(pack_a.surfaces) >= 1

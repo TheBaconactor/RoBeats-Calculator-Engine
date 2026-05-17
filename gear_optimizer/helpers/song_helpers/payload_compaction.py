@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .ga_entry_utils import materialize_candidate_names, materialize_entry_names
 from .item_utils import names_list
 
 
@@ -52,40 +51,5 @@ def compact_fg_variants(variants: list[dict] | None) -> list[dict[str, Any]]:
     return out
 
 
-def compact_ga_candidates(candidates: list[dict] | None) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for candidate in candidates or []:
-        if not isinstance(candidate, dict):
-            continue
-        gear_names, mini_names = materialize_candidate_names(candidate, mutate=False)
-        out.append(
-            {
-                "Score": candidate.get("Score", 0),
-                "BaseScore": candidate.get("BaseScore", candidate.get("Score", 0)),
-                "Gear": list(gear_names),
-                "Minis": list(mini_names),
-                "Data": candidate.get("Data") or {},
-                "_fg_priority": candidate.get("_fg_priority", 0),
-            }
-        )
-    return out
 
 
-def compact_loadout_entries(entries: dict[str, dict] | None) -> dict[str, dict[str, Any]] | None:
-    if entries is None:
-        return None
-    out: dict[str, dict[str, Any]] = {}
-    for key, value in entries.items():
-        if not isinstance(value, dict):
-            continue
-        gear_names, mini_names = materialize_entry_names(value, mutate=False)
-        out[str(key)] = {
-            "score": value.get("score", 0),
-            "base_score": value.get("base_score", value.get("score", 0)),
-            "fg_score": value.get("fg_score", 0),
-            "gear": list(gear_names),
-            "minis": list(mini_names),
-            "details": value.get("details") or {},
-            "force": value.get("force"),
-        }
-    return out

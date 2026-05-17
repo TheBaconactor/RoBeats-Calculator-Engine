@@ -124,7 +124,7 @@ def estimate_request_work_units(request: GpuRequest, *, size_hint_fn: Callable[[
     if req_type in (GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS):
         return float(max(1, size_hint_fn(payload.get("ftff_pairs"))))
 
-    if req_type in (GpuRequestType.LOAD_REF_ARRAYS, GpuRequestType.PRECOMPUTE_TIMELINE):
+    if req_type == GpuRequestType.LOAD_REF_ARRAYS:
         return 0.25
 
     if req_type == GpuRequestType.SHUTDOWN:

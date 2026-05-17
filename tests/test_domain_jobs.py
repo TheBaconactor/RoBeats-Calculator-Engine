@@ -9,19 +9,14 @@ from gear_optimizer.domain.jobs import (
     legacy_task_tuple_from_job_context,
     materialize_repeat_task,
     seed_plan_from_song_job,
-    seed_plan_from_task_tuple,
     task_cfg_dict,
     task_difficulty,
-    task_extras,
-    task_file_path,
     task_ga_seed,
     task_queue_label,
-    task_ref_arrays,
     task_song_name,
     task_tuple_to_legacy_view,
     task_tuple_to_shared_context,
     task_tuple_to_song_job,
-    task_with_status_queue,
 )
 
 
@@ -59,21 +54,12 @@ def test_legacy_task_indices_match_production_tuple_prefix():
 def test_task_field_helpers_name_the_production_tuple_prefix():
     task = _legacy_task({"extra": True})
 
-    assert task_file_path(task) == "Data/Hard/FakeSong.txt"
     assert task_song_name(task) == "Fake Song (Hard) by Tester"
     assert task_difficulty(task) == "Hard"
     assert task_cfg_dict(task) == {"IterationEngine": {"GA_SearchDepth": "125"}}
-    assert task_ref_arrays(task) == ("ref",)
-    assert task_extras(task) == ({"extra": True},)
-
-
-def test_task_with_status_queue_replaces_only_the_status_queue_field():
-    task = _legacy_task({"extra": True})
-    replaced = task_with_status_queue(task, "new-status")
-
-    assert replaced[LegacyTaskIndex.STATUS_QUEUE] == "new-status"
-    assert replaced[:LegacyTaskIndex.STATUS_QUEUE] == task[:LegacyTaskIndex.STATUS_QUEUE]
-    assert replaced[int(LegacyTaskIndex.STATUS_QUEUE) + 1:] == task[int(LegacyTaskIndex.STATUS_QUEUE) + 1:]
+    assert task[LegacyTaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
+    assert task[LegacyTaskIndex.REF_ARRAYS] == ("ref",)
+    assert task[LEGACY_TASK_FIXED_FIELD_COUNT:] == ({"extra": True},)
 
 
 def test_task_tuple_to_song_job_preserves_queue_identity_and_repeat_metadata():
@@ -101,8 +87,8 @@ def test_seed_plan_from_song_job_preserves_repeat_label_and_seed():
     assert seed_plan.ga_seed == 987
 
 
-def test_seed_plan_from_task_tuple_defaults_non_repeat_to_base_label():
-    seed_plan = seed_plan_from_task_tuple(_legacy_task())
+def test_seed_plan_from_song_job_defaults_non_repeat_to_base_label():
+    seed_plan = seed_plan_from_song_job(task_tuple_to_song_job(_legacy_task()))
 
     assert seed_plan.queue_label == "Fake Song (Hard) by Tester"
     assert seed_plan.repeat_index == 0

@@ -76,15 +76,6 @@ def is_initialized() -> bool:
     return _ti_initialized
 
 
-def get_offline_cache_dir() -> str | None:
-    """
-    Return the effective offline cache directory used by Taichi (when enabled).
-
-    This is set during `init_taichi()` and can be used by callers to coordinate
-    cross-process warmups and avoid corrupting the offline cache directory when
-    multiple workers start concurrently.
-    """
-    return _offline_cache_dir
 
 
 @contextmanager

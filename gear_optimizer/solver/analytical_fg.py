@@ -169,27 +169,6 @@ class AnalyticalFGScorer:
         self._section_analysis_cache[cache_key] = result
         return result
 
-    def get_fill_penalty(self, forced_count: int, raw_fever_fill: float, is_section_1: bool) -> int:
-        """
-        Calculate fill penalty in notes.
-        Uses the new formula: ceil(raw_base + raw_penalty).
-
-        For section 1, we subtract 1 from the result (indexing adjustment).
-        """
-        if forced_count <= 0:
-            return 0
-
-        penalty_raw = forced_count * 0.5
-        notes_to_fill = ceil(raw_fever_fill + penalty_raw)
-
-        if is_section_1:
-            notes_to_fill -= 1
-            base_notes = ceil(raw_fever_fill) - 1
-        else:
-            base_notes = ceil(raw_fever_fill)
-
-        return max(0, int(notes_to_fill - base_notes))
-
     def binary_search_left(self, target_time: float) -> int:
         """
         Find first note index where timestamp >= target_time.

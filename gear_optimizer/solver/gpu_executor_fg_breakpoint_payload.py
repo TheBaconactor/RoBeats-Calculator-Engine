@@ -106,7 +106,7 @@ def maybe_precompute_fg_breakpoint_timeline(
     precompute_timeline_fn: Callable[..., Any],
 ) -> None:
     # Optional: precompute the timeline grid in this same executor request to avoid
-    # an extra PRECOMPUTE_TIMELINE boundary between GA/FG.
+    # an extra executor request boundary between GA and FG solve steps.
     #
     # This is safe: `precompute_timeline_gpu` is cached per (song_slot, song_key).
     ensure_timeline = bool(payload.get("ensure_timeline_precompute", False))

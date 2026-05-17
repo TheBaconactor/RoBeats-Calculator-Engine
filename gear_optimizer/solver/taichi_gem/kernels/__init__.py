@@ -86,8 +86,6 @@ from .kernels_ga import (
     ga_insert_base_candidate_cache_results_kernel,
     ga_propagate_exact_eval_reuse_base_stats_kernel,
     ga_propagate_exact_eval_reuse_chunk_best_kernel,
-    ga_select_parents_tournament_kernel,
-    ga_crossover_mutate_kernel,
     ga_swap_populations_kernel,
     ga_copy_elites_kernel,
     ga_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
@@ -95,9 +93,7 @@ from .kernels_ga import (
     ga_copy_scores_kernel,
     # FUSED kernels
     ga_aggregate_and_init_best_kernel,
-    ga_select_crossover_mutate_kernel,
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
-    ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
     ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
     ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
     ga_swap_population_kernel,  # FUSED: swap
@@ -218,8 +214,6 @@ __all__ = [
     "ga_insert_base_candidate_cache_results_kernel",
     "ga_propagate_exact_eval_reuse_base_stats_kernel",
     "ga_propagate_exact_eval_reuse_chunk_best_kernel",
-    "ga_select_parents_tournament_kernel",
-    "ga_crossover_mutate_kernel",
     "ga_swap_populations_kernel",
     "ga_copy_elites_kernel",
     "ga_copy_island_elites_kernel",
@@ -227,9 +221,7 @@ __all__ = [
     "ga_copy_scores_kernel",
     # FUSED GA kernels
     "ga_aggregate_and_init_best_kernel",
-    "ga_select_crossover_mutate_kernel",
     "ga_next_generation_full_kernel",
-    "ga_next_generation_full_islands_kernel",
     "ga_next_generation_full_runs_kernel",
     "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     "ga_swap_population_kernel",
