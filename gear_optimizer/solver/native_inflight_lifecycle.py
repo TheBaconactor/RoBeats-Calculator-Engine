@@ -776,10 +776,7 @@ class CpuPrewarmQueue:
         except Exception as e:
             logger.debug(f"native_inflight_lifecycle:CpuPrewarmQueue.submit: {e}")
             self.submitted.discard(task_key)
-            try:
-                song.runtime.prep.cpu_prewarm_future = None
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:CpuPrewarmQueue.submit: {e}")
+            song.runtime.prep.cpu_prewarm_future = None
             return False
 
     def submit_prepared_backlog(
@@ -814,10 +811,7 @@ class CpuPrewarmQueue:
                 error = exc
                 self.submitted.discard(str(label))
             finally:
-                try:
-                    song.runtime.prep.cpu_prewarm_future = None
-                except Exception as e:
-                    logger.debug(f"native_inflight_lifecycle:CpuPrewarmQueue.finish_completed: {e}")
+                song.runtime.prep.cpu_prewarm_future = None
             completions.append(
                 CpuPrewarmCompletion(
                     song=song,
@@ -1227,10 +1221,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
             ),
         ),
     )
-    try:
-        song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:prepare_native_song: {e}")
+    song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song
 
 # ---- merged from native_inflight_lifecycle.py ----
@@ -1581,10 +1572,7 @@ def count_active_song_lanes(
         key = _song_lane_key(song)
         if key:
             keys.add(key)
-    try:
-        keys.update(str(key).strip() for key in fg_active_keys if str(key).strip())
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:count_active_song_lanes: {e}")
+    keys.update(str(key).strip() for key in fg_active_keys if str(key).strip())
     return int(len(keys))
 
 
@@ -1596,21 +1584,9 @@ def default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count:
     GPU queue shallow while prep/decode workers are still spinning up. We bias toward
     a modest 4-8 song startup backlog, but always cap by the prep buffer and pending queue.
     """
-    try:
-        inflight_limit = int(inflight_limit)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:default_prime_target: {e}")
-        inflight_limit = 1
-    try:
-        prep_limit = int(prep_limit)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:default_prime_target: {e}")
-        prep_limit = 1
-    try:
-        pending_count = int(pending_count)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:default_prime_target: {e}")
-        pending_count = 0
+    inflight_limit = int(inflight_limit)
+    prep_limit = int(prep_limit)
+    pending_count = int(pending_count)
 
     inflight_limit = max(1, inflight_limit)
     prep_limit = max(1, prep_limit)
@@ -1815,12 +1791,7 @@ def read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
     Default to two lanes whenever overlap is enabled so GA/FG can interleave across
     songs instead of collapsing back into a single-song phase train.
     """
-    try:
-        inflight_limit_i = int(inflight_limit)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:read_inflight_target_song_lanes: {e}")
-        inflight_limit_i = 1
-    inflight_limit_i = max(1, int(inflight_limit_i))
+    inflight_limit_i = max(1, int(inflight_limit))
 
     target = 2 if int(inflight_limit_i) > 1 else 1
     try:

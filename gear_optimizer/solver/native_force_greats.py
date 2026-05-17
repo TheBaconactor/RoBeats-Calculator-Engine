@@ -184,6 +184,22 @@ def _materialize_raw_best_list(raw: dict[str, Any], n: int) -> list[dict[str, An
     return out
 
 
+def _empty_batch_metrics(*, input_genomes: int = 0, section_hits: int = 0, section_misses: int = 0) -> dict[str, int]:
+    return {
+        "gpu_batches": 0,
+        "groups": 0,
+        "input_genomes": int(input_genomes),
+        "unique_genomes": 0,
+        "deduped_genomes": 0,
+        "dedupe_groups": 0,
+        "section_summary_cache_hits": int(section_hits),
+        "section_summary_cache_misses": int(section_misses),
+        "candidate_cache_hits": 0,
+        "candidate_cache_misses": 0,
+        "candidate_cache_writes": 0,
+    }
+
+
 def solve_native_force_greats_gpu_batch(
     *,
     base_stats_list: list[dict[str, Any]],
@@ -196,36 +212,12 @@ def solve_native_force_greats_gpu_batch(
     gpu_client: Any | None = None,
 ) -> tuple[list[dict[str, Any] | None], dict[str, int]]:
     if not base_stats_list:
-        return [], {
-            "gpu_batches": 0,
-            "groups": 0,
-            "input_genomes": 0,
-            "unique_genomes": 0,
-            "deduped_genomes": 0,
-            "dedupe_groups": 0,
-            "section_summary_cache_hits": 0,
-            "section_summary_cache_misses": 0,
-            "candidate_cache_hits": 0,
-            "candidate_cache_misses": 0,
-            "candidate_cache_writes": 0,
-        }
+        return [], _empty_batch_metrics()
 
     song_inputs = extract_fg_song_inputs(calc_song)
     if int(song_inputs.total_notes) <= 0:
         empty = [None for _ in base_stats_list]
-        return empty, {
-            "gpu_batches": 0,
-            "groups": 0,
-            "input_genomes": 0,
-            "unique_genomes": 0,
-            "deduped_genomes": 0,
-            "dedupe_groups": 0,
-            "section_summary_cache_hits": 0,
-            "section_summary_cache_misses": 0,
-            "candidate_cache_hits": 0,
-            "candidate_cache_misses": 0,
-            "candidate_cache_writes": 0,
-        }
+        return empty, _empty_batch_metrics()
 
     primary = str(song_inputs.primary_color or "")
     secondary = str(song_inputs.secondary_color or "")
@@ -282,19 +274,11 @@ def solve_native_force_greats_gpu_batch(
         input_genomes += 1
 
     if not prepared_groups:
-        return results, {
-            "gpu_batches": 0,
-            "groups": 0,
-            "input_genomes": int(input_genomes),
-            "unique_genomes": 0,
-            "deduped_genomes": 0,
-            "dedupe_groups": 0,
-            "section_summary_cache_hits": int(section_summary_cache_hits),
-            "section_summary_cache_misses": int(section_summary_cache_misses),
-            "candidate_cache_hits": 0,
-            "candidate_cache_misses": 0,
-            "candidate_cache_writes": 0,
-        }
+        return results, _empty_batch_metrics(
+            input_genomes=int(input_genomes),
+            section_hits=int(section_summary_cache_hits),
+            section_misses=int(section_summary_cache_misses),
+        )
 
     try:
         gem_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")

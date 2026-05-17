@@ -12,7 +12,7 @@ from gear_optimizer.helpers.song_helpers.persistence import (
     canonicalize_and_assemble,
     make_build_details_fn,
 )
-from gear_optimizer.persistence.finalizer import build_persistence_result_payload
+from gear_optimizer.domain.results import PersistenceBatch
 from gear_optimizer.pipeline.post_processor_fg_variants import best_fg_improving_score_from_variants
 
 logger = logging.getLogger(__name__)
@@ -195,10 +195,10 @@ def build_deferred_post_result_payload(
     persist_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     song = item.get("song", "Unknown")
-    return build_persistence_result_payload(
+    return PersistenceBatch(
         song=str(song),
         db_key=str(item.get("db_key", song)),
         db_payload=db_payload,
         persist_entries=persist_entries,
         log=str(item.get("log") or ""),
-    )
+    ).as_result_payload()

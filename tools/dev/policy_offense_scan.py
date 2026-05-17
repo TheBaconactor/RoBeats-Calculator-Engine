@@ -34,7 +34,6 @@ EXCLUDED_PREFIXES = (
 )
 EXCLUDED_PATH_PARTS = {
     "archive",
-    "branch-archives",
     "__pycache__",
 }
 EXCLUDED_FILES = {

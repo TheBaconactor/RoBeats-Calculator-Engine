@@ -232,8 +232,11 @@ def profile_ga_with_gpu():
     stats2.print_stats(25)
     print(stream2.getvalue())
 
-    # Save full results
-    output_file = os.path.join(project_root, "tests", "ga_gpu_profile_results.txt")
+    # Save full results outside the test tree so profiling output stays out of
+    # the maintained regression surface.
+    output_dir = os.path.join(project_root, "artifacts", "profiles")
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "ga_gpu_profile_results.txt")
     with open(output_file, "w") as f:
         f.write(f"GA GPU Profiling Results\n")
         f.write(f"Total time: {total_time:.2f}s\n")

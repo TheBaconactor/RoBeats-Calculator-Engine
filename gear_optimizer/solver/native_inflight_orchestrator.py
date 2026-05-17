@@ -305,12 +305,7 @@ def run_native_inflight_song_pipeline(
         event_wait_short_spin_s = float(read_inflight_event_wait_short_spin_s())
 
         profile_max_songs = int(icfg.loop_observer.profile_max_songs)
-        completed_baseline = 0
-        try:
-            completed_baseline = int(len(completed_songs))
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:completed_baseline: {e}")
-            completed_baseline = 0
+        completed_baseline = len(completed_songs)
         bubble_tracker = BubbleTracker()
 
         def _bubble_snapshot(now_mono: float, *, oldest_fg_wait_s: float = 0.0) -> dict[str, float | int]:
@@ -351,42 +346,20 @@ def run_native_inflight_song_pipeline(
 
             # Optional profiling cap: stop after N completed songs/tasks.
             if (not stopping) and profile_max_songs > 0:
-                try:
-                    completed_now = int(len(completed_songs)) - int(completed_baseline)
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    completed_now = 0
+                completed_now = len(completed_songs) - int(completed_baseline)
                 if completed_now >= int(profile_max_songs):
                     stopping = True
-                    try:
-                        pending_tasks.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    try:
-                        prepared.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    try:
-                        pending_fg.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                    pending_tasks.clear()
+                    prepared.clear()
+                    pending_fg.clear()
 
             if stop_signal.requested(now):
                 if not stopping:
                     stopping = True
                     gpu_abort_requester.request("native in-flight stop requested")
-                    try:
-                        pending_tasks.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    try:
-                        prepared.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    try:
-                        pending_fg.clear()
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                    pending_tasks.clear()
+                    prepared.clear()
+                    pending_fg.clear()
                     # Best-effort cancel of queued prep/decode work.
                     try:
                         prep_queue.cancel_all()
@@ -401,19 +374,11 @@ def run_native_inflight_song_pipeline(
             # Periodic throughput reporting (opt-in via env).
             if throughput_sec > 0 and (now - last_throughput) >= float(throughput_sec):
                 last_throughput = now
-                try:
-                    completed_now = int(len(completed_songs)) - int(completed_baseline)
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                    completed_now = 0
+                completed_now = len(completed_songs) - int(completed_baseline)
                 if completed_now > 0:
                     wall_s = max(1e-9, float(time.perf_counter() - float(stage_profiler._t0)))
                     per_h = float(completed_now) * 3600.0 / wall_s
-                    try:
-                        pending_now = int(len(pending_tasks)) + int(len(prepared)) + int(len(pending_fg))
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                        pending_now = 0
+                    pending_now = len(pending_tasks) + len(prepared) + len(pending_fg)
                     try:
                         avg_s = wall_s / float(completed_now)
                         eta_s = float(pending_now) * avg_s if pending_now > 0 else 0.0
@@ -879,10 +844,7 @@ def run_native_inflight_song_pipeline(
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
 
-                try:
-                    song.runtime.post.deferred_post_emitted = False
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                song.runtime.post.deferred_post_emitted = False
                 fg_pipeline.queue(song, now_s=time.monotonic())
                 did_work = True
 
@@ -1099,10 +1061,7 @@ def run_native_inflight_song_pipeline(
                                 )
                             except Exception as e:
                                 logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                        try:
-                            fg_song.runtime.fg.fg_queued_t0 = None
-                        except Exception as e:
-                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                        fg_song.runtime.fg.fg_queued_t0 = None
                         fg_pipeline.submit_job(
                             native_fg_pipeline.run_fg_job_sync,
                             fg_song,
@@ -1461,10 +1420,7 @@ def emit_deferred_post_payload(
 
     post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
 
-    try:
-        song.runtime.post.deferred_post_emitted = True
-    except Exception as e:
-        logger.debug(f"native_inflight_orchestrator:emit_deferred_post_payload: {e}")
+    song.runtime.post.deferred_post_emitted = True
 
     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
     needs_fg_stage = bool(fg_pending_for_post(song))
@@ -1478,10 +1434,7 @@ def emit_deferred_post_payload(
             failed=False,
         )
     elif needs_fg_stage:
-        try:
-            song.runtime.post.await_fg_completion_progress = True
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:emit_deferred_post_payload: {e}")
+        song.runtime.post.await_fg_completion_progress = True
     else:
         mark_song_completed(
             completed_songs=completed_songs,
@@ -1515,10 +1468,7 @@ def finish_deferred_fg_completion(
             record_info=getattr(song.runtime.db, "record_info", None),
             failed=bool(fg_failed),
         )
-        try:
-            song.runtime.bundle.bundle_wait_for_fg = False
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:finish_deferred_fg_completion: {e}")
+        song.runtime.bundle.bundle_wait_for_fg = False
         return True
 
     if bool(getattr(song.runtime.post, "await_fg_completion_progress", False)):
@@ -1531,10 +1481,7 @@ def finish_deferred_fg_completion(
         )
         if progress_tracker is not None:
             progress_tracker.emit_done_song_progress(progress_cb, song)
-        try:
-            song.runtime.post.await_fg_completion_progress = False
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:finish_deferred_fg_completion: {e}")
+        song.runtime.post.await_fg_completion_progress = False
         return True
 
     return False
