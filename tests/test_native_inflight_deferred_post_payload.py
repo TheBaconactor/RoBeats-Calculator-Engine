@@ -255,7 +255,7 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
     calls: dict[str, object] = {}
     gpu_client = object()
 
-    def _fake_score_native_ga_force_greats(**kwargs):
+    def _fake_score_native_fg_candidate_records(**kwargs):
         calls.update(kwargs)
         return [
             {
@@ -268,7 +268,7 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_ga_force_greats", _fake_score_native_ga_force_greats)
+    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_records", _fake_score_native_fg_candidate_records)
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
@@ -279,6 +279,17 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_score=100,
         db_best_fg_score=100,
         db_baseline_valid=True,
+        loadout_entries={},
+        fg_candidate_records=[
+            {
+                "hash": "pytest-native-inline-fg-runner",
+                "base_stats": {"Perfect Points": 1},
+                "base_score": 111,
+                "selected_color": "Rush",
+                "center_ft": 0,
+                "center_ff": 0,
+            }
+        ],
     )
 
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)

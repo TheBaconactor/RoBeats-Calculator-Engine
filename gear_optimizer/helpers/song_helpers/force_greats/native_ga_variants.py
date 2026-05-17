@@ -189,20 +189,15 @@ def _record_from_loadout_entry(
     }
 
 
-def score_native_ga_force_greats(
+def build_native_fg_candidate_records(
     *,
     loadout_entries: dict[str, dict] | None,
     ga_candidates: list[dict] | None,
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
     default_selected_color: str,
     primary_color: str,
     secondary_color: str,
     minis_by_name: dict[str, dict] | None = None,
     registry: Any = None,
-    search_radius: int | None = None,
-    retained_limit: int = LOADOUTS_PER_SONG_LIMIT,
-    gpu_client: Any | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
@@ -227,6 +222,20 @@ def score_native_ga_force_greats(
         if rec is not None:
             records.append(rec)
 
+    return records
+
+
+def score_native_fg_candidate_records(
+    *,
+    records: list[dict[str, Any]] | None,
+    loadout_entries: dict[str, dict] | None,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    search_radius: int | None = None,
+    retained_limit: int = LOADOUTS_PER_SONG_LIMIT,
+    gpu_client: Any | None = None,
+) -> list[dict[str, Any]]:
+    records = list(records or [])
     if not records:
         return []
 

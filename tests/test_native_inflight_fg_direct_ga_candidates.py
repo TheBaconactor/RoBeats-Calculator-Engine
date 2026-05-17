@@ -9,7 +9,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     calls: dict[str, object] = {}
     registry = object()
 
-    def _fake_score_native_ga_force_greats(**kwargs):
+    def _fake_score_native_fg_candidate_records(**kwargs):
         calls.update(kwargs)
         return [
             {
@@ -22,7 +22,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_ga_force_greats", _fake_score_native_ga_force_greats)
+    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_records", _fake_score_native_fg_candidate_records)
 
     song = make_native_song(
         fg_prep_future=None,
@@ -43,6 +43,16 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=True,
+        fg_candidate_records=[
+            {
+                "hash": "direct-ga",
+                "base_stats": {"Perfect Points": 1},
+                "base_score": 99,
+                "selected_color": "Rush",
+                "center_ft": 0,
+                "center_ff": 0,
+            }
+        ],
         manual_force_greats=False,
         force_greats_config=[],
         fg_search_radius=5,
@@ -57,11 +67,8 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     fg_pipeline.run_fg_job_sync(song, gpu_client=SimpleNamespace())
 
-    assert calls["ga_candidates"] is song.runtime.decode.ga_candidates
-    assert calls["registry"] is registry
-    assert calls["primary_color"] == "Rush"
-    assert calls["secondary_color"] == "Flow"
-    assert calls["default_selected_color"] == "Rush"
+    assert calls["records"] is song.runtime.fg.fg_candidate_records
+    assert calls["loadout_entries"] == {}
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
@@ -70,7 +77,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
 
     calls: dict[str, object] = {}
 
-    def _fake_score_native_ga_force_greats(**kwargs):
+    def _fake_score_native_fg_candidate_records(**kwargs):
         calls.update(kwargs)
         return [
             {
@@ -83,7 +90,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_ga_force_greats", _fake_score_native_ga_force_greats)
+    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_records", _fake_score_native_fg_candidate_records)
 
     song = make_native_song(
         fg_prep_future=None,
@@ -99,6 +106,16 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=False,
+        fg_candidate_records=[
+            {
+                "hash": "db",
+                "base_stats": {"Perfect Points": 1},
+                "base_score": 100,
+                "selected_color": "Rush",
+                "center_ft": 0,
+                "center_ff": 0,
+            }
+        ],
         manual_force_greats=False,
         force_greats_config=[],
         fg_search_radius=5,
@@ -116,9 +133,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
     assert calls["search_radius"] == 5
-    assert calls["ga_candidates"] is None
-    assert calls["registry"] is None
+    assert calls["records"] is song.runtime.fg.fg_candidate_records
     assert calls["loadout_entries"] == {}
     assert calls["ref_arrays"] == {"Perfect Points": []}
-    assert calls["default_selected_color"] == "Rush"
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

@@ -87,14 +87,18 @@ def test_native_ga_force_greats_materializes_retained_variant(monkeypatch) -> No
         },
     }
 
-    variants = native_ga_variants.score_native_ga_force_greats(
+    records = native_ga_variants.build_native_fg_candidate_records(
         loadout_entries=loadout_entries,
         ga_candidates=[candidate],
-        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
-        ref_arrays={},
         default_selected_color="Rush",
         primary_color="Rush",
         secondary_color="Flow",
+    )
+    variants = native_ga_variants.score_native_fg_candidate_records(
+        records=records,
+        loadout_entries=loadout_entries,
+        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
+        ref_arrays={},
         search_radius=-1,
         gpu_client="owner-client",
     )
@@ -130,6 +134,15 @@ def test_native_force_greats_gpu_batch_uses_gpu_owner_client(monkeypatch) -> Non
     monkeypatch.setattr(native_force_greats, "create_scorer_from_calc_song", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(native_force_greats, "_materialize_best", lambda best, **_kwargs: dict(best))
 
+    class EmptyCandidateCache:
+        def get(self, _key):
+            return None
+
+        def put(self, _key, _value):
+            return False
+
+    monkeypatch.setattr(native_force_greats.FgCandidateCacheShard, "load", lambda *_args, **_kwargs: EmptyCandidateCache())
+
     class FakeGpuClient:
         def __init__(self) -> None:
             self.solve_calls = []
@@ -148,7 +161,13 @@ def test_native_force_greats_gpu_batch_uses_gpu_owner_client(monkeypatch) -> Non
             "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
             "song_data": {"timestamps": [0.0]},
         },
-        ref_arrays={},
+        ref_arrays={
+            "Perfect Points": [1.0],
+            "Combo Multiplier": [1.0],
+            "Fever Multiplier": [1.0],
+            "Fever Fill Rate": [1.0],
+            "Fever Time": [1.0],
+        },
         selected_colors=["Rush"],
         center_fts=[0],
         center_ffs=[0],
