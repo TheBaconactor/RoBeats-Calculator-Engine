@@ -789,6 +789,15 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: 
 
 
 @ti.kernel
+def fg_read_forced_counts_kernel(n_cfg: ti.i32, cfg_src_offset: ti.i32, n_sections: ti.i32, out: ti.types.ndarray(dtype=ti.i32, ndim=2)):
+    """
+    Read a small forced-count window for GPU parity/debug tests.
+    """
+    for i, j in ti.ndrange(n_cfg, n_sections):
+        out[i, j] = fg_forced_counts[cfg_src_offset + i, j]
+
+
+@ti.kernel
 def fg_upload_song_timestamps_prefix_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     """Upload song timestamps without padding to FG_MAX_SONG_NOTES."""
     for i in range(n):

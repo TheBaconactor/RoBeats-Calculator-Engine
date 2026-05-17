@@ -51,22 +51,13 @@ def resolve_database_baseline_team_buff(
     """
     Resolve the TeamBuff tier used for progress/context reads.
 
-    Auto TeamBuff mode stores and reads baseline DB rows under T5. Manual configs
-    must use their selected tier so GA and FG seed from the same leaderboard slice.
+    Native optimizer DB context reads the persisted baseline slice. Runtime auto
+    mode stores baseline rows under T5, so this path stays pinned to T5 even when
+    display-only DB best views use the selected config tier.
     """
     default_tier = str(default or "T5")
     try:
-        if cfg_dict is None and isinstance(cfg, Mapping) and not hasattr(cfg, "getboolean"):
-            cfg_dict = cfg
-            cfg = None
-        if cfg is not None:
-            from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
-
-            return resolve_baseline_team_buff_from_cfg(cfg, default=default_tier)
-
-        from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-
-        return resolve_baseline_team_buff_from_cfg_dict(cfg_dict or {}, default=default_tier)
+        return default_tier
     except Exception as e:
         logger.debug(f"database_context:resolve_database_baseline_team_buff: {e}")
         return default_tier

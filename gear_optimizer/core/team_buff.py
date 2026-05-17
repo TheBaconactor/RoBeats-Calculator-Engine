@@ -4,8 +4,9 @@ import logging
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
 
-We persist/load baseline candidates under a single TeamBuff tier per run. Runtime
-semantics force the baseline TeamBuff tier to T5.
+We persist/load baseline candidates under a single TeamBuff tier per run. The
+selected tier comes from TeamContributionBuffConstant.TeamBuff; absent or
+invalid settings resolve to T5.
 
 This module centralizes:
 - tier normalization
@@ -139,14 +140,22 @@ def resolve_team_color_from_cfg_dict(
 def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
     Resolve the baseline TeamBuff tier for a run from cfg_dict.
-
-    Runtime baseline persistence always uses T5.
     """
-    return "T5"
+    sec = _get_team_section_from_cfg_dict(cfg_dict)
+    raw = sec.get("TeamBuff", sec.get("teambuff", "")) if sec else ""
+    if not raw and isinstance(cfg_dict, Mapping):
+        raw = cfg_dict.get("TeamBuff", cfg_dict.get("teambuff", ""))
+    return normalize_team_buff(raw, default=default)
 
 
 def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
     """
     Resolve the baseline TeamBuff tier for a run from a configparser-like object.
     """
-    return "T5"
+    raw = ""
+    try:
+        if cfg.has_option("TeamContributionBuffConstant", "TeamBuff"):
+            raw = cfg.get("TeamContributionBuffConstant", "TeamBuff")
+    except (AttributeError, TypeError, ValueError):
+        raw = ""
+    return normalize_team_buff(raw, default=default)

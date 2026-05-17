@@ -48,8 +48,8 @@ def read_fg_slot_reserve(cfg0: Any) -> int:
     return _inflight_lifecycle_module().read_fg_slot_reserve(cfg0)
 
 
-def read_inflight_target_song_lanes(cfg0: Any) -> int:
-    return _inflight_lifecycle_module().read_inflight_target_song_lanes(cfg0)
+def read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
+    return _inflight_lifecycle_module().read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
 
 
 def default_worker_threads(*, inflight_limit: int, kind: str) -> int:

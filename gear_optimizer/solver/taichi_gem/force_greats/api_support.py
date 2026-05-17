@@ -1427,5 +1427,3 @@ def _fg_download_global_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, 
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
-
-
