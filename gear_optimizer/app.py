@@ -52,7 +52,7 @@ from gear_optimizer.data.csv_parser import (
 )
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
-from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
+from gear_optimizer.solver.scoring import GEM_SOLVER_CACHE
 from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning

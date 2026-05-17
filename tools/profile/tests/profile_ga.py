@@ -153,7 +153,7 @@ def setup_ga_test_data():
 
 def run_ga(data, ga_depth=50):
     """Run the GA solver."""
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
 
     np.random.seed(42)
     random.seed(42)

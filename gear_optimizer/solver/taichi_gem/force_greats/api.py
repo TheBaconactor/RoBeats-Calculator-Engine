@@ -240,11 +240,7 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Reset outputs and init stage1.
     fg_kernels.fg_reset_best_kernel(n_genomes)
-    if gem_fields.IS_METAL:
-        fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
-    else:
-        # Vulkan: initialize only the packed winner field (Stage 2 recomputes aux outputs).
-        fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
+    fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
 
     # Mark end of upload phase
@@ -258,13 +254,12 @@ def _solve_force_greats_finder_gpu_impl(
     if n_work_items > fg_fields.FG_MAX_FLAT_WORK_ITEMS:
         raise ValueError(f"Too many flat work items: {n_work_items} > {fg_fields.FG_MAX_FLAT_WORK_ITEMS}")
 
-    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)) for the Vulkan Stage-1 wave kernels.
-    if not gem_fields.IS_METAL:
-        global _fg_flat_work_key
-        flat_key = (n_genomes, n_ftff)
-        if _fg_flat_work_key != flat_key:
-            fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
-            _fg_flat_work_key = flat_key
+    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)) for Stage-1 wave kernels.
+    global _fg_flat_work_key
+    flat_key = (n_genomes, n_ftff)
+    if _fg_flat_work_key != flat_key:
+        fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+        _fg_flat_work_key = flat_key
 
     # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
     # so we must ensure it is initialized even when the caller does not supply
@@ -479,75 +474,43 @@ def _solve_force_greats_finder_gpu_impl(
             _record_upload("forced_counts_staging(chunk)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
             fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(global_cfg_offset), staging)
 
-        # Stage 1:
-        # - Metal: serial-per-owner kernel (no 64-bit atomics).
-        # - Vulkan: block-per-owner with subgroup reductions + wave-staging (atomic-free).
+        # Stage 1: block-per-owner with subgroup reductions + wave-staging (atomic-free).
         # Add base_cfg_offset for global cfg indexing across multiple GPU calls.
         is_first_chunk = int(1 if int(cfg_offset) == 0 else 0)
-        if gem_fields.IS_METAL:
-            fg_kernels.fg_stage1_kernel(
-                int(n_genomes),
-                int(total_notes),
-                int(long_notes),
-                float(last_note_time),
-                int(total_budget),
-                int(gem_scale_fever),
-                int(n_cfg),
-                int(n_sections),
-                int(n_ftff),
-                int(global_cfg_offset),
-                int(global_cfg_offset),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-                int(song_slot),
-                int(1 if pair_caps_from_timeline else 0),
-                int(is_first_chunk),
-            )
-        else:
-            if not _FG_STAGE1_DIRECT_ATOMIC:
-                fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
-            fg_kernels.fg_stage1_waves_kernel(
-                bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
-                int(0),
-                int(0),
-                int(0),
-                int(n_work_items),
-                int(n_cfg),
-                int(global_cfg_offset),
-                int(global_cfg_offset),
-                int(total_notes),
-                int(long_notes),
-                float(last_note_time),
-                int(total_budget),
-                int(gem_scale_fever),
-                int(n_sections),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-                int(song_slot),
-                int(1 if pair_caps_from_timeline else 0),
-            )
-            if not _FG_STAGE1_DIRECT_ATOMIC:
-                fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
+        if not _FG_STAGE1_DIRECT_ATOMIC:
+            fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+        fg_kernels.fg_stage1_waves_kernel(
+            bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
+            int(0),
+            int(0),
+            int(0),
+            int(n_work_items),
+            int(n_cfg),
+            int(global_cfg_offset),
+            int(global_cfg_offset),
+            int(total_notes),
+            int(long_notes),
+            float(last_note_time),
+            int(total_budget),
+            int(gem_scale_fever),
+            int(n_sections),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            int(song_slot),
+            int(1 if pair_caps_from_timeline else 0),
+        )
+        if not _FG_STAGE1_DIRECT_ATOMIC:
+            fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
             ti.sync()
@@ -1564,18 +1527,14 @@ def solve_force_greats_finder_gpu_tasks(
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
-        if gem_fields.IS_METAL:
-            fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
-        else:
-            fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
+        fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
 
-        # Ensure flat work is built for this (n_genomes, n_ftff) (used by Vulkan Stage-1 wave kernels).
-        if not gem_fields.IS_METAL:
-            global _fg_flat_work_key
-            flat_key = (int(n_genomes), int(n_ftff))
-            if _fg_flat_work_key != flat_key:
-                fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
-                _fg_flat_work_key = flat_key
+        # Ensure flat work is built for this (n_genomes, n_ftff) for Stage-1 wave kernels.
+        global _fg_flat_work_key
+        flat_key = (int(n_genomes), int(n_ftff))
+        if _fg_flat_work_key != flat_key:
+            fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+            _fg_flat_work_key = flat_key
 
         # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
         #
@@ -1610,7 +1569,6 @@ def solve_force_greats_finder_gpu_tasks(
             cfg_chunk_run = int(cfg_chunk_run_plan.cfg_chunk)
         use_stage1_cfg_dedupe = bool(
             _FG_GPU_CONFIG_DEDUPE
-            and (not gem_fields.IS_METAL)
             and bool(use_gpu_cfg_ranges)
             and int(max_cfg_len_chunk) >= int(_FG_GPU_CONFIG_DEDUPE_MIN_CFG)
             and int(n_sections) > 0
@@ -1712,70 +1670,40 @@ def solve_force_greats_finder_gpu_tasks(
 
                 # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
                 is_first_chunk = int(1 if int(band_idx) == 0 else 0)
-                if gem_fields.IS_METAL:
-                    fg_kernels.fg_stage1_kernel(
-                        int(n_genomes),
-                        int(total_notes),
-                        int(long_notes),
-                        float(last_note_time),
-                        int(total_budget),
-                        int(gem_scale_fever),
-                        int(band_len),
-                        int(n_sections),
-                        int(n_ftff),
-                        int(cfg_offset_i),
-                        int(cfg_read_offset_i),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                        int(is_p_pp),
-                        int(is_s_pp),
-                        int(is_p_cm),
-                        int(is_s_cm),
-                        int(is_p_fm),
-                        int(is_s_fm),
-                        int(is_p_ov),
-                        int(is_s_ov),
-                        int(song_slot),
-                        int(1 if pair_caps_from_timeline else 0),
-                        int(is_first_chunk),
-                    )
-                else:
-                    if not _FG_STAGE1_DIRECT_ATOMIC:
-                        fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
-                    fg_kernels.fg_stage1_waves_kernel(
-                        bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
-                        int(0),
-                        int(0),
-                        int(0),
-                        int(n_work_items),
-                        int(band_len),
-                        int(cfg_offset_i),
-                        int(cfg_read_offset_i),
-                        int(total_notes),
-                        int(long_notes),
-                        float(last_note_time),
-                        int(total_budget),
-                        int(gem_scale_fever),
-                        int(n_sections),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                        int(is_p_pp),
-                        int(is_s_pp),
-                        int(is_p_cm),
-                        int(is_s_cm),
-                        int(is_p_fm),
-                        int(is_s_fm),
-                        int(is_p_ov),
-                        int(is_s_ov),
-                        int(song_slot),
-                        int(1 if pair_caps_from_timeline else 0),
-                    )
-                    if not _FG_STAGE1_DIRECT_ATOMIC:
-                        fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
+                if not _FG_STAGE1_DIRECT_ATOMIC:
+                    fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+                fg_kernels.fg_stage1_waves_kernel(
+                    bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
+                    int(0),
+                    int(0),
+                    int(0),
+                    int(n_work_items),
+                    int(band_len),
+                    int(cfg_offset_i),
+                    int(cfg_read_offset_i),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
+                )
+                if not _FG_STAGE1_DIRECT_ATOMIC:
+                    fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
 
         # Ordering is preserved on-device; only force a host sync when timing/tracing.
         did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)

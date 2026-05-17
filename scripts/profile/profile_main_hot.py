@@ -20,7 +20,7 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
 
     from gear_optimizer.app import GearOptimizerApp
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     try:
         print("=" * 70)

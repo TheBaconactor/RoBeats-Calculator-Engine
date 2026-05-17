@@ -12,13 +12,11 @@ These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
 
-import sys
 import taichi as ti
 
 from gear_optimizer.core.parsing import env_float
 
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
+IS_METAL = False
 
 from . import kernels_helpers
 from .ga_eval.write_results import (

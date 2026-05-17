@@ -649,7 +649,7 @@ def execute_gpu_native_ga_run(
 
     try:
         if run_payload_fn is None:
-            from gear_optimizer.solver.genetic import run_gpu_native_ga_runs_payload_prebuilt as run_payload_fn
+            from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt as run_payload_fn
 
         kwargs = dict(
             calc_song=calc_song,

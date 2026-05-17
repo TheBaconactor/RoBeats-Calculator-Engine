@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 def run_ga():
     """Run a minimal GA to profile."""
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.solver.scoring import solve_best_fever_combination
     from gear_optimizer.data.models import GASettings
     from gear_optimizer.data.gears import load_gears

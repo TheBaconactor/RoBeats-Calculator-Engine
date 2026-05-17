@@ -9,7 +9,6 @@ This module handles:
 """
 
 import logging
-import sys
 
 import taichi as ti
 
@@ -17,9 +16,8 @@ from gear_optimizer.core.parsing import env_flag, env_int
 
 from .runtime import is_initialized, init_taichi
 
-# Platform detection for Metal-specific fields
 from gear_optimizer.core.parsing import env_get
-IS_METAL = sys.platform == "darwin"
+IS_METAL = False
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -263,9 +261,8 @@ chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-ch
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
-# Metal-specific 32-bit fields (used instead of u64 atomics on macOS)
-chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
-chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index (Metal)
+chunk_best_score: ti.Field = None
+chunk_best_idx: ti.Field = None
 
 # Cached evaluation results per genome (eliminates redundant optimize_core_device calls)
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
@@ -1047,25 +1044,6 @@ def ensure_fields_allocated():
 
         bind_fields(kernels)
 
-        # Bind Metal-specific NON-GRID fields if on macOS
-        # Grid fields are bound later in ensure_grid_fields_allocated()
-        if IS_METAL:
-            from . import kernels_metal
-
-            kernels_metal.chunk_best_score = chunk_best_score
-            kernels_metal.chunk_best_idx = chunk_best_idx
-            # Bind shared non-grid fields needed by Metal kernels
-            kernels_metal.genome_result_stats = genome_result_stats
-            kernels_metal.genome_base_stats = genome_base_stats
-            kernels_metal.ga_scores = ga_scores
-            kernels_metal.population_indices = population_indices
-            kernels_metal.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
-            kernels_metal.ftff_combo_ft = ftff_combo_ft
-            kernels_metal.ftff_combo_ff = ftff_combo_ff
-            kernels_metal.ga_global_best_score = ga_global_best_score
-            kernels_metal.ga_global_best_genome = ga_global_best_genome
-            kernels_metal.ga_global_best_results = ga_global_best_results
-
 
 def ensure_grid_fields_allocated():
     """
@@ -1081,30 +1059,3 @@ def ensure_grid_fields_allocated():
         from . import kernels
 
         bind_fields(kernels)
-
-        # Bind Metal-specific GRID fields if on macOS
-        if IS_METAL:
-            from . import kernels_metal
-
-            kernels_metal.grid_count_body_fever = grid_count_body_fever
-            kernels_metal.grid_count_body_normal = grid_count_body_normal
-            kernels_metal.grid_head_len = grid_head_len
-            kernels_metal.grid_N_hn = grid_N_hn
-            kernels_metal.grid_N_hf = grid_N_hf
-            kernels_metal.grid_Sigma_hn = grid_Sigma_hn
-            kernels_metal.grid_Sigma_hf = grid_Sigma_hf
-            kernels_metal.grid_fever_masks_bits = grid_fever_masks_bits
-            kernels_metal.grid_frontier_count = grid_frontier_count
-            kernels_metal.grid_frontier_offset = grid_frontier_offset
-            kernels_metal.grid_frontier_body_fever_pool = grid_frontier_body_fever_pool
-            kernels_metal.grid_frontier_body_normal_pool = grid_frontier_body_normal_pool
-            kernels_metal.grid_frontier_masks_bits_pool = grid_frontier_masks_bits_pool
-            kernels_metal.grid_sig0 = grid_sig0
-            kernels_metal.grid_sig1 = grid_sig1
-            kernels_metal.grid_gap = grid_gap
-            kernels_metal.grid_fever_activations = grid_fever_activations
-
-            # Now that ALL fields are bound, apply Metal kernel patches
-            from .kernel_loader import apply_metal_patches
-
-            apply_metal_patches()

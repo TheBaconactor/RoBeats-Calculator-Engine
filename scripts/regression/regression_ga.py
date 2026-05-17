@@ -19,7 +19,7 @@ def run_ga_regression():
     random.seed(SEED)
     print(f"[OK] Seeds set to {SEED}")
 
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # 2. Mock Data

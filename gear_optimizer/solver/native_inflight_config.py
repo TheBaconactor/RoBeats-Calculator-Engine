@@ -587,7 +587,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     try:
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-        from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
+        from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 
         ga_runs = read_ga_multi_start(cfg0)
         gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)

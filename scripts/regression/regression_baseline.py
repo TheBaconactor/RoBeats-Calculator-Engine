@@ -37,7 +37,7 @@ def patch_ga_seed():
     """Patch the GA module to use deterministic random."""
     # Import modules to patch
     from gear_optimizer.helpers import ga_helpers
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     # Patch random in both modules
     ga_helpers.random = random

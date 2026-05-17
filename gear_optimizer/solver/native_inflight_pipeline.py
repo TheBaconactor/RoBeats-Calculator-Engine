@@ -30,28 +30,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def evaluate_fg_progress_record_update(song: NativeSong, progress_tracker):
-    from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update as _impl
-
-    return _impl(song, progress_tracker)
-
-
-def ensure_fg_build_details(song: NativeSong):
-    from gear_optimizer.solver.native_inflight_orchestrator import ensure_fg_build_details as _impl
-
-    return _impl(song)
-
-
-def build_fg_persist_entries(song: NativeSong):
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries as _impl
-
-    return _impl(song)
-
-
-def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]):
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_update_payload as _impl
-
-    return _impl(song, persist_entries=persist_entries)
 @dataclass(frozen=True)
 class NativeFGPipelineSettings:
     workers: int
@@ -613,6 +591,13 @@ def run_fg_job_sync(
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
+    from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
+    from gear_optimizer.solver.native_inflight_orchestrator import (
+        build_fg_persist_entries,
+        build_fg_update_payload,
+        ensure_fg_build_details,
+    )
+
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
     active_fg_calc_song = resolve_active_fg_calc_song(song)
@@ -981,7 +966,7 @@ from gear_optimizer.data.song_io import clone_calc_song
 
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
-from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 
 logger = logging.getLogger(__name__)
 

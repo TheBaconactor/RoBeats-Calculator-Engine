@@ -5,8 +5,6 @@ Includes:
 - ga_find_best_combo_warmstart_kernel
 """
 
-import sys
-
 import taichi as ti
 
 from .. import kernels_helpers
@@ -16,8 +14,7 @@ from ..kernels_scoring import (
     score_solution_from_gems_preloaded,
 )
 
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
+IS_METAL = False
 MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 

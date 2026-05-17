@@ -10,7 +10,6 @@ from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, truthy
 from gear_optimizer.core.constants import (
     FG_PLATEAU_REP_STRIDE,
     LOADOUTS_PER_SONG_LIMIT,
-    TOTAL_ROWS,
 )
 
 from . import cache_validation, result_application
@@ -39,7 +38,6 @@ from .retained_variants import retain_and_build_fg_variants as _retain_and_build
 from .signature_frontier import (
     build_signature_frontier_metas_from_rows as _build_signature_frontier_metas_from_rows_impl,
     resolve_signature_frontier_limit as _resolve_signature_frontier_limit_impl,
-    select_signature_frontier_cpu_from_metas as _select_signature_frontier_cpu_from_metas_impl,
     signature_timing_bucket as _signature_timing_bucket_impl,
 )
 from . import gpu_dispatch_caches as _dispatch_caches
@@ -967,7 +965,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             frontier_meta_batches.append(metas)
 
         if frontier_payloads:
-            frontier_batch_failed = False
             try:
                 if gpu_client is not None:
                     selected_batches = gpu_client.submit(
@@ -977,56 +974,28 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 else:
                     selected_batches = fg_select_signature_frontier_batch(frontier_payloads)
             except Exception as exc:
-                warn_fallback(
-                    "fg.signature_frontier.gpu_batch",
-                    "GPU FG signature frontier batch selection failed; falling back to host selector",
-                    exc=exc,
-                    fatal=False,
-                )
-                if _GPU_STRICT:
-                    raise
-                frontier_batch_failed = True
-                selected_batches = []
+                raise RuntimeError("GPU FG signature frontier batch selection failed") from exc
 
-            if frontier_batch_failed:
-                for group_key, metas in zip(frontier_keys, frontier_meta_batches):
-                    out = _select_signature_frontier_cpu_from_metas_impl(metas, limit=int(sig_frontier_limit))
-                    reduced_sig_lists[group_key] = list(out[: int(sig_frontier_limit)])
-                    frontier_total_after += int(len(reduced_sig_lists[group_key]))
-                    if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
-                        frontier_groups_reduced += 1
-            else:
-                for group_key, metas, selected_indices in zip(frontier_keys, frontier_meta_batches, selected_batches):
-                    out: list = []
-                    seen: set = set()
-                    for idx in list(np.asarray(selected_indices, dtype=np.int32)):
-                        i = int(idx)
-                        if i < 0 or i >= len(metas):
-                            continue
-                        sig = metas[i]["sig"]
-                        if sig in seen:
-                            continue
-                        seen.add(sig)
-                        out.append(sig)
-                    expected_n = min(int(sig_frontier_limit), int(len(metas)))
-                    if len(out) < expected_n:
-                        exc = RuntimeError(
-                            f"GPU FG frontier batch returned {len(out)} signatures; expected {expected_n}"
-                        )
-                        warn_fallback(
-                            "fg.signature_frontier.gpu_batch_short",
-                            "GPU FG signature frontier batch selection returned an incomplete surface",
-                            exc=exc,
-                            fatal=False,
-                        )
-                        if _GPU_STRICT:
-                            raise exc
-                        out = _select_signature_frontier_cpu_from_metas_impl(metas, limit=int(sig_frontier_limit))
+            for group_key, metas, selected_indices in zip(frontier_keys, frontier_meta_batches, selected_batches):
+                out: list = []
+                seen: set = set()
+                for idx in list(np.asarray(selected_indices, dtype=np.int32)):
+                    i = int(idx)
+                    if i < 0 or i >= len(metas):
+                        continue
+                    sig = metas[i]["sig"]
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    out.append(sig)
+                expected_n = min(int(sig_frontier_limit), int(len(metas)))
+                if len(out) < expected_n:
+                    raise RuntimeError(f"GPU FG frontier batch returned {len(out)} signatures; expected {expected_n}")
 
-                    reduced_sig_lists[group_key] = list(out[: int(sig_frontier_limit)])
-                    frontier_total_after += int(len(reduced_sig_lists[group_key]))
-                    if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
-                        frontier_groups_reduced += 1
+                reduced_sig_lists[group_key] = list(out[: int(sig_frontier_limit)])
+                frontier_total_after += int(len(reduced_sig_lists[group_key]))
+                if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
+                    frontier_groups_reduced += 1
 
     _emit_finder_phase(
         "frontier_ready",
@@ -1068,10 +1037,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     elif caps_mode in {"none", "off", "0", "false", "no"}:
         pair_caps_from_timeline = False
         pair_caps_grid = None  # unlimited caps
-    elif caps_mode in {"cpu"}:
-        pair_caps_from_timeline = False
     else:
-        pair_caps_from_timeline = True
+        raise ValueError(f"Unsupported FG_PAIR_CAPS_MODE={caps_mode!r}; expected 'timeline' or 'none'")
 
     if pair_caps_from_timeline and gpu_client is None:
         # Direct (non-IPC) GPU path: ensure the timeline grid is computed synchronously on this thread
@@ -1081,65 +1048,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
             precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
         except Exception as e:
-            warn_fallback(
-                "fg.pair_caps.timeline_precompute",
-                "timeline pair-caps precompute failed; falling back away from timeline caps",
-                context={"song_slot": int(song_slot)},
-                exc=e,
-            )
-            logger.warning("[FG] Timeline precompute for pair-caps FAILED: %s: %s", type(e).__name__, e)
-            pair_caps_from_timeline = False
+            raise RuntimeError("timeline pair-caps precompute failed") from e
 
     if (
         (not pair_caps_from_timeline)
         and pair_caps_grid is None
         and caps_mode not in {"none", "off", "0", "false", "no"}
     ):
-        # CPU fallback (rare): build the cap grid and cache it on the song payload.
-        warn_fallback(
-            "fg.pair_caps.cpu_grid",
-            "using CPU pair-caps grid fallback",
-            context={"caps_mode": caps_mode},
-        )
-        try:
-            from ....solver.fever_timeline import get_song_timeline_grid
-            from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
-
-            cached_pair_caps = None
-            cached_max_per_section = 0
-            try:
-                cached_pair_caps = song_data_cache.get("fg_pair_caps_grid")
-                cached_max_per_section = int(song_data_cache.get("fg_pair_caps_grid_max_per_section", 0) or 0)
-            except (KeyError, TypeError, ValueError, AttributeError):
-                cached_pair_caps = None
-                cached_max_per_section = 0
-
-            if (
-                isinstance(cached_pair_caps, np.ndarray)
-                and cached_pair_caps.ndim == 3
-                and cached_max_per_section >= 100
-            ):
-                pair_caps_grid = cached_pair_caps
-            else:
-                grid = get_song_timeline_grid(calc_song, ref_arrays)
-                gpu_arrays = grid.to_gpu_arrays_minimal()
-                gap_grid = gpu_arrays["gap"]  # (161, 161) int32
-                acts_grid = gpu_arrays["fever_activations"]  # (161, 161) int32
-                pair_caps_grid = vectorized_calculate_section_caps_grid(gap_grid, acts_grid, max_per_section=100)
-                try:
-                    song_data_cache["fg_pair_caps_grid"] = pair_caps_grid
-                    song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
-                except (KeyError, TypeError, ValueError, AttributeError):
-                    pass
-        except Exception as e:
-            warn_fallback(
-                "fg.pair_caps.permissive",
-                "CPU pair-caps precompute failed; falling back to permissive cap grid",
-                exc=e,
-            )
-            logger.warning("[FG] CPU pair-caps precompute FAILED: %s: %s", type(e).__name__, e)
-            # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
-            pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
+        raise RuntimeError("FG pair caps require GPU timeline precompute or FG_PAIR_CAPS_MODE=none")
 
     _emit_finder_phase(
         "pair_caps_ready",

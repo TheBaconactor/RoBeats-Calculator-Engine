@@ -24,7 +24,7 @@ def profile_ga_with_gpu():
     """Profile GA using GPU path."""
     import numpy as np
     import random
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.models import GASettings
 

@@ -212,109 +212,17 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     if conn is not None:
         return conn
 
-    # If we recently failed to open the real DB connection, avoid retrying on every
-    # hot-path call (which can spam warnings and waste time during brief lock bursts).
-    try:
-        now_monotonic = float(time.monotonic())
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        now_monotonic = 0.0
-    try:
-        next_retry_ts = float(getattr(_DB_TLS, "ro_next_retry_ts", 0.0) or 0.0)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        next_retry_ts = 0.0
-    if now_monotonic and (now_monotonic < next_retry_ts):
-        fallback = getattr(_DB_TLS, "fallback_conn", None)
-        if fallback is not None:
-            if not allow_fallback:
-                raise sqlite3.OperationalError("read-only DB fallback active during strict read")
-            return fallback
-
     # Default to a small non-zero timeout to allow brief lock contention during
-    # write bursts without immediate failure. This prevents spurious fallbacks
-    # to the empty in-memory DB when the AsyncDbSaver is actively writing.
+    # write bursts without immediate failure.
     try:
         read_timeout = float(env_get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception as e:
         logger.warning(f"database:get_db_connection_cached: {e}")
         read_timeout = 0.2
 
-    try:
-        conn = get_db_connection_readonly(db_path, timeout=read_timeout)
-    except sqlite3.Error as exc:
-        # Best-effort: DB might be locked briefly during heavy write bursts, or
-        # may not exist yet in some test/tool entrypoints. Never block the GPU
-        # feed loop on a read-only seed/context fetch, but also avoid "sticky"
-        # permanent fallback: retry opening the real DB after a short cooldown.
-        try:
-            fail_count = int(getattr(_DB_TLS, "ro_fail_count", 0) or 0) + 1
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-            fail_count = 1
-        try:
-            setattr(_DB_TLS, "ro_fail_count", int(fail_count))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-        # Exponential backoff, capped, to avoid thrashing on persistent failures.
-        try:
-            exp = min(7, max(0, int(fail_count) - 1))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-            exp = 0
-        cooldown_sec = min(5.0, 0.05 * (2**exp))
-        try:
-            next_retry_ts = float(now_monotonic) + float(cooldown_sec)
-            setattr(_DB_TLS, "ro_next_retry_ts", float(next_retry_ts))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-        site = "db.readonly_connection"
-        message = "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)"
-        if not allow_fallback:
-            site = "db.readonly_connection.strict"
-            message = "failed to open read-only DB connection for strict baseline read"
-        warn_fallback(
-            site,
-            message,
-            context={
-                "db_path": db_path,
-                "timeout_sec": read_timeout,
-                "fail_count": int(fail_count),
-                "retry_in_sec": float(cooldown_sec),
-            },
-            exc=exc,
-            fatal=False,
-        )
-        if not allow_fallback:
-            raise
-        fallback = getattr(_DB_TLS, "fallback_conn", None)
-        if fallback is None:
-            try:
-                fallback = sqlite3.connect(":memory:")
-                fallback.row_factory = sqlite3.Row
-                # Keep query semantics stable: fallback DB should look like an empty
-                # evolution DB (schema present) rather than raising "no such table".
-                try:
-                    ensure_schema(fallback)
-                except Exception as e:
-                    logger.warning(f"database:get_db_connection_cached: {e}")
-                try:
-                    fallback.execute("PRAGMA query_only=1;")
-                except Exception as e:
-                    logger.warning(f"database:get_db_connection_cached: {e}")
-                setattr(_DB_TLS, "fallback_conn", fallback)
-            except Exception as e:
-                # Last resort: re-raise so callers can handle it.
-                logger.warning(f"database:get_db_connection_cached: {e}")
-                raise
-        return fallback
+    conn = get_db_connection_readonly(db_path, timeout=read_timeout)
 
     conns[db_path] = conn
-    try:
-        setattr(_DB_TLS, "ro_fail_count", 0)
-        setattr(_DB_TLS, "ro_next_retry_ts", 0.0)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
     return conn
 
 
@@ -860,6 +768,40 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
     return out
 
 
+def _coerce_db_int(v: Any) -> int:
+    try:
+        return int(v or 0)
+    except Exception as e:
+        logger.warning(f"database:_coerce_db_int: {e}")
+        return 0
+
+
+def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
+    if not isinstance(force_data, dict):
+        return force_data
+
+    out = dict(force_data)
+
+    score_v = _coerce_db_int(out.get("score", 0))
+    if score_v <= 0:
+        score_v = _coerce_db_int(out.get("Score", 0))
+    if score_v <= 0 and int(fg_score or 0) > 0:
+        score_v = int(fg_score)
+    if score_v > 0:
+        out["score"] = int(score_v)
+
+    det = out.get("details")
+    if isinstance(det, dict):
+        fg = det.get("ForceGreats")
+        if isinstance(fg, dict) and int(fg_score or 0) > 0:
+            fg_out = dict(fg)
+            fg_out["final_score"] = int(fg_score)
+            det_out = dict(det)
+            det_out["ForceGreats"] = fg_out
+            out["details"] = det_out
+    return out
+
+
 def save_loadouts_batch(
     song_name: str,
     entries: List[PersistenceEntry],
@@ -884,28 +826,21 @@ def save_loadouts_batch(
         return
     team_buff = normalize_team_buff(team_buff, default="T5")
 
-    def _coerce_int(v: Any) -> int:
-        try:
-            return int(v or 0)
-        except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
-            return 0
-
     best_score_max = None
     best_fg_max = None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        score = _coerce_int(entry.get("score", 0))
-        fg_score = _coerce_int(entry.get("fg_score", 0))
+        score = _coerce_db_int(entry.get("score", 0))
+        fg_score = _coerce_db_int(entry.get("fg_score", 0))
         fg_base_score = score
         try:
             raw_fg_base = entry.get("fg_base_score")
         except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
+            logger.warning(f"database:_coerce_db_int: {e}")
             raw_fg_base = None
         if raw_fg_base is not None:
-            fg_base_score = _coerce_int(raw_fg_base)
+            fg_base_score = _coerce_db_int(raw_fg_base)
             if fg_base_score <= 0:
                 fg_base_score = score
         force_data = entry.get("force")
@@ -1035,38 +970,6 @@ def save_team_buff_loadouts_batch(
 
     minis_by_name = get_minis_by_name_cached()
     gears_by_name = get_gears_by_name_cached()
-
-    def _coerce_int(v: Any) -> int:
-        try:
-            return int(v or 0)
-        except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
-            return 0
-
-    def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
-        if not isinstance(force_data, dict):
-            return force_data
-
-        out = dict(force_data)
-
-        score_v = _coerce_int(out.get("score", 0))
-        if score_v <= 0:
-            score_v = _coerce_int(out.get("Score", 0))
-        if score_v <= 0 and int(fg_score or 0) > 0:
-            score_v = int(fg_score)
-        if score_v > 0:
-            out["score"] = int(score_v)
-
-        det = out.get("details")
-        if isinstance(det, dict):
-            fg = det.get("ForceGreats")
-            if isinstance(fg, dict) and int(fg_score or 0) > 0:
-                fg_out = dict(fg)
-                fg_out["final_score"] = int(fg_score)
-                det_out = dict(det)
-                det_out["ForceGreats"] = fg_out
-                out["details"] = det_out
-        return out
 
     entry_color_cache: Dict[int, tuple[str, str, str]] = {}
 
@@ -1465,8 +1368,8 @@ def save_team_buff_loadouts_batch(
             return bytes(_pack_id_groups(id_groups))
 
         for entry in deduplicated_entries:
-            score = _coerce_int(entry.get("score", 0))
-            fg_score = _coerce_int(entry.get("fg_score", 0))
+            score = _coerce_db_int(entry.get("score", 0))
+            fg_score = _coerce_db_int(entry.get("fg_score", 0))
             fg_base_score = score
             try:
                 raw_fg_base = entry.get("fg_base_score")
@@ -1474,7 +1377,7 @@ def save_team_buff_loadouts_batch(
                 logger.warning(f"database:_encode_mini_groups_to_blob: {e}")
                 raw_fg_base = None
             if raw_fg_base is not None:
-                fg_base_score = _coerce_int(raw_fg_base)
+                fg_base_score = _coerce_db_int(raw_fg_base)
                 if fg_base_score <= 0:
                     fg_base_score = score
             gear = entry.get("gear", [])

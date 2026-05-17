@@ -3,8 +3,8 @@ import pytest
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
-from gear_optimizer.solver import genetic
-from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver import genetic_pipeline as genetic
+from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.item_registry import ItemRegistry
 
 

@@ -1122,7 +1122,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     init_heuristic_copies = 25
 
     try:
-        from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk
+        from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
 
         if init_heuristic_k > 0:
             cache_key = (pool_key, int(init_heuristic_k))

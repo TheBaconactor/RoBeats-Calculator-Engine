@@ -22,7 +22,7 @@ def run_ga_gpu_test():
 
     SEED = 42
 
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # Generate deterministic mock data

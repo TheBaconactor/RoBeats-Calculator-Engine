@@ -30,6 +30,52 @@ def _json_loads(value: Any) -> Any:
     return json.loads(value)
 
 
+def _json_loads_default(value: Any, *, default: Any) -> Any:
+    """Deserialize JSON, returning *default* for empty or malformed payloads."""
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return _json_loads(text)
+    except Exception as e:
+        logger.debug(f"database:_json_loads_default: {e}")
+        return default
+
+
+def _decode_legacy_gear_names(payload: Any) -> list[str]:
+    raw = _json_loads_default(payload, default=[])
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        name = str(item or "").strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def _decode_legacy_mini_groups(payload: Any) -> list[list[str]]:
+    raw = _json_loads_default(payload, default=[])
+    if not isinstance(raw, list):
+        return []
+    out: list[list[str]] = []
+    for item in raw:
+        if isinstance(item, list):
+            names = [str(name or "").strip() for name in item]
+            names = [name for name in names if name]
+            if names:
+                out.append(names)
+            continue
+        name = str(item or "").strip()
+        if name:
+            out.append([name])
+    return out
+
+
 def _encode_uvarint(value: int) -> bytes:
     """Encode an unsigned integer as base-128 varint (little-endian groups)."""
     x = int(value)

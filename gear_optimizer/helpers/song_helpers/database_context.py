@@ -222,6 +222,11 @@ def load_database_progress_baseline(
     prev_attempts_first = 0
     baseline_valid = False
 
+    def _invalid_baseline_result():
+        if isinstance(prev_record, tuple) and len(prev_record) == 2:
+            return prev_record[0], prev_record[1], 0, 0, 0, 0, False
+        return None, {}, 0, 0, 0, 0, False
+
     try:
         prev_record = load_database_context(
             found_song_name,
@@ -232,7 +237,7 @@ def load_database_progress_baseline(
         )
     except sqlite3.Error:
         if not allow_fallback:
-            return None, 0, 0, 0, 0, False
+            return _invalid_baseline_result()
         raise
 
     try:
@@ -261,7 +266,7 @@ def load_database_progress_baseline(
                     db_best_fg_score = 0
     except sqlite3.Error:
         if not allow_fallback:
-            return None, 0, 0, 0, 0, False
+            return _invalid_baseline_result()
         baseline_valid = True
 
     if not db_best_score and isinstance(prev_record, dict):

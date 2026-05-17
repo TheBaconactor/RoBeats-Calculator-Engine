@@ -5,16 +5,13 @@ Includes:
 - ga_find_best_combo_key_kernel
 """
 
-import sys
-
 import taichi as ti
 from taichi.lang import simt
 
 from .. import kernels_helpers
 from ..kernels_scoring import optimize_core_device_refined as optimize_core_device
 
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
+IS_METAL = False
 
 
 @ti.kernel

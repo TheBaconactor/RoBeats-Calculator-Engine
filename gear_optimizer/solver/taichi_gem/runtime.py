@@ -2,7 +2,7 @@
 Taichi Runtime - Initialization and configuration for GPU backend.
 
 This module handles:
-- Taichi initialization with auto-detected backend (Metal on macOS, Vulkan elsewhere)
+- Taichi initialization with the Vulkan backend
 - Environment variable configuration (kernel profiler, block dim)
 - Global initialization state
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import os
 import struct
-import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -178,15 +177,12 @@ def _clamp_block_dim(x: int) -> int:
 
 def _detect_backend() -> tuple:
     """
-    Auto-detect the best GPU backend based on platform.
+    Return the production GPU backend.
 
     Returns:
         tuple: (taichi_arch, backend_name)
     """
-    if sys.platform == "darwin":
-        return ti.metal, "Metal"
-    else:
-        return ti.vulkan, "Vulkan"
+    return ti.vulkan, "Vulkan"
 
 
 def _maybe_set_vulkan_visible_device() -> None:

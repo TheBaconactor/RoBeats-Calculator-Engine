@@ -52,7 +52,7 @@ def _mk_mini(*, name: str, rng: np.random.Generator) -> dict:
 
 def _solve_synthetic_ga(*, song_name: str) -> dict:
     from gear_optimizer.data.models import GAEvolutionSettings
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
 
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {}
