@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from heapq import nsmallest
 import re
 from math import ceil
 import logging
@@ -739,21 +740,16 @@ def compute_team_buff_tier_leaderboards(
                         }
                     )
 
-        base_ranked.sort(
-            key=lambda r: (
-                -int(r.get("score", 0) or 0),
-                str(r.get("loadout_hash") or ""),
-            )
+        base_top = nsmallest(
+            int(n),
+            base_ranked,
+            key=lambda r: (-int(r.get("score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-        fg_ranked.sort(
-            key=lambda r: (
-                -int(r.get("fg_score", 0) or 0),
-                str(r.get("loadout_hash") or ""),
-            )
+        fg_top = nsmallest(
+            int(n),
+            fg_ranked,
+            key=lambda r: (-int(r.get("fg_score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-
-        base_top = base_ranked[:n]
-        fg_top = fg_ranked[:n]
         tiers_out[str(tier)] = {"base_top51": base_top, "fg_top51": fg_top}
 
     return {

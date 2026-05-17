@@ -1162,11 +1162,21 @@ def save_team_buff_loadouts_batch(
         mini_sig_cache[key] = sig
         return sig
 
+    entry_names_cache: Dict[int, tuple[list[str], list[str]]] = {}
+
+    def _compact_entry_names(entry: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+        entry_id = int(id(entry))
+        cached = entry_names_cache.get(entry_id)
+        if cached is not None:
+            return cached
+        out = (_compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", [])))
+        entry_names_cache[entry_id] = out
+        return out
+
     def _effective_hash_for_entry(
         entry: Mapping[str, Any],
     ) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
-        gear_names_local = _compact_gear_for_db(entry.get("gear", []))
-        mini_names_local = _compact_minis_for_db(entry.get("minis", []))
+        gear_names_local, mini_names_local = _compact_entry_names(entry)
         p_color, s_color, sel_color = _extract_entry_colors(entry)
         if (not p_color and not s_color) and song_color_fallback is not None:
             p_color, s_color, fallback_sel = song_color_fallback
@@ -1202,9 +1212,8 @@ def save_team_buff_loadouts_batch(
                 context={"song_name": song_name, "team_buff": team_buff},
                 fatal=False,
             )
-            h = _loadout_hash_from_names(
-                _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
-            )
+            gear_names_local, mini_names_local = _compact_entry_names(entry)
+            h = _loadout_hash_from_names(gear_names_local, mini_names_local)
         else:
             h = eff[0]
         key = (int(entry.get("score", 0) or 0), str(h))
@@ -1227,19 +1236,19 @@ def save_team_buff_loadouts_batch(
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
     def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
-        if gear_names_local:
-            if not isinstance(gears_by_name, dict) or not gears_by_name:
-                return False
-            if any((n and n not in gears_by_name) for n in gear_names_local):
-                return False
-        if mini_names_local:
-            if not isinstance(minis_by_name, dict) or not minis_by_name:
-                return False
-            if any((n and n not in minis_by_name) for n in mini_names_local):
-                return False
-        return True
+        gear_ok = (not gear_names_local) or (
+            isinstance(gears_by_name, dict)
+            and bool(gears_by_name)
+            and all((not n or n in gears_by_name) for n in gear_names_local)
+        )
+        mini_ok = (not mini_names_local) or (
+            isinstance(minis_by_name, dict)
+            and bool(minis_by_name)
+            and all((not n or n in minis_by_name) for n in mini_names_local)
+        )
+        return bool(gear_ok and mini_ok)
 
-    def _recompute_stats_in_details_for_persistence(
+    def _details_with_representative_stats(
         details_obj: Any,
         *,
         gear_names_local: list[str],
@@ -1321,6 +1330,75 @@ def save_team_buff_loadouts_batch(
         out["Stats"] = computed
         return out
 
+    def _canonical_persistence_minis(
+        gear_names_local: list[str],
+        mini_names_local: list[str],
+        eff: Optional[tuple[str, list[tuple[Any, ...]], str, str, str]],
+    ) -> tuple[str, list[list[str]], list[str]]:
+        if eff is None:
+            warn_fallback(
+                "db.minis_groups.singletons",
+                "effective mini grouping unavailable; persisting singleton mini groups",
+                context={"song_name": song_name, "team_buff": team_buff},
+                fatal=False,
+            )
+            return _loadout_hash_from_names(gear_names_local, mini_names_local), [[n] for n in mini_names_local], [
+                *mini_names_local
+            ]
+
+        loadout_hash, mini_sigs, p_color, s_color, sel_color = eff
+        groups = canonical_minis_groups_from_names(
+            mini_names_local,
+            minis_by_name,
+            p_color,
+            s_color,
+            sel_color,
+            mini_sigs=mini_sigs,
+        )
+        # Persisted mini representative contract: group[0] owns the stored stat contribution.
+        groups = rotate_mini_groups_for_slot_display(groups)
+        return loadout_hash, groups, [g[0] for g in groups if g]
+
+    def _canonicalize_persistence_details(
+        details_obj: Any,
+        *,
+        gear_names_local: list[str],
+        representative_mini_names_local: list[str],
+        original_gear: Any,
+        original_minis: Any,
+        eff: Optional[tuple[str, list[tuple[Any, ...]], str, str, str]],
+    ) -> dict:
+        details_unpacked = _unpack_stats_after_load(details_obj) if isinstance(details_obj, dict) else details_obj
+        if not isinstance(details_unpacked, dict):
+            details_unpacked = {}
+
+        team_color_for_stats = str(
+            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
+        ).strip()
+        if (eff is not None) and _can_recompute_stats_for_persistence(
+            gear_names_local, representative_mini_names_local
+        ):
+            return _details_with_representative_stats(
+                details_unpacked,
+                gear_names_local=gear_names_local,
+                mini_names_local=representative_mini_names_local,
+                team_color=team_color_for_stats,
+            )
+
+        current_stats = details_unpacked.get("Stats")
+        if isinstance(current_stats, dict) and current_stats:
+            return details_unpacked
+
+        # External/test boundary: some tool rows use names absent from Stats CSVs.
+        return _ensure_stats_in_details(
+            details_unpacked,
+            original_gear,
+            original_minis,
+            minis_by_name,
+            team_buff=team_buff,
+            team_color=team_color_for_stats,
+        )
+
     own_conn = conn is None
     if conn is None:
         resolved_db_path = str(db_path or get_evolution_db_path())
@@ -1386,16 +1464,7 @@ def save_team_buff_loadouts_batch(
                     id_groups.append(ids)
             return bytes(_pack_id_groups(id_groups))
 
-        entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
-        for i, entry in enumerate(deduplicated_entries):
-            entry_id = int(id(entry))
-            eff = effective_cache_by_entry_id.get(entry_id)
-            if entry_id not in effective_cache_by_entry_id:
-                eff = _effective_hash_for_entry(entry)
-                effective_cache_by_entry_id[entry_id] = eff
-            entry_to_effective[i] = eff
-
-        for i, entry in enumerate(deduplicated_entries):
+        for entry in deduplicated_entries:
             score = _coerce_int(entry.get("score", 0))
             fg_score = _coerce_int(entry.get("fg_score", 0))
             fg_base_score = score
@@ -1413,7 +1482,11 @@ def save_team_buff_loadouts_batch(
             details = entry.get("details", {})
             force_data = entry.get("force")
 
-            eff = entry_to_effective.get(i)
+            entry_id = int(id(entry))
+            eff = effective_cache_by_entry_id.get(entry_id)
+            if entry_id not in effective_cache_by_entry_id:
+                eff = _effective_hash_for_entry(entry)
+                effective_cache_by_entry_id[entry_id] = eff
             if eff is not None and isinstance(details, dict):
                 (_loadout_hash_eff, _mini_sigs_eff, p_color_eff, s_color_eff, sel_color_eff) = eff
                 if (
@@ -1447,65 +1520,17 @@ def save_team_buff_loadouts_batch(
                 preserve_attempt_meta=bool(preserve_attempt_meta),
             )
 
-            gear_names = _compact_gear_for_db(gear)
-            mini_names = _compact_minis_for_db(minis)
+            gear_names, mini_names = _compact_entry_names(entry)
 
-            if eff is not None:
-                (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
-                groups = canonical_minis_groups_from_names(
-                    mini_names,
-                    minis_by_name,
-                    p_color,
-                    s_color,
-                    sel_color,
-                )
-                # Legacy mini-group representation contract:
-                # - choose distinct representatives across duplicate groups when possible, and
-                # - rotate each group so the representative becomes the first element (consumers often read `g[0]`).
-                groups = rotate_mini_groups_for_slot_display(groups)
-                mini_names = [g[0] for g in groups if g]
-            else:
-                warn_fallback(
-                    "db.minis_groups.singletons",
-                    "effective mini grouping unavailable; persisting singleton mini groups",
-                    context={"song_name": song_name, "team_buff": team_buff},
-                    fatal=False,
-                )
-                loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
-                groups = [[n] for n in mini_names]
-
-            # Canonicalize persisted Stats:
-            # - Use representative mini names for equivalence groups (legacy DB behavior)
-            # - Avoid persisting config-tainted Stats snapshots (ElementalGems/UserInputStatsGems)
-            # - Preserve unknown-gear/minis cases (tests/tools may use synthetic names)
-            details_unpacked = _unpack_stats_after_load(details) if isinstance(details, dict) else details
-            current_stats = details_unpacked.get("Stats") if isinstance(details_unpacked, dict) else None
-            has_stats = isinstance(current_stats, dict) and len(current_stats) > 0
-            can_recompute = (eff is not None) and _can_recompute_stats_for_persistence(gear_names, mini_names)
-            if not has_stats:
-                # Defensive: never persist empty Stats.
-                if can_recompute:
-                    details = _recompute_stats_in_details_for_persistence(
-                        details_unpacked,
-                        gear_names_local=gear_names,
-                        mini_names_local=mini_names,
-                        team_color=str(
-                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
-                        ).strip(),
-                    )
-                else:
-                    details = _ensure_stats_in_details(
-                        details_unpacked,
-                        gear,
-                        minis,
-                        minis_by_name,
-                        team_buff=team_buff,
-                        team_color=str(
-                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
-                        ).strip(),
-                    )
-            else:
-                details = details_unpacked
+            loadout_hash, groups, mini_names = _canonical_persistence_minis(gear_names, mini_names, eff)
+            details = _canonicalize_persistence_details(
+                details,
+                gear_names_local=gear_names,
+                representative_mini_names_local=mini_names,
+                original_gear=gear,
+                original_minis=minis,
+                eff=eff,
+            )
 
             if (
                 isinstance(details, dict)

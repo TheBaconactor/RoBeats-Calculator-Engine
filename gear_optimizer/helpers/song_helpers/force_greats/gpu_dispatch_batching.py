@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+from heapq import nlargest
 from typing import Any
 import logging
 
@@ -310,14 +311,7 @@ def _build_topk_keep_signature_set(
         return True
 
     if int(base_keep_n) > 0 and items:
-        top_base = sorted(
-            items,
-            key=lambda kv: (
-                entry_base_score(kv[1] or {}),
-                str(kv[0]),
-            ),
-            reverse=True,
-        )[: int(base_keep_n)]
+        top_base = nlargest(int(base_keep_n), items, key=lambda kv: (entry_base_score(kv[1] or {}), str(kv[0])))
         for _hash, entry in top_base:
             sig0 = entry_sig.get(int(id(entry)))
             _add(sig0)
