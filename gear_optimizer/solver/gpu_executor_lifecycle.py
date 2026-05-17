@@ -652,3 +652,499 @@ class LiveReporter:
 
 def _request_type_value(request_type: Any) -> str:
     return str(getattr(request_type, "value", request_type))
+
+# ---- merged from gpu_executor_queue_wait.py ----
+import time
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Literal
+
+
+NowaitFollowupAction = Literal["request", "fallback", "continue", "break"]
+
+
+@dataclass(frozen=True)
+class NowaitFollowupPoll:
+    action: NowaitFollowupAction
+    request: Any | None
+    yields_left: int
+
+
+@dataclass(frozen=True)
+class ShortWaitSpinSettings:
+    short_wait_spin_sec: float
+    short_wait_spin_yield_rounds: int
+
+
+def load_short_wait_spin_settings(env_get_fn: Callable[[str, str], Any]) -> ShortWaitSpinSettings:
+    try:
+        short_wait_spin_ms = float(str(env_get_fn("GPU_EXECUTOR_SHORT_WAIT_SPIN_MS", "3.0") or "3.0").strip())
+    except (ValueError, TypeError):
+        short_wait_spin_ms = 3.0
+    try:
+        short_wait_spin_yields = int(str(env_get_fn("GPU_EXECUTOR_SHORT_WAIT_SPIN_YIELD_ROUNDS", "8") or "8").strip())
+    except (ValueError, TypeError):
+        short_wait_spin_yields = 8
+
+    return ShortWaitSpinSettings(
+        short_wait_spin_sec=max(0.0, float(short_wait_spin_ms) / 1000.0),
+        short_wait_spin_yield_rounds=max(0, min(int(short_wait_spin_yields), 100_000)),
+    )
+
+
+def safe_qsize(request_queue: Any) -> int:
+    if request_queue is None:
+        return -1
+    try:
+        size = request_queue.qsize()
+    except (NotImplementedError, AttributeError):
+        return -1
+    except (OSError, ValueError):
+        return -1
+    try:
+        return max(0, int(size))
+    except (ValueError, TypeError):
+        return -1
+
+
+def get_with_short_wait_spin(
+    request_queue: Any,
+    *,
+    timeout: float,
+    in_process_queues: bool,
+    short_wait_spin_sec: float,
+    short_wait_spin_yield_rounds: int,
+    perf_counter_fn: Callable[[], float] = perf_counter,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Any:
+    wait_timeout = max(0.0, float(timeout))
+    if wait_timeout <= 0.0:
+        return request_queue.get(timeout=0.0)
+
+    if not in_process_queues or wait_timeout > float(short_wait_spin_sec):
+        return request_queue.get(timeout=wait_timeout)
+
+    get_nowait = getattr(request_queue, "get_nowait", None)
+    if not callable(get_nowait):
+        return request_queue.get(timeout=wait_timeout)
+
+    deadline = perf_counter_fn() + wait_timeout
+    yields = 0
+    max_yields = int(short_wait_spin_yield_rounds or 0)
+    while True:
+        try:
+            return get_nowait()
+        except queue.Empty:
+            now = perf_counter_fn()
+            if now >= deadline:
+                raise
+            remaining = float(deadline - now)
+            if yields < max_yields:
+                yields += 1
+                sleep_fn(0)
+                continue
+
+            block_s = min(remaining, 0.001)
+            if block_s <= 0.0:
+                raise
+            try:
+                return request_queue.get(timeout=block_s)
+            except queue.Empty:
+                continue
+
+
+def poll_inprocess_followup_nowait(
+    request_queue: Any,
+    *,
+    deadline_s: float,
+    yields_left: int,
+    stamp_fn: Callable[[Any], Any],
+    perf_counter_fn: Callable[[], float] = perf_counter,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> NowaitFollowupPoll:
+    get_nowait = getattr(request_queue, "get_nowait", None)
+    if not callable(get_nowait):
+        return NowaitFollowupPoll(action="fallback", request=None, yields_left=int(yields_left))
+
+    try:
+        return NowaitFollowupPoll(
+            action="request",
+            request=stamp_fn(get_nowait()),
+            yields_left=int(yields_left),
+        )
+    except queue.Empty:
+        if perf_counter_fn() >= float(deadline_s) or int(yields_left) <= 0:
+            return NowaitFollowupPoll(action="break", request=None, yields_left=int(yields_left))
+        sleep_fn(0)
+        return NowaitFollowupPoll(action="continue", request=None, yields_left=int(yields_left) - 1)
+
+# ---- merged from gpu_executor_worker_responses.py ----
+from collections import OrderedDict
+import time
+
+from gear_optimizer.core.env_config import ENV
+
+
+class WorkerResponseRouter:
+    def __init__(self, *, pending_ttl_sec: float, pending_max: int) -> None:
+        self._pending: OrderedDict[int, tuple[GpuResponse, float]] = OrderedDict()
+        self._cond = threading.Condition()
+        self._pending_ttl_sec = max(0.0, float(pending_ttl_sec))
+        self._pending_max = max(0, int(pending_max))
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def reset(self) -> None:
+        self._stop_thread()
+        self.clear_pending()
+
+    def restart(self) -> None:
+        self._stop_thread()
+        self._stop.clear()
+        self.clear_pending()
+
+    def clear_pending(self) -> None:
+        with self._cond:
+            self._pending = OrderedDict()
+            self._cond.notify_all()
+
+    def prune(self, now: float | None = None) -> None:
+        with self._cond:
+            self._prune_locked(now)
+
+    def ensure_started(self, response_queue_getter: Callable[[], Any | None], *, label: str) -> None:
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            return
+        self._stop.clear()
+        thread = threading.Thread(
+            target=self._loop,
+            args=(response_queue_getter,),
+            name=f"GpuWorkerResponseRouter[{label}]",
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+
+    def wait(self, request_id: int, timeout: float) -> GpuResponse:
+        deadline = time.monotonic() + float(timeout)
+        with self._cond:
+            while True:
+                self._prune_locked()
+                if request_id in self._pending:
+                    response, _ts = self._pending.pop(request_id)
+                    return response
+                remaining = float(deadline - time.monotonic())
+                if remaining <= 0:
+                    raise RuntimeError(f"GPU executor timeout after {timeout}s")
+                self._cond.wait(timeout=remaining)
+
+    def store(self, response: GpuResponse) -> None:
+        with self._cond:
+            self._store_locked(response)
+            self._cond.notify_all()
+
+    def _stop_thread(self) -> None:
+        self._stop.set()
+        with self._cond:
+            self._cond.notify_all()
+        thread = self._thread
+        if thread is not None:
+            try:
+                thread.join(timeout=0.25)
+            except Exception:
+                pass
+        self._thread = None
+
+    def _loop(self, response_queue_getter: Callable[[], Any | None]) -> None:
+        while True:
+            if self._stop.is_set():
+                return
+            response_queue = response_queue_getter()
+            if response_queue is None:
+                time.sleep(0.01)
+                continue
+            try:
+                response = response_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            except (OSError, ValueError):
+                time.sleep(0.05)
+                continue
+            if response is None:
+                continue
+            self.store(response)
+
+    def _store_locked(self, response: GpuResponse) -> None:
+        request_id = int(getattr(response, "request_id", 0) or 0)
+        now = time.monotonic()
+        self._pending[request_id] = (response, now)
+        self._pending.move_to_end(request_id)
+        self._prune_locked(now)
+
+    def _prune_locked(self, now: float | None = None) -> None:
+        if not self._pending:
+            return
+        if now is None:
+            now = time.monotonic()
+        if self._pending_ttl_sec > 0.0:
+            while self._pending:
+                _response, ts = next(iter(self._pending.values()))
+                if (now - ts) <= self._pending_ttl_sec:
+                    break
+                self._pending.popitem(last=False)
+        if self._pending_max > 0:
+            while len(self._pending) > self._pending_max:
+                self._pending.popitem(last=False)
+
+
+worker_response_router = WorkerResponseRouter(
+    pending_ttl_sec=max(0.0, float(getattr(ENV, "gpu_executor_pending_ttl_sec", 300.0) or 0.0)),
+    pending_max=max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0)),
+)
+
+# ---- merged from gpu_executor_worker_state.py ----
+from collections.abc import MutableMapping
+from dataclasses import dataclass
+import logging
+
+from gear_optimizer.core.parsing import env_get
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RegisteredWorker:
+    worker_id: int
+    request_queue: Any
+    response_queue: Any
+    next_worker_id: int
+
+    def as_tuple(self) -> tuple[int, Any, Any]:
+        return self.worker_id, self.request_queue, self.response_queue
+
+
+@dataclass
+class WorkerModeState:
+    enabled: bool = False
+    worker_id: int | None = None
+    request_queue: Any | None = None
+    response_queue: Any | None = None
+    request_counter: int = 0
+
+    def configure(self, worker_id: int, request_queue: Any, response_queue: Any) -> None:
+        self.enabled = True
+        self.worker_id = int(worker_id)
+        self.request_queue = request_queue
+        self.response_queue = response_queue
+
+    def clear(self) -> None:
+        self.enabled = False
+        self.worker_id = None
+        self.request_queue = None
+        self.response_queue = None
+
+    def next_request_id(self) -> int:
+        self.request_counter += 1
+        return int(self.request_counter)
+
+    def require_request_queue(self) -> Any:
+        if not self.enabled or self.request_queue is None:
+            raise RuntimeError("GPU worker mode request queue is not configured")
+        return self.request_queue
+
+
+worker_mode_state = WorkerModeState()
+
+
+def register_executor_worker(
+    *,
+    next_worker_id: int,
+    request_queue: Any,
+    response_queues: MutableMapping[int, Any],
+    response_queue_factory: Callable[[], Any],
+) -> RegisteredWorker:
+    worker_id = int(next_worker_id)
+    response_queue = response_queue_factory()
+    response_queues[worker_id] = response_queue
+    return RegisteredWorker(
+        worker_id=worker_id,
+        request_queue=request_queue,
+        response_queue=response_queue,
+        next_worker_id=worker_id + 1,
+    )
+
+
+def unregister_executor_worker(
+    *,
+    worker_id: int,
+    response_queues: MutableMapping[int, Any],
+) -> bool:
+    return response_queues.pop(int(worker_id), None) is not None
+
+
+def default_song_slot_for_worker(worker_id: int) -> int:
+    """Map a worker id to a stable non-zero song slot for timeline reuse."""
+    try:
+        from .taichi_gem import fields as gem_fields
+
+        max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
+    except Exception as e:
+        logger.debug(f"gpu_executor_worker_state:default_song_slot_for_worker: {e}")
+        try:
+            max_slots = int(env_get("GPU_SONG_SLOTS", "24") or "24")
+        except (ValueError, TypeError):
+            max_slots = 24
+    max_slots = max(1, int(max_slots))
+    if max_slots <= 1:
+        return 0
+    return 1 + (abs(int(worker_id)) % max(1, int(max_slots) - 1))
+
+# ---- merged from gpu_executor_static_handles.py ----
+import os
+import hashlib
+
+
+REGISTRY_STATIC_HANDLE_CACHE_MAX = max(
+    16, int(os.environ.get("GPU_EXECUTOR_REGISTRY_HANDLE_CACHE_MAX", "256") or "256")
+)
+REGISTRY_STATIC_HANDLE_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+_REGISTRY_STATIC_HANDLE_COUNTER = 0
+
+
+def minimize_calc_song_for_gpu_timeline_grid(calc_song: Any) -> Any:
+    """
+    Reduce IPC payload size for `timeline_grid` when it is actually a `calc_song` dict.
+
+    `taichi_gem.api.timeline.precompute_timeline_gpu` only needs:
+      - calc_song["song_data"]["timestamps"] / chart_timestamps
+      - calc_song["song_data"]["note_types"]
+      - calc_song["metadata"]["Long Notes"]
+      - calc_song["metadata"]["Last Note Time"]
+      - timing-envelope metadata used by cache keys
+    """
+    if not isinstance(calc_song, dict):
+        return calc_song
+
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    if not isinstance(meta, dict) or not isinstance(song_data, dict):
+        return calc_song
+
+    timestamps = song_data.get("timestamps")
+    if timestamps is None:
+        return calc_song
+
+    def _contiguous_array(value: Any, dtype: Any) -> Any:
+        if value is None:
+            return None
+        out = value
+        try:
+            import numpy as np
+
+            out = np.asarray(value, dtype=dtype)
+            if not out.flags["C_CONTIGUOUS"]:
+                out = np.ascontiguousarray(out)
+        except (ValueError, TypeError):
+            out = value
+        return out
+
+    ts_out = _contiguous_array(timestamps, "float32")
+    chart_ts = song_data.get("chart_timestamps")
+    chart_ts_out = _contiguous_array(chart_ts, "float32") if chart_ts is not None else None
+    note_types = song_data.get("note_types")
+    note_types_out = _contiguous_array(note_types, "int16") if note_types is not None else None
+
+    song_data_out: dict[str, Any] = {"timestamps": ts_out}
+    if chart_ts_out is not None:
+        song_data_out["chart_timestamps"] = chart_ts_out
+    if note_types_out is not None:
+        song_data_out["note_types"] = note_types_out
+    for sig_key in ("_timestamps_sig", "_chart_timestamps_sig", "_note_types_sig"):
+        sig_val = song_data.get(sig_key)
+        if isinstance(sig_val, (bytes, bytearray, memoryview)) and len(sig_val) == 16:
+            song_data_out[sig_key] = bytes(sig_val)
+
+    meta_out = {
+        "Song Name": meta.get("Song Name", ""),
+        "Difficulty": meta.get("Difficulty", ""),
+        "Long Notes": int(meta.get("Long Notes", 0) or 0),
+        "Last Note Time": float(meta.get("Last Note Time", 0) or 0.0),
+        "TimingEnvelopeApplied": bool(meta.get("TimingEnvelopeApplied")),
+        "TimingEnvelopeMode": meta.get("TimingEnvelopeMode", ""),
+        "TimingEnvelopeFGCarry": meta.get("TimingEnvelopeFGCarry", ""),
+    }
+    return {"metadata": meta_out, "song_data": song_data_out}
+
+
+def registry_base_fixed_stats_sig(arr: Any) -> tuple[Any, ...]:
+    """
+    Build a compact content signature for small base-fixed arrays.
+
+    This keeps handle reuse robust even when callers rebuild small numpy arrays
+    with identical values between requests.
+    """
+    try:
+        import numpy as np
+
+        a = np.asarray(arr, dtype=np.int32)
+        if a.ndim == 0:
+            return ("scalar", int(a))
+        h = hashlib.blake2b(digest_size=8)
+        h.update(memoryview(np.ascontiguousarray(a)).cast("B"))
+        return ("arr", tuple(int(x) for x in a.shape), str(a.dtype), h.digest())
+    except (ValueError, TypeError, AttributeError):
+        return ("obj", id(arr))
+
+
+def clear_registry_static_handle_cache() -> None:
+    REGISTRY_STATIC_HANDLE_CACHE.clear()
+
+
+def registry_static_handle_entry(
+    *,
+    item_stats: Any,
+    slot_start: Any,
+    slot_count: Any,
+    base_fixed_stats: Any,
+    timeline_grid: Any,
+    ref_arrays: Any,
+) -> dict[str, Any]:
+    """
+    Get or create a worker-local handle entry for registry static payload parts.
+
+    The entry retains strong references for identity-based keys to prevent ID reuse
+    collisions while the handle is alive.
+    """
+    global _REGISTRY_STATIC_HANDLE_COUNTER
+
+    key = (
+        int(id(item_stats)),
+        int(id(slot_start)),
+        int(id(slot_count)),
+        registry_base_fixed_stats_sig(base_fixed_stats),
+        int(id(timeline_grid)),
+        int(id(ref_arrays)),
+    )
+    cached = REGISTRY_STATIC_HANDLE_CACHE.get(key)
+    if cached is not None:
+        REGISTRY_STATIC_HANDLE_CACHE.move_to_end(key)
+        return cached
+
+    _REGISTRY_STATIC_HANDLE_COUNTER += 1
+    timeline_grid_send = minimize_calc_song_for_gpu_timeline_grid(timeline_grid)
+    entry = {
+        "handle": int(_REGISTRY_STATIC_HANDLE_COUNTER),
+        "registered": False,
+        "item_stats_ref": item_stats,
+        "slot_start_ref": slot_start,
+        "slot_count_ref": slot_count,
+        "timeline_grid_ref": timeline_grid,
+        "timeline_grid_send": timeline_grid_send,
+        "ref_arrays_ref": ref_arrays,
+    }
+    REGISTRY_STATIC_HANDLE_CACHE[key] = entry
+    REGISTRY_STATIC_HANDLE_CACHE.move_to_end(key)
+    while len(REGISTRY_STATIC_HANDLE_CACHE) > REGISTRY_STATIC_HANDLE_CACHE_MAX:
+        REGISTRY_STATIC_HANDLE_CACHE.popitem(last=False)
+    return entry

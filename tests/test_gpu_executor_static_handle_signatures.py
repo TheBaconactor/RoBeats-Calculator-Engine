@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_static_handles import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     REGISTRY_STATIC_HANDLE_CACHE,
     clear_registry_static_handle_cache,
     minimize_calc_song_for_gpu_timeline_grid,

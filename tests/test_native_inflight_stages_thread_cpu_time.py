@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_native_inflight_timing_exposes_thread_cpu_time_helper() -> None:
-    import gear_optimizer.solver.native_inflight_stages as stages
+    import gear_optimizer.solver.native_inflight_pipeline as stages
 
     assert callable(getattr(stages, "thread_cpu_time_s", None))
     value = stages.thread_cpu_time_s()

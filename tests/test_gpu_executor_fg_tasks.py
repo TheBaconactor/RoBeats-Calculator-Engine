@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_fg_tasks import (
+from gear_optimizer.solver.gpu_executor_fg import (
     build_merged_fg_task_kwargs,
     coalesce_fg_task_requests,
     extract_fg_task_only_request,

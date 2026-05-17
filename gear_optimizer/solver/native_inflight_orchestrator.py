@@ -14,7 +14,11 @@ from __future__ import annotations
 import logging
 import time
 import traceback
+import concurrent.futures
+import threading
 from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable
 
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
@@ -30,9 +34,10 @@ from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_timeout_s,
     read_inflight_event_wait_gpu_cap_s,
     read_inflight_event_wait_short_spin_s,
+    wait_for_completion_event,
 )
-from gear_optimizer.solver.native_inflight_prepare import prepare_native_song
-from gear_optimizer.solver.native_inflight_scheduler import (
+from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
+from gear_optimizer.solver.native_inflight_lifecycle import (
     GAQueueLimitController,
     continuous_fg_allow_not_ready,
     continuous_ga_should_yield_to_fg,
@@ -43,8 +48,8 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     count_active_song_lanes,
     read_prime_target,
 )
-from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
-from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
+from gear_optimizer.solver import native_inflight_pipeline as native_fg_pipeline
+from gear_optimizer.solver.native_inflight_pipeline import GADecodeQueue, InflightGAPipeline
 from gear_optimizer.solver.native_inflight_lifecycle import (
     BubbleTracker,
     CachedRuntimeSignal,
@@ -59,21 +64,9 @@ from gear_optimizer.solver.native_inflight_lifecycle import (
     shutdown_native_inflight_resources,
     start_native_inflight_gpu_client,
 )
-from gear_optimizer.solver.native_inflight_result_events import (
-    build_failed_fg_update_payload as _build_failed_fg_update_payload,
-    build_native_song_error_payload as _build_native_song_error_payload,
-    build_native_task_error_payload as _build_native_task_error_payload,
-)
-from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
-from gear_optimizer.solver.native_inflight_completion import (
-    CompletionTracker,
-    emit_deferred_post_payload as _emit_deferred_post_payload_once,
-    finish_deferred_fg_completion,
-    has_waitable_work,
-    mark_song_completed,
-)
-from gear_optimizer.solver.native_inflight_types import NativeSong
-from gear_optimizer.solver.native_inflight_stages import (
+from gear_optimizer.solver.native_inflight_lifecycle import ActiveRuntimeProgressReporter, ProgressTracker
+from gear_optimizer.solver.native_inflight_config import NativeSong
+from gear_optimizer.solver.native_inflight_pipeline import (
     InFlightStageProfiler,
     decode_ga_payload_sync,
     prepare_fg_static_sync,
@@ -285,7 +278,7 @@ def run_native_inflight_song_pipeline(
     _submit_cpu_prewarm_backlog()
 
     def _emit_deferred_post_payload(song: NativeSong) -> None:
-        _emit_deferred_post_payload_once(
+        emit_deferred_post_payload(
             song,
             post=_post,
             persist_pending_fg_job=False,
@@ -498,7 +491,7 @@ def run_native_inflight_song_pipeline(
                     if stopping and is_stop_abort_exception(exc):
                         continue
                     repeat_ctx = extract_repeat_context(logical_task)
-                    payload = _build_native_task_error_payload(
+                    payload = build_native_task_error_payload(
                         song_name=str(song_name),
                         queue_key=str(task_key),
                         exc=exc,
@@ -534,7 +527,7 @@ def run_native_inflight_song_pipeline(
                         pass
                     else:
                         _post(
-                            _build_native_task_error_payload(
+                            build_native_task_error_payload(
                                 song_name=str(song.config.song_name),
                                 queue_key=str(song.config.task_key),
                                 exc=prep_completion.error,
@@ -638,7 +631,7 @@ def run_native_inflight_song_pipeline(
                         except Exception as e:
                             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-                        payload = _build_native_song_error_payload(
+                        payload = build_native_song_error_payload(
                             song,
                             exc=exc,
                             trace=traceback.format_exc(),
@@ -690,7 +683,7 @@ def run_native_inflight_song_pipeline(
                             register_future=completion_tracker.register,
                         )
                     except Exception as exc:
-                        payload = _build_native_task_error_payload(
+                        payload = build_native_task_error_payload(
                             song_name=task_song_name(nxt),
                             queue_key=str(nxt_key),
                             exc=exc,
@@ -741,7 +734,7 @@ def run_native_inflight_song_pipeline(
                     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
                     if not (stopping and is_stop_abort_exception(exc)):
                         _post(
-                            _build_native_song_error_payload(
+                            build_native_song_error_payload(
                                 song,
                                 exc=exc,
                                 trace=traceback.format_exc(),
@@ -836,7 +829,7 @@ def run_native_inflight_song_pipeline(
                     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
                     if not (stopping and is_stop_abort_exception(exc)):
                         _post(
-                            _build_native_song_error_payload(
+                            build_native_song_error_payload(
                                 song,
                                 exc=exc,
                                 trace=traceback.format_exc(),
@@ -937,7 +930,7 @@ def run_native_inflight_song_pipeline(
                 if fg_failed:
                     try:
                         if post_sender is not None and bool(getattr(fg_song.runtime.bundle, "bundle_wait_for_fg", False)):
-                            post_sender.send(_build_failed_fg_update_payload(fg_song))
+                            post_sender.send(build_failed_fg_update_payload(fg_song))
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 # Release this song's reserved timeline slot now that FG is complete.
@@ -1366,3 +1359,484 @@ def run_native_inflight_song_pipeline(
 
 # NOTE: `decode_ga_payload_sync` and `prepare_fg_job_sync` are imported from
 # their own modules to keep the orchestrator leaner.
+
+# ---- merged from native_inflight_orchestrator.py ----
+
+
+@dataclass
+class CompletionTracker:
+    event: threading.Event = field(default_factory=threading.Event)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    ids: set[int] = field(default_factory=set)
+
+    def register(self, fut: concurrent.futures.Future | None) -> bool:
+        if fut is None:
+            return False
+        fut_id = int(id(fut))
+
+        with self.lock:
+            if fut_id in self.ids:
+                return False
+            self.ids.add(fut_id)
+
+        def _on_done(_fut: concurrent.futures.Future, *, _fut_id: int = fut_id) -> None:
+            self.unregister(_fut_id)
+            self.event.set()
+
+        try:
+            fut.add_done_callback(_on_done)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            self.unregister(fut_id)
+            self.event.set()
+            return False
+        return True
+
+    def unregister(self, fut_id: int) -> None:
+        with self.lock:
+            self.ids.discard(int(fut_id))
+
+    def is_set(self) -> bool:
+        return bool(self.event.is_set())
+
+    def wait(self, timeout_s: float, *, short_spin_s: float = 0.0) -> bool:
+        return bool(
+            wait_for_completion_event(
+                self.event,
+                timeout_s=float(timeout_s),
+                short_spin_s=float(short_spin_s),
+                perf_counter=time.perf_counter,
+                sleep=time.sleep,
+            )
+        )
+
+    def clear(self) -> None:
+        self.event.clear()
+
+
+def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = ()) -> bool:
+    for group in queue_groups:
+        try:
+            if group:
+                return True
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:has_waitable_work: {e}")
+            continue
+    _ = pending_fg
+    return False
+
+
+def mark_song_completed(
+    *,
+    completed_songs: set[str],
+    task_key: str,
+    song_name: str,
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+) -> None:
+    key = str(task_key)
+    completed_songs.add(key)
+    if memory_resume_tracker:
+        memory_resume_tracker.mark_completed(str(song_name))
+    if bundle_completed_cb is not None:
+        try:
+            bundle_completed_cb(key, completed_songs)
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:mark_song_completed: {e}")
+
+
+def emit_deferred_post_payload(
+    song: NativeSong,
+    *,
+    post: Callable[[dict], None],
+    persist_pending_fg_job: bool,
+    completed_songs: set[str],
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+    advance_bundle: Callable[..., None],
+    progress_tracker=None,
+    progress_cb=None,
+) -> bool:
+    if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
+        return False
+
+    post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
+
+    try:
+        song.runtime.post.deferred_post_emitted = True
+    except Exception as e:
+        logger.debug(f"native_inflight_orchestrator:emit_deferred_post_payload: {e}")
+
+    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+    needs_fg_stage = bool(fg_pending_for_post(song))
+    if bundle_parent is not None and needs_fg_stage:
+        song.runtime.bundle.bundle_wait_for_fg = True
+    elif bundle_parent is not None:
+        advance_bundle(
+            bundle_parent,
+            song_name=str(song.config.song_name),
+            record_info=getattr(song.runtime.db, "record_info", None),
+            failed=False,
+        )
+    elif needs_fg_stage:
+        try:
+            song.runtime.post.await_fg_completion_progress = True
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:emit_deferred_post_payload: {e}")
+    else:
+        mark_song_completed(
+            completed_songs=completed_songs,
+            task_key=song.config.task_key,
+            song_name=song.config.song_name,
+            memory_resume_tracker=memory_resume_tracker,
+            bundle_completed_cb=bundle_completed_cb,
+        )
+        if progress_tracker is not None:
+            progress_tracker.emit_done_song_progress(progress_cb, song)
+
+    return True
+
+
+def finish_deferred_fg_completion(
+    song: NativeSong,
+    *,
+    fg_failed: bool,
+    completed_songs: set[str],
+    memory_resume_tracker=None,
+    bundle_completed_cb=None,
+    advance_bundle: Callable[..., None],
+    progress_tracker=None,
+    progress_cb=None,
+) -> bool:
+    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+    if bundle_parent is not None and bool(getattr(song.runtime.bundle, "bundle_wait_for_fg", False)):
+        advance_bundle(
+            bundle_parent,
+            song_name=str(song.config.song_name),
+            record_info=getattr(song.runtime.db, "record_info", None),
+            failed=bool(fg_failed),
+        )
+        try:
+            song.runtime.bundle.bundle_wait_for_fg = False
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:finish_deferred_fg_completion: {e}")
+        return True
+
+    if bool(getattr(song.runtime.post, "await_fg_completion_progress", False)):
+        mark_song_completed(
+            completed_songs=completed_songs,
+            task_key=song.config.task_key,
+            song_name=song.config.song_name,
+            memory_resume_tracker=memory_resume_tracker,
+            bundle_completed_cb=bundle_completed_cb,
+        )
+        if progress_tracker is not None:
+            progress_tracker.emit_done_song_progress(progress_cb, song)
+        try:
+            song.runtime.post.await_fg_completion_progress = False
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:finish_deferred_fg_completion: {e}")
+        return True
+
+    return False
+
+# ---- merged from native_inflight_orchestrator.py ----
+
+
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.result_payloads import build_error_payload
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
+from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names
+from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
+from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
+
+
+def build_ga_candidates_for_post(
+    candidates: list[dict] | None,
+    *,
+    registry: Any,
+    minis_by_name: dict | None,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+    limit: int = LOADOUTS_PER_SONG_LIMIT,
+    selector: Callable[..., list[dict]] = select_effective_unique_ga_candidates,
+    materializer: Callable[..., tuple[list[str], list[str]]] = materialize_candidate_names,
+) -> list[dict[str, Any]]:
+    selected = selector(
+        list(candidates or []),
+        limit=int(limit),
+        registry=registry,
+        minis_by_name=minis_by_name,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        selected_color=str(selected_color or ""),
+    )
+    out: list[dict[str, Any]] = []
+    for cand in selected or []:
+        if not isinstance(cand, dict):
+            continue
+        data0 = cand.get("Data") or {}
+        candidate_for_post = dict(cand)
+        candidate_for_post["Data"] = dict(data0) if isinstance(data0, dict) else {}
+        gear_names, mini_names = materializer(
+            candidate_for_post,
+            registry=registry,
+            mutate=False,
+        )
+        out.append(
+            {
+                "Score": candidate_for_post.get("Score", 0),
+                "BaseScore": candidate_for_post.get("BaseScore", candidate_for_post.get("Score", 0)),
+                "Gear": list(gear_names),
+                "Minis": list(mini_names),
+                "Data": candidate_for_post.get("Data") or {},
+                "_fg_priority": candidate_for_post.get("_fg_priority", 0),
+                "loadout_hash": candidate_for_post.get("loadout_hash"),
+            }
+        )
+    return out
+
+
+def fg_scored_for_song(song: NativeSong) -> bool:
+    return getattr(song.runtime.fg, "fg_variants", None) is not None
+
+
+def fg_pending_for_post(song: NativeSong) -> bool:
+    return bool(not fg_scored_for_song(song))
+
+
+def build_native_song_error_payload(
+    song: NativeSong,
+    *,
+    exc: Exception,
+    trace: str,
+    suppress_for_bundle: bool = True,
+) -> dict[str, Any]:
+    payload = build_error_payload(
+        song_name=str(song.config.song_name),
+        queue_key=str(song.config.task_key),
+        queue_label=str(song.config.task_key),
+        exc=exc,
+        trace=trace,
+    )
+    if bool(suppress_for_bundle) and getattr(song.runtime.bundle, "bundle_parent_task", None) is not None:
+        payload["_suppress_progress"] = True
+    return payload
+
+
+def build_native_task_error_payload(
+    *,
+    song_name: str,
+    queue_key: str,
+    exc: Exception,
+    trace: str,
+    queue_label: str | None = None,
+    suppress_progress: bool = False,
+) -> dict[str, Any]:
+    key = str(queue_key)
+    payload = build_error_payload(
+        song_name=str(song_name),
+        queue_key=key,
+        queue_label=str(queue_label if queue_label is not None else key),
+        exc=exc,
+        trace=trace,
+    )
+    if bool(suppress_progress):
+        payload["_suppress_progress"] = True
+    return payload
+
+
+def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
+    return {
+        "_fg_update": True,
+        "song": song.config.song_name,
+        "db_key": song.config.db_key,
+        "persist_entries": list(persist_entries or []),
+        "file_path": song.config.fp,
+        "cfg_dict": song.config.cfg_dict,
+    }
+
+
+def build_failed_fg_update_payload(song: NativeSong) -> dict[str, Any]:
+    return build_fg_update_payload(song, persist_entries=[])
+
+
+def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
+    best_data_for_post = song.runtime.decode.best_data or {}
+    best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
+    pending_fg_job = fg_pending_for_post(song)
+    fg_variants_post = (
+        compact_fg_variants(list(getattr(song.runtime.fg, "fg_variants", None) or []))
+        if fg_scored_for_song(song)
+        else []
+    )
+    candidates_for_post = (
+        song.runtime.decode.ga_persistence_candidates
+        if isinstance(getattr(song.runtime.decode, "ga_persistence_candidates", None), list)
+        and getattr(song.runtime.decode, "ga_persistence_candidates", None)
+        else song.runtime.decode.ga_candidates
+    )
+    ga_candidates_post = build_ga_candidates_for_post(
+        list(candidates_for_post or []),
+        registry=song.gpu_inputs.registry,
+        minis_by_name=song.gpu_inputs.minis_by_name,
+        primary_color=str(song.gpu_inputs.meta_primary_color or ""),
+        secondary_color=str(song.gpu_inputs.meta_secondary_color or ""),
+        selected_color=str((song.gpu_inputs.cfg_data or {}).get("selected_color", "") or ""),
+        selector=select_effective_unique_ga_candidates,
+        materializer=materialize_candidate_names,
+    )
+
+    # Deferred post must always carry replay context so persistence can
+    # canonicalize retained rows to the same score authority used by replay/repair.
+    return {
+        "_deferred_post": True,
+        "_pending_fg_job": bool(pending_fg_job),
+        "song": song.config.song_name,
+        "_queue_key": song.config.task_key,
+        "_queue_label": song.config.task_key,
+        "_ga_seed": song.config.ga_seed,
+        "db_key": song.config.db_key,
+        "difficulty": song.config.effective_difficulty,
+        "cfg_dict": song.config.cfg_dict,
+        "ref_arrays": song.gpu_inputs.ref_arrays,
+        "calc_song": song.gpu_inputs.calc_song,
+        "best_data": best_data_post,
+        "best_gear": _compact_items(song.runtime.decode.best_gear),
+        "best_minis": _compact_items(song.runtime.decode.best_minis),
+        "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
+        "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
+        "fg_variants": fg_variants_post,
+        "ga_candidates": ga_candidates_post,
+        "_persist_pending_fg_job": bool(persist_pending_fg_job and pending_fg_job),
+        "prev_record": _compact_prev_record(song.runtime.db.prev_record),
+        "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
+        "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
+        "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
+        "meta_primary_color": song.gpu_inputs.meta_primary_color,
+        "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
+        "fg_debug": bool(song.config.fg_debug),
+    }
+
+# ---- merged from native_inflight_orchestrator.py ----
+
+
+from gear_optimizer.core.utils import safe_int
+from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
+from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_entry_names
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
+
+
+def ensure_fg_build_details(song: NativeSong) -> Callable:
+    build_details = song.runtime.fg.fg_build_details
+    if callable(build_details):
+        return build_details
+    build_details = make_build_details_fn(
+        getattr(song.gpu_inputs, "meta_primary_color", ""),
+        getattr(song.gpu_inputs, "meta_secondary_color", ""),
+        getattr(song.config, "effective_difficulty", ""),
+    )
+    song.runtime.fg.fg_build_details = build_details
+    return build_details
+
+
+def build_fg_persist_entries(song: NativeSong) -> list[dict]:
+    entries: list[dict] = []
+    build_details = ensure_fg_build_details(song)
+    raw_loadout_entries = song.runtime.fg.loadout_entries
+    loadout_entries = raw_loadout_entries if isinstance(raw_loadout_entries, dict) else {}
+    loadout_hash_index: dict[str, dict] = {}
+    if loadout_entries:
+        for loadout_key, entry in loadout_entries.items():
+            if isinstance(entry, dict):
+                loadout_hash_index.setdefault(str(loadout_key), entry)
+            try:
+                loadout_hash = entry_loadout_hash(entry)
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:build_fg_persist_entries: {e}")
+                loadout_hash = None
+            if not loadout_hash or not isinstance(entry, dict):
+                continue
+            loadout_hash_index.setdefault(str(loadout_hash), entry)
+
+    for v in song.runtime.fg.fg_variants or []:
+        if not isinstance(v, dict):
+            continue
+        is_ga = bool(v.get("_is_ga"))
+        base_score = safe_int(v.get("base_score", v.get("score", 0)), 0)
+        fg_score = safe_int(v.get("fg_score", 0), 0)
+        gear_names = _compact_items(v.get("gear") or [])
+        mini_names = _compact_items(v.get("minis") or [])
+        data = v.get("data")
+        if not (isinstance(data, dict) and has_valid_fg_config(data)):
+            data = v.get("force")
+        if not (isinstance(data, dict) and has_valid_fg_config(data)) and isinstance(v.get("_entry_ref"), dict):
+            data = v["_entry_ref"].get("force")
+        if not isinstance(data, dict):
+            data = {}
+        base_entry = None
+        if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
+            try:
+                gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:build_fg_persist_entries: {e}")
+                gear_names, mini_names = [], []
+        if gear_names or mini_names:
+            try:
+                from gear_optimizer.data.database import get_loadout_hash as _get_loadout_hash
+
+                candidate = loadout_hash_index.get(str(_get_loadout_hash(gear_names, mini_names)))
+                if isinstance(candidate, dict):
+                    base_entry = candidate
+            except Exception as e:
+                logger.debug(f"native_inflight_orchestrator:build_fg_persist_entries: {e}")
+                base_entry = None
+
+        if isinstance(base_entry, dict):
+            entry_base_score = safe_int(
+                base_entry.get("base_score"),
+                safe_int(base_entry.get("score", 0), base_score),
+            )
+            if entry_base_score > 0:
+                base_score = entry_base_score
+
+        details_obj = base_entry.get("details") if isinstance(base_entry, dict) else None
+        if isinstance(details_obj, dict) and details_obj:
+            # Keep base payload consistent with base score on deferred FG updates.
+            details = dict(details_obj)
+        else:
+            details_source = base_entry.get("eval_data") if isinstance(base_entry, dict) else None
+            if not isinstance(details_source, dict) or not details_source:
+                details_source = data if isinstance(data, dict) else {}
+            details = build_details(details_source) if callable(build_details) else {}
+            if not isinstance(details, dict):
+                details = {}
+            details = dict(details)
+            details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
+
+        force_obj = None
+        try:
+            if isinstance(data, dict) and has_valid_fg_config(data):
+                force_obj = dict(data)
+                materialize_stats_from_payload(force_obj, mutate_payload=True)
+        except Exception as e:
+            logger.debug(f"native_inflight_orchestrator:build_fg_persist_entries: {e}")
+            force_obj = None
+        if force_obj is None:
+            continue
+        entries.append(
+            {
+                "score": int(base_score),
+                "fg_score": int(fg_score),
+                "gear": gear_names,
+                "minis": mini_names,
+                "details": details,
+                "force": force_obj,
+                "_is_ga": bool(is_ga),
+                # Mark these entries as coming from a deferred FG-only persistence pass
+                # so the DB layer can avoid overwriting base `details_json` on ties.
+                "_deferred_fg_update": True,
+            }
+        )
+    return entries

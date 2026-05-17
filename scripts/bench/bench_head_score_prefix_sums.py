@@ -38,7 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from gear_optimizer.core.constants import TOTAL_ROWS, FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
 from gear_optimizer.data.song_io import read_song_file
 from gear_optimizer.solver.fever_timeline import SongTimelineGrid, calculate_fever_timeline_indices
-from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+from gear_optimizer.solver.scoring_core import lookup_reference_py
 
 
 def build_calc_song(song_data: dict) -> dict:

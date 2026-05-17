@@ -3,7 +3,7 @@ import queue
 import pytest
 
 from gear_optimizer.solver.gpu_executor_types import GpuResponse
-from gear_optimizer.solver.gpu_executor_worker_responses import WorkerResponseRouter
+from gear_optimizer.solver.gpu_executor_lifecycle import WorkerResponseRouter
 
 
 def test_worker_response_router_waits_for_matching_response():

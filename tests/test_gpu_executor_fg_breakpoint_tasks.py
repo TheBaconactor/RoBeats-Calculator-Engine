@@ -1,7 +1,7 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import prepare_fg_breakpoint_payload_inputs
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_tasks import build_fg_breakpoint_tasks
+from gear_optimizer.solver.gpu_executor_fg import prepare_fg_breakpoint_payload_inputs
+from gear_optimizer.solver.gpu_executor_fg import build_fg_breakpoint_tasks
 
 
 def _prepared(*, implicit_cfgs="1", **overrides):

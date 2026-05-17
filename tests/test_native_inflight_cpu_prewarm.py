@@ -3,7 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 
 from gear_optimizer.solver.native_inflight_lifecycle import CpuPrewarmQueue
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_cpu_prewarm_queue_submits_once_and_finishes_success():

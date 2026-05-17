@@ -226,7 +226,7 @@ def _score_with_ceiling_timeline(
     stats: dict,
 ) -> int:
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score, lookup_reference_py
+    from gear_optimizer.solver.scoring_core import fast_calculate_score, lookup_reference_py
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 

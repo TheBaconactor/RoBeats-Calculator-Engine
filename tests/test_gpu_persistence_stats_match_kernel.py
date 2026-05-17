@@ -36,7 +36,7 @@ def test_persisted_stats_roundtrip_reproduces_gpu_score(tmp_path, monkeypatch):
     from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
     from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload, run_gpu_native_ga_runs_payload_prebuilt
     from gear_optimizer.solver.item_registry import ItemRegistry
-    from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.scoring_core import lookup_reference_py
     from gear_optimizer.solver.taichi_gem.api import score_fixed_stats_gpu
 
     db_path = tmp_path / "evolution.db"

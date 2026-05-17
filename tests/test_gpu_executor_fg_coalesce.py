@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_coalesce import (
+from gear_optimizer.solver.gpu_executor_fg import (
     FgBreakpointCoalesceLimits,
     build_fg_breakpoint_split_requests,
     build_fg_breakpoint_group_bundle,

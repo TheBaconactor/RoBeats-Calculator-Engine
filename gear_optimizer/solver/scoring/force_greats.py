@@ -36,7 +36,7 @@ from ..fever_timeline import (
     calculate_force_greats_timeline_indices,
 )
 
-from .scoring_core import (
+from ..scoring_core import (
     fast_calculate_score,
     lookup_reference_py,
     optimize_core_jit,

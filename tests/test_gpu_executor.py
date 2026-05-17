@@ -156,7 +156,7 @@ def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
 
 
 def test_default_song_slot_for_worker_is_stable_nonzero():
-    from gear_optimizer.solver.gpu_executor_worker_state import default_song_slot_for_worker
+    from gear_optimizer.solver.gpu_executor_lifecycle import default_song_slot_for_worker
 
     slot_a = default_song_slot_for_worker(0)
     slot_b = default_song_slot_for_worker(0)

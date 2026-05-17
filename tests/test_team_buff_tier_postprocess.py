@@ -647,7 +647,7 @@ def test_team_buff_tier_postprocess_converts_persisted_forced_counts_back_to_fp_
     from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
-    from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.scoring_core import lookup_reference_py
     from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
     ref_arrays = _get_team_buff_ref_arrays_cached()
@@ -1173,7 +1173,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-    from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.scoring_core import lookup_reference_py
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
     from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 

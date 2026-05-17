@@ -28,9 +28,9 @@ from ..core.constants import (
     FEVER_TIME_SCALE,
     TOTAL_ROWS,
 )
+from ..core.ref_lookup import resolve_stat_factors
 from ..core.time_quantize import quantize_to_int_ms
 from ..core.utils import safe_float, safe_int
-from .scoring.fg_policy import resolve_stat_factors
 
 
 

@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoints import execute_fg_compute_breakpoints
+from gear_optimizer.solver.gpu_executor_fg import execute_fg_compute_breakpoints
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

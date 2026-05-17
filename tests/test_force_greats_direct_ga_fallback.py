@@ -1,4 +1,4 @@
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 import pytest
 
@@ -54,7 +54,7 @@ def test_process_force_greats_gpu_failure_raises_without_cpu_fallback(monkeypatc
 def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     import configparser
 
-    import gear_optimizer.solver.native_inflight_stages as stages
+    import gear_optimizer.solver.native_inflight_pipeline as stages
 
     seen = {"ga_n": None}
 

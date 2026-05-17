@@ -1,5 +1,5 @@
-from gear_optimizer.solver.native_inflight_types import make_native_song
-from gear_optimizer.solver.native_inflight_result_events import (
+from gear_optimizer.solver.native_inflight_config import make_native_song
+from gear_optimizer.solver.native_inflight_orchestrator import (
     build_failed_fg_update_payload,
     build_fg_update_payload,
     build_native_song_error_payload,
@@ -103,7 +103,7 @@ def test_fg_update_payload_uses_shared_result_event_shape():
 
 
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):
-    from gear_optimizer.solver import native_inflight_result_events as result_events
+    from gear_optimizer.solver import native_inflight_orchestrator as result_events
 
     calc_song = {
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"},
@@ -185,7 +185,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
 
 def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
-    from gear_optimizer.solver import native_inflight_result_events as result_events
+    from gear_optimizer.solver import native_inflight_orchestrator as result_events
 
     monkeypatch.setattr(
         result_events,
@@ -250,7 +250,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
-    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     gpu_client = object()
@@ -291,7 +291,7 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
 
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
-    from gear_optimizer.solver import native_inflight_result_events as result_events
+    from gear_optimizer.solver import native_inflight_orchestrator as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = {

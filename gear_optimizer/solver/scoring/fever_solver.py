@@ -31,12 +31,12 @@ from ..fever_timeline import (
     get_song_timeline_grid,
 )
 
-from .scoring_core import (
+from ..scoring_core import (
     fast_calculate_score,
     lookup_reference_py,
     optimize_core_jit,
 )
-from .fg_policy import resolve_stat_factors
+from ...core.ref_lookup import resolve_stat_factors
 from ..base_stats import build_base_fixed_stats_dict, build_stats_array
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 

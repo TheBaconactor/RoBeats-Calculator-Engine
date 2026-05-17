@@ -39,7 +39,7 @@ from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.solver.gpu_executor_dispatch import (
+from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
     FG_REQUEST_TYPES,
     is_ga_recovery_request as _is_ga_recovery_request,
@@ -48,13 +48,13 @@ from gear_optimizer.solver.gpu_executor_dispatch import (
     execute_request_from_dispatch as _execute_request_from_dispatch,
     plan_execution_units as _plan_execution_units,
 )
-from gear_optimizer.solver import gpu_executor_static_handles as _static_handles
+from gear_optimizer.solver import gpu_executor_lifecycle as _static_handles
 from gear_optimizer.solver.gpu_executor_types import (
     GpuRequest,
     GpuRequestType,
     GpuResponse,
 )
-from gear_optimizer.solver.gpu_executor_workload import (
+from gear_optimizer.solver.gpu_executor_profile import (
     batch_trace_context as _batch_trace_context,
     estimate_request_work_units,
     load_workload_profile_settings as _load_workload_profile_settings,
@@ -103,10 +103,10 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
     write_warmup_sentinel_payload as _write_warmup_sentinel_payload,
 )
-from gear_optimizer.solver.gpu_executor_worker_responses import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     worker_response_router as _worker_response_router,
 )
-from gear_optimizer.solver.gpu_executor_worker_state import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     default_song_slot_for_worker as _default_song_slot_for_worker,
     register_executor_worker as _register_executor_worker,
     unregister_executor_worker as _unregister_executor_worker,
@@ -121,8 +121,8 @@ from gear_optimizer.solver.gpu_executor_registry import (
     ref_arrays_sig as _ref_arrays_sig,
     should_retry_unknown_registry_handle as _should_retry_unknown_registry_handle,
 )
-from gear_optimizer.solver.gpu_executor_trace import ExecutorTraceWriter
-from gear_optimizer.solver.gpu_executor_fg_breakpoints import (
+from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter
+from gear_optimizer.solver.gpu_executor_fg import (
     compute_fg_breakpoints_max_fp_matrix as _compute_fg_breakpoints_max_fp_matrix,
     execute_fg_compute_breakpoints as _execute_fg_compute_breakpoints,
 )
@@ -133,39 +133,39 @@ from gear_optimizer.solver.gpu_executor_fg import (
     decode_cfg_counts_from_max_fp_matrix as _decode_cfg_counts_from_max_fp_matrix,
     decode_cfg_counts_from_windows_for_gpu as _decode_cfg_counts_from_windows_for_gpu,
 )
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_solve import (
+from gear_optimizer.solver.gpu_executor_fg import (
     execute_fg_solve_with_breakpoints as _execute_fg_solve_with_breakpoints,
     execute_fg_solve_with_breakpoints_batch as _execute_fg_solve_with_breakpoints_batch,
     run_fg_solve_with_breakpoints_payload as _run_fg_solve_with_breakpoints_payload,
 )
-from gear_optimizer.solver.gpu_executor_fg_solve import (
+from gear_optimizer.solver.gpu_executor_fg import (
     execute_solve_force_greats_finder as _execute_solve_force_greats_finder,
 )
-from gear_optimizer.solver.gpu_executor_fg_tasks import (
+from gear_optimizer.solver.gpu_executor_fg import (
     coalesce_fg_task_requests as _coalesce_fg_task_requests,
 )
-from gear_optimizer.solver.gpu_executor_fg_coalesce import (
+from gear_optimizer.solver.gpu_executor_fg import (
     coalesce_fg_solve_with_breakpoints_batch_requests as _coalesce_fg_solve_with_breakpoints_batch_requests,
 )
-from gear_optimizer.solver.gpu_executor_fused_coalesce import (
+from gear_optimizer.solver.gpu_executor_batching import (
     coalesce_ga_fg_fused_requests as _coalesce_ga_fg_fused_requests,
 )
-from gear_optimizer.solver.gpu_executor_native_ga_batch import (
+from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
 )
-from gear_optimizer.solver.gpu_executor_native_ga import execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request
-from gear_optimizer.solver.gpu_executor_queue_wait import (
+from gear_optimizer.solver.gpu_executor_batching import execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     get_with_short_wait_spin as _get_with_short_wait_spin,
     load_short_wait_spin_settings as _load_short_wait_spin_settings,
     poll_inprocess_followup_nowait as _poll_inprocess_followup_nowait,
     safe_qsize as _safe_qsize,
 )
-from gear_optimizer.solver.gpu_executor_registry_solve import (
+from gear_optimizer.solver.gpu_executor_registry import (
     execute_solve_genomes_from_registry as _execute_solve_genomes_from_registry,
     handle_solve_genomes_from_registry as _handle_solve_genomes_from_registry,
 )
-from gear_optimizer.solver.gpu_executor_registry_coalesce import (
+from gear_optimizer.solver.gpu_executor_registry import (
     coalesce_solve_genomes_from_registry as _coalesce_solve_genomes_from_registry,
 )
 from gear_optimizer.solver.gpu_executor_profile import (

@@ -12,7 +12,7 @@ from gear_optimizer.core.constants import GEM_SCALE_FEVER, PATHS
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.song_io import scan_song_header
-from gear_optimizer.solver.native_inflight_prepare import prepare_native_song
+from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api import hard_reset_taichi
 from gear_optimizer.solver.taichi_gem.api.ga_operations import (

@@ -12,7 +12,7 @@ from gear_optimizer.solver.fg_exact_dp import (
     solve_force_greats_exact_dp,
 )
 from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
-from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score, lookup_reference_py
+from gear_optimizer.solver.scoring_core import fast_calculate_score, lookup_reference_py
 
 
 def _make_constant_ref_arrays(

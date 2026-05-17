@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gear_optimizer.solver.scoring.scoring_core import optimize_core_jit
+from gear_optimizer.solver.scoring_core import optimize_core_jit
 
 
 def test_optimize_core_jit_cm_lookahead_breaks_plateau_trap() -> None:

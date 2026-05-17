@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_registry_solve import (
+from gear_optimizer.solver.gpu_executor_registry import (
     execute_solve_genomes_from_registry,
     handle_solve_genomes_from_registry,
     request_song_slot,

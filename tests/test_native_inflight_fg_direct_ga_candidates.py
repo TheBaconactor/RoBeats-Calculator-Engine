@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     registry = object()
@@ -66,7 +66,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
-    from gear_optimizer.solver import native_inflight_fg_pipeline as fg_pipeline
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
 

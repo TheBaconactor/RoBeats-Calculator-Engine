@@ -2,7 +2,7 @@ import queue
 
 import pytest
 
-from gear_optimizer.solver.gpu_executor_queue_wait import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     get_with_short_wait_spin,
     load_short_wait_spin_settings,
     poll_inprocess_followup_nowait,

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from gear_optimizer.solver.native_inflight_persistence import ensure_fg_build_details
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_orchestrator import ensure_fg_build_details
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
-def test_native_inflight_persistence_owns_fg_build_details_cache():
+def test_native_inflight_orchestrator_owns_fg_build_details_cache():
     song = make_native_song(
         meta_primary_color="Rush",
         meta_secondary_color="Flow",

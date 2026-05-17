@@ -11,7 +11,7 @@ from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, calcu
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
 from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+from gear_optimizer.solver.scoring_core import lookup_reference_py
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.utils import safe_int
 

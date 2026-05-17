@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gear_optimizer.solver.gpu_executor_native_ga import execute_gpu_native_ga_run
+from gear_optimizer.solver.gpu_executor_batching import execute_gpu_native_ga_run
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

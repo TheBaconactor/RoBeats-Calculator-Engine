@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_solve import execute_solve_force_greats_finder
+from gear_optimizer.solver.gpu_executor_fg import execute_solve_force_greats_finder
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

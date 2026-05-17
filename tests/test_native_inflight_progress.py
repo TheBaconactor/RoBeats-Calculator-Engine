@@ -1,9 +1,9 @@
-from gear_optimizer.solver.native_inflight_progress import (
+from gear_optimizer.solver.native_inflight_lifecycle import (
     ActiveRuntimeProgressReporter,
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_progress_tracker_emit_progress_is_best_effort():

@@ -2,7 +2,7 @@ import pytest
 
 from dataclasses import fields
 
-from gear_optimizer.solver.native_inflight_types import (
+from gear_optimizer.solver.native_inflight_config import (
     NativeSong,
     NativeSongConfig,
     NativeSongBundleState,

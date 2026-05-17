@@ -8,7 +8,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_fg_should_start,
     continuous_ga_warm_queue_limit,
 )
-from gear_optimizer.solver.native_inflight_scheduler import (
+from gear_optimizer.solver.native_inflight_lifecycle import (
     GAQueueLimitController,
     closed_loop_bubble_kpi,
     count_active_song_lanes,
@@ -40,7 +40,7 @@ from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_timeout_s,
     wait_for_completion_event,
 )
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:

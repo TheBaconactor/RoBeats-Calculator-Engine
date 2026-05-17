@@ -2,14 +2,14 @@ import json
 import queue
 import threading
 
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline import post_processor
-    from gear_optimizer.solver import native_inflight_result_events as result_events
+    from gear_optimizer.solver import native_inflight_orchestrator as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_exact_authority.db"

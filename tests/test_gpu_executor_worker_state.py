@@ -1,7 +1,7 @@
 import queue
 
 from gear_optimizer.solver.gpu_executor import clear_gpu_worker_mode, is_gpu_worker_mode, set_gpu_worker_mode
-from gear_optimizer.solver.gpu_executor_worker_state import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     WorkerModeState,
     default_song_slot_for_worker,
     register_executor_worker,
