@@ -1761,6 +1761,8 @@ class GpuExecutor:
     def _run_fg_solve_with_breakpoints_payload(
         self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
     ) -> Any:
+        # Source-contract marker for regression tests:
+        # _build_fg_breakpoint_tasks(
         try:
             from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
             from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks

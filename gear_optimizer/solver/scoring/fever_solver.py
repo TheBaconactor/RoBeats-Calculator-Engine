@@ -36,6 +36,7 @@ from .scoring_core import (
     lookup_reference_py,
     optimize_core_jit,
 )
+from .fg_policy import resolve_stat_factors
 from ..base_stats import build_base_fixed_stats_dict, build_stats_array
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
@@ -565,6 +566,26 @@ def solve_best_fever_combination(
     cur_pp = base_stats["Perfect Points"]
     cur_cm = base_stats["Combo Multiplier"]
     cur_fm = base_stats["Fever Multiplier"]
+    score_factors_cache: dict[tuple[int, int, int], tuple[float, float, float]] = {}
+
+    def _resolve_score_factors(pp_stat: int, cm_stat: int, fm_stat: int) -> tuple[float, float, float]:
+        key = (int(pp_stat), int(cm_stat), int(fm_stat))
+        cached = score_factors_cache.get(key)
+        if cached is not None:
+            return cached
+        factors = resolve_stat_factors(
+            {
+                "Perfect Points": int(pp_stat),
+                "Combo Multiplier": int(cm_stat),
+                "Fever Multiplier": int(fm_stat),
+                "Fever Fill Rate": 0,
+                "Fever Time": 0,
+            },
+            ref_arrays,
+        )
+        resolved = (float(factors.pp_factor), float(factors.combo_mul), float(factors.fever_mul))
+        score_factors_cache[key] = resolved
+        return resolved
 
     # GPU path: use the grid-based FT/FF solver (default), eliminating CPU timeline enumeration
     # and per-work-item fever mask transfers.
@@ -700,9 +721,8 @@ def solve_best_fever_combination(
                 MAX_STAT_INDEX,
             )
 
-            base = (final_p_val * 2) + final_s_val + lookup_reference_py(final_pp, ref_pp, TOTAL_ROWS)
-            c_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_py(final_fm, ref_fm, TOTAL_ROWS)
+            pp_factor, c_mul, f_mul = _resolve_score_factors(final_pp, final_cm, final_fm)
+            base = (final_p_val * 2) + final_s_val + pp_factor
             total_score = fast_calculate_score(
                 base,
                 c_mul,
