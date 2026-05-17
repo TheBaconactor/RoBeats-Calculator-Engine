@@ -250,12 +250,13 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import NativeFgCandidateSurface
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     gpu_client = object()
 
-    def _fake_score_native_fg_candidate_records(**kwargs):
+    def _fake_score_native_fg_candidate_surface(**kwargs):
         calls.update(kwargs)
         return [
             {
@@ -268,7 +269,23 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_records", _fake_score_native_fg_candidate_records)
+    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_surface", _fake_score_native_fg_candidate_surface)
+
+    surface = NativeFgCandidateSurface()
+    surface.append(
+        loadout_hash="pytest-native-inline-fg-runner",
+        entry=None,
+        candidate=None,
+        base_data={},
+        base_stats={"Perfect Points": 1},
+        base_score=111,
+        selected_color="Rush",
+        center_ft=0,
+        center_ff=0,
+        gear=[],
+        minis=[],
+        is_ga=False,
+    )
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
@@ -280,16 +297,7 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_fg_score=100,
         db_baseline_valid=True,
         loadout_entries={},
-        fg_candidate_records=[
-            {
-                "hash": "pytest-native-inline-fg-runner",
-                "base_stats": {"Perfect Points": 1},
-                "base_score": 111,
-                "selected_color": "Rush",
-                "center_ft": 0,
-                "center_ff": 0,
-            }
-        ],
+        fg_candidate_surface=surface,
     )
 
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)

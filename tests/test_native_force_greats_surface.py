@@ -87,15 +87,15 @@ def test_native_ga_force_greats_materializes_retained_variant(monkeypatch) -> No
         },
     }
 
-    records = native_ga_variants.build_native_fg_candidate_records(
+    surface = native_ga_variants.build_native_fg_candidate_surface(
         loadout_entries=loadout_entries,
         ga_candidates=[candidate],
         default_selected_color="Rush",
         primary_color="Rush",
         secondary_color="Flow",
     )
-    variants = native_ga_variants.score_native_fg_candidate_records(
-        records=records,
+    variants = native_ga_variants.score_native_fg_candidate_surface(
+        surface=surface,
         loadout_entries=loadout_entries,
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
         ref_arrays={},
