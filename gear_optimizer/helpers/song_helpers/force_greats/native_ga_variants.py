@@ -17,7 +17,7 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
 from gear_optimizer.helpers.song_helpers.retention import select_retained_hashes
 from gear_optimizer.solver.native_force_greats import solve_native_force_greats_gpu_batch
 from gear_optimizer.solver.scoring import _extract_base_stats
-from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
+from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:

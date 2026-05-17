@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections import defaultdict, deque
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import importlib
 import json
@@ -8,12 +9,15 @@ import os
 from pathlib import Path
 import logging
 import queue
+import threading
 import traceback
+import time
 from typing import Any
 
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.gpu_executor_types import build_shutdown_request
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 from gear_optimizer.solver.windows_timer import (
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms_shared,
@@ -373,3 +377,278 @@ def report_gpu_profiler(
     except Exception as e:
         logger.debug(f"gpu_executor_lifecycle:report_gpu_profiler: {e}")
         return False
+
+
+class ExecutorAbortState:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._reason = ""
+
+    def request_abort(self, reason: str = "abort requested") -> None:
+        try:
+            reason_text = str(reason or "").strip()
+        except (ValueError, TypeError):
+            reason_text = ""
+        self._reason = reason_text or "abort requested"
+        self._event.set()
+
+    def clear(self) -> None:
+        self._reason = ""
+        self._event.clear()
+
+    def requested(self) -> bool:
+        return bool(self._event.is_set())
+
+    def error_message(self) -> str:
+        reason = str(self._reason or "").strip()
+        if not reason:
+            reason = "abort requested"
+        return f"GpuExecutor aborted: {reason}"
+
+    def raise_if_requested(self) -> None:
+        if self.requested():
+            raise RuntimeError(self.error_message())
+
+    def response(self, request: GpuRequest) -> GpuResponse:
+        return GpuResponse(
+            request_id=int(getattr(request, "request_id", 0) or 0),
+            success=False,
+            error=self.error_message(),
+        )
+
+
+def stamp_request_dequeue(
+    request: Any,
+    *,
+    perf_counter_ns_fn: Callable[[], int] = time.perf_counter_ns,
+) -> Any:
+    try:
+        if int(getattr(request, "dequeue_perf_ns", 0) or 0) <= 0:
+            request.dequeue_perf_ns = int(perf_counter_ns_fn())
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return request
+
+
+def stage_request(
+    staged_requests: deque,
+    request: Any,
+    *,
+    front: bool = False,
+    stamp_fn: Callable[[Any], Any] = stamp_request_dequeue,
+) -> None:
+    stamped = stamp_fn(request)
+    if front:
+        staged_requests.appendleft(stamped)
+    else:
+        staged_requests.append(stamped)
+
+
+def pop_staged_request(staged_requests: deque, *, index: int = 0) -> Any:
+    if index <= 0:
+        return staged_requests.popleft()
+    rotate_by = int(index)
+    staged_requests.rotate(-rotate_by)
+    try:
+        return staged_requests.popleft()
+    finally:
+        staged_requests.rotate(rotate_by)
+
+
+def staged_ga_recovery_index(
+    staged_requests: Sequence[Any],
+    *,
+    is_ga_recovery_request: Callable[[Any], bool],
+) -> int | None:
+    if not staged_requests:
+        return None
+    first_request = staged_requests[0]
+    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
+        return None
+
+    for idx, staged in enumerate(staged_requests):
+        if idx == 0:
+            continue
+        request_type = getattr(staged, "request_type", None)
+        if request_type == GpuRequestType.SHUTDOWN:
+            return int(idx)
+        if is_ga_recovery_request(staged):
+            return int(idx)
+    return None
+
+
+def prefetch_ga_recovery_requests(
+    *,
+    in_process_queues: bool,
+    ga_owner_turn_streak: int,
+    staged_requests: Any,
+    deadline: float,
+    batch_max_size: int,
+    streak_cap: int,
+    lookahead_limit: int,
+    pop_queue_request: Callable[[float], Any],
+    perf_counter_fn: Callable[[], float],
+    is_ga_recovery_request: Callable[[Any], bool],
+    empty_exception: type[BaseException],
+) -> None:
+    if not bool(in_process_queues):
+        return
+    if int(ga_owner_turn_streak) < int(streak_cap):
+        return
+    if not staged_requests:
+        return
+    try:
+        first_request = staged_requests[0]
+    except (IndexError, AttributeError):
+        return
+    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
+        return
+    if staged_ga_recovery_index(
+        list(staged_requests),
+        is_ga_recovery_request=is_ga_recovery_request,
+    ) is not None:
+        return
+
+    target = max(0, int(lookahead_limit))
+    if target <= 0:
+        return
+
+    while len(staged_requests) < int(target):
+        remaining = float(deadline - perf_counter_fn())
+        if remaining <= 0.0:
+            break
+        try:
+            request = pop_queue_request(remaining)
+        except empty_exception:
+            break
+        staged_requests.append(request)
+        if request.request_type == GpuRequestType.SHUTDOWN:
+            break
+        if is_ga_recovery_request(request):
+            break
+
+
+class ExecutorHeartbeatWriter:
+    def __init__(self, *, path: Path, interval_sec: float) -> None:
+        self.path = Path(path)
+        self.interval_sec = max(0.1, float(interval_sec))
+        self.last_write_monotonic = 0.0
+        self.last_phase = ""
+
+    def write(
+        self,
+        *,
+        phase: str,
+        batch: list[GpuRequest] | None = None,
+        note: str = "",
+        force: bool = False,
+        ready: bool,
+        running: bool,
+        requests_processed: int,
+        response_put_failures_total: int,
+    ) -> None:
+        now_monotonic = time.monotonic()
+        if (
+            not force
+            and str(phase) == str(self.last_phase)
+            and (now_monotonic - float(self.last_write_monotonic or 0.0)) < float(self.interval_sec)
+        ):
+            return
+
+        type_counts, request_count = summarize_request_batch(batch)
+        payload = {
+            "pid": int(os.getpid()),
+            "updated_at": int(time.time() * 1000.0),
+            "phase": str(phase or "unknown"),
+            "ready": bool(ready),
+            "running": bool(running),
+            "requests_processed": int(requests_processed),
+            "request_count": int(request_count),
+            "request_types": type_counts,
+            "note": str(note or ""),
+            "response_put_failures_total": int(response_put_failures_total),
+        }
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, self.path)
+            self.last_write_monotonic = now_monotonic
+            self.last_phase = str(phase or "")
+        except (OSError, ValueError, TypeError):
+            return
+
+
+def summarize_request_batch(batch: list[GpuRequest] | None) -> tuple[dict[str, int], int]:
+    type_counts: dict[str, int] = {}
+    request_count = 0
+    for req in batch or []:
+        if getattr(req, "request_type", None) == GpuRequestType.SHUTDOWN:
+            continue
+        req_name = str(getattr(getattr(req, "request_type", None), "value", "unknown") or "unknown")
+        type_counts[req_name] = int(type_counts.get(req_name, 0)) + 1
+        request_count += 1
+    return type_counts, int(request_count)
+
+
+class LiveReporter:
+    def __init__(self, *, now: Callable[[], float] = time.perf_counter) -> None:
+        self._now = now
+        self.enabled = False
+        self.interval_sec = 1.0
+        self.last_report_ts: float | None = None
+        self.wait_sec = 0.0
+        self.exec_sec = 0.0
+        self.type_counts = defaultdict(int)
+
+    def configure(self, *, enabled: bool, interval_sec: float) -> None:
+        self.enabled = bool(enabled)
+        self.interval_sec = max(0.1, float(interval_sec))
+        self.last_report_ts = None
+        self.wait_sec = 0.0
+        self.exec_sec = 0.0
+        self.type_counts = defaultdict(int)
+
+    def record_wait(self, wait_sec: float) -> None:
+        if self.enabled:
+            self.wait_sec += float(wait_sec)
+
+    def record_exec(self, request_type: GpuRequestType, *, exec_sec: float, count: int = 1) -> None:
+        if not self.enabled:
+            return
+        self.exec_sec += float(exec_sec)
+        self.type_counts[request_type] += int(count)
+
+    def maybe_report(self) -> bool:
+        if not self.enabled:
+            return False
+        now = self._now()
+        if self.last_report_ts is None:
+            self.last_report_ts = now
+            return False
+        if (now - float(self.last_report_ts)) < float(self.interval_sec):
+            return False
+        logger.debug(self._format_message())
+        self.last_report_ts = now
+        self.wait_sec = 0.0
+        self.exec_sec = 0.0
+        self.type_counts = defaultdict(int)
+        return True
+
+    def _format_message(self) -> str:
+        total = float(self.wait_sec) + float(self.exec_sec)
+        util = (float(self.exec_sec) / total * 100.0) if total > 0 else 0.0
+        top_types = sorted(self.type_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        types_str = ",".join(f"{_request_type_value(t)}:{int(n)}" for t, n in top_types) if top_types else ""
+        return (
+            f"[GpuExecutor][LIVE] busy={util:.1f}% (executor) wait={self.wait_sec * 1000:.1f}ms "
+            f"exec={self.exec_sec * 1000:.1f}ms types=[{types_str}]"
+        )
+
+
+def _request_type_value(request_type: Any) -> str:
+    return str(getattr(request_type, "value", request_type))

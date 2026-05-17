@@ -22,7 +22,7 @@ from ..fever_timeline import (
     calculate_non_fever_sections,
 )
 
-from ..scoring_core import fast_calculate_score, lookup_reference_py
+from .scoring_core import fast_calculate_score, lookup_reference_py
 
 
 from gear_optimizer.core.parsing import env_get

@@ -25,7 +25,6 @@ from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import NativeSong
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
@@ -40,6 +39,15 @@ _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 def _truthy(raw: Any) -> bool:
     return truthy(raw)
+
+
+def thread_cpu_time_s() -> float:
+    """Best-effort per-thread CPU timer for CPU-side stage profiling."""
+    try:
+        return float(time.thread_time())
+    except Exception as e:
+        logger.debug(f"native_inflight_stages:thread_cpu_time_s: {e}")
+        return 0.0
 
 
 def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any) -> None:

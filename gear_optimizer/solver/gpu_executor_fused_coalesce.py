@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from gear_optimizer.solver.gpu_executor_response_delivery import order_responses_for_requests
+from gear_optimizer.solver.gpu_executor_dispatch import order_responses_for_requests
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 

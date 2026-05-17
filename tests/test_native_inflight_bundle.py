@@ -1,6 +1,6 @@
 from collections import deque
 
-from gear_optimizer.solver.native_inflight_bundle import InflightBundleTracker
+from gear_optimizer.solver.native_inflight_lifecycle import InflightBundleTracker
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 

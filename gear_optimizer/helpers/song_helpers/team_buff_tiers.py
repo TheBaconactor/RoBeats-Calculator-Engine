@@ -131,6 +131,21 @@ def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
 
 
 def _resolve_base_team_buff(cfg_dict: dict) -> str:
+    if isinstance(cfg_dict, dict):
+        if isinstance(cfg_dict.get("IterationEngine"), dict):
+            return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
+        sec = cfg_dict.get("TeamContributionBuffConstant")
+        if isinstance(sec, dict):
+            raw = _norm_text(sec.get("TeamBuff", sec.get("teambuff", "")))
+            if raw:
+                normalized = normalize_team_buff_sequence((raw,), default=("T5",))
+                if normalized:
+                    return str(normalized[0])
+        raw = _norm_text(cfg_dict.get("TeamBuff", cfg_dict.get("teambuff", "")))
+        if raw:
+            normalized = normalize_team_buff_sequence((raw,), default=("T5",))
+            if normalized:
+                return str(normalized[0])
     return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
 
 

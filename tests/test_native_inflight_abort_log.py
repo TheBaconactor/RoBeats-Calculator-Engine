@@ -1,4 +1,4 @@
-from gear_optimizer.solver.native_inflight_abort_log import (
+from gear_optimizer.solver.native_inflight_lifecycle import (
     append_native_abort_log,
     build_abort_queue_snapshot,
     log_native_abort,

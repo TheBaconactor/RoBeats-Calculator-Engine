@@ -33,7 +33,7 @@ from tools.bench._bench_reporting import (
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 
 GA_KERNEL_PROFILER_NAMES = (
     "ga_build_exact_eval_reuse_map_kernel",

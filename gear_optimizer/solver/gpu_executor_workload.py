@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from gear_optimizer.solver.gpu_executor_request_policy import COALESCABLE_REQUEST_TYPES, FG_REQUEST_TYPES
+from gear_optimizer.solver.gpu_executor_dispatch import COALESCABLE_REQUEST_TYPES, FG_REQUEST_TYPES
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

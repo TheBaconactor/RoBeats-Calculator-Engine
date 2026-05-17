@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_registry_submit import (
+from gear_optimizer.solver.gpu_executor_registry import (
     build_registry_solve_request_payload,
     expected_registry_result_count,
     should_retry_unknown_registry_handle,

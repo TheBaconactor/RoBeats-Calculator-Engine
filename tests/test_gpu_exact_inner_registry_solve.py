@@ -51,7 +51,7 @@ def _score_from_alloc(
         GEM_STAT_TO_ELEMENT_SCALE,
         TOTAL_ROWS,
     )
-    from gear_optimizer.solver.scoring_core import fast_calculate_score, lookup_reference_py
+    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score, lookup_reference_py
 
     pp_stat = int(cur_pp) + int(g_pp) * int(GEM_SCALE_NORMAL)
     cm_stat = int(cur_cm) + int(g_cm) * int(GEM_SCALE_NORMAL)
@@ -100,7 +100,7 @@ def test_registry_solve_exact_inner_matches_cpu_exact():
     from gear_optimizer.solver.base_stats import build_stats_array
     from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
     from gear_optimizer.solver.scoring.fever_solver import precompute_fever_timelines
-    from gear_optimizer.solver.scoring_core import optimize_core_exact_bounded_jit
+    from gear_optimizer.solver.scoring.scoring_core import optimize_core_exact_bounded_jit
 
     timestamps = np.linspace(0.0, 120.0, 120, dtype=np.float32)
     calc_song = {

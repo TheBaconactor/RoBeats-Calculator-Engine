@@ -23,7 +23,7 @@ from gear_optimizer.solver.inflight_utils import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
-from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_stages import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import (
     NativeSong,
     NativeSongConfig,

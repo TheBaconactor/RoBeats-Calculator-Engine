@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_fg_frontier import execute_fg_select_signature_frontier_batch
+from gear_optimizer.solver.gpu_executor_fg import execute_fg_select_signature_frontier_batch
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

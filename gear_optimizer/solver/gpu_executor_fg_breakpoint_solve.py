@@ -5,15 +5,15 @@ from collections.abc import Callable
 from typing import Any
 
 from gear_optimizer.core.parsing import env_flag, env_get
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_download import pack_or_download_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg import pack_or_download_fg_breakpoint_result
 from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import (
     maybe_precompute_fg_breakpoint_timeline,
     prepare_fg_breakpoint_payload_inputs,
     prepare_fg_breakpoint_solve_submission,
 )
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_result import finalize_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg import finalize_fg_breakpoint_result
 from gear_optimizer.solver.gpu_executor_fg_breakpoint_tasks import build_fg_breakpoint_tasks
-from gear_optimizer.solver.gpu_executor_fg_selection import fg_selection_upload_key
+from gear_optimizer.solver.gpu_executor_fg import fg_selection_upload_key
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
 logger = logging.getLogger(__name__)

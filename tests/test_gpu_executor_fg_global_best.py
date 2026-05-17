@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_fg_global_best import (
+from gear_optimizer.solver.gpu_executor_fg import (
     execute_fg_download_global_best,
     execute_fg_reset_global_best,
 )

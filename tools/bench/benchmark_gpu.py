@@ -25,7 +25,7 @@ from gear_optimizer.core.constants import (
     TOTAL_GEM_BUDGET,
     TOTAL_ROWS,
 )
-from gear_optimizer.solver.scoring_core import optimize_core_jit
+from gear_optimizer.solver.scoring.scoring_core import optimize_core_jit
 from gear_optimizer.solver.taichi_gem.api import load_ref_arrays, solve_genomes_with_ftff
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 

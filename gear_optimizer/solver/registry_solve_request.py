@@ -142,7 +142,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = 
             use_exact_inner_solver=bool(request.use_exact_inner_solver),
         )
 
-    from .scoring.gpu_solver import _GPU_LOCK
+    from .scoring.runtime_state import _GPU_LOCK
     from .taichi_gem.api import (
         ga_upload_base_fixed_stats,
         ga_upload_item_stats,

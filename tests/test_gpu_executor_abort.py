@@ -1,6 +1,6 @@
 import pytest
 
-from gear_optimizer.solver.gpu_executor_abort import ExecutorAbortState
+from gear_optimizer.solver.gpu_executor_lifecycle import ExecutorAbortState
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

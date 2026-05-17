@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from math import ceil, floor
+from math import ceil
 from typing import Literal
 
 import numpy as np
@@ -28,7 +28,7 @@ from .timing_envelope import (
     count_timeline_analysis_windows,
     prepare_timeline_analysis_inputs,
 )
-from .scoring.stats_scoring import build_great_penalty_table
+from .scoring.fg_policy import build_penalty_table_and_body
 
 _MAX_HEAD = 100
 
@@ -113,16 +113,13 @@ def _build_forced_great_penalty_prefix(
     if n <= 0:
         return np.zeros((1,), dtype=np.int64)
 
-    combo_value = floor(float(base_value) * float(combo_mul))
-
-    great_penalty_base_head = floor((primary_val * 2) * (2.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0)) + 150
-    great_penalty_base_raw = ((primary_val * 2) * (2.0 / 3.0)) + (secondary_val * (2.0 / 3.0)) + 150.0
-    great_combo_value = floor(float(great_penalty_base_raw) * float(combo_mul))
-    body_penalty = max(0, int(combo_value - great_combo_value))
-
-    penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base_head, head_limit=100)
-    if penalty_table:
-        penalty_table[-1] = body_penalty
+    penalty_table, body_penalty, _combo_value = build_penalty_table_and_body(
+        base_value=float(base_value),
+        combo_mul=float(combo_mul),
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
+        head_limit=100,
+    )
 
     c = np.empty((n,), dtype=np.int32)
     head_len = min(100, n)

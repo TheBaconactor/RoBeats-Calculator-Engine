@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_result import finalize_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg import finalize_fg_breakpoint_result
 
 
 def _finalize(result, **overrides):

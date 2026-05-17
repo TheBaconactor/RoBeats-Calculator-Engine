@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gear_optimizer.solver import native_inflight_shutdown as shutdown
+from gear_optimizer.solver import native_inflight_lifecycle as shutdown
 
 
 class _FgPipeline:

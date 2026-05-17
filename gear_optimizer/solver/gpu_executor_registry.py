@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from gear_optimizer.solver.gpu_executor_types import GpuRequest
+from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
+logger = logging.getLogger(__name__)
 
-STATIC_REGISTRY_PAYLOAD_KEYS = (
+REGISTRY_STATIC_PAYLOAD_KEYS = (
     "item_stats",
     "slot_start",
     "slot_count",
@@ -15,6 +17,41 @@ STATIC_REGISTRY_PAYLOAD_KEYS = (
     "timeline_grid",
     "ref_arrays",
 )
+
+STATIC_REGISTRY_PAYLOAD_KEYS = REGISTRY_STATIC_PAYLOAD_KEYS
+
+
+def build_registry_solve_request_payload(
+    base_payload: dict[str, Any],
+    entry: dict[str, Any],
+    *,
+    inline_static: bool,
+    static_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = dict(base_payload or {})
+    payload["registry_payload_handle"] = int(entry.get("handle", 0) or 0)
+    payload["registry_payload_inline"] = bool(inline_static)
+    if inline_static:
+        if static_payload:
+            payload.update(static_payload)
+    else:
+        for key in REGISTRY_STATIC_PAYLOAD_KEYS:
+            payload.pop(key, None)
+    return payload
+
+
+def should_retry_unknown_registry_handle(response: GpuResponse, *, inline_static: bool) -> bool:
+    if inline_static or bool(getattr(response, "success", False)):
+        return False
+    err_text = str(getattr(response, "error", "") or "")
+    return "Unknown registry payload handle" in err_text
+
+
+def expected_registry_result_count(population_indices: Any) -> int:
+    try:
+        return int(getattr(population_indices, "shape", [len(population_indices)])[0])
+    except (ValueError, TypeError, AttributeError):
+        return 0
 
 
 @dataclass(frozen=True)
@@ -50,13 +87,6 @@ class RegistryPayloadCache:
         request: GpuRequest,
         payload: dict[str, Any],
     ) -> tuple[dict[str, Any], str | None]:
-        """
-        Resolve registry-solve payloads that optionally use worker-side static handles.
-
-        Workers may send only dynamic fields (population indices + flags) plus
-        `registry_payload_handle` after first registration to avoid repeated IPC
-        transfer of immutable arrays/dicts.
-        """
         handle_raw = payload.get("registry_payload_handle")
         if handle_raw is None:
             return payload, None
@@ -88,3 +118,45 @@ class RegistryPayloadCache:
             if key not in resolved and static_payload is not None:
                 resolved[key] = static_payload[key]
         return resolved, None
+
+
+@dataclass(frozen=True)
+class LoadRefsOutcome:
+    response: GpuResponse
+    last_ref_arrays_sig: bytes | None
+
+
+def execute_load_refs(
+    request: GpuRequest,
+    *,
+    last_ref_arrays_sig: bytes | None,
+    load_ref_arrays_fn,
+    ref_arrays_sig_fn,
+) -> LoadRefsOutcome:
+    ref_arrays = request.payload["ref_arrays"]
+    sig = ref_arrays_sig_fn(ref_arrays)
+    if sig is None or sig != last_ref_arrays_sig:
+        load_ref_arrays_fn(ref_arrays)
+        last_ref_arrays_sig = sig
+
+    return LoadRefsOutcome(
+        response=GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=None,
+        ),
+        last_ref_arrays_sig=last_ref_arrays_sig,
+    )
+
+
+def ref_arrays_sig(ref_arrays: Any) -> bytes | None:
+    try:
+        from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
+    except Exception as e:
+        logger.debug(f"gpu_executor_registry:ref_arrays_sig: {e}")
+        return None
+    try:
+        return _taichi_ref_arrays_sig(ref_arrays)
+    except Exception as e:
+        logger.debug(f"gpu_executor_registry:ref_arrays_sig: {e}")
+        return None

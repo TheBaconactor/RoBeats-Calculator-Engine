@@ -64,8 +64,8 @@ def main() -> None:
     from gear_optimizer.core.utils import cfg_to_dict
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.scoring_core import lookup_reference_py
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
+    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 
     cfg_dict = cfg_to_dict(load_config())

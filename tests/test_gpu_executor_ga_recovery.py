@@ -1,7 +1,7 @@
 import queue
 from collections import deque
 
-from gear_optimizer.solver.gpu_executor_ga_recovery import prefetch_ga_recovery_requests, staged_ga_recovery_index
+from gear_optimizer.solver.gpu_executor_lifecycle import prefetch_ga_recovery_requests, staged_ga_recovery_index
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

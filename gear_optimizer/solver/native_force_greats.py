@@ -1,106 +1,71 @@
 from __future__ import annotations
 
 import importlib
-from itertools import product
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER, TOTAL_GEM_BUDGET, TOTAL_ROWS
-from gear_optimizer.core.utils import safe_float, safe_int
+from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import fp_targets_to_forced_counts
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
 from gear_optimizer.solver.candidate_solver_cache import FgCandidateCacheShard, fg_context_digest
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 from gear_optimizer.solver.scoring.force_greats import _compute_force_greats_timeline
-from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
-from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
-from gear_optimizer.solver.scoring_core import lookup_reference_py
+from gear_optimizer.solver.scoring.fg_policy import (
+    build_fg_result_dict,
+    build_force_greats_counts_list,
+    extract_fg_song_inputs,
+    iter_ft_ff_budget_pairs,
+    normalize_ft_ff_search_ranges,
+    resolve_stat_factors,
+)
+from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 
 
 def _ftff_pairs(search_ranges: tuple[int, int, int, int] | None) -> list[tuple[int, int]]:
-    if search_ranges is None:
-        start_ft, end_ft = 0, int(TOTAL_GEM_BUDGET)
-        start_ff, end_ff = 0, int(TOTAL_GEM_BUDGET)
-    else:
-        start_ft, end_ft, start_ff, end_ff = search_ranges
-        start_ft = max(0, int(start_ft))
-        end_ft = min(int(TOTAL_GEM_BUDGET), int(end_ft))
-        start_ff = max(0, int(start_ff))
-        end_ff = min(int(TOTAL_GEM_BUDGET), int(end_ff))
-
-    out: list[tuple[int, int]] = []
-    for ft_gems in range(start_ft, end_ft + 1):
-        remaining = int(TOTAL_GEM_BUDGET) - int(ft_gems)
-        if remaining < 0:
-            break
-        for ff_gems in range(start_ff, min(end_ff, remaining) + 1):
-            out.append((int(ft_gems), int(ff_gems)))
-    return out
+    start_ft, end_ft, start_ff, end_ff = normalize_ft_ff_search_ranges(
+        search_ranges,
+        total_budget=TOTAL_GEM_BUDGET,
+    )
+    return [
+        (int(ft), int(ff))
+        for ft, ff, _ in iter_ft_ff_budget_pairs(
+            start_ft,
+            end_ft,
+            start_ff,
+            end_ff,
+            total_budget=TOTAL_GEM_BUDGET,
+        )
+    ]
 
 
 def _counts_list(num_sections: int, non_fever_base: int) -> list[tuple[int, ...]]:
-    n = int(num_sections)
-    if n <= 0:
-        return []
-    cap_s0 = min(int(non_fever_base or 0), 50)
-    cap_s1 = min(int(non_fever_base or 0), 25)
-    cap_s2 = min(int(non_fever_base or 0), 15)
-    if n == 1:
-        return [(s0,) for s0 in range(cap_s0 + 1)]
-    if n == 2:
-        return [(s0, s1) for s0 in range(cap_s0 + 1) for s1 in range(cap_s1 + 1)]
-    if n == 3:
-        return [
-            (s0, s1, s2)
-            for s0 in range(cap_s0 + 1)
-            for s1 in range(cap_s1 + 1)
-            for s2 in range(cap_s2 + 1)
-        ]
-    cap = min(int(non_fever_base or 0), 5)
-    return [tuple(int(v) for v in counts) for counts in product(range(cap + 1), repeat=n)]
+    return build_force_greats_counts_list(int(num_sections), int(non_fever_base))
 
 
 def _section_summary(
     base_stats: dict[str, Any], calc_song: dict[str, Any], ref_arrays: dict[str, Any]
 ) -> tuple[int, int]:
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
-    total_notes = int(len(timestamps)) if timestamps is not None else 0
-    if total_notes <= 0:
+    song_inputs = extract_fg_song_inputs(calc_song)
+    if song_inputs.total_notes <= 0:
         return 0, 0
 
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    base_ts = song_data.get("timestamps", timestamps)
-    default_last_note = base_ts[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    fever_fill_rate = lookup_reference_py(
-        safe_int(base_stats.get("Fever Fill Rate", 0), 0),
-        ref_arrays["Fever Fill Rate"],
-        TOTAL_ROWS,
-    )
-    fever_time_stat = lookup_reference_py(
-        safe_int(base_stats.get("Fever Time", 0), 0),
-        ref_arrays["Fever Time"],
-        TOTAL_ROWS,
-    )
+    factors = resolve_stat_factors(base_stats, ref_arrays)
     _, _, _, non_fever_base, section_details = _compute_force_greats_timeline(
-        timestamps,
-        great_candidates,
-        total_notes,
-        fever_fill_rate,
-        fever_time_stat,
-        long_notes,
-        last_note_time,
+        song_inputs.timestamps,
+        song_inputs.great_candidates,
+        song_inputs.total_notes,
+        factors.fever_fill_rate,
+        factors.fever_time_stat,
+        song_inputs.long_notes,
+        song_inputs.last_note_time,
         [],
         clamp_base_notes_nonnegative=True,
         clamp_forced_to_section_notes=True,
-        use_forced_great_timing=use_forced_great_timing,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
     return int(len(section_details)), int(non_fever_base)
 
@@ -190,22 +155,20 @@ def _materialize_best(
         safe_int(best.get("FF", 0), 0),
         fg_scorer,
     )
-    return {
-        "base_score": int(best.get("base_score", 0) or 0),
-        "final_score": int(best.get("final_score", 0) or 0),
-        "score_penalty": int(best.get("score_penalty", 0) or 0),
-        "fill_penalty": int(best.get("fill_penalty", 0) or 0),
-        "total_penalty": int(best.get("score_penalty", 0) or 0) + int(best.get("fill_penalty", 0) or 0),
-        "num_non_fever_sections": int(num_sections),
-        "penalty_analysis": {},
-        "config_counts": list(forced_counts),
-        "config_dict": _force_greats_counts_to_dict(forced_counts, max(2, len(forced_counts))),
-        "fp_targets": list(fp_targets),
-        "non_fever_base": int(non_fever_base),
-        "gem_counts": best.get("gem_counts", {}) or {},
-        "FT": int(best.get("FT", 0) or 0),
-        "FF": int(best.get("FF", 0) or 0),
-    }
+    result = build_fg_result_dict(
+        base_score=int(best.get("base_score", 0) or 0),
+        total_score_penalty=int(best.get("score_penalty", 0) or 0),
+        total_fill_penalty=int(best.get("fill_penalty", 0) or 0),
+        section_details=[{} for _ in range(int(num_sections))],
+        config_counts=list(forced_counts),
+        penalty_analysis={},
+        non_fever_base=int(non_fever_base),
+    )
+    result["fp_targets"] = list(fp_targets)
+    result["gem_counts"] = best.get("gem_counts", {}) or {}
+    result["FT"] = int(best.get("FT", 0) or 0)
+    result["FF"] = int(best.get("FF", 0) or 0)
+    return result
 
 
 def _materialize_raw_best_list(raw: dict[str, Any], n: int) -> list[dict[str, Any]]:
@@ -258,10 +221,8 @@ def solve_native_force_greats_gpu_batch(
             "candidate_cache_writes": 0,
         }
 
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    total_notes = int(len(timestamps)) if timestamps is not None else 0
-    if total_notes <= 0:
+    song_inputs = extract_fg_song_inputs(calc_song)
+    if int(song_inputs.total_notes) <= 0:
         empty = [None for _ in base_stats_list]
         return empty, {
             "gpu_batches": 0,
@@ -277,13 +238,8 @@ def solve_native_force_greats_gpu_batch(
             "candidate_cache_writes": 0,
         }
 
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    base_ts = song_data.get("timestamps", timestamps)
-    default_last_note = base_ts[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    primary = str(metadata.get("Primary Color", "") or "")
-    secondary = str(metadata.get("Secondary Color", "") or "")
+    primary = str(song_inputs.primary_color or "")
+    secondary = str(song_inputs.secondary_color or "")
     fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
 
     prepared_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -484,10 +440,10 @@ def solve_native_force_greats_gpu_batch(
                     pair_chunk = pairs[int(pair_start) : int(pair_start) + int(max_ftff)]
                     _fg_solve_owner(
                         genome_stats,
-                        timestamps,
-                        song_data.get("fg_great_candidate_timestamps"),
-                        long_notes,
-                        last_note_time,
+                        song_inputs.timestamps,
+                        song_inputs.great_candidates,
+                        song_inputs.long_notes,
+                        song_inputs.last_note_time,
                         counts,
                         pair_chunk,
                         accumulate_global=True,
@@ -499,10 +455,10 @@ def solve_native_force_greats_gpu_batch(
             else:
                 out = _fg_solve_owner(
                     genome_stats,
-                    timestamps,
-                    song_data.get("fg_great_candidate_timestamps"),
-                    long_notes,
-                    last_note_time,
+                    song_inputs.timestamps,
+                    song_inputs.great_candidates,
+                    song_inputs.long_notes,
+                    song_inputs.last_note_time,
                     counts,
                     pairs,
                     **solve_kwargs,

@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_response_delivery import order_responses_for_requests
+from gear_optimizer.solver.gpu_executor_dispatch import order_responses_for_requests
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 logger = logging.getLogger(__name__)

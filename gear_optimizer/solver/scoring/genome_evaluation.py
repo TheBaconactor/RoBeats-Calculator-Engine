@@ -23,7 +23,7 @@ from ...core.constants import SKIP_ITEM_KEYS
 from ...core.env_config import ENV
 from ...core.utils import stats_signature
 
-from .gpu_solver import GEM_SOLVER_CACHE
+from .runtime_state import GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
 from .stats_ops import apply_gems_to_base_stats
 from ..base_stats import build_solver_stat_row

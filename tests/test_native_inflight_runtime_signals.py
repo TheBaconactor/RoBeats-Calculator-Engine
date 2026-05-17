@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from gear_optimizer.solver.native_inflight_runtime_signals import (
+from gear_optimizer.solver.native_inflight_lifecycle import (
     CachedRuntimeSignal,
     GpuAbortRequester,
     is_stop_abort_exception,

@@ -8,7 +8,7 @@ from gear_optimizer.solver.scoring.stats_scoring import (
     _FG_BASELINE_POINT_MISS_COUNT,
     fg_baseline_params,
 )
-from gear_optimizer.solver.scoring_core import lookup_reference_py
+from gear_optimizer.solver.scoring.scoring_core import lookup_reference_py
 
 
 def test_fg_baseline_params_grid_matches_non_fever_sections(monkeypatch):

@@ -19,10 +19,10 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_progress import ProgressTracker, evaluate_fg_progress_record_update
 from gear_optimizer.solver.native_inflight_persistence import build_fg_persist_entries, ensure_fg_build_details
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
-from gear_optimizer.solver.native_inflight_post_sender import PostSender
+from gear_optimizer.solver.native_inflight_lifecycle import PostSender
 from gear_optimizer.solver.native_inflight_result_events import build_fg_update_payload
 from gear_optimizer.solver.native_inflight_stages import prepare_fg_job_sync, resolve_active_fg_calc_song
-from gear_optimizer.solver.native_inflight_timing import thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_stages import thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import NativeSong
 
 logger = logging.getLogger(__name__)

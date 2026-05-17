@@ -20,7 +20,6 @@ from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
-from gear_optimizer.solver.native_inflight_gpu_startup import start_native_inflight_gpu_client
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
     first_task_config,
@@ -44,16 +43,28 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     count_active_song_lanes,
     read_prime_target,
 )
-from gear_optimizer.solver.native_inflight_prime import prime_native_inflight_prepared_queue
 from gear_optimizer.solver import native_inflight_fg_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_ga_pipeline import GADecodeQueue, InflightGAPipeline
+from gear_optimizer.solver.native_inflight_lifecycle import (
+    BubbleTracker,
+    CachedRuntimeSignal,
+    CpuPrewarmQueue,
+    GpuAbortRequester,
+    InflightBundleTracker,
+    PostSender,
+    SongPrepQueue,
+    is_stop_abort_exception,
+    log_native_abort,
+    prime_native_inflight_prepared_queue,
+    shutdown_native_inflight_resources,
+    start_native_inflight_gpu_client,
+)
 from gear_optimizer.solver.native_inflight_result_events import (
     build_failed_fg_update_payload as _build_failed_fg_update_payload,
     build_native_song_error_payload as _build_native_song_error_payload,
     build_native_task_error_payload as _build_native_task_error_payload,
 )
 from gear_optimizer.solver.native_inflight_progress import ActiveRuntimeProgressReporter, ProgressTracker
-from gear_optimizer.solver.native_inflight_post_sender import PostSender
 from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     emit_deferred_post_payload as _emit_deferred_post_payload_once,
@@ -61,16 +72,6 @@ from gear_optimizer.solver.native_inflight_completion import (
     has_waitable_work,
     mark_song_completed,
 )
-from gear_optimizer.solver.native_inflight_bubble import BubbleTracker
-from gear_optimizer.solver.native_inflight_bundle import InflightBundleTracker
-from gear_optimizer.solver.native_inflight_cpu_prewarm import CpuPrewarmQueue
-from gear_optimizer.solver.native_inflight_song_prep_queue import SongPrepQueue
-from gear_optimizer.solver.native_inflight_runtime_signals import (
-    CachedRuntimeSignal,
-    GpuAbortRequester,
-    is_stop_abort_exception,
-)
-from gear_optimizer.solver.native_inflight_abort_log import log_native_abort
 from gear_optimizer.solver.native_inflight_types import NativeSong
 from gear_optimizer.solver.native_inflight_stages import (
     InFlightStageProfiler,
@@ -79,7 +80,6 @@ from gear_optimizer.solver.native_inflight_stages import (
     prepare_fg_job_sync,
     run_cpu_prewarm_for_song,
 )
-from gear_optimizer.solver.native_inflight_shutdown import shutdown_native_inflight_resources
 
 logger = logging.getLogger(__name__)
 

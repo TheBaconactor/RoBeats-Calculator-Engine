@@ -1,6 +1,6 @@
 import json
 
-from gear_optimizer.solver.gpu_executor_heartbeat import ExecutorHeartbeatWriter, summarize_request_batch
+from gear_optimizer.solver.gpu_executor_lifecycle import ExecutorHeartbeatWriter, summarize_request_batch
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 

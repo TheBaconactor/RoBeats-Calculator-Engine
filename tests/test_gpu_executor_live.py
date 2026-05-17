@@ -1,6 +1,6 @@
 import logging
 
-from gear_optimizer.solver.gpu_executor_live import LiveReporter
+from gear_optimizer.solver.gpu_executor_lifecycle import LiveReporter
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -12,7 +12,7 @@ def test_live_reporter_records_and_reports_after_interval(caplog):
     reporter.record_wait(0.25)
     reporter.record_exec(GpuRequestType.GPU_NATIVE_GA_RUN, exec_sec=0.75, count=2)
 
-    with caplog.at_level(logging.DEBUG, logger="gear_optimizer.solver.gpu_executor_live"):
+    with caplog.at_level(logging.DEBUG, logger="gear_optimizer.solver.gpu_executor_lifecycle"):
         assert reporter.maybe_report() is False
         assert reporter.maybe_report() is False
         assert reporter.maybe_report() is True

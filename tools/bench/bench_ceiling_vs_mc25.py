@@ -133,7 +133,7 @@ class _TimelineSig:
 
 
 def _score_from_sig(sig: _TimelineSig, *, base: float, combo: float, fever: float) -> int:
-    from gear_optimizer.solver.scoring_core import fast_calculate_score
+    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score
 
     # Unpack head bits to bool for the score function.
     head_len = int(sig.head_len)
@@ -1013,7 +1013,7 @@ def main() -> int:
         ft_factor=ft_factor,
         fever_mask_buffer=fever_mask_buffer,
     )
-    from gear_optimizer.solver.scoring_core import fast_calculate_score
+    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score
 
     fast_calculate_score(base, combo, fever, np.zeros(min(n, 100), dtype=np.bool_), 0, max(0, n - 100))
 

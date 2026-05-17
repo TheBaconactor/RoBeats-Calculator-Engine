@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from gear_optimizer.solver.native_inflight_cpu_prewarm import CpuPrewarmQueue
+from gear_optimizer.solver.native_inflight_lifecycle import CpuPrewarmQueue
 from gear_optimizer.solver.native_inflight_types import make_native_song
 
 

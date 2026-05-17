@@ -31,7 +31,7 @@ from ..fever_timeline import (
     get_song_timeline_grid,
 )
 
-from ..scoring_core import (
+from .scoring_core import (
     fast_calculate_score,
     lookup_reference_py,
     optimize_core_jit,

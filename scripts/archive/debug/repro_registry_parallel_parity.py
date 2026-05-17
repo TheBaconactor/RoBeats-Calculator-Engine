@@ -28,7 +28,7 @@ from gear_optimizer.core.constants import (
     TOTAL_GEM_BUDGET,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem import fields
 from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
 from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_base_fixed_stats, ga_upload_item_stats

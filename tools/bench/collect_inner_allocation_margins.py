@@ -28,7 +28,7 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.config import load_config, load_paths_cache
 from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.csv_parser import read_table
-from gear_optimizer.solver.scoring_core import (
+from gear_optimizer.solver.scoring.scoring_core import (
     fast_calculate_score,
     lookup_reference_jit,
     optimize_core_exact_bounded_jit,

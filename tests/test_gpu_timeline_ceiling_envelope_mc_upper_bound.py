@@ -43,7 +43,7 @@ def test_gpu_ceiling_timeline_is_upper_bound_over_mc_samples(monkeypatch) -> Non
         generate_perfect_timing_events_ms,
         prepare_perfect_timing_envelope,
     )
-    from gear_optimizer.solver.scoring_core import fast_calculate_score
+    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
@@ -174,7 +174,7 @@ def test_gpu_ceiling_timeline_regression_normal_hi_can_underperform_mc(monkeypat
         generate_perfect_timing_events_ms,
         prepare_perfect_timing_envelope,
     )
-    from gear_optimizer.solver.scoring_core import fast_calculate_score
+    from gear_optimizer.solver.scoring.scoring_core import fast_calculate_score
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields

@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_refs import execute_load_refs
+from gear_optimizer.solver.gpu_executor_registry import execute_load_refs
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 
