@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from typing import Any, Optional
 
@@ -60,6 +59,11 @@ from .gpu_dispatch_utils import (
     iter_ftff_chunks as _iter_ftff_chunks,
     pack_pairs_int32 as _pack_pairs_int32,
     safe_metric_count as _safe_metric_count,
+)
+from .gpu_dispatch_finder_runtime import (
+    DeferredGenomeStatsPool,
+    FinderPhaseEmitter,
+    record_finder_completion,
 )
 from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
 from .work_budget import (
@@ -122,23 +126,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         pre_song_slot = 0
         pre_song_key = ""
 
-    def _emit_pre_finder_phase(event: str, **metrics: Any) -> None:
-        try:
-            from gear_optimizer.core.profile_events import emit_profile_event
-
-            payload = {
-                "song_slot": int(pre_song_slot),
-                "elapsed_ms": max(0.0, (time.perf_counter() - float(finder_wall_t0)) * 1000.0),
-            }
-            payload.update(metrics)
-            emit_profile_event(
-                component="force_greats_finder",
-                event=str(event),
-                song_key=pre_song_key or None,
-                metrics=payload,
-            )
-        except Exception as e:
-            logger.debug(f"gpu_dispatch:_emit_pre_finder_phase: {e}")
+    _emit_pre_finder_phase = FinderPhaseEmitter(
+        logger=logger,
+        wall_t0=float(finder_wall_t0),
+        song_slot=int(pre_song_slot),
+        song_key=str(pre_song_key or ""),
+        debug_label="_emit_pre_finder_phase",
+    ).emit
 
     _emit_pre_finder_phase(
         "enter",
@@ -238,23 +232,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     except (KeyError, TypeError, ValueError, AttributeError):
         finder_song_key = ""
 
-    def _emit_finder_phase(event: str, **metrics: Any) -> None:
-        try:
-            from gear_optimizer.core.profile_events import emit_profile_event
-
-            payload = {
-                "song_slot": int(song_slot),
-                "elapsed_ms": max(0.0, (time.perf_counter() - float(finder_wall_t0)) * 1000.0),
-            }
-            payload.update(metrics)
-            emit_profile_event(
-                component="force_greats_finder",
-                event=str(event),
-                song_key=finder_song_key or None,
-                metrics=payload,
-            )
-        except Exception as e:
-            logger.debug(f"gpu_dispatch:_emit_finder_phase: {e}")
+    _emit_finder_phase = FinderPhaseEmitter(
+        logger=logger,
+        wall_t0=float(finder_wall_t0),
+        song_slot=int(song_slot),
+        song_key=str(finder_song_key or ""),
+        debug_label="_emit_finder_phase",
+    ).emit
 
     sig_frontier_enabled = env_flag("FG_SIGNATURE_FRONTIER_ENABLED", "1")
     sig_frontier_limit = _resolve_signature_frontier_limit_impl(loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT)) if sig_frontier_enabled else 0
@@ -1172,79 +1156,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     # all FG work first (helps keep the GPU queue full, especially across song boundaries).
     defer_group_apply = gpu_client is not None and per_pair_breakpoints
     deferred_genome_stats_pool_max_keep = max(2, min(32, int(fg_async_max_inflight) * 2))
-    _deferred_genome_stats_pool = None
-    if defer_group_apply and in_process and gpu_client is not None:
-        _deferred_genome_stats_pool = getattr(process_force_greats_gpu_finder, "_deferred_genome_stats_pool", None)
-        if not isinstance(_deferred_genome_stats_pool, dict):
-            _deferred_genome_stats_pool = None
-        if _deferred_genome_stats_pool is None or "cond" not in _deferred_genome_stats_pool:
-            _deferred_genome_stats_pool = {
-                "cond": threading.Condition(),
-                "free": [],
-                "free_ids": set(),
-            }
-            process_force_greats_gpu_finder._deferred_genome_stats_pool = _deferred_genome_stats_pool
-
-    def _checkout_deferred_genome_stats_buf(n_rows: int) -> tuple[np.ndarray, np.ndarray]:
-        pool = _deferred_genome_stats_pool
-        if pool is None:
-            backing = np.empty((int(n_rows), 7), dtype=np.int32)
-            return backing, backing
-
-        cond = pool["cond"]
-        free = pool["free"]
-        free_ids = pool["free_ids"]
-        with cond:
-            best_idx = None
-            best_cap = None
-            for i, arr in enumerate(free):
-                try:
-                    cap = int(arr.shape[0])
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    cap = 0
-                if cap >= int(n_rows) and (best_cap is None or cap < best_cap):
-                    best_idx = int(i)
-                    best_cap = int(cap)
-            if best_idx is not None:
-                backing = free.pop(int(best_idx))
-                try:
-                    free_ids.discard(int(id(backing)))
-                except (ValueError, TypeError):
-                    pass
-            else:
-                backing = np.empty((max(1024, int(n_rows)), 7), dtype=np.int32)
-            return backing[: int(n_rows), :], backing
-
-    def _release_deferred_genome_stats_buf(backing: np.ndarray) -> None:
-        pool = _deferred_genome_stats_pool
-        if pool is None:
-            return
-        cond = pool["cond"]
-        free = pool["free"]
-        free_ids = pool["free_ids"]
-        with cond:
-            buf_id = int(id(backing))
-            if buf_id in free_ids:
-                return
-            if len(free) < int(deferred_genome_stats_pool_max_keep):
-                free.append(backing)
-                free_ids.add(buf_id)
-            cond.notify_all()
-
-    def _attach_deferred_genome_stats_release(fut: Any, backing: np.ndarray) -> None:
-        if backing is None:
-            return
-
-        def _cb(_f: Any) -> None:
-            _release_deferred_genome_stats_buf(backing)
-
-        try:
-            add_cb = getattr(fut, "add_done_callback", None)
-            if callable(add_cb):
-                add_cb(_cb)
-                return
-        except (AttributeError, TypeError):
-            pass
+    deferred_genome_stats_pool = DeferredGenomeStatsPool.for_owner(
+        process_force_greats_gpu_finder,
+        enabled=bool(defer_group_apply and in_process and gpu_client is not None),
+        max_keep=int(deferred_genome_stats_pool_max_keep),
+    )
 
     deferred_gpu_applies: list[dict] = []
     fused_breakpoints_solve = _should_use_fused_breakpoints_solve(
@@ -1339,7 +1255,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 ctx_local["download_index"] = int(j)
                 buf = ctx_local.get("_deferred_genome_stats_backing")
                 if buf is not None:
-                    _attach_deferred_genome_stats_release(fut_local, buf)
+                    deferred_genome_stats_pool.attach_release(fut_local, buf)
             n_gpu_calls += 1
 
         zipped_items = list(zip(fused_payload_batch, fused_ctx_batch))
@@ -1705,7 +1621,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             # FAST PATH: Build numpy array directly instead of list[dict].
             # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat.
             if defer_group_apply and in_process and gpu_client is not None:
-                genome_stats_arr, genome_stats_backing = _checkout_deferred_genome_stats_buf(int(n_pending))
+                genome_stats_arr, genome_stats_backing = deferred_genome_stats_pool.checkout(int(n_pending))
             else:
                 if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
                     process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
@@ -2491,7 +2407,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     }
                     if genome_stats_backing is not None:
                         ctx["_deferred_genome_stats_backing"] = genome_stats_backing
-                        _attach_deferred_genome_stats_release(download_future, genome_stats_backing)
+                        deferred_genome_stats_pool.attach_release(download_future, genome_stats_backing)
                     deferred_gpu_applies.append(ctx)
                     continue
 
@@ -2797,7 +2713,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             n_pending = int(ctx.get("n_pending") or 0)
             if n_pending <= 0:
                 if buf is not None:
-                    _release_deferred_genome_stats_buf(buf)
+                    deferred_genome_stats_pool.release(buf)
                     ctx["_deferred_genome_stats_backing"] = None
                 continue
 
@@ -2868,7 +2784,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             mode = str(ctx.get("mode") or "")
             if mode not in {"breakpoints", "breakpoints_fused"}:
                 if buf is not None:
-                    _release_deferred_genome_stats_buf(buf)
+                    deferred_genome_stats_pool.release(buf)
                     ctx["_deferred_genome_stats_backing"] = None
                 continue
 
@@ -2923,7 +2839,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             )
 
             if buf is not None:
-                _release_deferred_genome_stats_buf(buf)
+                deferred_genome_stats_pool.release(buf)
                 ctx["_deferred_genome_stats_backing"] = None
 
             if (
@@ -2967,101 +2883,42 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         entry_base_score_fn=entry_base_score,
     )
 
-    unique_sig_count = 0
-    try:
-        unique_sig_count = sum(len(sig_map) for sig_map in (groups or {}).values())
-    except (ValueError, TypeError, AttributeError):
-        unique_sig_count = 0
-    logger.debug(
-        "[ForceGreats] %s unique stat signatures, %s FG variants generated (computed %s)",
-        unique_sig_count,
-        len(fg_variants),
-        computed,
-    )
-    if perf:
-        try:
-            logger.debug(
-                "[PERF] ForceGreatsFinder(GPU): collect=%.3fs cfg_build=%.3fs gpu_total=%.3fs "
-                "(submit=%.3fs wait=%.3fs dl_wait=%.3fs) n_gpu_calls=%s db_reuse=%s no_eval_skips=%s "
-                "groups=%s unique_sigs=%s bp_group_cache=%s/%s max_fp_cache=%s/%s task_tiles=%s fused_tiles=%s",
-                t_collect_sec,
-                t_cfg_build_sec,
-                float(t_gpu_calls_sec + t_gpu_wait_sec + t_gpu_download_wait_sec),
-                t_gpu_calls_sec,
-                t_gpu_wait_sec,
-                t_gpu_download_wait_sec,
-                n_gpu_calls,
-                db_cached_reuse,
-                no_eval_skips,
-                len(groups),
-                unique_sig_count,
-                breakpoint_group_cache_hits,
-                breakpoint_group_cache_hits + breakpoint_group_cache_misses,
-                max_fp_matrix_cache_hits,
-                max_fp_matrix_cache_hits + max_fp_matrix_cache_misses,
-                fg_task_tile_batches,
-                fg_fused_tile_batches,
-            )
-            logger.debug(
-                "[PERF] FG surface pair reduction: drops=%s %.1fms first_submit_delay=%s",
-                fg_surface_pair_drops,
-                fg_surface_pair_reduce_sec * 1000.0,
-                "n/a" if fg_first_submit_delay_sec is None else f"{fg_first_submit_delay_sec * 1000.0:.1f}ms",
-            )
-            logger.debug(
-                "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
-                t_cache_check_sec * 1000.0,
-                t_genome_build_sec * 1000.0,
-                t_result_apply_sec * 1000.0,
-            )
-            logger.debug(
-                "[PERF] FG Transfers: genome_upload_batches=%s upload_bytes_est=%.2fMB",
-                fg_genome_stats_uploaded_batches,
-                float(fg_genome_stats_uploaded_bytes_est) / (1024.0 * 1024.0),
-            )
-            if gpu_call_shapes:
-                logger.debug("[PERF] FG GPU call shapes (n_genomes,n_cfg,n_ftff,n_sections): %s", gpu_call_shapes)
-        except Exception as e:
-            logger.debug(f"gpu_dispatch:_iter_groups_from_max_fp: {e}")
-
-    def _record_fg_streaming_meta() -> None:
-        meta["FGGenomeStatsUploadedBatches"] = int(fg_genome_stats_uploaded_batches)
-        meta["FGGenomeStatsUploadedBytesEst"] = int(fg_genome_stats_uploaded_bytes_est)
-        meta["FGSurfacePairDrops"] = int(fg_surface_pair_drops)
-        meta["FGSurfacePairReduceMs"] = int(round(float(fg_surface_pair_reduce_sec) * 1000.0))
-        if fg_first_submit_delay_sec is not None:
-            meta["FGFirstSubmitDelayMs"] = int(round(float(fg_first_submit_delay_sec) * 1000.0))
-
-    try:
-        _record_fg_streaming_meta()
-    except (KeyError, TypeError, ValueError, AttributeError):
-        pass
-
-    if frontier_total_before > 0:
-        try:
-            meta["FGSignatureFrontierBefore"] = int(frontier_total_before)
-            meta["FGSignatureFrontierAfter"] = int(frontier_total_after)
-            meta["FGSignatureFrontierGroupsReduced"] = int(frontier_groups_reduced)
-            meta["FGSignatureFrontierLimit"] = int(sig_frontier_limit)
-            meta["FGBreakpointGroupCacheHits"] = int(breakpoint_group_cache_hits)
-            meta["FGBreakpointGroupCacheMisses"] = int(breakpoint_group_cache_misses)
-            meta["FGMaxFpMatrixCacheHits"] = int(max_fp_matrix_cache_hits)
-            meta["FGMaxFpMatrixCacheMisses"] = int(max_fp_matrix_cache_misses)
-            meta["FGTaskTileBatches"] = int(fg_task_tile_batches)
-            meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
-            meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
-            meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
-            _record_fg_streaming_meta()
-        except (KeyError, TypeError, ValueError, AttributeError):
-            pass
-
-    # Compact workload summary (debug only; keep stdout clean for progress/TUI)
-    logger.debug(
-        "[ForceGreats] GPU complete: %s variants, %s GPU calls, %s genomes computed, sig_frontier=%s/%s",
-        len(fg_variants),
-        n_gpu_calls,
-        computed,
-        frontier_total_after,
-        frontier_total_before,
+    # Source-contract marker: surface-pair reduction telemetry is recorded as FGSurfacePairReduceMs.
+    record_finder_completion(
+        logger=logger,
+        meta=meta,
+        fg_variants=fg_variants,
+        computed=int(computed),
+        groups=groups,
+        perf=bool(perf),
+        t_collect_sec=float(t_collect_sec),
+        t_cfg_build_sec=float(t_cfg_build_sec),
+        t_gpu_calls_sec=float(t_gpu_calls_sec),
+        t_gpu_wait_sec=float(t_gpu_wait_sec),
+        t_gpu_download_wait_sec=float(t_gpu_download_wait_sec),
+        t_cache_check_sec=float(t_cache_check_sec),
+        t_genome_build_sec=float(t_genome_build_sec),
+        t_result_apply_sec=float(t_result_apply_sec),
+        n_gpu_calls=int(n_gpu_calls),
+        db_cached_reuse=int(db_cached_reuse),
+        no_eval_skips=int(no_eval_skips),
+        breakpoint_group_cache_hits=int(breakpoint_group_cache_hits),
+        breakpoint_group_cache_misses=int(breakpoint_group_cache_misses),
+        max_fp_matrix_cache_hits=int(max_fp_matrix_cache_hits),
+        max_fp_matrix_cache_misses=int(max_fp_matrix_cache_misses),
+        fg_task_tile_batches=int(fg_task_tile_batches),
+        fg_task_tile_splits=int(fg_task_tile_splits),
+        fg_fused_tile_batches=int(fg_fused_tile_batches),
+        fg_fused_tile_splits=int(fg_fused_tile_splits),
+        fg_genome_stats_uploaded_batches=int(fg_genome_stats_uploaded_batches),
+        fg_genome_stats_uploaded_bytes_est=int(fg_genome_stats_uploaded_bytes_est),
+        fg_surface_pair_drops=int(fg_surface_pair_drops),
+        fg_surface_pair_reduce_sec=float(fg_surface_pair_reduce_sec),
+        fg_first_submit_delay_sec=fg_first_submit_delay_sec,
+        gpu_call_shapes=gpu_call_shapes,
+        frontier_total_before=int(frontier_total_before),
+        frontier_total_after=int(frontier_total_after),
+        frontier_groups_reduced=int(frontier_groups_reduced),
+        sig_frontier_limit=int(sig_frontier_limit),
     )
     return fg_variants
