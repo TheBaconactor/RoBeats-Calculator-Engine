@@ -803,6 +803,98 @@ def fg_upload_great_candidate_timestamps_prefix_kernel(n: ti.i32, timestamps: ti
 
 
 @ti.kernel
+def fg_debug_timeline_forced_counts_kernel(
+    n: ti.i32,
+    raw_fever_fill: ti.f32,
+    fever_duration: ti.f32,
+    forced_counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    n_forced: ti.i32,
+    out_mask: ti.types.ndarray(dtype=ti.u32, ndim=1),
+    out_counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    head_len: ti.i32 = ti.min(n, 100)
+    m0 = ti.cast(0, ti.u32)
+    m1 = ti.cast(0, ti.u32)
+    m2 = ti.cast(0, ti.u32)
+    m3 = ti.cast(0, ti.u32)
+    body_fever: ti.i32 = 0
+    body_normal: ti.i32 = 0
+    fever_acts: ti.i32 = 0
+
+    non_fever_base: ti.i32 = ti.cast(ti.ceil(raw_fever_fill), ti.i32)
+    idx: ti.i32 = 0
+    section: ti.i32 = 0
+    carry_time: ti.f32 = 0.0
+
+    while idx < n and section < n_forced + 1:
+        forced: ti.i32 = 0
+        if section < n_forced:
+            forced = forced_counts[section]
+        if forced > non_fever_base:
+            forced = non_fever_base
+        if forced < 0:
+            forced = 0
+
+        notes_needed: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(forced, ti.f32) * 0.5), ti.i32)
+        if section == 0:
+            notes_needed -= 1
+        if notes_needed < 0:
+            notes_needed = 0
+
+        section_start: ti.i32 = idx
+        idx += notes_needed
+
+        if idx >= n:
+            body_start: ti.i32 = ti.max(100, section_start)
+            if body_start < n:
+                body_normal += n - body_start
+            break
+
+        if forced > 0:
+            forced_start: ti.i32 = section_start
+            if section != 0:
+                forced_start = section_start + 1
+            forced_end: ti.i32 = ti.min(idx - 1, forced_start + forced - 1)
+            if forced_end >= forced_start and forced_end < n:
+                cand: ti.f32 = song_timestamps_great_candidate[forced_end]
+                if cand > carry_time:
+                    carry_time = cand
+
+        fever_start_time: ti.f32 = song_timestamps[idx]
+        if carry_time > fever_start_time:
+            fever_start_time = carry_time
+        fever_end_idx: ti.i32 = _binary_search_left_song_timestamps(n, fever_start_time + fever_duration)
+        fever_acts += 1
+
+        fever_head_end: ti.i32 = ti.min(fever_end_idx, head_len)
+        if idx < fever_head_end:
+            masks = _or_head_mask_range(m0, m1, m2, m3, idx, fever_head_end)
+            m0 = masks[0]
+            m1 = masks[1]
+            m2 = masks[2]
+            m3 = masks[3]
+        if fever_end_idx > head_len:
+            body_fever += ti.min(fever_end_idx, n) - ti.max(idx, head_len)
+
+        body_section_start: ti.i32 = ti.max(section_start, head_len)
+        if idx > body_section_start:
+            body_normal += idx - body_section_start
+
+        idx = fever_end_idx
+        section += 1
+
+    if idx < n:
+        body_tail_start: ti.i32 = ti.max(idx, head_len)
+        if body_tail_start < n:
+            body_normal += n - body_tail_start
+
+    out_mask[0] = m0
+    out_mask[1] = m1
+    out_mask[2] = m2
+    out_mask[3] = m3
+    out_counts[0] = body_fever
+    out_counts[1] = body_normal
+    out_counts[2] = fever_acts
 
 
 @ti.kernel

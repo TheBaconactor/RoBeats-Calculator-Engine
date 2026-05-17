@@ -24,6 +24,7 @@ from .fg_policy import (
     build_fg_result_dict,
     build_penalty_table_and_body,
     extract_fg_song_inputs,
+    extract_song_meta,
     resolve_stat_factors,
 )
 
@@ -118,9 +119,9 @@ def score_stats_exact(
     fever_mask_buffer=None,
 ) -> int:
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-    metadata = calc_song.get("metadata", {}) or {}
-    primary = str(metadata.get("Primary Color", "") or "")
-    secondary = str(metadata.get("Secondary Color", "") or "")
+    song_meta = extract_song_meta(calc_song)
+    primary = song_meta.primary_color
+    secondary = song_meta.secondary_color
 
     pp_factor = lookup_reference_py(safe_int(stats.get("Perfect Points", 0), 0), ref_arrays["Perfect Points"], TOTAL_ROWS)
     combo_mul = lookup_reference_py(

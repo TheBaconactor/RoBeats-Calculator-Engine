@@ -29,7 +29,6 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
     FG_SEARCH_RADIUS,
 )
-from ...core.color_flags import build_color_flags
 from ...core.utils import full_pipeline_signature, safe_int
 
 from ..fever_timeline import (
@@ -43,13 +42,19 @@ from ..scoring_core import (
 )
 
 from .runtime_state import FORCE_GREATS_ALGO_VERSION, FG_CACHE
-from .stats_scoring import _force_greats_counts_to_dict, _song_cache_key_for_fg_timeline
+from .stats_scoring import _song_cache_key_for_fg_timeline
 from .fg_policy import (
+    BASE_STAT_KEYS,
     accumulate_fg_penalties,
     build_fg_result_dict,
     build_force_greats_counts_list,
+    build_gpu_fg_result_dict,
     build_penalty_table_and_body,
+    copy_base_stats,
+    extract_fg_context,
     extract_fg_song_inputs,
+    extract_song_meta,
+    ftff_pairs_for_search,
     iter_ft_ff_budget_pairs,
     normalize_ft_ff_search_ranges,
     resolve_stat_factors,
@@ -121,10 +126,6 @@ def _get_fg_timeline_buffers(total_notes: int):
         section_skip_wasted[:] = False
 
     return fever_mask, section_start, section_forced, section_fill_penalty, section_skip_wasted
-
-
-def _normalize_ft_ff_search_ranges(search_ranges):
-    return normalize_ft_ff_search_ranges(search_ranges, total_budget=TOTAL_GEM_BUDGET)
 
 
 def _iter_ft_ff_budget_pairs(start_ft, end_ft, start_ff, end_ff, total_budget):
@@ -327,7 +328,8 @@ def evaluate_fg_with_gem_iteration(
     if not base_stats or not calc_song:
         return None
 
-    song_inputs = extract_fg_song_inputs(calc_song)
+    fg_context = extract_fg_context(calc_song, selected_color)
+    song_inputs = fg_context.song_inputs
     if int(song_inputs.total_notes) <= 0:
         return None
 
@@ -340,15 +342,9 @@ def evaluate_fg_with_gem_iteration(
     ref_ff = ref_arrays["Fever Fill Rate"]
     ref_ft = ref_arrays["Fever Time"]
 
-    flags = build_color_flags(p_color, s_color, selected_color)
-    is_p_pp = flags["is_p_pp"]
-    is_s_pp = flags["is_s_pp"]
-    is_p_cm = flags["is_p_cm"]
-    is_s_cm = flags["is_s_cm"]
-    is_p_fm = flags["is_p_fm"]
-    is_s_fm = flags["is_s_fm"]
-    is_p_ov = flags["is_p_ov"]
-    is_s_ov = flags["is_s_ov"]
+    is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = (
+        fg_context.color_flags.optimizer_args()
+    )
 
     # Base stats (pre-gem)
     base_pp = base_stats.get("Perfect Points", 0)
@@ -363,7 +359,10 @@ def evaluate_fg_with_gem_iteration(
     force_counts = list(forced_counts or [])
     song_key = _song_cache_key_for_fg_timeline(calc_song)
 
-    start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
+    start_ft, end_ft, start_ff, end_ff = normalize_ft_ff_search_ranges(
+        search_ranges,
+        total_budget=TOTAL_GEM_BUDGET,
+    )
 
     # Collect candidates first (preserve deterministic (ft, ff) iteration order).
     candidates = []
@@ -579,26 +578,14 @@ def run_force_greats_hill_climb(
 
     # Selected element is a loadout/config property (overflow target), not always the song primary.
     # Default to song primary only if missing.
-    selected_color = selected_color or calc_song["metadata"].get("Primary Color", "Rush")
+    song_meta = extract_song_meta(calc_song, default_primary="Rush")
+    selected_color = selected_color or song_meta.primary_color or "Rush"
 
     # Extract base stats (before gems) - use stats directly since we want gear+mini stats
     # The GPU path now returns gem-adjusted stats, so we need to reverse
     # For simplicity, we can use the stats as-is since evaluate_fg_with_gem_iteration
     # handles the gem allocation internally
-    base_stats = {}
-    for key in [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Chill",
-        "Flow",
-        "Rush",
-        "Beat",
-        "Vibe",
-    ]:
-        base_stats[key] = stats.get(key, 0)
+    base_stats = copy_base_stats(stats)
 
     non_fever_base = baseline.get("non_fever_base", 20)
     # Calculate FT/FF search window (kept tight; full FT/FF × all FG configs explodes combinatorially)
@@ -622,39 +609,16 @@ def run_force_greats_hill_climb(
         try:
             from ..taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
-            song_inputs = extract_fg_song_inputs(calc_song)
+            fg_context = extract_fg_context(calc_song, selected_color)
+            song_inputs = fg_context.song_inputs
             if song_inputs.total_notes <= 0:
                 return None
 
-            p_color = song_inputs.primary_color
-            s_color = song_inputs.secondary_color
-
-            flags = build_color_flags(p_color, s_color, selected_color)
-            is_p_pp = flags["is_p_pp"]
-            is_s_pp = flags["is_s_pp"]
-            is_p_cm = flags["is_p_cm"]
-            is_s_cm = flags["is_s_cm"]
-            is_p_fm = flags["is_p_fm"]
-            is_s_fm = flags["is_s_fm"]
-            is_p_ft = flags["is_p_ft"]
-            is_s_ft = flags["is_s_ft"]
-            is_p_ff = flags["is_p_ff"]
-            is_s_ff = flags["is_s_ff"]
-            is_p_ov = flags["is_p_ov"]
-            is_s_ov = flags["is_s_ov"]
+            p_color = fg_context.primary_color
+            s_color = fg_context.secondary_color
 
             # FT/FF window list (no budgets here; GPU computes budget=total_budget-ft-ff)
-            start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
-            ftff_pairs = [
-                (ft, ff)
-                for ft, ff, _ in _iter_ft_ff_budget_pairs(
-                    start_ft,
-                    end_ft,
-                    start_ff,
-                    end_ff,
-                    TOTAL_GEM_BUDGET,
-                )
-            ]
+            ftff_pairs = ftff_pairs_for_search(search_ranges, total_budget=TOTAL_GEM_BUDGET)
 
             # Single-genome input (base stats; GPU allocates gems)
             genome_stats_list = [
@@ -678,18 +642,7 @@ def run_force_greats_hill_climb(
                 counts_list,
                 ftff_pairs,
                 n_sections=len(counts_list[0]) if counts_list else 1,
-                is_p_ft=is_p_ft,
-                is_s_ft=is_s_ft,
-                is_p_ff=is_p_ff,
-                is_s_ff=is_s_ff,
-                is_p_pp=is_p_pp,
-                is_s_pp=is_s_pp,
-                is_p_cm=is_p_cm,
-                is_s_cm=is_s_cm,
-                is_p_fm=is_p_fm,
-                is_s_fm=is_s_fm,
-                is_p_ov=is_p_ov,
-                is_s_ov=is_s_ov,
+                **fg_context.color_flags.as_dict(),
                 ref_arrays=ref_arrays,
                 total_budget=TOTAL_GEM_BUDGET,
                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -703,21 +656,12 @@ def run_force_greats_hill_climb(
                 list(counts_list[cfg_idx]) if (cfg_idx is not None and 0 <= int(cfg_idx) < len(counts_list)) else []
             )
 
-            result = {
-                "base_score": best.get("base_score", 0),
-                "final_score": best.get("final_score", 0),
-                "score_penalty": best.get("score_penalty", 0),
-                "fill_penalty": best.get("fill_penalty", 0),
-                "total_penalty": (best.get("score_penalty", 0) or 0) + (best.get("fill_penalty", 0) or 0),
-                "num_non_fever_sections": num_sections,
-                "penalty_analysis": {},  # optional; GPU path currently omits per-section breakdown
-                "config_counts": cfg_counts,
-                "config_dict": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
-                "non_fever_base": non_fever_base,
-                "gem_counts": best.get("gem_counts", {}) or {},
-                "FT": best.get("FT", 0),
-                "FF": best.get("FF", 0),
-            }
+            result = build_gpu_fg_result_dict(
+                best=best,
+                config_counts=cfg_counts,
+                num_sections=int(num_sections),
+                non_fever_base=int(non_fever_base),
+            )
             result["ForceGreats"] = {
                 "config": result.get("config_dict", {}),
                 "base_score": result.get("base_score", 0),
@@ -780,18 +724,7 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
 
     # Only these keys affect gem optimization + FG math; copying full stats dicts is unnecessary
     # and can be expensive for DB-cached payloads.
-    keys = (
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Beat",
-        "Vibe",
-        "Rush",
-        "Flow",
-        "Chill",
-    )
+    keys = BASE_STAT_KEYS
     gs = stats.get
 
     if not gem_counts:
@@ -887,7 +820,7 @@ def apply_force_greats_to_result(
         return None
 
     gem_counts = data_dict.get("GemCounts") or {}
-    selected_color = data_dict.get("Selected Element", calc_song["metadata"].get("Primary Color", ""))
+    selected_color = data_dict.get("Selected Element", extract_song_meta(calc_song).primary_color)
     ft_gems = data_dict.get("FT", 0)
     ff_gems = data_dict.get("FF", 0)
 

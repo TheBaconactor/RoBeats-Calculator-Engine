@@ -23,7 +23,7 @@ from ..fever_timeline import (
 )
 from ...core.ref_lookup import resolve_stat_factors
 
-from ..scoring_core import fast_calculate_score
+from ..scoring_core import fast_calculate_score, lookup_reference_py
 
 
 from gear_optimizer.core.parsing import env_get
@@ -254,9 +254,16 @@ def _fg_baseline_params_point(
     last_note_time: float,
     ref_arrays: dict,
 ) -> tuple[int, int]:
-    factors = resolve_stat_factors(stats, ref_arrays)
-    fever_fill_rate = float(factors.fever_fill_rate)
-    fever_time_stat = float(factors.fever_time_stat)
+    fever_fill_rate = lookup_reference_py(
+        safe_int(stats.get("Fever Fill Rate", 0), 0),
+        ref_arrays["Fever Fill Rate"],
+        TOTAL_ROWS,
+    )
+    fever_time_stat = lookup_reference_py(
+        safe_int(stats.get("Fever Time", 0), 0),
+        ref_arrays["Fever Time"],
+        TOTAL_ROWS,
+    )
     non_fever_section, non_fever_base = calculate_non_fever_sections(
         timestamps,
         total_notes,

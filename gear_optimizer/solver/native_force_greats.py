@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.core.color_flags import build_color_flags
+from gear_optimizer.core.color_flags import build_color_flag_values
 from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import fp_targets_to_forced_counts
@@ -18,28 +18,17 @@ from gear_optimizer.solver.scoring.fg_policy import (
     build_fg_result_dict,
     build_force_greats_counts_list,
     extract_fg_song_inputs,
-    iter_ft_ff_budget_pairs,
-    normalize_ft_ff_search_ranges,
+    ftff_pairs_for_search,
     resolve_stat_factors,
 )
 from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 
 
 def _ftff_pairs(search_ranges: tuple[int, int, int, int] | None) -> list[tuple[int, int]]:
-    start_ft, end_ft, start_ff, end_ff = normalize_ft_ff_search_ranges(
+    return ftff_pairs_for_search(
         search_ranges,
         total_budget=TOTAL_GEM_BUDGET,
     )
-    return [
-        (int(ft), int(ff))
-        for ft, ff, _ in iter_ft_ff_budget_pairs(
-            start_ft,
-            end_ft,
-            start_ff,
-            end_ff,
-            total_budget=TOTAL_GEM_BUDGET,
-        )
-    ]
 
 
 def _counts_list(num_sections: int, non_fever_base: int) -> list[tuple[int, ...]]:
@@ -359,7 +348,7 @@ def solve_native_force_greats_gpu_batch(
         counts = list(group["counts"])
         pairs = list(group["pairs"])
         selected_color = str(group["selected_color"] or "")
-        flags = build_color_flags(primary, secondary, selected_color)
+        flags = build_color_flag_values(primary, secondary, selected_color)
         cache = FgCandidateCacheShard.load(
             fg_context_digest(
                 calc_song=calc_song,
@@ -415,18 +404,7 @@ def solve_native_force_greats_gpu_batch(
 
             solve_kwargs = {
                 "n_sections": len(counts[0]),
-                "is_p_ft": flags["is_p_ft"],
-                "is_s_ft": flags["is_s_ft"],
-                "is_p_ff": flags["is_p_ff"],
-                "is_s_ff": flags["is_s_ff"],
-                "is_p_pp": flags["is_p_pp"],
-                "is_s_pp": flags["is_s_pp"],
-                "is_p_cm": flags["is_p_cm"],
-                "is_s_cm": flags["is_s_cm"],
-                "is_p_fm": flags["is_p_fm"],
-                "is_s_fm": flags["is_s_fm"],
-                "is_p_ov": flags["is_p_ov"],
-                "is_s_ov": flags["is_s_ov"],
+                **flags.as_dict(),
                 "ref_arrays": ref_arrays,
                 "total_budget": TOTAL_GEM_BUDGET,
                 "gem_scale_fever": GEM_SCALE_FEVER,

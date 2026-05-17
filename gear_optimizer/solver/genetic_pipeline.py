@@ -50,7 +50,7 @@ from ..core.constants import (
 )
 from ..core.config import GASettings as GARuntimeSettings, read_fg_candidate_limit
 from ..core.gem_defs import UserGemsSettings, build_gem_counts, build_gem_details
-from ..core.color_flags import build_color_flags
+from ..core.color_flags import build_color_flags, normalize_color_flags
 from ..core.profile_events import emit_profile_event
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -61,6 +61,7 @@ from .base_stats import (
 )
 from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from .scoring.stats_ops import apply_gems_to_base_stats
+from .scoring.fg_policy import extract_song_meta
 from ..data.models import GAEvolutionSettings
 from ..helpers.ga_helpers import (
     initialize_pools,
@@ -736,6 +737,7 @@ def decode_gpu_native_ga_runs_payload(
                             secondary_color=str(cfg_data.get("secondary_color", "") or ""),
                             run_idx=int(sel_run_idx[i]),
                             row_idx=int(sel_rows[i]),
+                            prefer_grid=True,
                         )
                         if isinstance(fg_group_meta, dict):
                             data_obj["_fg_group_meta"] = fg_group_meta
@@ -1175,6 +1177,7 @@ def decode_gpu_native_ga_runs_payload(
                 secondary_color=str(cfg_data.get("secondary_color", "") or ""),
                 run_idx=int(sel_run_idx[i]),
                 row_idx=int(sel_rows[i]),
+                prefer_grid=True,
             )
             if isinstance(fg_group_meta, dict):
                 data_obj["_fg_group_meta"] = fg_group_meta
@@ -1429,18 +1432,20 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
         _emit_ga_setup_phase(phase="ga_upload_init_heuristic_topk", start=t_phase)
 
-    is_p_ft = color_flags.get("is_p_ft", 0)
-    is_s_ft = color_flags.get("is_s_ft", 0)
-    is_p_ff = color_flags.get("is_p_ff", 0)
-    is_s_ff = color_flags.get("is_s_ff", 0)
-    is_p_pp = color_flags.get("is_p_pp", 0)
-    is_s_pp = color_flags.get("is_s_pp", 0)
-    is_p_cm = color_flags.get("is_p_cm", 0)
-    is_s_cm = color_flags.get("is_s_cm", 0)
-    is_p_fm = color_flags.get("is_p_fm", 0)
-    is_s_fm = color_flags.get("is_s_fm", 0)
-    is_p_ov = color_flags.get("is_p_ov", 0)
-    is_s_ov = color_flags.get("is_s_ov", 0)
+    (
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+    ) = normalize_color_flags(color_flags).as_tuple()
 
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
@@ -2258,8 +2263,9 @@ def solve_coevolution_genetic(
     ga_settings = ga_settings or GAEvolutionSettings.from_cfg(cfg)
 
     if solver_ctx is None:
-        p_color = calc_song["metadata"].get("Primary Color", "Rush")
-        s_color = calc_song["metadata"].get("Secondary Color", "")
+        song_meta = extract_song_meta(calc_song, default_primary="Rush")
+        p_color = song_meta.primary_color
+        s_color = song_meta.secondary_color
         selected_color = p_color
         slots = list(GEAR_SLOTS)
 

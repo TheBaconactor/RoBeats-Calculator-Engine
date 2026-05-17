@@ -7,7 +7,9 @@ receive stat-gem contributions and which lanes receive overflow gems.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any, Mapping
 
 
 _COLOR_FLAG_KEYS = (
@@ -24,6 +26,40 @@ _COLOR_FLAG_KEYS = (
     "is_p_ov",
     "is_s_ov",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ColorFlags:
+    is_p_ft: int = 0
+    is_s_ft: int = 0
+    is_p_ff: int = 0
+    is_s_ff: int = 0
+    is_p_pp: int = 0
+    is_s_pp: int = 0
+    is_p_cm: int = 0
+    is_s_cm: int = 0
+    is_p_fm: int = 0
+    is_s_fm: int = 0
+    is_p_ov: int = 0
+    is_s_ov: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {key: int(getattr(self, key)) for key in _COLOR_FLAG_KEYS}
+
+    def as_tuple(self) -> tuple[int, ...]:
+        return tuple(int(getattr(self, key)) for key in _COLOR_FLAG_KEYS)
+
+    def optimizer_args(self) -> tuple[int, int, int, int, int, int, int, int]:
+        return (
+            int(self.is_p_pp),
+            int(self.is_s_pp),
+            int(self.is_p_cm),
+            int(self.is_s_cm),
+            int(self.is_p_fm),
+            int(self.is_s_fm),
+            int(self.is_p_ov),
+            int(self.is_s_ov),
+        )
 
 
 @lru_cache(maxsize=64)
@@ -44,9 +80,20 @@ def _build_color_flags_tuple(p: str, s: str, sel: str) -> tuple[int, ...]:
     )
 
 
-def build_color_flags(p_color: str | None, s_color: str | None, selected_color: str | None) -> dict[str, int]:
+def normalize_color_flags(flags: ColorFlags | Mapping[str, Any] | None) -> ColorFlags:
+    if isinstance(flags, ColorFlags):
+        return flags
+    source = flags or {}
+    return ColorFlags(**{key: int(source.get(key, 0) or 0) for key in _COLOR_FLAG_KEYS})
+
+
+def build_color_flag_values(p_color: str | None, s_color: str | None, selected_color: str | None) -> ColorFlags:
     p = str(p_color or "")
     s = str(s_color or "")
     sel = str(selected_color or "")
     vals = _build_color_flags_tuple(p, s, sel)
-    return dict(zip(_COLOR_FLAG_KEYS, vals))
+    return ColorFlags(**dict(zip(_COLOR_FLAG_KEYS, vals)))
+
+
+def build_color_flags(p_color: str | None, s_color: str | None, selected_color: str | None) -> dict[str, int]:
+    return build_color_flag_values(p_color, s_color, selected_color).as_dict()
