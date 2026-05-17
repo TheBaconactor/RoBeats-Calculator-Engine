@@ -24,7 +24,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from ...core.color_flags import build_color_flags
+from ...core.color_flags import build_color_flag_values
 from ...core.gem_defs import UserGemsSettings, build_gem_counts
 
 from ..fever_timeline import (
@@ -541,15 +541,8 @@ def solve_best_fever_combination(
     best_score = -1
     best_tuple = None
 
-    flags = build_color_flags(p_color, s_color, selected_color)
-    is_p_pp = flags["is_p_pp"]
-    is_s_pp = flags["is_s_pp"]
-    is_p_cm = flags["is_p_cm"]
-    is_s_cm = flags["is_s_cm"]
-    is_p_fm = flags["is_p_fm"]
-    is_s_fm = flags["is_s_fm"]
-    is_p_ov = flags["is_p_ov"]
-    is_s_ov = flags["is_s_ov"]
+    color_flags = build_color_flag_values(p_color, s_color, selected_color)
+    is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = color_flags.optimizer_args()
 
     base_beat = base_stats.get("Beat", 0)
     base_vibe = base_stats.get("Vibe", 0)
@@ -591,11 +584,6 @@ def solve_best_fever_combination(
     # and per-work-item fever mask transfers.
     if use_gpu:
         # Compute color contribution flags for FT/FF gems (FT gems add Beat, FF gems add Vibe).
-        is_p_ft = flags["is_p_ft"]
-        is_s_ft = flags["is_s_ft"]
-        is_p_ff = flags["is_p_ff"]
-        is_s_ff = flags["is_s_ff"]
-
         try:
             song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
         except Exception as e:
@@ -619,20 +607,7 @@ def solve_best_fever_combination(
             base_fixed_stats=base_fixed_stats,
             timeline_grid=calc_song,
             ref_arrays=ref_arrays,
-            flags={
-                "is_p_ft": int(is_p_ft),
-                "is_s_ft": int(is_s_ft),
-                "is_p_ff": int(is_p_ff),
-                "is_s_ff": int(is_s_ff),
-                "is_p_pp": int(is_p_pp),
-                "is_s_pp": int(is_s_pp),
-                "is_p_cm": int(is_p_cm),
-                "is_s_cm": int(is_s_cm),
-                "is_p_fm": int(is_p_fm),
-                "is_s_fm": int(is_s_fm),
-                "is_p_ov": int(is_p_ov),
-                "is_s_ov": int(is_s_ov),
-            },
+            flags=color_flags.as_dict(),
             total_budget=int(TOTAL_GEM_BUDGET),
             gem_scale_fever=int(GEM_SCALE_FEVER),
             song_slot=int(song_slot),

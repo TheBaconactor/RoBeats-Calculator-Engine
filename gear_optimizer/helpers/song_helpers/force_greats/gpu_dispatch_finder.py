@@ -28,7 +28,7 @@ from .entry_resolution import (
     selected_count as _selected_count,
     sig_results_has_fg_improvement as _sig_results_has_fg_improvement,
 )
-from ....core.color_flags import build_color_flags
+from ....core.color_flags import build_color_flag_values
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
 from ....solver.taichi_gem.ftff_combos import collect_ftff_pairs_from_centers
@@ -577,18 +577,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
             submit_kwargs = dict(
                 n_sections=n_sections,
-                is_p_ft=is_p_ft,
-                is_s_ft=is_s_ft,
-                is_p_ff=is_p_ff,
-                is_s_ff=is_s_ff,
-                is_p_pp=is_p_pp,
-                is_s_pp=is_s_pp,
-                is_p_cm=is_p_cm,
-                is_s_cm=is_s_cm,
-                is_p_fm=is_p_fm,
-                is_s_fm=is_s_fm,
-                is_p_ov=is_p_ov,
-                is_s_ov=is_s_ov,
+                **flag_kwargs,
                 ref_arrays=ref_arrays,
                 total_budget=TOTAL_GEM_BUDGET,
                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -1511,36 +1500,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     section_k1_valid_fps=plateau_k1_valid,
                 )
 
-            if perf:
-                t_cfg_build_sec += time.perf_counter() - _t_cfg0
+        if perf:
+            t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
-        flags = build_color_flags(p_color, s_color, sel_color)
-        is_p_pp = flags["is_p_pp"]
-        is_s_pp = flags["is_s_pp"]
-        is_p_cm = flags["is_p_cm"]
-        is_s_cm = flags["is_s_cm"]
-        is_p_fm = flags["is_p_fm"]
-        is_s_fm = flags["is_s_fm"]
-        is_p_ft = flags["is_p_ft"]
-        is_s_ft = flags["is_s_ft"]
-        is_p_ff = flags["is_p_ff"]
-        is_s_ff = flags["is_s_ff"]
-        is_p_ov = flags["is_p_ov"]
-        is_s_ov = flags["is_s_ov"]
+        color_flags = build_color_flag_values(p_color, s_color, sel_color)
+        flag_kwargs = color_flags.as_dict()
         fused_solve_kwargs_static = {
             "n_sections": int(n_sections),
-            "is_p_ft": is_p_ft,
-            "is_s_ft": is_s_ft,
-            "is_p_ff": is_p_ff,
-            "is_s_ff": is_s_ff,
-            "is_p_pp": is_p_pp,
-            "is_s_pp": is_s_pp,
-            "is_p_cm": is_p_cm,
-            "is_s_cm": is_s_cm,
-            "is_p_fm": is_p_fm,
-            "is_s_fm": is_s_fm,
-            "is_p_ov": is_p_ov,
-            "is_s_ov": is_s_ov,
+            **flag_kwargs,
             "ref_arrays": ref_arrays,
             "total_budget": TOTAL_GEM_BUDGET,
             "gem_scale_fever": GEM_SCALE_FEVER,
@@ -2143,10 +2110,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         max_fp_matrix,
                         n_sections=int(n_sections),
                         total_budget=int(TOTAL_GEM_BUDGET),
-                        is_p_ft=int(is_p_ft),
-                        is_s_ft=int(is_s_ft),
-                        is_p_ff=int(is_p_ff),
-                        is_s_ff=int(is_s_ff),
+                        is_p_ft=int(color_flags.is_p_ft),
+                        is_s_ft=int(color_flags.is_s_ft),
+                        is_p_ff=int(color_flags.is_p_ff),
+                        is_s_ff=int(color_flags.is_s_ff),
                     )
                     surface_drops_i = int(surface_reduction.dropped)
                     if surface_drops_i > 0:
@@ -2443,18 +2410,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 counts_for_solve,
                                 ftff_chunk,
                                 n_sections=n_sections,
-                                is_p_ft=is_p_ft,
-                                is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff,
-                                is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp,
-                                is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm,
-                                is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm,
-                                is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov,
-                                is_s_ov=is_s_ov,
+                                **flag_kwargs,
                                 ref_arrays=ref_arrays,
                                 total_budget=TOTAL_GEM_BUDGET,
                                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -2653,18 +2609,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 counts_list,
                                 ftff_chunk,
                                 n_sections=n_sections,
-                                is_p_ft=is_p_ft,
-                                is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff,
-                                is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp,
-                                is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm,
-                                is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm,
-                                is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov,
-                                is_s_ov=is_s_ov,
+                                **flag_kwargs,
                                 ref_arrays=ref_arrays,
                                 total_budget=TOTAL_GEM_BUDGET,
                                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -2722,18 +2667,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         counts_list,
                         ftff_pairs,
                         n_sections=n_sections,
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
+                        **flag_kwargs,
                         ref_arrays=ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
