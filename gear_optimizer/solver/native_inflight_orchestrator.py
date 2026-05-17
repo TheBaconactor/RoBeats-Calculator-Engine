@@ -91,7 +91,6 @@ def run_native_inflight_song_pipeline(
     completed_songs: set[str],
     memory_resume_tracker=None,
     post_queue=None,
-    total_tasks: int | None = None,
     stop_requested=None,
     progress_cb=None,
     bundle_completed_cb=None,

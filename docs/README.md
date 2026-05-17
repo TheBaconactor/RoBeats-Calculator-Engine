@@ -24,7 +24,6 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 ## Integration and Correspondence
 
 - [integration/DB_READY_FOR_FRONTEND.md](integration/DB_READY_FOR_FRONTEND.md) - compact DB integration status and frontend-facing guidance.
-- [correspondence/DEVELOPER_LETTER_INVENTORY_META.md](correspondence/DEVELOPER_LETTER_INVENTORY_META.md) - external-facing inventory-meta problem brief.
 
 ## Active Plans and Operating Notes
 

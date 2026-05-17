@@ -54,9 +54,6 @@ from .genome_evaluation import (
     batch_evaluate_genomes,
 )
 
-# Import from fg_utils (helper)
-from ...helpers.fg_utils import generate_dynamic_fg_configs
-
 # Public API
 __all__ = [
     # GPU solver
@@ -85,6 +82,4 @@ __all__ = [
     # Genome evaluation
     "worker_coevolution_evaluate",
     "batch_evaluate_genomes",
-    # Helpers
-    "generate_dynamic_fg_configs",
 ]

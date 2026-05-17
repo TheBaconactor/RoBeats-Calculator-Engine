@@ -15,7 +15,6 @@ try:
     from .initialization import (
         ensure_ready,
         load_ref_arrays,
-        is_refs_loaded,
         hard_reset_taichi,
         _ensure_ftff_combo_tables,
         _maybe_sync,
@@ -108,7 +107,6 @@ __all__ = [
     # Initialization
     "ensure_ready",
     "load_ref_arrays",
-    "is_refs_loaded",
     "hard_reset_taichi",
     "_ensure_ftff_combo_tables",
     "_maybe_sync",

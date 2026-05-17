@@ -10,6 +10,8 @@ from .utils import safe_int
 
 
 logger = logging.getLogger(__name__)
+
+
 class GemKey(str, Enum):
     PP = "Perfect Points"
     CM = "Combo Multiplier"
@@ -55,6 +57,7 @@ GEM_KEYS: tuple[str, ...] = (
     GemKey.FM.value,
     GemKey.ELEMENT.value,
 )
+
 
 @dataclass(frozen=True, slots=True)
 class GemTotals:

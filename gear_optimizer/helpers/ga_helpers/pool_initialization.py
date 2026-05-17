@@ -15,9 +15,7 @@ to improve code modularity and maintainability. These functions handle:
 
 from ...core.utils import prune_gear_pool_lossless_for_song, prune_mini_pool_lossless_for_song
 
-_PRUNED_GEAR_POOL_CACHE: dict[
-    tuple[int, int, str, str, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]
-] = {}
+_PRUNED_GEAR_POOL_CACHE: dict[tuple[int, int, str, str, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]] = {}
 
 
 def _get_pruned_gear_pool(all_gears, slots, p_color, s_color=None):
@@ -32,7 +30,7 @@ def _get_pruned_gear_pool(all_gears, slots, p_color, s_color=None):
     cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
     if cached is not None:
         gear_pool_cached, total_before, total_after = cached
-        return gear_pool_cached, int(total_before), int(total_after), True
+        return gear_pool_cached, int(total_before), int(total_after)
 
     gear_pool = {s: [] for s in slots_key}
     for g in all_gears:
@@ -49,7 +47,7 @@ def _get_pruned_gear_pool(all_gears, slots, p_color, s_color=None):
     if len(_PRUNED_GEAR_POOL_CACHE) > 8:
         _PRUNED_GEAR_POOL_CACHE.clear()
         _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
-    return gear_pool, int(total_before), int(total_after), False
+    return gear_pool, int(total_before), int(total_after)
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
@@ -120,6 +118,6 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
         return None, [], 0, 0, []
 
     # Initialize/prune gear pools once per gear dataset + song color pair.
-    gear_pool, total_before, total_after, from_cache = _get_pruned_gear_pool(all_gears, slots, p_color, s_color)
+    gear_pool, total_before, total_after = _get_pruned_gear_pool(all_gears, slots, p_color, s_color)
 
     return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis

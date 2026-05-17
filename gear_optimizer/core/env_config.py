@@ -42,7 +42,6 @@ class EnvConfig:
     gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
     gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
     gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
-    gpu_timeline_only: bool  # GPU_TIMELINE_ONLY: Force GPU timeline (avoid CPU precompute_all)
     gpu_strict: bool  # GPU_STRICT: Fail fast on any CPU fallback
 
     # General Performance
@@ -100,7 +99,6 @@ class EnvConfig:
             gpu_profiler=debug_profile and env_flag("GPU_PROFILER"),
             gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
             gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
-            gpu_timeline_only=env_flag("GPU_TIMELINE_ONLY", "1"),
             gpu_strict=env_flag("GPU_STRICT", "1"),
             # General Performance
             perf_timing=debug_profile and perf_timing_unconditional,

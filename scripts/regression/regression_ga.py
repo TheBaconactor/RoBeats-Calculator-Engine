@@ -157,13 +157,10 @@ def run_ga_regression():
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=cfg,
         base_stats_fixed=base_stats_fixed,
-        paths=paths,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         all_gears=all_gears,
         all_minis=all_minis,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=10,  # Short run

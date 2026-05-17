@@ -115,7 +115,6 @@ class InflightGAPipeline:
 
     @staticmethod
     def prepare_submit(song: NativeSong) -> None:
-        song.runtime.ga.outer_engine = "ga"
         song.runtime.ga.ga_submit_t0 = time.perf_counter()
 
     @staticmethod

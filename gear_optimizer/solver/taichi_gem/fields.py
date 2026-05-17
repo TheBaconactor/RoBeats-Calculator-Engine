@@ -73,7 +73,6 @@ GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(GA_FTFF_REDUCE_BLOCK_DIM), 256))
 GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
 if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
     GA_FTFF_REDUCE_BLOCK_DIM = 32
-GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 and wave64 (uses lane//32)
 
 # GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
 # Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to

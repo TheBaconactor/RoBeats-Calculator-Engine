@@ -661,9 +661,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 eval_cpu_limit,
                 parallel_workers,
                 memory_resume_tracker,
-                manager,
-                status_queue,
-                status_thread,
                 loop_forever,
             )
 

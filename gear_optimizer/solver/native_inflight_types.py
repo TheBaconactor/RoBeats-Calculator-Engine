@@ -63,8 +63,6 @@ class NativeSongGPUInputs:
 @dataclass
 class NativeSongPrepState:
     cpu_prewarm_future: Optional[concurrent.futures.Future] = None
-    cpu_prewarm_s: float = 0.0
-    cpu_prewarm_submit_t0: float | None = None
     cpu_prep_s: float = 0.0
     fg_chart_scorer_prewarmed: bool = False
 
@@ -74,7 +72,6 @@ class NativeSongGAState:
     ga_future: Optional[concurrent.futures.Future] = None
     ga_submit_t0: float | None = None
     ga_initial_populations: Optional[list[Any]] = None
-    outer_engine: str = ""
 
 
 @dataclass
@@ -101,7 +98,6 @@ class NativeSongFGState:
     fg_static_prep_future: Optional[concurrent.futures.Future] = None
     fg_static_prep_done: bool = False
     fg_dynamic_prep_done: bool = False
-    fg_static_prep_submit_t0: float | None = None
     fg_prep_submit_t0: float | None = None
     fg_build_details: Any | None = None
     loadout_entries: Optional[dict[str, JsonDict]] = None

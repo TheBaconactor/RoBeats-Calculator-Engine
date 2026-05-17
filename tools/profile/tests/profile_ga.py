@@ -27,7 +27,6 @@ def setup_ga_test_data():
 
     # Generate 50 items per slot (300 total gear items)
     all_gears = []
-    gears_by_name = {}
     for slot in slots:
         for i in range(50):
             name = f"{slot}_{i}"
@@ -46,11 +45,9 @@ def setup_ga_test_data():
                 "Fever Fill Rate": np.random.randint(0, 20),
             }
             all_gears.append(item)
-            gears_by_name[name] = item
 
     # Generate 20 minis
     all_minis = []
-    minis_by_name = {}
     for i in range(20):
         name = f"Mini_{i}"
         item = {
@@ -66,9 +63,8 @@ def setup_ga_test_data():
             "Flow": np.random.randint(0, 100),
             "Fever Time": np.random.randint(0, 30),
             "Fever Fill Rate": np.random.randint(0, 30),
-        }
+            }
         all_minis.append(item)
-        minis_by_name[name] = item
 
     # Mock Song Context - 100 notes over 120s
     timestamps = np.linspace(0, 120, 100).tolist()
@@ -152,8 +148,6 @@ def setup_ga_test_data():
         "ref_arrays": ref_arrays,
         "all_gears": all_gears,
         "all_minis": all_minis,
-        "gears_by_name": gears_by_name,
-        "minis_by_name": minis_by_name,
     }
 
 
@@ -167,13 +161,10 @@ def run_ga(data, ga_depth=50):
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=data["cfg"],
         base_stats_fixed=data["base_stats_fixed"],
-        paths=None,
         calc_song=data["calc_song"],
         ref_arrays=data["ref_arrays"],
         all_gears=data["all_gears"],
         all_minis=data["all_minis"],
-        gears_by_name=data["gears_by_name"],
-        minis_by_name=data["minis_by_name"],
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=ga_depth,

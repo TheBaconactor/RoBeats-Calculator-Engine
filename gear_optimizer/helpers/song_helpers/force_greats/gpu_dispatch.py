@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, TYPE_CHECKING, Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -56,6 +56,11 @@ from .gpu_dispatch_batching import (
     _should_use_fused_breakpoints_solve,
     _uses_timing_envelope_fg,
 )
+from .gpu_dispatch_utils import (
+    iter_ftff_chunks as _iter_ftff_chunks,
+    pack_pairs_int32 as _pack_pairs_int32,
+    safe_metric_count as _safe_metric_count,
+)
 from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
 from .work_budget import (
     estimate_fg_task_threads as _estimate_fg_task_threads,
@@ -75,11 +80,6 @@ _FG_BREAKPOINT_GROUPS_CACHE = _dispatch_caches._FG_BREAKPOINT_GROUPS_CACHE
 _FG_BREAKPOINT_GROUPS_LOCK = _dispatch_caches._FG_BREAKPOINT_GROUPS_LOCK
 _FG_MAX_FP_MATRIX_CACHE = _dispatch_caches._FG_MAX_FP_MATRIX_CACHE
 _FG_MAX_FP_MATRIX_LOCK = _dispatch_caches._FG_MAX_FP_MATRIX_LOCK
-
-if TYPE_CHECKING:
-    from gear_optimizer.solver.gpu_service import GpuServiceClient
-
-
 
 _GPU_STRICT = env_flag("GPU_STRICT", "1")
 
@@ -105,10 +105,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     ref_arrays,
     meta_primary_color,
     *,
-    use_gpu: bool = False,
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
-    gpu_client: Optional["GpuServiceClient"] = None,
+    gpu_client: Optional[Any] = None,
     ga_candidates=None,
     ga_registry=None,
 ):
@@ -256,20 +255,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             )
         except Exception as e:
             logger.debug(f"gpu_dispatch:_emit_finder_phase: {e}")
-
-    def _safe_metric_count(items: Any) -> int:
-        if items is None:
-            return 0
-        try:
-            shape = getattr(items, "shape", None)
-            if shape is not None and len(shape) > 0:
-                return max(0, int(shape[0]))
-        except (KeyError, TypeError, ValueError, AttributeError):
-            pass
-        try:
-            return max(0, int(len(items)))
-        except (ValueError, TypeError):
-            return 0
 
     sig_frontier_enabled = env_flag("FG_SIGNATURE_FRONTIER_ENABLED", "1")
     sig_frontier_limit = _resolve_signature_frontier_limit_impl(loadouts_per_song_limit=int(LOADOUTS_PER_SONG_LIMIT)) if sig_frontier_enabled else 0
@@ -516,39 +501,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             fg_surface_pair_reduce_sec += max(0.0, float(gpu_results.get("surface_pair_reduce_ms", 0) or 0)) / 1000.0
         except (ValueError, TypeError, KeyError, AttributeError):
             pass
-
-    def _iter_ftff_chunks(pairs):
-        chunk_size = int(fg_fields.FG_MAX_FTFF)
-        if chunk_size <= 0:
-            yield pairs
-            return
-        if len(pairs) <= chunk_size:
-            yield pairs
-            return
-        for i in range(0, len(pairs), chunk_size):
-            yield pairs[i : i + chunk_size]
-
-    def _pack_pairs_int32(pairs):
-        """
-        Normalize pair collections as contiguous (n, 2) int32 arrays.
-
-        Returns None when packing fails or shape is invalid.
-        """
-        if pairs is None:
-            return None
-        try:
-            arr = np.asarray(pairs, dtype=np.int32)
-            if arr.ndim != 2:
-                arr = np.asarray(list(pairs), dtype=np.int32)
-            if arr.ndim != 2 or int(arr.shape[1]) < 2:
-                return None
-            if int(arr.shape[1]) != 2:
-                arr = arr[:, :2]
-            if not arr.flags["C_CONTIGUOUS"]:
-                arr = np.ascontiguousarray(arr)
-            return arr
-        except (ValueError, TypeError, KeyError):
-            return None
 
     need_reset = False
     timeline_precompute_queued = False
@@ -1504,7 +1456,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             total_budget=int(TOTAL_GEM_BUDGET),
             use_fast=bool(fast_pairs),
         )
-        ftff_pairs_key = tuple((int(ft), int(ff)) for ft, ff in list(ftff_pairs or []))
         ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
 
         counts_list = None
@@ -1870,7 +1821,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             result_g_cm = None
             result_g_fm = None
             result_g_ov = None
-            result_cfg_counts = None
             selected_indices = None
             cfg_counts_arr = None
 
@@ -2425,7 +2375,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         except (ValueError, TypeError, KeyError):
                             pairs_packed = group_pairs
 
-                        for ftff_chunk in _iter_ftff_chunks(pairs_packed):
+                        for ftff_chunk in _iter_ftff_chunks(pairs_packed, int(fg_fields.FG_MAX_FTFF)):
                             fg_tasks_batch.append(
                                 {
                                     "counts_list": counts_list_packed if counts_list_packed is not None else None,
@@ -2483,7 +2433,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         if not counts_for_solve:
                             counts_for_solve = [tuple([0] * int(n_sections))]
 
-                        for ftff_chunk in _iter_ftff_chunks(group_pairs):
+                        for ftff_chunk in _iter_ftff_chunks(group_pairs, int(fg_fields.FG_MAX_FTFF)):
                             _submit_solve_force_greats_finder(
                                 genome_stats_arr,
                                 timestamps,
@@ -2665,7 +2615,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         except (ValueError, TypeError, KeyError):
                             pairs_packed = ftff_pairs
 
-                        for ftff_chunk in _iter_ftff_chunks(pairs_packed):
+                        for ftff_chunk in _iter_ftff_chunks(pairs_packed, int(fg_fields.FG_MAX_FTFF)):
                             fg_tasks_batch.append(
                                 {
                                     "counts_list": counts_list_packed,
@@ -2693,7 +2643,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     fg_tasks_batch = fg_tasks_batch[int(flush_plan.submit_count) :]
                                     _flush_fg_tasks_batch(batch=submit_batch)
                     else:
-                        for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
+                        for ftff_chunk in _iter_ftff_chunks(ftff_pairs, int(fg_fields.FG_MAX_FTFF)):
                             _submit_solve_force_greats_finder(
                                 genome_stats_arr,  # numpy array instead of list[dict]
                                 timestamps,
@@ -2831,10 +2781,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 continue
                 except (ValueError, TypeError, KeyError):
                     cfg_counts_arr = None
-
-            # Defensive: older revisions had paths where `cfg_counts_arr` was never assigned.
-            # Keep behavior stable by falling back to cfg_idx->counts_list decode when None.
-            cfg_counts_arr = cfg_counts_arr if "cfg_counts_arr" in locals() else None
 
             # Reduced-download path: apply only to selected signature indices.
             apply_sigs = pending_sigs

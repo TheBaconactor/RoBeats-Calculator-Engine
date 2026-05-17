@@ -69,7 +69,6 @@ class CpuPrewarmQueue:
             return False
         self.submitted.add(task_key)
         try:
-            song.runtime.prep.cpu_prewarm_submit_t0 = time.perf_counter()
             future = self.executor.submit(self.prewarm_fn, song)
             song.runtime.prep.cpu_prewarm_future = future
             self.inflight.append((song, future, time.perf_counter(), task_key))

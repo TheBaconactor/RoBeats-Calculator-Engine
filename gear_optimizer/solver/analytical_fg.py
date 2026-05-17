@@ -297,35 +297,6 @@ class AnalyticalFGScorer:
                     m3 |= 1 << (i - 96)
         return m0, m1, m2, m3
 
-    def precompute_all_configs(
-        self,
-        ft_stat: int,
-        ff_stat: int,
-        configs: List[List[int]],
-    ) -> List[Tuple[int, int, int, int, int, int]]:
-        """
-        Pre-compute timeline data for all FG configs.
-
-        This is the batch function that replaces GPU timeline simulation.
-        The returned data can be uploaded to GPU for gem optimization.
-
-        Args:
-            ft_stat: Fever Time stat
-            ff_stat: Fever Fill Rate stat
-            configs: List of forced counts configurations
-
-        Returns:
-            List of tuples: (m0, m1, m2, m3, count_body_fever, count_body_normal)
-            ready for GPU consumption.
-        """
-        results = []
-        for cfg in configs:
-            mask, bf, bn, _ = self.compute_timeline_with_forced(ft_stat, ff_stat, cfg)
-            m0, m1, m2, m3 = self.pack_fever_mask(mask)
-            results.append((m0, m1, m2, m3, bf, bn))
-        return results
-
-
 def create_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> AnalyticalFGScorer:
     """
     Factory function to create AnalyticalFGScorer from calc_song format.

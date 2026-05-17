@@ -71,7 +71,6 @@ def test_no_removed_gpu_symbols_present() -> None:
         _REPO_ROOT,
         rel_dirs=[
             "gear_optimizer",
-            "inventory_optimizer",
             "general_meta",
             "tools",
         ],
@@ -158,7 +157,6 @@ def test_no_raw_runtime_fallback_prints() -> None:
         _REPO_ROOT,
         rel_dirs=[
             "gear_optimizer",
-            "inventory_optimizer",
             "general_meta",
             "tools",
         ],

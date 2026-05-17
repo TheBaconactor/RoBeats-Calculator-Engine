@@ -24,51 +24,6 @@ def _fp_cap_from_forced(scorer, ft_stat: int, ff_stat: int, forced_cap: int) -> 
     return int(max(0, notes_to_fill - base_notes))
 
 
-def calculate_section_caps(num_sections, non_fever_base, gap=None, fever_activations=None):
-    """
-    Compute max Forced Greats caps per section.
-
-    Args:
-        num_sections: Number of non-fever sections
-        non_fever_base: Notes in non-fever section (limit)
-        gap: Gap value (limit)
-        fever_activations: Count of fever windows (limit)
-
-    Returns:
-        List[int]: Cap for each section
-    """
-    if num_sections <= 0:
-        return []
-
-    caps = []
-    actual_base = int(non_fever_base or 0)
-
-    # If gap is provided and <= 0, no opportunity - return zeros
-    if gap is not None and gap <= 0:
-        return [0] * num_sections
-
-    # Compute caps per section
-    for i in range(num_sections):
-        # Sections beyond fever_activations get cap=0 (no benefit from FG there)
-        if fever_activations is not None and i >= fever_activations:
-            caps.append(0)
-            continue
-
-        # Get hard cap for this section (diminishing per section)
-        hard_cap = MAX_SECTION_CAPS[i] if i < len(MAX_SECTION_CAPS) else 4
-
-        # Dynamic cap based on gap (no need to shift more than gap)
-        if gap is not None:
-            effective = min(actual_base, gap, hard_cap)
-        else:
-            # Fallback if gap not provided - use hard cap
-            effective = min(actual_base, hard_cap)
-
-        caps.append(effective)
-
-    return caps
-
-
 def vectorized_calculate_section_caps_grid(gap_grid, activations_grid, max_per_section=100):
     """
     VECTORIZED: Compute pair_caps_grid (161, 161, 16) from gap and activations grids.
@@ -113,37 +68,6 @@ def vectorized_calculate_section_caps_grid(gap_grid, activations_grid, max_per_s
         pair_caps[:, :, sec] = np.where(mask, base_cap, 0)
 
     return pair_caps
-
-
-def generate_dynamic_fg_configs(num_sections, non_fever_base, *, gap=None, fever_activations=None):
-    """
-    Generate a list of FG configs with dynamic caps based on gap.
-
-    Uses gap (total_notes - last_fever_end) to limit search space:
-    - If gap <= 0: no opportunity (overshoot or at end), return [(0,0,...)] only
-    - Otherwise: cap each section by gap (no need to overshoot)
-    - Sections beyond fever_activations get cap=0 (no benefit)
-
-    Args:
-        num_sections: Number of non-fever sections
-        non_fever_base: Notes in non-fever section (hard cap by available notes)
-        gap: Gap value (total_notes - last_fever_end). Required for optimal capping.
-        fever_activations: Count of fever windows. Sections beyond this get cap=0.
-
-    Returns:
-        List of tuples, e.g. [(0,), (1,), ...] or [(0,0), (0,1)...]
-    """
-    caps = calculate_section_caps(num_sections, non_fever_base, gap, fever_activations)
-    if not caps:
-        return []
-
-    # Generate ranges
-    import itertools
-
-    ranges = [range(c + 1) for c in caps]
-
-    # Generate all combinations
-    return list(itertools.product(*ranges))
 
 
 def _clamp_stat_idx(x: Any) -> int:

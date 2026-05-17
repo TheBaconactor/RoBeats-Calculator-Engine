@@ -2189,21 +2189,16 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 def solve_coevolution_genetic(
     cfg,
     base_stats_fixed,
-    paths,
     calc_song,
     ref_arrays,
     all_gears,
     all_minis,
-    gears_by_name,
-    minis_by_name,
     optimize_gear=True,
     optimize_minis=True,
     fixed_gear=None,
     fixed_minis=None,
     ga_depth=75,
     ga_settings=None,
-    status_cb=None,
-    executor=None,
     song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
     ga_seed: int | None = None,
     solver_ctx: SolverContext | None = None,
@@ -2221,21 +2216,16 @@ def solve_coevolution_genetic(
     Args:
         cfg: Configuration object
         base_stats_fixed: Fixed base stats dictionary
-        paths: Path configuration
         calc_song: Song calculation context
         ref_arrays: Reference lookup arrays
         all_gears: List of all gear items
         all_minis: List of all mini items
-        gears_by_name: Dict mapping gear names to gear objects
-        minis_by_name: Dict mapping mini names to mini objects
         optimize_gear: Whether to optimize gear (vs fixed)
         optimize_minis: Whether to optimize minis (vs fixed)
         fixed_gear: Fixed gear loadout if not optimizing
         fixed_minis: Fixed minis if not optimizing
         ga_depth: Total generations across all runs
         ga_settings: GA configuration settings
-        status_cb: Optional status callback function
-        executor: Optional process pool executor for parallel evaluation
 
     Returns:
         tuple: (best_data, best_gear, best_minis, None, [], [], all_evaluated)
@@ -2267,10 +2257,10 @@ def solve_coevolution_genetic(
             gear_pool = None
             whitelisted_minis = []
         elif len(pools) == 4:
-            gear_pool, mini_pool, total_before, total_after = pools
+            gear_pool, mini_pool, _, _ = pools
             whitelisted_minis = []
         else:
-            gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
+            gear_pool, mini_pool, _, _, whitelisted_minis = pools
         if gear_pool is None:
             logger.error(
                 f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}"

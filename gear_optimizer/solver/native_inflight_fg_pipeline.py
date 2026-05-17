@@ -361,7 +361,6 @@ class NativeFGPipeline:
         if int(self.active_static_prep_count(*external_song_groups)) >= int(self.static_prep_budget()):
             return False
         try:
-            song.runtime.fg.fg_static_prep_submit_t0 = time.perf_counter()
             static_future = self.prep_executor.submit(prep_fn, song)
             song.runtime.fg.fg_static_prep_future = static_future
             if register_future is not None:

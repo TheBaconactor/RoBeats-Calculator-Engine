@@ -87,7 +87,6 @@ class GpuTiming(TypedDict, total=False):
     kernel_sec: float
     upload_sec: float
     download_sec: float
-    kernel_calls: int
     genome_evaluations: int
     total_sec: float
 

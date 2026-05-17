@@ -194,13 +194,10 @@ def profile_ga_with_gpu():
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=cfg,
         base_stats_fixed=base_stats_fixed,
-        paths=None,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         all_gears=all_gears,
         all_minis=all_minis,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=13,  # Match production depth

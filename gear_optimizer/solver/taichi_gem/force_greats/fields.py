@@ -483,6 +483,21 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_frontier_selected_indices_batch = fg_frontier_selected_indices_batch
     kernels_module.fg_genome_hint_allocation = fg_genome_hint_allocation
 
+    # Taichi kernels snapshot their globals at decoration time. After split modules
+    # are bound, mirror the live module state into those snapshots so the kernels
+    # see the allocated fields instead of the original None placeholders.
+    module_state = dict(vars(kernels_module))
+    for value in tuple(module_state.values()):
+        if not callable(value):
+            continue
+        kernel_globals = getattr(value, "__globals__", None)
+        if isinstance(kernel_globals, dict):
+            kernel_globals.update(module_state)
+        wrapped = getattr(value, "__wrapped__", None)
+        wrapped_globals = getattr(wrapped, "__globals__", None)
+        if isinstance(wrapped_globals, dict):
+            wrapped_globals.update(module_state)
+
 
 
 def allocate_fields() -> None:
@@ -725,9 +740,13 @@ def ensure_fields_allocated() -> None:
         allocate_fields()
 
     # Bind fields into kernel placeholders
+    from . import frontier_kernels as _frontier_kernels
+    from . import global_best_kernels as _global_best_kernels
     from . import kernels as _kernels
 
     bind_fields(_kernels)
+    bind_fields(_global_best_kernels)
+    bind_fields(_frontier_kernels)
 
 
 # ============================================================================

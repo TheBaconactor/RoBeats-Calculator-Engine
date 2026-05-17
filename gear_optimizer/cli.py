@@ -6,8 +6,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence
 import logging
+from typing import Sequence
 
 from gear_optimizer.core.config import find_and_cache_paths, get_config_path, load_config, load_paths_cache
 from gear_optimizer.core.parsing import config_bool, env_flag
@@ -182,23 +182,12 @@ def meta() -> int:
         return 1
 
 
-def inventory(argv: Sequence[str] | None = None) -> int:
-    """
-    Delegate to the inventory entry implementation.
-    """
-    from gear_optimizer.inventory_cli import main as inventory_main
-
-    return int(inventory_main(list(argv) if argv is not None else None))
-
-
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="metafinder")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Run optimizer.")
     sub.add_parser("meta", help="Run GeneralMeta analysis.")
     sub.add_parser("sync-data", help="Regenerate Data/Gear CSVs from Data/exported_game_data.json.")
-    inv = sub.add_parser("inventory", help="Run inventory coverage CLI.")
-    inv.add_argument("inventory_args", nargs=argparse.REMAINDER, help="Args forwarded to inventory CLI.")
     return parser
 
 
@@ -211,8 +200,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return meta()
     if args.command == "sync-data":
         return sync_data()
-    if args.command == "inventory":
-        return inventory(getattr(args, "inventory_args", []) or [])
     parser.error(f"Unknown command: {args.command}")
     return 2
 

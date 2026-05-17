@@ -32,9 +32,8 @@ def load_fg_task_budget(
         task_budget = None
 
     if task_budget is None:
-        inflight_v3 = env_flag_fn("INFLIGHT_V3")
         inflight_v4 = env_flag_fn("INFLIGHT_V4")
-        task_budget = 256 if (inflight_v3 or inflight_v4 or in_process_queues) else 0
+        task_budget = 256 if (inflight_v4 or in_process_queues) else 0
 
     return max(0, int(task_budget))
 
