@@ -142,6 +142,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
         self._session_new_record_keys: set[str] = set()
+        self._session_new_record_best_by_song: dict[str, int] = {}
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0

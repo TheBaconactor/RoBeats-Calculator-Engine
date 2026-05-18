@@ -264,15 +264,15 @@ class RuntimeUiMixin:
             )
             return self._normalize_song_label(str(raw_song or "").strip())
 
-    def _is_authoritative_new_record(self, record_info: dict | None) -> tuple[bool, str]:
+    def _is_authoritative_new_record(self, record_info: dict | None) -> tuple[bool, str, int]:
             if not isinstance(record_info, dict):
-                return False, ""
+                return False, "", 0
             if not bool(record_info.get("record_update")):
-                return False, ""
+                return False, "", 0
 
             song_key = self._record_info_song_key(record_info)
             if not song_key:
-                return False, ""
+                return False, "", 0
 
             try:
                 best_overall_score = int(record_info.get("best_overall_score_run", 0) or 0)
@@ -286,23 +286,34 @@ class RuntimeUiMixin:
                 prev_overall_score = 0
 
             if best_overall_score <= 0:
-                return False, ""
+                return False, "", 0
             if int(best_overall_score - prev_overall_score) <= int(RECORD_UPDATE_SCORE_EPSILON):
-                return False, ""
-            return True, song_key
+                return False, "", 0
+            return True, song_key, int(best_overall_score)
 
     def _apply_authoritative_new_record(self, record_info: dict | None) -> bool:
-            is_authoritative, song_key = self._is_authoritative_new_record(record_info)
+            is_authoritative, song_key, best_overall_score = self._is_authoritative_new_record(record_info)
             if not is_authoritative:
                 return False
             seen_keys = getattr(self, "_session_new_record_keys", None)
             if not isinstance(seen_keys, set):
                 seen_keys = set()
                 self._session_new_record_keys = seen_keys
-            if song_key in seen_keys:
+
+            best_by_song = getattr(self, "_session_new_record_best_by_song", None)
+            if not isinstance(best_by_song, dict):
+                best_by_song = {}
+                self._session_new_record_best_by_song = best_by_song
+            try:
+                previous_session_best = int(best_by_song.get(song_key, 0) or 0)
+            except Exception as e:
+                logger.debug(f"runtime_ui:_apply_authoritative_new_record: {e}")
+                previous_session_best = 0
+            if int(best_overall_score or 0) <= int(previous_session_best or 0):
                 return False
 
             seen_keys.add(song_key)
+            best_by_song[song_key] = int(best_overall_score)
             try:
                 self._session_new_records = int(self._session_new_records) + 1
             except Exception as e:

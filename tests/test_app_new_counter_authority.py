@@ -8,6 +8,7 @@ def _make_minimal_app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
     app._session_new_records = 0
     app._session_new_record_keys = set()
+    app._session_new_record_best_by_song = {}
     app._progress = None
     app._runtime_completed_count = 0
     app._runtime_total_count = 0
@@ -57,7 +58,20 @@ def test_new_counter_ignores_non_authoritative_delta_within_epsilon():
     assert app._session_new_record_keys == set()
 
 
-def test_new_counter_dedupes_song_runs_by_normalized_song_name():
+def test_new_counter_dedupes_duplicate_score_by_normalized_song_name():
+    app = _make_minimal_app()
+    info1 = _record("Gamma Song (Run 1/3)", prev_overall=100, best_overall=300)
+    info2 = _record("Gamma Song (Run 2/3)", prev_overall=100, best_overall=300)
+
+    app._progress_event(completed_delta=0, record_info=info1)
+    app._progress_event(completed_delta=0, record_info=info2)
+
+    assert app._session_new_records == 1
+    assert app._session_new_record_keys == {"Gamma Song"}
+    assert app._session_new_record_best_by_song == {"Gamma Song": 300}
+
+
+def test_new_counter_counts_later_same_song_record_improvement():
     app = _make_minimal_app()
     info1 = _record("Gamma Song (Run 1/3)", prev_overall=100, best_overall=300)
     info2 = _record("Gamma Song (Run 2/3)", prev_overall=300, best_overall=600)
@@ -65,8 +79,9 @@ def test_new_counter_dedupes_song_runs_by_normalized_song_name():
     app._progress_event(completed_delta=0, record_info=info1)
     app._progress_event(completed_delta=0, record_info=info2)
 
-    assert app._session_new_records == 1
+    assert app._session_new_records == 2
     assert app._session_new_record_keys == {"Gamma Song"}
+    assert app._session_new_record_best_by_song == {"Gamma Song": 600}
 
 
 def test_new_counter_counts_native_fg_record_event_before_tracker_advances():
