@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_solve import (
+from gear_optimizer.solver.gpu_executor_fg import (
     execute_fg_solve_with_breakpoints,
     execute_fg_solve_with_breakpoints_batch,
     run_fg_solve_with_breakpoints_payload,
@@ -160,7 +160,7 @@ def test_execute_fg_solve_with_breakpoints_batch_decodes_missing_cfg_counts(monk
 
 
 def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypatch):
-    import gear_optimizer.solver.gpu_executor_fg_breakpoint_solve as solve_mod
+    import gear_optimizer.solver.gpu_executor_fg as solve_mod
 
     calls = []
     prepared = SimpleNamespace(

@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_dispatch import execute_request_from_dispatch, plan_execution_units
+from gear_optimizer.solver.gpu_executor_batching import execute_request_from_dispatch, plan_execution_units
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 

@@ -4,13 +4,13 @@ import threading
 import time
 from concurrent.futures import Future
 
-from gear_optimizer.solver.native_inflight_fg_pipeline import (
+from gear_optimizer.solver.native_inflight_pipeline import (
     NativeFGPipeline,
     NativeFGPipelineSettings,
     count_fg_group_meta_ready,
     read_native_fg_pipeline_settings,
 )
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):

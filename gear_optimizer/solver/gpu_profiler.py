@@ -60,8 +60,6 @@ class SongTiming:
     # Individual measurements
     measurements: List[TimingEntry] = field(default_factory=list)
 
-    # Counts
-    kernel_calls: int = 0
     genome_evaluations: int = 0
 
 
@@ -156,7 +154,6 @@ class GpuProfiler:
                 return
             if "kernel" in name_lower or "solve" in name_lower:
                 self._current_song.kernel_sec += duration
-                self._current_song.kernel_calls += 1
             elif "upload" in name_lower or "from_numpy" in name_lower:
                 self._current_song.upload_sec += duration
             elif "download" in name_lower or "to_numpy" in name_lower:
@@ -170,7 +167,6 @@ class GpuProfiler:
         with self._lock:
             if self._current_song:
                 self._current_song.kernel_sec += duration_sec
-                self._current_song.kernel_calls += 1
                 self._current_song.genome_evaluations += genome_count
             else:
                 # In-flight mode can overlap songs, so we may not have a per-song

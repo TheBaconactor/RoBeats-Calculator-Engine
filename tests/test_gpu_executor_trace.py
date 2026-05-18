@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from gear_optimizer.solver import gpu_executor_trace
-from gear_optimizer.solver.gpu_executor_trace import ExecutorTraceWriter, TRACE_HEADER
+from gear_optimizer.solver import gpu_executor_profile
+from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter, TRACE_HEADER
 
 
 def test_executor_trace_writer_opens_file_with_header(tmp_path: Path):
@@ -22,7 +22,7 @@ def test_executor_trace_writer_writes_csv_and_profile_event(tmp_path: Path, monk
     trace_path = tmp_path / "gpu_executor_trace.csv"
     writer = ExecutorTraceWriter()
     events = []
-    monkeypatch.setattr(gpu_executor_trace, "emit_profile_event", lambda **kwargs: events.append(kwargs))
+    monkeypatch.setattr(gpu_executor_profile, "emit_profile_event", lambda **kwargs: events.append(kwargs))
 
     writer.open(str(trace_path))
     try:

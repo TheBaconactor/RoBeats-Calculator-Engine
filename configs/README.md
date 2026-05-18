@@ -29,7 +29,6 @@ configs/
     config_profile_queue160.ini               160-song full-queue profile (standalone)
   smoke/
     config_smoke_queue1_fast.ini              1-song smoke test (standalone)
-  inventory_meta_coverage.ini                 Inventory meta-coverage optimizer config (standalone)
 ```
 
 ## `_extends` Mechanism
@@ -64,4 +63,4 @@ declare only its overrides; shared settings live in `configs/common/`.
 Configs that are intentionally standalone (e.g., `config.ini`,
 `config.profile.ini`, `config_profile_baseline.ini`,
 `config_profile_queue160.ini`, `config_smoke_queue1_fast.ini`,
-`configs/inventory_meta_coverage.ini`) do not use `_extends`.
+do not use `_extends`.

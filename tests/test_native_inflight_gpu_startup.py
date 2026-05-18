@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gear_optimizer.solver import native_inflight_gpu_startup as startup
+from gear_optimizer.solver import native_inflight_lifecycle as startup
 
 
 class _Executor:

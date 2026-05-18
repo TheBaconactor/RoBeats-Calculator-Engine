@@ -24,7 +24,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from ...core.color_flags import build_color_flags
+from ...core.color_flags import build_color_flag_values
 from ...core.gem_defs import UserGemsSettings, build_gem_counts
 
 from ..fever_timeline import (
@@ -36,6 +36,7 @@ from ..scoring_core import (
     lookup_reference_py,
     optimize_core_jit,
 )
+from ...core.ref_lookup import resolve_stat_factors
 from ..base_stats import build_base_fixed_stats_dict, build_stats_array
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
@@ -540,15 +541,8 @@ def solve_best_fever_combination(
     best_score = -1
     best_tuple = None
 
-    flags = build_color_flags(p_color, s_color, selected_color)
-    is_p_pp = flags["is_p_pp"]
-    is_s_pp = flags["is_s_pp"]
-    is_p_cm = flags["is_p_cm"]
-    is_s_cm = flags["is_s_cm"]
-    is_p_fm = flags["is_p_fm"]
-    is_s_fm = flags["is_s_fm"]
-    is_p_ov = flags["is_p_ov"]
-    is_s_ov = flags["is_s_ov"]
+    color_flags = build_color_flag_values(p_color, s_color, selected_color)
+    is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = color_flags.optimizer_args()
 
     base_beat = base_stats.get("Beat", 0)
     base_vibe = base_stats.get("Vibe", 0)
@@ -565,16 +559,31 @@ def solve_best_fever_combination(
     cur_pp = base_stats["Perfect Points"]
     cur_cm = base_stats["Combo Multiplier"]
     cur_fm = base_stats["Fever Multiplier"]
+    score_factors_cache: dict[tuple[int, int, int], tuple[float, float, float]] = {}
+
+    def _resolve_score_factors(pp_stat: int, cm_stat: int, fm_stat: int) -> tuple[float, float, float]:
+        key = (int(pp_stat), int(cm_stat), int(fm_stat))
+        cached = score_factors_cache.get(key)
+        if cached is not None:
+            return cached
+        factors = resolve_stat_factors(
+            {
+                "Perfect Points": int(pp_stat),
+                "Combo Multiplier": int(cm_stat),
+                "Fever Multiplier": int(fm_stat),
+                "Fever Fill Rate": 0,
+                "Fever Time": 0,
+            },
+            ref_arrays,
+        )
+        resolved = (float(factors.pp_factor), float(factors.combo_mul), float(factors.fever_mul))
+        score_factors_cache[key] = resolved
+        return resolved
 
     # GPU path: use the grid-based FT/FF solver (default), eliminating CPU timeline enumeration
     # and per-work-item fever mask transfers.
     if use_gpu:
         # Compute color contribution flags for FT/FF gems (FT gems add Beat, FF gems add Vibe).
-        is_p_ft = flags["is_p_ft"]
-        is_s_ft = flags["is_s_ft"]
-        is_p_ff = flags["is_p_ff"]
-        is_s_ff = flags["is_s_ff"]
-
         try:
             song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
         except Exception as e:
@@ -598,20 +607,7 @@ def solve_best_fever_combination(
             base_fixed_stats=base_fixed_stats,
             timeline_grid=calc_song,
             ref_arrays=ref_arrays,
-            flags={
-                "is_p_ft": int(is_p_ft),
-                "is_s_ft": int(is_s_ft),
-                "is_p_ff": int(is_p_ff),
-                "is_s_ff": int(is_s_ff),
-                "is_p_pp": int(is_p_pp),
-                "is_s_pp": int(is_s_pp),
-                "is_p_cm": int(is_p_cm),
-                "is_s_cm": int(is_s_cm),
-                "is_p_fm": int(is_p_fm),
-                "is_s_fm": int(is_s_fm),
-                "is_p_ov": int(is_p_ov),
-                "is_s_ov": int(is_s_ov),
-            },
+            flags=color_flags.as_dict(),
             total_budget=int(TOTAL_GEM_BUDGET),
             gem_scale_fever=int(GEM_SCALE_FEVER),
             song_slot=int(song_slot),
@@ -700,9 +696,8 @@ def solve_best_fever_combination(
                 MAX_STAT_INDEX,
             )
 
-            base = (final_p_val * 2) + final_s_val + lookup_reference_py(final_pp, ref_pp, TOTAL_ROWS)
-            c_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_py(final_fm, ref_fm, TOTAL_ROWS)
+            pp_factor, c_mul, f_mul = _resolve_score_factors(final_pp, final_cm, final_fm)
+            base = (final_p_val * 2) + final_s_val + pp_factor
             total_score = fast_calculate_score(
                 base,
                 c_mul,

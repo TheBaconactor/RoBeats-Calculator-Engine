@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_native_ga_batch import (
+from gear_optimizer.solver.gpu_executor_batching import (
     NativeGaBatchLimits,
     execute_gpu_native_ga_run_batch,
     execute_gpu_native_ga_run_chunk,

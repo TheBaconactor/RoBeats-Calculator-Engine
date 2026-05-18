@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from gear_optimizer.solver.gpu_executor_request_policy import (
+from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
     FG_REQUEST_TYPES,
     GA_RECOVERY_REQUEST_TYPES,

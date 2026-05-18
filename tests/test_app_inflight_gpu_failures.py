@@ -6,6 +6,7 @@ import types
 import pytest
 
 from gear_optimizer.app import GearOptimizerApp
+from gear_optimizer.engine.native import NativeOptimizationEngine
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 
 
@@ -64,10 +65,11 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
 
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
+    expected_tasks = [NativeOptimizationEngine._canonical_task_tuple(task) for task in tasks]
     assert len(calls) == 1
-    assert calls[0]["args"][0] == tasks
+    assert calls[0]["args"][0] == expected_tasks
     assert calls[0]["kwargs"]["in_flight_songs"] == 1
-    assert calls[0]["kwargs"]["total_tasks"] == 1
+    assert "total_tasks" not in calls[0]["kwargs"]
 
 
 def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
@@ -86,8 +88,9 @@ def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
 
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
+    expected_tasks = [NativeOptimizationEngine._canonical_task_tuple(task) for task in tasks]
     assert len(native_calls) == 1
-    assert native_calls[0]["args"][0] == tasks
+    assert native_calls[0]["args"][0] == expected_tasks
 
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):

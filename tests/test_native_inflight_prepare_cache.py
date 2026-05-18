@@ -1,6 +1,6 @@
 from collections import OrderedDict
 
-from gear_optimizer.solver.native_inflight_prepare import _lru_get, _lru_put
+from gear_optimizer.solver.native_inflight_lifecycle import _lru_get, _lru_put
 
 
 def test_prepare_lru_helpers_refresh_and_evict_oldest_entry():

@@ -1,7 +1,7 @@
 import numpy as np
 
 from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
-from gear_optimizer.solver.gpu_executor_fg_cfg_decode import (
+from gear_optimizer.solver.gpu_executor_fg import (
     decode_cfg_counts_from_max_fp_matrix,
     decode_cfg_counts_from_windows_for_gpu,
 )

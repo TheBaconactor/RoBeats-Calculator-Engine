@@ -28,9 +28,9 @@ from ..core.constants import (
     FEVER_TIME_SCALE,
     TOTAL_ROWS,
 )
+from ..core.ref_lookup import resolve_stat_factors
 from ..core.time_quantize import quantize_to_int_ms
 from ..core.utils import safe_float, safe_int
-from .scoring_core import lookup_reference_py
 
 
 
@@ -609,20 +609,16 @@ def prepare_timeline_analysis_inputs(
     last_note_time = safe_float(metadata.get("Last Note Time", default_last_note), default=default_last_note)
 
     try:
-        ref_pp = ref_arrays["Perfect Points"]
-        ref_cm = ref_arrays["Combo Multiplier"]
-        ref_fm = ref_arrays["Fever Multiplier"]
-        ref_ff = ref_arrays["Fever Fill Rate"]
-        ref_ft = ref_arrays["Fever Time"]
+        factors = resolve_stat_factors(stats, ref_arrays)
     except Exception as e:
         logger.debug(f"timing_envelope:prepare_timeline_analysis_inputs: {e}")
         return None
 
-    pp_factor = float(lookup_reference_py(stats.get("Perfect Points", 0), ref_pp, TOTAL_ROWS))
-    combo_mul = float(lookup_reference_py(stats.get("Combo Multiplier", 0), ref_cm, TOTAL_ROWS))
-    fever_mul = float(lookup_reference_py(stats.get("Fever Multiplier", 0), ref_fm, TOTAL_ROWS))
-    fever_fill_rate = float(lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS))
-    fever_time_stat = float(lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS))
+    pp_factor = float(factors.pp_factor)
+    combo_mul = float(factors.combo_mul)
+    fever_mul = float(factors.fever_mul)
+    fever_fill_rate = float(factors.fever_fill_rate)
+    fever_time_stat = float(factors.fever_time_stat)
 
     p_color = str(metadata.get("Primary Color", "") or "")
     s_color = str(metadata.get("Secondary Color", "") or "")

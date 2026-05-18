@@ -20,6 +20,7 @@ from gear_optimizer.solver.gpu_executor_profile import (
     record_request_latency_stats,
     request_latency_summary_log_message,
 )
+from gear_optimizer.solver.gpu_profiler import SongTiming
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 
@@ -223,6 +224,13 @@ def test_gpu_profiler_snapshot_returns_zero_when_disabled_or_unavailable():
         )
         == (0.0, 0.0, 0.0)
     )
+
+
+def test_gpu_profiler_song_timing_no_longer_tracks_kernel_call_counter():
+    song = SongTiming(song_name="demo", start_time=0.0)
+
+    assert not hasattr(song, "kernel_calls")
+    assert song.genome_evaluations == 0
 
 
 def test_compute_request_latency_window_uses_dequeue_and_exec_boundaries():

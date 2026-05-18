@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_registry_coalesce import (
+from gear_optimizer.solver.gpu_executor_registry import (
     RegistryCoalesceSignatureBuilder,
     ensure_registry_population_staging_buffer,
     pack_registry_population_chunk,

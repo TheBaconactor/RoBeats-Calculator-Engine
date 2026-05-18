@@ -8,6 +8,8 @@ It reuses the shared scoring helpers from `gear_optimizer.solver.taichi_gem.kern
 Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 """
 
+# ruff: noqa: F405
+
 import taichi as ti
 from taichi.lang import simt
 
@@ -18,15 +20,13 @@ from ..kernels import kernels_helpers
 from ..kernels.kernels_scoring import optimize_core_device_exact_bound_preloaded_bits
 from .fields import (
     FG_CFG_DEDUPE_SIG_WORDS,
-    FG_DOWNLOAD_BATCH_MAX,
-    FG_DOWNLOAD_TOPK_MAX,
     FG_MAX_SECTIONS,
     FG_MAX_STAT,
-    FG_SIGNATURE_FRONTIER_BATCH_MAX,
-    FG_SIGNATURE_FRONTIER_MAX,
     FG_STAGE1_WAVE_SLOTS_MAX,
 )
 
+from .global_best_kernels import *  # noqa: F401,F403
+from .frontier_kernels import *  # noqa: F401,F403
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
 _KERNEL_BLOCK_DIM = kernels_helpers._KERNEL_BLOCK_DIM
 
@@ -93,26 +93,7 @@ fg_stage1_wave_best = None
 FG_STAGE1_HAS_AUX_FIELDS = False
 FG_STAGE1_HAS_CFG_IDX_FIELD = False
 
-# Global best fields for GPU-resident accumulation (persist across group calls)
-fg_global_best_final_score = None
-fg_global_best_base_score = None
-fg_global_best_cfg_idx = None
-fg_global_best_ft = None
-fg_global_best_ff = None
-fg_global_best_g_pp = None
-fg_global_best_g_cm = None
-fg_global_best_g_fm = None
-fg_global_best_g_ov = None
-fg_global_best_score_penalty = None
-fg_global_best_fill_penalty = None
-fg_global_best_cfg_counts = None
-fg_global_best_packed = None
 
-fg_input_base_score = None
-fg_keep_mask = None
-fg_selected_count = None
-fg_selected_indices = None
-fg_selected_packed = None
 fg_selected_packed_batch = None
 fg_frontier_base_score = None
 fg_frontier_proxy_score = None
@@ -808,6 +789,15 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: 
 
 
 @ti.kernel
+def fg_read_forced_counts_kernel(n_cfg: ti.i32, cfg_src_offset: ti.i32, n_sections: ti.i32, out: ti.types.ndarray(dtype=ti.i32, ndim=2)):
+    """
+    Read a small forced-count window for GPU parity/debug tests.
+    """
+    for i, j in ti.ndrange(n_cfg, n_sections):
+        out[i, j] = fg_forced_counts[cfg_src_offset + i, j]
+
+
+@ti.kernel
 def fg_upload_song_timestamps_prefix_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     """Upload song timestamps without padding to FG_MAX_SONG_NOTES."""
     for i in range(n):
@@ -822,6 +812,98 @@ def fg_upload_great_candidate_timestamps_prefix_kernel(n: ti.i32, timestamps: ti
 
 
 @ti.kernel
+def fg_debug_timeline_forced_counts_kernel(
+    n: ti.i32,
+    raw_fever_fill: ti.f32,
+    fever_duration: ti.f32,
+    forced_counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    n_forced: ti.i32,
+    out_mask: ti.types.ndarray(dtype=ti.u32, ndim=1),
+    out_counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    head_len: ti.i32 = ti.min(n, 100)
+    m0 = ti.cast(0, ti.u32)
+    m1 = ti.cast(0, ti.u32)
+    m2 = ti.cast(0, ti.u32)
+    m3 = ti.cast(0, ti.u32)
+    body_fever: ti.i32 = 0
+    body_normal: ti.i32 = 0
+    fever_acts: ti.i32 = 0
+
+    non_fever_base: ti.i32 = ti.cast(ti.ceil(raw_fever_fill), ti.i32)
+    idx: ti.i32 = 0
+    section: ti.i32 = 0
+    carry_time: ti.f32 = 0.0
+
+    while idx < n and section < n_forced + 1:
+        forced: ti.i32 = 0
+        if section < n_forced:
+            forced = forced_counts[section]
+        if forced > non_fever_base:
+            forced = non_fever_base
+        if forced < 0:
+            forced = 0
+
+        notes_needed: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(forced, ti.f32) * 0.5), ti.i32)
+        if section == 0:
+            notes_needed -= 1
+        if notes_needed < 0:
+            notes_needed = 0
+
+        section_start: ti.i32 = idx
+        idx += notes_needed
+
+        if idx >= n:
+            body_start: ti.i32 = ti.max(100, section_start)
+            if body_start < n:
+                body_normal += n - body_start
+            break
+
+        if forced > 0:
+            forced_start: ti.i32 = section_start
+            if section != 0:
+                forced_start = section_start + 1
+            forced_end: ti.i32 = ti.min(idx - 1, forced_start + forced - 1)
+            if forced_end >= forced_start and forced_end < n:
+                cand: ti.f32 = song_timestamps_great_candidate[forced_end]
+                if cand > carry_time:
+                    carry_time = cand
+
+        fever_start_time: ti.f32 = song_timestamps[idx]
+        if carry_time > fever_start_time:
+            fever_start_time = carry_time
+        fever_end_idx: ti.i32 = _binary_search_left_song_timestamps(n, fever_start_time + fever_duration)
+        fever_acts += 1
+
+        fever_head_end: ti.i32 = ti.min(fever_end_idx, head_len)
+        if idx < fever_head_end:
+            masks = _or_head_mask_range(m0, m1, m2, m3, idx, fever_head_end)
+            m0 = masks[0]
+            m1 = masks[1]
+            m2 = masks[2]
+            m3 = masks[3]
+        if fever_end_idx > head_len:
+            body_fever += ti.min(fever_end_idx, n) - ti.max(idx, head_len)
+
+        body_section_start: ti.i32 = ti.max(section_start, head_len)
+        if idx > body_section_start:
+            body_normal += idx - body_section_start
+
+        idx = fever_end_idx
+        section += 1
+
+    if idx < n:
+        body_tail_start: ti.i32 = ti.max(idx, head_len)
+        if body_tail_start < n:
+            body_normal += n - body_tail_start
+
+    out_mask[0] = m0
+    out_mask[1] = m1
+    out_mask[2] = m2
+    out_mask[3] = m3
+    out_counts[0] = body_fever
+    out_counts[1] = body_normal
+    out_counts[2] = fever_acts
 
 
 @ti.kernel
@@ -2659,590 +2741,3 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                 fg_global_best_fill_penalty[song_slot, gid] = fill_penalty_total
                 for s in ti.static(range(FG_MAX_SECTIONS)):
                     fg_global_best_cfg_counts[song_slot, gid, s] = cfg_counts_vec[s]
-
-
-@ti.kernel
-def fg_pack_results_kernel(n_genomes: ti.i32):
-    """
-    Pack best result fields + cfg_counts into a single contiguous array for efficient CPU download.
-
-    This eliminates 11 separate to_numpy() calls (11 CPU waits) into 1 single download.
-    MASSIVE speedup on weak CPUs that bottleneck on GPU synchronization.
-
-    Column order: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty, cfg_counts...]
-    """
-    for g in range(n_genomes):
-        fg_best_packed[g, 0] = fg_best_final_score[g]
-        fg_best_packed[g, 1] = fg_best_base_score[g]
-        fg_best_packed[g, 2] = fg_best_cfg_idx[g]
-        fg_best_packed[g, 3] = fg_best_ft[g]
-        fg_best_packed[g, 4] = fg_best_ff[g]
-        fg_best_packed[g, 5] = fg_best_g_pp[g]
-        fg_best_packed[g, 6] = fg_best_g_cm[g]
-        fg_best_packed[g, 7] = fg_best_g_fm[g]
-        fg_best_packed[g, 8] = fg_best_g_ov[g]
-        fg_best_packed[g, 9] = fg_best_score_penalty[g]
-        fg_best_packed[g, 10] = fg_best_fill_penalty[g]
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_best_packed[g, 11 + s] = fg_best_cfg_counts[g, s]
-
-
-@ti.kernel
-def fg_copy_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_genomes: ti.i32):
-    """
-    Copy the populated prefix of `fg_best_packed` into a smaller staging field.
-
-    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
-    MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., a compact GA run).
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    total_cols = 11 + FG_MAX_SECTIONS
-    for g, c in ti.ndrange(n_genomes, total_cols):
-        out_packed[g, c] = fg_best_packed[g, c]
-
-
-@ti.kernel
-def fg_copy_global_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_genomes: ti.i32):
-    """
-    Copy the populated prefix of `fg_global_best_packed` into a smaller staging field.
-
-    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
-    MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
-    number of genomes are active (e.g., a compact GA run).
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    total_cols = 11 + FG_MAX_SECTIONS
-    for g, c in ti.ndrange(n_genomes, total_cols):
-        out_packed[g, c] = fg_global_best_packed[g, c]
-
-
-@ti.kernel
-def fg_pack_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
-    """
-    Pack all global-best fields + cfg_counts into a single contiguous array for efficient CPU download.
-
-    Mirrors `fg_pack_results_kernel`, but for the GPU-resident global best buffers used by
-    multi-group accumulation.
-    """
-    for g in range(n_genomes):
-        fg_global_best_packed[g, 0] = fg_global_best_final_score[session_slot, g]
-        fg_global_best_packed[g, 1] = fg_global_best_base_score[session_slot, g]
-        fg_global_best_packed[g, 2] = fg_global_best_cfg_idx[session_slot, g]
-        fg_global_best_packed[g, 3] = fg_global_best_ft[session_slot, g]
-        fg_global_best_packed[g, 4] = fg_global_best_ff[session_slot, g]
-        fg_global_best_packed[g, 5] = fg_global_best_g_pp[session_slot, g]
-        fg_global_best_packed[g, 6] = fg_global_best_g_cm[session_slot, g]
-        fg_global_best_packed[g, 7] = fg_global_best_g_fm[session_slot, g]
-        fg_global_best_packed[g, 8] = fg_global_best_g_ov[session_slot, g]
-        fg_global_best_packed[g, 9] = fg_global_best_score_penalty[session_slot, g]
-        fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[session_slot, g]
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_global_best_packed[g, 11 + s] = fg_global_best_cfg_counts[session_slot, g, s]
-
-
-@ti.kernel
-def fg_select_global_best_topk_kernel(session_slot: ti.i32, n_genomes: ti.i32, topk: ti.i32):
-    """
-    Build a compact list of genome indices worth downloading from global_best.
-
-    Output order:
-    - keep items first (in ascending genome index)
-    - then top-k candidates by final_score (descending), tie-breaking by lower genome index (stable)
-
-    Eligibility filter for candidates:
-    - final_score > fg_input_base_score
-    - fg_global_best_fill_penalty > 0 (implies at least one forced section; matches CPU "valid config" intent)
-    """
-    k: ti.i32 = topk
-    if k < 0:
-        k = 0
-    if k > ti.i32(FG_DOWNLOAD_TOPK_MAX):
-        k = ti.i32(FG_DOWNLOAD_TOPK_MAX)
-
-    # Clear output
-    fg_selected_count[None] = 0
-    ti.loop_config(serialize=True)
-    for j in range(FG_DOWNLOAD_TOPK_MAX):
-        fg_selected_indices[j] = -1
-
-    # Keep set: include these indices unconditionally
-    keep_count: ti.i32 = 0
-    ti.loop_config(serialize=True)
-    for i in range(n_genomes):
-        if fg_keep_mask[i] != 0:
-            if keep_count < ti.i32(FG_DOWNLOAD_TOPK_MAX):
-                fg_selected_indices[keep_count] = i
-                keep_count += 1
-
-    start: ti.i32 = keep_count
-    max_k: ti.i32 = k
-    if start + max_k > ti.i32(FG_DOWNLOAD_TOPK_MAX):
-        max_k = ti.i32(FG_DOWNLOAD_TOPK_MAX) - start
-    if max_k < 0:
-        max_k = 0
-
-    # Initialize candidate slots
-    ti.loop_config(serialize=True)
-    for j in range(max_k):
-        fg_selected_indices[start + j] = -1
-
-    # Insert-sort top-k candidates by packed key
-    ti.loop_config(serialize=True)
-    for i in range(n_genomes):
-        if fg_keep_mask[i] != 0:
-            continue
-        score: ti.i32 = fg_global_best_final_score[session_slot, i]
-        if score <= fg_input_base_score[i]:
-            continue
-        if fg_global_best_fill_penalty[session_slot, i] <= 0:
-            continue
-
-        key: ti.i64 = (ti.cast(score, ti.i64) << 32) | ti.cast(0x7FFFFFFF - i, ti.i64)
-        pos: ti.i32 = max_k
-
-        # Find insertion point
-        for j in range(max_k):
-            idx_j: ti.i32 = fg_selected_indices[start + j]
-            if idx_j < 0:
-                pos = j
-                break
-            score_j: ti.i32 = fg_global_best_final_score[session_slot, idx_j]
-            key_j: ti.i64 = (ti.cast(score_j, ti.i64) << 32) | ti.cast(0x7FFFFFFF - idx_j, ti.i64)
-            if key > key_j:
-                pos = j
-                break
-
-        if pos < max_k:
-            # Shift down to make room
-            for off in range(max_k - 1):
-                s: ti.i32 = (max_k - 1) - off
-                if s > pos:
-                    fg_selected_indices[start + s] = fg_selected_indices[start + s - 1]
-            fg_selected_indices[start + pos] = i
-
-    # Compute final count (keep + filled candidates)
-    count: ti.i32 = keep_count
-    ti.loop_config(serialize=True)
-    for j in range(max_k):
-        if fg_selected_indices[start + j] >= 0:
-            count += 1
-        else:
-            break
-    fg_selected_count[None] = count
-
-
-@ti.func
-def _fg_frontier_cmp_base(lhs: ti.i32, rhs: ti.i32) -> ti.i32:
-    out = 0
-    base_l = fg_frontier_base_score[lhs]
-    base_r = fg_frontier_base_score[rhs]
-    if base_l != base_r:
-        out = 1 if base_l > base_r else 0
-    else:
-        proxy_l = fg_frontier_proxy_score[lhs]
-        proxy_r = fg_frontier_proxy_score[rhs]
-        if proxy_l != proxy_r:
-            out = 1 if proxy_l > proxy_r else 0
-        else:
-            prio_l = fg_frontier_priority[lhs]
-            prio_r = fg_frontier_priority[rhs]
-            if prio_l != prio_r:
-                out = 1 if prio_l > prio_r else 0
-            else:
-                out = 1 if lhs < rhs else 0
-    return out
-
-
-@ti.func
-def _fg_frontier_cmp_fg(lhs: ti.i32, rhs: ti.i32) -> ti.i32:
-    out = 0
-    keep_l = fg_frontier_force_keep[lhs]
-    keep_r = fg_frontier_force_keep[rhs]
-    if keep_l != keep_r:
-        out = 1 if keep_l > keep_r else 0
-    else:
-        prio_l = fg_frontier_priority[lhs]
-        prio_r = fg_frontier_priority[rhs]
-        if prio_l != prio_r:
-            out = 1 if prio_l > prio_r else 0
-        else:
-            proxy_l = fg_frontier_proxy_score[lhs]
-            proxy_r = fg_frontier_proxy_score[rhs]
-            if proxy_l != proxy_r:
-                out = 1 if proxy_l > proxy_r else 0
-            else:
-                base_l = fg_frontier_base_score[lhs]
-                base_r = fg_frontier_base_score[rhs]
-                if base_l != base_r:
-                    out = 1 if base_l > base_r else 0
-                else:
-                    out = 1 if lhs < rhs else 0
-    return out
-
-
-@ti.func
-def _fg_frontier_selected_has_idx(idx: ti.i32, count: ti.i32) -> ti.i32:
-    found = 0
-    ti.loop_config(serialize=True)
-    for j in range(FG_SIGNATURE_FRONTIER_MAX):
-        if j < count and fg_frontier_selected_indices[j] == idx:
-            found = 1
-    return found
-
-
-@ti.func
-def _fg_frontier_selected_has_center(idx: ti.i32, count: ti.i32) -> ti.i32:
-    ft_bucket = fg_frontier_center_bucket_ft[idx]
-    ff_bucket = fg_frontier_center_bucket_ff[idx]
-    found = 0
-    ti.loop_config(serialize=True)
-    for j in range(FG_SIGNATURE_FRONTIER_MAX):
-        if j < count:
-            sel = fg_frontier_selected_indices[j]
-            if (
-                sel >= 0
-                and fg_frontier_center_bucket_ft[sel] == ft_bucket
-                and fg_frontier_center_bucket_ff[sel] == ff_bucket
-            ):
-                found = 1
-    return found
-
-
-@ti.func
-def _fg_frontier_selected_has_timing(idx: ti.i32, count: ti.i32) -> ti.i32:
-    timing_bucket = fg_frontier_timing_bucket[idx]
-    found = 0
-    if timing_bucket <= 0:
-        found = 1
-    else:
-        ti.loop_config(serialize=True)
-        for j in range(FG_SIGNATURE_FRONTIER_MAX):
-            if j < count:
-                sel = fg_frontier_selected_indices[j]
-                if sel >= 0 and fg_frontier_timing_bucket[sel] == timing_bucket:
-                    found = 1
-    return found
-
-
-@ti.func
-def _fg_frontier_try_add(idx: ti.i32, count: ti.i32, limit: ti.i32) -> ti.i32:
-    out = count
-    if count >= limit:
-        out = count
-    elif _fg_frontier_selected_has_idx(idx, count) != 0:
-        out = count
-    else:
-        fg_frontier_selected_indices[count] = idx
-        out = count + 1
-    return out
-
-
-@ti.kernel
-def fg_select_signature_frontier_kernel(n_signatures: ti.i32, limit: ti.i32, top_base_keep: ti.i32):
-    n = n_signatures
-    if n < 0:
-        n = 0
-    if n > ti.i32(FG_SIGNATURE_FRONTIER_MAX):
-        n = ti.i32(FG_SIGNATURE_FRONTIER_MAX)
-
-    lim = limit
-    if lim < 0:
-        lim = 0
-    if lim > n:
-        lim = n
-
-    base_keep = top_base_keep
-    if base_keep < 0:
-        base_keep = 0
-    if base_keep > lim:
-        base_keep = lim
-
-    fg_frontier_selected_count[None] = 0
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        fg_frontier_selected_indices[i] = -1
-        fg_frontier_base_order[i] = -1
-        fg_frontier_fg_order[i] = -1
-        if i < n:
-            fg_frontier_base_order[i] = i
-            fg_frontier_fg_order[i] = i
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n:
-            continue
-        cur = fg_frontier_base_order[i]
-        j = i
-        while j > 0 and _fg_frontier_cmp_base(cur, fg_frontier_base_order[j - 1]) != 0:
-            fg_frontier_base_order[j] = fg_frontier_base_order[j - 1]
-            j -= 1
-        fg_frontier_base_order[j] = cur
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n:
-            continue
-        cur = fg_frontier_fg_order[i]
-        j = i
-        while j > 0 and _fg_frontier_cmp_fg(cur, fg_frontier_fg_order[j - 1]) != 0:
-            fg_frontier_fg_order[j] = fg_frontier_fg_order[j - 1]
-            j -= 1
-        fg_frontier_fg_order[j] = cur
-
-    extra_budget = lim - base_keep
-    if extra_budget < 0:
-        extra_budget = 0
-    keep_budget = 0
-    if extra_budget > 0:
-        keep_budget = extra_budget // 2
-        if keep_budget < 2:
-            keep_budget = 2
-        if keep_budget > extra_budget:
-            keep_budget = extra_budget
-    keep_budget_end = base_keep + keep_budget
-    if keep_budget_end > lim:
-        keep_budget_end = lim
-
-    priority_budget = 0
-    if extra_budget > 0:
-        priority_budget = extra_budget
-        if priority_budget > 5:
-            priority_budget = 5
-        if priority_budget < 2:
-            priority_budget = 2
-        rem = lim - keep_budget_end
-        if rem < 0:
-            rem = 0
-        if priority_budget > rem:
-            priority_budget = rem
-    priority_budget_end = keep_budget_end + priority_budget
-    if priority_budget_end > lim:
-        priority_budget_end = lim
-
-    fg_budget_end = priority_budget_end
-    if extra_budget > 0:
-        fg_budget_end = base_keep + priority_budget
-        scaled_extra = (extra_budget * 85) // 100
-        if scaled_extra > fg_budget_end - base_keep:
-            fg_budget_end = base_keep + scaled_extra
-        if fg_budget_end < priority_budget_end:
-            fg_budget_end = priority_budget_end
-        if fg_budget_end > lim:
-            fg_budget_end = lim
-
-    selected = 0
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= base_keep:
-            continue
-        idx = fg_frontier_base_order[i]
-        if idx >= 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= keep_budget_end:
-            continue
-        idx = fg_frontier_base_order[i]
-        if idx >= 0 and fg_frontier_force_keep[idx] != 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= priority_budget_end:
-            continue
-        idx = fg_frontier_fg_order[i]
-        if idx >= 0 and fg_frontier_priority[idx] != 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= fg_budget_end:
-            continue
-        idx = fg_frontier_fg_order[i]
-        if idx >= 0 and _fg_frontier_selected_has_timing(idx, selected) == 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= fg_budget_end:
-            continue
-        idx = fg_frontier_fg_order[i]
-        if idx >= 0 and _fg_frontier_selected_has_center(idx, selected) == 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= fg_budget_end:
-            continue
-        idx = fg_frontier_fg_order[i]
-        if idx >= 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    ti.loop_config(serialize=True)
-    for i in range(FG_SIGNATURE_FRONTIER_MAX):
-        if i >= n or selected >= lim:
-            continue
-        idx = fg_frontier_base_order[i]
-        if idx >= 0:
-            selected = _fg_frontier_try_add(idx, selected, lim)
-
-    fg_frontier_selected_count[None] = selected
-
-
-@ti.kernel
-def fg_copy_signature_frontier_selected_to_batch_kernel(batch_idx: ti.i32):
-    if batch_idx >= 0 and batch_idx < ti.i32(FG_SIGNATURE_FRONTIER_BATCH_MAX):
-        fg_frontier_selected_count_batch[batch_idx] = fg_frontier_selected_count[None]
-        for j in range(FG_SIGNATURE_FRONTIER_MAX):
-            fg_frontier_selected_indices_batch[batch_idx, j] = fg_frontier_selected_indices[j]
-
-
-@ti.kernel
-def fg_pack_selected_global_best_kernel(session_slot: ti.i32, n_selected: ti.i32):
-    """Pack selected rows from global_best into fg_selected_packed for fast CPU download.
-
-    Column order (12 + FG_MAX_SECTIONS):
-      [genome_idx, final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty, cfg_counts...]
-    """
-    total_cols = 12 + FG_MAX_SECTIONS
-    for j in range(n_selected):
-        idx: ti.i32 = fg_selected_indices[j]
-        fg_selected_packed[j, 0] = idx
-        if idx < 0:
-            for c in range(1, total_cols):
-                fg_selected_packed[j, c] = 0
-            continue
-        fg_selected_packed[j, 1] = fg_global_best_final_score[session_slot, idx]
-        fg_selected_packed[j, 2] = fg_global_best_base_score[session_slot, idx]
-        fg_selected_packed[j, 3] = fg_global_best_cfg_idx[session_slot, idx]
-        fg_selected_packed[j, 4] = fg_global_best_ft[session_slot, idx]
-        fg_selected_packed[j, 5] = fg_global_best_ff[session_slot, idx]
-        fg_selected_packed[j, 6] = fg_global_best_g_pp[session_slot, idx]
-        fg_selected_packed[j, 7] = fg_global_best_g_cm[session_slot, idx]
-        fg_selected_packed[j, 8] = fg_global_best_g_fm[session_slot, idx]
-        fg_selected_packed[j, 9] = fg_global_best_g_ov[session_slot, idx]
-        fg_selected_packed[j, 10] = fg_global_best_score_penalty[session_slot, idx]
-        fg_selected_packed[j, 11] = fg_global_best_fill_penalty[session_slot, idx]
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_selected_packed[j, 12 + s] = fg_global_best_cfg_counts[session_slot, idx, s]
-
-
-@ti.kernel
-def fg_pack_selected_global_best_batch_kernel(session_slot: ti.i32, n_selected: ti.i32, batch_idx: ti.i32):
-    """Pack selected rows from global_best into `fg_selected_packed_batch[batch_idx]`.
-
-    This is used by executor-side batching so multiple payloads can be downloaded via a single `to_numpy()`.
-    """
-    if batch_idx >= 0 and batch_idx < ti.i32(FG_DOWNLOAD_BATCH_MAX):
-        total_cols = 12 + FG_MAX_SECTIONS
-        for j in range(n_selected):
-            idx: ti.i32 = fg_selected_indices[j]
-            fg_selected_packed_batch[batch_idx, j, 0] = idx
-            if idx < 0:
-                for c in range(1, total_cols):
-                    fg_selected_packed_batch[batch_idx, j, c] = 0
-                continue
-            fg_selected_packed_batch[batch_idx, j, 1] = fg_global_best_final_score[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 2] = fg_global_best_base_score[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 3] = fg_global_best_cfg_idx[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 4] = fg_global_best_ft[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 5] = fg_global_best_ff[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 6] = fg_global_best_g_pp[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 7] = fg_global_best_g_cm[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 8] = fg_global_best_g_fm[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 9] = fg_global_best_g_ov[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 10] = fg_global_best_score_penalty[session_slot, idx]
-            fg_selected_packed_batch[batch_idx, j, 11] = fg_global_best_fill_penalty[session_slot, idx]
-            for s in ti.static(range(FG_MAX_SECTIONS)):
-                fg_selected_packed_batch[batch_idx, j, 12 + s] = fg_global_best_cfg_counts[session_slot, idx, s]
-
-
-@ti.kernel
-def fg_copy_selected_packed_batch_to_download_staging_kernel(out_packed: ti.template(), n_payloads: ti.i32):
-    """
-    Copy the populated prefix of `fg_selected_packed_batch` into a smaller staging field.
-
-    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
-    FG_DOWNLOAD_BATCH_MAX buffer can dominate throughput when only a small number of
-    payloads are active in a fused executor bundle.
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    total_cols = 12 + FG_MAX_SECTIONS
-    for batch_idx, j in ti.ndrange(n_payloads, FG_DOWNLOAD_TOPK_MAX):
-        for c in range(total_cols):
-            out_packed[batch_idx, j, c] = fg_selected_packed_batch[batch_idx, j, c]
-
-
-@ti.kernel
-def fg_reset_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
-    """
-    Reset global best fields to sentinel values before multi-group processing.
-
-    Call this once at the start of a batch of FG groups, before the loop.
-    """
-    for i in range(n_genomes):
-        fg_global_best_final_score[session_slot, i] = -1
-        fg_global_best_base_score[session_slot, i] = 0
-        fg_global_best_cfg_idx[session_slot, i] = -1
-        fg_global_best_ft[session_slot, i] = 0
-        fg_global_best_ff[session_slot, i] = 0
-        fg_global_best_g_pp[session_slot, i] = 0
-        fg_global_best_g_cm[session_slot, i] = 0
-        fg_global_best_g_fm[session_slot, i] = 0
-        fg_global_best_g_ov[session_slot, i] = 0
-        fg_global_best_score_penalty[session_slot, i] = 0
-        fg_global_best_fill_penalty[session_slot, i] = 0
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_global_best_cfg_counts[session_slot, i, s] = 0
-
-
-@ti.kernel
-def fg_update_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
-    """
-    Compare current fg_best_* results with fg_global_best_*, update if better.
-
-    Call this after each solve_force_greats_finder_gpu() call to accumulate
-    the best results across all groups without downloading to CPU.
-    """
-    for gid in range(n_genomes):
-        new_score = fg_best_final_score[gid]
-        old_score = fg_global_best_final_score[session_slot, gid]
-        new_cfg = fg_best_cfg_idx[gid]
-        old_cfg = fg_global_best_cfg_idx[session_slot, gid]
-        new_ft = fg_best_ft[gid]
-        old_ft = fg_global_best_ft[session_slot, gid]
-        new_ff = fg_best_ff[gid]
-        old_ff = fg_global_best_ff[session_slot, gid]
-
-        # Deterministic tie-breaking:
-        # 1) Higher final score wins.
-        # 2) If scores tie, prefer lower cfg_idx (matches stage1 packed tie-break).
-        # 3) If still tied, prefer lower (ft, ff) lexicographically for stability.
-        better = False
-        if new_score > old_score:
-            better = True
-        elif new_score == old_score:
-            if old_cfg < 0 and new_cfg >= 0:
-                better = True
-            elif new_cfg >= 0 and new_cfg < old_cfg:
-                better = True
-            elif new_cfg == old_cfg:
-                if new_ft < old_ft:
-                    better = True
-                elif new_ft == old_ft and new_ff < old_ff:
-                    better = True
-
-        if better:
-            fg_global_best_final_score[session_slot, gid] = new_score
-            fg_global_best_base_score[session_slot, gid] = fg_best_base_score[gid]
-            fg_global_best_cfg_idx[session_slot, gid] = new_cfg
-            fg_global_best_ft[session_slot, gid] = new_ft
-            fg_global_best_ff[session_slot, gid] = new_ff
-            fg_global_best_g_pp[session_slot, gid] = fg_best_g_pp[gid]
-            fg_global_best_g_cm[session_slot, gid] = fg_best_g_cm[gid]
-            fg_global_best_g_fm[session_slot, gid] = fg_best_g_fm[gid]
-            fg_global_best_g_ov[session_slot, gid] = fg_best_g_ov[gid]
-            fg_global_best_score_penalty[session_slot, gid] = fg_best_score_penalty[gid]
-            fg_global_best_fill_penalty[session_slot, gid] = fg_best_fill_penalty[gid]

@@ -53,14 +53,25 @@ def canonicalize_fg_update_entries(
         return []
 
     try:
-        from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
+        from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
 
-        return canonicalize_baseline_persist_entries(
+        canonical = canonicalize_authoritative_fg_entries(
             list(entries),
             calc_song=calc_song,
             ref_arrays=resolved_ref_arrays,
-            cfg_dict=cfg_local,
         )
+        valid: list[dict[str, Any]] = []
+        for entry in canonical:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                fg_score = int(entry.get("fg_score", 0) or 0)
+                fg_base_score = int(entry.get("fg_base_score", entry.get("score", 0)) or 0)
+            except Exception as exc:
+                raise ValueError(f"invalid canonical FG score fields for {song_name}") from exc
+            if isinstance(entry.get("force"), dict) and fg_score > fg_base_score:
+                valid.append(entry)
+        return valid
     except Exception as exc:
         logger.warning(
             "[POST][FG] Skipping FG deferred save for %s: canonicalization failed (%s: %s)",

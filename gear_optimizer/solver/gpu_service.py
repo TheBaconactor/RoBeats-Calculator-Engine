@@ -34,8 +34,8 @@ from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
 )
 
 from .gpu_executor import GpuExecutor, get_gpu_executor
-from .gpu_executor_registry_submit import build_registry_solve_request_payload as _build_registry_solve_request_payload
-from .gpu_executor_static_handles import registry_base_fixed_stats_sig as _registry_base_fixed_stats_sig
+from .gpu_executor_registry import build_registry_solve_request_payload as _build_registry_solve_request_payload
+from .gpu_executor_lifecycle import registry_base_fixed_stats_sig as _registry_base_fixed_stats_sig
 from .gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 from gear_optimizer.core.parsing import env_get

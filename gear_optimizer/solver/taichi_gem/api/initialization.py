@@ -229,11 +229,6 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=for_timing)
 
 
-def is_refs_loaded() -> bool:
-    """Check if reference arrays have been loaded."""
-    return _ref_loaded
-
-
 # ============================================================================
 # INITIALIZATION HELPERS
 # ============================================================================

@@ -26,7 +26,6 @@ class StopController:
         self.stop_requested_event = threading.Event()
         self.force_exit_requested_event = threading.Event()
         self._signal_handlers_installed = False
-        self._signal_prev_handlers: dict[int, object] = {}
         self._stop_after_raw = ""
         self._stop_after_sec = 0.0
         self._stop_after_deadline_monotonic: float | None = None
@@ -145,7 +144,6 @@ class StopController:
             if sig is None:
                 continue
             try:
-                self._signal_prev_handlers[int(sig)] = signal.getsignal(sig)
                 signal.signal(sig, _handler)
             except Exception as e:
                 logger.debug(f"app_stop_control:_handler: {e}")

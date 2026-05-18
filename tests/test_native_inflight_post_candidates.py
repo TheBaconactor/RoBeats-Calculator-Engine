@@ -1,4 +1,4 @@
-from gear_optimizer.solver.native_inflight_post_candidates import build_ga_candidates_for_post
+from gear_optimizer.solver.native_inflight_orchestrator import build_ga_candidates_for_post
 
 
 def test_build_ga_candidates_for_post_compacts_and_materializes_names():

@@ -1,6 +1,6 @@
 import queue
 
-from gear_optimizer.solver.gpu_executor_response_delivery import ResponseDeliveryTracker, order_responses_for_requests
+from gear_optimizer.solver.gpu_executor_batching import ResponseDeliveryTracker, order_responses_for_requests
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 

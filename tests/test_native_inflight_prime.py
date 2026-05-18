@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from types import SimpleNamespace
 
-from gear_optimizer.solver.native_inflight_prime import prime_native_inflight_prepared_queue
+from gear_optimizer.solver.native_inflight_lifecycle import prime_native_inflight_prepared_queue
 
 
 def _task(name: str) -> tuple:

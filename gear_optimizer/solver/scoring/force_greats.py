@@ -15,7 +15,7 @@ fill penalties at the cost of score penalties from great notes.
 
 import numpy as np
 import threading
-from math import floor, ceil
+from math import ceil
 import logging
 from cachetools import LRUCache
 
@@ -29,8 +29,7 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
     FG_SEARCH_RADIUS,
 )
-from ...core.color_flags import build_color_flags
-from ...core.utils import full_pipeline_signature, safe_int, safe_float
+from ...core.utils import full_pipeline_signature, safe_int
 
 from ..fever_timeline import (
     calculate_force_greats_timeline_indices,
@@ -42,15 +41,29 @@ from ..scoring_core import (
     optimize_core_jit,
 )
 
-from .gpu_solver import FORCE_GREATS_ALGO_VERSION, FG_CACHE
-from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key_for_fg_timeline
+from .runtime_state import FORCE_GREATS_ALGO_VERSION, FG_CACHE
+from .stats_scoring import _song_cache_key_for_fg_timeline
+from .fg_policy import (
+    BASE_STAT_KEYS,
+    accumulate_fg_penalties,
+    build_fg_result_dict,
+    build_force_greats_counts_list,
+    build_gpu_fg_result_dict,
+    build_penalty_table_and_body,
+    copy_base_stats,
+    extract_fg_context,
+    extract_fg_song_inputs,
+    extract_song_meta,
+    ftff_pairs_for_search,
+    iter_ft_ff_budget_pairs,
+    normalize_ft_ff_search_ranges,
+    resolve_stat_factors,
+)
 from .stats_ops import apply_gems_to_base_stats
 
 
 
 logger = logging.getLogger(__name__)
-# Constants
-MAX_FT_FF_GEMS = TOTAL_GEM_BUDGET
 FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
 
 # Thread-local scratch buffers for Force Greats timeline computation.
@@ -115,38 +128,14 @@ def _get_fg_timeline_buffers(total_notes: int):
     return fever_mask, section_start, section_forced, section_fill_penalty, section_skip_wasted
 
 
-def _normalize_ft_ff_search_ranges(search_ranges):
-    if search_ranges:
-        start_ft, end_ft, start_ff, end_ff = search_ranges
-        start_ft = max(0, int(start_ft))
-        end_ft = min(MAX_FT_FF_GEMS, int(end_ft))
-        start_ff = max(0, int(start_ff))
-        end_ff = min(MAX_FT_FF_GEMS, int(end_ff))
-    else:
-        start_ft, end_ft = 0, MAX_FT_FF_GEMS
-        start_ff, end_ff = 0, MAX_FT_FF_GEMS
-
-    return start_ft, end_ft, start_ff, end_ff
-
-
 def _iter_ft_ff_budget_pairs(start_ft, end_ft, start_ff, end_ff, total_budget):
-    total_budget = int(total_budget)
-    start_ft = int(start_ft)
-    end_ft = int(end_ft)
-    start_ff = int(start_ff)
-    end_ff = int(end_ff)
-
-    for ft_gems in range(start_ft, end_ft + 1):
-        remaining_after_ft = total_budget - ft_gems
-        if remaining_after_ft < 0:
-            break
-
-        ff_end = min(end_ff, remaining_after_ft)
-        for ff_gems in range(start_ff, ff_end + 1):
-            current_budget = remaining_after_ft - ff_gems
-            if current_budget < 0:
-                break
-            yield ft_gems, ff_gems, current_budget
+    yield from iter_ft_ff_budget_pairs(
+        start_ft,
+        end_ft,
+        start_ff,
+        end_ff,
+        total_budget=int(total_budget),
+    )
 
 
 def _compute_force_greats_timeline(
@@ -246,54 +235,20 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     if not stats or not calc_song:
         return None
 
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
-    total_notes = len(timestamps)
-    if total_notes <= 0:
+    song_inputs = extract_fg_song_inputs(calc_song)
+    if int(song_inputs.total_notes) <= 0:
         return None
 
-    metadata = calc_song["metadata"]
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    # last_note_time is derived from chart length, not simulated hits.
-    base_ts = song_data.get("timestamps", timestamps)
-    default_last_note = base_ts[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    primary_color = metadata.get("Primary Color", "")
-    secondary_color = metadata.get("Secondary Color", "")
-    primary_val = stats.get(primary_color, 0)
-    secondary_val = stats.get(secondary_color, 0)
-
-    ref_pp = ref_arrays["Perfect Points"]
-    ref_cm = ref_arrays["Combo Multiplier"]
-    ref_fm = ref_arrays["Fever Multiplier"]
-    ref_ff = ref_arrays["Fever Fill Rate"]
-    ref_ft = ref_arrays["Fever Time"]
-
-    pp_factor = lookup_reference_py(stats["Perfect Points"], ref_pp, TOTAL_ROWS)
-    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_cm, TOTAL_ROWS)
-    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_fm, TOTAL_ROWS)
-    fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_ff, TOTAL_ROWS)
-    fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_ft, TOTAL_ROWS)
-
-    base_value = (primary_val * 2) + secondary_val + pp_factor
-    combo_value = floor(base_value * combo_mul)
-    # Great scoring:
-    # - For ramped notes (<100), we use an integer base derived from per-term floors.
-    # - For full-combo (>=100), the game effectively floors *after* applying the combo multiplier to the
-    #   underlying float expression. This matters for borderline cases where 2/3 introduces a tiny
-    #   floating error (e.g., 1689.999999999...), which can shift the floor result by 1–2.
-    great_penalty_base_head = floor((primary_val * 2) * (2.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0)) + 150
-    great_penalty_base_raw = ((primary_val * 2) * (2.0 / 3.0)) + (secondary_val * (2.0 / 3.0)) + 150.0
-
-    great_combo_value = floor(great_penalty_base_raw * combo_mul)
-    body_penalty = max(0, combo_value - great_combo_value)
-
-    penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base_head)
-    # Ensure the last ramp note (100th hit) matches the constant full-combo body penalty.
-    if penalty_table:
-        penalty_table[-1] = body_penalty
+    primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
+    secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
+    factors = resolve_stat_factors(stats, ref_arrays)
+    base_value = (primary_val * 2) + secondary_val + float(factors.pp_factor)
+    penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
+        base_value=float(base_value),
+        combo_mul=float(factors.combo_mul),
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
+    )
 
     force_counts = list(forced_counts or [])
     (
@@ -303,76 +258,43 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         non_fever_base,
         section_details,
     ) = _compute_force_greats_timeline(
-        timestamps,
-        great_candidates,
-        total_notes,
-        fever_fill_rate,
-        fever_time_stat,
-        long_notes,
-        last_note_time,
+        song_inputs.timestamps,
+        song_inputs.great_candidates,
+        song_inputs.total_notes,
+        factors.fever_fill_rate,
+        factors.fever_time_stat,
+        song_inputs.long_notes,
+        song_inputs.last_note_time,
         force_counts,
         clamp_base_notes_nonnegative=True,
         clamp_forced_to_section_notes=True,
-        use_forced_great_timing=use_forced_great_timing,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
 
     base_score = fast_calculate_score(
         base_value,
-        combo_mul,
-        fever_mul,
+        factors.combo_mul,
+        factors.fever_mul,
         fever_mask_head,
         count_body_fever,
         count_body_normal,
     )
 
-    total_score_penalty = 0
-    total_fill_penalty = 0
-    penalty_analysis = {}
-    for idx, detail in enumerate(section_details):
-        section_key = f"NonFever{idx + 1}"
-        fill_penalty_score = detail["fill_penalty_notes"] * combo_value
-        total_fill_penalty += fill_penalty_score
-        forced = detail["forced"]
-        if forced > 0:
-            # For sections 2+, the first non-fever note is the transition note (no fill).
-            # Forced Greats should apply to fill-contributing notes, so offset by +1.
-            start_idx = detail["start_idx"] + (0 if detail.get("skip_wasted") else 1)
-            score_penalty = 0
-            note_idx = start_idx
-            remaining = forced
-            while remaining > 0:
-                if note_idx < len(penalty_table):
-                    score_penalty += penalty_table[note_idx]
-                else:
-                    score_penalty += body_penalty
-                note_idx += 1
-                remaining -= 1
-        else:
-            score_penalty = 0
-        total_score_penalty += score_penalty
-        penalty_analysis[section_key] = {
-            "forced_greats": forced,
-            "score_penalty": score_penalty,
-            "fill_penalty": fill_penalty_score,
-            "total_penalty": score_penalty + fill_penalty_score,
-        }
-
-    used_counts = force_counts[:]
-    if len(used_counts) < len(section_details):
-        used_counts.extend([0] * (len(section_details) - len(used_counts)))
-
-    return {
-        "base_score": base_score,
-        "final_score": max(0, base_score - total_score_penalty),
-        "score_penalty": total_score_penalty,
-        "fill_penalty": total_fill_penalty,
-        "total_penalty": total_score_penalty + total_fill_penalty,
-        "num_non_fever_sections": len(section_details),
-        "config_counts": used_counts[: len(section_details)],
-        "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
-        "penalty_analysis": penalty_analysis,
-        "non_fever_base": non_fever_base,
-    }
+    total_score_penalty, total_fill_penalty, penalty_analysis = accumulate_fg_penalties(
+        section_details=section_details,
+        penalty_table=penalty_table,
+        body_penalty=body_penalty,
+        combo_value=combo_value,
+    )
+    return build_fg_result_dict(
+        base_score=int(base_score),
+        total_score_penalty=int(total_score_penalty),
+        total_fill_penalty=int(total_fill_penalty),
+        section_details=section_details,
+        config_counts=force_counts,
+        penalty_analysis=penalty_analysis,
+        non_fever_base=int(non_fever_base),
+    )
 
 
 def evaluate_fg_with_gem_iteration(
@@ -406,22 +328,13 @@ def evaluate_fg_with_gem_iteration(
     if not base_stats or not calc_song:
         return None
 
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
-    total_notes = len(timestamps)
-    if total_notes <= 0:
+    fg_context = extract_fg_context(calc_song, selected_color)
+    song_inputs = fg_context.song_inputs
+    if int(song_inputs.total_notes) <= 0:
         return None
 
-    metadata = calc_song["metadata"]
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    # last_note_time is derived from chart length, not simulated hits.
-    base_ts = song_data.get("timestamps", timestamps)
-    default_last_note = base_ts[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    p_color = metadata.get("Primary Color", "")
-    s_color = metadata.get("Secondary Color", "")
+    p_color = song_inputs.primary_color
+    s_color = song_inputs.secondary_color
 
     ref_pp = ref_arrays["Perfect Points"]
     ref_cm = ref_arrays["Combo Multiplier"]
@@ -429,15 +342,9 @@ def evaluate_fg_with_gem_iteration(
     ref_ff = ref_arrays["Fever Fill Rate"]
     ref_ft = ref_arrays["Fever Time"]
 
-    flags = build_color_flags(p_color, s_color, selected_color)
-    is_p_pp = flags["is_p_pp"]
-    is_s_pp = flags["is_s_pp"]
-    is_p_cm = flags["is_p_cm"]
-    is_s_cm = flags["is_s_cm"]
-    is_p_fm = flags["is_p_fm"]
-    is_s_fm = flags["is_s_fm"]
-    is_p_ov = flags["is_p_ov"]
-    is_s_ov = flags["is_s_ov"]
+    is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = (
+        fg_context.color_flags.optimizer_args()
+    )
 
     # Base stats (pre-gem)
     base_pp = base_stats.get("Perfect Points", 0)
@@ -448,11 +355,14 @@ def evaluate_fg_with_gem_iteration(
     base_beat = base_stats.get("Beat", 0)
     base_vibe = base_stats.get("Vibe", 0)
 
-    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
+    non_fever_cas = max(0.0, (song_inputs.total_notes - song_inputs.long_notes) * 0.333)
     force_counts = list(forced_counts or [])
     song_key = _song_cache_key_for_fg_timeline(calc_song)
 
-    start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
+    start_ft, end_ft, start_ff, end_ff = normalize_ft_ff_search_ranges(
+        search_ranges,
+        total_budget=TOTAL_GEM_BUDGET,
+    )
 
     # Collect candidates first (preserve deterministic (ft, ff) iteration order).
     candidates = []
@@ -484,17 +394,17 @@ def evaluate_fg_with_gem_iteration(
                 _nf_base_from_jit,
                 section_details,
             ) = _compute_force_greats_timeline(
-                timestamps,
-                great_candidates,
-                total_notes,
+                song_inputs.timestamps,
+                song_inputs.great_candidates,
+                song_inputs.total_notes,
                 fever_fill_rate,
                 fever_time_stat,
-                long_notes,
-                last_note_time,
+                song_inputs.long_notes,
+                song_inputs.last_note_time,
                 force_counts,
                 clamp_base_notes_nonnegative=False,
                 clamp_forced_to_section_notes=False,
-                use_forced_great_timing=use_forced_great_timing,
+                use_forced_great_timing=song_inputs.use_forced_great_timing,
             )
 
             cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
@@ -594,73 +504,40 @@ def evaluate_fg_with_gem_iteration(
             count_body_normal,
         )
 
-        # FG penalties (score penalty for greats + fill penalty)
-        combo_value = floor(base_value * combo_mul)
-        great_penalty_base_head = floor((final_p_val * 2) * (2.0 / 3.0)) + floor(final_s_val * (2.0 / 3.0)) + 150
-        great_penalty_base_raw = ((final_p_val * 2) * (2.0 / 3.0)) + (final_s_val * (2.0 / 3.0)) + 150.0
-        penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base_head)
-        body_penalty = max(0, combo_value - floor(great_penalty_base_raw * combo_mul))
-        if penalty_table:
-            penalty_table[-1] = body_penalty
-
-        total_score_penalty = 0
-        total_fill_penalty = 0
-        penalty_analysis = {}
-
-        for s_idx, detail in enumerate(section_details):
-            section_key = f"NonFever{s_idx + 1}"
-            fill_p_score = detail["fill_penalty_notes"] * combo_value
-            total_fill_penalty += fill_p_score
-
-            forced = detail["forced"]
-            score_p = 0
-            if forced > 0:
-                # For sections 2+, the first non-fever note is the transition note (no fill).
-                # Forced Greats should apply to fill-contributing notes, so offset by +1.
-                start_idx = detail["start_idx"] + (0 if detail.get("skip_wasted") else 1)
-
-                note_idx = start_idx
-                remaining = forced
-                while remaining > 0:
-                    if note_idx < len(penalty_table):
-                        score_p += penalty_table[note_idx]
-                    else:
-                        score_p += body_penalty
-                    note_idx += 1
-                    remaining -= 1
-
-            total_score_penalty += score_p
-            penalty_analysis[section_key] = {
-                "forced_greats": forced,
-                "score_penalty": score_p,
-                "fill_penalty": fill_p_score,
-                "total_penalty": score_p + fill_p_score,
-            }
+        penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
+            base_value=float(base_value),
+            combo_mul=float(combo_mul),
+            primary_val=int(final_p_val),
+            secondary_val=int(final_s_val),
+        )
+        total_score_penalty, total_fill_penalty, penalty_analysis = accumulate_fg_penalties(
+            section_details=section_details,
+            penalty_table=penalty_table,
+            body_penalty=body_penalty,
+            combo_value=combo_value,
+        )
 
         final_score = max(0, base_score - total_score_penalty)
 
         if final_score > (best_score if best_result else -1):
             best_score = final_score
-            best_result = {
-                "base_score": base_score,
-                "final_score": final_score,
-                "score_penalty": total_score_penalty,
-                "fill_penalty": total_fill_penalty,
-                "total_penalty": total_score_penalty + total_fill_penalty,
-                "num_non_fever_sections": len(section_details),
-                "penalty_analysis": penalty_analysis,
-                "config_counts": force_counts[:],
-                "config_dict": _force_greats_counts_to_dict(force_counts, max(2, len(force_counts))),
-                "non_fever_base": non_fever_base,
-                "gem_counts": {
-                    "Perfect Points": gems_pp,
-                    "Combo Multiplier": gems_cm,
-                    "Fever Multiplier": gems_fm,
-                    "Element": gems_ov,
-                },
-                "FT": ft_gems,
-                "FF": ff_gems,
+            best_result = build_fg_result_dict(
+                base_score=int(base_score),
+                total_score_penalty=int(total_score_penalty),
+                total_fill_penalty=int(total_fill_penalty),
+                section_details=section_details,
+                config_counts=force_counts,
+                penalty_analysis=penalty_analysis,
+                non_fever_base=int(non_fever_base),
+            )
+            best_result["gem_counts"] = {
+                "Perfect Points": gems_pp,
+                "Combo Multiplier": gems_cm,
+                "Fever Multiplier": gems_fm,
+                "Element": gems_ov,
             }
+            best_result["FT"] = ft_gems
+            best_result["FF"] = ff_gems
 
     return best_result
 
@@ -701,26 +578,14 @@ def run_force_greats_hill_climb(
 
     # Selected element is a loadout/config property (overflow target), not always the song primary.
     # Default to song primary only if missing.
-    selected_color = selected_color or calc_song["metadata"].get("Primary Color", "Rush")
+    song_meta = extract_song_meta(calc_song, default_primary="Rush")
+    selected_color = selected_color or song_meta.primary_color or "Rush"
 
     # Extract base stats (before gems) - use stats directly since we want gear+mini stats
     # The GPU path now returns gem-adjusted stats, so we need to reverse
     # For simplicity, we can use the stats as-is since evaluate_fg_with_gem_iteration
     # handles the gem allocation internally
-    base_stats = {}
-    for key in [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Chill",
-        "Flow",
-        "Rush",
-        "Beat",
-        "Vibe",
-    ]:
-        base_stats[key] = stats.get(key, 0)
+    base_stats = copy_base_stats(stats)
 
     non_fever_base = baseline.get("non_fever_base", 20)
     # Calculate FT/FF search window (kept tight; full FT/FF × all FG configs explodes combinatorially)
@@ -733,32 +598,7 @@ def run_force_greats_hill_climb(
             center_ff + search_radius,
         )
 
-    # Build FG config list in deterministic order (matches the nested-loop ordering)
-    counts_list = []
-
-    # Per-section caps requested by user
-    cap_s0 = min(int(non_fever_base or 0), 50)
-    cap_s1 = min(int(non_fever_base or 0), 25)
-    cap_s2 = min(int(non_fever_base or 0), 15)
-
-    if num_sections == 1:
-        for s0 in range(cap_s0 + 1):
-            counts_list.append((s0,))
-    elif num_sections == 2:
-        for s0 in range(cap_s0 + 1):
-            for s1 in range(cap_s1 + 1):
-                counts_list.append((s0, s1))
-    elif num_sections == 3:
-        for s0 in range(cap_s0 + 1):
-            for s1 in range(cap_s1 + 1):
-                for s2 in range(cap_s2 + 1):
-                    counts_list.append((s0, s1, s2))
-    else:
-        from itertools import product
-
-        cap = min(int(non_fever_base or 0), 5)
-        for counts in product(range(cap + 1), repeat=num_sections):
-            counts_list.append(tuple(counts))
+    counts_list = build_force_greats_counts_list(num_sections, non_fever_base)
 
     # --------------------------------------------------------------------
     # FULL GPU FINDER PATH (when enabled):
@@ -769,48 +609,16 @@ def run_force_greats_hill_climb(
         try:
             from ..taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
-            song_data = calc_song.get("song_data", {}) or {}
-            timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-            great_candidates = song_data.get("fg_great_candidate_timestamps")
-            total_notes = len(timestamps)
-            if total_notes <= 0:
+            fg_context = extract_fg_context(calc_song, selected_color)
+            song_inputs = fg_context.song_inputs
+            if song_inputs.total_notes <= 0:
                 return None
 
-            meta = calc_song.get("metadata", {}) or {}
-            long_notes = safe_int(meta.get("Long Notes"), 0)
-            # last_note_time is derived from chart length, not simulated hits.
-            base_ts = song_data.get("timestamps", timestamps)
-            default_last_note = base_ts[-1] if total_notes else 0.0
-            last_note_time = safe_float(meta.get("Last Note Time"), default_last_note)
-            p_color = meta.get("Primary Color", "")
-            s_color = meta.get("Secondary Color", "")
-
-            flags = build_color_flags(p_color, s_color, selected_color)
-            is_p_pp = flags["is_p_pp"]
-            is_s_pp = flags["is_s_pp"]
-            is_p_cm = flags["is_p_cm"]
-            is_s_cm = flags["is_s_cm"]
-            is_p_fm = flags["is_p_fm"]
-            is_s_fm = flags["is_s_fm"]
-            is_p_ft = flags["is_p_ft"]
-            is_s_ft = flags["is_s_ft"]
-            is_p_ff = flags["is_p_ff"]
-            is_s_ff = flags["is_s_ff"]
-            is_p_ov = flags["is_p_ov"]
-            is_s_ov = flags["is_s_ov"]
+            p_color = fg_context.primary_color
+            s_color = fg_context.secondary_color
 
             # FT/FF window list (no budgets here; GPU computes budget=total_budget-ft-ff)
-            start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
-            ftff_pairs = [
-                (ft, ff)
-                for ft, ff, _ in _iter_ft_ff_budget_pairs(
-                    start_ft,
-                    end_ft,
-                    start_ff,
-                    end_ff,
-                    TOTAL_GEM_BUDGET,
-                )
-            ]
+            ftff_pairs = ftff_pairs_for_search(search_ranges, total_budget=TOTAL_GEM_BUDGET)
 
             # Single-genome input (base stats; GPU allocates gems)
             genome_stats_list = [
@@ -827,25 +635,14 @@ def run_force_greats_hill_climb(
 
             out = solve_force_greats_finder_gpu(
                 genome_stats_list,
-                timestamps,
-                great_candidates,
-                long_notes,
-                last_note_time,
+                song_inputs.timestamps,
+                song_inputs.great_candidates,
+                song_inputs.long_notes,
+                song_inputs.last_note_time,
                 counts_list,
                 ftff_pairs,
                 n_sections=len(counts_list[0]) if counts_list else 1,
-                is_p_ft=is_p_ft,
-                is_s_ft=is_s_ft,
-                is_p_ff=is_p_ff,
-                is_s_ff=is_s_ff,
-                is_p_pp=is_p_pp,
-                is_s_pp=is_s_pp,
-                is_p_cm=is_p_cm,
-                is_s_cm=is_s_cm,
-                is_p_fm=is_p_fm,
-                is_s_fm=is_s_fm,
-                is_p_ov=is_p_ov,
-                is_s_ov=is_s_ov,
+                **fg_context.color_flags.as_dict(),
                 ref_arrays=ref_arrays,
                 total_budget=TOTAL_GEM_BUDGET,
                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -859,21 +656,12 @@ def run_force_greats_hill_climb(
                 list(counts_list[cfg_idx]) if (cfg_idx is not None and 0 <= int(cfg_idx) < len(counts_list)) else []
             )
 
-            result = {
-                "base_score": best.get("base_score", 0),
-                "final_score": best.get("final_score", 0),
-                "score_penalty": best.get("score_penalty", 0),
-                "fill_penalty": best.get("fill_penalty", 0),
-                "total_penalty": (best.get("score_penalty", 0) or 0) + (best.get("fill_penalty", 0) or 0),
-                "num_non_fever_sections": num_sections,
-                "penalty_analysis": {},  # optional; GPU path currently omits per-section breakdown
-                "config_counts": cfg_counts,
-                "config_dict": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
-                "non_fever_base": non_fever_base,
-                "gem_counts": best.get("gem_counts", {}) or {},
-                "FT": best.get("FT", 0),
-                "FF": best.get("FF", 0),
-            }
+            result = build_gpu_fg_result_dict(
+                best=best,
+                config_counts=cfg_counts,
+                num_sections=int(num_sections),
+                non_fever_base=int(non_fever_base),
+            )
             result["ForceGreats"] = {
                 "config": result.get("config_dict", {}),
                 "base_score": result.get("base_score", 0),
@@ -936,18 +724,7 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
 
     # Only these keys affect gem optimization + FG math; copying full stats dicts is unnecessary
     # and can be expensive for DB-cached payloads.
-    keys = (
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Beat",
-        "Vibe",
-        "Rush",
-        "Flow",
-        "Chill",
-    )
+    keys = BASE_STAT_KEYS
     gs = stats.get
 
     if not gem_counts:
@@ -1043,7 +820,7 @@ def apply_force_greats_to_result(
         return None
 
     gem_counts = data_dict.get("GemCounts") or {}
-    selected_color = data_dict.get("Selected Element", calc_song["metadata"].get("Primary Color", ""))
+    selected_color = data_dict.get("Selected Element", extract_song_meta(calc_song).primary_color)
     ft_gems = data_dict.get("FT", 0)
     ff_gems = data_dict.get("FF", 0)
 

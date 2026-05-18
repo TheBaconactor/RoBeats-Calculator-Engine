@@ -4,7 +4,7 @@ import os
 from typing import Dict, List, Tuple
 
 from gear_optimizer.core.constants import SCRIPT_DIR
-from gear_optimizer.pipeline.song_processor import scan_song_header
+from gear_optimizer.data.song_io import scan_song_header
 
 
 def get_songs_by_elemental_combo(paths: dict) -> Dict[Tuple[str, str], List[dict]]:

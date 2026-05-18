@@ -15,6 +15,7 @@ from .persistence_entry_selection import (
     add_ga_candidate_entries,
     build_retained_loadout_entries,
 )
+from .persistence_authority import canonicalize_authoritative_fg_entries
 from .persistence_payload import normalize_force_payload
 from .stats_gateway import details_have_stats, ensure_stats
 from .team_buff_tiers import build_team_buff_tier_db_batches
@@ -320,7 +321,12 @@ def canonicalize_and_assemble(
     )
     ensured_entries = _ensure_stats_or_fail(raw_entries, build_details_fn=build_details_fn)
     canonical_entries = _canonicalize_entries(ensured_entries, replay_ctx=replay_ctx)
-    return _dedupe_entries(canonical_entries)
+    authoritative_entries = canonicalize_authoritative_fg_entries(
+        canonical_entries,
+        calc_song=replay_ctx.calc_song,
+        ref_arrays=replay_ctx.ref_arrays,
+    )
+    return _dedupe_entries(authoritative_entries)
 
 
 def assemble_without_replay(

@@ -1,11 +1,11 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_download import pack_or_download_fg_breakpoint_result
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import (
+from gear_optimizer.solver.gpu_executor_fg import pack_or_download_fg_breakpoint_result
+from gear_optimizer.solver.gpu_executor_fg import (
     prepare_fg_breakpoint_payload_inputs,
     prepare_fg_breakpoint_solve_submission,
 )
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_tasks import FgBreakpointTaskPlan
+from gear_optimizer.solver.gpu_executor_fg import FgBreakpointTaskPlan
 
 
 def _prepared():

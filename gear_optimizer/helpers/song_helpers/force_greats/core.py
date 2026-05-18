@@ -284,7 +284,6 @@ def process_force_greats(
                 calc_song,
                 ref_arrays,
                 meta_primary_color,
-                use_gpu=use_gpu,
                 fg_search_radius=fg_search_radius,
                 perf_timing=perf_timing,
                 gpu_client=gpu_client,

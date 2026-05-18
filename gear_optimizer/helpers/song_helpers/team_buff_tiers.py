@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from heapq import nsmallest
 import re
 from math import ceil
 import logging
@@ -131,6 +132,21 @@ def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
 
 
 def _resolve_base_team_buff(cfg_dict: dict) -> str:
+    if isinstance(cfg_dict, dict):
+        if isinstance(cfg_dict.get("IterationEngine"), dict):
+            return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
+        sec = cfg_dict.get("TeamContributionBuffConstant")
+        if isinstance(sec, dict):
+            raw = _norm_text(sec.get("TeamBuff", sec.get("teambuff", "")))
+            if raw:
+                normalized = normalize_team_buff_sequence((raw,), default=("T5",))
+                if normalized:
+                    return str(normalized[0])
+        raw = _norm_text(cfg_dict.get("TeamBuff", cfg_dict.get("teambuff", "")))
+        if raw:
+            normalized = normalize_team_buff_sequence((raw,), default=("T5",))
+            if normalized:
+                return str(normalized[0])
     return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
 
 
@@ -724,21 +740,16 @@ def compute_team_buff_tier_leaderboards(
                         }
                     )
 
-        base_ranked.sort(
-            key=lambda r: (
-                -int(r.get("score", 0) or 0),
-                str(r.get("loadout_hash") or ""),
-            )
+        base_top = nsmallest(
+            int(n),
+            base_ranked,
+            key=lambda r: (-int(r.get("score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-        fg_ranked.sort(
-            key=lambda r: (
-                -int(r.get("fg_score", 0) or 0),
-                str(r.get("loadout_hash") or ""),
-            )
+        fg_top = nsmallest(
+            int(n),
+            fg_ranked,
+            key=lambda r: (-int(r.get("fg_score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-
-        base_top = base_ranked[:n]
-        fg_top = fg_ranked[:n]
         tiers_out[str(tier)] = {"base_top51": base_top, "fg_top51": fg_top}
 
     return {

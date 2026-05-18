@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.gpu_executor_fg_breakpoint_payload import (
+from gear_optimizer.solver.gpu_executor_fg import (
     maybe_precompute_fg_breakpoint_timeline,
     prepare_fg_breakpoint_payload_inputs,
     prepare_fg_breakpoint_solve_submission,

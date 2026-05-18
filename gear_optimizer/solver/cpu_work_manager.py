@@ -2,21 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
-
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
-    TimelineFrontierCachePrebuildSummary,
-    run_timeline_frontier_cache_prebuild,
-)
+from gear_optimizer.solver.timeline_frontier_cache_prebuild import run_timeline_frontier_cache_prebuild
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class StartupCpuWorkSummary:
-    timeline_cache: TimelineFrontierCachePrebuildSummary
-    elapsed_ms: float
 
 
 class CpuWorkManager:
@@ -34,7 +23,7 @@ class CpuWorkManager:
         song_queue,
         ref_arrays: dict,
         data_root,
-    ) -> StartupCpuWorkSummary:
+    ) -> None:
         t0 = time.perf_counter()
         logger.info("[Startup][CPU] Building exact timeline frontier cache before Taichi init...")
         emit_profile_event(
@@ -72,4 +61,4 @@ class CpuWorkManager:
                 "elapsed_ms": elapsed_ms,
             },
         )
-        return StartupCpuWorkSummary(timeline_cache=timeline_summary, elapsed_ms=elapsed_ms)
+        return None

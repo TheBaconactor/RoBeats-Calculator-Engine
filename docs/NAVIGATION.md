@@ -12,7 +12,6 @@
 
 - Optimizer: `main.py` -> `gear_optimizer/app.py` (`GearOptimizerApp.run`)
 - GeneralMeta: `general_meta_main.py` -> `general_meta/` (`run_general_meta`)
-- Inventory Meta coverage: `inventory_meta_coverage_main.py` -> `inventory_optimizer/`
 
 ## Typical Optimizer Flow
 

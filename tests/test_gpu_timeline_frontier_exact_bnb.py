@@ -18,7 +18,7 @@ def _has_taichi() -> bool:
 def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
     import taichi as ti
 
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api.fixed_scoring import _score_fixed_batch
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready

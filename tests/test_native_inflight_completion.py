@@ -1,13 +1,13 @@
 from concurrent.futures import Future
 
-from gear_optimizer.solver.native_inflight_completion import (
+from gear_optimizer.solver.native_inflight_orchestrator import (
     CompletionTracker,
     emit_deferred_post_payload,
     finish_deferred_fg_completion,
     has_waitable_work,
     mark_song_completed,
 )
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_completion_tracker_registers_and_waits_for_future_completion():

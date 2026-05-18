@@ -310,23 +310,37 @@ def canonical_minis_groups_from_names(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
+    mini_sigs: List[tuple[Any, ...]] | None = None,
 ) -> list[list[str]]:
     """
     Deterministically expand minis into variant groups based on Minis.csv equivalence.
 
     For each selected mini name, we compute its effective signature under the song context,
     then expand it to all minis that share that signature in the provided Minis.csv map.
+    Callers that already computed those signatures for hashing can pass `mini_sigs`.
 
     Multiplicity is preserved (e.g., if duplicates ever appear).
     """
+    names = [str(name or "").strip() for name in mini_names or []]
+    names = [name for name in names if name]
+    if mini_sigs is None:
+        mini_sigs = [
+            effective_mini_signature_for_name(
+                name,
+                minis_by_name,
+                primary_color,
+                secondary_color,
+                selected_color,
+            )
+            for name in names
+        ]
+    elif len(mini_sigs) != len(names):
+        raise ValueError("mini_sigs length must match non-empty mini_names length")
+
     sig_counts: Counter = Counter()
     sig_rep: dict[tuple[Any, ...], str] = {}
 
-    for name in mini_names or []:
-        n = str(name).strip()
-        if not n:
-            continue
-        sig = effective_mini_signature_for_name(n, minis_by_name, primary_color, secondary_color, selected_color)
+    for n, sig in zip(names, mini_sigs):
         sig_counts[sig] += 1
         sig_rep.setdefault(sig, n)
 

@@ -98,10 +98,6 @@ def safe_int(val, default=0):
         return default
 
 
-def ceil_div(n: int, d: int) -> int:
-    return int((int(n) + int(d) - 1) // int(d))
-
-
 def safe_float(val, default=0.0):
     """
     Safely convert a value to a float with fallback.

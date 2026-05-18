@@ -1,4 +1,4 @@
-from gear_optimizer.solver.gpu_executor_fused_coalesce import (
+from gear_optimizer.solver.gpu_executor_batching import (
     build_ga_fg_fused_batch_requests,
     coalesce_ga_fg_fused_requests,
     unwrap_ga_fg_fused_batch_response,

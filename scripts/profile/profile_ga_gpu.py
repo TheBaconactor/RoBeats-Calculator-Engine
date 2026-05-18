@@ -24,7 +24,7 @@ def profile_ga_with_gpu():
     """Profile GA using GPU path."""
     import numpy as np
     import random
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.models import GASettings
 
@@ -194,13 +194,10 @@ def profile_ga_with_gpu():
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=cfg,
         base_stats_fixed=base_stats_fixed,
-        paths=None,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         all_gears=all_gears,
         all_minis=all_minis,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=13,  # Match production depth
@@ -235,8 +232,11 @@ def profile_ga_with_gpu():
     stats2.print_stats(25)
     print(stream2.getvalue())
 
-    # Save full results
-    output_file = os.path.join(project_root, "tests", "ga_gpu_profile_results.txt")
+    # Save full results outside the test tree so profiling output stays out of
+    # the maintained regression surface.
+    output_dir = os.path.join(project_root, "artifacts", "profiles")
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "ga_gpu_profile_results.txt")
     with open(output_file, "w") as f:
         f.write(f"GA GPU Profiling Results\n")
         f.write(f"Total time: {total_time:.2f}s\n")

@@ -73,17 +73,23 @@ def hydrate_fg_candidate_stats(
     if not candidates:
         return
 
-    selected_color = str(selected_color or "")
     cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
+    selected_color = str(selected_color or cfg_data.get("selected_color", "") or "")
 
-    base_fixed_list, fallback_sel = build_base_fixed_stats_list(
-        base_stats_fixed,
-        cfg_data,
-        fallback_selected_color=selected_color,
-    )
-    base_fixed = build_stats_dict(base_fixed_list)
-    if fallback_sel and not selected_color:
-        selected_color = str(fallback_sel)
+    base_fixed: dict[str, int] | None = None
+
+    def _base_fixed_stats() -> dict[str, int]:
+        nonlocal base_fixed, selected_color
+        if base_fixed is None:
+            base_fixed_list, fallback_sel = build_base_fixed_stats_list(
+                base_stats_fixed,
+                cfg_data,
+                fallback_selected_color=selected_color,
+            )
+            base_fixed = build_stats_dict(base_fixed_list)
+            if fallback_sel and not selected_color:
+                selected_color = str(fallback_sel)
+        return base_fixed
 
     for cand in candidates:
         if not isinstance(cand, dict):
@@ -139,7 +145,9 @@ def hydrate_fg_candidate_stats(
             )
         else:
             genome = _candidate_genome(cand)
-            stats = dict(base_fixed)
+            stats = dict(_base_fixed_stats())
+            if not sel:
+                sel = selected_color
             for item in genome[:9]:
                 if not isinstance(item, dict) or not item:
                     continue

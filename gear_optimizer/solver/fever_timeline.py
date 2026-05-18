@@ -597,27 +597,14 @@ class SongTimelineGrid:
         return result
 
     def get_timeline_with_forced(self, ft_idx, ff_idx, forced_counts):
-        """
-        Calculates timeline dynamics with specific forced greats counts.
-        Used for analytic breakpoint finding.
-
-        Args:
-            ft_idx: Fever Time stat index
-            ff_idx: Fever Fill Rate stat index
-            forced_counts: List/Tuple of forced greats counts per section
-
-        Returns:
-            tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
-        """
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
 
-        # Prepare buffers for the kernel
         max_sections = 16
         forced_counts_arr = np.array(forced_counts, dtype=np.int32)
-        forced_len = len(forced_counts)
+        forced_len = len(forced_counts_arr)
         padded_counts = np.zeros(max_sections, dtype=np.int32)
         padded_counts[:forced_len] = forced_counts_arr
 
@@ -625,11 +612,6 @@ class SongTimelineGrid:
         section_forced_out = np.zeros(max_sections, dtype=np.int32)
         section_fill_penalty_out = np.zeros(max_sections, dtype=np.int32)
         section_skip_wasted_out = np.zeros(max_sections, dtype=np.int32)
-
-        # We reuse the thread-local buffer if single-threaded, but to be safe create new or copy header
-        # Actually calculate_force_greats_timeline_indices writes to fever_mask_buffer.
-        # We can reuse self._fever_mask_buffer if this is single-threaded CPU.
-        # Yes, standard python thread.
 
         mask_result, cbf, cbn, _base, _sec_cnt = calculate_force_greats_timeline_indices(
             self.fg_timestamps,
@@ -641,45 +623,15 @@ class SongTimelineGrid:
             self.last_note_time,
             padded_counts,
             forced_len,
-            True,  # clamp_base_notes_nonnegative
-            True,  # clamp_forced_to_section_notes
-            False,  # use_forced_great_timing
+            True,
+            True,
+            False,
             self._fever_mask_buffer,
             section_start_out,
             section_forced_out,
             section_fill_penalty_out,
             section_skip_wasted_out,
         )
-
-        # We need "last_fever_end_idx". The kernel calculates fever mask.
-        # We can find the last True index in mask? Or recalculate?
-        # calculate_force_greats_timeline_indices doesn't return last_end explicitly in its tuple.
-        # It updates mask. We can scan mask.
-
-        # Fast way to find last non-zero index in boolean array:
-        # np.max(np.nonzero(mask))
-        # But mask is reused.
-
-        # Actually, let's look at calculate_fever_timeline_indices (the standard one).
-        # It returns last_fever_end_idx.
-        # calculate_force_greats_timeline_indices does NOT return it.
-        # We should modify the kernel to return it, OR derive it.
-        # Deriving it requires scanning the array which is slow O(N).
-        # Updating the kernel is better.
-        # But I cannot easily update the kernel signature without breaking other callers (e.g. scoring.py).
-
-        # Check usage in scoring.py.
-        # scoring.py calls it.
-
-        # Alternative: The "Breakpoints" logic only cares if the *Set of Covered Notes* changes.
-        # Set of Covered Notes = (mask_head + body_fever).
-        # We have these.
-        # If (mask_head hash, body_fever) changes, then the config is distinct.
-        # We don't technically need last_fever_end_idx for the breakpoint logic itself,
-        # unless we use it for Gap calculation.
-        # But we use `get_timeline`(standard) for the Gap check.
-        # So we represent the result by (mask_head.copy(), cbf, cbn).
-
         return mask_result.copy(), cbf, cbn
 
     def get_fever_params(self, ft_idx, ff_idx):

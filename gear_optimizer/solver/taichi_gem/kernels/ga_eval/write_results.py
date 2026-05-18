@@ -6,8 +6,6 @@ Includes:
 - ga_write_best_and_update_global_kernel
 """
 
-import sys
-
 import taichi as ti
 
 from .. import kernels_helpers
@@ -17,8 +15,7 @@ from ..kernels_scoring import (
     score_solution_from_gems_preloaded,
 )
 
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
+IS_METAL = False
 # Small populations are faster with a serial scan than a fully contended atomic reduction.
 GA_GLOBAL_BEST_SERIAL_THRESHOLD = 512
 

@@ -1,4 +1,4 @@
-from gear_optimizer.solver.native_inflight_bubble import BubbleTracker
+from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker
 
 
 def test_bubble_tracker_snapshot_owns_kpi_shape():

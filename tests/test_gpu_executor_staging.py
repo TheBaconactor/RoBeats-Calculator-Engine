@@ -1,7 +1,7 @@
 from collections import deque
 
 from gear_optimizer.solver.gpu_executor import GpuExecutor
-from gear_optimizer.solver.gpu_executor_staging import (
+from gear_optimizer.solver.gpu_executor_lifecycle import (
     pop_staged_request,
     stage_request,
     stamp_request_dequeue,

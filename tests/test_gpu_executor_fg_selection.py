@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gpu_executor_fg_selection import fg_selection_array_sig, fg_selection_upload_key
+from gear_optimizer.solver.gpu_executor_fg import fg_selection_array_sig, fg_selection_upload_key
 
 
 def test_fg_selection_signature_uses_active_prefix_content():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
@@ -17,7 +18,59 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
 from gear_optimizer.helpers.song_helpers.retention import select_retained_hashes
 from gear_optimizer.solver.native_force_greats import solve_native_force_greats_gpu_batch
 from gear_optimizer.solver.scoring import _extract_base_stats
-from gear_optimizer.solver.scoring.gpu_solver import FORCE_GREATS_ALGO_VERSION
+from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
+
+
+@dataclass(slots=True)
+class NativeFgCandidateSurface:
+    loadout_hashes: list[str] = field(default_factory=list)
+    entries: list[dict[str, Any] | None] = field(default_factory=list)
+    candidates: list[dict[str, Any] | None] = field(default_factory=list)
+    base_data: list[dict[str, Any]] = field(default_factory=list)
+    base_stats: list[dict[str, Any]] = field(default_factory=list)
+    base_scores: list[int] = field(default_factory=list)
+    selected_colors: list[str] = field(default_factory=list)
+    center_fts: list[int] = field(default_factory=list)
+    center_ffs: list[int] = field(default_factory=list)
+    gear: list[list[str]] = field(default_factory=list)
+    minis: list[list[str]] = field(default_factory=list)
+    is_ga: list[bool] = field(default_factory=list)
+    fg_scores: list[int] = field(default_factory=list)
+    force_payloads: list[dict[str, Any] | None] = field(default_factory=list)
+
+    def __len__(self) -> int:
+        return len(self.loadout_hashes)
+
+    def append(
+        self,
+        *,
+        loadout_hash: str,
+        entry: dict[str, Any] | None,
+        candidate: dict[str, Any] | None,
+        base_data: dict[str, Any],
+        base_stats: dict[str, Any],
+        base_score: int,
+        selected_color: str,
+        center_ft: int,
+        center_ff: int,
+        gear: list[str],
+        minis: list[str],
+        is_ga: bool,
+    ) -> None:
+        self.loadout_hashes.append(str(loadout_hash))
+        self.entries.append(entry)
+        self.candidates.append(candidate)
+        self.base_data.append(base_data)
+        self.base_stats.append(base_stats)
+        self.base_scores.append(int(base_score))
+        self.selected_colors.append(str(selected_color or ""))
+        self.center_fts.append(int(center_ft))
+        self.center_ffs.append(int(center_ff))
+        self.gear.append(list(gear or []))
+        self.minis.append(list(minis or []))
+        self.is_ga.append(bool(is_ga))
+        self.fg_scores.append(int(base_score))
+        self.force_payloads.append(None)
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
@@ -105,7 +158,8 @@ def _materialize_force_payload(
     return force_payload
 
 
-def _record_from_ga_candidate(
+def _append_ga_candidate(
+    surface: NativeFgCandidateSurface,
     candidate: dict[str, Any],
     *,
     default_selected_color: str,
@@ -116,12 +170,12 @@ def _record_from_ga_candidate(
 ) -> dict[str, Any] | None:
     data = candidate.get("Data")
     if not isinstance(data, dict) or not data:
-        return None
+        return
 
     selected_color = get_selected_element(data, default_selected_color)
     base_stats = _candidate_base_stats(data, selected_color=selected_color)
     if not base_stats:
-        return None
+        return
 
     gear_names, mini_names = materialize_candidate_names(candidate, registry=registry, mutate=True)
     loadout_hash = candidate_loadout_hash(
@@ -134,26 +188,27 @@ def _record_from_ga_candidate(
         mutate=True,
     )
     if not loadout_hash:
-        return None
+        return
 
     base_score = safe_int(candidate.get("BaseScore", candidate.get("Score", 0)), 0)
-    return {
-        "hash": str(loadout_hash),
-        "entry": None,
-        "candidate": candidate,
-        "data": data,
-        "base_stats": base_stats,
-        "base_score": int(base_score),
-        "selected_color": str(selected_color or ""),
-        "center_ft": safe_int(data.get("FT", 0), 0),
-        "center_ff": safe_int(data.get("FF", 0), 0),
-        "gear": list(gear_names),
-        "minis": list(mini_names),
-        "_is_ga": True,
-    }
+    surface.append(
+        loadout_hash=str(loadout_hash),
+        entry=None,
+        candidate=candidate,
+        base_data=data,
+        base_stats=base_stats,
+        base_score=int(base_score),
+        selected_color=str(selected_color or ""),
+        center_ft=safe_int(data.get("FT", 0), 0),
+        center_ff=safe_int(data.get("FF", 0), 0),
+        gear=list(gear_names),
+        minis=list(mini_names),
+        is_ga=True,
+    )
 
 
-def _record_from_loadout_entry(
+def _append_loadout_entry(
+    surface: NativeFgCandidateSurface,
     key: str,
     entry: dict[str, Any],
     *,
@@ -161,62 +216,56 @@ def _record_from_loadout_entry(
 ) -> dict[str, Any] | None:
     data = eval_data_from_entry(entry, default_selected_color)
     if not isinstance(data, dict) or not data:
-        return None
+        return
 
     selected_color = get_selected_element(data, default_selected_color)
     base_stats = _candidate_base_stats(data, selected_color=selected_color)
     if not base_stats:
-        return None
+        return
 
     gear_names, mini_names = materialize_entry_names(entry, mutate=True)
     loadout_hash = str(entry.get("loadout_hash") or entry.get("_resolved_loadout_hash") or key or "")
     if not loadout_hash:
-        return None
+        return
 
-    return {
-        "hash": str(loadout_hash),
-        "entry": entry,
-        "candidate": None,
-        "data": data,
-        "base_stats": base_stats,
-        "base_score": int(entry_base_score(entry)),
-        "selected_color": str(selected_color or ""),
-        "center_ft": safe_int(data.get("FT", 0), 0),
-        "center_ff": safe_int(data.get("FF", 0), 0),
-        "gear": list(gear_names),
-        "minis": list(mini_names),
-        "_is_ga": str(entry.get("_source") or "") == "ga",
-    }
+    surface.append(
+        loadout_hash=str(loadout_hash),
+        entry=entry,
+        candidate=None,
+        base_data=data,
+        base_stats=base_stats,
+        base_score=int(entry_base_score(entry)),
+        selected_color=str(selected_color or ""),
+        center_ft=safe_int(data.get("FT", 0), 0),
+        center_ff=safe_int(data.get("FF", 0), 0),
+        gear=list(gear_names),
+        minis=list(mini_names),
+        is_ga=str(entry.get("_source") or "") == "ga",
+    )
 
 
-def score_native_ga_force_greats(
+def build_native_fg_candidate_surface(
     *,
     loadout_entries: dict[str, dict] | None,
     ga_candidates: list[dict] | None,
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
     default_selected_color: str,
     primary_color: str,
     secondary_color: str,
     minis_by_name: dict[str, dict] | None = None,
     registry: Any = None,
-    search_radius: int | None = None,
-    retained_limit: int = LOADOUTS_PER_SONG_LIMIT,
-    gpu_client: Any | None = None,
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+) -> NativeFgCandidateSurface:
+    surface = NativeFgCandidateSurface()
 
     for key, entry in list((loadout_entries or {}).items()):
         if not isinstance(entry, dict):
             continue
-        rec = _record_from_loadout_entry(str(key), entry, default_selected_color=default_selected_color)
-        if rec is not None:
-            records.append(rec)
+        _append_loadout_entry(surface, str(key), entry, default_selected_color=default_selected_color)
 
     for candidate in ga_candidates or []:
         if not isinstance(candidate, dict):
             continue
-        rec = _record_from_ga_candidate(
+        _append_ga_candidate(
+            surface,
             candidate,
             default_selected_color=default_selected_color,
             primary_color=primary_color,
@@ -224,26 +273,37 @@ def score_native_ga_force_greats(
             minis_by_name=minis_by_name,
             registry=registry,
         )
-        if rec is not None:
-            records.append(rec)
 
-    if not records:
+    return surface
+
+
+def score_native_fg_candidate_surface(
+    *,
+    surface: NativeFgCandidateSurface | None,
+    loadout_entries: dict[str, dict] | None,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    search_radius: int | None = None,
+    retained_limit: int = LOADOUTS_PER_SONG_LIMIT,
+    gpu_client: Any | None = None,
+) -> list[dict[str, Any]]:
+    if surface is None or len(surface) <= 0:
         return []
 
     if search_radius is not None and int(search_radius) < 0:
-        center_fts: list[int | None] = [None for _ in records]
-        center_ffs: list[int | None] = [None for _ in records]
+        center_fts: list[int | None] = [None for _ in range(len(surface))]
+        center_ffs: list[int | None] = [None for _ in range(len(surface))]
         radius_arg = None
     else:
-        center_fts = [int(rec["center_ft"]) for rec in records]
-        center_ffs = [int(rec["center_ff"]) for rec in records]
+        center_fts = [int(v) for v in surface.center_fts]
+        center_ffs = [int(v) for v in surface.center_ffs]
         radius_arg = search_radius
 
     fg_results, batch_stats = solve_native_force_greats_gpu_batch(
-        base_stats_list=[dict(rec["base_stats"]) for rec in records],
+        base_stats_list=[dict(stats) for stats in surface.base_stats],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        selected_colors=[str(rec["selected_color"]) for rec in records],
+        selected_colors=[str(color) for color in surface.selected_colors],
         center_fts=center_fts,
         center_ffs=center_ffs,
         search_radius=radius_arg,
@@ -260,36 +320,46 @@ def score_native_ga_force_greats(
     )
 
     items: list[tuple[str, dict]] = []
-    for idx, rec in enumerate(records):
+    for idx in range(len(surface)):
         fg_result = fg_results[idx] if idx < len(fg_results) else None
         force_payload = None
-        fg_score = int(rec["base_score"])
+        base_score = int(surface.base_scores[idx])
+        fg_score = int(base_score)
         if isinstance(fg_result, dict) and fg_result:
-            fg_score = safe_int(fg_result.get("final_score", rec["base_score"]), int(rec["base_score"]))
+            fg_score = safe_int(fg_result.get("final_score", base_score), base_score)
             force_payload = _materialize_force_payload(
-                base_data=_safe_dict(rec["data"]),
-                base_score=int(rec["base_score"]),
-                base_stats=dict(rec["base_stats"]),
+                base_data=_safe_dict(surface.base_data[idx]),
+                base_score=int(base_score),
+                base_stats=dict(surface.base_stats[idx]),
                 fg_result=fg_result,
-                selected_color=str(rec["selected_color"]),
+                selected_color=str(surface.selected_colors[idx]),
                 search_radius=search_radius,
-                center_ft=int(rec["center_ft"]),
-                center_ff=int(rec["center_ff"]),
+                center_ft=int(surface.center_fts[idx]),
+                center_ff=int(surface.center_ffs[idx]),
             )
 
-        rec["fg_score"] = int(fg_score)
-        rec["force"] = force_payload
-        entry = rec.get("entry")
+        surface.fg_scores[idx] = int(fg_score)
+        surface.force_payloads[idx] = force_payload
+        entry = surface.entries[idx]
         if isinstance(entry, dict):
             entry["fg_score"] = int(fg_score)
             if isinstance(force_payload, dict):
                 entry["force"] = force_payload
-        candidate = rec.get("candidate")
+        candidate = surface.candidates[idx]
         if isinstance(candidate, dict):
             candidate["fg_score"] = int(fg_score)
             if isinstance(force_payload, dict):
                 candidate["force"] = force_payload
-        items.append((str(rec["hash"]), rec))
+        items.append(
+            (
+                str(surface.loadout_hashes[idx]),
+                {
+                    "base_score": int(base_score),
+                    "fg_score": int(fg_score),
+                    "force": force_payload,
+                },
+            )
+        )
 
     retained_hashes = select_retained_hashes(
         items,
@@ -301,40 +371,40 @@ def score_native_ga_force_greats(
 
     fg_variants: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for rec in records:
-        loadout_hash = str(rec["hash"])
+    for idx in range(len(surface)):
+        loadout_hash = str(surface.loadout_hashes[idx])
         if loadout_hash not in retained_hashes or loadout_hash in seen:
             continue
         seen.add(loadout_hash)
-        force_payload = rec.get("force")
+        force_payload = surface.force_payloads[idx]
         if not isinstance(force_payload, dict) or not has_valid_fg_config(force_payload):
             continue
         fg_variants.append(
             {
                 "data": force_payload,
                 "force": force_payload,
-                "gear": list(rec.get("gear") or []),
-                "minis": list(rec.get("minis") or []),
-                "score": int(rec.get("base_score", 0) or 0),
-                "base_score": int(rec.get("base_score", 0) or 0),
-                "fg_score": int(rec.get("fg_score", 0) or 0),
-                "_entry_ref": rec.get("entry"),
-                "_is_ga": bool(rec.get("_is_ga")),
+                "gear": list(surface.gear[idx] or []),
+                "minis": list(surface.minis[idx] or []),
+                "score": int(surface.base_scores[idx] or 0),
+                "base_score": int(surface.base_scores[idx] or 0),
+                "fg_score": int(surface.fg_scores[idx] or 0),
+                "_entry_ref": surface.entries[idx],
+                "_is_ga": bool(surface.is_ga[idx]),
             }
         )
 
-        entry = rec.get("entry")
+        entry = surface.entries[idx]
         if entry is None and isinstance(loadout_entries, dict):
             loadout_entries[loadout_hash] = {
-                "gear": list(rec.get("gear") or []),
-                "minis": list(rec.get("minis") or []),
-                "score": int(rec.get("base_score", 0) or 0),
-                "base_score": int(rec.get("base_score", 0) or 0),
+                "gear": list(surface.gear[idx] or []),
+                "minis": list(surface.minis[idx] or []),
+                "score": int(surface.base_scores[idx] or 0),
+                "base_score": int(surface.base_scores[idx] or 0),
                 "details": {},
-                "fg_score": int(rec.get("fg_score", 0) or 0),
+                "fg_score": int(surface.fg_scores[idx] or 0),
                 "force": force_payload,
-                "eval_data": rec.get("data"),
-                "_source": "ga" if bool(rec.get("_is_ga")) else "db",
+                "eval_data": surface.base_data[idx],
+                "_source": "ga" if bool(surface.is_ga[idx]) else "db",
             }
 
     fg_variants.sort(key=lambda row: safe_int(row.get("fg_score", 0), 0), reverse=True)

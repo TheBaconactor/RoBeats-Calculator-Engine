@@ -41,24 +41,23 @@ def test_native_optimization_engine_delegates_to_native_inflight(monkeypatch):
 
     completed: set[str] = set()
     task = _task()
+    expected_task = NativeOptimizationEngine._canonical_task_tuple(task)
     NativeOptimizationEngine().run(
         NativeOptimizationRequest(
             tasks=[task],
             in_flight_songs=3,
             completed_songs=completed,
-            total_tasks=1,
         )
     )
 
     assert calls == [
         (
-            [task],
+            [expected_task],
             {
                 "in_flight_songs": 3,
                 "completed_songs": completed,
                 "memory_resume_tracker": None,
                 "post_queue": None,
-                "total_tasks": 1,
                 "stop_requested": None,
                 "progress_cb": None,
                 "bundle_completed_cb": None,

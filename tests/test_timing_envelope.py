@@ -126,7 +126,7 @@ def test_timeline_window_counter_matches_prepared_analysis_for_resolved_stats() 
 
 
 def test_gpu_registry_payload_preserves_timing_envelope_inputs() -> None:
-    from gear_optimizer.solver.gpu_executor_static_handles import (
+    from gear_optimizer.solver.gpu_executor_lifecycle import (
         clear_registry_static_handle_cache,
         registry_static_handle_entry,
     )

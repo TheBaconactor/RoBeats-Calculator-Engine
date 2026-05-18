@@ -7,7 +7,7 @@ import pytest
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api.ga_operations import (
     ga_download_results,
     ga_evaluate_population,

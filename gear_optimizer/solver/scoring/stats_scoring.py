@@ -21,6 +21,7 @@ from ..fever_timeline import (
     calculate_fever_timeline_indices,
     calculate_non_fever_sections,
 )
+from ...core.ref_lookup import resolve_stat_factors
 
 from ..scoring_core import fast_calculate_score, lookup_reference_py
 
@@ -187,8 +188,9 @@ def evaluate_stats_score(
     if mask_buffer is None or mask_buffer.shape[0] != total_notes:
         mask_buffer = np.zeros(total_notes, dtype=np.bool_)
 
-    ft_factor = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
-    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+    factors = resolve_stat_factors(stats, ref_arrays)
+    ft_factor = float(factors.fever_time_stat)
+    ff_factor = float(factors.fever_fill_rate)
     fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
         timestamps,
         total_notes,
@@ -199,9 +201,9 @@ def evaluate_stats_score(
         mask_buffer,
     )
 
-    base_pp = lookup_reference_py(stats["Perfect Points"], ref_arrays["Perfect Points"], TOTAL_ROWS)
-    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_arrays["Combo Multiplier"], TOTAL_ROWS)
-    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_arrays["Fever Multiplier"], TOTAL_ROWS)
+    base_pp = float(factors.pp_factor)
+    combo_mul = float(factors.combo_mul)
+    fever_mul = float(factors.fever_mul)
 
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")
@@ -252,11 +254,16 @@ def _fg_baseline_params_point(
     last_note_time: float,
     ref_arrays: dict,
 ) -> tuple[int, int]:
-    ref_ff = ref_arrays["Fever Fill Rate"]
-    ref_ft = ref_arrays["Fever Time"]
-
-    fever_fill_rate = lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS)
-    fever_time_stat = lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS)
+    fever_fill_rate = lookup_reference_py(
+        safe_int(stats.get("Fever Fill Rate", 0), 0),
+        ref_arrays["Fever Fill Rate"],
+        TOTAL_ROWS,
+    )
+    fever_time_stat = lookup_reference_py(
+        safe_int(stats.get("Fever Time", 0), 0),
+        ref_arrays["Fever Time"],
+        TOTAL_ROWS,
+    )
     non_fever_section, non_fever_base = calculate_non_fever_sections(
         timestamps,
         total_notes,

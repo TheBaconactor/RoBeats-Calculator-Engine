@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 
-from gear_optimizer.solver.native_inflight_song_prep_queue import SongPrepQueue
+from gear_optimizer.solver.native_inflight_lifecycle import SongPrepQueue
 
 
 def test_song_prep_queue_submit_and_pop_completed_keeps_result_policy_external():

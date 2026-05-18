@@ -13,14 +13,12 @@ from pathlib import PurePosixPath
 ACTIVE_PREFIXES = (
     "gear_optimizer/",
     "general_meta/",
-    "inventory_optimizer/",
     "scripts/",
     "tools/",
 )
 ACTIVE_ROOT_FILES = {
     "main.py",
     "general_meta_main.py",
-    "inventory_cli.py",
 }
 CODE_SUFFIXES = {
     ".py",
@@ -36,7 +34,6 @@ EXCLUDED_PREFIXES = (
 )
 EXCLUDED_PATH_PARTS = {
     "archive",
-    "branch-archives",
     "__pycache__",
 }
 EXCLUDED_FILES = {

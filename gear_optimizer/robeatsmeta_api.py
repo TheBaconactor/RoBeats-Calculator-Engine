@@ -219,14 +219,11 @@ class RoBeatsMetaOptimizerApi:
         self._runtime_status_pending: dict[str, Any] | None = None
         self._runtime_status_current: dict[str, Any] | None = None
         self._runtime_status_disk_mtime_ns = -1
-        self._runtime_status_http_conn: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
-        self._runtime_status_http_conn_key: tuple[str, str, int] | None = None
         heartbeat_raw = env_get("ROBEATSMETA_OPTIMIZER_STATUS_HEARTBEAT_SEC", "5")
         heartbeat_seconds = _safe_float(heartbeat_raw, 5.0)
         self._runtime_status_heartbeat_interval_sec = (
             max(1.0, float(heartbeat_seconds)) if self._publish_runtime_status else 0.0
         )
-        self._runtime_status_last_push_monotonic = 0.0
         self._runtime_status_current = self.read_runtime_status()
         self._runtime_status_thread = threading.Thread(
             target=self._runtime_status_loop,
@@ -914,7 +911,6 @@ class RoBeatsMetaOptimizerApi:
                     )
                 try:
                     self._push_runtime_status_direct(state)
-                    self._runtime_status_last_push_monotonic = time.monotonic()
                 except Exception as e:
                     logger.debug(f"robeatsmeta_api:_runtime_status_loop: {e}")
                 continue
@@ -939,7 +935,6 @@ class RoBeatsMetaOptimizerApi:
                     )
                 try:
                     self._push_runtime_status_direct(state)
-                    self._runtime_status_last_push_monotonic = time.monotonic()
                 except Exception as e:
                     logger.debug(f"robeatsmeta_api:_runtime_status_loop: {e}")
                 with self._runtime_status_state_lock:
@@ -1225,15 +1220,6 @@ class RoBeatsMetaOptimizerApi:
                 self._runtime_status_thread.join(timeout=max(0.0, float(timeout)))
         except Exception as e:
             logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
-        try:
-            conn = self._runtime_status_http_conn
-            if conn is not None:
-                conn.close()
-        except Exception as e:
-            logger.debug(f"robeatsmeta_api:stop_runtime_status_loop: {e}")
-        finally:
-            self._runtime_status_http_conn = None
-            self._runtime_status_http_conn_key = None
         try:
             # If callers explicitly stop the status loop (tests, graceful shutdown),
             # we should not run the atexit handler again and attempt a final push.

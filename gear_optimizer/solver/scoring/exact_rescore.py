@@ -19,7 +19,14 @@ from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_a
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices
 from ..scoring_core import lookup_reference_py
-from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict
+from .fg_policy import (
+    accumulate_fg_penalties,
+    build_fg_result_dict,
+    build_penalty_table_and_body,
+    extract_fg_song_inputs,
+    extract_song_meta,
+    resolve_stat_factors,
+)
 
 
 def calculate_score_exact(
@@ -112,9 +119,9 @@ def score_stats_exact(
     fever_mask_buffer=None,
 ) -> int:
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-    metadata = calc_song.get("metadata", {}) or {}
-    primary = str(metadata.get("Primary Color", "") or "")
-    secondary = str(metadata.get("Secondary Color", "") or "")
+    song_meta = extract_song_meta(calc_song)
+    primary = song_meta.primary_color
+    secondary = song_meta.secondary_color
 
     pp_factor = lookup_reference_py(safe_int(stats.get("Perfect Points", 0), 0), ref_arrays["Perfect Points"], TOTAL_ROWS)
     combo_mul = lookup_reference_py(
@@ -159,56 +166,20 @@ def evaluate_force_greats_exact(
 
     from .force_greats import _compute_force_greats_timeline
 
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
-    total_notes = int(len(timestamps)) if timestamps is not None else 0
-    if total_notes <= 0:
+    song_inputs = extract_fg_song_inputs(calc_song)
+    if song_inputs.total_notes <= 0:
         return None
 
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    base_ts = song_data.get("timestamps", timestamps)
-    default_last_note = base_ts[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    primary_color = str(metadata.get("Primary Color", "") or "")
-    secondary_color = str(metadata.get("Secondary Color", "") or "")
-    primary_val = safe_int(stats.get(primary_color, 0), 0)
-    secondary_val = safe_int(stats.get(secondary_color, 0), 0)
-
-    pp_factor = lookup_reference_py(safe_int(stats.get("Perfect Points", 0), 0), ref_arrays["Perfect Points"], TOTAL_ROWS)
-    combo_mul = lookup_reference_py(
-        safe_int(stats.get("Combo Multiplier", 0), 0),
-        ref_arrays["Combo Multiplier"],
-        TOTAL_ROWS,
+    primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
+    secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
+    factors = resolve_stat_factors(stats, ref_arrays)
+    base_value = float((primary_val * 2) + secondary_val) + float(factors.pp_factor)
+    penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
+        base_value=float(base_value),
+        combo_mul=float(factors.combo_mul),
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
     )
-    fever_mul = lookup_reference_py(
-        safe_int(stats.get("Fever Multiplier", 0), 0),
-        ref_arrays["Fever Multiplier"],
-        TOTAL_ROWS,
-    )
-    fever_fill_rate = lookup_reference_py(
-        safe_int(stats.get("Fever Fill Rate", 0), 0),
-        ref_arrays["Fever Fill Rate"],
-        TOTAL_ROWS,
-    )
-    fever_time_stat = lookup_reference_py(
-        safe_int(stats.get("Fever Time", 0), 0),
-        ref_arrays["Fever Time"],
-        TOTAL_ROWS,
-    )
-
-    base_value = float((primary_val * 2) + secondary_val) + float(pp_factor)
-    combo_value = floor(base_value * float(combo_mul))
-    great_penalty_base_head = floor((primary_val * 2) * (2.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0)) + 150
-    great_penalty_base_raw = ((primary_val * 2) * (2.0 / 3.0)) + (secondary_val * (2.0 / 3.0)) + 150.0
-    great_combo_value = floor(great_penalty_base_raw * float(combo_mul))
-    body_penalty = max(0, combo_value - great_combo_value)
-
-    penalty_table = build_great_penalty_table(base_value, float(combo_mul), great_penalty_base_head)
-    if penalty_table:
-        penalty_table[-1] = body_penalty
 
     force_counts = list(forced_counts or [])
     (
@@ -218,71 +189,40 @@ def evaluate_force_greats_exact(
         non_fever_base,
         section_details,
     ) = _compute_force_greats_timeline(
-        timestamps,
-        great_candidates,
-        total_notes,
-        fever_fill_rate,
-        fever_time_stat,
-        long_notes,
-        last_note_time,
+        song_inputs.timestamps,
+        song_inputs.great_candidates,
+        song_inputs.total_notes,
+        factors.fever_fill_rate,
+        factors.fever_time_stat,
+        song_inputs.long_notes,
+        song_inputs.last_note_time,
         force_counts,
         clamp_base_notes_nonnegative=True,
         clamp_forced_to_section_notes=True,
-        use_forced_great_timing=use_forced_great_timing,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
     )
 
     base_score = calculate_score_exact(
         base_value,
-        float(combo_mul),
-        float(fever_mul),
+        float(factors.combo_mul),
+        float(factors.fever_mul),
         fever_mask_head,
         int(count_body_fever),
         int(count_body_normal),
     )
 
-    total_score_penalty = 0
-    total_fill_penalty = 0
-    penalty_analysis: dict[str, dict[str, int]] = {}
-    for idx, detail in enumerate(section_details):
-        section_key = f"NonFever{idx + 1}"
-        fill_penalty_score = int(detail["fill_penalty_notes"]) * int(combo_value)
-        total_fill_penalty += fill_penalty_score
-        forced = int(detail["forced"])
-        if forced > 0:
-            start_idx = int(detail["start_idx"]) + (0 if detail.get("skip_wasted") else 1)
-            score_penalty = 0
-            note_idx = start_idx
-            remaining = forced
-            while remaining > 0:
-                if note_idx < len(penalty_table):
-                    score_penalty += int(penalty_table[note_idx])
-                else:
-                    score_penalty += int(body_penalty)
-                note_idx += 1
-                remaining -= 1
-        else:
-            score_penalty = 0
-        total_score_penalty += score_penalty
-        penalty_analysis[section_key] = {
-            "forced_greats": int(forced),
-            "score_penalty": int(score_penalty),
-            "fill_penalty": int(fill_penalty_score),
-            "total_penalty": int(score_penalty + fill_penalty_score),
-        }
-
-    used_counts = force_counts[:]
-    if len(used_counts) < len(section_details):
-        used_counts.extend([0] * (len(section_details) - len(used_counts)))
-
-    return {
-        "base_score": int(base_score),
-        "final_score": max(0, int(base_score) - int(total_score_penalty)),
-        "score_penalty": int(total_score_penalty),
-        "fill_penalty": int(total_fill_penalty),
-        "total_penalty": int(total_score_penalty + total_fill_penalty),
-        "num_non_fever_sections": len(section_details),
-        "config_counts": used_counts[: len(section_details)],
-        "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
-        "penalty_analysis": penalty_analysis,
-        "non_fever_base": int(non_fever_base),
-    }
+    total_score_penalty, total_fill_penalty, penalty_analysis = accumulate_fg_penalties(
+        section_details=section_details,
+        penalty_table=penalty_table,
+        body_penalty=body_penalty,
+        combo_value=combo_value,
+    )
+    return build_fg_result_dict(
+        base_score=int(base_score),
+        total_score_penalty=int(total_score_penalty),
+        total_fill_penalty=int(total_fill_penalty),
+        section_details=section_details,
+        config_counts=force_counts,
+        penalty_analysis=penalty_analysis,
+        non_fever_base=int(non_fever_base),
+    )

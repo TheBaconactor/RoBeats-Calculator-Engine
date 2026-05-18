@@ -558,7 +558,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
 def test_team_buff_tier_postprocess_fg_scoring_matches_gpu_force_greats_kernel():
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
     calc_song = _mock_song(name="pytest_team_buff_fg_kernel_match", n_notes=24)
@@ -646,7 +646,7 @@ def test_team_buff_tier_postprocess_converts_persisted_forced_counts_back_to_fp_
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.scoring_core import lookup_reference_py
     from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 

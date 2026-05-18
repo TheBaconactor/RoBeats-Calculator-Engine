@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 def run_ga():
     """Run a minimal GA to profile."""
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
     from gear_optimizer.solver.scoring import solve_best_fever_combination
     from gear_optimizer.data.models import GASettings
     from gear_optimizer.data.gears import load_gears
@@ -55,17 +55,6 @@ def run_ga():
     }
 
     # Config
-    cfg_data = {
-        "selected_color": "Beat",
-        "user_ft": 0,
-        "user_ff": 0,
-        "user_pp": 0,
-        "user_cm": 0,
-        "user_fm": 0,
-        "static_elem_input": 0,
-        "use_gpu": True,
-    }
-
     base_stats = {
         "Beat": 50,
         "Vibe": 30,
@@ -87,7 +76,6 @@ def run_ga():
     result = solve_coevolution_genetic(
         cfg=None,
         base_stats_fixed=base_stats,
-        cfg_data=cfg_data,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         all_gears=gears,
@@ -97,7 +85,6 @@ def run_ga():
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=10,  # Reduced for profiling
-        status_cb=None,
         ga_settings=ga_settings,
     )
 

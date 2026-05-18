@@ -195,22 +195,24 @@ def test_make_build_details_fn_materializes_stats_from_base_stats():
 
 
 def test_build_persistence_entries_materializes_lazy_ga_entry_names():
+    from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
+
     class _FakeRegistry:
         @staticmethod
         def decode_names(ids):
             return [f"I{int(x)}" for x in ids[:9]]
 
     build_details = make_build_details_fn("Rush", "Flow", "Hard")
-    persist_entries = build_persistence_entries(
-        {
+    persist_entries = assemble_without_replay(
+        db_payload={
             "score": 999,
             "gear": ["Top Hat"],
             "minis": ["Mini A", "Mini B", "Mini C"],
             "details": {"Stats": {}, "ForceGreats": {}},
             "fg_score": 0,
         },
-        [],
-        {
+        ga_candidates=[],
+        loadout_entries={
             "ga:1,2,3,4,5,6,7,8,9": {
                 "score": 999,
                 "base_score": 999,
@@ -225,7 +227,7 @@ def test_build_persistence_entries_materializes_lazy_ga_entry_names():
                 "_ga_registry": _FakeRegistry(),
             }
         },
-        build_details,
+        build_details_fn=build_details,
     )
 
     lazy_row = next((row for row in persist_entries if row.get("gear") == ["I1", "I2", "I3", "I4", "I5", "I6"]), None)

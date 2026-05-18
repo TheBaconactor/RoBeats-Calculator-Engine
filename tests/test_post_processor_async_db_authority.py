@@ -2,14 +2,14 @@ import json
 import queue
 import threading
 
-from gear_optimizer.solver.native_inflight_types import make_native_song
+from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline import post_processor
-    from gear_optimizer.solver import native_inflight_result_events as result_events
+    from gear_optimizer.solver import native_inflight_orchestrator as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_exact_authority.db"
@@ -125,47 +125,45 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
 def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
-    from gear_optimizer.data.database import _unpack_stats_after_load
+    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.pipeline import post_processor
-    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_fg_update_authority.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
 
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
+    ref_arrays = _get_team_buff_ref_arrays_cached()
+    assert ref_arrays
+
+    force_payload = {
+        "Score": 32521173,
+        "FT": 1,
+        "FF": 15,
+        "GemCounts": {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 13,
+            "Element": 61,
         },
-        "song_data": {"timestamps": [0.0]},
+        "Selected Element": "Rush",
+        "BaseScore": 32518595,
+        "BaseStats": {
+            "Perfect Points": 40,
+            "Combo Multiplier": 50,
+            "Fever Multiplier": 37,
+            "Fever Time": 28,
+            "Fever Fill Rate": 19,
+            "Beat": 0,
+            "Vibe": 44,
+            "Rush": 321,
+            "Flow": 29,
+            "Chill": 33,
+        },
+        "ForceGreats": {"config": {"NonFever1": 5, "NonFever2": 0}, "final_score": 32521173},
+        "forced_counts": [5, 0],
     }
-    ref_arrays = {
-        "Perfect Points": [1.0] * 1001,
-        "Combo Multiplier": [1.0] * 1001,
-        "Fever Multiplier": [1.0] * 1001,
-        "Fever Fill Rate": [1.0] * 1001,
-        "Fever Time": [1.0] * 1001,
-    }
-    stats = {
-        "Perfect Points": 0,
-        "Combo Multiplier": 0,
-        "Fever Multiplier": 0,
-        "Fever Fill Rate": 0,
-        "Fever Time": 0,
-        "Rush": 10,
-        "Flow": 5,
-    }
-    exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
-    inflated_score = exact_score + 22222
 
     monkeypatch.setattr(post_processor, "print_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "gear_optimizer.data.song_io.get_base_calc_song",
-        lambda _fp, _cfg: calc_song,
-    )
     monkeypatch.setattr(
         "gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached",
         lambda: ref_arrays,
@@ -183,24 +181,35 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
             "_fg_update": True,
             "song": "pytest_post_processor_fg_update_authority",
             "db_key": "pytest_post_processor_fg_update_authority",
-            "file_path": "Data/Easy/pytest_post_processor_fg_update_authority.txt",
+            "file_path": r"Data\Hard\00 (Hard) by garlagan.txt",
             "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
+            "ref_arrays": ref_arrays,
             "persist_entries": [
                 {
-                    "score": int(inflated_score),
-                    "fg_score": 0,
-                    "gear": ["G1"],
-                    "minis": ["M1"],
+                    "score": 32518595,
+                    "fg_score": 32521173,
+                    "fg_base_score": 32518595,
+                    "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+                    "minis": ["M1", "M2", "M3"],
                     "details": {
-                        "FT": 0,
-                        "FF": 0,
-                        "GemCounts": {},
-                        "Stats": dict(stats),
+                        "Stats": {
+                            "Perfect Points": 40,
+                            "Combo Multiplier": 50,
+                            "Fever Multiplier": 76,
+                            "Fever Time": 31,
+                            "Fever Fill Rate": 64,
+                            "Beat": 3,
+                            "Vibe": 89,
+                            "Rush": 726,
+                            "Flow": 29,
+                            "Chill": 33,
+                        },
                         "SelectedElement": "Rush",
                         "PrimaryColor": "Rush",
-                        "SecondaryColor": "Flow",
+                        "SecondaryColor": "Rush",
                     },
-                    "force": None,
+                    "force": force_payload,
+                    "_deferred_fg_update": True,
                 }
             ],
         }
@@ -212,16 +221,17 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     with get_db_connection(str(db_path)) as conn:
         row = conn.execute(
-            "SELECT score, details_json "
-            "FROM team_buff_loadouts "
+            "SELECT score, fg_score, details_json, force_details_json "
+            "FROM team_buff_fg_loadouts "
             "WHERE song_name = ? AND team_buff = 'T5'",
             ("pytest_post_processor_fg_update_authority",),
         ).fetchone()
 
     assert row is not None
-    stored_details = _unpack_stats_after_load(json.loads(str(row["details_json"] or "{}"))) or {}
-    stored_stats = dict(stored_details.get("Stats") or {})
-
-    assert stored_stats
-    assert int(row["score"]) != inflated_score
-    assert int(row["score"]) == int(score_stats_exact(stored_stats, calc_song, ref_arrays))
+    stored_details = json.loads(str(row["details_json"] or "{}"))
+    stored_force = json.loads(str(row["force_details_json"] or "{}"))
+    assert int(row["score"]) == 32367815
+    assert int(row["fg_score"]) == 32521173
+    assert int(stored_details["BaseScore"]) == 32367815
+    assert int(stored_force["BaseScore"]) == 32367815
+    assert int(stored_force["Score"]) == 32521173

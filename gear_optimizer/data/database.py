@@ -10,14 +10,13 @@ import sqlite3
 import time
 import threading
 import warnings
-from collections.abc import Iterable
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 import logging
 
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.fallback_monitor import warn_fallback
-from ..core.gem_defs import GEM_KEYS, STAT_KEYS, fg_score_from_force
+from ..core.gem_defs import fg_score_from_force
 from ..core.parsing import env_flag
 from ..core.utils import safe_int as _safe_int_for_db
 from ..core.team_buff import (
@@ -28,13 +27,30 @@ from ..core.team_buff import (
 )
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
-from .encoding_maps import EncodingMaps
+from .database_codecs import (
+    _json_dumps_compact,
+    _json_loads,
+    _pack_id_groups,
+    _pack_id_list,
+    _pack_stats_for_storage,
+    _strip_computed_details_fields,
+    _unpack_id_groups,
+    _unpack_id_list,
+    _unpack_stats_after_load,
+)
+from .piece_encoding_store import (
+    _GEAR_NAME_ENCODING_TABLE,
+    _MINI_NAME_ENCODING_TABLE,
+    _initialize_piece_name_encodings,
+    _insert_missing_piece_names,
+    _load_piece_name_encoding_maps,
+)
 from .loadout_equivalence import (
     effective_loadout_hash_from_names,
     effective_mini_signature_for_name,
     extract_song_colors,
-    get_minis_by_name_cached,
     get_gears_by_name_cached,
+    get_minis_by_name_cached,
     canonical_minis_groups_from_names,
     representative_mini_names,
     rotate_mini_groups_for_slot_display,
@@ -43,411 +59,6 @@ from .loadout_equivalence import (
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
-try:
-    import orjson as _orjson
-except Exception:  # pragma: no cover - optional dependency
-    _orjson = None
-
-
-def _json_dumps_compact(value: Any) -> str:
-    """Serialize JSON using compact separators, with optional orjson acceleration."""
-    if _orjson is not None:
-        return _orjson.dumps(value).decode("utf-8")
-    return json.dumps(value, separators=(",", ":"))
-
-
-def _json_loads(value: Any) -> Any:
-    """Deserialize JSON with optional orjson acceleration."""
-    if value is None or value == "":
-        return None
-    if _orjson is not None:
-        return _orjson.loads(value)
-    return json.loads(value)
-
-
-# ---------------------------------------------------------------------------
-# Compact piece name encoding (gear/minis)
-# ---------------------------------------------------------------------------
-
-_GEAR_NAME_ENCODING_TABLE = "gear_name_encoding"
-_MINI_NAME_ENCODING_TABLE = "mini_name_encoding"
-
-
-def _encode_uvarint(value: int) -> bytes:
-    """Encode an unsigned integer as base-128 varint (little-endian groups)."""
-    x = int(value)
-    if x < 0:
-        raise ValueError("uvarint cannot encode negative values")
-    out = bytearray()
-    while True:
-        b = x & 0x7F
-        x >>= 7
-        if x:
-            out.append(int(b | 0x80))
-        else:
-            out.append(int(b))
-            break
-    return bytes(out)
-
-
-def _decode_uvarints(blob: bytes) -> list[int]:
-    """Decode a sequence of base-128 varints from a bytes blob."""
-    if not blob:
-        return []
-    out: list[int] = []
-    x = 0
-    shift = 0
-    for b in blob:
-        x |= (int(b) & 0x7F) << shift
-        if int(b) & 0x80:
-            shift += 7
-            if shift > 63:
-                raise ValueError("uvarint too large")
-            continue
-        out.append(int(x))
-        x = 0
-        shift = 0
-    if shift:
-        raise ValueError("truncated uvarint stream")
-    return out
-
-
-def _pack_id_list(ids: Sequence[int]) -> bytes:
-    """Pack a list of positive integer IDs into a compact varint blob."""
-    if not ids:
-        return b""
-    buf = bytearray()
-    for v in ids:
-        iv = int(v)
-        if iv <= 0:
-            continue
-        buf += _encode_uvarint(iv)
-    return bytes(buf)
-
-
-def _unpack_id_list(blob: Any) -> list[int]:
-    """Unpack a varint blob produced by `_pack_id_list`."""
-    if not blob:
-        return []
-    if isinstance(blob, memoryview):
-        blob = blob.tobytes()
-    if not isinstance(blob, (bytes, bytearray)):
-        return []
-    try:
-        return [int(v) for v in _decode_uvarints(bytes(blob)) if int(v) > 0]
-    except Exception as e:
-        logger.warning(f"database:_unpack_id_list: {e}")
-        return []
-
-
-def _pack_id_groups(groups: Sequence[Sequence[int]]) -> bytes:
-    """
-    Pack list-of-lists IDs using 0 as a group separator.
-
-    IDs are expected to be positive (>=1). Separator is encoded as uvarint(0) i.e. one byte 0.
-    """
-    if not groups:
-        return b""
-    buf = bytearray()
-    for g0 in groups:
-        if not g0:
-            continue
-        for v in g0:
-            iv = int(v)
-            if iv <= 0:
-                continue
-            buf += _encode_uvarint(iv)
-        buf += b"\x00"
-    return bytes(buf)
-
-
-def _unpack_id_groups(blob: Any) -> list[list[int]]:
-    """Inverse of `_pack_id_groups`."""
-    if not blob:
-        return []
-    if isinstance(blob, memoryview):
-        blob = blob.tobytes()
-    if not isinstance(blob, (bytes, bytearray)):
-        return []
-    try:
-        values = _decode_uvarints(bytes(blob))
-    except Exception as e:
-        logger.warning(f"database:_unpack_id_groups: {e}")
-        return []
-    out: list[list[int]] = []
-    cur: list[int] = []
-    for v in values:
-        iv = int(v)
-        if iv == 0:
-            if cur:
-                out.append(cur)
-            cur = []
-            continue
-        if iv > 0:
-            cur.append(iv)
-    if cur:
-        out.append(cur)
-    return out
-
-
-_PIECE_ENCODING_CACHE_LOCK = threading.Lock()
-_PIECE_ENCODING_CACHE: dict[str, EncodingMaps] = {}
-
-
-def _encoding_table_count(conn: sqlite3.Connection, table: str) -> int:
-    try:
-        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-        return int(row[0] or 0) if row else 0
-    except sqlite3.Error:
-        return 0
-
-
-def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) -> EncodingMaps:
-    """
-    Load (and cache) piece name <-> id maps for a DB path.
-
-    Cache is refreshed when the encoding tables' row counts change.
-    """
-    db_path = str(db_path)
-    gear_count = _encoding_table_count(conn, _GEAR_NAME_ENCODING_TABLE)
-    mini_count = _encoding_table_count(conn, _MINI_NAME_ENCODING_TABLE)
-
-    with _PIECE_ENCODING_CACHE_LOCK:
-        cached = _PIECE_ENCODING_CACHE.get(db_path)
-        if (
-            cached is not None
-            and int(cached.gear_count) == int(gear_count)
-            and int(cached.mini_count) == int(mini_count)
-        ):
-            return cached
-
-    gear_name_to_id: dict[str, int] = {}
-    gear_id_to_name: dict[int, str] = {}
-    mini_name_to_id: dict[str, int] = {}
-    mini_id_to_name: dict[int, str] = {}
-
-    try:
-        rows = conn.execute(f"SELECT id, name FROM {_GEAR_NAME_ENCODING_TABLE}").fetchall()
-        for r in rows:
-            try:
-                i = int(r[0] or 0)
-                n = str(r[1] or "")
-            except Exception as e:
-                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
-                continue
-            if i > 0 and n:
-                gear_name_to_id[n] = i
-                gear_id_to_name[i] = n
-    except sqlite3.Error:
-        pass
-
-    try:
-        rows = conn.execute(f"SELECT id, name FROM {_MINI_NAME_ENCODING_TABLE}").fetchall()
-        for r in rows:
-            try:
-                i = int(r[0] or 0)
-                n = str(r[1] or "")
-            except Exception as e:
-                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
-                continue
-            if i > 0 and n:
-                mini_name_to_id[n] = i
-                mini_id_to_name[i] = n
-    except sqlite3.Error:
-        pass
-
-    maps = EncodingMaps(
-        gear_name_to_id=gear_name_to_id,
-        gear_id_to_name=gear_id_to_name,
-        mini_name_to_id=mini_name_to_id,
-        mini_id_to_name=mini_id_to_name,
-        gear_count=int(gear_count),
-        mini_count=int(mini_count),
-    )
-    with _PIECE_ENCODING_CACHE_LOCK:
-        _PIECE_ENCODING_CACHE[db_path] = maps
-    return maps
-
-
-def _insert_missing_piece_names(
-    conn: sqlite3.Connection,
-    *,
-    table: str,
-    names: Sequence[str],
-) -> None:
-    if not names:
-        return
-    cleaned = sorted({str(n).strip() for n in (names or []) if str(n).strip()})
-    if not cleaned:
-        return
-
-    try:
-        existing = {str(r[0]) for r in conn.execute(f"SELECT name FROM {table}").fetchall() if r and r[0]}
-    except sqlite3.Error:
-        existing = set()
-    missing = [n for n in cleaned if n not in existing]
-    if not missing:
-        return
-
-    try:
-        row = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
-        max_id = int(row[0] or 0) if row else 0
-    except sqlite3.Error:
-        max_id = 0
-
-    params = [(max_id + idx + 1, n) for idx, n in enumerate(missing)]
-    try:
-        conn.executemany(
-            f"INSERT INTO {table} (id, name) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
-            params,
-        )
-    except sqlite3.Error:
-        # Fallback for older SQLite builds lacking ON CONFLICT DO NOTHING syntax.
-        try:
-            conn.executemany(f"INSERT OR IGNORE INTO {table} (id, name) VALUES (?, ?)", params)
-        except sqlite3.Error:
-            return
-
-
-def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) -> None:
-    """
-    Populate encoding tables deterministically (sorted) from the known dataset.
-
-    This is best-effort: failures must not block optimizer startup.
-    """
-    try:
-        gears_by_name = get_gears_by_name_cached()
-        minis_by_name = get_minis_by_name_cached()
-    except Exception as e:
-        logger.warning(f"database:_initialize_piece_name_encodings: {e}")
-        return
-
-    gear_names = sorted([str(k).strip() for k in (gears_by_name or {}).keys() if str(k).strip()])
-    mini_names = sorted([str(k).strip() for k in (minis_by_name or {}).keys() if str(k).strip()])
-
-    if gear_names:
-        _insert_missing_piece_names(conn, table=_GEAR_NAME_ENCODING_TABLE, names=gear_names)
-    if mini_names:
-        _insert_missing_piece_names(conn, table=_MINI_NAME_ENCODING_TABLE, names=mini_names)
-
-    # Refresh cache for this db_path.
-    with _PIECE_ENCODING_CACHE_LOCK:
-        _PIECE_ENCODING_CACHE.pop(str(db_path), None)
-
-
-# ---------------------------------------------------------------------------
-# Compact details payload helpers (Stats packing, computed fields stripping)
-# ---------------------------------------------------------------------------
-
-def _pack_stats_for_storage(details: Any) -> Any:
-    """
-    Reduce JSON size by storing Stats as a short array under `details["st"]`.
-
-    - Input: details["Stats"] is a dict with verbose keys.
-    - Output: details["st"] is a fixed-order int list, and "Stats" is removed.
-    """
-    if not isinstance(details, dict) or not details:
-        return details
-    out = dict(details)
-    stats = details.get("Stats")
-    if isinstance(stats, dict) and stats and out.get("st") is None:
-        arr: list[int] = []
-        for k in STAT_KEYS:
-            try:
-                arr.append(int(stats.get(k, 0) or 0))
-            except Exception as e:
-                logger.warning(f"database:_pack_stats_for_storage: {e}")
-                arr.append(0)
-        out.pop("Stats", None)
-        out["st"] = arr
-
-    gems = details.get("GemCounts")
-    if isinstance(gems, dict) and gems and out.get("gc") is None:
-        packed_gems: list[int] = []
-        gem_key_mask = 0
-        for i, k in enumerate(GEM_KEYS):
-            if k in gems:
-                gem_key_mask |= 1 << i
-            try:
-                packed_gems.append(int(gems.get(k, 0) or 0))
-            except Exception as e:
-                logger.warning(f"database:_pack_stats_for_storage: {e}")
-                packed_gems.append(0)
-        out.pop("GemCounts", None)
-        out["gc"] = packed_gems
-        if gem_key_mask != (1 << len(GEM_KEYS)) - 1:
-            out["gk"] = int(gem_key_mask)
-
-    selected = out.pop("Selected Element", None)
-    selected = out.pop("SelectedElement", selected)
-    if selected:
-        out["se"] = str(selected)
-
-    primary = out.pop("Primary Color", None)
-    primary = out.pop("PrimaryColor", primary)
-    if primary:
-        out["pc"] = str(primary)
-
-    secondary = out.pop("Secondary Color", None)
-    secondary = out.pop("SecondaryColor", secondary)
-    if secondary:
-        out["sc"] = str(secondary)
-
-    if not out.get("ForceGreats"):
-        out.pop("ForceGreats", None)
-    out.pop("Difficulty", None)
-    return out
-
-
-def _unpack_stats_after_load(details: Any) -> Any:
-    """Inverse of `_pack_stats_for_storage` (best-effort)."""
-    if not isinstance(details, dict) or not details:
-        return details
-    out = dict(details)
-    stats = details.get("Stats")
-    st = details.get("st")
-    if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(STAT_KEYS):
-        out_stats: dict[str, int] = {}
-        for i, k in enumerate(STAT_KEYS):
-            try:
-                out_stats[k] = int(st[i] or 0)
-            except Exception as e:
-                logger.warning(f"database:_unpack_stats_after_load: {e}")
-                out_stats[k] = 0
-        out["Stats"] = out_stats
-
-    gems = details.get("GemCounts")
-    gc = details.get("gc")
-    if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(GEM_KEYS):
-        try:
-            gem_key_mask = int(details.get("gk", (1 << len(GEM_KEYS)) - 1) or 0)
-        except Exception as e:
-            logger.warning(f"database:_unpack_stats_after_load: {e}")
-            gem_key_mask = (1 << len(GEM_KEYS)) - 1
-        out_gems: dict[str, int] = {}
-        for i, k in enumerate(GEM_KEYS):
-            if (gem_key_mask & (1 << i)) == 0:
-                continue
-            try:
-                out_gems[k] = int(gc[i] or 0)
-            except Exception as e:
-                logger.warning(f"database:_unpack_stats_after_load: {e}")
-                out_gems[k] = 0
-        out["GemCounts"] = out_gems
-
-    if "SelectedElement" not in out and "Selected Element" not in out and out.get("se"):
-        out["SelectedElement"] = str(out.get("se") or "")
-    if "PrimaryColor" not in out and "Primary Color" not in out and out.get("pc"):
-        out["PrimaryColor"] = str(out.get("pc") or "")
-    if "SecondaryColor" not in out and "Secondary Color" not in out and out.get("sc"):
-        out["SecondaryColor"] = str(out.get("sc") or "")
-
-    return out
-
-
-def _strip_computed_details_fields(details: Any) -> Any:
-    """Return details without large recomputable payloads."""
-    return details
 
 
 def get_evolution_db_path() -> str:
@@ -601,109 +212,17 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     if conn is not None:
         return conn
 
-    # If we recently failed to open the real DB connection, avoid retrying on every
-    # hot-path call (which can spam warnings and waste time during brief lock bursts).
-    try:
-        now_monotonic = float(time.monotonic())
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        now_monotonic = 0.0
-    try:
-        next_retry_ts = float(getattr(_DB_TLS, "ro_next_retry_ts", 0.0) or 0.0)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        next_retry_ts = 0.0
-    if now_monotonic and (now_monotonic < next_retry_ts):
-        fallback = getattr(_DB_TLS, "fallback_conn", None)
-        if fallback is not None:
-            if not allow_fallback:
-                raise sqlite3.OperationalError("read-only DB fallback active during strict read")
-            return fallback
-
     # Default to a small non-zero timeout to allow brief lock contention during
-    # write bursts without immediate failure. This prevents spurious fallbacks
-    # to the empty in-memory DB when the AsyncDbSaver is actively writing.
+    # write bursts without immediate failure.
     try:
         read_timeout = float(env_get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception as e:
         logger.warning(f"database:get_db_connection_cached: {e}")
         read_timeout = 0.2
 
-    try:
-        conn = get_db_connection_readonly(db_path, timeout=read_timeout)
-    except sqlite3.Error as exc:
-        # Best-effort: DB might be locked briefly during heavy write bursts, or
-        # may not exist yet in some test/tool entrypoints. Never block the GPU
-        # feed loop on a read-only seed/context fetch, but also avoid "sticky"
-        # permanent fallback: retry opening the real DB after a short cooldown.
-        try:
-            fail_count = int(getattr(_DB_TLS, "ro_fail_count", 0) or 0) + 1
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-            fail_count = 1
-        try:
-            setattr(_DB_TLS, "ro_fail_count", int(fail_count))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-        # Exponential backoff, capped, to avoid thrashing on persistent failures.
-        try:
-            exp = min(7, max(0, int(fail_count) - 1))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-            exp = 0
-        cooldown_sec = min(5.0, 0.05 * (2**exp))
-        try:
-            next_retry_ts = float(now_monotonic) + float(cooldown_sec)
-            setattr(_DB_TLS, "ro_next_retry_ts", float(next_retry_ts))
-        except Exception as e:
-            logger.warning(f"database:get_db_connection_cached: {e}")
-        site = "db.readonly_connection"
-        message = "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)"
-        if not allow_fallback:
-            site = "db.readonly_connection.strict"
-            message = "failed to open read-only DB connection for strict baseline read"
-        warn_fallback(
-            site,
-            message,
-            context={
-                "db_path": db_path,
-                "timeout_sec": read_timeout,
-                "fail_count": int(fail_count),
-                "retry_in_sec": float(cooldown_sec),
-            },
-            exc=exc,
-            fatal=False,
-        )
-        if not allow_fallback:
-            raise
-        fallback = getattr(_DB_TLS, "fallback_conn", None)
-        if fallback is None:
-            try:
-                fallback = sqlite3.connect(":memory:")
-                fallback.row_factory = sqlite3.Row
-                # Keep query semantics stable: fallback DB should look like an empty
-                # evolution DB (schema present) rather than raising "no such table".
-                try:
-                    ensure_schema(fallback)
-                except Exception as e:
-                    logger.warning(f"database:get_db_connection_cached: {e}")
-                try:
-                    fallback.execute("PRAGMA query_only=1;")
-                except Exception as e:
-                    logger.warning(f"database:get_db_connection_cached: {e}")
-                setattr(_DB_TLS, "fallback_conn", fallback)
-            except Exception as e:
-                # Last resort: re-raise so callers can handle it.
-                logger.warning(f"database:get_db_connection_cached: {e}")
-                raise
-        return fallback
+    conn = get_db_connection_readonly(db_path, timeout=read_timeout)
 
     conns[db_path] = conn
-    try:
-        setattr(_DB_TLS, "ro_fail_count", 0)
-        setattr(_DB_TLS, "ro_next_retry_ts", 0.0)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
     return conn
 
 
@@ -1249,6 +768,87 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
     return out
 
 
+def _coerce_db_int(v: Any) -> int:
+    try:
+        return int(v or 0)
+    except Exception as e:
+        logger.warning(f"database:_coerce_db_int: {e}")
+        return 0
+
+
+def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
+    if not isinstance(force_data, dict):
+        return force_data
+
+    out = dict(force_data)
+
+    score_v = _coerce_db_int(fg_score)
+    if score_v <= 0:
+        score_v = _coerce_db_int(out.get("Score", 0))
+    if score_v <= 0:
+        score_v = _coerce_db_int(out.get("score", 0))
+    if score_v > 0:
+        out["score"] = int(score_v)
+        out["Score"] = int(score_v)
+
+    det = out.get("details")
+    if isinstance(det, dict):
+        fg = det.get("ForceGreats")
+        if isinstance(fg, dict) and int(fg_score or 0) > 0:
+            fg_out = dict(fg)
+            fg_out["final_score"] = int(fg_score)
+            det_out = dict(det)
+            det_out["ForceGreats"] = fg_out
+            out["details"] = det_out
+    fg = out.get("ForceGreats")
+    if isinstance(fg, dict) and int(score_v or 0) > 0:
+        fg_out = dict(fg)
+        fg_out["final_score"] = int(score_v)
+        out["ForceGreats"] = fg_out
+    return out
+
+
+def _normalize_force_base_score_for_persistence(force_data: Any, *, fg_base_score: int) -> Any:
+    if not isinstance(force_data, dict):
+        return force_data
+    base_i = _coerce_db_int(fg_base_score)
+    if base_i <= 0:
+        return force_data
+    out = dict(force_data)
+    out["BaseScore"] = int(base_i)
+    det = out.get("details")
+    if isinstance(det, dict):
+        det_out = dict(det)
+        det_out["BaseScore"] = int(base_i)
+        out["details"] = det_out
+    return out
+
+
+def _assert_force_score_pairing(force_data: Any, *, fg_base_score: int, fg_score: int) -> None:
+    if not isinstance(force_data, dict) or int(fg_score or 0) <= 0:
+        return
+    force_base = _force_payload_base_score(force_data)
+    if int(force_base or 0) != int(fg_base_score or 0):
+        raise AssertionError(
+            "FG persistence payload BaseScore must match the paired FG base score "
+            f"(force={force_base}, row={fg_base_score})."
+        )
+    force_score = _coerce_db_int(force_data.get("Score", force_data.get("score", 0)))
+    if int(force_score or 0) != int(fg_score or 0):
+        raise AssertionError(
+            "FG persistence payload Score must match the row FG score "
+            f"(force={force_score}, row={fg_score})."
+        )
+    fg_meta = force_data.get("ForceGreats")
+    if isinstance(fg_meta, dict) and "final_score" in fg_meta:
+        meta_score = _coerce_db_int(fg_meta.get("final_score"))
+        if int(meta_score or 0) != int(fg_score or 0):
+            raise AssertionError(
+                "FG persistence ForceGreats.final_score must match the row FG score "
+                f"(force={meta_score}, row={fg_score})."
+            )
+
+
 def save_loadouts_batch(
     song_name: str,
     entries: List[PersistenceEntry],
@@ -1273,28 +873,21 @@ def save_loadouts_batch(
         return
     team_buff = normalize_team_buff(team_buff, default="T5")
 
-    def _coerce_int(v: Any) -> int:
-        try:
-            return int(v or 0)
-        except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
-            return 0
-
     best_score_max = None
     best_fg_max = None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        score = _coerce_int(entry.get("score", 0))
-        fg_score = _coerce_int(entry.get("fg_score", 0))
+        score = _coerce_db_int(entry.get("score", 0))
+        fg_score = _coerce_db_int(entry.get("fg_score", 0))
         fg_base_score = score
         try:
             raw_fg_base = entry.get("fg_base_score")
         except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
+            logger.warning(f"database:_coerce_db_int: {e}")
             raw_fg_base = None
         if raw_fg_base is not None:
-            fg_base_score = _coerce_int(raw_fg_base)
+            fg_base_score = _coerce_db_int(raw_fg_base)
             if fg_base_score <= 0:
                 fg_base_score = score
         force_data = entry.get("force")
@@ -1425,38 +1018,6 @@ def save_team_buff_loadouts_batch(
     minis_by_name = get_minis_by_name_cached()
     gears_by_name = get_gears_by_name_cached()
 
-    def _coerce_int(v: Any) -> int:
-        try:
-            return int(v or 0)
-        except Exception as e:
-            logger.warning(f"database:_coerce_int: {e}")
-            return 0
-
-    def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
-        if not isinstance(force_data, dict):
-            return force_data
-
-        out = dict(force_data)
-
-        score_v = _coerce_int(out.get("score", 0))
-        if score_v <= 0:
-            score_v = _coerce_int(out.get("Score", 0))
-        if score_v <= 0 and int(fg_score or 0) > 0:
-            score_v = int(fg_score)
-        if score_v > 0:
-            out["score"] = int(score_v)
-
-        det = out.get("details")
-        if isinstance(det, dict):
-            fg = det.get("ForceGreats")
-            if isinstance(fg, dict) and int(fg_score or 0) > 0:
-                fg_out = dict(fg)
-                fg_out["final_score"] = int(fg_score)
-                det_out = dict(det)
-                det_out["ForceGreats"] = fg_out
-                out["details"] = det_out
-        return out
-
     entry_color_cache: Dict[int, tuple[str, str, str]] = {}
 
     def _extract_entry_colors(entry: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -1551,11 +1112,21 @@ def save_team_buff_loadouts_batch(
         mini_sig_cache[key] = sig
         return sig
 
+    entry_names_cache: Dict[int, tuple[list[str], list[str]]] = {}
+
+    def _compact_entry_names(entry: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+        entry_id = int(id(entry))
+        cached = entry_names_cache.get(entry_id)
+        if cached is not None:
+            return cached
+        out = (_compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", [])))
+        entry_names_cache[entry_id] = out
+        return out
+
     def _effective_hash_for_entry(
         entry: Mapping[str, Any],
     ) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
-        gear_names_local = _compact_gear_for_db(entry.get("gear", []))
-        mini_names_local = _compact_minis_for_db(entry.get("minis", []))
+        gear_names_local, mini_names_local = _compact_entry_names(entry)
         p_color, s_color, sel_color = _extract_entry_colors(entry)
         if (not p_color and not s_color) and song_color_fallback is not None:
             p_color, s_color, fallback_sel = song_color_fallback
@@ -1591,9 +1162,8 @@ def save_team_buff_loadouts_batch(
                 context={"song_name": song_name, "team_buff": team_buff},
                 fatal=False,
             )
-            h = _loadout_hash_from_names(
-                _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
-            )
+            gear_names_local, mini_names_local = _compact_entry_names(entry)
+            h = _loadout_hash_from_names(gear_names_local, mini_names_local)
         else:
             h = eff[0]
         key = (int(entry.get("score", 0) or 0), str(h))
@@ -1616,19 +1186,19 @@ def save_team_buff_loadouts_batch(
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
     def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
-        if gear_names_local:
-            if not isinstance(gears_by_name, dict) or not gears_by_name:
-                return False
-            if any((n and n not in gears_by_name) for n in gear_names_local):
-                return False
-        if mini_names_local:
-            if not isinstance(minis_by_name, dict) or not minis_by_name:
-                return False
-            if any((n and n not in minis_by_name) for n in mini_names_local):
-                return False
-        return True
+        gear_ok = (not gear_names_local) or (
+            isinstance(gears_by_name, dict)
+            and bool(gears_by_name)
+            and all((not n or n in gears_by_name) for n in gear_names_local)
+        )
+        mini_ok = (not mini_names_local) or (
+            isinstance(minis_by_name, dict)
+            and bool(minis_by_name)
+            and all((not n or n in minis_by_name) for n in mini_names_local)
+        )
+        return bool(gear_ok and mini_ok)
 
-    def _recompute_stats_in_details_for_persistence(
+    def _details_with_representative_stats(
         details_obj: Any,
         *,
         gear_names_local: list[str],
@@ -1710,6 +1280,75 @@ def save_team_buff_loadouts_batch(
         out["Stats"] = computed
         return out
 
+    def _canonical_persistence_minis(
+        gear_names_local: list[str],
+        mini_names_local: list[str],
+        eff: Optional[tuple[str, list[tuple[Any, ...]], str, str, str]],
+    ) -> tuple[str, list[list[str]], list[str]]:
+        if eff is None:
+            warn_fallback(
+                "db.minis_groups.singletons",
+                "effective mini grouping unavailable; persisting singleton mini groups",
+                context={"song_name": song_name, "team_buff": team_buff},
+                fatal=False,
+            )
+            return _loadout_hash_from_names(gear_names_local, mini_names_local), [[n] for n in mini_names_local], [
+                *mini_names_local
+            ]
+
+        loadout_hash, mini_sigs, p_color, s_color, sel_color = eff
+        groups = canonical_minis_groups_from_names(
+            mini_names_local,
+            minis_by_name,
+            p_color,
+            s_color,
+            sel_color,
+            mini_sigs=mini_sigs,
+        )
+        # Persisted mini representative contract: group[0] owns the stored stat contribution.
+        groups = rotate_mini_groups_for_slot_display(groups)
+        return loadout_hash, groups, [g[0] for g in groups if g]
+
+    def _canonicalize_persistence_details(
+        details_obj: Any,
+        *,
+        gear_names_local: list[str],
+        representative_mini_names_local: list[str],
+        original_gear: Any,
+        original_minis: Any,
+        eff: Optional[tuple[str, list[tuple[Any, ...]], str, str, str]],
+    ) -> dict:
+        details_unpacked = _unpack_stats_after_load(details_obj) if isinstance(details_obj, dict) else details_obj
+        if not isinstance(details_unpacked, dict):
+            details_unpacked = {}
+
+        team_color_for_stats = str(
+            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
+        ).strip()
+        if (eff is not None) and _can_recompute_stats_for_persistence(
+            gear_names_local, representative_mini_names_local
+        ):
+            return _details_with_representative_stats(
+                details_unpacked,
+                gear_names_local=gear_names_local,
+                mini_names_local=representative_mini_names_local,
+                team_color=team_color_for_stats,
+            )
+
+        current_stats = details_unpacked.get("Stats")
+        if isinstance(current_stats, dict) and current_stats:
+            return details_unpacked
+
+        # External/test boundary: some tool rows use names absent from Stats CSVs.
+        return _ensure_stats_in_details(
+            details_unpacked,
+            original_gear,
+            original_minis,
+            minis_by_name,
+            team_buff=team_buff,
+            team_color=team_color_for_stats,
+        )
+
     own_conn = conn is None
     if conn is None:
         resolved_db_path = str(db_path or get_evolution_db_path())
@@ -1775,26 +1414,19 @@ def save_team_buff_loadouts_batch(
                     id_groups.append(ids)
             return bytes(_pack_id_groups(id_groups))
 
-        entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
-        for i, entry in enumerate(deduplicated_entries):
-            entry_id = int(id(entry))
-            eff = effective_cache_by_entry_id.get(entry_id)
-            if entry_id not in effective_cache_by_entry_id:
-                eff = _effective_hash_for_entry(entry)
-                effective_cache_by_entry_id[entry_id] = eff
-            entry_to_effective[i] = eff
-
-        for i, entry in enumerate(deduplicated_entries):
-            score = _coerce_int(entry.get("score", 0))
-            fg_score = _coerce_int(entry.get("fg_score", 0))
+        for entry in deduplicated_entries:
+            score = _coerce_db_int(entry.get("score", 0))
+            fg_score = _coerce_db_int(entry.get("fg_score", 0))
             fg_base_score = score
+            has_explicit_fg_base = False
             try:
                 raw_fg_base = entry.get("fg_base_score")
             except Exception as e:
                 logger.warning(f"database:_encode_mini_groups_to_blob: {e}")
                 raw_fg_base = None
             if raw_fg_base is not None:
-                fg_base_score = _coerce_int(raw_fg_base)
+                has_explicit_fg_base = True
+                fg_base_score = _coerce_db_int(raw_fg_base)
                 if fg_base_score <= 0:
                     fg_base_score = score
             gear = entry.get("gear", [])
@@ -1802,7 +1434,11 @@ def save_team_buff_loadouts_batch(
             details = entry.get("details", {})
             force_data = entry.get("force")
 
-            eff = entry_to_effective.get(i)
+            entry_id = int(id(entry))
+            eff = effective_cache_by_entry_id.get(entry_id)
+            if entry_id not in effective_cache_by_entry_id:
+                eff = _effective_hash_for_entry(entry)
+                effective_cache_by_entry_id[entry_id] = eff
             if eff is not None and isinstance(details, dict):
                 (_loadout_hash_eff, _mini_sigs_eff, p_color_eff, s_color_eff, sel_color_eff) = eff
                 if (
@@ -1826,8 +1462,14 @@ def save_team_buff_loadouts_batch(
 
             force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
             force_base_score = _force_payload_base_score(force_data)
-            if force_base_score > 0:
+            if has_explicit_fg_base and fg_base_score > 0:
+                force_data = _normalize_force_base_score_for_persistence(force_data, fg_base_score=fg_base_score)
+            elif force_base_score > 0:
                 fg_base_score = force_base_score
+            elif fg_base_score > 0:
+                force_data = _normalize_force_base_score_for_persistence(force_data, fg_base_score=fg_base_score)
+            if force_data is not None and fg_score > fg_base_score:
+                _assert_force_score_pairing(force_data, fg_base_score=fg_base_score, fg_score=fg_score)
             details = _normalize_details_for_persistence(
                 details,
                 score=score,
@@ -1836,65 +1478,17 @@ def save_team_buff_loadouts_batch(
                 preserve_attempt_meta=bool(preserve_attempt_meta),
             )
 
-            gear_names = _compact_gear_for_db(gear)
-            mini_names = _compact_minis_for_db(minis)
+            gear_names, mini_names = _compact_entry_names(entry)
 
-            if eff is not None:
-                (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
-                groups = canonical_minis_groups_from_names(
-                    mini_names,
-                    minis_by_name,
-                    p_color,
-                    s_color,
-                    sel_color,
-                )
-                # Legacy mini-group representation contract:
-                # - choose distinct representatives across duplicate groups when possible, and
-                # - rotate each group so the representative becomes the first element (consumers often read `g[0]`).
-                groups = rotate_mini_groups_for_slot_display(groups)
-                mini_names = [g[0] for g in groups if g]
-            else:
-                warn_fallback(
-                    "db.minis_groups.singletons",
-                    "effective mini grouping unavailable; persisting singleton mini groups",
-                    context={"song_name": song_name, "team_buff": team_buff},
-                    fatal=False,
-                )
-                loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
-                groups = [[n] for n in mini_names]
-
-            # Canonicalize persisted Stats:
-            # - Use representative mini names for equivalence groups (legacy DB behavior)
-            # - Avoid persisting config-tainted Stats snapshots (ElementalGems/UserInputStatsGems)
-            # - Preserve unknown-gear/minis cases (tests/tools may use synthetic names)
-            details_unpacked = _unpack_stats_after_load(details) if isinstance(details, dict) else details
-            current_stats = details_unpacked.get("Stats") if isinstance(details_unpacked, dict) else None
-            has_stats = isinstance(current_stats, dict) and len(current_stats) > 0
-            can_recompute = (eff is not None) and _can_recompute_stats_for_persistence(gear_names, mini_names)
-            if not has_stats:
-                # Defensive: never persist empty Stats.
-                if can_recompute:
-                    details = _recompute_stats_in_details_for_persistence(
-                        details_unpacked,
-                        gear_names_local=gear_names,
-                        mini_names_local=mini_names,
-                        team_color=str(
-                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
-                        ).strip(),
-                    )
-                else:
-                    details = _ensure_stats_in_details(
-                        details_unpacked,
-                        gear,
-                        minis,
-                        minis_by_name,
-                        team_buff=team_buff,
-                        team_color=str(
-                            details_unpacked.get("PrimaryColor") or details_unpacked.get("Primary Color") or ""
-                        ).strip(),
-                    )
-            else:
-                details = details_unpacked
+            loadout_hash, groups, mini_names = _canonical_persistence_minis(gear_names, mini_names, eff)
+            details = _canonicalize_persistence_details(
+                details,
+                gear_names_local=gear_names,
+                representative_mini_names_local=mini_names,
+                original_gear=gear,
+                original_minis=minis,
+                eff=eff,
+            )
 
             if (
                 isinstance(details, dict)
@@ -2009,29 +1603,27 @@ def save_team_buff_loadouts_batch(
                     fg_score = MAX(fg_score, excluded.fg_score),
                     score = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.score
-                        WHEN excluded.fg_score = fg_score AND excluded.score > score THEN excluded.score
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL THEN excluded.score
                         ELSE score
                     END,
                     gear_ids_blob = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.gear_ids_blob
                         ELSE gear_ids_blob
                     END,
                     minis_ids_blob = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.minis_ids_blob
                         ELSE minis_ids_blob
                     END,
                     details_json = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.details_json
                         ELSE details_json
                     END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.score > score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.score = score AND excluded.force_details_json IS NOT NULL
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
                             THEN excluded.force_details_json
                         ELSE force_details_json
                     END,
@@ -2496,163 +2088,9 @@ def get_best_loadouts(
         pass
 
 
-def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[str] = None) -> set[str]:
-    """
-    Return the subset of song names that are already present in the DB.
+from . import pending_fg_jobs as _pending_fg_jobs
 
-    Presence is defined as having a row in `songs` OR any row in the loadout tables.
-    """
-    names = [name for name in (song_names or []) if name]
-    if not names:
-        return set()
-
-    if db_path is None:
-        db_path = get_evolution_db_path()
-    db_path = str(db_path)
-    if not db_path or not os.path.exists(db_path):
-        return set()
-
-    conn = get_db_connection_cached(db_path)
-    present: set[str] = set()
-    batch_size = 900  # sqlite default parameter cap is commonly 999
-    for offset in range(0, len(names), batch_size):
-        batch = names[offset : offset + batch_size]
-        placeholders = ",".join("?" for _ in batch)
-
-        try:
-            rows = conn.execute(
-                f"SELECT name FROM songs WHERE name IN ({placeholders})",
-                batch,
-            ).fetchall()
-            present.update(row[0] for row in rows if row and row[0])
-        except sqlite3.Error:
-            pass
-
-        for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
-            try:
-                rows = conn.execute(
-                    f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",
-                    batch,
-                ).fetchall()
-                present.update(row[0] for row in rows if row and row[0])
-            except sqlite3.Error:
-                continue
-
-    return present
-
-
-def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> None:
-    """
-    Persist a crash-safe pending ForceGreats job for a song.
-
-    This stores a compact candidate list so FG can be computed later without
-    rerunning GA (e.g. when FG is deferred/batched for throughput).
-    """
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return
-    if not candidates:
-        delete_pending_fg_job(song_name)
-        return
-
-    payload = _json_dumps_compact(candidates)
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
-    try:
-        conn.execute(
-            """
-            INSERT INTO pending_fg_jobs (song_name, candidates_json, created_ts, updated_ts)
-            VALUES (?, ?, strftime('%s','now'), strftime('%s','now'))
-            ON CONFLICT(song_name) DO UPDATE SET
-                candidates_json = excluded.candidates_json,
-                updated_ts = strftime('%s','now')
-            """,
-            (song_name, payload),
-        )
-        conn.commit()
-    except sqlite3.Error:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-    finally:
-        conn.close()
-
-
-def delete_pending_fg_job(song_name: str) -> None:
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
-    try:
-        conn.execute("DELETE FROM pending_fg_jobs WHERE song_name = ?", (song_name,))
-        conn.commit()
-    except sqlite3.Error:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-    finally:
-        conn.close()
-
-
-def list_pending_fg_jobs(limit: int = 0) -> List[Dict[str, Any]]:
-    """
-    List pending FG jobs, newest-first.
-
-    Returns dicts with keys: song_name, candidates, created_ts, updated_ts.
-    """
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
-    try:
-        lim = int(limit or 0)
-        if lim > 0:
-            rows = conn.execute(
-                """
-                SELECT song_name, candidates_json, created_ts, updated_ts
-                FROM pending_fg_jobs
-                ORDER BY COALESCE(updated_ts, created_ts) DESC
-                LIMIT ?
-                """,
-                (lim,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT song_name, candidates_json, created_ts, updated_ts
-                FROM pending_fg_jobs
-                ORDER BY COALESCE(updated_ts, created_ts) DESC
-                """,
-            ).fetchall()
-
-        out: List[Dict[str, Any]] = []
-        for r in rows or []:
-            try:
-                song = r["song_name"] if isinstance(r, sqlite3.Row) else r[0]
-                cand_json = r["candidates_json"] if isinstance(r, sqlite3.Row) else r[1]
-                created_ts = r["created_ts"] if isinstance(r, sqlite3.Row) else r[2]
-                updated_ts = r["updated_ts"] if isinstance(r, sqlite3.Row) else r[3]
-            except Exception as e:
-                logger.warning(f"database:list_pending_fg_jobs: {e}")
-                continue
-
-            try:
-                candidates = _json_loads(cand_json) if cand_json else []
-            except Exception as e:
-                logger.warning(f"database:list_pending_fg_jobs: {e}")
-                candidates = []
-
-            out.append(
-                {
-                    "song_name": song,
-                    "candidates": candidates,
-                    "created_ts": created_ts,
-                    "updated_ts": updated_ts,
-                }
-            )
-        return out
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
+get_song_names_present_in_db = _pending_fg_jobs.get_song_names_present_in_db
+upsert_pending_fg_job = _pending_fg_jobs.upsert_pending_fg_job
+delete_pending_fg_job = _pending_fg_jobs.delete_pending_fg_job
+list_pending_fg_jobs = _pending_fg_jobs.list_pending_fg_jobs

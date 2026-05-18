@@ -6,7 +6,7 @@ import gear_optimizer.solver.gpu_executor as gpu_executor_module
 from gear_optimizer.solver.gpu_executor import GpuExecutor
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 from gear_optimizer.solver.gpu_executor_batching import BatchPlan as _BatchPlan
-from gear_optimizer.solver.gpu_executor_workload import (
+from gear_optimizer.solver.gpu_executor_profile import (
     batch_trace_context,
     estimate_request_work_units,
     load_workload_profile_settings,
@@ -15,7 +15,7 @@ from gear_optimizer.solver.gpu_executor_workload import (
     size_hint,
     summarize_batch,
 )
-from gear_optimizer.solver.gpu_executor_workload import (
+from gear_optimizer.solver.gpu_executor_profile import (
     should_emit_workload_batch_event,
     record_workload_batch_state,
     emit_workload_batch_profile,

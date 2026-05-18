@@ -52,7 +52,7 @@ def _mk_mini(*, name: str, rng: np.random.Generator) -> dict:
 
 def _solve_synthetic_ga(*, song_name: str) -> dict:
     from gear_optimizer.data.models import GAEvolutionSettings
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    from gear_optimizer.solver.genetic_pipeline import solve_coevolution_genetic
 
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {}
@@ -76,9 +76,6 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
     all_minis: list[dict] = []
     for i in range(12):
         all_minis.append(_mk_mini(name=f"Mini_{i}", rng=rng))
-
-    gears_by_name = {str(g["Name"]): g for g in all_gears}
-    minis_by_name = {str(m["Name"]): m for m in all_minis}
 
     base_stats_fixed = {
         "Perfect Points": 250,
@@ -124,19 +121,14 @@ def _solve_synthetic_ga(*, song_name: str) -> dict:
     best_data, _best_gear, _best_minis, _none, _a, _b, _evaluated = solve_coevolution_genetic(
         cfg,
         base_stats_fixed,
-        {},  # paths (unused for this synthetic test)
         calc_song,
         ref_arrays,
         all_gears,
         all_minis,
-        gears_by_name,
-        minis_by_name,
         optimize_gear=True,
         optimize_minis=True,
         ga_depth=2,
         ga_settings=ga_settings,
-        status_cb=None,
-        executor=None,
         song_slot=0,
         ga_seed=123,
     )
@@ -154,7 +146,11 @@ def test_gpu_native_ga_winner_refinement_overwrites_payload_on_improvement(monke
     called = {"n": 0}
     refined_score = 2_000_000_000
 
-    def _fake_solve_best_fever_combination(cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None):
+    def _fake_solve_best_fever_combination(
+        cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None
+    ):
+        if silent:
+            pass
         called["n"] += 1
         selected_color = ""
         if isinstance(override_cfg, dict):
@@ -193,7 +189,11 @@ def test_gpu_native_ga_winner_exact_check_stays_debug_only_when_refinement_disab
     called = {"n": 0}
     refined_score = 2_000_000_000
 
-    def _fake_solve_best_fever_combination(cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None):
+    def _fake_solve_best_fever_combination(
+        cfg, base_stats, calc_song, ref_arrays, *, silent=False, override_cfg=None
+    ):
+        if silent:
+            pass
         called["n"] += 1
         selected_color = ""
         if isinstance(override_cfg, dict):

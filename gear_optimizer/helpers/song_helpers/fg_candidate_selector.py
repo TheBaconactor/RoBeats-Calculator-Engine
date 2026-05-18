@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass
-import logging
 
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+from ...core.utils import safe_float, safe_int
 from .ga_entry_utils import candidate_loadout_hash
 from .item_utils import _item_name
 
 
 from gear_optimizer.core.parsing import env_get
-
-logger = logging.getLogger(__name__)
 def _split_gear_minis(candidate: dict) -> tuple[list[dict], list[dict]]:
     """
     Robustly extract (gear, minis) from historical candidate shapes.
@@ -36,42 +34,25 @@ def _center_key(candidate: dict) -> tuple[int, int]:
         data = candidate.get("data")
         if not isinstance(data, dict):
             data = {}
-    ft = 0
-    ff = 0
-    try:
-        ft = data.get("FT", candidate.get("FT", 0) or 0) or 0
-        ff = data.get("FF", candidate.get("FF", 0) or 0) or 0
-    except Exception as e:
-        logger.debug(f"fg_candidate_selector:_center_key: {e}")
-        ft = candidate.get("FT", 0) or 0
-        ff = candidate.get("FF", 0) or 0
-    try:
-        return int(ft), int(ff)
-    except Exception as e:
-        logger.debug(f"fg_candidate_selector:_center_key: {e}")
-        return 0, 0
+    ft_fallback = safe_int(candidate.get("FT", 0), 0)
+    ff_fallback = safe_int(candidate.get("FF", 0), 0)
+    ft = safe_int(data.get("FT", ft_fallback), ft_fallback)
+    ff = safe_int(data.get("FF", ff_fallback), ff_fallback)
+    return int(ft), int(ff)
 
 
 def _base_score(candidate: dict) -> int:
     v = candidate.get("BaseScore")
     if v is None:
         v = candidate.get("Score", 0)
-    try:
-        return int(v or 0)
-    except Exception as e:
-        logger.debug(f"fg_candidate_selector:_base_score: {e}")
-        return 0
+    return safe_int(v, 0)
 
 
 def _fg_proxy_from_items(items: list[dict], *, primary_color: str, secondary_color: str) -> int:
     """FG proxy variant that reuses already split gear+mini item lists."""
 
     def _i(item: dict, key: str) -> int:
-        try:
-            return int((item or {}).get(key, 0) or 0)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_i: {e}")
-            return 0
+        return safe_int((item or {}).get(key, 0), 0)
 
     score = 0
     for it in items:
@@ -108,11 +89,7 @@ def select_effective_unique_ga_candidates(
     """
     if not candidates:
         return []
-    try:
-        limit_i = int(limit)
-    except Exception as e:
-        logger.debug(f"fg_candidate_selector:select_effective_unique_ga_candidates: {e}")
-        limit_i = 0
+    limit_i = safe_int(limit, 0)
     if limit_i <= 0:
         return []
 
@@ -132,11 +109,7 @@ def select_effective_unique_ga_candidates(
         )
         if not loadout_hash:
             continue
-        try:
-            fg_priority = int(cand.get("_fg_priority", 0) or 0)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_effective_unique_ga_candidates: {e}")
-            fg_priority = 0
+        fg_priority = safe_int(cand.get("_fg_priority", 0), 0)
         # Higher base/priority wins; earlier rows win exact ties to preserve GPU ordering.
         rank = (_base_score(cand), fg_priority, -int(order))
         prev_rank = best_rank_by_hash.get(loadout_hash)
@@ -203,11 +176,7 @@ def select_fg_candidates(
     if not candidates:
         return []
 
-    try:
-        limit = int(limit)
-    except Exception as e:
-        logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
-        limit = 0
+    limit = safe_int(limit, 0)
     if limit <= 0:
         return []
 
@@ -224,38 +193,23 @@ def select_fg_candidates(
 
     env_band = env_get("FG_PROMISING_BAND_PCT")
     if env_band is not None and str(env_band).strip():
-        try:
-            promising_band_pct = float(env_band)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        promising_band_pct = safe_float(env_band, promising_band_pct)
 
     env_max_pool = env_get("FG_PROMISING_MAX_POOL")
     if env_max_pool is not None and str(env_max_pool).strip():
-        try:
-            promising_max_pool = int(env_max_pool)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        promising_max_pool = safe_int(env_max_pool, promising_max_pool)
 
     env_per_mini = env_get("FG_PROMISING_PER_MINI")
     if env_per_mini is not None and str(env_per_mini).strip():
-        try:
-            promising_per_mini = int(env_per_mini)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        promising_per_mini = safe_int(env_per_mini, promising_per_mini)
 
     env_per_center = env_get("FG_PROMISING_PER_CENTER")
     if env_per_center is not None and str(env_per_center).strip():
-        try:
-            promising_per_center = int(env_per_center)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        promising_per_center = safe_int(env_per_center, promising_per_center)
 
     env_center_bin = env_get("FG_PROMISING_CENTER_BIN")
     if env_center_bin is not None and str(env_center_bin).strip():
-        try:
-            promising_center_bin = int(env_center_bin)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        promising_center_bin = safe_int(env_center_bin, promising_center_bin)
 
     slot_band_pct = 1.0
     slot_max_pool = 20000
@@ -263,72 +217,39 @@ def select_fg_candidates(
 
     env_slot_band = env_get("FG_SLOT_DIVERSE_BAND_PCT")
     if env_slot_band is not None and str(env_slot_band).strip():
-        try:
-            slot_band_pct = float(env_slot_band)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        slot_band_pct = safe_float(env_slot_band, slot_band_pct)
 
     env_slot_max_pool = env_get("FG_SLOT_DIVERSE_MAX_POOL")
     if env_slot_max_pool is not None and str(env_slot_max_pool).strip():
-        try:
-            slot_max_pool = int(env_slot_max_pool)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        slot_max_pool = safe_int(env_slot_max_pool, slot_max_pool)
 
     env_slot_per_slot = env_get("FG_SLOT_DIVERSE_PER_SLOT")
     if env_slot_per_slot is not None and str(env_slot_per_slot).strip():
-        try:
-            slot_per_slot = int(env_slot_per_slot)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:select_fg_candidates: {e}")
+        slot_per_slot = safe_int(env_slot_per_slot, slot_per_slot)
 
     def _select_promising_archive(metas: list[_CandMeta]) -> list[dict]:
-        try:
-            band_pct = float(promising_band_pct)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            band_pct = 1.0
+        band_pct = safe_float(promising_band_pct, 1.0)
         if band_pct < 0:
             band_pct = 0.0
 
-        try:
-            max_pool = int(promising_max_pool)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            max_pool = 0
+        max_pool = safe_int(promising_max_pool, 0)
         if max_pool <= 0:
             max_pool = 20000
 
-        try:
-            per_mini = int(promising_per_mini)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            per_mini = 0
+        per_mini = safe_int(promising_per_mini, 0)
         if per_mini < 0:
             per_mini = 0
 
-        try:
-            per_center = int(promising_per_center)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            per_center = 0
+        per_center = safe_int(promising_per_center, 0)
         if per_center < 0:
             per_center = 0
 
-        try:
-            center_bin = int(promising_center_bin)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            center_bin = 2
+        center_bin = safe_int(promising_center_bin, 2)
         if center_bin <= 0:
             center_bin = 1
 
         # Avoid full-list sorts when metas is large: we only need the top slice.
-        try:
-            best_base = max((m.base for m in metas), default=0)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_promising_archive: {e}")
-            best_base = 0
+        best_base = max((m.base for m in metas), default=0)
         threshold = int(best_base * (1.0 - (band_pct / 100.0))) if best_base > 0 else 0
 
         # Base band: candidates within X% of the best base-score loadout.
@@ -349,11 +270,7 @@ def select_fg_candidates(
         center_counts: dict[tuple[int, int], int] = {}
 
         def _center_bucket(center: tuple[int, int]) -> tuple[int, int]:
-            try:
-                return int(center[0] // center_bin), int(center[1] // center_bin)
-            except Exception as e:
-                logger.debug(f"fg_candidate_selector:_center_bucket: {e}")
-                return 0, 0
+            return int(center[0] // center_bin), int(center[1] // center_bin)
 
         def _add(meta: _CandMeta) -> bool:
             if meta.key in seen_keys:
@@ -417,28 +334,15 @@ def select_fg_candidates(
         return selected[:limit]
 
     def _select_slot_diverse_archive(metas: list[_CandMeta]) -> list[dict]:
-        try:
-            band_pct = float(slot_band_pct)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_slot_diverse_archive: {e}")
-            band_pct = 1.0
+        band_pct = safe_float(slot_band_pct, 1.0)
         if band_pct < 0:
             band_pct = 0.0
 
-        try:
-            max_pool = int(slot_max_pool)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_slot_diverse_archive: {e}")
-            max_pool = 0
+        max_pool = safe_int(slot_max_pool, 0)
         if max_pool <= 0:
             max_pool = 20000
 
-        try:
-            per_slot = int(slot_per_slot)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_select_slot_diverse_archive: {e}")
-            per_slot = 10
-        per_slot = max(1, min(50, int(per_slot)))
+        per_slot = max(1, min(50, safe_int(slot_per_slot, 10)))
 
         # Only materialize top slices we can actually consume.
         base_pool_k = min(len(metas), max(limit, 20000))
@@ -467,11 +371,7 @@ def select_fg_candidates(
             seen_minis.add(meta.mini_key)
             seen_centers.add(meta.center)
             for slot_idx in range(6):
-                try:
-                    name = meta.key[slot_idx]
-                except Exception as e:
-                    logger.debug(f"fg_candidate_selector:_add: {e}")
-                    name = ""
+                name = meta.key[slot_idx] if slot_idx < len(meta.key) else ""
                 if name:
                     seen_items_by_slot[slot_idx].add(name)
             return True
@@ -498,11 +398,7 @@ def select_fg_candidates(
             for slot_idx in range(6):
                 if len(seen_items_by_slot[slot_idx]) >= per_slot:
                     continue
-                try:
-                    name = meta.key[slot_idx]
-                except Exception as e:
-                    logger.debug(f"fg_candidate_selector:_needs_slot_item: {e}")
-                    name = ""
+                name = meta.key[slot_idx] if slot_idx < len(meta.key) else ""
                 if name and name not in seen_items_by_slot[slot_idx]:
                     return True
             return False
@@ -576,11 +472,7 @@ def select_fg_candidates(
 
     metas: list[_CandMeta] = []
     for key, cand in uniq_items:
-        try:
-            fg_priority = int(cand.get("_fg_priority", 0) or 0)
-        except Exception as e:
-            logger.debug(f"fg_candidate_selector:_needs_slot_item: {e}")
-            fg_priority = 0
+        fg_priority = safe_int(cand.get("_fg_priority", 0), 0)
         gear, minis, mini_key = split_cache_by_key.get(key, ([], [], tuple()))
         fg_proxy = _fg_proxy_from_items(
             list(gear) + list(minis), primary_color=primary_color, secondary_color=secondary_color

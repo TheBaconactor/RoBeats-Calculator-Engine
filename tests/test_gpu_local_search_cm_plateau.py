@@ -23,7 +23,7 @@ def test_local_search_from_hint_cm_jump_breaks_plateau_trap() -> None:
     """
     import taichi as ti
 
-    from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+    from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import local_search_from_hint
 

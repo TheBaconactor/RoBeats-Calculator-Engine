@@ -9,11 +9,16 @@ Consumers should use `gear_optimizer.data.db_manager.EvolutionDbManager` for rea
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from typing import Callable, Dict
 import logging
 
+from gear_optimizer.data.database_codecs import (
+    _decode_legacy_gear_names,
+    _decode_legacy_mini_groups,
+    _pack_id_groups,
+    _pack_id_list,
+)
 
 logger = logging.getLogger(__name__)
 Migration = Callable[[sqlite3.Connection], None]
@@ -59,95 +64,6 @@ def _add_column_if_missing(conn: sqlite3.Connection, *, table: str, column: str,
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_sql}")
     except sqlite3.Error:
         pass
-
-
-def _load_json(payload: object, *, default: object) -> object:
-    if payload is None:
-        return default
-    if isinstance(payload, (list, dict)):
-        return payload
-    text = str(payload or "").strip()
-    if not text:
-        return default
-    try:
-        return json.loads(text)
-    except Exception as e:
-        logger.debug(f"__init__:_load_json: {e}")
-        return default
-
-
-def _decode_legacy_gear_names(payload: object) -> list[str]:
-    raw = _load_json(payload, default=[])
-    if not isinstance(raw, list):
-        return []
-    out: list[str] = []
-    for item in raw:
-        name = str(item or "").strip()
-        if name:
-            out.append(name)
-    return out
-
-
-def _decode_legacy_mini_groups(payload: object) -> list[list[str]]:
-    raw = _load_json(payload, default=[])
-    if not isinstance(raw, list):
-        return []
-    out: list[list[str]] = []
-    for item in raw:
-        if isinstance(item, list):
-            names = [str(name or "").strip() for name in item]
-            names = [name for name in names if name]
-            if names:
-                out.append(names)
-            continue
-        name = str(item or "").strip()
-        if name:
-            out.append([name])
-    return out
-
-
-def _encode_uvarint(value: int) -> bytes:
-    x = int(value)
-    if x < 0:
-        raise ValueError("uvarint cannot encode negative values")
-    out = bytearray()
-    while True:
-        b = x & 0x7F
-        x >>= 7
-        if x:
-            out.append(int(b | 0x80))
-        else:
-            out.append(int(b))
-            break
-    return bytes(out)
-
-
-def _pack_id_list(ids: list[int]) -> bytes:
-    if not ids:
-        return b""
-    buf = bytearray()
-    for value in ids:
-        iv = int(value)
-        if iv <= 0:
-            continue
-        buf += _encode_uvarint(iv)
-    return bytes(buf)
-
-
-def _pack_id_groups(groups: list[list[int]]) -> bytes:
-    if not groups:
-        return b""
-    buf = bytearray()
-    for group in groups:
-        if not group:
-            continue
-        for value in group:
-            iv = int(value)
-            if iv <= 0:
-                continue
-            buf += _encode_uvarint(iv)
-        buf += b"\x00"
-    return bytes(buf)
 
 
 def _insert_missing_encoding_names(conn: sqlite3.Connection, *, table: str, names: set[str]) -> None:

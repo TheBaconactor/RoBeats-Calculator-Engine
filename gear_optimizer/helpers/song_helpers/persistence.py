@@ -7,7 +7,7 @@ This module stays as the stable import surface for pipeline and tests.
 
 from __future__ import annotations
 
-from .persistence_canon import ReplayContext, assemble_without_replay, canonicalize_and_assemble
+from .persistence_canon import ReplayContext, canonicalize_and_assemble
 from .persistence_payload import (
     build_db_payload as build_db_payload,
     make_build_details_fn as make_build_details_fn,
@@ -34,16 +34,12 @@ def build_persistence_entries(
     """
     Compatibility wrapper around the centralized canonicalization gateway.
 
-    Production callers should pass replay context (`calc_song`, `ref_arrays`, `cfg_dict`)
-    so persisted rows are authoritative and replayable.
+    Replay context is required so persisted rows are authoritative and replayable.
+    Tests/tooling that intentionally need shape-only assembly should call
+    `persistence_canon.assemble_without_replay` explicitly.
     """
     if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
-        return assemble_without_replay(
-            db_payload=db_payload if isinstance(db_payload, dict) else {},
-            ga_candidates=ga_candidates,
-            loadout_entries=loadout_entries,
-            build_details_fn=build_details_fn,
-        )
+        raise ValueError("build_persistence_entries requires calc_song and ref_arrays for authoritative replay.")
 
     replay_ctx = ReplayContext(
         calc_song=calc_song,

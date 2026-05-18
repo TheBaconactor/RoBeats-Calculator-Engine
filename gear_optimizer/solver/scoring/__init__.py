@@ -2,7 +2,7 @@
 Scoring Package - Score Calculation and Gem Optimization.
 
 This package splits the monolithic scoring.py (2,056 lines) into 5 focused modules:
-1. gpu_solver.py - GPU solver initialization and global caches
+1. runtime_state.py - GPU solver runtime state and global caches
 2. stats_scoring.py - Stats evaluation helpers
 3. fever_solver.py - Fever timeline and gem combination optimization
 4. force_greats.py - Force greats timeline, evaluation, and hill climb
@@ -13,8 +13,8 @@ This __init__.py defines the public scoring API surface.
 Avoid duplicating gem search or FG scoring in pipeline/orchestrator code.
 """
 
-# Import from gpu_solver
-from .gpu_solver import (
+# Import from runtime_state
+from .runtime_state import (
     _GPU_LOCK,
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
@@ -54,9 +54,6 @@ from .genome_evaluation import (
     batch_evaluate_genomes,
 )
 
-# Import from fg_utils (helper)
-from ...helpers.fg_utils import generate_dynamic_fg_configs
-
 # Public API
 __all__ = [
     # GPU solver
@@ -85,6 +82,4 @@ __all__ = [
     # Genome evaluation
     "worker_coevolution_evaluate",
     "batch_evaluate_genomes",
-    # Helpers
-    "generate_dynamic_fg_configs",
 ]

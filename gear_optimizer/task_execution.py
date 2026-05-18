@@ -32,9 +32,6 @@ class TaskExecutionMixin:
             eval_cpu_limit,
             parallel_workers,
             memory_resume_tracker,
-            manager,
-            status_queue,
-            status_thread,
             loop_forever,
         ):
             """Execute tasks with automatic parallelism."""
@@ -160,7 +157,6 @@ class TaskExecutionMixin:
                         completed_songs=completed_songs,
                         memory_resume_tracker=memory_resume_tracker,
                         post_queue=post_queue,
-                        total_tasks=int(total_tasks),
                         stop_requested=self._stop_requested_now,
                         progress_cb=self._progress_event,
                         bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,

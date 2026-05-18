@@ -64,5 +64,7 @@ general_meta_results.json
 # Local benchmark / run artifacts
 artifacts/
 tmp_dbg/
+analysis.txt
+tmp_general_meta_debug*.db*
 runs*/
 run_*.log

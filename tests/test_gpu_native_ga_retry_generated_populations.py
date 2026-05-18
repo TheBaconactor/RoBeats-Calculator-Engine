@@ -215,7 +215,7 @@ def _install_fake_taichi_sync(monkeypatch) -> None:
 
 
 def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=True)
     _install_fake_taichi_modules(monkeypatch)
@@ -260,7 +260,7 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
 
 
 def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -308,7 +308,7 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
 
 
 def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -346,7 +346,7 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
 
 
 def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -384,7 +384,7 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
 
 
 def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -426,7 +426,7 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
 
 
 def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -479,7 +479,7 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
 
 
 def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
@@ -530,7 +530,7 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
 
 
 def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
-    from gear_optimizer.solver import genetic
+    from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
     _install_fake_taichi_modules(monkeypatch)
