@@ -8,6 +8,7 @@ import time
 from typing import Any, Mapping
 
 from ...core.env_config import env_flag
+from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...data.database import (
     get_db_connection_cached,
     get_best_loadouts,
@@ -52,15 +53,10 @@ def resolve_database_baseline_team_buff(
     Resolve the TeamBuff tier used for progress/context reads.
 
     Native optimizer DB context reads the persisted baseline slice. Runtime auto
-    mode stores baseline rows under T5, so this path stays pinned to T5 even when
-    display-only DB best views use the selected config tier.
+    mode stores baseline rows under the fixed optimizer baseline.
     """
-    default_tier = str(default or "T5")
-    try:
-        return default_tier
-    except Exception as e:
-        logger.debug(f"database_context:resolve_database_baseline_team_buff: {e}")
-        return default_tier
+    _ = cfg, cfg_dict, default
+    return OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def _maybe_wal_maintenance(conn) -> None:

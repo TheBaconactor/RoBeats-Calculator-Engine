@@ -214,6 +214,30 @@ def _install_fake_taichi_sync(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "taichi", types.SimpleNamespace(sync=lambda: None))
 
 
+def test_run_gpu_native_ga_requires_explicit_seed(monkeypatch):
+    from gear_optimizer.solver import genetic_pipeline as genetic
+
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+
+    with pytest.raises(ValueError, match="explicit per-run ga_seed"):
+        genetic.run_gpu_native_ga_runs_payload_prebuilt(
+            calc_song={"metadata": {"Song Name": "seed-required"}},
+            ref_arrays=_ref_arrays(),
+            song_slot=0,
+            item_stats=np.zeros((1, 10), dtype=np.int32),
+            slot_start=np.zeros((9,), dtype=np.int32),
+            slot_count=np.zeros((9,), dtype=np.int32),
+            base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+            n_generations=1,
+            initial_populations=None,
+            num_runs=1,
+            n_genomes=8,
+            color_flags={},
+            cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
+            ga_seed=None,
+        )
+
+
 def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 

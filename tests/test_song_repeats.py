@@ -48,7 +48,7 @@ def test_prepare_tasks_song_repeats_expands_queue():
     assert len(set(seeds)) == 3
 
 
-def test_prepare_tasks_song_repeats_one_keeps_single_shape():
+def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(1)
 
@@ -68,9 +68,80 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == 14
-    assert extract_repeat_context(tasks[0]) is None
+    assert len(tasks[0]) == 15
+    repeat_ctx = extract_repeat_context(tasks[0])
+    assert repeat_ctx is not None
+    assert repeat_ctx["repeat_index"] == 1
+    assert repeat_ctx["repeat_total"] == 1
+    assert isinstance(repeat_ctx["ga_seed"], int)
+    assert repeat_ctx["ga_seed"] >= 0
     assert task_queue_label(tasks[0]) == "Dummy Song"
+
+
+def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypatch):
+    from gear_optimizer import app as app_module
+
+    seeds = iter([101, 202])
+    monkeypatch.setattr(app_module.secrets, "randbits", lambda _bits: next(seeds))
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    cfg = _build_cfg(1)
+    song_queue = [("dummy.txt", "Dummy Song", "Hard")]
+
+    first = app._prepare_tasks(
+        song_queue=song_queue,
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+    second = app._prepare_tasks(
+        song_queue=song_queue,
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+
+    assert extract_repeat_context(first[0])["ga_seed"] == 101
+    assert extract_repeat_context(second[0])["ga_seed"] == 202
+
+
+def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
+    from gear_optimizer import app as app_module
+
+    seeds = iter([0])
+    monkeypatch.setattr(app_module.secrets, "randbits", lambda _bits: next(seeds))
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    cfg = _build_cfg(1)
+    tasks = app._prepare_tasks(
+        song_queue=[("dummy.txt", "Dummy Song", "Hard")],
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+
+    assert extract_repeat_context(tasks[0])["ga_seed"] == 0
 
 
 def test_prepare_tasks_backend_priority_new_songs_use_song_repeats_by_default(monkeypatch, tmp_path):

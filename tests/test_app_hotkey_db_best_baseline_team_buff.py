@@ -6,7 +6,7 @@ import gear_optimizer.app as app_mod
 import gear_optimizer.ui.runtime_ui as runtime_ui
 
 
-def test_hotkey_db_best_uses_resolved_baseline_team_buff(monkeypatch) -> None:
+def test_hotkey_db_best_ignores_configured_team_buff(monkeypatch) -> None:
     called: dict[str, str] = {}
 
     def fake_get_best_loadouts(*args, **kwargs):
@@ -29,12 +29,12 @@ def test_hotkey_db_best_uses_resolved_baseline_team_buff(monkeypatch) -> None:
     monkeypatch.setattr(runtime_ui, "load_config", lambda: cfg)
 
     app = app_mod.GearOptimizerApp.__new__(app_mod.GearOptimizerApp)
-    app._run_current_song_label = "Song T10 (Run 1/1)"
+    app._run_current_song_label = "Song T5 (Run 1/1)"
     emitted: list[list[str]] = []
     app._emit_block = emitted.append
 
     app._hotkey_db_best()
 
-    assert called["team_buff"] == "T10"
+    assert called["team_buff"] == "T5"
     assert emitted
-    assert any("Song T10" in line for line in emitted[0])
+    assert any("Song T5" in line for line in emitted[0])

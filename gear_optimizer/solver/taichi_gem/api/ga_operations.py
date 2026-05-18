@@ -400,7 +400,7 @@ def ga_generate_initial_populations(
     n_runs: int,
     n_genomes: int,
     n_slots: int = 9,
-    seed: int = 12345,
+    seed: int,
     heuristic_prob: float = 0.0,
     heuristic_k: int = 0,
     heuristic_copies: int = 0,
@@ -458,14 +458,14 @@ def ga_generate_initial_populations(
     )
 
 
-def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
+def ga_seed_rng(n_genomes: int, seed: int) -> None:
     """Seed per-genome RNG state for GPU GA operators."""
     ensure_ready()
     kernels.ga_seed_rng_kernel(int(n_genomes), np.uint32(seed))
     # GPU-only op; no CPU readback needed.
 
 
-def ga_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int = 12345) -> None:
+def ga_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int) -> None:
     """
     Seed per-genome RNG state for multiple independent runs packed contiguously.
 

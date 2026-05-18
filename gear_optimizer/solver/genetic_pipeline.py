@@ -16,22 +16,14 @@ import importlib
 
 import numpy as np
 
-from ..core.parsing import env_flag, env_int
+from ..core.parsing import env_flag, env_get, env_int
 
-from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
 def _ga_redundancy_audit_enabled() -> bool:
     return env_flag("GA_REDUNDANCY_AUDIT")
 
-
-# Support deterministic testing via GA_SEED environment variable
-_GA_SEED = env_get("GA_SEED")
-if _GA_SEED is not None:
-    _GA_SEED = int(_GA_SEED)
-    random.seed(_GA_SEED)
-    logger.info(f"[GA] Deterministic mode: seed={_GA_SEED}")
 
 from ..core.constants import (
     GA_POPULATION_SIZE,
@@ -1252,11 +1244,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     Important: This must be called from the Taichi/Vulkan owner thread (GpuExecutor).
     """
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA not available (missing dependencies)")
-
-    gpu_api = _require_gpu_api()
-
     cfg_data = dict(cfg_data or {})
     color_flags = dict(color_flags or {})
     trace_writer, trace_every = build_convergence_trace_writer(
@@ -1266,13 +1253,17 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     )
     trace_t0 = time.perf_counter() if trace_writer is not None else 0.0
 
-    seed_base = 42
-    if ga_seed is not None:
-        try:
-            seed_base = int(ga_seed) & 0xFFFFFFFF
-        except Exception as e:
-            logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
-            seed_base = 42
+    if ga_seed is None:
+        raise ValueError("GPU-native GA requires an explicit per-run ga_seed")
+    try:
+        seed_base = int(ga_seed) & 0xFFFFFFFF
+    except Exception as exc:
+        raise ValueError("GPU-native GA requires an integer per-run ga_seed") from exc
+
+    if not _GPU_NATIVE_AVAILABLE:
+        raise RuntimeError("GPU-native GA not available (missing dependencies)")
+
+    gpu_api = _require_gpu_api()
 
     try:
         gpu_api_module = importlib.import_module("gear_optimizer.solver.taichi_gem.api")

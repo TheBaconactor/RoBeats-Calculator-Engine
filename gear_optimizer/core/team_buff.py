@@ -4,13 +4,14 @@ import logging
 """
 TeamBuff helpers (tier definitions, normalization, and baseline resolution).
 
-We persist/load native baseline candidates under T5. Display-only DB views may
-read the selected TeamContributionBuffConstant.TeamBuff tier explicitly.
+We persist/load native baseline candidates under the fixed optimizer baseline.
+TeamBuff is not a user setting; runtime song setup automatically selects the
+song primary color before scoring.
 
 This module centralizes:
 - tier normalization
 - shared TeamBuff stat deltas
-- resolving the baseline TeamBuff from either a cfg_dict or configparser-like object
+- resolving the fixed optimizer baseline TeamBuff
 """
 
 from typing import Any, Mapping, Sequence
@@ -31,6 +32,7 @@ TEAM_BUFF_ELEMENTS: tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 
 CANONICAL_TEAM_BUFF_TIERS: frozenset[str] = frozenset(TEAM_BUFF_TIER_EFFECTS)
 DEFAULT_TEAM_BUFF_REPLAY_TIERS: tuple[str, ...] = TEAM_BUFF_TIER_ORDER
+OPTIMIZER_BASELINE_TEAM_BUFF = "T5"
 
 
 def canonicalize_team_buff(value: Any) -> str:
@@ -53,7 +55,7 @@ def normalize_team_buff(value: Any, *, default: str = "T5") -> str:
     if s:
         return s
     d = canonicalize_team_buff(default)
-    return d or "T5"
+    return d or OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def normalize_team_buff_sequence(
@@ -78,7 +80,7 @@ def normalize_team_buff_sequence(
         tier = canonicalize_team_buff(raw)
         if tier and tier not in fallback:
             fallback.append(tier)
-    return tuple(fallback) or ("T5",)
+    return tuple(fallback) or (OPTIMIZER_BASELINE_TEAM_BUFF,)
 
 
 def team_buff_query_values(team_buff: Any, *, default: str = "T5") -> tuple[str, ...]:
@@ -138,26 +140,21 @@ def resolve_team_color_from_cfg_dict(
 
 def resolve_selected_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
-    Resolve the selected TeamBuff tier from cfg_dict for display/read-only views.
+    Resolve the optimizer TeamBuff tier for display/read-only views.
+
+    The optimizer baseline is fixed. Stale TeamContributionBuffConstant entries in
+    user config must not affect runtime queries or UI output.
     """
-    sec = _get_team_section_from_cfg_dict(cfg_dict)
-    raw = sec.get("TeamBuff", sec.get("teambuff", "")) if sec else ""
-    if not raw and isinstance(cfg_dict, Mapping):
-        raw = cfg_dict.get("TeamBuff", cfg_dict.get("teambuff", ""))
-    return normalize_team_buff(raw, default=default)
+    _ = cfg_dict, default
+    return OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def resolve_selected_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
     """
-    Resolve the selected TeamBuff tier from a configparser-like object for display/read-only views.
+    Resolve the optimizer TeamBuff tier for display/read-only views.
     """
-    raw = ""
-    try:
-        if cfg.has_option("TeamContributionBuffConstant", "TeamBuff"):
-            raw = cfg.get("TeamContributionBuffConstant", "TeamBuff")
-    except (AttributeError, TypeError, ValueError):
-        raw = ""
-    return normalize_team_buff(raw, default=default)
+    _ = cfg, default
+    return OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
@@ -165,7 +162,7 @@ def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None,
     Resolve the native baseline TeamBuff tier for persistence/replay.
     """
     _ = cfg_dict, default
-    return "T5"
+    return OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
@@ -173,4 +170,4 @@ def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str
     Resolve the native baseline TeamBuff tier for persistence/replay.
     """
     _ = cfg, default
-    return "T5"
+    return OPTIMIZER_BASELINE_TEAM_BUFF

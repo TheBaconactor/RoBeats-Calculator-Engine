@@ -163,6 +163,27 @@ def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg
     assert tracker.snapshot("song-a") == (1000, 1050, True)
 
 
+def test_evaluate_fg_progress_record_update_updates_base_session_best():
+    tracker = ProgressTracker()
+    tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)
+    song = make_native_song(
+        db_key="song-a",
+        task_key="Song A (Hard)",
+        best_data={"BaseScore": 1100},
+        fg_variants=[],
+        db_best_score=1,
+        db_best_fg_score=1,
+        db_baseline_valid=False,
+    )
+
+    record_info = evaluate_fg_progress_record_update(song, tracker)
+
+    assert isinstance(record_info, dict)
+    assert record_info["is_better"] is True
+    assert record_info["song"] == "Song A (Hard)"
+    assert tracker.snapshot("song-a") == (1100, 900, True)
+
+
 def test_active_runtime_progress_reporter_prefers_ga_then_decode_then_fg():
     ga_song = make_native_song(task_key="ga-song", song_name="GA Song")
     decode_song = make_native_song(task_key="decode-song", song_name="Decode Song")

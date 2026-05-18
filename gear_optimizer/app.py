@@ -1239,16 +1239,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
             tasks.append(legacy_task_tuple_from_job_context(job, run_context, *extras))
 
-        # When GA_SEED is set, users expect reproducible A/B comparisons.
-        # Historically we still generated per-repeat seeds via `secrets.randbits`,
-        # which made runs non-reproducible even in "deterministic mode".
+        # GA_SEED is debug-only. Production runs leave it unset and get fresh
+        # per-task seeds on every preparation / LoopForever pass.
         ga_seed_base: int | None = None
         raw_ga_seed = env_get("GA_SEED")
         if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
             try:
                 ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
-            except (ValueError, TypeError):
-                ga_seed_base = None
+            except (ValueError, TypeError) as exc:
+                raise ValueError("GA_SEED must be an integer debug seed when set") from exc
 
         # PRODUCTION: repeat flags.
         runtime_settings = self._current_runtime_settings(cfg)
@@ -1279,18 +1278,18 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
             idx = int(repeat_index) & 0xFFFFFFFF
             seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
-            return int(seed or 1)
+            return int(seed)
 
         def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
             if ga_seed_base is not None:
                 ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
                 while ga_seed in used_ga_seeds:
                     # Extremely unlikely, but keep the uniqueness guarantee across the queue.
-                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
+                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF)
             else:
-                ga_seed = int(secrets.randbits(32) or 1)
+                ga_seed = int(secrets.randbits(32))
                 while ga_seed in used_ga_seeds:
-                    ga_seed = int(secrets.randbits(32) or 1)
+                    ga_seed = int(secrets.randbits(32))
             used_ga_seeds.add(int(ga_seed))
             return {
                 "repeat_index": int(repeat_index),
@@ -1306,13 +1305,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
             if repeats_for_song <= 1:
                 logger.info(f"[QUEUE] {found_song_name}")
-
-                if ga_seed_base is not None:
-                    # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
-                    repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
-                    _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
-                else:
-                    _append_song_task(fp, found_song_name, task_diff)
+                # Production native GA must never fall back to its internal fixed seed.
+                # Attach a one-run context even when SongRepeats=1 so every song has
+                # an explicit per-run seed across LoopForever iterations.
+                repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
+                _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
                 continue
 
             for repeat_index in range(1, repeats_for_song + 1):

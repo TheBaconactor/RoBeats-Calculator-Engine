@@ -87,14 +87,10 @@ def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
     Resolve the baseline TeamBuff tier used by the optimizer for this run.
 
     This matches runtime semantics:
-    - runtime baseline TeamBuff tier => T5
-    - Otherwise => TeamContributionBuffConstant.TeamBuff (fallback T5)
+    - runtime baseline TeamBuff tier is fixed at T5
+    - stale TeamContributionBuffConstant config entries are ignored
     """
-    try:
-        return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-    except Exception as e:
-        logger.warning(f"app_async_db:_resolve_base_team_buff_for_persistence: {e}")
-        return "T5"
+    return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
 
 
 class AsyncDbSaver:

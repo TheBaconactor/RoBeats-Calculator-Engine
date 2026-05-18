@@ -1473,13 +1473,15 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
 
     record_info = dict(record_info)
     record_info.setdefault("song", native_song_label(song))
-    if record_info.get("is_fg_better") and progress_tracker is not None:
-        best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0)
-        if best_fg_new > 0:
+    if progress_tracker is not None:
+        best_score_new = safe_int(record_info.get("score", 0), 0) if record_info.get("is_better") else None
+        best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0) if record_info.get("is_fg_better") else None
+        if (best_score_new is not None and best_score_new > 0) or (best_fg_new is not None and best_fg_new > 0):
             key = str(getattr(song.config, "db_key", "") or "").strip()
             if key:
                 progress_tracker.update(
                     key,
+                    best_score=best_score_new,
                     best_fg=best_fg_new,
                     mark_valid=bool(baseline_valid),
                 )

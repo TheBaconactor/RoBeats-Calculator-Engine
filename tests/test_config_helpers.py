@@ -138,11 +138,11 @@ def test_ga_settings_accepts_legacy_ga_depth_with_warning(caplog):
     assert "GA_Depth is deprecated; use IterationEngine.GA_SearchDepth" in caplog.text
 
 
-def test_repo_config_keeps_song_selection_loop_flag_and_t5_baseline():
+def test_repo_config_keeps_song_selection_loop_flag_only():
     repo_root = Path(__file__).resolve().parents[1]
     cfg = load_config(str(repo_root / "config.ini"))
 
-    assert set(cfg.sections()) == {"CalculateSong", "TeamContributionBuffConstant"}
+    assert set(cfg.sections()) == {"CalculateSong"}
     assert set(cfg.options("CalculateSong")) == {
         "song_name",
         "difficulty",
@@ -150,8 +150,6 @@ def test_repo_config_keeps_song_selection_loop_flag_and_t5_baseline():
         "targetsecondary",
         "loopforever",
     }
-    assert cfg.get("TeamContributionBuffConstant", "TeamBuff") == "T5"
-    assert cfg.get("TeamContributionBuffConstant", "TeamColor") == ""
 
 
 def test_loop_forever_is_owned_by_calculate_song_only():
