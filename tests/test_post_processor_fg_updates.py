@@ -7,23 +7,28 @@ def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkey
     ref_arrays = {"Perfect Points": [1.0]}
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5"}}
     calls = {}
+    canonical_row = {
+        "score": 456,
+        "fg_base_score": 400,
+        "fg_score": 500,
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+    }
 
     def fake_get_base_calc_song(file_path, cfg):
         calls["song_io"] = (file_path, cfg)
         return calc_song
 
-    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays, cfg_dict):
+    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
         calls["canonicalize"] = {
             "entries": entries_arg,
             "calc_song": calc_song,
             "ref_arrays": ref_arrays,
-            "cfg_dict": cfg_dict,
         }
-        return [{"score": 456}]
+        return [canonical_row]
 
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", fake_get_base_calc_song)
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
+        "gear_optimizer.helpers.song_helpers.persistence_authority.canonicalize_authoritative_fg_entries",
         fake_canonicalize,
     )
 
@@ -35,13 +40,12 @@ def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkey
         song_name="Test Song",
     )
 
-    assert result == [{"score": 456}]
+    assert result == [canonical_row]
     assert calls["song_io"] == ("Data/Hard/Test Song.txt", cfg_dict)
     assert calls["canonicalize"] == {
         "entries": entries,
         "calc_song": calc_song,
         "ref_arrays": ref_arrays,
-        "cfg_dict": cfg_dict,
     }
 
 
@@ -54,12 +58,19 @@ def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda _fp, _cfg: calc_song)
     monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: cached_ref_arrays)
 
-    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays, cfg_dict):
+    canonical_row = {
+        "score": 123,
+        "fg_base_score": 100,
+        "fg_score": 125,
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
         calls["ref_arrays"] = ref_arrays
-        return list(entries_arg)
+        return [canonical_row]
 
     monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.canonicalize_baseline_persist_entries",
+        "gear_optimizer.helpers.song_helpers.persistence_authority.canonicalize_authoritative_fg_entries",
         fake_canonicalize,
     )
 
@@ -71,7 +82,7 @@ def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
         song_name="Test Song",
     )
 
-    assert result == entries
+    assert result == [canonical_row]
     assert calls["ref_arrays"] is cached_ref_arrays
 
 

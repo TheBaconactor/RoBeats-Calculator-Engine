@@ -782,13 +782,14 @@ def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
 
     out = dict(force_data)
 
-    score_v = _coerce_db_int(out.get("score", 0))
+    score_v = _coerce_db_int(fg_score)
     if score_v <= 0:
         score_v = _coerce_db_int(out.get("Score", 0))
-    if score_v <= 0 and int(fg_score or 0) > 0:
-        score_v = int(fg_score)
+    if score_v <= 0:
+        score_v = _coerce_db_int(out.get("score", 0))
     if score_v > 0:
         out["score"] = int(score_v)
+        out["Score"] = int(score_v)
 
     det = out.get("details")
     if isinstance(det, dict):
@@ -799,7 +800,53 @@ def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
             det_out = dict(det)
             det_out["ForceGreats"] = fg_out
             out["details"] = det_out
+    fg = out.get("ForceGreats")
+    if isinstance(fg, dict) and int(score_v or 0) > 0:
+        fg_out = dict(fg)
+        fg_out["final_score"] = int(score_v)
+        out["ForceGreats"] = fg_out
     return out
+
+
+def _normalize_force_base_score_for_persistence(force_data: Any, *, fg_base_score: int) -> Any:
+    if not isinstance(force_data, dict):
+        return force_data
+    base_i = _coerce_db_int(fg_base_score)
+    if base_i <= 0:
+        return force_data
+    out = dict(force_data)
+    out["BaseScore"] = int(base_i)
+    det = out.get("details")
+    if isinstance(det, dict):
+        det_out = dict(det)
+        det_out["BaseScore"] = int(base_i)
+        out["details"] = det_out
+    return out
+
+
+def _assert_force_score_pairing(force_data: Any, *, fg_base_score: int, fg_score: int) -> None:
+    if not isinstance(force_data, dict) or int(fg_score or 0) <= 0:
+        return
+    force_base = _force_payload_base_score(force_data)
+    if int(force_base or 0) != int(fg_base_score or 0):
+        raise AssertionError(
+            "FG persistence payload BaseScore must match the paired FG base score "
+            f"(force={force_base}, row={fg_base_score})."
+        )
+    force_score = _coerce_db_int(force_data.get("Score", force_data.get("score", 0)))
+    if int(force_score or 0) != int(fg_score or 0):
+        raise AssertionError(
+            "FG persistence payload Score must match the row FG score "
+            f"(force={force_score}, row={fg_score})."
+        )
+    fg_meta = force_data.get("ForceGreats")
+    if isinstance(fg_meta, dict) and "final_score" in fg_meta:
+        meta_score = _coerce_db_int(fg_meta.get("final_score"))
+        if int(meta_score or 0) != int(fg_score or 0):
+            raise AssertionError(
+                "FG persistence ForceGreats.final_score must match the row FG score "
+                f"(force={meta_score}, row={fg_score})."
+            )
 
 
 def save_loadouts_batch(
@@ -1371,12 +1418,14 @@ def save_team_buff_loadouts_batch(
             score = _coerce_db_int(entry.get("score", 0))
             fg_score = _coerce_db_int(entry.get("fg_score", 0))
             fg_base_score = score
+            has_explicit_fg_base = False
             try:
                 raw_fg_base = entry.get("fg_base_score")
             except Exception as e:
                 logger.warning(f"database:_encode_mini_groups_to_blob: {e}")
                 raw_fg_base = None
             if raw_fg_base is not None:
+                has_explicit_fg_base = True
                 fg_base_score = _coerce_db_int(raw_fg_base)
                 if fg_base_score <= 0:
                     fg_base_score = score
@@ -1413,8 +1462,14 @@ def save_team_buff_loadouts_batch(
 
             force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
             force_base_score = _force_payload_base_score(force_data)
-            if force_base_score > 0:
+            if has_explicit_fg_base and fg_base_score > 0:
+                force_data = _normalize_force_base_score_for_persistence(force_data, fg_base_score=fg_base_score)
+            elif force_base_score > 0:
                 fg_base_score = force_base_score
+            elif fg_base_score > 0:
+                force_data = _normalize_force_base_score_for_persistence(force_data, fg_base_score=fg_base_score)
+            if force_data is not None and fg_score > fg_base_score:
+                _assert_force_score_pairing(force_data, fg_base_score=fg_base_score, fg_score=fg_score)
             details = _normalize_details_for_persistence(
                 details,
                 score=score,
@@ -1548,29 +1603,27 @@ def save_team_buff_loadouts_batch(
                     fg_score = MAX(fg_score, excluded.fg_score),
                     score = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.score
-                        WHEN excluded.fg_score = fg_score AND excluded.score > score THEN excluded.score
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL THEN excluded.score
                         ELSE score
                     END,
                     gear_ids_blob = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.gear_ids_blob
                         ELSE gear_ids_blob
                     END,
                     minis_ids_blob = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.minis_ids_blob
                         ELSE minis_ids_blob
                     END,
                     details_json = CASE
-                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.score > score)
+                        WHEN excluded.fg_score > fg_score OR (excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL)
                             THEN excluded.details_json
                         ELSE details_json
                     END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.score > score AND excluded.force_details_json IS NOT NULL
-                            THEN excluded.force_details_json
-                        WHEN excluded.fg_score = fg_score AND excluded.score = score AND excluded.force_details_json IS NOT NULL
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
                             THEN excluded.force_details_json
                         ELSE force_details_json
                     END,

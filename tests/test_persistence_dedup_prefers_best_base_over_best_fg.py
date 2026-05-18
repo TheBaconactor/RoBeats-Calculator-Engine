@@ -1,4 +1,5 @@
 from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
 
 
 def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_best_fg_payload():
@@ -42,13 +43,11 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
 
     build_details_fn = lambda data: {"marker": (data or {}).get("marker")}  # noqa: E731
 
-    out = build_persistence_entries(
-        db_payload,
-        ga_candidates,
+    out = assemble_without_replay(
+        db_payload=db_payload,
+        ga_candidates=ga_candidates,
         loadout_entries=None,
         build_details_fn=build_details_fn,
-        calc_song=None,
-        ref_arrays=None,
     )
 
     dup = [e for e in out if e.get("gear") == loadout_gear and e.get("minis") == loadout_minis]
@@ -63,8 +62,8 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
 
 
 def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
-    out = build_persistence_entries(
-        {
+    out = assemble_without_replay(
+        db_payload={
             "score": 999,
             "gear": ["TOP_GEAR"],
             "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
@@ -72,7 +71,7 @@ def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
             "fg_score": 0,
             "force": None,
         },
-        [
+        ga_candidates=[
             {
                 "loadout_hash": "effective-ga-hash",
                 "BaseScore": 123,
@@ -83,8 +82,6 @@ def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
         ],
         loadout_entries=None,
         build_details_fn=lambda data: {"marker": (data or {}).get("marker")},
-        calc_song=None,
-        ref_arrays=None,
     )
 
     matches = [entry for entry in out if entry.get("loadout_hash") == "effective-ga-hash"]
@@ -100,8 +97,8 @@ def test_build_persistence_entries_retained_fg_without_force_drops_fg_score():
     gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
     minis = ["M1", "M2", "M3"]
 
-    out = build_persistence_entries(
-        {
+    out = assemble_without_replay(
+        db_payload={
             "score": 999,
             "gear": ["TOP_GEAR"],
             "minis": ["TOP_M1", "TOP_M2", "TOP_M3"],
@@ -122,8 +119,6 @@ def test_build_persistence_entries_retained_fg_without_force_drops_fg_score():
             }
         },
         build_details_fn=lambda data: dict(data or {}),
-        calc_song=None,
-        ref_arrays=None,
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
@@ -140,8 +135,8 @@ def test_build_persistence_entries_top1_fg_without_force_drops_fg_score():
     gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
     minis = ["M1", "M2", "M3"]
 
-    out = build_persistence_entries(
-        {
+    out = assemble_without_replay(
+        db_payload={
             "score": 120,
             "gear": list(gear),
             "minis": list(minis),
@@ -152,8 +147,6 @@ def test_build_persistence_entries_top1_fg_without_force_drops_fg_score():
         ga_candidates=[],
         loadout_entries=None,
         build_details_fn=lambda data: dict(data or {}),
-        calc_song=None,
-        ref_arrays=None,
     )
 
     assert len(out) == 1
@@ -229,6 +222,10 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.build_team_buff_tier_db_batches",
         _fake_batches,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
+        lambda entries, *, calc_song, ref_arrays: list(entries),
     )
 
     out = build_persistence_entries(
@@ -314,6 +311,10 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.build_team_buff_tier_db_batches",
         _fake_batches,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
+        lambda entries, *, calc_song, ref_arrays: list(entries),
     )
 
     out = build_persistence_entries(
