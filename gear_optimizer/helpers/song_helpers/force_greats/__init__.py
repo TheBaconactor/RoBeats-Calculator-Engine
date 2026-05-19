@@ -5,9 +5,7 @@ entrypoint is actually called.
 
 from __future__ import annotations
 
-from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
-
-__all__ = ["process_force_greats", "decode_cfg_counts_from_windows"]
+__all__ = ["process_force_greats"]
 
 
 def process_force_greats(*args, **kwargs):
