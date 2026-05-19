@@ -73,16 +73,6 @@ from .work_budget import (
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
-# Re-export cache state for targeted tests and local debugging.
-_FG_CHART_SCORER_CACHE = _dispatch_caches._FG_CHART_SCORER_CACHE
-_FG_CHART_SCORER_LOCK = _dispatch_caches._FG_CHART_SCORER_LOCK
-_FG_ANALYTICAL_BREAKPOINTS_CACHE = _dispatch_caches._FG_ANALYTICAL_BREAKPOINTS_CACHE
-_FG_ANALYTICAL_BREAKPOINTS_LOCK = _dispatch_caches._FG_ANALYTICAL_BREAKPOINTS_LOCK
-_FG_BREAKPOINT_GROUPS_CACHE = _dispatch_caches._FG_BREAKPOINT_GROUPS_CACHE
-_FG_BREAKPOINT_GROUPS_LOCK = _dispatch_caches._FG_BREAKPOINT_GROUPS_LOCK
-_FG_MAX_FP_MATRIX_CACHE = _dispatch_caches._FG_MAX_FP_MATRIX_CACHE
-_FG_MAX_FP_MATRIX_LOCK = _dispatch_caches._FG_MAX_FP_MATRIX_LOCK
-
 _GPU_STRICT = env_flag("GPU_STRICT", "1")
 
 __all__ = [

@@ -128,7 +128,7 @@ def test_build_db_payload_normalizes_force_payload_stats():
 
 
 def test_normalize_force_payload_materializes_stats_from_base_stats():
-    from gear_optimizer.helpers.song_helpers.persistence import _normalize_force_payload
+    from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
 
     base_stats = {
         "Perfect Points": 10,
@@ -156,7 +156,7 @@ def test_normalize_force_payload_materializes_stats_from_base_stats():
         "ForceGreats": {"config": {"NonFever1": 1}},
     }
 
-    force_out = _normalize_force_payload(force_in)
+    force_out = normalize_force_payload(force_in)
     stats = force_out.get("Stats")
     assert isinstance(stats, dict)
     assert stats.get("Perfect Points", 0) >= base_stats["Perfect Points"]

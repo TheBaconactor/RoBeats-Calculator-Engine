@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 
-from . import gpu_dispatch_caches as _dispatch_caches
 from .entry_resolution import (
     selected_count as _selected_count,
     sig_results_has_fg_improvement as _sig_results_has_fg_improvement,
@@ -20,16 +19,6 @@ from .gpu_dispatch_batching import (
     _uses_timing_envelope_fg,
 )
 from .gpu_dispatch_finder import process_force_greats_gpu_finder
-
-# Re-export cache state for targeted tests and local debugging.
-_FG_CHART_SCORER_CACHE = _dispatch_caches._FG_CHART_SCORER_CACHE
-_FG_CHART_SCORER_LOCK = _dispatch_caches._FG_CHART_SCORER_LOCK
-_FG_ANALYTICAL_BREAKPOINTS_CACHE = _dispatch_caches._FG_ANALYTICAL_BREAKPOINTS_CACHE
-_FG_ANALYTICAL_BREAKPOINTS_LOCK = _dispatch_caches._FG_ANALYTICAL_BREAKPOINTS_LOCK
-_FG_BREAKPOINT_GROUPS_CACHE = _dispatch_caches._FG_BREAKPOINT_GROUPS_CACHE
-_FG_BREAKPOINT_GROUPS_LOCK = _dispatch_caches._FG_BREAKPOINT_GROUPS_LOCK
-_FG_MAX_FP_MATRIX_CACHE = _dispatch_caches._FG_MAX_FP_MATRIX_CACHE
-_FG_MAX_FP_MATRIX_LOCK = _dispatch_caches._FG_MAX_FP_MATRIX_LOCK
 
 
 def _should_skip_full_download_no_candidates(

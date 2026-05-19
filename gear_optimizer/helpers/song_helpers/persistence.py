@@ -11,14 +11,11 @@ from .persistence_canon import ReplayContext, canonicalize_and_assemble
 from .persistence_payload import (
     build_db_payload as build_db_payload,
     make_build_details_fn as make_build_details_fn,
-    normalize_force_payload,
 )
 from .persistence_records import (
     RECORD_UPDATE_SCORE_EPSILON as RECORD_UPDATE_SCORE_EPSILON,
     evaluate_progress_record_update as evaluate_progress_record_update,
 )
-
-_normalize_force_payload = normalize_force_payload
 
 
 def build_persistence_entries(
