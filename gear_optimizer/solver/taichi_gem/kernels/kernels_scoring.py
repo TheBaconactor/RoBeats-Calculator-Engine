@@ -6,7 +6,6 @@ This module contains score calculation functions and the critical optimize_core_
 - _calc_head_factor: Combo ramp factor
 - _calc_head_score_*: Head score with fever masks (3 variants)
 - calc_score_device: Main score calculation (work-item masks)
-- calc_score_with_grid: Score calculation using grid-stored masks
 - calc_score_with_grid_bits: Score calculation using bitpacked masks
 - calc_score_cached_device: Cached score calculation
 - optimize_core_device: CRITICAL greedy gem allocation (179 lines)

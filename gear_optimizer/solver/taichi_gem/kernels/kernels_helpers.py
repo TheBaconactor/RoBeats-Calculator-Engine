@@ -58,7 +58,6 @@ grid_N_hn = None
 grid_N_hf = None
 grid_Sigma_hn = None
 grid_Sigma_hf = None
-grid_fever_masks = None
 grid_fever_masks_bits = None
 grid_frontier_count = None
 grid_frontier_offset = None
@@ -478,46 +477,6 @@ def _calc_head_score_bits(
             head_score += ti.cast(ramp_val * mul, ti.i32)
             t += 1.0
     return ti.cast(head_score, ti.f32)
-
-
-@ti.func
-def calc_score_with_grid(
-    base_value: ti.f32,
-    combo_mul: ti.f32,
-    fever_mul: ti.f32,
-    song_slot: ti.i32,
-    ft_idx: ti.i32,
-    ff_idx: ti.i32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.i32:
-    """
-    Score calculation using the legacy unpacked i8 grid mask.
-
-    This exists for parity tests and debug tooling. Production scoring uses
-    `calc_score_with_grid_bits` exclusively for speed/VRAM.
-
-    IMPORTANT: Callers must ensure `grid_fever_masks` is allocated and populated.
-    """
-    body_score = _calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
-    factor = _calc_head_factor(base_value, combo_mul)
-
-    head_score_i32 = ti.i32(0)
-    fever_delta = fever_mul - 1.0
-    # Use a fixed loop bound for backend stability (dynamic range() has been flaky on Metal).
-    head_len_c = ti.max(0, ti.min(head_len, 100))
-    # Unpacked masks are stored only for slot 0 (shape[0]=1) to avoid VRAM blowups.
-    mask_slot = ti.i32(0)
-    for i in range(100):
-        if i < head_len_c:
-            t = ti.cast(i + 1, ti.f32)
-            ramp_val = base_value + (t * factor)
-            is_fever_f = ti.cast(grid_fever_masks[mask_slot, ft_idx, ff_idx, i], ti.f32)
-            mul = 1.0 + fever_delta * is_fever_f
-            head_score_i32 += ti.cast(ramp_val * mul, ti.i32)
-
-    return ti.cast(body_score, ti.i32) + head_score_i32
 
 
 @ti.func

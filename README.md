@@ -242,7 +242,6 @@ RoBeats-Calculator-Engine/
 │   └── debug_*.py                    # Debugging utilities
 │
 ├── tools/                            # Additional utilities
-│   ├── benchmark_gpu.py              # GPU benchmarking
 │   ├── check_db.py                   # Database inspection
 │   └── verify_loadout.py             # Loadout verification
 │

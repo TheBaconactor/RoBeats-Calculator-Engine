@@ -137,7 +137,7 @@ def main() -> int:
 
     baseline_tests = [
         "-q",
-        "tests/test_solve_genomes_from_registry_score_parity.py::test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow",
+        "tests/test_gpu_exact_inner_registry_solve.py::test_registry_solve_exact_inner_matches_cpu_exact",
         "tests/test_gem_optimizer_cm_lookahead.py::test_optimize_core_jit_cm_lookahead_breaks_plateau_trap",
         "tests/test_gpu_local_search_cm_plateau.py::test_local_search_from_hint_cm_jump_breaks_plateau_trap",
     ]
@@ -194,7 +194,7 @@ def main() -> int:
         rc = _pytest(
             [
                 "-q",
-                "tests/test_solve_genomes_from_registry_score_parity.py::test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow",
+                "tests/test_gpu_exact_inner_registry_solve.py::test_registry_solve_exact_inner_matches_cpu_exact",
             ]
         )
         if rc == 0:

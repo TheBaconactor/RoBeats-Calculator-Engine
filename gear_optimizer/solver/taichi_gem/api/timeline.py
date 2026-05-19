@@ -977,7 +977,6 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     - grid_count_body_fever[song_slot, ft, ff]
     - grid_count_body_normal[song_slot, ft, ff]
     - grid_head_len[song_slot, ft, ff]
-    - grid_fever_masks[song_slot, ft, ff, :]
     - grid_fever_masks_bits[song_slot, ft, ff, :]
     - grid_gap[song_slot, ft, ff] (computed by CPU upload path)
     - grid_fever_activations[song_slot, ft, ff] (computed by CPU upload path)
@@ -1066,11 +1065,6 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
 
-    write_unpacked_masks = (
-        1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
-    )
-    if write_unpacked_masks != 0:
-        fields.ensure_grid_unpacked_masks_allocated()
     group_payload = payload
     ref_ft = np.asarray(ctx["ref_ft"], dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ctx["ref_ff"], dtype=np.float32).reshape(-1)
@@ -1123,17 +1117,6 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         ),
         frontier_variants=int(np.sum(np.asarray(frontier_payload.grid_frontier_count[payload_slot_i], dtype=np.int64))),
     )
-    if write_unpacked_masks != 0:
-        # Build i8 masks from the bitpacked representation on-GPU (debug/tests only).
-        t_unpack = time.perf_counter()
-        kernels.unpack_timeline_grid_masks_kernel(int(song_slot))
-        _emit_timeline_phase(
-            phase="unpack_timeline_masks",
-            start=t_unpack,
-            calc_song=calc_song,
-            song_slot=song_slot_i,
-        )
-
     _maybe_sync(for_timing=True)
     _t1 = time.perf_counter()
 

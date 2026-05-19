@@ -5,7 +5,7 @@ This package splits the monolithic kernels.py (1,757 lines) into 6 focused modul
 1. kernels_helpers.py - Field placeholders & lookup functions
 2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
 3. kernels_scoring.py - Score calculation & optimize_core_device
-4. kernels_solvers_batch.py - Batch solver kernels
+4. kernels_solvers_batch.py - Result staging kernels
 5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
 
@@ -23,7 +23,6 @@ from .kernels_helpers import (
     grid_count_body_fever,
     grid_count_body_normal,
     grid_head_len,
-    grid_fever_masks,
     grid_fever_masks_bits,
     song_timestamps,
     song_total_notes,
@@ -66,7 +65,6 @@ from .kernels_helpers import (
     _calc_body_score,
     _calc_head_factor,
     _calc_head_score_bits,
-    calc_score_with_grid,
     calc_score_with_grid_bits,
 )
 
@@ -108,8 +106,6 @@ from .kernels_scoring import (
 
 # Import batch solver kernels
 from .kernels_solvers_batch import (
-    solve_genomes_with_ftff_kernel,
-    solve_genomes_with_ftff_block_kernel,
     copy_genome_result_stats_to_download_staging_kernel,
 )
 
@@ -150,7 +146,6 @@ from .ga_eval import (
 # Import timeline kernel
 from .kernels_timeline import (
     precompute_fever_end_idx_kernel,
-    unpack_timeline_grid_masks_kernel,
 )
 
 # Public API
@@ -166,7 +161,6 @@ __all__ = [
     "grid_count_body_fever",
     "grid_count_body_normal",
     "grid_head_len",
-    "grid_fever_masks",
     "grid_fever_masks_bits",
     "song_timestamps",
     "song_total_notes",
@@ -231,13 +225,10 @@ __all__ = [
     "_calc_head_factor",
     "_calc_head_score_grid",
     "_calc_head_score_bits",
-    "calc_score_with_grid",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
     "optimize_core_device",
     # Batch solver kernels
-    "solve_genomes_with_ftff_kernel",
-    "solve_genomes_with_ftff_block_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "ga_find_best_combo_key_kernel",
@@ -272,5 +263,4 @@ __all__ = [
     "binary_search_left_from",
     "binary_search_left",
     "precompute_fever_end_idx_kernel",
-    "unpack_timeline_grid_masks_kernel",
 ]

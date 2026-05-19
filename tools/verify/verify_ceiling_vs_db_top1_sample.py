@@ -293,7 +293,6 @@ def main() -> int:
 
     # Force ceiling mode for this verification run.
     os.environ["GPU_TIMELINE_CEILING_ENVELOPE"] = "1"
-    os.environ.setdefault("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
 
     # Init Taichi once.
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi

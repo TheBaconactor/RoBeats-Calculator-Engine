@@ -12,10 +12,9 @@ import logging
 
 from gear_optimizer.core.parsing import truthy
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_item_names, compact_prev_record
-from gear_optimizer.solver.song_slot_pool import SongSlotPool
 
 logger = logging.getLogger(__name__)
-__all__ = ["SongSlotPool", "_compact_items", "_compact_prev_record", "_truthy"]
+__all__ = ["_compact_items", "_compact_prev_record", "_truthy"]
 
 
 def _truthy(v: Any) -> bool:

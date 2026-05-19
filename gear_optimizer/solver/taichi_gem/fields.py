@@ -12,7 +12,7 @@ import logging
 
 import taichi as ti
 
-from gear_optimizer.core.parsing import env_flag, env_int
+from gear_optimizer.core.parsing import env_int
 
 from .runtime import is_initialized, init_taichi
 
@@ -58,9 +58,6 @@ MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
-
-# Optional allocations: unpacked timeline masks are optional; bitpacked masks are the production path.
-WRITE_UNPACKED_GRID_MASKS_DEFAULT = env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS")
 
 # FT/FF combo reduction sizing (Vulkan path).
 # Used by the warmstart and combo-search reduction kernels.
@@ -112,7 +109,6 @@ grid_N_hn: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - count of normal h
 grid_N_hf: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - count of fever head notes
 grid_Sigma_hn: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - sum(i+1) over normal head notes
 grid_Sigma_hf: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - sum(i+1) over fever head notes
-grid_fever_masks: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
 grid_fever_masks_bits: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
 grid_frontier_count: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - retained packed frontier count
 grid_frontier_offset: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - packed frontier start offset
@@ -299,7 +295,7 @@ def reset_fields_state() -> None:
     global exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
     global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
-    global grid_fever_masks, grid_fever_masks_bits
+    global grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
     global grid_sig0, grid_sig1
@@ -358,7 +354,6 @@ def reset_fields_state() -> None:
     grid_N_hf = None
     grid_Sigma_hn = None
     grid_Sigma_hf = None
-    grid_fever_masks = None
     grid_fever_masks_bits = None
     grid_frontier_count = None
     grid_frontier_offset = None
@@ -772,7 +767,7 @@ def allocate_grid_fields():
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
     global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
-    global grid_fever_masks, grid_fever_masks_bits
+    global grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
     global grid_sig0, grid_sig1
@@ -793,12 +788,6 @@ def allocate_grid_fields():
     grid_N_hf = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_Sigma_hn = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_Sigma_hf = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    if WRITE_UNPACKED_GRID_MASKS_DEFAULT:
-        # Unpacked masks are legacy/debug-only; keep them minimal to avoid VRAM blowups.
-        # We only allocate slot 0 (shape[0]=1). Multi-slot code must use bitpacked masks.
-        grid_fever_masks = ti.field(dtype=ti.i8, shape=(1, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
-    else:
-        grid_fever_masks = None
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     grid_frontier_count = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_frontier_offset = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
@@ -835,33 +824,6 @@ def allocate_grid_fields():
         MAX_SONG_SLOTS,
         GRID_SIZE,
         GRID_SIZE,
-    )
-
-
-def ensure_grid_unpacked_masks_allocated() -> None:
-    """
-    Allocate unpacked timeline masks on demand.
-
-    Production kernels use `grid_fever_masks_bits`. Unpacked masks are only for
-    optional debug/inspection paths and are disabled by default to save VRAM.
-    """
-    global grid_fever_masks
-
-    ensure_grid_fields_allocated()
-    if grid_fever_masks is not None:
-        return
-
-    # Unpacked masks are legacy/debug-only; keep them minimal to avoid VRAM blowups.
-    # We only allocate slot 0 (shape[0]=1). Multi-slot code must use bitpacked masks.
-    grid_fever_masks = ti.field(dtype=ti.i8, shape=(1, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
-    from . import kernels
-
-    bind_fields(kernels)
-    logger.debug(
-        "[Taichi] Allocated unpacked timeline masks: 1 x %s x %s x %s",
-        GRID_SIZE,
-        GRID_SIZE,
-        MAX_HEAD_NOTES,
     )
 
 
@@ -908,7 +870,6 @@ def bind_fields(kernels_module):
     target.grid_N_hf = grid_N_hf
     target.grid_Sigma_hn = grid_Sigma_hn
     target.grid_Sigma_hf = grid_Sigma_hf
-    target.grid_fever_masks = grid_fever_masks
     target.grid_fever_masks_bits = grid_fever_masks_bits
     target.grid_frontier_count = grid_frontier_count
     target.grid_frontier_offset = grid_frontier_offset

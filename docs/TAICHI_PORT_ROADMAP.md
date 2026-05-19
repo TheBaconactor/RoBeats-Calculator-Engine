@@ -1,7 +1,7 @@
 # Taichi Port Roadmap (End-to-End GPU GA)
 
 ## Current State (what’s already on GPU)
-- **Gem optimization** is on Taichi (Metal/Vulkan) via `solve_genomes_with_ftff()` in [`gear_optimizer/solver/taichi_gem/api/parallel_solvers.py`](../gear_optimizer/solver/taichi_gem/api/parallel_solvers.py).
+- **Gem optimization** is on Taichi (Metal/Vulkan) via `solve_genomes_from_registry()` in [`gear_optimizer/solver/taichi_gem/api/parallel_solvers.py`](../gear_optimizer/solver/taichi_gem/api/parallel_solvers.py).
 - The GA evaluation path (`batch_evaluate_genomes`) calls it from [`gear_optimizer/solver/scoring/genome_evaluation.py`](../gear_optimizer/solver/scoring/genome_evaluation.py).
 - The V3 path:
   - Uses a **precomputed (FT,FF) combo table** on GPU.
@@ -39,15 +39,16 @@ This makes crossover/mutation fast and GPU-native.
 Compute:
 - `genome_stats[genome_id, stat_id] = sum(item_stats[item_id, stat_id]) + base_stats_fixed[stat_id]`
 
-From this, produce the minimal inputs required by `solve_genomes_with_ftff()`:
-- `base_pp/base_cm/base_fm/base_ft_stat/base_ff_stat`
-- `base_p_val/base_s_val` based on song primary/secondary
+From this, produce the minimal inputs required by `solve_genomes_from_registry()`:
+- `population_indices`
+- `item_stats`, `slot_start`, `slot_count`
+- `base_fixed_stats`
 
 ## Staged Implementation Plan
 ### Stage A — GPU stat aggregation kernel (low risk, immediate CPU reduction)
 Add a Taichi kernel that:
 - Inputs: `population_indices`, `item_stats`, `base_stats_fixed`
-- Outputs: `genome_base_*` arrays compatible with `solve_genomes_with_ftff()`
+- Outputs: registry/base-stat arrays compatible with `solve_genomes_from_registry()`
 
 Integration option:
 - Add an opt-in flag (e.g. `cfg_data["gpu_aggregate_stats"]=True`) in `batch_evaluate_genomes`.
@@ -57,7 +58,7 @@ Integration option:
 Persist GPU fields across generations:
 - `population_indices` lives in a Taichi field.
 - Only mutation/crossover updates (deltas) are applied each generation.
-- `solve_genomes_with_ftff()` can read `genome_base_*` without `from_numpy()` each time.
+- `solve_genomes_from_registry()` can reuse resident registry/base-stat buffers.
 
 Expected win:
 - Removes repeated host→device transfers for `genome_base_*` per generation.

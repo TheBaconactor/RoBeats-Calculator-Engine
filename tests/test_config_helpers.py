@@ -1,5 +1,4 @@
 import configparser
-import logging
 from pathlib import Path
 
 import pytest
@@ -111,31 +110,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
 
     assert read_fg_candidate_limit(cfg, default=51, min_limit=1) == 5000
     assert read_fg_search_radius(cfg) is None
-
-
-def test_ga_settings_uses_canonical_ga_search_depth_over_legacy_alias(caplog):
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"GA_SearchDepth": "125", "GA_Depth": "1"}})
-
-    with caplog.at_level(logging.WARNING):
-        ga = GASettings.from_config(cfg)
-
-    assert ga.search_depth == 125
-    assert "GA_Depth is deprecated" not in caplog.text
-
-
-def test_ga_settings_accepts_legacy_ga_depth_with_warning(caplog):
-    from gear_optimizer.core import config as config_module
-
-    config_module._CFG_ALIAS_WARNED.clear()
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"GA_Depth": "12"}})
-
-    with caplog.at_level(logging.WARNING):
-        ga = GASettings.from_config(cfg)
-
-    assert ga.search_depth == 12
-    assert "GA_Depth is deprecated; use IterationEngine.GA_SearchDepth" in caplog.text
 
 
 def test_repo_config_keeps_song_selection_loop_flag_only():

@@ -21,7 +21,7 @@ def analyze(prof_file):
     p.print_callees("solve_force_greats_finder_gpu")
 
     print("\n=== GA CALLEES (What is GA spending time on?) ===")
-    p.print_callees("solve_genomes_with_ftff")
+    p.print_callees("solve_genomes_from_registry")
 
 
 if __name__ == "__main__":
