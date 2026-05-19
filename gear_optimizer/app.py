@@ -55,14 +55,9 @@ from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.scoring import GEM_SOLVER_CACHE
 from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
-from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
-from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 from gear_optimizer.song_queue import (
-    build_song_queue_from_pending_ids,
-    ensure_song_path_index,
     infer_song_difficulty_from_path,
-    song_index_roots,
 )
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
@@ -100,8 +95,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
         self._progress: _ProgressUI | None = None
-        # Separate-process TUI (default) keeps console IO out of the compute/GPU owner process.
-        self._tui_enabled = True
+        self._tui_enabled = False
         try:
             raw = env_get("METAFINDER_UI_PROCESS")
             if raw is not None and str(raw).strip() != "":
@@ -137,23 +131,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
-        self._backend_priority_song_names: set[str] = set()
-        # Optional override for pending-visit songs. 0 means "use SongRepeats".
-        try:
-            self._backend_priority_song_repeat_count = max(
-                0,
-                int(env_get("ROBEATSMETA_OPTIMIZER_PRIORITY_REPEAT_COUNT", "0") or "0"),
-            )
-        except (TypeError, ValueError):
-            self._backend_priority_song_repeat_count = 0
-        self._song_path_index_lock = threading.Lock()
-        self._song_path_index: dict[str, list[dict[str, str]]] = {}
-        self._song_path_index_ready = False
-        self._song_path_index_roots: tuple[str, ...] = ()
-        self._song_path_index_last_force_attempt_monotonic = 0.0
         self._cpu_work_manager = CpuWorkManager()
-        self._song_path_index_force_cooldown_sec = 60.0
-        self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
         self._runtime_settings: AppRuntimeSettings | None = None
 
     def setup_logging(self) -> None:
@@ -363,21 +341,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return True
         return False
 
-    def _optimizer_priority_api_enabled(self) -> bool:
-        return False
-
-    def _prioritize_robeatsmeta_song_queue(
-        self,
-        song_queue: list[tuple[str, str, str]],
-    ) -> list[tuple[str, str, str]]:
-        return list(song_queue or [])
-
-    def _filter_robeatsmeta_recently_computed_song_queue(
-        self,
-        song_queue: list[tuple[str, str, str]],
-    ) -> list[tuple[str, str, str]]:
-        return list(song_queue or [])
-
     def _maybe_mark_robeatsmeta_song_batch_computed(
         self,
         song_name: str | None,
@@ -443,46 +406,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             restore_stdout(self._orig_stdout)
             restore_stderr(self._orig_stderr)
 
-    def _maybe_init_robeatsmeta_api(self, cfg) -> None:
-        try:
-            self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
-            if self._robeatsmeta_api.backend_mode_enabled():
-                backend_benchmark_mode = bool(self._robeatsmeta_api.benchmark_mode_enabled())
-                if self._robeatsmeta_api.apply_service_defaults(cfg):
-                    runtime_settings = AppRuntimeSettings.from_config(cfg)
-                    self._runtime_settings = runtime_settings
-                    loop_forever_effective = runtime_settings.loop_forever
-                    song_repeats_effective = runtime_settings.song_repeats
-                    inflight_songs_effective = runtime_settings.inflight.songs
-                    if backend_benchmark_mode:
-                        logger.info(
-                            "[RoBeatsMeta] Service defaults enabled (benchmark): "
-                            f"LoopForever={loop_forever_effective}, "
-                            f"SongRepeats={song_repeats_effective}, "
-                            f"InFlightSongs={inflight_songs_effective}, "
-                            "Difficulty=All, QueueScope=PendingSongIds.",
-                        )
-                    else:
-                        logger.info(
-                            "[RoBeatsMeta] Service defaults enabled: "
-                            f"LoopForever={loop_forever_effective}, "
-                            f"SongRepeats={song_repeats_effective}, "
-                            f"InFlightSongs={inflight_songs_effective}, "
-                            "Difficulty=All, QueueScope=PendingSongIds.",
-                        )
-                elif not self._robeatsmeta_api.service_defaults_enabled():
-                    logger.info(
-                        "[RoBeatsMeta] Service mode enabled: keeping IterationEngine/CalculateSong config (service defaults disabled).",
-                    )
-
-                # Backend-special behavior: default to headless runtime status via API.
-                # Keep CLI progress disabled unless explicitly requested by env.
-                if "METAFINDER_PROGRESS" not in os.environ:
-                    self._progress_enabled = False
-        except Exception as exc:
-            self._robeatsmeta_api = None
-            logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")
-
     def _run_single_iteration(self):
         memory_guard_restart = False
         memory_resume_tracker = None
@@ -507,7 +430,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return False
 
             cfg = load_config()
-            self._maybe_init_robeatsmeta_api(cfg)
             runtime_settings = self._current_runtime_settings(cfg)
             self._runtime_settings = runtime_settings
             paths = load_paths_cache()
@@ -524,28 +446,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
             init_db()
 
-            # Verify Stats integrity (only on fresh queue, not resume)
-            # This ensures all database entries have properly populated Stats objects.
-            # If issues are detected (missing or empty Stats), the verifier will:
-            # 1. Automatically repair them by recomputing Stats
-            # 2. Display a prominent warning if any issues were found
-            # This prevents frontend/extractors from seeing 0 for elemental stats.
             ignore_resume = truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
-            # StatsVerifier is a heavyweight DB integrity repair pass intended for debugging/one-off recovery,
-            # not a default production startup step. Keep it opt-in.
-            enable_stats_verify = bool(truthy(env_get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
-            skip_stats_verify = bool(truthy(env_get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:
-                if not self._stats_verified_once:
-                    if skip_stats_verify or not enable_stats_verify:
-                        # Treat the skip env var as an explicit override; the default stays off.
-                        self._stats_verified_once = True
-                    else:
-                        self._verify_stats_integrity()
-                        self._stats_verified_once = True
+                self._stats_verified_once = True
 
             # Config reading
             ie = runtime_settings.iteration_engine
@@ -742,33 +648,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
 
-    def _verify_stats_integrity(self):
-        """
-        Verify and repair database Stats integrity on fresh queue startup.
-
-        Performs a FULL scan of all database entries (not sample-based) to ensure
-        no entries with missing/empty Stats slip through. Automatically repairs
-        any issues found and displays a prominent warning.
-        """
-        try:
-            # Full scan of all entries - sample-based checks can miss scattered bad entries
-            logger.info("[StatsVerifier] Full database integrity check...")
-            all_valid, full_stats = verify_and_repair_stats(dry_run=False, verbose=True, sample_size=0)
-
-            if all_valid:
-                logger.info(f"[StatsVerifier] All {full_stats['total']:,} entries have valid Stats")
-            else:
-                # Repairs were made - display prominent warning
-                repaired = full_stats.get("repaired", 0)
-                logger.info(f"[StatsVerifier] Repaired {repaired:,} entries with invalid Stats")
-                if repaired > 100:
-                    # Only show prominent warning if many repairs needed
-                    print_verification_warning(full_stats)
-
-        except Exception as e:
-            logger.error(f"[StatsVerifier] Unexpected error: {e}")
-            logger.warning(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")
-
     def _disable_inputs_to_prevent_taint(self, cfg):
         logger.info(
             " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
@@ -822,62 +701,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _infer_song_difficulty_from_path(root: str) -> str:
         return infer_song_difficulty_from_path(root)
 
-    def _song_index_roots(self) -> list[str]:
-        return song_index_roots(data_root=PATHS.data_dir, script_dir=SCRIPT_DIR)
-
-    def _ensure_song_path_index(self, *, force: bool = False) -> None:
-        roots = tuple(self._song_index_roots())
-        ensure_song_path_index(self, roots=roots, force=force)
-
-    def _build_song_queue_from_pending_ids(
-        self,
-        pending_song_ids: typing.Sequence[str],
-        *,
-        diff_lower: str,
-        filter_search: str,
-        target_primary_all: bool,
-        target_primary_colors: set[str],
-        target_secondary_all: bool,
-        target_secondary_colors: set[str],
-    ) -> tuple[list[tuple[str, str, str]], list[str]]:
-        return build_song_queue_from_pending_ids(
-            self,
-            pending_song_ids,
-            diff_lower=diff_lower,
-            filter_search=filter_search,
-            target_primary_all=target_primary_all,
-            target_primary_colors=target_primary_colors,
-            target_secondary_all=target_secondary_all,
-            target_secondary_colors=target_secondary_colors,
-        )
-
     def _build_song_queue(self, cfg, paths):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
-        backend_service_mode = bool(
-            getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
-        )
-        self._backend_priority_song_names = set()
-
-        def _pending_backend_song_ids() -> list[str]:
-            if not backend_service_mode or not self._optimizer_priority_api_enabled():
-                return []
-            api = self._robeatsmeta_api
-            if api is None:
-                return []
-            try:
-                raw_ids = api.pending_song_ids()
-            except Exception as exc:
-                logging.warning(f"[RoBeatsMeta] Failed to read pending song ids: {type(exc).__name__}: {exc}")
-                return []
-            cleaned: list[str] = []
-            seen: set[str] = set()
-            for value in raw_ids or []:
-                song_id = str(value or "").strip()
-                if not song_id or song_id in seen:
-                    continue
-                seen.add(song_id)
-                cleaned.append(song_id)
-            return cleaned
 
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
@@ -912,10 +737,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         resume_seed_queue: list[tuple[str, str, str]] = []
         resume_names_present: set[str] = set()
         ignore_resume = bool(self._current_runtime_settings(cfg).ignore_resume_queue)
-        if backend_service_mode:
-            # Backend queue order and persistence come from the API bridge state file.
-            # Ignore memory-guard resume files to avoid replaying stale broad queues.
-            ignore_resume = True
         if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
 
@@ -931,119 +752,66 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         for item in resume_seed_queue:
                             (resume_existing if item[1] in resume_names_present else resume_missing).append(item)
                         resume_seed_queue = resume_missing + resume_existing
-                        if backend_service_mode:
-                            self._backend_priority_song_names.update(
-                                str(item[1] or "").strip() for item in resume_missing
-                            )
                 except Exception as exc:
                     logging.warning(
                         f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
                     )
 
-        pending_song_ids = _pending_backend_song_ids()
-        pending_set = set(pending_song_ids)
-        pending_only_mode = bool(
-            backend_service_mode and truthy(env_get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
-        )
         diff = self._current_runtime_settings(cfg).calculate_song.difficulty or "All"
         search_dir = paths.get(diff, SCRIPT_DIR)
-        unresolved_song_ids: list[str] = []
         song_queue: list[tuple[str, str, str]] = []
 
-        if backend_service_mode and pending_set and pending_only_mode:
-            song_queue, unresolved_song_ids = self._build_song_queue_from_pending_ids(
-                pending_song_ids,
-                diff_lower=diff_lower,
-                filter_search=filter_search,
-                target_primary_all=tp_all,
-                target_primary_colors=tp_cols,
-                target_secondary_all=ts_all,
-                target_secondary_colors=ts_cols,
-            )
-            if unresolved_song_ids:
-                now_monotonic = float(time.monotonic())
-                if now_monotonic - float(self._song_path_index_last_force_attempt_monotonic) >= float(
-                    self._song_path_index_force_cooldown_sec
-                ):
-                    self._song_path_index_last_force_attempt_monotonic = now_monotonic
-                    self._ensure_song_path_index(force=True)
-                    song_queue, unresolved_song_ids = self._build_song_queue_from_pending_ids(
-                        pending_song_ids,
-                        diff_lower=diff_lower,
-                        filter_search=filter_search,
-                        target_primary_all=tp_all,
-                        target_primary_colors=tp_cols,
-                        target_secondary_all=ts_all,
-                        target_secondary_colors=ts_cols,
-                    )
-                if unresolved_song_ids:
-                    logging.warning(
-                        "[RoBeatsMeta] Pending song ids not found in song path index: %s",
-                        ", ".join(unresolved_song_ids[:10]),
-                    )
+        seen_paths = set()
+        if diff_lower not in ("easy", "normal", "hard"):
+            data_root = PATHS.data_dir
+            dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
         else:
-            seen_paths = set()
-            if diff_lower not in ("easy", "normal", "hard"):
-                data_root = PATHS.data_dir
-                dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
-            else:
-                dirs_to_search = [search_dir]
+            dirs_to_search = [search_dir]
 
-            for d in dirs_to_search:
-                if not os.path.exists(d):
-                    continue
+        for d in dirs_to_search:
+            if not os.path.exists(d):
+                continue
+            if self._stop_requested_now():
+                break
+            for root, _, files in os.walk(d):
                 if self._stop_requested_now():
                     break
-                for root, _, files in os.walk(d):
+                for f in files:
                     if self._stop_requested_now():
                         break
-                    for f in files:
-                        if self._stop_requested_now():
-                            break
-                        if f.lower().endswith(".txt"):
-                            fp = os.path.join(root, f)
-                            abs_fp = os.path.abspath(fp)
-                            if abs_fp in seen_paths:
-                                continue
+                    if not f.lower().endswith(".txt"):
+                        continue
+                    fp = os.path.join(root, f)
+                    abs_fp = os.path.abspath(fp)
+                    if abs_fp in seen_paths:
+                        continue
 
-                            meta = scan_song_header(fp)
-                            if not meta:
-                                continue
+                    meta = scan_song_header(fp)
+                    if not meta:
+                        continue
 
-                            name = meta["Song Name"]
-                            name_lower = name.lower()
-                            detected_diff = self._infer_song_difficulty_from_path(root)
+                    name = meta["Song Name"]
+                    name_lower = name.lower()
+                    detected_diff = self._infer_song_difficulty_from_path(root)
 
-                            if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
-                                continue
+                    if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
+                        continue
 
-                            primary_color = (meta.get("Primary Color") or "").strip().lower()
-                            secondary_color = (meta.get("Secondary Color") or "").strip().lower()
+                    primary_color = (meta.get("Primary Color") or "").strip().lower()
+                    secondary_color = (meta.get("Secondary Color") or "").strip().lower()
 
-                            if not tp_all and (not primary_color or primary_color not in tp_cols):
-                                continue
-                            if not ts_all and (not secondary_color or secondary_color not in ts_cols):
-                                continue
+                    if not tp_all and (not primary_color or primary_color not in tp_cols):
+                        continue
+                    if not ts_all and (not secondary_color or secondary_color not in ts_cols):
+                        continue
 
-                            if filter_search and filter_search not in name_lower:
-                                continue
+                    if filter_search and filter_search not in name_lower:
+                        continue
 
-                            song_queue.append((fp, name, detected_diff))
-                            seen_paths.add(abs_fp)
-
-        if backend_service_mode:
-            if pending_set:
-                self._backend_priority_song_names.update(pending_song_ids)
-            elif pending_only_mode:
-                song_queue = []
-                try:
-                    logger.info("[Queue] No pending song-id visits; backend service is idle.")
-                except Exception as e:
-                    logger.warning(f"app:_lookup_song_presence: {e}")
+                    song_queue.append((fp, name, detected_diff))
+                    seen_paths.add(abs_fp)
 
         if not song_queue and not resume_seed_queue:
-            if backend_service_mode:
-                return []
             logger.error("Error: No matching songs found.")
             return []
 
@@ -1063,8 +831,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 for item in song_queue:
                     (existing if item[1] in song_names_present_in_db else missing).append(item)
                 song_queue = missing + existing
-                if backend_service_mode:
-                    self._backend_priority_song_names.update(str(item[1] or "").strip() for item in missing)
         except Exception as exc:
             logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
@@ -1129,8 +895,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     logger.info(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
                 except Exception as e:
                     logger.warning(f"app:_queue_sort_key: {e}")
-                if backend_service_mode:
-                    self._backend_priority_song_names.update(str(item[1] or "").strip() for item in new_missing)
 
             merged_queue = list(new_missing) + list(resume_seed_queue)
             song_queue_limit = _read_song_queue_limit()
@@ -1139,11 +903,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 logger.info(
                     f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)"
                 )
-            return self._prioritize_robeatsmeta_song_queue(merged_queue)
+            return merged_queue
 
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
-        song_queue = self._prioritize_robeatsmeta_song_queue(song_queue)
-        song_queue = self._filter_robeatsmeta_recently_computed_song_queue(song_queue)
         if not filter_search:
             return song_queue
 
@@ -1245,18 +1007,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
         used_ga_seeds: set[int] = set()
-        backend_service_mode = bool(
-            getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
-        )
-        backend_priority_song_names = {
-            str(name or "").strip()
-            for name in getattr(self, "_backend_priority_song_names", set())
-            if str(name or "").strip()
-        }
-        priority_repeat_count = max(0, int(getattr(self, "_backend_priority_song_repeat_count", 0) or 0))
-        if priority_repeat_count <= 0:
-            priority_repeat_count = int(song_repeats)
-
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
             # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.
             base = int(ga_seed_base or 0) & 0xFFFFFFFF
@@ -1283,12 +1033,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             }
 
         for fp, found_song_name, task_diff in song_queue:
-            repeats_for_song = (
-                priority_repeat_count
-                if backend_service_mode and str(found_song_name or "").strip() in backend_priority_song_names
-                else song_repeats
-            )
-            if repeats_for_song <= 1:
+            if song_repeats <= 1:
                 logger.info(f"[QUEUE] {found_song_name}")
                 # Production native GA must never fall back to its internal fixed seed.
                 # Attach a one-run context even when SongRepeats=1 so every song has
@@ -1297,14 +1042,14 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
                 continue
 
-            for repeat_index in range(1, repeats_for_song + 1):
+            for repeat_index in range(1, song_repeats + 1):
                 repeat_ctx = _build_repeat_ctx(
                     str(found_song_name),
                     repeat_index=int(repeat_index),
-                    repeat_total=int(repeats_for_song),
+                    repeat_total=int(song_repeats),
                 )
 
-                logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
+                logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
         return tasks
 
@@ -1325,12 +1070,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return truthy(raw)
         if truthy(env_get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
             return True
-        try:
-            api = getattr(self, "_robeatsmeta_api", None)
-            if api is not None and callable(getattr(api, "service_mode_enabled", None)):
-                return bool(api.service_mode_enabled())
-        except (ValueError, TypeError, AttributeError):
-            pass
         return False
 
     @staticmethod
@@ -1398,16 +1137,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
             self._clear_robeatsmeta_runtime_status(status="idle", available=True)
-            api = getattr(self, "_robeatsmeta_api", None)
-            if api is not None:
-                try:
-                    api.flush_runtime_status(timeout=1.0)
-                except Exception as e:
-                    logger.warning(f"app:_cleanup_resources: {e}")
-                try:
-                    api.stop_runtime_status_loop(timeout=1.0)
-                except Exception as e:
-                    logger.warning(f"app:_cleanup_resources: {e}")
             if status_queue:
                 try:
                     status_queue.put(None)

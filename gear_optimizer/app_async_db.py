@@ -10,7 +10,6 @@ from gear_optimizer.core.parsing import env_flag, env_get, truthy
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
     get_evolution_db_path,
-    get_evolution_overlay_db_path,
     get_song_counters,
     save_loadouts_batch,
     update_song_counters,
@@ -65,21 +64,6 @@ def _async_db_strict() -> bool:
     if raw is not None:
         return truthy(raw)
     return env_flag("GPU_STRICT", "1")
-
-
-def _overlay_backend_mode_enabled() -> bool:
-    """
-    Enable overlay DB mirroring only when the optimizer is paired with the backend/live site.
-    """
-    if env_flag("ROBEATSMETA_OVERLAY_DB_ENABLE"):
-        return True
-    try:
-        from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
-
-        return bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
-    except Exception as e:
-        logger.warning(f"app_async_db:_overlay_backend_mode_enabled: {e}")
-        return env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
 
 
 def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
@@ -305,32 +289,11 @@ class AsyncDbSaver:
                     processed_run = bool(meta.get("_processed_run", True))
                     cfg_dict = meta.get("cfg_dict") or {}
                     canonical_db_path = str(get_evolution_db_path() or "").strip()
-                    overlay_db_path = ""
-                    overlay_enabled = False
-                    try:
-                        overlay_enabled = _overlay_backend_mode_enabled()
-                        if overlay_enabled:
-                            overlay_db_path = str(get_evolution_overlay_db_path() or "").strip()
-                            overlay_enabled = bool(overlay_db_path) and overlay_db_path != canonical_db_path
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
-                        overlay_db_path = ""
-                        overlay_enabled = False
 
                     prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(
                         db_key,
                         db_path=canonical_db_path or None,
                     )
-                    if overlay_enabled:
-                        try:
-                            _ov_life, _ov_attempts, _ov_best_score, _ov_best_fg = get_song_counters(
-                                db_key,
-                                db_path=overlay_db_path,
-                            )
-                            prev_best_score = max(int(prev_best_score or 0), int(_ov_best_score or 0))
-                            prev_best_fg = max(int(prev_best_fg or 0), int(_ov_best_fg or 0))
-                        except Exception as e:
-                            logger.warning(f"app_async_db:_loop: {e}")
 
                     run_score = 0
                     run_best_fg = 0
@@ -393,15 +356,14 @@ class AsyncDbSaver:
                     # Timing-envelope runs are deterministic and no longer persist
                     # sampled hit contexts or sampled offset-delta backfills.
 
-                    target_db_path = overlay_db_path if overlay_enabled else canonical_db_path
-                    if entries and target_db_path:
+                    if entries and canonical_db_path:
                         base_team_buff = _resolve_base_team_buff_for_persistence(cfg_dict or {})
                         save_loadouts_batch(
                             db_key,
                             entries,
-                            db_path=target_db_path,
+                            db_path=canonical_db_path,
                             team_buff=base_team_buff,
-                            preserve_attempt_meta=bool(overlay_enabled),
+                            preserve_attempt_meta=False,
                         )
 
                     # Update per-song counters (even if there were no entries to persist).
