@@ -1511,7 +1511,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     Finder-mode FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
-    cpu_t0 = thread_cpu_time_s()
     config = getattr(song, 'config', song)
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -1537,7 +1536,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     if not bool(runtime.fg.fg_direct_ga_candidates):
         try:
             song.runtime.fg.fg_static_prep_done = True
-            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
@@ -1545,7 +1543,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     if getattr(song.runtime.fg, "loadout_entries", None) is not None:
         try:
             song.runtime.fg.fg_static_prep_done = True
-            song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         except AttributeError:
             pass
         return
@@ -1562,7 +1559,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     )
     try:
         song.runtime.fg.fg_static_prep_done = True
-        song.runtime.fg.cpu_fg_static_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except AttributeError:
         pass
 

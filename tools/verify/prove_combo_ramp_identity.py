@@ -267,7 +267,6 @@ def main() -> None:
         if p1["residual_lifts"]:
             print(f"\n  Residual lift examples (fs1 >= 99, shift-gain=0, lift from other mechanisms):")
             for rl in p1["residual_lifts"][:5]:
-                pct = (rl["lift"] * 100.0 / (rl["lift"] + abs(rl["lift"]) + 1)) if False else 0
                 print(f"    fs1={rl['fs1']:<4} nfb={rl['nfb']:<4}  "
                       f"lift=+{rl['lift']:>12,}  FF={rl['ff']}  {rl['song'][:50]}")
 

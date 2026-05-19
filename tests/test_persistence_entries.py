@@ -1,7 +1,6 @@
 from gear_optimizer.persistence.entries import (
     filter_valid_persistence_entries,
     force_score_hint,
-    valid_entry_from_db_payload,
 )
 
 
@@ -32,28 +31,3 @@ def test_filter_valid_persistence_entries_can_accept_fg_or_force_score_hint():
         require_base_score=False,
         accept_force_score_hint=True,
     ) == [fg_entry, force_entry]
-
-
-def test_valid_entry_from_db_payload_preserves_db_payload_save_contract():
-    assert valid_entry_from_db_payload({"score": 0, "fg_score": 999, "gear": ["G"], "minis": []}) is None
-    assert valid_entry_from_db_payload({"score": 10, "gear": [], "minis": []}) is None
-
-    entry = valid_entry_from_db_payload(
-        {
-            "score": 10,
-            "fg_score": 20,
-            "gear": ["G"],
-            "minis": ["M"],
-            "details": {"Stats": {}},
-            "force": {"score": 20},
-        }
-    )
-
-    assert entry == {
-        "score": 10,
-        "fg_score": 20,
-        "gear": ["G"],
-        "minis": ["M"],
-        "details": {"Stats": {}},
-        "force": {"score": 20},
-    }

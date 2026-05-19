@@ -4,7 +4,7 @@ SQLite schema versioning for the evolution database.
 We use `PRAGMA user_version` as the single source of truth for schema state.
 
 Note: This repo intentionally does NOT provide or maintain legacy view-based schemas.
-Consumers should use `gear_optimizer.data.db_manager.EvolutionDbManager` for reads.
+Consumers should use the canonical DB helpers in `gear_optimizer.data.database`.
 """
 
 from __future__ import annotations

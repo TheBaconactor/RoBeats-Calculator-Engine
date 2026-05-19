@@ -57,15 +57,6 @@ from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
-from gear_optimizer.api_integration import (
-    clear_robeatsmeta_runtime_status,
-    filter_robeatsmeta_recently_computed_song_queue,
-    mark_robeatsmeta_song_started,
-    maybe_mark_robeatsmeta_song_batch_computed,
-    optimizer_priority_api_enabled,
-    prioritize_robeatsmeta_song_queue,
-    update_robeatsmeta_runtime_status,
-)
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 from gear_optimizer.song_queue import (
     build_song_queue_from_pending_ids,
@@ -373,29 +364,30 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return False
 
     def _optimizer_priority_api_enabled(self) -> bool:
-        return optimizer_priority_api_enabled(self)
+        return False
 
     def _prioritize_robeatsmeta_song_queue(
         self,
         song_queue: list[tuple[str, str, str]],
     ) -> list[tuple[str, str, str]]:
-        return prioritize_robeatsmeta_song_queue(self, song_queue)
+        return list(song_queue or [])
 
     def _filter_robeatsmeta_recently_computed_song_queue(
         self,
         song_queue: list[tuple[str, str, str]],
     ) -> list[tuple[str, str, str]]:
-        return filter_robeatsmeta_recently_computed_song_queue(self, song_queue)
+        return list(song_queue or [])
 
     def _maybe_mark_robeatsmeta_song_batch_computed(
         self,
         song_name: str | None,
         completed_songs: set[str] | None = None,
     ) -> bool:
-        return maybe_mark_robeatsmeta_song_batch_computed(self, song_name, completed_songs)
+        _ = song_name, completed_songs
+        return False
 
     def _mark_robeatsmeta_song_started(self, song_name: str | None) -> None:
-        mark_robeatsmeta_song_started(self, song_name)
+        _ = song_name
 
     def _update_robeatsmeta_runtime_status(
         self,
@@ -406,17 +398,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         total: int | None = None,
         failed: int | None = None,
     ) -> None:
-        update_robeatsmeta_runtime_status(
-            self,
-            status=status,
-            current_song=current_song,
-            completed=completed,
-            total=total,
-            failed=failed,
-        )
+        _ = status, current_song, completed, total, failed
 
     def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle", available: bool = True) -> None:
-        clear_robeatsmeta_runtime_status(self, status=status, available=available)
+        _ = status, available
 
     def _set_runtime_progress_counts(
         self,

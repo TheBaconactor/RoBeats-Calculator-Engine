@@ -91,11 +91,6 @@ def team_buff_query_values(team_buff: Any, *, default: str = "T5") -> tuple[str,
     return (tier,)
 
 
-def team_buff_display_label(team_buff: Any, *, default: str = "T5") -> str:
-    tier = normalize_team_buff(team_buff, default=default)
-    return "None" if tier == "NONE" else tier
-
-
 def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     """
     Return the raw stat delta applied by TeamBuff for the provided team color.

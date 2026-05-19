@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 import logging
 
 from .utils import safe_int
@@ -60,19 +60,6 @@ GEM_KEYS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True, slots=True)
-class GemTotals:
-    pp: int = 0
-    cm: int = 0
-    fm: int = 0
-    ft: int = 0
-    ff: int = 0
-    element: int = 0
-
-    def as_tuple(self) -> tuple[int, int, int, int, int, int]:
-        return (self.pp, self.cm, self.fm, self.ft, self.ff, self.element)
-
-
-@dataclass(frozen=True, slots=True)
 class UserGemsSettings:
     fever_time: int = 0
     fever_fill: int = 0
@@ -123,36 +110,6 @@ class UserGemsSettings:
             "static_elem_input": int(self.static_element),
             "selected_color": str(self.selected_color or ""),
         }
-
-
-def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
-    for key in keys:
-        if key not in mapping:
-            continue
-        try:
-            return int(mapping.get(key) or 0)
-        except Exception as e:
-            logger.debug(f"gem_defs:_read_first_int: {e}")
-            return 0
-    return 0
-
-
-def extract_gem_totals(details: Mapping[str, Any] | None) -> GemTotals:
-    src = details if isinstance(details, Mapping) else {}
-    gem_counts = src.get("GemCounts")
-    if not isinstance(gem_counts, Mapping):
-        gem_counts = {}
-
-    return GemTotals(
-        pp=_read_first_int(gem_counts, GemKey.PP.value, "PP"),
-        cm=_read_first_int(gem_counts, GemKey.CM.value, "CM"),
-        fm=_read_first_int(gem_counts, GemKey.FM.value, "FM"),
-        ft=_read_first_int(src, "FT", GemKey.FT.value, "FeverGems")
-        or _read_first_int(gem_counts, GemKey.FT.value, "FT", "FeverGems"),
-        ff=_read_first_int(src, "FF", GemKey.FF.value, "FeverFillGems")
-        or _read_first_int(gem_counts, GemKey.FF.value, "FF", "FeverFillGems"),
-        element=_read_first_int(gem_counts, GemKey.ELEMENT.value, "OV", "Overflow"),
-    )
 
 
 def build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:

@@ -1,9 +1,5 @@
 import numpy as np
 
-from gear_optimizer.solver.fg_exact_dp import (
-    count_force_greats_baseline_windows_from_prepared,
-    prepare_force_greats_exact_dp_inputs,
-)
 from gear_optimizer.solver.timing_envelope import (
     apply_timing_envelope,
     count_timeline_analysis_windows,
@@ -67,31 +63,6 @@ def test_timing_envelope_attaches_fg_stream_without_legacy_hitsim_metadata() -> 
     assert np.array_equal(song_data["fg_timestamps"], song_data["chart_timestamps"])
     assert song_data["fg_great_candidate_timestamps"].shape == song_data["chart_timestamps"].shape
     assert bool(np.all(song_data["fg_great_candidate_timestamps"] >= song_data["fg_timestamps"]))
-
-
-def test_fg_exact_dp_reuses_shared_timeline_window_analysis() -> None:
-    calc_song = _calc_song()
-    apply_timing_envelope(calc_song)
-    stats = {
-        "Perfect Points": 5,
-        "Combo Multiplier": 5,
-        "Fever Multiplier": 5,
-        "Fever Fill Rate": 5,
-        "Fever Time": 5,
-        "Rush": 1000,
-        "Flow": 500,
-    }
-
-    timeline = prepare_timeline_analysis_inputs(stats=stats, calc_song=calc_song, ref_arrays=_ref_arrays(), mode="fg")
-    prepared = prepare_force_greats_exact_dp_inputs(stats=stats, calc_song=calc_song, ref_arrays=_ref_arrays())
-
-    assert prepared is not None
-    assert timeline is not None
-    assert prepared.timeline_analysis.total_notes == timeline.total_notes
-    assert prepared.timeline_analysis.non_fever_base == timeline.non_fever_base
-    assert prepared.timeline_analysis.ft_idx == timeline.ft_idx
-    assert np.array_equal(prepared.timeline_analysis.timestamps, timeline.timestamps)
-    assert count_force_greats_baseline_windows_from_prepared(prepared) == count_timeline_analysis_windows(timeline)
 
 
 def test_timeline_window_counter_matches_prepared_analysis_for_resolved_stats() -> None:

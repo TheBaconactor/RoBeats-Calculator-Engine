@@ -24,52 +24,6 @@ def _fp_cap_from_forced(scorer, ft_stat: int, ff_stat: int, forced_cap: int) -> 
     return int(max(0, notes_to_fill - base_notes))
 
 
-def vectorized_calculate_section_caps_grid(gap_grid, activations_grid, max_per_section=100):
-    """
-    VECTORIZED: Compute pair_caps_grid (161, 161, 16) from gap and activations grids.
-
-    This replaces the 26K-iteration Python loop with NumPy broadcasting,
-    achieving ~100x speedup.
-
-    Args:
-        gap_grid: (161, 161) int array of gap values
-        activations_grid: (161, 161) int array of fever activations
-        max_per_section: Max notes per section (usually non_fever_base or 100)
-
-    Returns:
-        (161, 161, 16) int32 array of caps per section
-    """
-    import numpy as np
-
-    grid_h, grid_w = gap_grid.shape
-    n_sections = 16
-
-    # Hard caps per section (broadcast-ready)
-    hard_caps = np.array(MAX_SECTION_CAPS[:n_sections], dtype=np.int32)
-
-    # Initialize output: (H, W, 16)
-    pair_caps = np.zeros((grid_h, grid_w, n_sections), dtype=np.int32)
-
-    # For each section, compute cap as min(hard_cap, max_per_section)
-    # NOTE: Previously also capped by gap_grid, but this caused regressions
-    # (e.g., NonFever1=15 was skipped when gap was small at most FT/FF pairs).
-    # The analytic breakpoint collector already handles timeline-change detection,
-    # so we don't need to double-cap here.
-    for sec in range(n_sections):
-        hard_cap = int(hard_caps[sec])
-
-        # Base cap: min(hard_cap, max_per_section) - no gap capping
-        base_cap = min(hard_cap, max_per_section)
-
-        # Zero out where section >= activations
-        # activations_grid[i,j] = number of fever windows
-        # Section sec is valid only if sec < activations
-        mask = sec < activations_grid
-        pair_caps[:, :, sec] = np.where(mask, base_cap, 0)
-
-    return pair_caps
-
-
 def _clamp_stat_idx(x: Any) -> int:
     try:
         v = int(x)

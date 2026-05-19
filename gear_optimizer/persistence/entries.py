@@ -63,23 +63,3 @@ def filter_valid_persistence_entries(
             accept_force_score_hint=bool(accept_force_score_hint),
         )
     ]
-
-
-def entry_from_db_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "score": payload.get("score", 0),
-        "fg_score": payload.get("fg_score", 0),
-        "gear": payload.get("gear", []),
-        "minis": payload.get("minis", []),
-        "details": payload.get("details", {}),
-        "force": payload.get("force"),
-    }
-
-
-def valid_entry_from_db_payload(payload: Any) -> dict[str, Any] | None:
-    if not isinstance(payload, dict):
-        return None
-    entry = entry_from_db_payload(payload)
-    if not is_valid_persistence_entry(entry, require_base_score=True):
-        return None
-    return entry

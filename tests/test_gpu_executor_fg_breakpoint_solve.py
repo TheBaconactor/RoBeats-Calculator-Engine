@@ -196,7 +196,7 @@ def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypat
         "maybe_precompute_fg_breakpoint_timeline",
         lambda payload, precompute_timeline_fn: calls.append("precompute"),
     )
-    monkeypatch.setattr(solve_mod, "build_fg_breakpoint_tasks", lambda prepared_arg, compute_max_fp_matrix_fn: task_plan)
+    monkeypatch.setattr(solve_mod, "build_fg_breakpoint_tasks", lambda _prepared, compute_max_fp_matrix_fn: task_plan)
     monkeypatch.setattr(
         solve_mod,
         "prepare_fg_breakpoint_solve_submission",
