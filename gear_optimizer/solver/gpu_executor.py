@@ -85,7 +85,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     stage_request as _stage_request,
     staged_ga_recovery_index as _staged_ga_recovery_index,
     stamp_request_dequeue as _stamp_request_dequeue,
-    acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
     build_warmup_sentinel_payload as _build_warmup_sentinel_payload,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
@@ -94,14 +93,17 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     load_executor_start_settings as _load_executor_start_settings,
     load_executor_stop_profiler_settings as _load_executor_stop_profiler_settings,
     print_taichi_kernel_profiler as _print_taichi_kernel_profiler,
-    release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
     report_gpu_profiler as _report_gpu_profiler,
     send_shutdown_request as _send_shutdown_request,
     stop_executor_if_running as _stop_executor_if_running,
-    system_timer_override_allowed as _system_timer_override_allowed,
     warmup_sentinel_path as _warmup_sentinel_path,
     warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
     write_warmup_sentinel_payload as _write_warmup_sentinel_payload,
+)
+from gear_optimizer.solver.windows_timer import (
+    acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
+    release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
+    system_timer_override_allowed as _system_timer_override_allowed,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     worker_response_router as _worker_response_router,

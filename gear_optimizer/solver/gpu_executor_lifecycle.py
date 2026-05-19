@@ -20,8 +20,6 @@ from gear_optimizer.solver.gpu_executor_types import build_shutdown_request
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 from gear_optimizer.solver.windows_timer import (
-    acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms_shared,
-    release_windows_timer_period_1ms as _release_windows_timer_period_1ms_shared,
     system_timer_override_allowed as _system_timer_override_allowed_shared,
 )
 
@@ -90,7 +88,7 @@ def load_executor_start_settings(
 
     enable_high_res_timer = False
     if system_timer_override_allowed_fn is None:
-        system_timer_override_allowed_fn = system_timer_override_allowed
+        system_timer_override_allowed_fn = _system_timer_override_allowed_shared
     if bool(in_process) and str(os_name) == "nt" and bool(system_timer_override_allowed_fn()):
         try:
             raw_wait = env_get_fn("GPU_EXECUTOR_BATCH_WAIT_MS")
@@ -326,21 +324,6 @@ def warmup_sentinel_is_fresh(
     if str(payload.get("ga_warmup_profile", "") or "") != GA_WARMUP_PROFILE:
         return False
     return True
-
-
-def system_timer_override_allowed() -> bool:
-    # Wrapper kept for monkeypatch-based tests through gpu_executor imports.
-    return bool(_system_timer_override_allowed_shared())
-
-
-def acquire_windows_timer_period_1ms() -> bool:
-    # Wrapper kept for monkeypatch-based tests through gpu_executor imports.
-    return bool(_acquire_windows_timer_period_1ms_shared())
-
-
-def release_windows_timer_period_1ms() -> None:
-    # Wrapper kept for monkeypatch-based tests through gpu_executor imports.
-    _release_windows_timer_period_1ms_shared()
 
 
 def print_taichi_kernel_profiler(
