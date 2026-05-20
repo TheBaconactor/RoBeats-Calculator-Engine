@@ -248,8 +248,8 @@ def test_fg_counts_max_fp_implicit_matches_explicit_counts_list(
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps(monkeypatch: pytest.MonkeyPatch):
     """
-    The exact timeline-signature reducer is deliberately GPU-side and opt-in.
-    This guards the proof without making production pay for it by default.
+    The exact timeline-signature reducer must preserve the winner and compact
+    live representatives so Stage 1 cannot score dominated/dead surfaces.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
@@ -296,7 +296,7 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps(monkeypatch
     old_min_cfg = fg_api._FG_GPU_CONFIG_DEDUPE_MIN_CFG
     try:
         fg_api._FG_GPU_CONFIG_DEDUPE = False
-        fg_api._FG_GPU_CONFIG_DEDUPE_MIN_CFG = 1
+        fg_api._FG_GPU_CONFIG_DEDUPE_MIN_CFG = cfg_len + 1
         fg_api.fg_reset_global_best(n_genomes)
         fg_api.solve_force_greats_finder_gpu_tasks(
             genome_stats_arr,
@@ -313,8 +313,9 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps(monkeypatch
         )
         baseline = fg_api.fg_download_global_best(n_genomes)
 
-        fg_api._FG_GPU_CONFIG_DEDUPE = True
         fg_api.fg_reset_global_best(n_genomes)
+        fg_api._FG_GPU_CONFIG_DEDUPE = True
+        fg_api._FG_GPU_CONFIG_DEDUPE_MIN_CFG = 1
         fg_api.solve_force_greats_finder_gpu_tasks(
             genome_stats_arr,
             timestamps,
@@ -332,12 +333,22 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps(monkeypatch
 
         rep_count = int(fg_fields.fg_cfg_dedupe_rep_count.to_numpy()[0])
         active = int(fg_fields.fg_cfg_dedupe_active.to_numpy()[0])
+        dedupe_slots = 1
+        while dedupe_slots < cfg_len and dedupe_slots < int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
+            dedupe_slots *= 2
+        dedupe_slots = max(1, min(int(dedupe_slots), int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)))
+        rep_idx = fg_fields.fg_cfg_dedupe_rep_cfg_idx.to_numpy()[0, :dedupe_slots]
+        rep_hash = fg_fields.fg_cfg_dedupe_hash.to_numpy()[0, :dedupe_slots]
     finally:
         fg_api._FG_GPU_CONFIG_DEDUPE = old_enabled
         fg_api._FG_GPU_CONFIG_DEDUPE_MIN_CFG = old_min_cfg
 
     assert active == 1
     assert 0 < rep_count < cfg_len
+    assert np.all(rep_idx[:rep_count] >= 0)
+    assert np.all(rep_idx[rep_count:] == -1)
+    assert int(np.count_nonzero(rep_hash[:rep_count])) == rep_count
+    assert int(np.count_nonzero(rep_hash[rep_count:])) == 0
     assert set(baseline.keys()) == set(deduped.keys())
     for k in baseline:
         a = baseline[k]

@@ -38,7 +38,6 @@ from gear_optimizer.solver.gpu_executor_batching import (
     execute_request_from_dispatch as _execute_request_from_dispatch,
     plan_execution_units as _plan_execution_units,
 )
-from gear_optimizer.solver import gpu_executor_lifecycle as _static_handles
 from gear_optimizer.solver.gpu_executor_types import (
     GpuRequest,
     GpuRequestType,
@@ -99,19 +98,13 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     worker_response_router as _worker_response_router,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    default_song_slot_for_worker as _default_song_slot_for_worker,
     register_executor_worker as _register_executor_worker,
     unregister_executor_worker as _unregister_executor_worker,
     worker_mode_state as _worker_state,
 )
-from gear_optimizer.solver.gpu_executor_registry import (
-    RegistryPayloadCache,
-    build_registry_solve_request_payload as _build_registry_solve_request_payload,
+from gear_optimizer.solver.gpu_executor_refs import (
     execute_load_refs as _execute_load_refs,
-    expected_registry_result_count as _expected_registry_result_count,
-    load_registry_payload_cache_settings as _load_registry_payload_cache_settings,
     ref_arrays_sig as _ref_arrays_sig,
-    should_retry_unknown_registry_handle as _should_retry_unknown_registry_handle,
 )
 from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter
 from gear_optimizer.solver.gpu_executor_fg import (
@@ -153,13 +146,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     poll_inprocess_followup_nowait as _poll_inprocess_followup_nowait,
     safe_qsize as _safe_qsize,
 )
-from gear_optimizer.solver.gpu_executor_registry import (
-    execute_solve_genomes_from_registry as _execute_solve_genomes_from_registry,
-    handle_solve_genomes_from_registry as _handle_solve_genomes_from_registry,
-)
-from gear_optimizer.solver.gpu_executor_registry import (
-    coalesce_solve_genomes_from_registry as _coalesce_solve_genomes_from_registry,
-)
 from gear_optimizer.solver.gpu_executor_profile import (
     build_exec_breakdown_summary as _build_exec_breakdown_summary,
     build_executor_idle_summary as _build_executor_idle_summary,
@@ -195,12 +181,10 @@ def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
     _worker_response_router.reset()
     _worker_state.clear()
-    _static_handles.clear_registry_static_handle_cache()
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
     """Configure this process as a GPU worker (called after fork/spawn)."""
     _worker_response_router.restart()
     _worker_state.configure(worker_id, request_queue, response_queue)
-    _static_handles.clear_registry_static_handle_cache()
 class GpuExecutor:
     """
     Single GPU owner process that handles all Taichi kernel execution.
@@ -243,9 +227,6 @@ class GpuExecutor:
         self._staged_requests: deque[GpuRequest] = deque()
         self._ga_owner_turn_streak = 0
         self._last_ref_arrays_sig: bytes | None = None
-        registry_payload_cache_settings = _load_registry_payload_cache_settings(env_get_fn=_ENV_GET)
-        self._registry_payloads = RegistryPayloadCache(max_entries=registry_payload_cache_settings.max_entries)
-        self._registry_coalesce_staging: Any | None = None
         self._requests_processed = 0
         self._response_delivery = ResponseDeliveryTracker()
         from gear_optimizer.core.env_config import ENV
@@ -320,7 +301,6 @@ class GpuExecutor:
         self._short_wait_spin_sec = short_wait_settings.short_wait_spin_sec
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
-            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
@@ -452,8 +432,6 @@ class GpuExecutor:
         )
         self._workload_profile_last_emit_ts = result.last_emit_ts
         self._workload_events_emitted = int(result.events_emitted)
-    def _handle_solve_genomes_from_registry(self, request: GpuRequest) -> GpuResponse:
-        return _handle_solve_genomes_from_registry(request, execute_fn=self._execute_solve_genomes_from_registry)
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
         return _execute_request_from_dispatch(request, dispatch=self._dispatch)
@@ -529,8 +507,6 @@ class GpuExecutor:
         self._ready_event.clear()
         self.clear_abort()
         self._last_ref_arrays_sig = None
-        self._registry_coalesce_staging: Any | None = None
-        self._registry_payloads.clear()
         self._live.configure(
             enabled=bool(start_settings.live_enabled),
             interval_sec=float(start_settings.live_interval_sec),
@@ -987,7 +963,6 @@ class GpuExecutor:
                         self._coalesce_fg_solve_with_breakpoints_batch_requests
                     ),
                     GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_ga_fg_fused_requests,
-                    GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._coalesce_solve_genomes_from_registry,
                 }
                 def _execute_grouped_requests(
                     request_type: GpuRequestType, requests: list[GpuRequest], handler
@@ -1274,9 +1249,6 @@ class GpuExecutor:
             except queue.Empty:
                 break  # No more pending requests
         return batch
-    def _resolve_registry_payload(self, request: "GpuRequest") -> tuple[dict[str, Any], str | None]:
-        payload = _payload_dict(request)
-        return self._registry_payloads.resolve(request, payload)
     def _coalesce_fg_task_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
         Coalesce multiple SOLVE_FORCE_GREATS_FINDER requests into a single GPU call when they are task-only.
@@ -1331,63 +1303,6 @@ class GpuExecutor:
             coalesce_fg_breakpoint_batch=self._coalesce_fg_solve_with_breakpoints_batch_requests,
             warn_fallback_fn=warn_fallback,
         )
-    def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
-        """
-        Coalesce multiple SOLVE_GENOMES_FROM_REGISTRY requests by concatenating small population batches.
-        This is conservative and only merges requests with semantically identical per-song inputs.
-        Object identity checks are not reliable across IPC boundaries, so request equivalence must be
-        decided by value equality for arrays/dicts plus exact scalar flag equality.
-        """
-        from .taichi_gem.api import (
-            ga_upload_base_fixed_stats,
-            ga_upload_item_stats,
-            load_ref_arrays,
-            solve_genomes_from_registry,
-        )
-        from .taichi_gem import fields as gem_fields
-        result = _coalesce_solve_genomes_from_registry(
-            requests,
-            payload_dict_fn=_payload_dict,
-            resolve_payload_fn=self._resolve_registry_payload,
-            execute_request_fn=self._execute_request,
-            ref_arrays_sig_fn=_ref_arrays_sig,
-            last_ref_arrays_sig=self._last_ref_arrays_sig,
-            registry_coalesce_staging=self._registry_coalesce_staging,
-            max_genomes=int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096),
-            load_ref_arrays_fn=load_ref_arrays,
-            ga_upload_item_stats_fn=ga_upload_item_stats,
-            ga_upload_base_fixed_stats_fn=ga_upload_base_fixed_stats,
-            solve_genomes_from_registry_fn=solve_genomes_from_registry,
-            record_pack_fn=self._record_pack,
-            warn_fallback_fn=warn_fallback,
-            perf_counter_fn=perf_counter,
-        )
-        self._last_ref_arrays_sig = result.last_ref_arrays_sig
-        self._registry_coalesce_staging = result.staging_buffer
-        return result.responses
-    def _execute_solve_genomes_from_registry(self, request: GpuRequest, song_slot: int = 0) -> GpuResponse:
-        """Execute solve_genomes_from_registry on GPU (GPU-resident stat aggregation path)."""
-        from .taichi_gem.api import (
-            ga_upload_base_fixed_stats,
-            ga_upload_item_stats,
-            load_ref_arrays,
-            solve_genomes_from_registry,
-        )
-        result = _execute_solve_genomes_from_registry(
-            request,
-            song_slot=int(song_slot),
-            in_process_queues=bool(self._in_process_queues),
-            last_ref_arrays_sig=self._last_ref_arrays_sig,
-            resolve_payload_fn=self._resolve_registry_payload,
-            ref_arrays_sig_fn=_ref_arrays_sig,
-            default_song_slot_for_worker_fn=_default_song_slot_for_worker,
-            load_ref_arrays_fn=load_ref_arrays,
-            ga_upload_item_stats_fn=ga_upload_item_stats,
-            ga_upload_base_fixed_stats_fn=ga_upload_base_fixed_stats,
-            solve_genomes_from_registry_fn=solve_genomes_from_registry,
-        )
-        self._last_ref_arrays_sig = result.last_ref_arrays_sig
-        return result.response
     def _execute_solve_force_greats_finder(self, request: GpuRequest) -> GpuResponse:
         """Execute solve_force_greats_finder_gpu on GPU."""
         from .taichi_gem.force_greats.api import (
@@ -1621,108 +1536,3 @@ def _auto_stop_gpu_executor_at_exit() -> None:
     except Exception as e:
         logger.debug(f"gpu_executor:_auto_stop_gpu_executor_at_exit: {e}")
 atexit.register(_auto_stop_gpu_executor_at_exit)
-def submit_gpu_solve_genomes_from_registry(
-    population_indices,
-    item_stats,
-    slot_start,
-    slot_count,
-    base_fixed_stats,
-    timeline_grid,
-    is_p_ft: int,
-    is_s_ft: int,
-    is_p_ff: int,
-    is_s_ff: int,
-    is_p_pp: int,
-    is_s_pp: int,
-    is_p_cm: int,
-    is_s_cm: int,
-    is_p_fm: int,
-    is_s_fm: int,
-    is_p_ov: int,
-    is_s_ov: int,
-    ref_arrays: dict,
-    total_budget: int = 90,
-    gem_scale_fever: int = 3,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-    timeout: float = 60.0,
-) -> list:
-    """
-    Submit solve_genomes_from_registry request via IPC (for worker processes).
-    This uses the GPU-resident stat aggregation path and avoids uploading large
-    work-item buffers for FT/FF permutations.
-    """
-    if not _worker_state.enabled:
-        raise RuntimeError("submit_gpu_solve_genomes_from_registry called but not in worker mode")
-    entry = _static_handles.registry_static_handle_entry(
-        item_stats=item_stats,
-        slot_start=slot_start,
-        slot_count=slot_count,
-        base_fixed_stats=base_fixed_stats,
-        timeline_grid=timeline_grid,
-        ref_arrays=ref_arrays,
-    )
-    handle = int(entry.get("handle", 0) or 0)
-    if handle <= 0:
-        raise RuntimeError("Failed to allocate registry payload handle")
-    base_payload: dict[str, Any] = {
-        "population_indices": population_indices,
-        "is_p_ft": int(is_p_ft),
-        "is_s_ft": int(is_s_ft),
-        "is_p_ff": int(is_p_ff),
-        "is_s_ff": int(is_s_ff),
-        "is_p_pp": int(is_p_pp),
-        "is_s_pp": int(is_s_pp),
-        "is_p_cm": int(is_p_cm),
-        "is_s_cm": int(is_s_cm),
-        "is_p_fm": int(is_p_fm),
-        "is_s_fm": int(is_s_fm),
-        "is_p_ov": int(is_p_ov),
-        "is_s_ov": int(is_s_ov),
-        "total_budget": int(total_budget),
-        "gem_scale_fever": int(gem_scale_fever),
-        "song_slot": int(song_slot),
-        "use_exact_inner_solver": int(bool(use_exact_inner_solver)),
-    }
-    static_payload = {
-        "item_stats": item_stats,
-        "slot_start": slot_start,
-        "slot_count": slot_count,
-        "base_fixed_stats": base_fixed_stats,
-        "timeline_grid": entry.get("timeline_grid_send", timeline_grid),
-        "ref_arrays": ref_arrays,
-    }
-    def _build_payload(*, inline_static: bool) -> dict[str, Any]:
-        return _build_registry_solve_request_payload(
-            base_payload,
-            entry,
-            inline_static=bool(inline_static),
-            static_payload=static_payload,
-        )
-    def _submit_once(payload: dict[str, Any]) -> GpuResponse:
-        nonlocal timeout
-        request_id = _worker_state.next_request_id()
-        request = GpuRequest(
-            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-            request_id=request_id,
-            worker_id=_worker_state.worker_id,
-            payload=payload,
-            submit_perf_ns=time.perf_counter_ns(),
-        )
-        label = str(_worker_state.worker_id) if _worker_state.worker_id is not None else "?"
-        _worker_response_router.ensure_started(lambda: _worker_state.response_queue, label=label)
-        _worker_state.require_request_queue().put(request)
-        return _worker_response_router.wait(request_id, timeout)
-    inline_static = not bool(entry.get("registered", False))
-    response = _submit_once(_build_payload(inline_static=inline_static))
-    if _should_retry_unknown_registry_handle(response, inline_static=inline_static):
-        entry["registered"] = False
-        response = _submit_once(_build_payload(inline_static=True))
-    if not response.success:
-        raise RuntimeError(f"GPU executor error: {response.error}")
-    entry["registered"] = True
-    result = response.result
-    n_expected = _expected_registry_result_count(population_indices)
-    if isinstance(result, list) and n_expected and len(result) != n_expected:
-        raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
-    return result

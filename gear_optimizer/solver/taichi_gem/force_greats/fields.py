@@ -76,7 +76,7 @@ fg_cfg_dedupe_hash: ti.Field | None = None  # (FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_
 fg_cfg_dedupe_sig: ti.Field | None = None  # vector[FG_CFG_DEDUPE_SIG_WORDS] per representative
 fg_cfg_dedupe_rep_cfg_idx: ti.Field | None = None  # original global cfg_idx per representative
 fg_cfg_dedupe_rep_count: ti.Field | None = None  # representatives per local work item
-fg_cfg_dedupe_active: ti.Field | None = None  # 1=use representatives, 0=fallback to full configs
+fg_cfg_dedupe_active: ti.Field | None = None  # 1=representative table valid, 0=dedupe overflow/invalid
 fg_best_final_score: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_cfg_idx: ti.Field | None = None  # (MAX_GENOMES,) i32

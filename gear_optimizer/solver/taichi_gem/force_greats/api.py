@@ -1581,11 +1581,11 @@ def solve_force_greats_finder_gpu_tasks(
                 dedupe_slots *= 2
             dedupe_slots = max(1, min(int(dedupe_slots), int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)))
         cfg_span_for_bands = int(max_cfg_len_chunk)
-        if use_stage1_cfg_dedupe:
-            cfg_span_for_bands = max(int(cfg_span_for_bands), int(dedupe_slots))
         n_bands = (int(cfg_span_for_bands) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
+        stage1_band_count = int(n_bands)
         t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
         if use_stage1_cfg_dedupe:
+            stage1_band_count = 0
             work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
             for work_offset in range(0, int(n_work_items), int(work_chunk)):
                 local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
@@ -1604,9 +1604,22 @@ def solve_force_greats_finder_gpu_tasks(
                     int(song_slot),
                     int(1 if pair_caps_from_timeline else 0),
                 )
-                for band_idx in range(n_bands):
+                active_rows = fg_fields.fg_cfg_dedupe_active.to_numpy()[: int(local_work_items)]
+                if np.any(active_rows != 1):
+                    raise RuntimeError(
+                        "FG config surface dedupe exceeded its exact representative table; "
+                        "increase FG_CFG_DEDUPE_MAX_REPS or reduce the FG config span."
+                    )
+                rep_counts = fg_fields.fg_cfg_dedupe_rep_count.to_numpy()[: int(local_work_items)]
+                dedupe_live_span = int(np.max(rep_counts)) if int(local_work_items) > 0 else 0
+                if dedupe_live_span <= 0:
+                    raise RuntimeError("FG config surface dedupe produced no live exact representatives.")
+
+                n_dedupe_bands = (int(dedupe_live_span) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
+                stage1_band_count += int(n_dedupe_bands)
+                for band_idx in range(n_dedupe_bands):
                     band_start = int(band_idx) * int(cfg_chunk_run)
-                    band_len = min(int(cfg_chunk_run), int(cfg_span_for_bands) - int(band_start))
+                    band_len = min(int(cfg_chunk_run), int(dedupe_live_span) - int(band_start))
                     if band_len <= 0:
                         continue
                     is_first_chunk = int(1 if int(band_idx) == 0 else 0)
@@ -1616,7 +1629,7 @@ def solve_force_greats_finder_gpu_tasks(
                         bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
                         int(work_offset),
                         int(1),
-                        int(dedupe_slots),
+                        int(dedupe_live_span),
                         int(local_work_items),
                         int(band_len),
                         int(-1),
@@ -1716,7 +1729,7 @@ def solve_force_greats_finder_gpu_tasks(
                 try:
                     print(
                         f"[PERF] FG packed tasks: stage1_sync_wall={stage1_wall * 1000:.1f}ms "
-                        f"(genomes={n_genomes} ftff={n_ftff} cfg_max={max_cfg_len_chunk} bands={n_bands})"
+                        f"(genomes={n_genomes} ftff={n_ftff} cfg_max={max_cfg_len_chunk} bands={stage1_band_count})"
                     )
                 except Exception as e:
                     logger.debug(f"api:_flush_chunk: {e}")

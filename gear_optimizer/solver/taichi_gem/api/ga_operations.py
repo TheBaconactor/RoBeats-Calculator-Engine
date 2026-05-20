@@ -9,7 +9,7 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 - ga_set_scores: Manually set scores for custom evaluation
 - ga_next_generation: Tournament selection + crossover + mutation + elitism
 - ga_download_*: Download results from GPU
-These functions are called from gpu_executor.py, parallel_solvers.py, warmup paths,
+These functions are called from gpu_executor.py, warmup paths,
 and tests.
 """
 from __future__ import annotations

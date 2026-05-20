@@ -455,6 +455,26 @@ def _fg_signature_hash(sig: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32)) ->
         h = ti.u64(1)
     return h
 @ti.func
+def _fg_dedupe_compact_live(local_work_idx: ti.i32, dedupe_slots: ti.i32) -> ti.i32:
+    write_idx: ti.i32 = 0
+    for read_idx in range(dedupe_slots):
+        h_live = fg_cfg_dedupe_hash[local_work_idx, read_idx]
+        if h_live != ti.u64(0):
+            rep_live = fg_cfg_dedupe_rep_cfg_idx[local_work_idx, read_idx]
+            sig_live = fg_cfg_dedupe_sig[local_work_idx, read_idx]
+            if write_idx != read_idx:
+                fg_cfg_dedupe_hash[local_work_idx, write_idx] = h_live
+                fg_cfg_dedupe_sig[local_work_idx, write_idx] = sig_live
+                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, write_idx] = rep_live
+                fg_cfg_dedupe_hash[local_work_idx, read_idx] = ti.u64(0)
+                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, read_idx] = -1
+            write_idx += 1
+    for clear_idx in range(dedupe_slots):
+        if clear_idx >= write_idx:
+            fg_cfg_dedupe_hash[local_work_idx, clear_idx] = ti.u64(0)
+            fg_cfg_dedupe_rep_cfg_idx[local_work_idx, clear_idx] = -1
+    return write_idx
+@ti.func
 def _fg_sig_is_dominated(
     sig_a: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
     sig_b: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
@@ -940,24 +960,34 @@ def fg_cfg_dedupe_build_kernel(
                     active = 0
                     rep_count = 0
                 cfg_local += 1
-        if rep_count > 1 and active != 0:
+        if active == 0:
             for i in range(dedupe_slots):
+                fg_cfg_dedupe_hash[local_work_idx, i] = ti.u64(0)
+                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, i] = -1
+        if active != 0:
+            rep_count = _fg_dedupe_compact_live(local_work_idx, dedupe_slots)
+        if rep_count > 1 and active != 0:
+            i: ti.i32 = 0
+            while i < rep_count:
                 hash_i = fg_cfg_dedupe_hash[local_work_idx, i]
-                if hash_i == ti.u64(0):
-                    continue
-                for j in range(i + 1, dedupe_slots):
-                    hash_j = fg_cfg_dedupe_hash[local_work_idx, j]
-                    if hash_j == ti.u64(0):
-                        continue
-                    sig_i = fg_cfg_dedupe_sig[local_work_idx, i]
-                    sig_j = fg_cfg_dedupe_sig[local_work_idx, j]
-                    if _fg_sig_is_dominated(sig_i, sig_j) != 0:
-                        fg_cfg_dedupe_hash[local_work_idx, j] = ti.u64(0)
-                        rep_count -= 1
-                    elif _fg_sig_is_dominated(sig_j, sig_i) != 0:
-                        fg_cfg_dedupe_hash[local_work_idx, i] = ti.u64(0)
-                        rep_count -= 1
-                        break
+                if hash_i != ti.u64(0):
+                    j: ti.i32 = i + 1
+                    while j < rep_count:
+                        hash_j = fg_cfg_dedupe_hash[local_work_idx, j]
+                        if hash_j != ti.u64(0):
+                            sig_i = fg_cfg_dedupe_sig[local_work_idx, i]
+                            sig_j = fg_cfg_dedupe_sig[local_work_idx, j]
+                            if _fg_sig_is_dominated(sig_i, sig_j) != 0:
+                                fg_cfg_dedupe_hash[local_work_idx, j] = ti.u64(0)
+                                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, j] = -1
+                            elif _fg_sig_is_dominated(sig_j, sig_i) != 0:
+                                fg_cfg_dedupe_hash[local_work_idx, i] = ti.u64(0)
+                                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, i] = -1
+                                break
+                        j += 1
+                i += 1
+        if active != 0:
+            rep_count = _fg_dedupe_compact_live(local_work_idx, dedupe_slots)
         fg_cfg_dedupe_rep_count[local_work_idx] = rep_count
         fg_cfg_dedupe_active[local_work_idx] = active
 @ti.kernel
@@ -1269,7 +1299,7 @@ def fg_stage1_waves_kernel(
                 else:
                     band_start: ti.i32 = cfg_read_offset
                     total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
-                    if dedupe_active != 0:
+                    if use_cfg_dedupe != 0:
                         total_len = cfg_dedupe_slots
                     remaining: ti.i32 = total_len - band_start
                     if remaining <= 0:
@@ -1278,6 +1308,8 @@ def fg_stage1_waves_kernel(
                         cfg_len = ti.min(remaining, n_cfg)
                     cfg_global_base = cfg_base + band_start
                     cfg_read_base = cfg_global_base
+            if use_cfg_dedupe != 0 and dedupe_active == 0:
+                cfg_len = 0
             base_stats = kernels_helpers.genome_base_stats[g]
             base_pp: ti.i32 = base_stats[0]
             base_cm: ti.i32 = base_stats[1]
@@ -1303,7 +1335,7 @@ def fg_stage1_waves_kernel(
             owner_max_fp16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
             owner_max_fp4 = ti.Vector.zero(ti.i32, 4)
             if ti.static(FG_STAGE1_OWNER_CAP_REDUCTION):
-                if cfg_mode != 0 and dedupe_active == 0 and cfg_read_offset >= 0:
+                if cfg_mode != 0 and use_cfg_dedupe == 0 and cfg_read_offset >= 0:
                     total_eff: ti.i64 = 1
                     for sec_cap in ti.static(range(FG_MAX_SECTIONS)):
                         if sec_cap < n_sections:
@@ -1346,7 +1378,7 @@ def fg_stage1_waves_kernel(
                     cfg_idx += FG_STAGE1_BLOCK_DIM
                     continue
                 global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
-                if dedupe_active != 0:
+                if use_cfg_dedupe != 0:
                     rep_slot: ti.i32 = cfg_read_offset + cfg_idx
                     if rep_slot >= cfg_dedupe_slots:
                         cfg_idx += FG_STAGE1_BLOCK_DIM
@@ -1411,7 +1443,7 @@ def fg_stage1_waves_kernel(
                                 fp_target = fp_targets_vec16[sec]
                         else:
                             read_cfg_idx: ti.i32 = cfg_read_base + cfg_idx
-                            if dedupe_active != 0:
+                            if use_cfg_dedupe != 0:
                                 read_cfg_idx = global_cfg_idx
                             cfg_raw: ti.i32 = fg_forced_counts[read_cfg_idx, sec]
                             decoded = _decode_fp_target_and_rep_flag(cfg_raw)

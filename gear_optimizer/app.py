@@ -48,8 +48,7 @@ from gear_optimizer.data.csv_parser import (
     read_table,
 )
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
-from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
-from gear_optimizer.solver.scoring import GEM_SOLVER_CACHE
+from gear_optimizer.solver.scoring import FG_CACHE
 from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
@@ -366,8 +365,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         graceful_stop = False
         queued_songs = 0
         queued_tasks = 0
-        FEVER_TIMELINE_CACHE.clear()
-        GEM_SOLVER_CACHE.clear()
         FG_CACHE.clear()
         manager = None
         status_queue = None

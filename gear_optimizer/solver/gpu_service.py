@@ -20,7 +20,7 @@ import threading
 import time
 import random
 from concurrent.futures import Future
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Optional
 import logging
@@ -34,8 +34,6 @@ from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
 )
 
 from .gpu_executor import GpuExecutor, get_gpu_executor
-from .gpu_executor_registry import build_registry_solve_request_payload as _build_registry_solve_request_payload
-from .gpu_executor_lifecycle import registry_base_fixed_stats_sig as _registry_base_fixed_stats_sig
 from .gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
 from gear_optimizer.core.parsing import env_get
@@ -134,17 +132,6 @@ class GpuServiceClient:
         self._fg_owner_max_work = max(0, min(int(self._fg_owner_max_work), 2_000_000_000))
         self._fg_owner_max_payloads = max(1, int(self._fg_owner_max_payloads))
         self._fg_owner_max_payloads = min(int(self._fg_owner_max_payloads), int(executor_max_payloads))
-
-        self._registry_static_handle_counter = 0
-        self._registry_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
-        try:
-            self._registry_static_handle_cache_max = int(
-                env_get("GPU_SERVICE_REGISTRY_STATIC_CACHE_MAX", "512") or "512"
-            )
-        except Exception as e:
-            logger.debug(f"gpu_service:__init__: {e}")
-            self._registry_static_handle_cache_max = 512
-        self._registry_static_handle_cache_max = max(32, int(self._registry_static_handle_cache_max))
 
         timeout_default_enabled = env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
         timeout_fatal_default = timeout_default_enabled
@@ -316,84 +303,6 @@ class GpuServiceClient:
                 "sample_count": int(counts.get(key, 0) or 0),
             },
         )
-
-    def _registry_static_handle_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        if not isinstance(payload, dict):
-            return None
-        required = ("item_stats", "slot_start", "slot_count", "base_fixed_stats", "timeline_grid", "ref_arrays")
-        for key in required:
-            if key not in payload:
-                return None
-        item_stats = payload.get("item_stats")
-        slot_start = payload.get("slot_start")
-        slot_count = payload.get("slot_count")
-        base_fixed_stats = payload.get("base_fixed_stats")
-        timeline_grid = payload.get("timeline_grid")
-        ref_arrays = payload.get("ref_arrays")
-        key = (
-            int(id(item_stats)),
-            int(id(slot_start)),
-            int(id(slot_count)),
-            _registry_base_fixed_stats_sig(base_fixed_stats),
-            int(id(timeline_grid)),
-            int(id(ref_arrays)),
-        )
-        cached = self._registry_static_handle_cache.get(key)
-        if cached is not None:
-            self._registry_static_handle_cache.move_to_end(key)
-            return cached
-
-        self._registry_static_handle_counter += 1
-        entry = {
-            "handle": int(self._registry_static_handle_counter),
-            "registered": False,
-            "item_stats_ref": item_stats,
-            "slot_start_ref": slot_start,
-            "slot_count_ref": slot_count,
-            "base_fixed_stats_ref": base_fixed_stats,
-            "timeline_grid_ref": timeline_grid,
-            "ref_arrays_ref": ref_arrays,
-        }
-        self._registry_static_handle_cache[key] = entry
-        self._registry_static_handle_cache.move_to_end(key)
-        while len(self._registry_static_handle_cache) > int(self._registry_static_handle_cache_max):
-            self._registry_static_handle_cache.popitem(last=False)
-        return entry
-
-    @staticmethod
-    def _attach_handle_failure_reset(fut: Future, entry: dict[str, Any]) -> None:
-        if not isinstance(entry, dict):
-            return
-
-        def _on_done(f: Future) -> None:
-            try:
-                _ = f.result()
-            except Exception as e:
-                logger.debug(f"gpu_service:_on_done: {e}")
-                entry["registered"] = False
-
-        try:
-            fut.add_done_callback(_on_done)
-        except Exception as e:
-            logger.debug(f"gpu_service:_on_done: {e}")
-
-    def submit_solve_genomes_from_registry(self, payload: dict[str, Any]) -> GpuJobHandle:
-        request_payload = dict(payload or {})
-        entry = self._registry_static_handle_entry(request_payload)
-        if entry is None:
-            return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
-
-        inline_static = not bool(entry.get("registered", False))
-        request_payload = _build_registry_solve_request_payload(
-            request_payload,
-            entry,
-            inline_static=inline_static,
-        )
-
-        job = self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
-        entry["registered"] = True
-        self._attach_handle_failure_reset(job.future, entry)
-        return job
 
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))

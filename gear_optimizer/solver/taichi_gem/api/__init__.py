@@ -4,8 +4,7 @@ Taichi API Package - Python wrapper functions for GPU gem optimization.
 This package splits the monolithic api.py (1,754 lines) into focused modules:
 1. initialization.py - Reference arrays, staging buffers, GPU initialization
 2. timeline.py - GPU timeline precomputation and grid upload
-3. parallel_solvers.py - Registry genome solver
-4. ga_operations.py - GPU-native genetic algorithm operators
+3. ga_operations.py - GPU-native genetic algorithm operators
 
 This __init__.py defines the public Taichi gem solver API surface.
 """
@@ -26,14 +25,6 @@ except ImportError:
 try:
     from .timeline import (
         precompute_timeline_gpu,
-    )
-except ImportError:
-    pass
-
-# Import from parallel_solvers
-try:
-    from .parallel_solvers import (
-        solve_genomes_from_registry,
     )
 except ImportError:
     pass
@@ -111,8 +102,6 @@ __all__ = [
     "_maybe_sync",
     # Timeline
     "precompute_timeline_gpu",
-    # Parallel solvers
-    "solve_genomes_from_registry",
     # Fixed score
     "score_fixed_stats_gpu",
     # GA operations

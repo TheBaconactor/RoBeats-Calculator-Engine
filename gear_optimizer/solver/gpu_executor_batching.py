@@ -8,7 +8,6 @@ from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 FG_BURST_REQUEST_TYPES = frozenset(
     {
-        GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
         GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
         GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -411,7 +410,6 @@ GA_RECOVERY_REQUEST_TYPES = frozenset(FG_REQUEST_TYPES)
 
 COALESCABLE_REQUEST_TYPES = frozenset(
     {
-        GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
         GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
         GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,

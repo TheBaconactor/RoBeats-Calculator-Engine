@@ -10,7 +10,6 @@ from gear_optimizer.core.types import JsonDict
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
-    SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
