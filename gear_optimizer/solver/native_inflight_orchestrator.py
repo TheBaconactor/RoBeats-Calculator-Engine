@@ -1,6 +1,5 @@
 """
 GPU-native in-flight multi-song orchestrator (single process, single GPU owner thread).
-
 This pipeline is designed to keep the GPU continuously busy in native GA mode by:
 - Preparing the next songs' CPU-only data while the GPU runs the current song.
 - Executing GPU-native GA on the Taichi/Vulkan owner thread (GpuExecutor) via an in-process
@@ -8,9 +7,7 @@ This pipeline is designed to keep the GPU continuously busy in native GA mode by
 - Scheduling ForceGreatsFinder work via continuous credit-based interleaving,
   with CPU grouping/prep performed off the GPU thread and GPU kernels submitted via the executor.
 """
-
 from __future__ import annotations
-
 import logging
 import time
 import traceback
@@ -19,7 +16,6 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
-
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label, task_song_name
@@ -73,10 +69,7 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     prepare_fg_job_sync,
     run_cpu_prewarm_for_song,
 )
-
 logger = logging.getLogger(__name__)
-
-
 def run_native_inflight_song_pipeline(
     tasks: list[tuple],
     *,
@@ -90,31 +83,19 @@ def run_native_inflight_song_pipeline(
 ) -> None:
     if not tasks:
         return
-
     cfg0 = first_task_config(tasks)
-
     icfg = parse_inflight_config(tasks, in_flight_songs=in_flight_songs)
-
     ga_queue_limit_base = icfg.ga_queue_limit_base
     inflight_fg_hold_slots = icfg.inflight_fg_hold_slots
     fg_hold_budget = icfg.fg_hold_budget
-
     from gear_optimizer.solver.song_slot_pool import SongSlotPool
-
     slot_pool = SongSlotPool(max_song_slots=int(icfg.max_song_slots))
-
     gpu_executor, gpu_client = start_native_inflight_gpu_client(icfg, progress_cb=progress_cb)
-
     stage_profiler = InFlightStageProfiler(enabled=icfg.stage_profile_enabled, out_path=icfg.stage_profile_path)
-
     post_sender = PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
     fg_decision_debug = icfg.fg_decision_debug
     fg_submit_debug = icfg.fg_submit_debug
-
-    # Progress UI "New" counter should reflect *session-best* improvements, not the stale DB snapshot
-    # that in-flight tasks can start with (DB persistence is async, and many repeats can overlap).
     progress_tracker = ProgressTracker()
-
     def _emit_progress(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
         progress_tracker.emit_progress(
             progress_cb,
@@ -122,12 +103,10 @@ def run_native_inflight_song_pipeline(
             failed_delta=failed_delta,
             record_info=record_info,
         )
-
     def _post(item: dict) -> None:
         if post_sender is not None:
             post_sender.send(item)
         progress_tracker.emit_error_item_progress(progress_cb, item)
-
     pending_tasks = deque(t for t in tasks if task_queue_label(t) not in completed_songs)
     prepared: deque[NativeSong] = deque()
     pending_fg: deque[NativeSong] = deque()
@@ -141,25 +120,18 @@ def run_native_inflight_song_pipeline(
     _next_logical_task = bundle_tracker.next_logical_task
     _bind_bundle_song = bundle_tracker.bind_song
     _advance_bundle = bundle_tracker.advance
-
-    # GA jobs submitted to the GPU executor (in-order). We intentionally keep a
-    # backlog so CPU-side decode/post-processing can't create GPU idle gaps.
     ga_pipeline = InflightGAPipeline()
     ga_inflight = ga_pipeline.inflight
-
     prep_queue = SongPrepQueue(max_workers=int(icfg.prep_workers), prep_fn=prepare_native_song)
     prep_inflight = prep_queue.inflight
-
     cpu_prewarm_queue = CpuPrewarmQueue(
         max_workers=int(icfg.cpu_prewarm_workers),
         lookahead=int(icfg.cpu_prewarm_lookahead),
         prewarm_fn=run_cpu_prewarm_for_song,
     )
     cpu_prewarm_inflight = cpu_prewarm_queue.inflight
-
     decode_queue = GADecodeQueue(max_workers=int(icfg.decode_workers))
     decode_inflight = decode_queue.inflight
-
     fg_pipeline_settings = native_fg_pipeline.read_native_fg_pipeline_settings(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
@@ -175,7 +147,6 @@ def run_native_inflight_song_pipeline(
     post_emit_pending: deque[NativeSong] = deque()
     fg_workers = int(fg_pipeline.workers)
     fg_batch_max = int(fg_pipeline.batch_max)
-
     last_slot_block_t: float | None = None
     ga_queue_debug = bool(icfg.runtime.ga_queue_debug)
     last_ga_queue_limit_effective: int | None = None
@@ -191,14 +162,12 @@ def run_native_inflight_song_pipeline(
     memory_release_signal = CachedRuntimeSignal(memory_release_requested, poll_interval_s=0.05)
     gpu_abort_requester = GpuAbortRequester(gpu_executor)
     lane_fill_hold_count = 0
-
     def _active_song_lane_count() -> int:
         return count_active_song_lanes(
             ga_inflight=ga_inflight,
             decode_inflight=decode_inflight,
             fg_active_keys=fg_pipeline.active_song_keys(),
         )
-
     def _submit_fg_static_prewarm(song: NativeSong) -> bool:
         return fg_pipeline.start_static_prep(
             song,
@@ -206,21 +175,17 @@ def run_native_inflight_song_pipeline(
             external_song_groups=(ga_inflight, prepared, decode_inflight),
             register_future=completion_tracker.register,
         )
-
     def _submit_cpu_prewarm_backlog() -> int:
         return cpu_prewarm_queue.submit_prepared_backlog(
             prepared,
             register_future=completion_tracker.register,
             extra_submit=_submit_fg_static_prewarm,
         )
-
     def _finish_cpu_prewarm_jobs() -> int:
         finished = 0
         for completion in cpu_prewarm_queue.finish_completed():
             finished += 1
             if completion.error is not None:
-                # Prewarm is an accelerator only; the dispatch path will rebuild
-                # synchronously if the background attempt failed.
                 logger.debug(f"native_inflight_orchestrator:_finish_cpu_prewarm_jobs: {completion.error}")
                 continue
             stage_profiler.record(
@@ -230,7 +195,6 @@ def run_native_inflight_song_pipeline(
                 song=completion.label,
             )
         return int(finished)
-
     def _current_ga_queue_limit() -> int:
         return int(
             continuous_ga_warm_queue_limit(
@@ -247,14 +211,6 @@ def run_native_inflight_song_pipeline(
                 dispatch_burst=int(icfg.continuous_ga_dispatch_burst),
             )
         )
-
-    # Prime the pipeline: pre-prepare a backlog synchronously so the GPU queue
-    # doesn't starve on early song boundaries while prep workers spin up.
-    #
-    # High-end GPUs can burn through the first GA jobs quickly; priming only 1–2 songs
-    # can still leave the GPU idle while CPU prep catches up. Default to priming up to
-    # a modest 4-8 song backlog on smaller in-flight runs, but allow override via env
-    # var/config for experimentation.
     prime_target = read_prime_target(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
@@ -274,9 +230,7 @@ def run_native_inflight_song_pipeline(
         stage_profiler=stage_profiler,
         memory_resume_tracker=memory_resume_tracker,
     )
-
     _submit_cpu_prewarm_backlog()
-
     def _emit_deferred_post_payload(song: NativeSong) -> None:
         emit_deferred_post_payload(
             song,
@@ -289,7 +243,6 @@ def run_native_inflight_song_pipeline(
             progress_tracker=progress_tracker,
             progress_cb=progress_cb,
         )
-
     try:
         last_progress = time.monotonic()
         last_stall_report = last_progress
@@ -299,15 +252,12 @@ def run_native_inflight_song_pipeline(
         heartbeat_sec = float(icfg.loop_observer.heartbeat_sec)
         throughput_sec = float(icfg.loop_observer.throughput_sec)
         stage_emit_sec = float(icfg.loop_observer.stage_profile_emit_sec)
-
         event_wait_timeout_s = float(read_inflight_event_wait_timeout_s())
         event_wait_gpu_cap_s = float(read_inflight_event_wait_gpu_cap_s())
         event_wait_short_spin_s = float(read_inflight_event_wait_short_spin_s())
-
         profile_max_songs = int(icfg.loop_observer.profile_max_songs)
         completed_baseline = len(completed_songs)
         bubble_tracker = BubbleTracker()
-
         def _bubble_snapshot(now_mono: float, *, oldest_fg_wait_s: float = 0.0) -> dict[str, float | int]:
             return bubble_tracker.snapshot_from_pipeline_counts(
                 now_mono=float(now_mono),
@@ -327,7 +277,6 @@ def run_native_inflight_song_pipeline(
                 lane_fill_hold_count=int(lane_fill_hold_count),
                 target_song_lanes=int(icfg.target_song_lanes),
             )
-
         stopping = False
         while (
             pending_tasks
@@ -343,8 +292,6 @@ def run_native_inflight_song_pipeline(
             now = time.monotonic()
             if memory_release_signal.requested(now):
                 break
-
-            # Optional profiling cap: stop after N completed songs/tasks.
             if (not stopping) and profile_max_songs > 0:
                 completed_now = len(completed_songs) - int(completed_baseline)
                 if completed_now >= int(profile_max_songs):
@@ -352,7 +299,6 @@ def run_native_inflight_song_pipeline(
                     pending_tasks.clear()
                     prepared.clear()
                     pending_fg.clear()
-
             if stop_signal.requested(now):
                 if not stopping:
                     stopping = True
@@ -360,18 +306,14 @@ def run_native_inflight_song_pipeline(
                     pending_tasks.clear()
                     prepared.clear()
                     pending_fg.clear()
-                    # Best-effort cancel of queued prep/decode work.
                     try:
                         prep_queue.cancel_all()
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     try:
                         decode_queue.cancel_all()
-                        # Keep entries so we can still drain the deque safely.
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
-            # Periodic throughput reporting (opt-in via env).
             if throughput_sec > 0 and (now - last_throughput) >= float(throughput_sec):
                 last_throughput = now
                 completed_now = len(completed_songs) - int(completed_baseline)
@@ -408,21 +350,16 @@ def run_native_inflight_song_pipeline(
                             "eta_sec": float(eta_s),
                         },
                     )
-
-            # Periodic stage profile emission (opt-in via env).
             if stage_emit_sec > 0 and stage_profiler.enabled and (now - last_stage_emit) >= float(stage_emit_sec):
                 last_stage_emit = now
                 try:
                     stage_profiler.emit()
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
             did_work = False
             blocked_on_slot_acquire = False
             if _finish_cpu_prewarm_jobs() > 0:
                 did_work = True
-
-            # Move completed song preps into the staging queue.
             for prep_completion in prep_queue.pop_completed():
                 task = prep_completion.task
                 logical_task = prep_completion.logical_task
@@ -473,8 +410,6 @@ def run_native_inflight_song_pipeline(
                             song_name=song_name,
                             memory_resume_tracker=memory_resume_tracker,
                         )
-
-            # Finalize prepared FG jobs (CPU prep done) so the GPU stage can start immediately when scheduled.
             for prep_completion in fg_pipeline.finish_completed_prep():
                 song = prep_completion.song
                 did_work = True
@@ -501,7 +436,6 @@ def run_native_inflight_song_pipeline(
                         )
                 except Exception as exc:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {exc}")
-
             if pending_fg:
                 try:
                     started_fg_prep = fg_pipeline.start_pending_prep(
@@ -514,13 +448,6 @@ def run_native_inflight_song_pipeline(
                     started_fg_prep = 0
                 if int(started_fg_prep) > 0:
                     did_work = True
-
-            # Keep the GPU queue full while using spare CPU time to prep future songs.
-            #
-            # - `ga_inflight` bounds the number of submitted GPU-native GA jobs.
-            # - `prepared` is a CPU-side staging buffer; keeping it non-empty prevents
-            #   starvation if CPU prep briefly falls behind GPU throughput.
-            # - We alternate submit/prep to minimize the initial "startup bubble".
             fg_oldest_wait_s = 0.0
             try:
                 if pending_fg:
@@ -528,11 +455,7 @@ def run_native_inflight_song_pipeline(
             except Exception as e:
                 logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 fg_oldest_wait_s = 0.0
-
             while True:
-                # Submit GA jobs whenever we have prepared work and GPU queue capacity.
-                # We allow `ga_inflight` to exceed `icfg.inflight_limit` to create a backlog
-                # that keeps the GPU fed while CPU decode/FG prep runs.
                 if stopping:
                     break
                 ga_queue_limit_effective = _current_ga_queue_limit()
@@ -554,7 +477,6 @@ def run_native_inflight_song_pipeline(
                         )
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
                 ready_fg_for_ga_admission = fg_pipeline.ready_count() if pending_fg else 0
                 if continuous_ga_should_yield_to_fg(
                     pending_fg_count=len(pending_fg),
@@ -568,17 +490,12 @@ def run_native_inflight_song_pipeline(
                     blocked_on_slot=bool(blocked_on_slot_acquire),
                 ):
                     break
-
                 can_submit_ga = bool(prepared) and len(ga_inflight) < ga_queue_limit_effective
-
                 if can_submit_ga:
                     song = prepared.popleft()
-                    # Reserve a per-song GPU timeline slot so GA -> FG can reuse the resident grid
-                    # even while other songs are in-flight (avoids clobbering slot 0).
                     try:
                         ga_pipeline.reserve_slot(song, slot_pool)
                     except Exception as e:
-                        # No free slots: defer GA submission until FG drains.
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         blocked_on_slot_acquire = True
                         last_slot_block_t = time.monotonic()
@@ -590,7 +507,6 @@ def run_native_inflight_song_pipeline(
                     try:
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
                     except Exception as exc:
-                        # Ensure we don't leak the reserved slot on submission failure.
                         try:
                             ga_pipeline.release_slot(song, slot_pool)
                         except Exception as e:
@@ -613,7 +529,6 @@ def run_native_inflight_song_pipeline(
                             )
                         did_work = True
                         continue
-
                     ga_pipeline.track_submitted(
                         song,
                         handle.future,
@@ -623,14 +538,9 @@ def run_native_inflight_song_pipeline(
                     fg_pipeline.note_ga_submit()
                     if _submit_cpu_prewarm_backlog() > 0:
                         did_work = True
-
                     if _submit_fg_static_prewarm(song):
                         did_work = True
-
                     continue
-
-                # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
-                # doesn't starve if CPU prep briefly falls behind GPU throughput.
                 if stopping:
                     break
                 if pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit):
@@ -669,16 +579,11 @@ def run_native_inflight_song_pipeline(
                         continue
                     did_work = True
                     continue
-
                 break
-
-            # Drain completed GA jobs quickly to free inflight capacity; do the heavier
-            # CPU-side decode on a background thread so the GPU queue stays fed.
             for ga_completion in ga_pipeline.pop_completed_runs():
                 song = ga_completion.song
                 ga_future = ga_completion.future
                 did_work = True
-
                 try:
                     ga_result = ga_future.result()
                 except GpuServiceTimeoutError:
@@ -705,7 +610,6 @@ def run_native_inflight_song_pipeline(
                                 trace=traceback.format_exc(),
                             )
                         )
-                    # GA failed: release the reserved timeline slot for this song.
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
                     except Exception as e:
@@ -722,14 +626,11 @@ def run_native_inflight_song_pipeline(
                             memory_resume_tracker=memory_resume_tracker,
                         )
                     continue
-
                 t_submit = getattr(song.runtime.ga, "ga_submit_t0", None)
                 if t_submit is not None:
                     stage_profiler.record("ga_gpu", time.perf_counter() - float(t_submit), song=song.config.task_key)
                     song.runtime.ga.ga_submit_t0 = None
-
                 song.runtime.ga.ga_future = None
-
                 needs_fg_stage = True
                 hold_budget = int(fg_hold_budget or 0)
                 keep_slot_for_fg = False
@@ -755,17 +656,13 @@ def run_native_inflight_song_pipeline(
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                     keep_slot_for_fg = int(held_slots) < int(hold_budget)
-
                 if not keep_slot_for_fg:
-                    # Release the song slot immediately after GA completes unless we're keeping it
-                    # resident for FG reuse (bounded by `fg_hold_budget` so GA won't deadlock on slots).
                     if inflight_fg_hold_slots and needs_fg_stage and hold_budget > 0:
                         stage_profiler.record("fg_hold_drop", 0.0)
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
                 decode_queue.submit(
                     song,
                     ga_result,
@@ -781,13 +678,10 @@ def run_native_inflight_song_pipeline(
                     )
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
-            # Finalize decoded GA results (lightweight formatting + enqueue for post/FG).
             for decode_completion in decode_queue.pop_completed():
                 song = decode_completion.song
                 decode_future = decode_completion.future
                 did_work = True
-
                 try:
                     decode_result = decode_future.result()
                 except Exception as exc:
@@ -800,7 +694,6 @@ def run_native_inflight_song_pipeline(
                                 trace=traceback.format_exc(),
                             )
                         )
-                    # Decode failed: release the reserved timeline slot for this song.
                     try:
                         ga_pipeline.release_slot(song, slot_pool)
                     except Exception as e:
@@ -819,7 +712,6 @@ def run_native_inflight_song_pipeline(
                     continue
                 finally:
                     song.runtime.decode.decode_future = None
-
                 t_decode = decode_completion.submit_t0
                 if t_decode is not None:
                     stage_profiler.record(
@@ -829,7 +721,6 @@ def run_native_inflight_song_pipeline(
                         song=song.config.task_key,
                     )
                     song.runtime.decode.decode_submit_t0 = None
-
                 ga_pipeline.store_decode_result(song, decode_result)
                 try:
                     emit_profile_event(
@@ -843,12 +734,9 @@ def run_native_inflight_song_pipeline(
                     )
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
                 song.runtime.post.deferred_post_emitted = False
                 fg_pipeline.queue(song, now_s=time.monotonic())
                 did_work = True
-
-            # Reap completed FG workers (capture errors).
             for fg_completion in fg_pipeline.pop_completed_jobs():
                 fg_song = fg_completion.song
                 fut = fg_completion.future
@@ -895,7 +783,6 @@ def run_native_inflight_song_pipeline(
                             post_sender.send(build_failed_fg_update_payload(fg_song))
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                # Release this song's reserved timeline slot now that FG is complete.
                 try:
                     ga_pipeline.release_slot(fg_song, slot_pool)
                 except Exception as e:
@@ -916,7 +803,6 @@ def run_native_inflight_song_pipeline(
                     progress_tracker=progress_tracker,
                     progress_cb=progress_cb,
                 )
-
             fg_oldest_wait_s = 0.0
             try:
                 if pending_fg:
@@ -931,10 +817,8 @@ def run_native_inflight_song_pipeline(
                 now_mono=float(now),
                 oldest_fg_wait_s=float(fg_oldest_wait_s),
             )
-
             if not pending_fg:
                 fg_pipeline.reset_credit_if_empty()
-
             no_ga_remaining = (
                 (not pending_tasks)
                 and (not prepared)
@@ -942,7 +826,6 @@ def run_native_inflight_song_pipeline(
                 and (not ga_inflight)
                 and (not decode_inflight)
             )
-
             ga_queue_limit_effective = _current_ga_queue_limit()
             ready_ga_for_lane_fill = len(prepared) if len(ga_inflight) < int(ga_queue_limit_effective) else 0
             if continuous_fg_should_fill_song_lanes(
@@ -972,7 +855,6 @@ def run_native_inflight_song_pipeline(
                     ga_queue_limit=int(ga_queue_limit_effective),
                     fg_slot_reserve=int(icfg.fg_slot_reserve),
                 )
-
             if should_start_fg:
                 if fg_decision_debug:
                     try:
@@ -993,7 +875,6 @@ def run_native_inflight_song_pipeline(
                             reasons.append("aging_trigger")
                         if int(fg_pipeline.ga_credit) <= 0:
                             reasons.append("credit")
-
                         logger.debug(
                             "[InFlight][FGDecision] start reasons=%s pending=%s prepared=%s prep_inflight=%s "
                             "ga_inflight=%s decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s "
@@ -1011,7 +892,6 @@ def run_native_inflight_song_pipeline(
                         )
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-
                 submit_budget = continuous_fg_submit_budget(
                     pending_fg_count=len(pending_fg),
                     ready_fg_count=int(ready_fg_count),
@@ -1027,9 +907,7 @@ def run_native_inflight_song_pipeline(
                     adaptive_max_burst=int(icfg.fg_adaptive_submit_max_burst),
                     fg_slot_reserve=int(icfg.fg_slot_reserve),
                 )
-
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
-                    # Process pending FG jobs (up to worker + batch budget).
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
                         allow_not_ready = continuous_fg_allow_not_ready(
                             blocked_on_slot=bool(blocked_on_slot_acquire),
@@ -1044,10 +922,6 @@ def run_native_inflight_song_pipeline(
                             try:
                                 ga_pipeline.reserve_slot(fg_song, slot_pool)
                             except Exception as e:
-                                # No free slots: put the song back and defer FG submission
-                                # until GA releases slots. Without this, the song would be
-                                # dropped from FG processing entirely (it was removed from
-                                # pending_fg by the FG pipeline pop but never submitted).
                                 logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                                 fg_pipeline.requeue_front(fg_song)
                                 break
@@ -1073,7 +947,6 @@ def run_native_inflight_song_pipeline(
                         )
                         did_work = True
                         submit_budget -= 1
-
             if post_emit_pending:
                 post_emit_budget = 1
                 if not (
@@ -1094,17 +967,13 @@ def run_native_inflight_song_pipeline(
                     _emit_deferred_post_payload(post_song)
                     did_work = True
                     post_emit_budget -= 1
-
             active_runtime_reporter.emit(
                 ga_inflight=ga_inflight,
                 decode_inflight=decode_inflight,
                 fg_futures=fg_futures,
             )
-
             if did_work:
                 last_progress = time.monotonic()
-
-            # Avoid tight spin.
             if not did_work:
                 if heartbeat_sec > 0.0 and (time.monotonic() - last_heartbeat) >= heartbeat_sec:
                     last_heartbeat = time.monotonic()
@@ -1119,7 +988,6 @@ def run_native_inflight_song_pipeline(
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         oldest_ga_s = None
-
                     try:
                         msg = (
                             "[InFlight][HB] "
@@ -1170,7 +1038,6 @@ def run_native_inflight_song_pipeline(
                             "bubble_oldest_fg_wait_sec": float(fg_oldest_wait_s),
                         },
                     )
-
                 no_active_work = (
                     (not ga_inflight)
                     and (not decode_inflight)
@@ -1231,7 +1098,6 @@ def run_native_inflight_song_pipeline(
                             "bubble_oldest_fg_wait_sec": float(fg_oldest_wait_s),
                         },
                     )
-
                 if has_waitable_work(
                     ga_inflight,
                     prep_inflight,
@@ -1270,7 +1136,6 @@ def run_native_inflight_song_pipeline(
                     t_sleep = time.perf_counter()
                     time.sleep(0.001)
                     stage_profiler.record("main_sleep", time.perf_counter() - t_sleep)
-
     except Exception as exc:
         log_native_abort(
             exc,
@@ -1314,34 +1179,22 @@ def run_native_inflight_song_pipeline(
             gpu_client=gpu_client,
             gpu_executor=gpu_executor,
         )
-
-
-# NOTE: `decode_ga_payload_sync` and `prepare_fg_job_sync` are imported from
-# their own modules to keep the orchestrator leaner.
-
-# ---- merged from native_inflight_orchestrator.py ----
-
-
 @dataclass
 class CompletionTracker:
     event: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
     ids: set[int] = field(default_factory=set)
-
     def register(self, fut: concurrent.futures.Future | None) -> bool:
         if fut is None:
             return False
         fut_id = int(id(fut))
-
         with self.lock:
             if fut_id in self.ids:
                 return False
             self.ids.add(fut_id)
-
         def _on_done(_fut: concurrent.futures.Future, *, _fut_id: int = fut_id) -> None:
             self.unregister(_fut_id)
             self.event.set()
-
         try:
             fut.add_done_callback(_on_done)
         except (AttributeError, RuntimeError, TypeError, ValueError):
@@ -1349,14 +1202,11 @@ class CompletionTracker:
             self.event.set()
             return False
         return True
-
     def unregister(self, fut_id: int) -> None:
         with self.lock:
             self.ids.discard(int(fut_id))
-
     def is_set(self) -> bool:
         return bool(self.event.is_set())
-
     def wait(self, timeout_s: float, *, short_spin_s: float = 0.0) -> bool:
         return bool(
             wait_for_completion_event(
@@ -1367,11 +1217,8 @@ class CompletionTracker:
                 sleep=time.sleep,
             )
         )
-
     def clear(self) -> None:
         self.event.clear()
-
-
 def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = ()) -> bool:
     for group in queue_groups:
         try:
@@ -1382,8 +1229,6 @@ def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = 
             continue
     _ = pending_fg
     return False
-
-
 def mark_song_completed(
     *,
     completed_songs: set[str],
@@ -1401,8 +1246,6 @@ def mark_song_completed(
             bundle_completed_cb(key, completed_songs)
         except Exception as e:
             logger.debug(f"native_inflight_orchestrator:mark_song_completed: {e}")
-
-
 def emit_deferred_post_payload(
     song: NativeSong,
     *,
@@ -1417,11 +1260,8 @@ def emit_deferred_post_payload(
 ) -> bool:
     if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
         return False
-
     post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
-
     song.runtime.post.deferred_post_emitted = True
-
     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
     needs_fg_stage = bool(fg_pending_for_post(song))
     if bundle_parent is not None and needs_fg_stage:
@@ -1445,10 +1285,7 @@ def emit_deferred_post_payload(
         )
         if progress_tracker is not None:
             progress_tracker.emit_done_song_progress(progress_cb, song)
-
     return True
-
-
 def finish_deferred_fg_completion(
     song: NativeSong,
     *,
@@ -1470,7 +1307,6 @@ def finish_deferred_fg_completion(
         )
         song.runtime.bundle.bundle_wait_for_fg = False
         return True
-
     if bool(getattr(song.runtime.post, "await_fg_completion_progress", False)):
         mark_song_completed(
             completed_songs=completed_songs,
@@ -1483,20 +1319,13 @@ def finish_deferred_fg_completion(
             progress_tracker.emit_done_song_progress(progress_cb, song)
         song.runtime.post.await_fg_completion_progress = False
         return True
-
     return False
-
-# ---- merged from native_inflight_orchestrator.py ----
-
-
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
 from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
-
-
 def build_ga_candidates_for_post(
     candidates: list[dict] | None,
     *,
@@ -1542,16 +1371,10 @@ def build_ga_candidates_for_post(
             }
         )
     return out
-
-
 def fg_scored_for_song(song: NativeSong) -> bool:
     return getattr(song.runtime.fg, "fg_variants", None) is not None
-
-
 def fg_pending_for_post(song: NativeSong) -> bool:
     return bool(not fg_scored_for_song(song))
-
-
 def build_native_song_error_payload(
     song: NativeSong,
     *,
@@ -1569,8 +1392,6 @@ def build_native_song_error_payload(
     if bool(suppress_for_bundle) and getattr(song.runtime.bundle, "bundle_parent_task", None) is not None:
         payload["_suppress_progress"] = True
     return payload
-
-
 def build_native_task_error_payload(
     *,
     song_name: str,
@@ -1591,8 +1412,6 @@ def build_native_task_error_payload(
     if bool(suppress_progress):
         payload["_suppress_progress"] = True
     return payload
-
-
 def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
     return {
         "_fg_update": True,
@@ -1602,12 +1421,8 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
         "file_path": song.config.fp,
         "cfg_dict": song.config.cfg_dict,
     }
-
-
 def build_failed_fg_update_payload(song: NativeSong) -> dict[str, Any]:
     return build_fg_update_payload(song, persist_entries=[])
-
-
 def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
@@ -1633,9 +1448,6 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         selector=select_effective_unique_ga_candidates,
         materializer=materialize_candidate_names,
     )
-
-    # Deferred post must always carry replay context so persistence can
-    # canonicalize retained rows to the same score authority used by replay/repair.
     return {
         "_deferred_post": True,
         "_pending_fg_job": bool(pending_fg_job),
@@ -1664,17 +1476,11 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
         "fg_debug": bool(song.config.fg_debug),
     }
-
-# ---- merged from native_inflight_orchestrator.py ----
-
-
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
-
-
 def ensure_fg_build_details(song: NativeSong) -> Callable:
     build_details = song.runtime.fg.fg_build_details
     if callable(build_details):
@@ -1686,8 +1492,6 @@ def ensure_fg_build_details(song: NativeSong) -> Callable:
     )
     song.runtime.fg.fg_build_details = build_details
     return build_details
-
-
 def build_fg_persist_entries(song: NativeSong) -> list[dict]:
     entries: list[dict] = []
     build_details = ensure_fg_build_details(song)
@@ -1706,7 +1510,6 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
             if not loadout_hash or not isinstance(entry, dict):
                 continue
             loadout_hash_index.setdefault(str(loadout_hash), entry)
-
     for v in song.runtime.fg.fg_variants or []:
         if not isinstance(v, dict):
             continue
@@ -1732,14 +1535,12 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         if gear_names or mini_names:
             try:
                 from gear_optimizer.data.database import get_loadout_hash as _get_loadout_hash
-
                 candidate = loadout_hash_index.get(str(_get_loadout_hash(gear_names, mini_names)))
                 if isinstance(candidate, dict):
                     base_entry = candidate
             except Exception as e:
                 logger.debug(f"native_inflight_orchestrator:build_fg_persist_entries: {e}")
                 base_entry = None
-
         if isinstance(base_entry, dict):
             entry_base_score = safe_int(
                 base_entry.get("base_score"),
@@ -1747,10 +1548,8 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
             )
             if entry_base_score > 0:
                 base_score = entry_base_score
-
         details_obj = base_entry.get("details") if isinstance(base_entry, dict) else None
         if isinstance(details_obj, dict) and details_obj:
-            # Keep base payload consistent with base score on deferred FG updates.
             details = dict(details_obj)
         else:
             details_source = base_entry.get("eval_data") if isinstance(base_entry, dict) else None
@@ -1761,7 +1560,6 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
                 details = {}
             details = dict(details)
             details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
-
         force_obj = None
         try:
             if isinstance(data, dict) and has_valid_fg_config(data):
@@ -1781,8 +1579,6 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
                 "details": details,
                 "force": force_obj,
                 "_is_ga": bool(is_ga),
-                # Mark these entries as coming from a deferred FG-only persistence pass
-                # so the DB layer can avoid overwriting base `details_json` on ties.
                 "_deferred_fg_update": True,
             }
         )

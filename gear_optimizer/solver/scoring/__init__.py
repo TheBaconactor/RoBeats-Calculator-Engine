@@ -33,7 +33,6 @@ from .stats_scoring import (
 
 # Import from fever_solver
 from .fever_solver import (
-    precompute_fever_timelines,
     solve_best_fever_combination,
 )
 
@@ -69,7 +68,6 @@ __all__ = [
     "_force_greats_counts_to_dict",
     "_song_cache_key",
     # Fever solver
-    "precompute_fever_timelines",
     "solve_best_fever_combination",
     # Force greats
     "FG_TIMELINE_CACHE",

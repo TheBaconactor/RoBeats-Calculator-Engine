@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+import threading
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
@@ -34,15 +36,6 @@ class _FakeFuture:
 
     def result(self):
         return self._result
-
-
-class _FakeClient:
-    def __init__(self) -> None:
-        self.payload = None
-
-    def submit_solve_genomes_from_registry(self, payload):
-        self.payload = dict(payload)
-        return SimpleNamespace(future=_FakeFuture(["ok"]))
 
 
 def _make_plan():
@@ -89,10 +82,36 @@ def test_representative_genomes_from_plan_uses_first_member_of_each_unique_group
     assert out == [plan.uncached_genomes[1], plan.uncached_genomes[0]]
 
 
-def test_build_registry_solve_request_and_dispatch_via_client() -> None:
+def test_build_registry_solve_request_and_dispatch_direct(monkeypatch) -> None:
     plan = _make_plan()
     registry = _FakeRegistry()
-    client = _FakeClient()
+    seen = {"uploads": [], "solve_args": None}
+
+    fake_api = ModuleType("gear_optimizer.solver.taichi_gem.api")
+    fake_api.ga_upload_item_stats = lambda item_stats, slot_start, slot_count: seen["uploads"].append(
+        ("item", np.asarray(item_stats).shape, np.asarray(slot_start).shape, np.asarray(slot_count).shape)
+    )
+    fake_api.ga_upload_base_fixed_stats = lambda base_fixed_stats: seen["uploads"].append(
+        ("base", np.asarray(base_fixed_stats).shape)
+    )
+    fake_api.solve_genomes_from_registry = (
+        lambda *args, **kwargs: seen.__setitem__(
+            "solve_args",
+            {
+                "args": args,
+                "kwargs": dict(kwargs),
+            },
+        )
+        or ["ok"]
+    )
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.api", fake_api)
+    fake_scoring_pkg = ModuleType("gear_optimizer.solver.scoring")
+    fake_scoring_pkg.__path__ = []  # type: ignore[attr-defined]
+    fake_scoring_rt = ModuleType("gear_optimizer.solver.scoring.runtime_state")
+    fake_scoring_rt._GPU_LOCK = threading.Lock()
+    fake_scoring_pkg.runtime_state = fake_scoring_rt
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.scoring", fake_scoring_pkg)
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.scoring.runtime_state", fake_scoring_rt)
 
     request = build_registry_solve_request(plan=plan, registry=registry, song_slot=7)
 
@@ -104,10 +123,12 @@ def test_build_registry_solve_request_and_dispatch_via_client() -> None:
     assert int(request.base_fixed_stats[3]) == 397
     assert int(request.base_fixed_stats[5]) == 585
 
-    out = dispatch_registry_solve(request, gpu_client=client)
+    out = dispatch_registry_solve(request)
 
     assert out == ["ok"]
-    assert client.payload is not None
-    assert int(client.payload["song_slot"]) == 7
-    assert int(client.payload["is_p_ft"]) == 1
-    assert int(client.payload["is_s_ff"]) == 1
+    assert seen["uploads"][0][0] == "item"
+    assert seen["uploads"][1][0] == "base"
+    assert seen["solve_args"] is not None
+    assert int(seen["solve_args"]["args"][2]) == 1
+    assert int(seen["solve_args"]["args"][5]) == 1
+    assert int(seen["solve_args"]["kwargs"]["song_slot"]) == 7

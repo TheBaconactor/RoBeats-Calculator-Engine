@@ -1,16 +1,11 @@
 """
-Genetic algorithm solver for gear and mini co-evolution.
+GPU-native GA payload helpers for gear and mini co-evolution.
 
-This module contains the main GA that optimizes both gear (6 slots) and minis (3 slots)
-simultaneously to find optimal loadouts. Uses tournament selection, crossover, mutation,
-and memetic local search.
-
-The main function solve_coevolution_genetic() has been refactored to use helper functions
-from helpers.ga_helpers for improved modularity and maintainability.
+This module contains the payload generation, decoding, and selection helpers used by
+the native in-flight optimizer. The legacy direct CPU GA entrypoint has been removed.
 """
 
 import logging
-import random
 import time
 import importlib
 
@@ -40,9 +35,8 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
-from ..core.config import GASettings as GARuntimeSettings, read_fg_candidate_limit
-from ..core.gem_defs import UserGemsSettings, build_gem_counts, build_gem_details
-from ..core.color_flags import build_color_flags, normalize_color_flags
+from ..core.gem_defs import build_gem_counts, build_gem_details
+from ..core.color_flags import normalize_color_flags
 from ..core.profile_events import emit_profile_event
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -51,13 +45,7 @@ from .base_stats import (
     build_stats_array,
     build_stats_dict,
 )
-from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from .scoring.stats_ops import apply_gems_to_base_stats
-from .scoring.fg_policy import extract_song_meta
-from ..data.models import GAEvolutionSettings
-from ..helpers.ga_helpers import (
-    initialize_pools,
-)
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from ..helpers.ga_helpers.redundancy_audit import (
     analyze_ga_redundancy_from_runs_payload,
@@ -67,7 +55,6 @@ from ..helpers.ga_helpers.redundancy_audit import (
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .candidate_solver_cache import BaseCandidateCacheShard, base_context_digest, stats7_key
 from .item_registry import ItemRegistry
-from .solver_common import GEAR_SLOTS, SolverContext
 from .convergence_trace import build_convergence_trace_writer
 from .gpu_tuning_policy import choose_ga_batch_runs
 
@@ -1323,7 +1310,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # allocation (i.e., before ensure_ready/precompute_timeline triggers field allocation).
     gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
-    # Optional stability toggles (mirrors solve_coevolution_genetic GPU-native path)
+    # Optional stability toggles (mirrors the native GPU payload path)
     reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
     try:
         reset_every_runs = int(reset_every_runs_env)
@@ -2192,359 +2179,3 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
     return payload_segments[0]
 
-
-def solve_coevolution_genetic(
-    cfg,
-    base_stats_fixed,
-    calc_song,
-    ref_arrays,
-    all_gears,
-    all_minis,
-    optimize_gear=True,
-    optimize_minis=True,
-    fixed_gear=None,
-    fixed_minis=None,
-    ga_depth=75,
-    ga_settings=None,
-    song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
-    ga_seed: int | None = None,
-    solver_ctx: SolverContext | None = None,
-):
-    """
-    Main genetic algorithm solver for gear and mini co-evolution.
-
-    Features:
-    - Multi-start restarts for better global search
-    - Memetic local search on elite candidates
-    - Deep mining: extends search when cache hits indicate known territory
-    - Dynamic mutation rate based on stagnation
-    - Polishing phase at end with exhaustive local search
-
-    Args:
-        cfg: Configuration object
-        base_stats_fixed: Fixed base stats dictionary
-        calc_song: Song calculation context
-        ref_arrays: Reference lookup arrays
-        all_gears: List of all gear items
-        all_minis: List of all mini items
-        optimize_gear: Whether to optimize gear (vs fixed)
-        optimize_minis: Whether to optimize minis (vs fixed)
-        fixed_gear: Fixed gear loadout if not optimizing
-        fixed_minis: Fixed minis if not optimizing
-        ga_depth: Total generations across all runs
-        ga_settings: GA configuration settings
-
-    Returns:
-        tuple: (best_data, best_gear, best_minis, None, [], [], all_evaluated)
-    """
-    # Native callers clear these caches before solving, but clearing here is safe redundancy.
-    GEM_SOLVER_CACHE.clear()
-    FG_CACHE.clear()
-    FEVER_TIMELINE_CACHE.clear()
-
-    if ga_seed is not None:
-        try:
-            random.seed(int(ga_seed) & 0xFFFFFFFF)
-        except Exception as e:
-            logger.debug(f"genetic:solve_coevolution_genetic: {e}")
-
-    logger.info("=== STARTING GENETIC ALGORITHM SOLVER ===")
-    logger.info(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
-
-    ga_settings = ga_settings or GAEvolutionSettings.from_cfg(cfg)
-
-    if solver_ctx is None:
-        song_meta = extract_song_meta(calc_song, default_primary="Rush")
-        p_color = song_meta.primary_color
-        s_color = song_meta.secondary_color
-        selected_color = p_color
-        slots = list(GEAR_SLOTS)
-
-        pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
-        if pools is None:
-            gear_pool = None
-            whitelisted_minis = []
-        elif len(pools) == 4:
-            gear_pool, mini_pool, _, _ = pools
-            whitelisted_minis = []
-        else:
-            gear_pool, mini_pool, _, _, whitelisted_minis = pools
-        if gear_pool is None:
-            logger.error(
-                f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}"
-            )
-            return None, [], [], None, [], [], []
-
-        if whitelisted_minis:
-            logger.info(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
-    else:
-        p_color = str(solver_ctx.p_color or "Rush")
-        s_color = str(solver_ctx.s_color or "")
-        selected_color = str(solver_ctx.selected_color or p_color)
-        slots = list(GEAR_SLOTS)
-        gear_pool = solver_ctx.gear_pool
-        mini_pool = solver_ctx.mini_pool
-        whitelisted_minis = []
-
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA is required (GPU-only policy) but taichi_gem dependencies are unavailable.")
-
-    # GPU-native GA uses Taichi kernels directly (taichi_gem.api) and is not compatible with
-    # cross-process GPU ownership. GPU-only policy: do not fall back to CPU GA.
-    try:
-        from .gpu_executor import is_gpu_worker_mode
-
-        if is_gpu_worker_mode():
-            raise RuntimeError(
-                "GPU worker mode is not supported in GPU-only GA because it depends on a removed CPU-owned path."
-            )
-    except ImportError:
-        pass
-
-    # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
-    # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
-    logger.info("[GPU] Native GA enabled")
-
-    ga_runtime_settings = GARuntimeSettings.from_config(cfg)
-    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
-    user_gems_cfg = user_gems.to_solver_cfg()
-
-    cfg_data = (
-        dict(solver_ctx.cfg_data)
-        if solver_ctx is not None
-        else {
-            "selected_color": selected_color,
-            "primary_color": str(p_color or ""),
-            "secondary_color": str(s_color or ""),
-            "use_gpu": True,
-            "fg_candidate_limit": read_fg_candidate_limit(
-                cfg,
-                default=FG_CANDIDATE_LIMIT,
-                min_limit=LOADOUTS_PER_SONG_LIMIT,
-            ),
-            "user_ft": int(user_gems_cfg["user_ft"]),
-            "user_ff": int(user_gems_cfg["user_ff"]),
-            "user_pp": int(user_gems_cfg["user_pp"]),
-            "user_cm": int(user_gems_cfg["user_cm"]),
-            "user_fm": int(user_gems_cfg["user_fm"]),
-            "static_elem_input": int(user_gems_cfg["static_elem_input"]),
-        }
-    )
-    cfg_data.update(user_gems_cfg)
-    cfg_data["selected_color"] = selected_color
-    cfg_data["primary_color"] = str(p_color or "")
-    cfg_data["secondary_color"] = str(s_color or "")
-    cfg_data["use_gpu"] = True
-    cfg_data["fg_candidate_limit"] = int(
-        cfg_data.get(
-            "fg_candidate_limit",
-            read_fg_candidate_limit(
-                cfg,
-                default=FG_CANDIDATE_LIMIT,
-                min_limit=LOADOUTS_PER_SONG_LIMIT,
-            ),
-        )
-        or FG_CANDIDATE_LIMIT
-    )
-    cfg_data["ga_payload_candidate_limit"] = _resolve_ga_payload_candidate_limit(int(cfg_data["fg_candidate_limit"]))
-    cfg_data["ga_convergence_trace_enabled"] = bool(ga_runtime_settings.convergence_trace)
-    cfg_data["ga_convergence_trace_every"] = int(ga_runtime_settings.convergence_trace_every)
-    cfg_data["ga_convergence_trace_out_dir"] = str(ga_runtime_settings.convergence_trace_out_dir)
-    cfg_data["ga_convergence_trace_song_filter"] = str(ga_runtime_settings.convergence_trace_song_filter)
-    cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
-    # ForceGreatsFinder runs after GA and requires BaseStats for downstream FG batching.
-    # Keep this flag on cfg_data so the GPU decode step can include BaseStats
-    # without relying on an environment variable.
-    cfg_data["fg_require_stats"] = True
-    # PRODUCTION: modern optimizer runtime path is GPU-native.
-    # --- GPU-NATIVE GA PATH ---
-    # If using GPU mode, bypass the entire CPU loop mechanism.
-    if _GPU_NATIVE_AVAILABLE:
-        logger.info("=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
-        logger.info(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
-
-        if solver_ctx is None:
-            registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
-            registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
-            registry = ItemRegistry(
-                gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis
-            )
-            gpu_data = registry.to_gpu_arrays()
-            base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
-        else:
-            registry = solver_ctx.registry
-            gpu_data = solver_ctx.gpu_arrays
-            base_stats_arr = solver_ctx.base_fixed_stats_arr
-        num_runs = max(1, int(ga_settings.multi_start or 1))
-        gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
-        logger.info(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
-
-        gpu_tournament_k = int(ga_runtime_settings.tournament_k)
-        gpu_mutation_rate = float(ga_runtime_settings.mutation_rate)
-        gpu_immigrant_rate = float(ga_runtime_settings.immigrant_rate)
-
-        try:
-            gpu_fields = _require_gpu_fields()
-        except Exception as e:
-            logger.debug(f"genetic:solve_coevolution_genetic: {e}")
-            gpu_fields = None
-
-        heuristic_k = int(getattr(gpu_fields, "GA_INIT_HEURISTIC_K", 0) or 0)
-        init_heuristic_topk = None
-        if heuristic_k > 0:
-            try:
-                init_heuristic_topk = build_ga_init_heuristic_topk(
-                    item_stats=gpu_data["item_stats"],
-                    slot_start=gpu_data["slot_start"],
-                    slot_count=gpu_data["slot_count"],
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    heuristic_k=int(heuristic_k),
-                    n_slots=9,
-                )
-            except Exception as exc:
-                logger.warning(f"[GPU GA] Warning: failed to build init heuristic table: {exc}")
-
-        runs_payload = run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            song_slot=int(song_slot),
-            item_stats=gpu_data["item_stats"],
-            slot_start=gpu_data["slot_start"],
-            slot_count=gpu_data["slot_count"],
-            base_fixed_stats_arr=base_stats_arr,
-            n_generations=int(gens_per_run),
-            initial_populations=None,
-            num_runs=int(num_runs),
-            n_genomes=int(GA_POPULATION_SIZE),
-            init_heuristic_topk=init_heuristic_topk,
-            init_heuristic_k=int(heuristic_k),
-            init_heuristic_copies=25,
-            elite_count=int(ga_runtime_settings.elite_count),
-            mutation_rate=float(gpu_mutation_rate),
-            immigrant_rate=float(gpu_immigrant_rate),
-            tournament_k=int(gpu_tournament_k),
-            color_flags=build_color_flags(p_color, s_color, selected_color),
-            cfg_data=cfg_data,
-            ga_seed=ga_seed,
-        )
-
-        fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT))
-        if fg_candidate_limit <= 0:
-            fg_candidate_limit = FG_CANDIDATE_LIMIT
-
-        best_data, best_gear, best_minis, unique_evaluated = decode_gpu_native_ga_runs_payload(
-            runs_payload=runs_payload,
-            registry=registry,
-            cfg_data=cfg_data,
-            base_stats_fixed=base_stats_fixed,
-            fg_candidate_limit=fg_candidate_limit,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-        )
-
-        # Winner refinement:
-        #
-        # GPU-native GA candidate evaluation is now exact and hint-free, so the selected payload should already reflect
-        # the canonical gem solve for that candidate. Keep the final solve as a defensive cross-check against
-        # integration bugs or payload drift in the surrounding GA plumbing.
-        refine_winner = env_flag("GPU_GA_WINNER_REFINEMENT", "1")
-        exact_check = env_flag("GPU_GA_WINNER_EXACT_CHECK", "0")
-        if refine_winner or exact_check:
-            try:
-                from .scoring.fever_solver import solve_best_fever_combination
-
-                genome = best_data.get("Genome") if isinstance(best_data, dict) else None
-                if isinstance(genome, list) and genome:
-                    winner_stats = _add_genome_item_stats(base_stats_fixed, genome)
-                    override_cfg = {
-                        "user_ft": int(cfg_data.get("user_ft", 0) or 0),
-                        "user_ff": int(cfg_data.get("user_ff", 0) or 0),
-                        "user_pp": int(cfg_data.get("user_pp", 0) or 0),
-                        "user_cm": int(cfg_data.get("user_cm", 0) or 0),
-                        "user_fm": int(cfg_data.get("user_fm", 0) or 0),
-                        "selected_color": str(cfg_data.get("selected_color", "") or p_color or ""),
-                        "static_elem_input": int(cfg_data.get("static_elem_input", 0) or 0),
-                        "use_gpu": True,
-                    }
-                    refined = solve_best_fever_combination(
-                        cfg,
-                        winner_stats,
-                        calc_song,
-                        ref_arrays,
-                        silent=True,
-                        override_cfg=override_cfg,
-                    )
-                    if isinstance(refined, dict) and refined:
-                        refined_score = int(refined.get("Score", 0) or 0)
-                        best_score = int(best_data.get("Score", 0) or 0)
-                        if refined_score > best_score:
-                            song_name = str((calc_song or {}).get("metadata", {}).get("Song Name", "") or "")
-                            logger.warning(
-                                "[GPU] refined GA winner payload: song=%r best=%d refined=%d delta=%d",
-                                song_name,
-                                best_score,
-                                refined_score,
-                                refined_score - best_score,
-                            )
-                            if refine_winner:
-                                g_ft = int(refined.get("FT", 0) or 0)
-                                g_ff = int(refined.get("FF", 0) or 0)
-                                gems = refined.get("GemCounts") if isinstance(refined.get("GemCounts"), dict) else {}
-                                g_pp = int((gems or {}).get("Perfect Points", 0) or 0)
-                                g_cm = int((gems or {}).get("Combo Multiplier", 0) or 0)
-                                g_fm = int((gems or {}).get("Fever Multiplier", 0) or 0)
-                                g_ov = int((gems or {}).get("Element", 0) or 0)
-                                sel = str(
-                                    refined.get("Selected Element", "")
-                                    or override_cfg.get("selected_color", "")
-                                    or p_color
-                                    or ""
-                                )
-                                refined_stats = refined.get("Stats") if isinstance(refined.get("Stats"), dict) else None
-                                if not isinstance(refined_stats, dict) or not refined_stats:
-                                    # Defensive: rebuild stats even if the solver omitted a full `Stats` payload.
-                                    base_fixed_arr, _sel_built = build_base_fixed_stats_array(
-                                        base_stats_fixed, cfg_data
-                                    )
-                                    merged = _add_genome_item_stats(build_stats_dict(base_fixed_arr), genome)
-                                    refined_stats = apply_gems_to_base_stats(
-                                        merged,
-                                        sel,
-                                        g_ft,
-                                        g_ff,
-                                        g_pp,
-                                        g_cm,
-                                        g_fm,
-                                        g_ov,
-                                    )
-                                best_data = _build_best_result_payload(
-                                    score=int(refined_score),
-                                    genome=genome,
-                                    stats=refined_stats,
-                                    selected_color=sel,
-                                    g_ft=g_ft,
-                                    g_ff=g_ff,
-                                    g_pp=g_pp,
-                                    g_cm=g_cm,
-                                    g_fm=g_fm,
-                                    g_ov=g_ov,
-                                )
-                                best_gear = list(best_data.get("Gear") or best_gear or [])
-                                best_minis = list(best_data.get("Minis") or best_minis or [])
-                        elif exact_check and refined_score < best_score:
-                            song_name = str((calc_song or {}).get("metadata", {}).get("Song Name", "") or "")
-                            logger.warning(
-                                "[GPU][ExactCheck] GA payload beat canonical winner solve (unexpected): song=%r best=%d refined=%d delta=%d",
-                                song_name,
-                                best_score,
-                                refined_score,
-                                refined_score - best_score,
-                            )
-            except Exception as e:
-                # Never fail the run for a winner refinement issue; fall back to the GA payload.
-                logger.debug(f"genetic:solve_coevolution_genetic: {e}")
-
-        logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
-
-        return best_data, best_gear, best_minis, None, [], [], unique_evaluated

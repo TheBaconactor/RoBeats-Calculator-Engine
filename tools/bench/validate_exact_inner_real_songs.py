@@ -191,7 +191,7 @@ def _dispatch_batch(ctx: SolverContext, population_indices: np.ndarray, *, use_e
         use_exact_inner_solver=bool(use_exact_inner_solver),
     )
     t0 = time.perf_counter()
-    results = dispatch_registry_solve(req, gpu_client=ctx.gpu_client)
+    results = dispatch_registry_solve(req)
     return float(time.perf_counter() - t0), list(results or [])
 
 

@@ -210,7 +210,7 @@ def process_force_greats(
     ref_arrays,
     meta_primary_color,
     build_details_fn,
-    use_gpu: bool = False,
+    use_gpu: bool = True,
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
     gpu_client: Optional["GpuServiceClient"] = None,

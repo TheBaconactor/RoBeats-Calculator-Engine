@@ -111,7 +111,6 @@ from .kernels_solvers_batch import (
 
 # Import GA evaluation & reduction kernels
 from .ga_eval import (
-    ga_find_best_combo_key_kernel,
     ga_refresh_scores_and_update_runs_best_kernel,
     ga_write_best_results_from_key_kernel,
     ga_write_best_results_and_update_runs_best_kernel,
@@ -231,7 +230,6 @@ __all__ = [
     # Batch solver kernels
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
-    "ga_find_best_combo_key_kernel",
     "ga_refresh_scores_and_update_runs_best_kernel",
     "ga_write_best_results_from_key_kernel",
     "ga_write_best_results_and_update_runs_best_kernel",

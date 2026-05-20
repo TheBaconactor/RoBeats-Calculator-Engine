@@ -148,7 +148,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     gpu_client = SimpleNamespace(name="gpu")
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
-    assert calls["search_radius"] == 5
+    assert calls["search_radius"] == -1
     assert calls["surface"] is song.runtime.fg.fg_candidate_surface
     assert calls["loadout_entries"] == {}
     assert calls["ref_arrays"] == {"Perfect Points": []}

@@ -1,16 +1,8 @@
 """
-Helper functions for genetic algorithm operations.
+Helper functions for genetic algorithm pool initialization.
 
-This module contains helper functions extracted from solve_coevolution_genetic()
-to improve code modularity and maintainability. These functions handle:
-- Pool initialization and pruning
-- Genome factory functions
-- Evaluation and caching
-- Local search operations
-- Population initialization
-- Crossover and mutation
-- Parallel evaluation
-- Diversity and stagnation handling
+Production runs are GPU-native; this module keeps the small CPU helpers that remain
+useful for pool construction and reference-only tuning logic.
 """
 
 from ...core.utils import prune_gear_pool_lossless_for_song, prune_mini_pool_lossless_for_song

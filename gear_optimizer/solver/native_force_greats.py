@@ -95,6 +95,8 @@ def _search_ranges_for(
         return None
 
     radius = int(search_radius)
+    if radius < 0:
+        return None
     return (
         int(center_ft) - radius,
         int(center_ft) + radius,
@@ -211,6 +213,9 @@ def solve_native_force_greats_gpu_batch(
     search_radius: int | None,
     gpu_client: Any | None = None,
 ) -> tuple[list[dict[str, Any] | None], dict[str, int]]:
+    _ = search_radius
+    search_radius = None
+
     if not base_stats_list:
         return [], _empty_batch_metrics()
 

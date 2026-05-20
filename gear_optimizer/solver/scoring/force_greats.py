@@ -562,6 +562,9 @@ def run_force_greats_hill_climb(
     NOTE: This function now expects stats to be the gem-optimized Stats dict from
     the main solver. It extracts base stats and uses the new gem iteration function.
     """
+    _ = search_radius
+    search_radius = FG_SEARCH_RADIUS
+
     # Get baseline info from existing stats
     baseline = evaluate_force_greats(stats, calc_song, ref_arrays, [])
     if not baseline:
@@ -588,9 +591,9 @@ def run_force_greats_hill_climb(
     base_stats = copy_base_stats(stats)
 
     non_fever_base = baseline.get("non_fever_base", 20)
-    # Calculate FT/FF search window (kept tight; full FT/FF × all FG configs explodes combinatorially)
+    # Calculate FT/FF search window. Negative radius means full FT/FF grid.
     search_ranges = None
-    if center_ft is not None and center_ff is not None:
+    if search_radius is not None and int(search_radius) >= 0 and center_ft is not None and center_ff is not None:
         search_ranges = (
             center_ft - search_radius,
             center_ft + search_radius,
@@ -812,6 +815,9 @@ def apply_force_greats_to_result(
     FIXED: Now properly re-runs gem optimization for the FG timeline instead of
     using stats optimized for the normal timeline.
     """
+    _ = search_radius
+    search_radius = FG_SEARCH_RADIUS
+
     if not data_dict or "Stats" not in data_dict:
         return None
 

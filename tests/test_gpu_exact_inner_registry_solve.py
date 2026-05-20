@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 
 import numpy as np
 import pytest
@@ -13,6 +14,24 @@ def _has_taichi() -> bool:
     except Exception:
         return False
     return True
+
+
+def _install_fever_timeline_import_fakes(monkeypatch):
+    fake_numba = types.ModuleType("numba")
+    fake_numba.config = types.SimpleNamespace(CACHE_DIR="")
+
+    def _fake_numba_jit(*args, **kwargs):
+        if args and callable(args[0]) and len(args) == 1 and not kwargs:
+            return args[0]
+
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
+    fake_numba.jit = _fake_numba_jit
+    fake_numba.__getattr__ = lambda name: fake_numba.config if name == "config" else _fake_numba_jit
+    monkeypatch.setitem(sys.modules, "numba", fake_numba)
 
 
 pytestmark = pytest.mark.gpu
@@ -86,7 +105,8 @@ def _score_from_alloc(
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_registry_solve_exact_inner_matches_cpu_exact():
+def test_registry_solve_exact_inner_matches_cpu_exact(monkeypatch):
+    _install_fever_timeline_import_fakes(monkeypatch)
     from gear_optimizer.core.color_flags import build_color_flags
     from gear_optimizer.core.constants import (
         ELEMENTAL_GEM_SCALE,
@@ -97,9 +117,9 @@ def test_registry_solve_exact_inner_matches_cpu_exact():
         TOTAL_GEM_BUDGET,
         TOTAL_ROWS,
     )
+    from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
     from gear_optimizer.solver.base_stats import build_stats_array
     from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
-    from gear_optimizer.solver.scoring.fever_solver import precompute_fever_timelines
     from gear_optimizer.solver.scoring_core import optimize_core_exact_bounded_jit
 
     timestamps = np.linspace(0.0, 120.0, 120, dtype=np.float32)
@@ -147,87 +167,81 @@ def test_registry_solve_exact_inner_matches_cpu_exact():
     base_flow = int(base_stats["Flow"])
 
     cpu_best = None
-    timelines = precompute_fever_timelines(
-        base_stats,
-        calc_song,
-        ref_arrays,
-        int(TOTAL_GEM_BUDGET),
-        int(TOTAL_GEM_BUDGET),
-        int(TOTAL_GEM_BUDGET),
-    )
-    for t_data in timelines:
-        ft = int(t_data["ft_gems"])
-        ff = int(t_data["ff_gems"])
-        current_budget = int(t_data["remaining_budget"])
-        fever_mask_head = np.asarray(t_data["timeline"][0], dtype=np.bool_)
-        count_body_fever = int(t_data["timeline"][1])
-        count_body_normal = int(t_data["timeline"][2])
+    grid = get_song_timeline_grid(calc_song, ref_arrays)
+    range_ft = int(TOTAL_GEM_BUDGET)
+    for ft in range(range_ft + 1):
+        remaining_for_ff = int(TOTAL_GEM_BUDGET) - ft
+        for ff in range(remaining_for_ff + 1):
+            current_budget = int(TOTAL_GEM_BUDGET) - ft - ff
+            ft_idx = max(0, min(TOTAL_ROWS, int(base_stats["Fever Time"]) + (ft * int(GEM_SCALE_FEVER))))
+            ff_idx = max(0, min(TOTAL_ROWS, int(base_stats["Fever Fill Rate"]) + (ff * int(GEM_SCALE_FEVER))))
+            fever_mask_head, count_body_fever, count_body_normal = grid.get_timeline(ft_idx, ff_idx)[:3]
 
-        cur_beat = base_beat + (ft * int(GEM_STAT_TO_ELEMENT_SCALE))
-        cur_vibe = base_vibe + (ff * int(GEM_STAT_TO_ELEMENT_SCALE))
-        cur_p_val = cur_beat if calc_song["metadata"]["Primary Color"] == "Beat" else (
-            cur_vibe if calc_song["metadata"]["Primary Color"] == "Vibe" else base_rush
-        )
-        cur_s_val = cur_beat if calc_song["metadata"]["Secondary Color"] == "Beat" else (
-            cur_vibe if calc_song["metadata"]["Secondary Color"] == "Vibe" else base_flow
-        )
+            cur_beat = base_beat + (ft * int(GEM_STAT_TO_ELEMENT_SCALE))
+            cur_vibe = base_vibe + (ff * int(GEM_STAT_TO_ELEMENT_SCALE))
+            cur_p_val = cur_beat if calc_song["metadata"]["Primary Color"] == "Beat" else (
+                cur_vibe if calc_song["metadata"]["Primary Color"] == "Vibe" else base_rush
+            )
+            cur_s_val = cur_beat if calc_song["metadata"]["Secondary Color"] == "Beat" else (
+                cur_vibe if calc_song["metadata"]["Secondary Color"] == "Vibe" else base_flow
+            )
 
-        exact = optimize_core_exact_bounded_jit(
-            current_budget,
-            cur_pp,
-            cur_cm,
-            cur_fm,
-            int(cur_p_val),
-            int(cur_s_val),
-            int(flags["is_p_pp"]),
-            int(flags["is_s_pp"]),
-            int(flags["is_p_cm"]),
-            int(flags["is_s_cm"]),
-            int(flags["is_p_fm"]),
-            int(flags["is_s_fm"]),
-            int(flags["is_p_ov"]),
-            int(flags["is_s_ov"]),
-            np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
-            np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
-            np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
-            fever_mask_head,
-            count_body_fever,
-            count_body_normal,
-            GEM_SCALE_NORMAL,
-            GEM_SCALE_FEVER,
-            GEM_STAT_TO_ELEMENT_SCALE,
-            ELEMENTAL_GEM_SCALE,
-            TOTAL_ROWS,
-            MAX_STAT_INDEX,
-        )
-        score = _score_from_alloc(
-            cur_pp=cur_pp,
-            cur_cm=cur_cm,
-            cur_fm=cur_fm,
-            cur_p_val=int(cur_p_val),
-            cur_s_val=int(cur_s_val),
-            g_pp=int(exact[5]),
-            g_cm=int(exact[6]),
-            g_fm=int(exact[7]),
-            g_ov=int(exact[8]),
-            is_p_pp=int(flags["is_p_pp"]),
-            is_s_pp=int(flags["is_s_pp"]),
-            is_p_cm=int(flags["is_p_cm"]),
-            is_s_cm=int(flags["is_s_cm"]),
-            is_p_fm=int(flags["is_p_fm"]),
-            is_s_fm=int(flags["is_s_fm"]),
-            is_p_ov=int(flags["is_p_ov"]),
-            is_s_ov=int(flags["is_s_ov"]),
-            ref_pp=np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
-            ref_cm=np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
-            ref_fm=np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
-            fever_mask_head=fever_mask_head,
-            count_body_fever=count_body_fever,
-            count_body_normal=count_body_normal,
-        )
-        result = (score, ft, ff, int(exact[5]), int(exact[6]), int(exact[7]), int(exact[8]))
-        if cpu_best is None or int(result[0]) > int(cpu_best[0]):
-            cpu_best = result
+            exact = optimize_core_exact_bounded_jit(
+                current_budget,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                int(cur_p_val),
+                int(cur_s_val),
+                int(flags["is_p_pp"]),
+                int(flags["is_s_pp"]),
+                int(flags["is_p_cm"]),
+                int(flags["is_s_cm"]),
+                int(flags["is_p_fm"]),
+                int(flags["is_s_fm"]),
+                int(flags["is_p_ov"]),
+                int(flags["is_s_ov"]),
+                np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
+                np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
+                np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+                GEM_SCALE_NORMAL,
+                GEM_SCALE_FEVER,
+                GEM_STAT_TO_ELEMENT_SCALE,
+                ELEMENTAL_GEM_SCALE,
+                TOTAL_ROWS,
+                MAX_STAT_INDEX,
+            )
+            score = _score_from_alloc(
+                cur_pp=cur_pp,
+                cur_cm=cur_cm,
+                cur_fm=cur_fm,
+                cur_p_val=int(cur_p_val),
+                cur_s_val=int(cur_s_val),
+                g_pp=int(exact[5]),
+                g_cm=int(exact[6]),
+                g_fm=int(exact[7]),
+                g_ov=int(exact[8]),
+                is_p_pp=int(flags["is_p_pp"]),
+                is_s_pp=int(flags["is_s_pp"]),
+                is_p_cm=int(flags["is_p_cm"]),
+                is_s_cm=int(flags["is_s_cm"]),
+                is_p_fm=int(flags["is_p_fm"]),
+                is_s_fm=int(flags["is_s_fm"]),
+                is_p_ov=int(flags["is_p_ov"]),
+                is_s_ov=int(flags["is_s_ov"]),
+                ref_pp=np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
+                ref_cm=np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
+                ref_fm=np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
+                fever_mask_head=fever_mask_head,
+                count_body_fever=count_body_fever,
+                count_body_normal=count_body_normal,
+            )
+            result = (score, ft, ff, int(exact[5]), int(exact[6]), int(exact[7]), int(exact[8]))
+            if cpu_best is None or int(result[0]) > int(cpu_best[0]):
+                cpu_best = result
 
     assert cpu_best is not None
 

@@ -109,39 +109,7 @@ def build_registry_solve_request(
     )
 
 
-def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = None) -> list:
-    if gpu_client is not None:
-        return gpu_client.submit_solve_genomes_from_registry(request.to_payload()).future.result()
-
-    from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes_from_registry
-
-    if is_gpu_worker_mode():
-        return submit_gpu_solve_genomes_from_registry(
-            request.population_indices,
-            request.item_stats,
-            request.slot_start,
-            request.slot_count,
-            request.base_fixed_stats,
-            request.timeline_grid,
-            int(request.flags.get("is_p_ft", 0)),
-            int(request.flags.get("is_s_ft", 0)),
-            int(request.flags.get("is_p_ff", 0)),
-            int(request.flags.get("is_s_ff", 0)),
-            int(request.flags.get("is_p_pp", 0)),
-            int(request.flags.get("is_s_pp", 0)),
-            int(request.flags.get("is_p_cm", 0)),
-            int(request.flags.get("is_s_cm", 0)),
-            int(request.flags.get("is_p_fm", 0)),
-            int(request.flags.get("is_s_fm", 0)),
-            int(request.flags.get("is_p_ov", 0)),
-            int(request.flags.get("is_s_ov", 0)),
-            request.ref_arrays,
-            total_budget=int(request.total_budget),
-            gem_scale_fever=int(request.gem_scale_fever),
-            song_slot=int(request.song_slot),
-            use_exact_inner_solver=bool(request.use_exact_inner_solver),
-        )
-
+def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
     from .scoring.runtime_state import _GPU_LOCK
     from .taichi_gem.api import (
         ga_upload_base_fixed_stats,

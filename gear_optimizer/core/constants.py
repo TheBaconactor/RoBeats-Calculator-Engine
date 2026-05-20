@@ -5,8 +5,6 @@ Global constants and configuration values for the gear optimizer.
 import os
 from dataclasses import dataclass
 
-from .env_config import ENV
-
 # --- SCORING CONSTANTS ---
 GEM_SCALE_NORMAL = 2
 GEM_SCALE_FEVER = 3
@@ -66,8 +64,8 @@ FG_CANDIDATE_LIMIT = 51  # Default FG funnel size (retention cap minimum)
 DIFFICULTIES = ("Easy", "Normal", "Hard")
 
 # --- FORCE GREATS OPTIMIZATION ---
-# FT/FF search radius around loadout centers (default ±5)
-FG_SEARCH_RADIUS = int(getattr(ENV, "fg_search_radius", 5) or 5)
+# Production FG always searches the full FT/FF gem allocation grid.
+FG_SEARCH_RADIUS = -1
 FG_PLATEAU_REP_STRIDE = 64
 
 # --- MEMORY MANAGEMENT CONSTANTS ---

@@ -52,7 +52,6 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         "selected_color": str(selected_color or ""),
         "primary_color": str(p_color or ""),
         "secondary_color": str(s_color or ""),
-        "use_gpu": True,
         "fg_candidate_limit": int(FG_CANDIDATE_LIMIT),
         "user_ft": int(user_gems.fever_time),
         "user_ff": int(user_gems.fever_fill),

@@ -135,7 +135,7 @@ Level 5 (Orchestration):
      │
      ▼
 ┌──────────────────────────┐
-│ Genetic Algorithm Solver │  (genetic.solve_coevolution_genetic)
+│ Genetic Algorithm Solver │  (genetic_pipeline GPU-native helpers)
 │                          │
 │  ┌─────────────────┐    │
 │  │ Initialize Pop  │────┼──┐

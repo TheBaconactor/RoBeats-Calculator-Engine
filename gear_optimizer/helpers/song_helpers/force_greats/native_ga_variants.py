@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, FG_SEARCH_RADIUS, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import get_selected_element, safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
@@ -290,14 +290,10 @@ def score_native_fg_candidate_surface(
     if surface is None or len(surface) <= 0:
         return []
 
-    if search_radius is not None and int(search_radius) < 0:
-        center_fts: list[int | None] = [None for _ in range(len(surface))]
-        center_ffs: list[int | None] = [None for _ in range(len(surface))]
-        radius_arg = None
-    else:
-        center_fts = [int(v) for v in surface.center_fts]
-        center_ffs = [int(v) for v in surface.center_ffs]
-        radius_arg = search_radius
+    _ = search_radius
+    center_fts: list[int | None] = [None for _ in range(len(surface))]
+    center_ffs: list[int | None] = [None for _ in range(len(surface))]
+    radius_arg = None
 
     fg_results, batch_stats = solve_native_force_greats_gpu_batch(
         base_stats_list=[dict(stats) for stats in surface.base_stats],
@@ -333,7 +329,7 @@ def score_native_fg_candidate_surface(
                 base_stats=dict(surface.base_stats[idx]),
                 fg_result=fg_result,
                 selected_color=str(surface.selected_colors[idx]),
-                search_radius=search_radius,
+                search_radius=FG_SEARCH_RADIUS,
                 center_ft=int(surface.center_fts[idx]),
                 center_ff=int(surface.center_ffs[idx]),
             )

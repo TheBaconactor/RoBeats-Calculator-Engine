@@ -109,7 +109,7 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ie.manual_force_greats is True
 
     assert read_fg_candidate_limit(cfg, default=51, min_limit=1) == 5000
-    assert read_fg_search_radius(cfg) is None
+    assert read_fg_search_radius(cfg) == -1
 
 
 def test_repo_config_keeps_song_selection_loop_flag_only():

@@ -52,7 +52,7 @@ class EnvConfig:
     ga_seed: str | None  # GA_SEED: Seed for genetic algorithm RNG
 
     # ForceGreats
-    fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override)
+    fg_search_radius: int  # FG search radius policy: hard-coded full-window (-1)
 
     # JIT / profiling / memory helpers
     numba_cache_dir: str | None  # NUMBA_CACHE_DIR
@@ -106,7 +106,7 @@ class EnvConfig:
             # Genetic Algorithm
             ga_seed=env_get("GA_SEED"),
             # ForceGreats
-            fg_search_radius=env_int("FG_SEARCH_RADIUS", 5),
+            fg_search_radius=-1,
             # JIT / profiling / memory helpers
             numba_cache_dir=env_str("NUMBA_CACHE_DIR") or None,
             memory_guard_write_every_n=max(1, env_int("MEMORY_GUARD_WRITE_EVERY_N", 1)),

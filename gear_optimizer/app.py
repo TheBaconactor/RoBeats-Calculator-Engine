@@ -9,10 +9,7 @@ import zlib
 import threading
 import time
 import typing
-
 import numpy as np
-
-# Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, GA_POPULATION_SIZE
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import config_bool, env_flag, truthy
@@ -67,11 +64,8 @@ from gear_optimizer.ui.progress import (
 )
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
-
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
-
-
 class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def __init__(self):
         self.setup_logging()
@@ -122,9 +116,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._stop_poll_interval_sec = 0.05
         self._stop_next_check_monotonic = 0.0
         self._stop_cached_result = False
-        # Full DB integrity verification is expensive; only run it once per process.
         self._stats_verified_once = False
-        # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
         self._session_new_record_keys: set[str] = set()
         self._session_new_record_best_by_song: dict[str, int] = {}
@@ -133,33 +125,25 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_failed_count = 0
         self._cpu_work_manager = CpuWorkManager()
         self._runtime_settings: AppRuntimeSettings | None = None
-
     def setup_logging(self) -> None:
-        # Keep stdout clean for result printers; send diagnostics to stderr.
         try:
             from gear_optimizer.core.logging_config import configure_logging
-
             log_file_path = os.path.join(BIN_DIR, "error.log")
             console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
             configure_logging(log_file_path=log_file_path, console_level=console_level, file_level=logging.WARNING)
         except Exception as e:
             logger.warning(f"app:setup_logging: {e}")
-
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         try:
             return self._stop_control.request_stop(reason, force=force)
         finally:
-            # Best-effort: once the user asks to stop, ask the GPU owner to abort
-            # long-running in-flight requests so shutdown does not wait for a full GA/FG drain.
             try:
                 from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
                 gpu_executor = get_gpu_executor()
                 if gpu_executor.is_running:
                     gpu_executor.request_abort(f"stop requested ({reason})")
             except Exception as e:
                 logger.warning(f"app:request_stop: {e}")
-
     def _stop_requested_now(self) -> bool:
         if self._stop_cached_result:
             return True
@@ -172,14 +156,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return True
         self._stop_next_check_monotonic = now + float(self._stop_poll_interval_sec)
         return False
-
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
-
     @staticmethod
     def _cfg_truthy(cfg, section: str, key: str, *, fallback: bool = False) -> bool:
         return config_bool(cfg, section, key, default=fallback)
-
     def _current_runtime_settings(self, cfg=None) -> AppRuntimeSettings:
         settings = getattr(self, "_runtime_settings", None)
         if isinstance(settings, AppRuntimeSettings):
@@ -189,7 +170,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.warning(f"app:_current_runtime_settings: {e}")
             return AppRuntimeSettings.from_config(None)
-
     def _get_inflight_songs_requested(self, cfg) -> int:
         runtime_settings = self._current_runtime_settings(cfg)
         inflight_songs = int(runtime_settings.inflight.songs)
@@ -200,12 +180,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.debug(f"app:_get_inflight_songs_requested: {e}")
         return int(inflight_songs)
-
     def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
         raw = env_get("GPU_SONG_SLOTS")
         if raw is not None and str(raw).strip() != "":
             return
-
         runtime_settings = self._current_runtime_settings(cfg)
         cfg_slots = int(runtime_settings.gpu.gpu_song_slots)
         if int(cfg_slots) > 0:
@@ -219,18 +197,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             except Exception as e:
                 logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
             return
-
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if int(inflight_songs) <= 1:
             return
-
         try:
             if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
                 logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
                 return
         except Exception as e:
             logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
-
         ga_queue_mult = int(runtime_settings.gpu.ga_queue_mult)
         raw = env_get("INFLIGHT_GA_QUEUE_MULT")
         if raw is not None and str(raw).strip() != "":
@@ -241,10 +216,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if ga_queue_mult <= 0:
             ga_queue_mult = 2
         ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
-
         required = int(inflight_songs) * int(ga_queue_mult) + 2
         slots = min(max(24, int(required)), 256)
-
         os.environ["GPU_SONG_SLOTS"] = str(slots)
         try:
             logger.debug(
@@ -256,7 +229,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
         except Exception as e:
             logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
-
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
         ga_multistart = max(1, int(runtime_settings.ga.multi_start))
@@ -264,11 +236,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
         try:
             from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
             gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)
         except Exception as e:
@@ -276,7 +246,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             inflight_req = 0
         if inflight_req <= 1:
             return
-
         try:
             logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
             emit_profile_event(
@@ -285,7 +254,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 metrics={"in_process": 1},
             )
             from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
             get_gpu_executor().start(in_process=True)
             logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
             emit_profile_event(
@@ -295,13 +263,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-
     def _profiling_mode_enabled(self, cfg=None) -> bool:
-        # Fast path from centralized env snapshot.
         if bool(getattr(ENV, "debug_profile", False)) or bool(getattr(ENV, "perf_timing_unconditional", False)):
             return True
-
-        # Direct env checks (covers runs that don't go through main.py env normalization).
         truthy_keys = (
             "DEBUG_PROFILE",
             "METAFINDER_DEBUG_PROFILE",
@@ -322,7 +286,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         for key in truthy_keys:
             if env_flag(key):
                 return True
-
         path_keys = (
             "GPU_EXECUTOR_TRACE_PATH",
             "INFLIGHT_STAGE_PROFILE_PATH",
@@ -332,15 +295,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         for key in path_keys:
             if str(env_get(key, "") or "").strip():
                 return True
-
-        # DEV / DEBUG: profile-only config overrides (Debug.DebugProfile, IterationEngine.DebugProfile).
         if cfg is not None:
             if self._cfg_truthy(cfg, "Debug", "DebugProfile", fallback=False):
                 return True
             if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
                 return True
         return False
-
     def _maybe_mark_robeatsmeta_song_batch_computed(
         self,
         song_name: str | None,
@@ -348,10 +308,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     ) -> bool:
         _ = song_name, completed_songs
         return False
-
     def _mark_robeatsmeta_song_started(self, song_name: str | None) -> None:
         _ = song_name
-
     def _update_robeatsmeta_runtime_status(
         self,
         *,
@@ -362,10 +320,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         failed: int | None = None,
     ) -> None:
         _ = status, current_song, completed, total, failed
-
     def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle", available: bool = True) -> None:
         _ = status, available
-
     def _set_runtime_progress_counts(
         self,
         *,
@@ -379,7 +335,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             self._runtime_total_count = max(0, int(total))
         if failed is not None:
             self._runtime_failed_count = max(0, int(failed))
-
     def run(self):
         multiprocessing.freeze_support()
         self._install_signal_handlers()
@@ -390,12 +345,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 sys.stderr.reconfigure(line_buffering=True)
         except Exception as e:
             logger.warning(f"app:run: {e}")
-
         try:
             if not self._output_enabled:
                 self._orig_stdout = suppress_stdout(True)
                 self._orig_stderr = suppress_stderr(True)
-
             while True:
                 if self._stop_requested_now():
                     break
@@ -405,7 +358,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         finally:
             restore_stdout(self._orig_stdout)
             restore_stderr(self._orig_stderr)
-
     def _run_single_iteration(self):
         memory_guard_restart = False
         memory_resume_tracker = None
@@ -414,21 +366,17 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         graceful_stop = False
         queued_songs = 0
         queued_tasks = 0
-
         FEVER_TIMELINE_CACHE.clear()
         GEM_SOLVER_CACHE.clear()
         FG_CACHE.clear()
-
         manager = None
         status_queue = None
         status_thread = None
-
         try:
             if self._stop_requested_now():
                 graceful_stop = True
                 loop_forever = False
                 return False
-
             cfg = load_config()
             runtime_settings = self._current_runtime_settings(cfg)
             self._runtime_settings = runtime_settings
@@ -443,29 +391,19 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 event="run_start",
                 metrics={"db_file": str(db_display_name)},
             )
-
             init_db()
-
             ignore_resume = truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
-
             if is_fresh_queue:
                 self._stats_verified_once = True
-
-            # Config reading
             ie = runtime_settings.iteration_engine
             fg_debug = bool(ie.force_greats_debug)
-
             if ie.manual_force_greats:
                 fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
             else:
                 fg_status = "Finder"
-
             logger.info(f" >> [ForceGreats] {fg_status}")
-
-            # PRODUCTION: runtime flags (GA_SearchDepth, LoopForever, EvalCPUCores).
-            # Evolution DB is always enabled in production.
             ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)
             if self._profiling_mode_enabled(cfg):
@@ -479,18 +417,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
             self._maybe_autoset_gpu_song_slots(cfg)
-
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
-
-            # CRITICAL FIX: Prevent DB tainting by disabling manual input fields.
             self._disable_inputs_to_prevent_taint(cfg)
-
             ref_arrays = self._preload_ref_arrays(stats_table)
             all_gears = load_all_gears_list(paths)
             all_minis = load_all_minis_list(paths)
             gears_by_name = {g["Name"]: g for g in all_gears}
             minis_by_name = {m["Name"]: m for m in all_minis}
-
             song_queue = self._build_song_queue(cfg, paths)
             queued_songs = len(song_queue)
             try:
@@ -502,7 +435,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 event="queue_built",
                 metrics={"queued_songs": int(queued_songs)},
             )
-
             self._cpu_work_manager.run_startup(
                 cfg=cfg,
                 song_queue=song_queue,
@@ -510,16 +442,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 data_root=PATHS.data_dir,
             )
             self._configure_execution_and_prewarm(cfg)
-
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
-
             manager = multiprocessing.Manager()
             status_queue = manager.Queue()
-
             status_thread = threading.Thread(target=self._status_listener, args=(status_queue,), daemon=True)
             status_thread.start()
-
             tasks = self._prepare_tasks(
                 song_queue,
                 cfg,
@@ -543,11 +471,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     "queued_task_bundles": int(len(tasks)),
                 },
             )
-
             parallel_workers = 1
-
             self._start_progress(queued_tasks)
-
             self._execute_tasks(
                 tasks,
                 eval_cpu_limit,
@@ -555,14 +480,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 memory_resume_tracker,
                 loop_forever,
             )
-
-            # Check if we need to restart due to memory guard
             if memory_release_requested() and loop_forever:
                 memory_guard_restart = True
-
         except KeyboardInterrupt:
-            # First Ctrl+C is handled by the signal handler as a graceful stop request.
-            # This catches direct KeyboardInterrupt (or a forced second Ctrl+C).
             graceful_stop = True
             loop_forever = False
             if self._force_exit_requested.is_set():
@@ -573,11 +493,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 raise
         except Exception as e:
             logger.error(f"Error: {e}")
-
         finally:
             self._stop_progress()
             self._cleanup_resources(status_queue, status_thread, manager)
-
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
             logger.info(done_msg)
@@ -595,9 +513,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     if total_tasks is None:
                         total_tasks = int(queued_tasks)
                     total_tasks = max(0, int(total_tasks))
-
-                    # "songs" is approximate when SongRepeats>1; tasks/hour is the reliable metric.
-                    # Estimate repeats as queued_tasks/queued_songs (when available) to make songs/hour meaningful.
                     repeats_est = 1
                     try:
                         if int(queued_songs) > 0 and int(queued_tasks) > 0:
@@ -609,7 +524,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     except (ValueError, TypeError):
                         completed_songs_est = int(completed_tasks)
                     completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
-
                     songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
                     tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
                     logger.info(
@@ -629,14 +543,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 },
             )
             gc.collect()
-
         if graceful_stop or self._stop_requested.is_set():
             try:
                 logger.info("[Shutdown] Exiting by user request.")
             except Exception as e:
                 logger.warning(f"app:_run_single_iteration: {e}")
             return False
-
         if memory_guard_restart:
             restart_process_for_memory_guard()
             return False  # Process replaced
@@ -647,7 +559,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         else:
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
-
     def _disable_inputs_to_prevent_taint(self, cfg):
         logger.info(
             " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
@@ -656,38 +567,28 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             cfg.add_section("UserInputStatsGems")
         for key in ["perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"]:
             cfg.set("UserInputStatsGems", key, "0")
-
         if not cfg.has_section("ElementalGems"):
             cfg.add_section("ElementalGems")
         for key in ["Chill", "Flow", "Rush", "Beat", "Vibe"]:
             cfg.set("ElementalGems", key, "0")
-
     def _preload_ref_arrays(self, stats_table):
         from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
-
-        # Runtime/GPU search stays on float32. Exact replay paths resolve their own
-        # float64 authority refs so persistence/repair do not inherit search drift.
         return build_ref_arrays_from_stats(stats_table, dtype=np.float32)
-
     def _get_filter_params(self, cfg):
         song_settings = self._current_runtime_settings(cfg).calculate_song
         diff = song_settings.difficulty or "All"
         diff_lower = diff.strip().lower()
         filter_search = song_settings.song_name.strip().lower()
-
         def _parse_color_targets(raw_val):
             tokens = [c.strip().lower() for c in re.split(r"[,\|/]", raw_val or "") if c and c.strip()]
             is_all = not tokens or any(c in ("all", "any", "*") for c in tokens)
             return is_all, set() if is_all else set(tokens)
-
         target_primary_raw = song_settings.target_primary
         target_secondary_raw = song_settings.target_secondary
         if not target_secondary_raw:
             target_secondary_raw = "all"
-
         target_primary_all, target_primary_colors = _parse_color_targets(target_primary_raw)
         target_secondary_all, target_secondary_colors = _parse_color_targets(target_secondary_raw)
-
         return (
             diff_lower,
             filter_search,
@@ -696,16 +597,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             target_secondary_all,
             target_secondary_colors,
         )
-
     @staticmethod
     def _infer_song_difficulty_from_path(root: str) -> str:
         return infer_song_difficulty_from_path(root)
-
     def _build_song_queue(self, cfg, paths):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
-
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
-
         def _read_song_queue_limit() -> int:
             limit = int(self._current_runtime_settings(cfg).song_queue_limit)
             for env_key in ("SONG_QUEUE_LIMIT", "METAFINDER_SONG_QUEUE_LIMIT"):
@@ -720,9 +617,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     limit = int(env_val)
                     break
             return int(limit)
-
         _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
-
         def _lookup_song_presence(song_names: typing.Iterable[str]) -> set[str]:
             names = tuple(sorted({str(name or "").strip() for name in (song_names or []) if str(name or "").strip()}))
             if not names:
@@ -733,13 +628,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             present = get_song_names_present_in_db(names)
             _presence_lookup_cache[names] = present
             return present
-
         resume_seed_queue: list[tuple[str, str, str]] = []
         resume_names_present: set[str] = set()
         ignore_resume = bool(self._current_runtime_settings(cfg).ignore_resume_queue)
         if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
-
         if not ignore_resume:
             resume_seed_queue = load_memory_guard_resume_queue(resume_context)
             if resume_seed_queue:
@@ -756,18 +649,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     logging.warning(
                         f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
                     )
-
         diff = self._current_runtime_settings(cfg).calculate_song.difficulty or "All"
         search_dir = paths.get(diff, SCRIPT_DIR)
         song_queue: list[tuple[str, str, str]] = []
-
         seen_paths = set()
         if diff_lower not in ("easy", "normal", "hard"):
             data_root = PATHS.data_dir
             dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
         else:
             dirs_to_search = [search_dir]
-
         for d in dirs_to_search:
             if not os.path.exists(d):
                 continue
@@ -785,41 +675,31 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     abs_fp = os.path.abspath(fp)
                     if abs_fp in seen_paths:
                         continue
-
                     meta = scan_song_header(fp)
                     if not meta:
                         continue
-
                     name = meta["Song Name"]
                     name_lower = name.lower()
                     detected_diff = self._infer_song_difficulty_from_path(root)
-
                     if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
                         continue
-
                     primary_color = (meta.get("Primary Color") or "").strip().lower()
                     secondary_color = (meta.get("Secondary Color") or "").strip().lower()
-
                     if not tp_all and (not primary_color or primary_color not in tp_cols):
                         continue
                     if not ts_all and (not secondary_color or secondary_color not in ts_cols):
                         continue
-
                     if filter_search and filter_search not in name_lower:
                         continue
-
                     song_queue.append((fp, name, detected_diff))
                     seen_paths.add(abs_fp)
-
         if not song_queue and not resume_seed_queue:
             logger.error("Error: No matching songs found.")
             return []
-
         try:
             logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
         except Exception as e:
             logger.warning(f"app:_lookup_song_presence: {e}")
-
         song_names_present_in_db: set[str] = set()
         song_names_present_loaded = False
         try:
@@ -833,24 +713,16 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 song_queue = missing + existing
         except Exception as exc:
             logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
-
-        # Optional deterministic limit (useful for benchmarks / iteration).
-        # If resuming with DB priority, apply the limit after merging new-missing + resume.
         apply_limit = not resume_seed_queue
         if apply_limit:
             song_queue_limit = _read_song_queue_limit()
             if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
-
                 def _queue_sort_key(item: tuple[str, str, str]) -> tuple[str, str, str]:
                     return (
                         str(item[1] or "").casefold(),
                         str(item[2] or "").casefold(),
                         os.path.abspath(str(item[0] or "")).casefold(),
                     )
-
-                # Keep DB-missing songs at the front even when a queue limit is active.
-                # Without this, sorting the entire queue before truncation can drop newly
-                # added songs from the limited slice.
                 present = song_names_present_in_db if song_names_present_loaded else set()
                 if present:
                     missing: list[tuple[str, str, str]] = []
@@ -870,7 +742,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         pass
                 song_queue = song_queue[: int(song_queue_limit)]
                 logger.info(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
-
         if resume_seed_queue:
             new_missing: list[tuple[str, str, str]] = []
             try:
@@ -889,13 +760,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                         new_missing.append(item)
             except Exception as exc:
                 logging.warning(f"[DB] Failed to detect new missing songs: {type(exc).__name__}: {exc}")
-
             if new_missing:
                 try:
                     logger.info(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
                 except Exception as e:
                     logger.warning(f"app:_queue_sort_key: {e}")
-
             merged_queue = list(new_missing) + list(resume_seed_queue)
             song_queue_limit = _read_song_queue_limit()
             if song_queue_limit and song_queue_limit > 0 and len(merged_queue) > song_queue_limit:
@@ -904,16 +773,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)"
                 )
             return merged_queue
-
-        # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
             return song_queue
-
         logger.info(f"Found {len(song_queue)} songs to process.")
         return song_queue
-
     def _normalize_song_label(self, label: str) -> str:
-        # Strip "(Run x/y)" suffix so DB queries map to the base song key.
         s = str(label or "").strip()
         if not s:
             return s
@@ -921,7 +785,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", s).strip()
         except (ValueError, TypeError, re.error):
             return s
-
     def _prepare_tasks(
         self,
         song_queue,
@@ -952,7 +815,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             parallel_workers=int(parallel_workers),
             fg_debug=bool(fg_debug),
         )
-
         def _append_song_task(
             fp,
             found_song_name: str,
@@ -985,9 +847,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 queue_source="app_prepare_tasks",
             )
             tasks.append(legacy_task_tuple_from_job_context(job, run_context, *extras))
-
-        # GA_SEED is debug-only. Production runs leave it unset and get fresh
-        # per-task seeds on every preparation / LoopForever pass.
         ga_seed_base: int | None = None
         raw_ga_seed = env_get("GA_SEED")
         if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
@@ -995,8 +854,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
             except (ValueError, TypeError) as exc:
                 raise ValueError("GA_SEED must be an integer debug seed when set") from exc
-
-        # PRODUCTION: repeat flags.
         runtime_settings = self._current_runtime_settings(cfg)
         song_repeats = int(runtime_settings.song_repeats)
         try:
@@ -1008,18 +865,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         song_repeats = max(1, min(int(song_repeats), 100))
         used_ga_seeds: set[int] = set()
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
-            # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.
             base = int(ga_seed_base or 0) & 0xFFFFFFFF
             name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
             idx = int(repeat_index) & 0xFFFFFFFF
             seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
             return int(seed)
-
         def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
             if ga_seed_base is not None:
                 ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
                 while ga_seed in used_ga_seeds:
-                    # Extremely unlikely, but keep the uniqueness guarantee across the queue.
                     ga_seed = int((ga_seed + 1) & 0xFFFFFFFF)
             else:
                 ga_seed = int(secrets.randbits(32))
@@ -1031,39 +885,30 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 "repeat_total": int(repeat_total),
                 "ga_seed": int(ga_seed),
             }
-
         for fp, found_song_name, task_diff in song_queue:
             if song_repeats <= 1:
                 logger.info(f"[QUEUE] {found_song_name}")
-                # Production native GA must never fall back to its internal fixed seed.
-                # Attach a one-run context even when SongRepeats=1 so every song has
-                # an explicit per-run seed across LoopForever iterations.
                 repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
                 continue
-
             for repeat_index in range(1, song_repeats + 1):
                 repeat_ctx = _build_repeat_ctx(
                     str(found_song_name),
                     repeat_index=int(repeat_index),
                     repeat_total=int(song_repeats),
                 )
-
                 logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
         return tasks
-
     @staticmethod
     def _effective_total_tasks(tasks: list) -> int:
         """
         Compute the logical "task" count used for progress + throughput.
-
         - Non-bundled repeats: each queued tuple is already one task => `len(tasks)`.
         - Bundled repeats: each queued tuple expands into N repeat runs;
           count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
         """
         return effective_task_count(tasks)
-
     def _fatal_gpu_errors_enabled(self) -> bool:
         raw = str(env_get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
         if raw:
@@ -1071,7 +916,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if truthy(env_get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
             return True
         return False
-
     @staticmethod
     def _iter_exception_chain(exc: BaseException | None):
         seen: set[int] = set()
@@ -1093,17 +937,14 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 pending.append(getattr(current, "__context__", None))
             except Exception as e:
                 logger.warning(f"app:_iter_exception_chain: {e}")
-
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         if not self._fatal_gpu_errors_enabled():
             return False
-
         try:
             from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
         except Exception as e:
             logger.warning(f"app:_is_fatal_inflight_exception: {e}")
             GpuServiceTimeoutError = ()
-
         fatal_markers = (
             "gpu executor timeout after",
             "gpu executor taichi init failed",
@@ -1121,7 +962,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             "waituntilcompleted",
             "metaldevice::wait_idle",
         )
-
         for current in self._iter_exception_chain(exc):
             if GpuServiceTimeoutError and isinstance(current, GpuServiceTimeoutError):
                 return True
@@ -1133,7 +973,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if any(marker in message for marker in fatal_markers):
                 return True
         return False
-
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
             self._clear_robeatsmeta_runtime_status(status="idle", available=True)
@@ -1152,27 +991,22 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     manager.shutdown()
                 except Exception as e:
                     logger.warning(f"app:_cleanup_resources: {e}")
-            # Flush pending DB writes (best-effort)
             if hasattr(self, "_async_db_saver"):
                 try:
                     self._async_db_saver.shutdown(timeout=30.0)
                 except Exception as e:
                     logger.warning(f"app:_cleanup_resources: {e}")
-            # Force GC on manager
             old_manager = manager
             del old_manager
             gc.collect(generation=0)
-
         except Exception as e:
             logger.warning(f"app:_cleanup_resources: {e}")
-
     def _loop_restart_wait_seconds(self, cfg=None, *, default_seconds: float = 0.0) -> float:
         wait_s = float(default_seconds)
         try:
             wait_s = float(self._current_runtime_settings(cfg).loop_restart_wait_sec)
         except (ValueError, TypeError):
             pass
-
         for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC", "LOOP_RESTART_WAIT_SEC"):
             raw = env_get(env_key)
             if raw is None or str(raw).strip() == "":
@@ -1181,9 +1015,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 wait_s = float(raw)
             except (ValueError, TypeError):
                 pass
-
         return max(0.0, min(float(wait_s), 60.0))
-
     def _handle_loop_restart(self, wait_time=0):
         wait_s = max(0.0, float(wait_time or 0.0))
         if wait_s > 0.0:
