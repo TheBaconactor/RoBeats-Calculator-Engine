@@ -1368,10 +1368,6 @@ def solve_force_greats_finder_gpu_tasks(
     # Reuse a dict slot in the existing buf cache for cfg ranges.
     if _fg_flat_work_buf is None:
         _fg_flat_work_buf = {}
-    if "cfg_start" not in _fg_flat_work_buf:
-        _fg_flat_work_buf["cfg_start"] = np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32)
-    if "cfg_len" not in _fg_flat_work_buf:
-        _fg_flat_work_buf["cfg_len"] = np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32)
     if "cfg_base" not in _fg_flat_work_buf:
         _fg_flat_work_buf["cfg_base"] = np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32)
     if "cfg_mode" not in _fg_flat_work_buf:
@@ -1383,8 +1379,6 @@ def solve_force_greats_finder_gpu_tasks(
 
     ft_buf = _fg_ftff_upload_buf["ft"]
     ff_buf = _fg_ftff_upload_buf["ff"]
-    cfg_start_buf = _fg_flat_work_buf["cfg_start"]
-    cfg_len_buf = _fg_flat_work_buf["cfg_len"]
     cfg_base_buf = _fg_flat_work_buf["cfg_base"]
     cfg_mode_buf = _fg_flat_work_buf["cfg_mode"]
     cfg_max_fp_buf = _fg_flat_work_buf["cfg_max_fp"]
@@ -1514,7 +1508,7 @@ def solve_force_greats_finder_gpu_tasks(
                         int(is_s_ff),
                     )
                 if not use_gpu_cfg_ranges:
-                    # CPU needs per-ftff lengths to build cfg_start/cfg_len per band.
+                    # Host needs per-ftff lengths to compute the exact span for the reducer.
                     try:
                         cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
                     except Exception as e:
@@ -1567,128 +1561,51 @@ def solve_force_greats_finder_gpu_tasks(
                 label="packed_gpu_max_fp",
             )
             cfg_chunk_run = int(cfg_chunk_run_plan.cfg_chunk)
-        stage1_cfg_dedupe_requested = bool(
-            _FG_GPU_CONFIG_DEDUPE
-            and bool(use_gpu_cfg_ranges)
-            and int(max_cfg_len_chunk) >= int(_FG_GPU_CONFIG_DEDUPE_MIN_CFG)
-            and int(n_sections) > 0
-        )
-        if stage1_cfg_dedupe_requested and int(max_cfg_len_chunk) > int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
+        if int(max_cfg_len_chunk) > int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
             raise RuntimeError(
                 "FG config surface dedupe needs a representative table at least as large as the config span; "
-                "increase FG_CFG_DEDUPE_MAX_REPS or disable FG_GPU_CONFIG_DEDUPE."
+                "increase FG_CFG_DEDUPE_MAX_REPS."
             )
-        use_stage1_cfg_dedupe = bool(stage1_cfg_dedupe_requested)
-        dedupe_slots = 0
-        if use_stage1_cfg_dedupe:
-            dedupe_slots = 1
-            target_slots = max(1, int(max_cfg_len_chunk))
-            while int(dedupe_slots) < int(target_slots) and int(dedupe_slots) < int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
-                dedupe_slots *= 2
-            dedupe_slots = max(1, min(int(dedupe_slots), int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)))
-        cfg_span_for_bands = int(max_cfg_len_chunk)
-        n_bands = (int(cfg_span_for_bands) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
-        stage1_band_count = int(n_bands)
+        dedupe_slots = max(1, int(max_cfg_len_chunk))
+        stage1_band_count = 0
         t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
-        if use_stage1_cfg_dedupe:
-            stage1_band_count = 0
-            work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
-            for work_offset in range(0, int(n_work_items), int(work_chunk)):
-                local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
-                if local_work_items <= 0:
-                    continue
-                fg_kernels.fg_cfg_dedupe_clear_kernel(int(local_work_items), int(dedupe_slots))
-                fg_kernels.fg_cfg_dedupe_build_kernel(
-                    int(work_offset),
-                    int(local_work_items),
-                    int(dedupe_slots),
-                    int(total_notes),
-                    int(long_notes),
-                    int(total_budget),
-                    int(gem_scale_fever),
-                    int(n_sections),
-                    int(song_slot),
-                    int(1 if pair_caps_from_timeline else 0),
-                )
-                n_dedupe_bands = (int(dedupe_slots) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
-                stage1_band_count += int(n_dedupe_bands)
-                for band_idx in range(n_dedupe_bands):
-                    band_start = int(band_idx) * int(cfg_chunk_run)
-                    band_len = min(int(cfg_chunk_run), int(dedupe_slots) - int(band_start))
-                    if band_len <= 0:
-                        continue
-                    is_first_chunk = int(1 if int(band_idx) == 0 else 0)
-                    if not _FG_STAGE1_DIRECT_ATOMIC:
-                        fg_kernels.fg_stage1_clear_wave_best_kernel(int(local_work_items))
-                    fg_kernels.fg_stage1_waves_kernel(
-                        bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
-                        int(work_offset),
-                        int(1),
-                        int(dedupe_slots),
-                        int(local_work_items),
-                        int(band_len),
-                        int(-1),
-                        int(band_start),
-                        int(total_notes),
-                        int(long_notes),
-                        float(last_note_time),
-                        int(total_budget),
-                        int(gem_scale_fever),
-                        int(n_sections),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                        int(is_p_pp),
-                        int(is_s_pp),
-                        int(is_p_cm),
-                        int(is_s_cm),
-                        int(is_p_fm),
-                        int(is_s_fm),
-                        int(is_p_ov),
-                        int(is_s_ov),
-                        int(song_slot),
-                        int(1 if pair_caps_from_timeline else 0),
-                    )
-                    if not _FG_STAGE1_DIRECT_ATOMIC:
-                        fg_kernels.fg_stage1_reduce_waves_kernel(
-                            int(work_offset),
-                            int(local_work_items),
-                            int(is_first_chunk),
-                        )
-        else:
-            for band_idx in range(n_bands):
+        work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
+        for work_offset in range(0, int(n_work_items), int(work_chunk)):
+            local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
+            if local_work_items <= 0:
+                continue
+            fg_kernels.fg_cfg_dedupe_clear_kernel(int(local_work_items), int(dedupe_slots))
+            fg_kernels.fg_cfg_dedupe_build_kernel(
+                int(work_offset),
+                int(local_work_items),
+                int(dedupe_slots),
+                int(total_notes),
+                int(long_notes),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_sections),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
+            )
+            n_dedupe_bands = (int(dedupe_slots) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
+            stage1_band_count += int(n_dedupe_bands)
+            for band_idx in range(n_dedupe_bands):
                 band_start = int(band_idx) * int(cfg_chunk_run)
-                band_len = min(int(cfg_chunk_run), int(max_cfg_len_chunk) - int(band_start))
+                band_len = min(int(cfg_chunk_run), int(dedupe_slots) - int(band_start))
                 if band_len <= 0:
                     continue
-
-                # Packed-tasks cfg ranges:
-                # - Fast path: compute per-ftff cfg windows on-the-fly inside the Stage-1 kernel by passing
-                #   cfg_offset<0 and cfg_read_offset=band_start.
-                # - Fallback: precompute/upload fg_cfg_start_list/fg_cfg_len_list for this band and use the
-                #   cfg_offset/cfg_read_offset<0 sentinel.
-                cfg_offset_i = int(-1)
-                cfg_read_offset_i = int(band_start) if use_gpu_cfg_ranges else int(-1)
-                if not use_gpu_cfg_ranges:
-                    cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
-                    remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
-                    cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
-                    fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
-
-                # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
                 is_first_chunk = int(1 if int(band_idx) == 0 else 0)
                 if not _FG_STAGE1_DIRECT_ATOMIC:
-                    fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+                    fg_kernels.fg_stage1_clear_wave_best_kernel(int(local_work_items))
                 fg_kernels.fg_stage1_waves_kernel(
                     bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
-                    int(0),
-                    int(0),
-                    int(0),
-                    int(n_work_items),
+                    int(work_offset),
+                    int(1),
+                    int(dedupe_slots),
+                    int(local_work_items),
                     int(band_len),
-                    int(cfg_offset_i),
-                    int(cfg_read_offset_i),
+                    int(-1),
+                    int(band_start),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),
@@ -1711,7 +1628,11 @@ def solve_force_greats_finder_gpu_tasks(
                     int(1 if pair_caps_from_timeline else 0),
                 )
                 if not _FG_STAGE1_DIRECT_ATOMIC:
-                    fg_kernels.fg_stage1_reduce_waves_kernel(int(0), int(n_work_items), int(is_first_chunk))
+                    fg_kernels.fg_stage1_reduce_waves_kernel(
+                        int(work_offset),
+                        int(local_work_items),
+                        int(is_first_chunk),
+                    )
 
         # Ordering is preserved on-device; only force a host sync when timing/tracing.
         did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)

@@ -835,8 +835,8 @@ def fg_cfg_dedupe_build_kernel(
     Build per-owner representative cfg indices from exact scoring-relevant signatures.
     This is intentionally GPU-side: configs remain implicit, and Stage 1 later
     reads representative original cfg_idx values from fg_cfg_dedupe_rep_cfg_idx.
-    If an owner exhausts the bounded table, it is marked inactive and Stage 1
-    falls back to evaluating its full cfg window.
+    The host must size the bounded table to cover the full config span; exhausting
+    it is an invariant failure, not a supported alternate scoring path.
     """
     MAX_STAT: ti.i32 = 160
     head_len: ti.i32 = ti.min(total_notes, 100)
@@ -1300,7 +1300,7 @@ def fg_stage1_waves_kernel(
                     band_start: ti.i32 = cfg_read_offset
                     total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
                     if use_cfg_dedupe != 0:
-                        total_len = cfg_dedupe_slots
+                        total_len = fg_cfg_dedupe_rep_count[local_work_idx]
                     remaining: ti.i32 = total_len - band_start
                     if remaining <= 0:
                         cfg_len = 0
@@ -1373,10 +1373,7 @@ def fg_stage1_waves_kernel(
                         else:
                             cfg_len = ti.min(remaining_eff, n_cfg)
             cfg_idx: ti.i32 = lane
-            while cfg_idx < n_cfg:
-                if cfg_idx >= cfg_len:
-                    cfg_idx += FG_STAGE1_BLOCK_DIM
-                    continue
+            while cfg_idx < cfg_len:
                 global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
                 if use_cfg_dedupe != 0:
                     rep_slot: ti.i32 = cfg_read_offset + cfg_idx
