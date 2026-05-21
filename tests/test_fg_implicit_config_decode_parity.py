@@ -4,7 +4,6 @@ import itertools
 
 import numpy as np
 import pytest
-from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 
 # Ensure we can import gear_optimizer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,16 +19,7 @@ def _has_taichi() -> bool:
 
 def _explicit_plateau_rows(max_fp: tuple[int, ...], n_sections: int) -> list[tuple[int, ...]]:
     ranges = [range(0, int(v) + 1) for v in max_fp[: int(n_sections)]]
-    rows: list[tuple[int, ...]] = []
-    for base in itertools.product(*ranges):
-        for mask in range(1 << min(max(int(n_sections), 0), 4)):
-            rows.append(
-                tuple(
-                    int(base[s]) + (int(FG_PLATEAU_REP_STRIDE) if ((mask >> s) & 1) else 0)
-                    for s in range(int(n_sections))
-                )
-            )
-    return rows
+    return [tuple(int(v) for v in base) for base in itertools.product(*ranges)]
 
 
 @pytest.mark.gpu
@@ -41,16 +31,12 @@ def _explicit_plateau_rows(max_fp: tuple[int, ...], n_sections: int) -> list[tup
         (4, (1, 1, 1, 1)),
     ],
 )
-def test_fg_counts_max_fp_implicit_matches_explicit_counts_list(n_sections: int, max_fp: tuple[int, ...]):
+def test_fg_counts_max_fp_rectangles_are_rejected(n_sections: int, max_fp: tuple[int, ...]):
     """
-    Strong parity: implicit mixed-radix decode must match explicit plateau representative ordering.
+    Max-FP rectangles were replaced by the cap-free GPU prefix frontier descriptor.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.force_greats.api import (
-        fg_download_global_best,
-        fg_reset_global_best,
-        solve_force_greats_finder_gpu_tasks,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
 
     timestamps = np.linspace(0.0, 120.0, 180, dtype=np.float32)
     long_notes = 0
@@ -91,52 +77,22 @@ def test_fg_counts_max_fp_implicit_matches_explicit_counts_list(n_sections: int,
 
     ftff_pairs = [(0, 0), (1, 0)]
 
-    counts_list = _explicit_plateau_rows(max_fp, int(n_sections))
-
-    explicit_task = {"counts_list": counts_list, "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
     implicit_task = {"counts_max_fp": list(max_fp), "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
 
-    fg_reset_global_best(n_genomes)
-    solve_force_greats_finder_gpu_tasks(
-        genome_stats_arr,
-        timestamps,
-        None,
-        long_notes,
-        last_note_time,
-        fg_tasks=[explicit_task],
-        n_sections=int(n_sections),
-        ref_arrays=ref_arrays,
-        return_raw=True,
-        accumulate_global=True,
-        **flags,
-    )
-    explicit = fg_download_global_best(n_genomes)
-
-    # Implicit decode (counts_max_fp)
-    fg_reset_global_best(n_genomes)
-    solve_force_greats_finder_gpu_tasks(
-        genome_stats_arr,
-        timestamps,
-        None,
-        long_notes,
-        last_note_time,
-        fg_tasks=[implicit_task],
-        n_sections=int(n_sections),
-        ref_arrays=ref_arrays,
-        return_raw=True,
-        accumulate_global=True,
-        **flags,
-    )
-    implicit = fg_download_global_best(n_genomes)
-
-    assert set(explicit.keys()) == set(implicit.keys())
-    for k in explicit:
-        a = explicit[k]
-        b = implicit[k]
-        assert isinstance(a, np.ndarray)
-        assert isinstance(b, np.ndarray)
-        assert a.shape == b.shape
-        assert np.array_equal(a, b), f"Mismatch for key={k}"
+    with pytest.raises(ValueError, match="counts_max_fp rectangles were removed"):
+        solve_force_greats_finder_gpu_tasks(
+            genome_stats_arr,
+            timestamps,
+            None,
+            long_notes,
+            last_note_time,
+            fg_tasks=[implicit_task],
+            n_sections=int(n_sections),
+            ref_arrays=ref_arrays,
+            return_raw=True,
+            accumulate_global=True,
+            **flags,
+        )
 
 
 @pytest.mark.gpu
@@ -185,10 +141,8 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps():
     cfg_len = 1
     for v in max_fp:
         cfg_len *= int(v) + 1
-    cfg_len *= 1 << len(max_fp)
     counts_list = _explicit_plateau_rows(max_fp, len(max_fp))
     baseline_task = {"counts_list": counts_list, "ftff_pairs": [(0, 0)], "base_cfg_offset": 0}
-    dedupe_task = {"counts_max_fp": list(max_fp), "ftff_pairs": [(0, 0)], "base_cfg_offset": 0}
 
     fg_api.fg_reset_global_best(n_genomes)
     fg_api.solve_force_greats_finder_gpu_tasks(
@@ -206,22 +160,6 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps():
     )
     baseline = fg_api.fg_download_global_best(n_genomes)
 
-    fg_api.fg_reset_global_best(n_genomes)
-    fg_api.solve_force_greats_finder_gpu_tasks(
-        genome_stats_arr,
-        timestamps,
-        None,
-        long_notes,
-        last_note_time,
-        fg_tasks=[dedupe_task],
-        n_sections=len(max_fp),
-        ref_arrays=ref_arrays,
-        return_raw=True,
-        accumulate_global=True,
-        **flags,
-    )
-    deduped = fg_api.fg_download_global_best(n_genomes)
-
     rep_count = int(fg_fields.fg_cfg_dedupe_rep_count.to_numpy()[0])
     active = int(fg_fields.fg_cfg_dedupe_active.to_numpy()[0])
     dedupe_slots = max(1, int(cfg_len))
@@ -234,11 +172,4 @@ def test_fg_gpu_config_signature_dedupe_is_lossless_and_reduces_reps():
     assert np.all(rep_idx[rep_count:] == -1)
     assert int(np.count_nonzero(rep_hash[:rep_count])) == rep_count
     assert int(np.count_nonzero(rep_hash[rep_count:])) == 0
-    assert set(baseline.keys()) == set(deduped.keys())
-    for k in baseline:
-        a = baseline[k]
-        b = deduped[k]
-        assert isinstance(a, np.ndarray)
-        assert isinstance(b, np.ndarray)
-        assert a.shape == b.shape
-        assert np.array_equal(a, b), f"Mismatch for key={k}"
+    assert "final_score" in baseline

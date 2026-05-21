@@ -903,7 +903,6 @@ def solve_force_greats_finder_gpu_tasks(
     n_sections = int(n_sections) if int(n_sections) > 0 else 1
     if n_sections > fg_fields.FG_MAX_SECTIONS:
         raise ValueError(f"Too many FG sections: {n_sections} > {fg_fields.FG_MAX_SECTIONS}")
-    plateau_rep_multiplier = 1 << min(max(int(n_sections), 0), int(fg_kernels.FG_PLATEAU_REP_MAX_SECTIONS))
 
     # Upload song buffers (cached) and ensure fever-end tables exist.
     timestamps_np = np.asarray(timestamps_np, dtype=np.float32)
@@ -1029,6 +1028,8 @@ def solve_force_greats_finder_gpu_tasks(
         if isinstance(counts_max_fp, dict) and str(counts_max_fp.get("mode") or "") == "gpu":
             counts_max_fp_compute = counts_max_fp
             counts_max_fp = None
+        elif counts_max_fp is not None:
+            raise ValueError("counts_max_fp rectangles were removed; use the GPU prefix frontier descriptor")
         ftff_pairs = task.get("ftff_pairs")
         if ftff_pairs is None:
             continue
@@ -1048,139 +1049,24 @@ def solve_force_greats_finder_gpu_tasks(
         else:
             cfg_empty = not fg_configs
 
-        counts_max_fp_arr = None
-        per_pair_max_fp = False
-        per_pair_max_fp_gpu = False
-        if counts_max_fp is None:
-            max_fp_empty = True
-        else:
-            try:
-                counts_max_fp_arr = np.asarray(counts_max_fp, dtype=np.int32)
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                counts_max_fp_arr = None
-            if isinstance(counts_max_fp_arr, np.ndarray) and int(getattr(counts_max_fp_arr, "ndim", 0) or 0) == 2:
-                if n_pairs > 0 and int(counts_max_fp_arr.shape[0]) == int(n_pairs):
-                    per_pair_max_fp = True
-                    max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
-                else:
-                    max_fp_empty = True
-            else:
-                if counts_max_fp_arr is None:
-                    max_fp_empty = not counts_max_fp
-                else:
-                    max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
-
-        if counts_max_fp_compute is not None:
-            per_pair_max_fp_gpu = True
-            max_fp_empty = False
-        if (cfg_empty and max_fp_empty) or ftff_empty:
+        if (cfg_empty and counts_max_fp_compute is None) or ftff_empty:
             continue
-        if per_pair_max_fp_gpu:
-            try:
-                # Fast path: caller can pass pre-split base FT/FF vectors to avoid
-                # repeated host slicing of `(n,2)` base stat pairs.
-                base_ft = counts_max_fp_compute.get("base_ft")
-                base_ff = counts_max_fp_compute.get("base_ff")
-                if base_ft is None or base_ff is None:
-                    base_pairs = np.asarray(counts_max_fp_compute.get("base_stats_pairs"), dtype=np.int32)
-                    if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2:
-                        continue
-                    base_ft = base_pairs[:, 0]
-                    base_ff = base_pairs[:, 1]
-
-                base_ft = np.asarray(base_ft, dtype=np.int32)
-                base_ff = np.asarray(base_ff, dtype=np.int32)
-                if base_ft.ndim != 1 or base_ff.ndim != 1:
-                    continue
-                if int(base_ft.shape[0]) <= 0 or int(base_ft.shape[0]) != int(base_ff.shape[0]):
-                    continue
-                if not bool(base_ft.flags["C_CONTIGUOUS"]):
-                    base_ft = np.ascontiguousarray(base_ft, dtype=np.int32)
-                if not bool(base_ff.flags["C_CONTIGUOUS"]):
-                    base_ff = np.ascontiguousarray(base_ff, dtype=np.int32)
-
-                non_fever_base_by_ff = np.asarray(counts_max_fp_compute.get("non_fever_base_by_ff"), dtype=np.int16)
-                if not bool(non_fever_base_by_ff.flags["C_CONTIGUOUS"]):
-                    non_fever_base_by_ff = np.ascontiguousarray(non_fever_base_by_ff, dtype=np.int16)
-
-                fp_cap_table = np.asarray(counts_max_fp_compute.get("fp_cap_table"), dtype=np.int16)
-                if not bool(fp_cap_table.flags["C_CONTIGUOUS"]):
-                    fp_cap_table = np.ascontiguousarray(fp_cap_table, dtype=np.int16)
-
-                compute_n_sections = int(counts_max_fp_compute.get("n_sections", n_sections) or n_sections)
-                compute_song_slot = int(counts_max_fp_compute.get("song_slot", song_slot) or song_slot)
-                compute_gem_scale = int(
-                    counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever
-                )
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                continue
-            if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
-                continue
-            if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
-                continue
-            # IMPORTANT: packed-task streaming uses `total_pairs` to size the work estimate.
-            # If we don't count pairs here, the function returns early and never runs Stage-1/2,
-            # leaving cfg_max_fp/cfg_total_len as zeros -> cfg_idx=-1 -> 0 FG variants.
+        if counts_max_fp_compute is not None:
+            compute_n_sections = int(counts_max_fp_compute.get("n_sections", n_sections) or n_sections)
+            compute_song_slot = int(counts_max_fp_compute.get("song_slot", song_slot) or song_slot)
+            compute_gem_scale = int(counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever)
             total_pairs += int(n_pairs)
             prepared_tasks.append(
                 {
                     "ftff_pairs": ftff_pairs,
                     "cfg_base": 0,
                     "cfg_len": 0,
-                    "cfg_mode": 1,
-                    "max_fp_arr": None,
-                    "max_fp_matrix": None,
-                    "cfg_len_matrix": None,
+                    "cfg_mode": 2,
                     "max_fp_compute": {
-                        "base_ft": base_ft,
-                        "base_ff": base_ff,
-                        "non_fever_base_by_ff": non_fever_base_by_ff,
-                        "fp_cap_table": fp_cap_table,
                         "n_sections": int(compute_n_sections),
                         "song_slot": int(compute_song_slot),
                         "gem_scale_fever": int(compute_gem_scale),
                     },
-                }
-            )
-            continue
-        if per_pair_max_fp:
-            # Per-pair max-FP caps: avoid CPU grouping and keep implicit configs per FT/FF pair.
-            try:
-                max_fp_matrix = np.asarray(counts_max_fp_arr[:, : int(n_sections)], dtype=np.int32)
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                continue
-            if int(max_fp_matrix.shape[0]) <= 0:
-                continue
-            try:
-                cfg_len_matrix = np.prod(np.maximum(max_fp_matrix, 0) + 1, axis=1, dtype=np.int64)
-                cfg_len_matrix *= int(plateau_rep_multiplier)
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                cfg_len_matrix = None
-            if cfg_len_matrix is None:
-                continue
-            try:
-                cfg_len_matrix = np.clip(cfg_len_matrix, 1, np.iinfo(np.int32).max).astype(np.int32, copy=False)
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                cfg_len_matrix = np.asarray(cfg_len_matrix, dtype=np.int32)
-            try:
-                max_cfg_len = max(int(max_cfg_len), int(np.max(cfg_len_matrix)))
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-            total_pairs += int(n_pairs)
-            prepared_tasks.append(
-                {
-                    "ftff_pairs": ftff_pairs,
-                    "cfg_base": 0,
-                    "cfg_len": 0,
-                    "cfg_mode": 1,
-                    "max_fp_arr": None,
-                    "max_fp_matrix": max_fp_matrix,
-                    "cfg_len_matrix": cfg_len_matrix,
                 }
             )
             continue
@@ -1190,21 +1076,7 @@ def solve_force_greats_finder_gpu_tasks(
         except Exception as e:
             logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             cfg_base = int(base_cfg_offset)
-        if counts_max_fp:
-            try:
-                max_fp_list = [max(0, int(x or 0)) for x in list(counts_max_fp)[: int(n_sections)]]
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                max_fp_list = []
-            if not max_fp_list:
-                cfg_len = 1
-            else:
-                cfg_len = 1
-                for v in max_fp_list:
-                    cfg_len *= int(v) + 1
-                cfg_len *= int(plateau_rep_multiplier)
-        else:
-            cfg_len = int(len(fg_configs))
+        cfg_len = int(len(fg_configs))
         if cfg_len <= 0:
             continue
         if cfg_len > max_cfg_len:
@@ -1214,88 +1086,67 @@ def solve_force_greats_finder_gpu_tasks(
         except Exception as e:
             logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
 
-        if counts_max_fp:
-            try:
-                key = (tuple(max_fp_list), int(cfg_base))
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                key = (int(id(counts_max_fp)), int(cfg_base))
-        else:
-            key = (int(id(fg_configs)), int(cfg_base))
+        key = (int(id(fg_configs)), int(cfg_base))
         if key not in uploaded_cfg_keys:
             uploaded_cfg_keys.add(key)
             if cfg_base < 0:
                 raise ValueError("base_cfg_offset must be >= 0 for packed FG tasks")
-            if (not counts_max_fp) and (int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS)):
+            if int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS):
                 raise ValueError("Packed FG tasks exceed FG_MAX_CONFIGS")
 
-            if not counts_max_fp:
-                # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
-                #
-                # IMPORTANT: the staging buffer is capped (default 4096 rows). Some songs/configurations can produce
-                # >4096 distinct configs (e.g., 3+ useful sections with wide breakpoint ranges). Chunk uploads to
-                # avoid IndexError and keep correctness (kernel reads only the first `n_cfg` rows per upload).
-                max_rows = int(getattr(buf, "shape", (0,))[0] or 0)
-                if max_rows <= 0:
-                    raise RuntimeError("Forced-count staging buffer was not allocated")
+            # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
+            max_rows = int(getattr(buf, "shape", (0,))[0] or 0)
+            if max_rows <= 0:
+                raise RuntimeError("Forced-count staging buffer was not allocated")
 
-                # Attempt a packed numpy view for fast slicing when possible.
+            # Attempt a packed numpy view for fast slicing when possible.
+            arr_cfg = None
+            try:
+                arr_cfg = np.asarray(fg_configs, dtype=np.int32)
+            except Exception as e:
+                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 arr_cfg = None
+            arr_cfg_is_packed = bool(
+                arr_cfg is not None and getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(cfg_len)
+            )
+            packed_cols = int(arr_cfg.shape[1]) if arr_cfg_is_packed else 0
+            cols = min(int(packed_cols), int(n_sections), int(fg_fields.FG_MAX_SECTIONS)) if packed_cols > 0 else 0
+
+            for cfg_off in range(0, int(cfg_len), int(max_rows)):
+                n_cfg = min(int(max_rows), int(cfg_len) - int(cfg_off))
+                if n_cfg <= 0:
+                    continue
+
+                buf[:n_cfg, :] = 0
                 try:
-                    arr_cfg = np.asarray(fg_configs, dtype=np.int32)
-                except Exception as e:
-                    logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                    arr_cfg = None
-                arr_cfg_is_packed = bool(
-                    arr_cfg is not None and getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(cfg_len)
-                )
-                packed_cols = int(arr_cfg.shape[1]) if arr_cfg_is_packed else 0
-                cols = min(int(packed_cols), int(n_sections), int(fg_fields.FG_MAX_SECTIONS)) if packed_cols > 0 else 0
-
-                for cfg_off in range(0, int(cfg_len), int(max_rows)):
-                    n_cfg = min(int(max_rows), int(cfg_len) - int(cfg_off))
-                    if n_cfg <= 0:
-                        continue
-
-                    buf[:n_cfg, :] = 0
-                    try:
-                        if arr_cfg_is_packed and cols > 0:
-                            buf[:n_cfg, :cols] = arr_cfg[int(cfg_off) : int(cfg_off) + int(n_cfg), :cols]
-                        else:
-                            chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
-                            for i, cfg in enumerate(chunk):
-                                limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
-                                buf[i, :limit] = cfg[:limit]
-                    except Exception as e:
-                        logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
+                    if arr_cfg_is_packed and cols > 0:
+                        buf[:n_cfg, :cols] = arr_cfg[int(cfg_off) : int(cfg_off) + int(n_cfg), :cols]
+                    else:
                         chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
                         for i, cfg in enumerate(chunk):
                             limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
                             buf[i, :limit] = cfg[:limit]
+                except Exception as e:
+                    logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
+                    chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
+                    for i, cfg in enumerate(chunk):
+                        limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
+                        buf[i, :limit] = cfg[:limit]
 
-                    staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
-                    staging = _get_forced_counts_staging(int(staging_rows))
-                    _t_up0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
-                    staging.from_numpy(buf[: int(staging_rows), :])
-                    if _t_up0:
-                        _record_upload(
-                            "forced_counts_staging(packed_tasks)",
-                            time.perf_counter() - _t_up0,
-                            buf[: int(staging_rows), :].nbytes,
-                        )
-                    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
-                    cfg_upload_kernels += 1
+                staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
+                staging = _get_forced_counts_staging(int(staging_rows))
+                _t_up0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+                staging.from_numpy(buf[: int(staging_rows), :])
+                if _t_up0:
+                    _record_upload(
+                        "forced_counts_staging(packed_tasks)",
+                        time.perf_counter() - _t_up0,
+                        buf[: int(staging_rows), :].nbytes,
+                    )
+                fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
+                cfg_upload_kernels += 1
 
-        cfg_mode = 1 if counts_max_fp else 0
-        max_fp_arr = None
-        if cfg_mode:
-            try:
-                max_fp_arr = np.zeros((int(fg_fields.FG_MAX_SECTIONS),), dtype=np.int32)
-                for i, v in enumerate(max_fp_list[: int(fg_fields.FG_MAX_SECTIONS)]):
-                    max_fp_arr[i] = int(v)
-            except Exception as e:
-                logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
-                max_fp_arr = None
+        cfg_mode = 0
 
         prepared_tasks.append(
             {
@@ -1303,9 +1154,6 @@ def solve_force_greats_finder_gpu_tasks(
                 "cfg_base": int(cfg_base),
                 "cfg_len": int(cfg_len),
                 "cfg_mode": int(cfg_mode),
-                "max_fp_arr": max_fp_arr,
-                "max_fp_matrix": None,
-                "cfg_len_matrix": None,
                 "max_fp_compute": None,
             }
         )
@@ -1440,48 +1288,6 @@ def solve_force_greats_finder_gpu_tasks(
                 fg_kernels.fg_upload_cfg_total_len_prefix_kernel(int(n_ftff_i), cfg_total_len_active)
         _fg_cfg_defaults_uploaded = False
 
-        if use_gpu_max_fp and max_fp_compute_ctx is not None:
-            try:
-                max_fp_sections_i = max(
-                    0,
-                    min(
-                        int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
-                        int(fg_fields.FG_MAX_SECTIONS),
-                    ),
-                )
-                fg_kernels.fg_compute_max_fp_for_ftff_kernel(
-                    int(n_ftff),
-                    int(getattr(max_fp_compute_ctx.get("base_ft"), "shape", (0,))[0] or 0),
-                    int(max_fp_sections_i),
-                    int(max_fp_compute_ctx.get("song_slot", 0) or 0),
-                    int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
-                    max_fp_compute_ctx.get("base_ft"),
-                    max_fp_compute_ctx.get("base_ff"),
-                    max_fp_compute_ctx.get("non_fever_base_by_ff"),
-                    max_fp_compute_ctx.get("fp_cap_table"),
-                )
-                fg_kernels.fg_compute_cfg_total_len_kernel(
-                    int(n_ftff),
-                    int(max_fp_sections_i),
-                )
-                if (
-                    int(n_ftff) <= int(_FG_SURFACE_PAIR_REDUCTION_MAX_PAIRS)
-                    and int(max_fp_sections_i) > 0
-                ):
-                    fg_kernels.fg_zero_dominated_surface_pairs_kernel(
-                        int(n_ftff),
-                        int(max_fp_sections_i),
-                        int(total_budget),
-                        int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                    )
-                fg_kernels.fg_reduce_cfg_total_len_max_kernel(int(n_ftff))
-            except Exception as e:
-                raise RuntimeError(f"FG max-FP GPU compute failed: {type(e).__name__}: {e}") from e
-
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
         fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
@@ -1492,6 +1298,86 @@ def solve_force_greats_finder_gpu_tasks(
         if _fg_flat_work_key != flat_key:
             fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
             _fg_flat_work_key = flat_key
+
+        if use_gpu_max_fp and max_fp_compute_ctx is not None:
+            fg_fields.fg_frontier_overflow[None] = 0
+            frontier_slots = int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)
+            work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
+            t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+            for work_offset in range(0, int(n_work_items), int(work_chunk)):
+                local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
+                if local_work_items <= 0:
+                    continue
+                fg_kernels.fg_stage1_prefix_frontier_kernel(
+                    int(work_offset),
+                    int(local_work_items),
+                    int(frontier_slots),
+                    int(total_notes),
+                    int(long_notes),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                )
+            ti.sync()
+            try:
+                overflow = int(fg_fields.fg_frontier_overflow[None])
+            except Exception as e:
+                raise RuntimeError(f"FG prefix frontier overflow status read failed: {type(e).__name__}: {e}") from e
+            if overflow:
+                raise RuntimeError(
+                    "FG prefix frontier exceeded its exact representative capacity; "
+                    "increase the compiled frontier capacity before running this song."
+                )
+            if t_stage1_wall0:
+                stage1_wall = time.perf_counter() - float(t_stage1_wall0)
+                _record_kernel_wall("prefix_frontier_stage1_sync_wall", stage1_wall, genome_count=n_genomes)
+                if _PERF_TIMING:
+                    print(
+                        f"[PERF] FG prefix frontier: stage1_sync_wall={stage1_wall * 1000:.1f}ms "
+                        f"(genomes={n_genomes} ftff={n_ftff})"
+                    )
+            t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
+            fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
+                int(n_genomes),
+                int(n_ftff),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_sections),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
+            )
+            maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
+            if (_FORCE_SYNC or _SYNC_FOR_TIMING) and t_stage2_wall0:
+                stage2_wall = time.perf_counter() - float(t_stage2_wall0)
+                _record_kernel_wall("prefix_frontier_stage2_sync_wall", stage2_wall, genome_count=n_genomes)
+            return
 
         # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
         #
@@ -1659,9 +1545,9 @@ def solve_force_greats_finder_gpu_tasks(
             max_fp_compute_ctx = task.get("max_fp_compute")
             break
 
-    use_gpu_max_fp = bool(max_fp_compute_ctx) and all(task.get("max_fp_compute") is not None for task in prepared_tasks)
-    if not use_gpu_max_fp:
-        max_fp_compute_ctx = None
+    use_gpu_max_fp = bool(max_fp_compute_ctx)
+    if use_gpu_max_fp and not all(task.get("max_fp_compute") is not None for task in prepared_tasks):
+        raise ValueError("Cannot mix prefix-frontier FG tasks with explicit counts_list tasks")
 
     for task in prepared_tasks:
         ftff_pairs = task.get("ftff_pairs")
@@ -1680,9 +1566,6 @@ def solve_force_greats_finder_gpu_tasks(
         except Exception as e:
             logger.debug(f"api:_flush_chunk: {e}")
             continue
-        max_fp_arr = task.get("max_fp_arr")
-        max_fp_matrix = task.get("max_fp_matrix")
-        cfg_len_matrix = task.get("cfg_len_matrix")
         max_fp_compute = task.get("max_fp_compute")
 
         # Normalize to a compact int32 (n,2) array for fast slicing.
@@ -1718,32 +1601,11 @@ def solve_force_greats_finder_gpu_tasks(
             if max_fp_compute is not None:
                 cfg_base_buf[sl] = 0
                 cfg_total_len_buf[sl] = 0
-                cfg_mode_buf[sl] = 1
-            elif max_fp_matrix is not None and cfg_len_matrix is not None:
-                cfg_base_buf[sl] = 0
-                cfg_total_len_buf[sl] = cfg_len_matrix[int(idx) : int(idx) + int(take)]
-                cfg_mode_buf[sl] = 1
-                try:
-                    cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_matrix[
-                        int(idx) : int(idx) + int(take), : int(n_sections)
-                    ]
-                except Exception as e:
-                    logger.debug(f"api:_flush_chunk: {e}")
-                    cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(
-                        max_fp_matrix[int(idx) : int(idx) + int(take)], dtype=np.int32
-                    )[:, : int(n_sections)]
+                cfg_mode_buf[sl] = 2
             else:
                 cfg_base_buf[sl] = int(cfg_base)
                 cfg_total_len_buf[sl] = int(cfg_len)
                 cfg_mode_buf[sl] = int(cfg_mode)
-                if int(cfg_mode) != 0 and max_fp_arr is not None:
-                    try:
-                        cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
-                    except Exception as e:
-                        logger.debug(f"api:_flush_chunk: {e}")
-                        cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[
-                            : int(n_sections)
-                        ]
 
             chunk_n += int(take)
             idx += int(take)

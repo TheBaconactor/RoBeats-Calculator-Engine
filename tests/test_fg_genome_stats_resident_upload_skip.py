@@ -41,8 +41,11 @@ def test_fg_tasks_can_skip_genome_stats_upload_when_resident():
     genome = np.zeros((1, 7), dtype=np.int32)
     genome[0, :] = [100, 100, 100, 100, 100, 80, 80]
 
-    # Minimal FG tasks (rectangular).
-    task = {"counts_max_fp": [2, 2], "ftff_pairs": [(0, 0), (5, 0)], "base_cfg_offset": 0}
+    task = {
+        "counts_max_fp": {"mode": "gpu", "n_sections": 2, "song_slot": 0, "gem_scale_fever": 3},
+        "ftff_pairs": [(0, 0), (5, 0)],
+        "base_cfg_offset": 0,
+    }
 
     # Run once with upload.
     fg_reset_global_best(1)

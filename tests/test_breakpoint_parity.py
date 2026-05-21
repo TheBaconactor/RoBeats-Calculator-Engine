@@ -72,14 +72,12 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
 
         # Get section caps (same logic as CPU version)
         if section_caps is None:
-            from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
-
             section_caps = []
             for i in range(actual_sections):
                 if i < len(analyzed_caps) and analyzed_caps[i] > 0:
-                    cap = min(analyzed_caps[i], MAX_SECTION_CAPS[i] if i < len(MAX_SECTION_CAPS) else 4)
+                    cap = analyzed_caps[i]
                 else:
-                    cap = MAX_SECTION_CAPS[i] if i < len(MAX_SECTION_CAPS) else 4
+                    cap = 0
                 section_caps.append(cap)
         else:
             section_caps = section_caps[:actual_sections]

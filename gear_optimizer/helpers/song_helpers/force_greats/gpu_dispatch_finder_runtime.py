@@ -166,8 +166,6 @@ def record_finder_completion(
     no_eval_skips: int,
     breakpoint_group_cache_hits: int,
     breakpoint_group_cache_misses: int,
-    max_fp_matrix_cache_hits: int,
-    max_fp_matrix_cache_misses: int,
     fg_task_tile_batches: int,
     fg_task_tile_splits: int,
     fg_fused_tile_batches: int,
@@ -199,7 +197,7 @@ def record_finder_completion(
             logger.debug(
                 "[PERF] ForceGreatsFinder(GPU): collect=%.3fs cfg_build=%.3fs gpu_total=%.3fs "
                 "(submit=%.3fs wait=%.3fs dl_wait=%.3fs) n_gpu_calls=%s db_reuse=%s no_eval_skips=%s "
-                "groups=%s unique_sigs=%s bp_group_cache=%s/%s max_fp_cache=%s/%s task_tiles=%s fused_tiles=%s",
+                "groups=%s unique_sigs=%s bp_group_cache=%s/%s task_tiles=%s fused_tiles=%s",
                 t_collect_sec,
                 t_cfg_build_sec,
                 float(t_gpu_calls_sec + t_gpu_wait_sec + t_gpu_download_wait_sec),
@@ -213,8 +211,6 @@ def record_finder_completion(
                 unique_sig_count,
                 breakpoint_group_cache_hits,
                 breakpoint_group_cache_hits + breakpoint_group_cache_misses,
-                max_fp_matrix_cache_hits,
-                max_fp_matrix_cache_hits + max_fp_matrix_cache_misses,
                 fg_task_tile_batches,
                 fg_fused_tile_batches,
             )
@@ -260,8 +256,6 @@ def record_finder_completion(
             meta["FGSignatureFrontierLimit"] = int(sig_frontier_limit)
             meta["FGBreakpointGroupCacheHits"] = int(breakpoint_group_cache_hits)
             meta["FGBreakpointGroupCacheMisses"] = int(breakpoint_group_cache_misses)
-            meta["FGMaxFpMatrixCacheHits"] = int(max_fp_matrix_cache_hits)
-            meta["FGMaxFpMatrixCacheMisses"] = int(max_fp_matrix_cache_misses)
             meta["FGTaskTileBatches"] = int(fg_task_tile_batches)
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)

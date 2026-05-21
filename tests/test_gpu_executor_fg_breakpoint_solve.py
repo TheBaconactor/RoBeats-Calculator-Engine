@@ -28,8 +28,6 @@ def _batch_execute(request, **overrides):
         "in_process_queues": True,
         "raise_if_abort_requested": lambda: None,
         "run_payload_fn": lambda payload, **_kwargs: payload,
-        "compute_max_fp_matrix_fn": lambda **_kwargs: np.zeros((1, 1), dtype=np.int16),
-        "decode_cfg_counts_from_max_fp_matrix_fn": lambda *_args: np.asarray([[1]], dtype=np.int32),
         "decode_cfg_counts_from_windows_fn": lambda *_args: np.asarray([[2]], dtype=np.int32),
         "download_packed_topk_batch_fn": lambda n: [{} for _ in range(int(n))],
         "download_batch_max_fn": lambda: 8,
@@ -129,8 +127,6 @@ def test_execute_fg_solve_with_breakpoints_batch_decodes_missing_cfg_counts(monk
             "implicit_cfgs": True,
             "base_ft": np.asarray([0], dtype=np.int32),
             "base_ff": np.asarray([0], dtype=np.int32),
-            "non_fever_base_by_ff": np.zeros((161,), dtype=np.int16),
-            "fp_cap_table": np.zeros((161, 51), dtype=np.int16),
         }
 
     response = _batch_execute(
@@ -156,7 +152,7 @@ def test_execute_fg_solve_with_breakpoints_batch_decodes_missing_cfg_counts(monk
     )
 
     assert response.success is True
-    np.testing.assert_array_equal(response.result[0]["cfg_counts"], np.asarray([[1]], dtype=np.int32))
+    assert "cfg_counts" not in response.result[0]
 
 
 def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypatch):
@@ -167,8 +163,6 @@ def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypat
         n_sections=1,
         base_ft=np.asarray([0], dtype=np.int32),
         base_ff=np.asarray([0], dtype=np.int32),
-        non_fever_base_by_ff=np.zeros((161,), dtype=np.int16),
-        fp_cap_table=np.zeros((161, 51), dtype=np.int16),
         song_slot=3,
         gem_scale_fever=3,
         solve_kwargs_payload={"song_slot": 3},
@@ -196,7 +190,7 @@ def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypat
         "maybe_precompute_fg_breakpoint_timeline",
         lambda payload, precompute_timeline_fn: calls.append("precompute"),
     )
-    monkeypatch.setattr(solve_mod, "build_fg_breakpoint_tasks", lambda _prepared, compute_max_fp_matrix_fn: task_plan)
+    monkeypatch.setattr(solve_mod, "build_fg_breakpoint_tasks", lambda _prepared: task_plan)
     monkeypatch.setattr(
         solve_mod,
         "prepare_fg_breakpoint_solve_submission",
@@ -214,12 +208,10 @@ def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypat
         raise_if_abort_requested=lambda: calls.append("abort_check"),
         env_get_fn=lambda _key, default=None: default,
         precompute_timeline_fn=lambda *_args, **_kwargs: None,
-        compute_max_fp_matrix_fn=lambda **_kwargs: np.zeros((1, 1), dtype=np.int16),
         solve_force_greats_finder_gpu_tasks_fn=lambda *args, **kwargs: calls.append(("solve", args, kwargs)),
         reset_global_best_fn=lambda n_genomes, session_slot: calls.append(("reset", n_genomes, session_slot)),
         download_global_best_fn=lambda *_args, **_kwargs: {"downloaded": True},
         pack_global_best_topk_to_batch_fn=lambda *_args, **_kwargs: {"packed": True},
-        decode_cfg_counts_from_max_fp_matrix_fn=lambda *_args: np.asarray([[1]], dtype=np.int32),
         decode_cfg_counts_from_windows_fn=lambda *_args: np.asarray([[2]], dtype=np.int32),
     )
 

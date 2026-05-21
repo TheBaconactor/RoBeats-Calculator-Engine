@@ -4,10 +4,7 @@ import time
 from typing import Any, Optional
 import numpy as np
 from gear_optimizer.core.parsing import TRUTHY_ENV_VALUES, env_flag, truthy
-from gear_optimizer.core.constants import (
-    FG_PLATEAU_REP_STRIDE,
-    LOADOUTS_PER_SONG_LIMIT,
-)
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from . import cache_validation, result_application
 from .entry_utils import (
     _cached_fg_group_meta_is_reusable as _fg_group_meta_is_reusable,
@@ -26,10 +23,6 @@ from ....core.color_flags import build_color_flag_values
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
 from ....solver.taichi_gem.ftff_combos import collect_ftff_pairs_from_centers
-from .ftff_pairs import (
-    _group_ftff_pairs_by_max_fp_matrix,
-    reduce_ftff_pairs_by_max_fp_surface,
-)
 from .retained_variants import retain_and_build_fg_variants as _retain_and_build_fg_variants
 from .signature_frontier import (
     build_signature_frontier_metas_from_rows as _build_signature_frontier_metas_from_rows_impl,
@@ -66,7 +59,6 @@ from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 _GPU_STRICT = env_flag("GPU_STRICT", "1")
 __all__ = [
-    "FG_PLATEAU_REP_STRIDE",
     "_build_topk_keep_signature_set",
     "_default_fused_payloads_per_request",
     "_extract_group_payload",
@@ -118,8 +110,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     frontier_groups_reduced = 0
     breakpoint_group_cache_hits = 0
     breakpoint_group_cache_misses = 0
-    max_fp_matrix_cache_hits = 0
-    max_fp_matrix_cache_misses = 0
     fg_task_tile_batches = 0
     fg_task_tile_splits = 0
     fg_fused_tile_batches = 0
@@ -571,17 +561,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         )
     except (ValueError, TypeError):
         breakpoint_group_cache_max_base_pairs = 64
-    max_fp_matrix_cache_enabled = env_flag("FG_MAX_FP_MATRIX_CACHE", "1")
-    try:
-        max_fp_matrix_cache_max_pairs = max(0, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX_PAIRS", "256") or "256"))
-    except (ValueError, TypeError):
-        max_fp_matrix_cache_max_pairs = 256
-    try:
-        max_fp_matrix_cache_max_base_pairs = max(
-            0, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX_BASE_PAIRS", "64") or "64")
-        )
-    except (ValueError, TypeError):
-        max_fp_matrix_cache_max_base_pairs = 64
     try:
         fg_task_tile_max_threads = int(
             env_get(
@@ -907,7 +886,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             logger.debug(f"gpu_dispatch:_flush_fg_tasks_batch: {e}")
     pair_caps_grid = None
     pair_caps_from_timeline = False
-    song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
     caps_mode = str(env_get("FG_PAIR_CAPS_MODE", "timeline") or "").strip().lower()
     if caps_mode in {"timeline", "gpu", "1", "true", "yes", "on", ""}:
         pair_caps_from_timeline = True
@@ -1119,53 +1097,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             "return_raw": True,
             "accumulate_global": True,
         }
-        fg_breakpoints_non_fever_base_by_ff = None
-        fg_breakpoints_fp_cap_table = None
-        if per_pair_breakpoints:
-            try:
-                fg_breakpoints_non_fever_base_by_ff = song_data_cache.get("fg_breakpoints_non_fever_base_by_ff")
-                fg_breakpoints_fp_cap_table = song_data_cache.get("fg_breakpoints_fp_cap_table")
-            except (KeyError, TypeError, ValueError, AttributeError):
-                fg_breakpoints_non_fever_base_by_ff = None
-                fg_breakpoints_fp_cap_table = None
-            if fg_breakpoints_non_fever_base_by_ff is None or fg_breakpoints_fp_cap_table is None:
-                try:
-                    import numpy as _np
-                    meta0 = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, dict) else {}
-                    try:
-                        ts0 = song_data_cache.get("timestamps")
-                        if ts0 is None:
-                            ts0 = song_data_cache.get("fg_timestamps")
-                        total_notes0 = int(len(ts0)) if ts0 is not None else 0
-                    except (ValueError, TypeError, KeyError, AttributeError):
-                        total_notes0 = 0
-                    try:
-                        long_notes0 = int(meta0.get("Long Notes", 0) or 0)
-                    except (ValueError, TypeError):
-                        long_notes0 = 0
-                    try:
-                        from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
-                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * float(FEVER_FILL_BASE_RATE))
-                    except (ValueError, TypeError):
-                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
-                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float32)
-                    if ref_ff0.shape[0] < 161:
-                        raise ValueError("ref_arrays['Fever Fill Rate'] must have length >= 161")
-                    ff_mult = ref_ff0[:161]
-                    raw_fill = non_fever_cas0 * ff_mult
-                    ceil_raw = _np.ceil(raw_fill)
-                    fg_breakpoints_non_fever_base_by_ff = _np.clip(ceil_raw, 0, 32767).astype(_np.int16)
-                    fg_breakpoints_fp_cap_table = _np.zeros((161, 51), dtype=_np.int16)
-                    for forced_cap in range(0, 51):
-                        fp = _np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
-                        fg_breakpoints_fp_cap_table[:, forced_cap] = _np.maximum(0, fp).astype(_np.int16)
-                    try:
-                        song_data_cache["fg_breakpoints_non_fever_base_by_ff"] = fg_breakpoints_non_fever_base_by_ff
-                        song_data_cache["fg_breakpoints_fp_cap_table"] = fg_breakpoints_fp_cap_table
-                    except (KeyError, TypeError, ValueError, AttributeError):
-                        pass
-                except Exception as _bp_tab_err:
-                    raise RuntimeError("GPU breakpoint table build failed") from _bp_tab_err
         max_genomes_per_batch = 1024
         if per_pair_breakpoints:
             try:
@@ -1341,76 +1272,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 except (ValueError, TypeError):
                     max_union_cfg = 5000
                     max_union_threads = 20000000
-                non_fever_base_by_ff = fg_breakpoints_non_fever_base_by_ff
-                fp_cap_table = fg_breakpoints_fp_cap_table
-                def _submit_compute_breakpoints_max_fp(*, blocking: bool = True):
-                    if non_fever_base_by_ff is None or fp_cap_table is None:
-                        return None
-                    if (not base_pairs_list) or _is_empty_pairs(ftff_pairs_submit):
-                        return None
-                    if gpu_client is not None:
-                        nonlocal timeline_precompute_queued
-                        ensure_timeline = not timeline_precompute_queued
-                        if ensure_timeline:
-                            timeline_precompute_queued = True
-                        fut = gpu_client.submit_fg_compute_breakpoints(
-                            ftff_pairs=ftff_pairs_submit,
-                            base_stats_pairs=base_pairs_submit,
-                            n_sections=int(n_sections),
-                            song_slot=int(song_slot),
-                            gem_scale_fever=int(GEM_SCALE_FEVER),
-                            non_fever_base_by_ff=non_fever_base_by_ff,
-                            fp_cap_table=fp_cap_table,
-                            ensure_timeline_precompute=bool(ensure_timeline),
-                            calc_song=calc_song if ensure_timeline else None,
-                            ref_arrays=ref_arrays if ensure_timeline else None,
-                        ).future
-                        return fut.result() if blocking else fut
-                    try:
-                        from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
-                        from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
-                        if not timeline_precompute_queued:
-                            try:
-                                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-                            except Exception as e:
-                                logger.debug(f"gpu_dispatch:_submit_compute_breakpoints_max_fp: {e}")
-                            timeline_precompute_queued = True
-                        pair_arr = ftff_pairs_packed if ftff_pairs_packed is not None else _pack_pairs_int32(ftff_pairs)
-                        base_arr = (
-                            base_pairs_packed if base_pairs_packed is not None else _pack_pairs_int32(base_pairs_list)
-                        )
-                        if pair_arr is None or base_arr is None:
-                            return None
-                        pair_ft = np.ascontiguousarray(pair_arr[:, 0], dtype=np.int32)
-                        pair_ff = np.ascontiguousarray(pair_arr[:, 1], dtype=np.int32)
-                        base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
-                        base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
-                        out0 = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
-                        kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
-                            int(pair_ft.shape[0]),
-                            int(base_ft.shape[0]),
-                            int(n_sections),
-                            int(song_slot),
-                            int(GEM_SCALE_FEVER),
-                            pair_ft,
-                            pair_ff,
-                            base_ft,
-                            base_ff,
-                            np.asarray(non_fever_base_by_ff, dtype=np.int16),
-                            np.asarray(fp_cap_table, dtype=np.int16),
-                            out0,
-                        )
-                        return out0
-                    except Exception as e:
-                        logger.debug(f"gpu_dispatch:_submit_compute_breakpoints_max_fp: {e}")
-                        return None
-                max_fp_matrix = None
                 if (
                     bool(fused_breakpoints_solve)
                     and gpu_client is not None
                     and in_process
-                    and (non_fever_base_by_ff is not None)
-                    and (fp_cap_table is not None)
                     and (not _is_empty_pairs(ftff_pairs_submit))
                 ):
                     if base_pairs_list:
@@ -1423,8 +1288,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 "n_sections": int(n_sections),
                                 "song_slot": int(song_slot),
                                 "gem_scale_fever": int(GEM_SCALE_FEVER),
-                                "non_fever_base_by_ff": non_fever_base_by_ff,
-                                "fp_cap_table": fp_cap_table,
                                 "calc_song": calc_song,
                                 "ensure_timeline_precompute": bool(pair_caps_from_timeline),
                                 "genome_stats_list": genome_stats_arr,
@@ -1503,87 +1366,18 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             selected_indices = gpu_results.get("selected_indices")
                         except Exception as _fuse_err:
                             raise RuntimeError("fused breakpoint+solve failed") from _fuse_err
-                can_cache_max_fp_matrix = (
-                    bool(max_fp_matrix_cache_enabled)
-                    and int(n_sections) > 0
-                    and int(len(base_pairs_list or [])) > 0
-                    and int(len(base_pairs_list or [])) <= int(max_fp_matrix_cache_max_base_pairs)
-                    and int(len(active_ftff_pairs or [])) > 0
-                    and int(len(active_ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
-                )
-                if max_fp_matrix is None:
-                    def _compute_max_fp_blocking():
-                        try:
-                            return _submit_compute_breakpoints_max_fp(blocking=True)
-                        except Exception as _bp_gpu_err:
-                            raise RuntimeError("GPU breakpoint compute failed") from _bp_gpu_err
-                    if can_cache_max_fp_matrix:
-                        max_fp_matrix, max_fp_cache_hit = _dispatch_caches.get_cached_max_fp_matrix(
-                            calc_song=calc_song,
-                            n_sections=int(n_sections),
-                            ftff_pairs=active_ftff_pairs,
-                            base_stats_pairs=base_pairs_list,
-                            gem_scale_fever=int(GEM_SCALE_FEVER),
-                            compute_fn=_compute_max_fp_blocking,
-                        )
-                        if max_fp_cache_hit:
-                            max_fp_matrix_cache_hits += 1
-                        else:
-                            max_fp_matrix_cache_misses += 1
-                    else:
-                        max_fp_matrix = _compute_max_fp_blocking()
-                if max_fp_matrix is None:
-                    raise RuntimeError("GPU breakpoint compute returned no matrix")
-                import numpy as _np
-                max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
-                _t_surface_reduce0 = time.perf_counter()
-                try:
-                    surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
-                        active_ftff_pairs,
-                        max_fp_matrix,
-                        n_sections=int(n_sections),
-                        total_budget=int(TOTAL_GEM_BUDGET),
-                        is_p_ft=int(color_flags.is_p_ft),
-                        is_s_ft=int(color_flags.is_s_ft),
-                        is_p_ff=int(color_flags.is_p_ff),
-                        is_s_ff=int(color_flags.is_s_ff),
-                    )
-                    surface_drops_i = int(surface_reduction.dropped)
-                    if surface_drops_i > 0:
-                        active_ftff_pairs = _np.ascontiguousarray(surface_reduction.pairs, dtype=_np.int32)
-                        max_fp_matrix = _np.ascontiguousarray(surface_reduction.max_fp_matrix, dtype=_np.int16)
-                        active_ftff_pairs_packed = active_ftff_pairs
-                        ftff_pairs_submit = active_ftff_pairs
-                        fg_surface_pair_drops += surface_drops_i
-                finally:
-                    fg_surface_pair_reduce_sec += time.perf_counter() - _t_surface_reduce0
-                    def _iter_groups_from_max_fp():
-                        try:
-                            for g in _group_ftff_pairs_by_max_fp_matrix(
-                                active_ftff_pairs,
-                                max_fp_matrix,
-                                n_sections=int(n_sections),
-                            ):
-                                if g and g.get("ftff_pairs") is not None:
-                                    yield g
-                        except (ValueError, TypeError, KeyError, AttributeError):
-                            all_groups = {}
-                            for i_pair, (ft_g, ff_g) in enumerate(active_ftff_pairs):
-                                row = max_fp_matrix[i_pair]
-                                max_fp_key = tuple(max(0, int(row[sec])) for sec in range(int(n_sections)))
-                                grp = all_groups.get(max_fp_key)
-                                if grp is None:
-                                    grp = {
-                                        "ftff_pairs": [],
-                                        "counts_max_fp": list(max_fp_key),
-                                    }
-                                    all_groups[max_fp_key] = grp
-                                grp["ftff_pairs"].append((int(ft_g), int(ff_g)))
-                            for g in all_groups.values():
-                                if g.get("ftff_pairs"):
-                                    yield g
-                    group_mode = "max_fp"
-                    group_compute_fn = _iter_groups_from_max_fp
+                def _iter_groups_from_prefix_frontier():
+                    yield {
+                        "ftff_pairs": ftff_pairs_submit,
+                        "counts_max_fp": {
+                            "mode": "gpu",
+                            "n_sections": int(n_sections),
+                            "song_slot": int(song_slot),
+                            "gem_scale_fever": int(GEM_SCALE_FEVER),
+                        },
+                    }
+                group_mode = "prefix_frontier"
+                group_compute_fn = _iter_groups_from_prefix_frontier
                 can_cache_groups = (
                     bool(breakpoint_group_cache_enabled)
                     and int(n_sections) > 0
@@ -1653,23 +1447,16 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             }
                         )
                     else:
-                        cfg_len0 = 1
-                        max_fp_norm = []
-                        for v in list(counts_max_fp)[: int(n_sections)]:
-                            try:
-                                max_fp_norm.append(max(0, int(v or 0)))
-                            except (ValueError, TypeError):
-                                max_fp_norm.append(0)
-                        if not max_fp_norm:
-                            max_fp_norm = [0] * int(n_sections)
-                        for v in max_fp_norm[: int(n_sections)]:
-                            cfg_len0 *= int(v) + 1
-                        cfg_len0 *= 1 << min(max(int(n_sections), 0), 4)
+                        if isinstance(counts_max_fp, dict) and str(counts_max_fp.get("mode") or "") == "gpu":
+                            cfg_len0 = 0
+                            max_fp_norm = []
+                        else:
+                            raise RuntimeError("FG max-FP rectangle groups were removed; expected prefix frontier")
                         cfg_windows.append(
                             {
                                 "base": int(group_cfg_offset),
                                 "len": int(cfg_len0),
-                                "kind": "max_fp",
+                                "kind": "prefix_frontier" if isinstance(counts_max_fp, dict) else "max_fp",
                                 "max_fp": list(max_fp_norm),
                                 "n_sections": int(n_sections),
                             }
@@ -1702,15 +1489,15 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                         counts_list_packed = counts_list
                         if counts_list:
                             try:
-                                arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
+                                arr_cfg = np.asarray(counts_list, dtype=np.int32)
                                 if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
                                     counts_list_packed = arr_cfg
                             except (ValueError, TypeError, KeyError):
                                 counts_list_packed = counts_list
                         pairs_packed = group_pairs
                         try:
-                            if group_pairs is not None and not isinstance(group_pairs, _np.ndarray):
-                                pairs_packed = _np.asarray(group_pairs, dtype=_np.int32)
+                            if group_pairs is not None and not isinstance(group_pairs, np.ndarray):
+                                pairs_packed = np.asarray(group_pairs, dtype=np.int32)
                         except (ValueError, TypeError, KeyError):
                             pairs_packed = group_pairs
                         for ftff_chunk in _iter_ftff_chunks(pairs_packed, int(fg_fields.FG_MAX_FTFF)):
@@ -2124,8 +1911,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         no_eval_skips=int(no_eval_skips),
         breakpoint_group_cache_hits=int(breakpoint_group_cache_hits),
         breakpoint_group_cache_misses=int(breakpoint_group_cache_misses),
-        max_fp_matrix_cache_hits=int(max_fp_matrix_cache_hits),
-        max_fp_matrix_cache_misses=int(max_fp_matrix_cache_misses),
         fg_task_tile_batches=int(fg_task_tile_batches),
         fg_task_tile_splits=int(fg_task_tile_splits),
         fg_fused_tile_batches=int(fg_fused_tile_batches),

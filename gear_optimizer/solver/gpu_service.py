@@ -324,8 +324,6 @@ class GpuServiceClient:
         n_sections: int,
         song_slot: int = 0,
         gem_scale_fever: int = 3,
-        non_fever_base_by_ff=None,
-        fp_cap_table=None,
         ensure_timeline_precompute: bool = False,
         calc_song: Optional[dict[str, Any]] = None,
         ref_arrays: Optional[dict[str, Any]] = None,
@@ -337,8 +335,6 @@ class GpuServiceClient:
             "n_sections": int(n_sections),
             "song_slot": int(song_slot),
             "gem_scale_fever": int(gem_scale_fever),
-            "non_fever_base_by_ff": non_fever_base_by_ff,
-            "fp_cap_table": fp_cap_table,
         }
         if ensure_timeline_precompute:
             request_payload["ensure_timeline_precompute"] = True

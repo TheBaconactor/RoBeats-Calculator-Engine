@@ -8,7 +8,6 @@ Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 # ruff: noqa: F405
 import taichi as ti
 from taichi.lang import simt
-from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 from gear_optimizer.core.parsing import env_flag, env_int
 from ..kernels import kernels_helpers
 from ..kernels.kernels_scoring import optimize_core_device_exact_bound_preloaded_bits
@@ -42,6 +41,9 @@ fg_cfg_dedupe_sig = None
 fg_cfg_dedupe_rep_cfg_idx = None
 fg_cfg_dedupe_rep_count = None
 fg_cfg_dedupe_active = None
+fg_frontier_state_idx = None
+fg_frontier_forced_counts = None
+fg_frontier_overflow = None
 fg_best_final_score = None
 fg_best_base_score = None
 fg_best_cfg_idx = None
@@ -64,6 +66,7 @@ fg_stage1_g_fm = None
 fg_stage1_g_ov = None
 fg_stage1_score_penalty = None
 fg_stage1_fill_penalty = None
+fg_stage1_cfg_counts = None
 fg_flat_work_genome = None
 fg_flat_work_ftff = None
 fg_stage1_packed = None
@@ -97,52 +100,18 @@ FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 FG_STAGE1_SMALL_SECTIONS_FASTPATH = env_flag("FG_STAGE1_SMALL_SECTIONS_FASTPATH")
 FG_STAGE1_OWNER_CAP_REDUCTION = env_flag("FG_STAGE1_OWNER_CAP_REDUCTION")
 FG_STAGE1_DIRECT_ATOMIC = env_flag("FG_STAGE1_DIRECT_ATOMIC", "1")
-FG_PLATEAU_REP_MAX_SECTIONS = 4
 @ti.func
 def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
-    cap: ti.i32 = 4
-    if sec == 0:
-        cap = 50
-    elif sec == 1:
-        cap = 30
-    elif sec == 2:
-        cap = 15
-    elif sec == 3:
-        cap = 10
-    elif sec == 4:
-        cap = 8
-    elif sec == 5:
-        cap = 6
-    elif sec == 6:
-        cap = 5
-    elif sec < 0 or sec >= FG_MAX_SECTIONS:
+    cap: ti.i32 = 2147483647
+    if sec < 0 or sec >= FG_MAX_SECTIONS:
         cap = 0
     return cap
 @ti.func
 def _fg_plateau_rep_multiplier(n_sections: ti.i32) -> ti.i32:
-    reps: ti.i32 = 1
-    for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
-        if s < n_sections:
-            reps *= 2
-    return reps
+    return 1
 @ti.func
 def _fg_base_cfg_idx(local_cfg_idx: ti.i32, n_sections: ti.i32) -> ti.i32:
-    reps: ti.i32 = _fg_plateau_rep_multiplier(n_sections)
-    out: ti.i32 = local_cfg_idx
-    if reps > 1:
-        out = local_cfg_idx // reps
-    return out
-@ti.func
-def _fg_rep_flags_vec(local_cfg_idx: ti.i32, n_sections: ti.i32):
-    out = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-    reps: ti.i32 = _fg_plateau_rep_multiplier(n_sections)
-    mask: ti.i32 = 0
-    if reps > 1:
-        mask = local_cfg_idx - (local_cfg_idx // reps) * reps
-    for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
-        if s < n_sections:
-            out[s] = (mask >> s) & 1
-    return out
+    return local_cfg_idx
 @ti.func
 def _fg_decode_fp_targets_vec(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
     """
@@ -390,27 +359,6 @@ def _forced_from_fp_target(
         forced_val = non_fever_base
     return forced_val
 @ti.func
-def _decode_fp_target_and_rep_flag(cfg_val: ti.i32) -> ti.types.vector(2, ti.i32):
-    """
-    Decode a per-section FP target with optional plateau representative flag.
-    Encoding is host-side:
-      value = fp_target + FG_PLATEAU_REP_STRIDE * rep_flag
-    where rep_flag is 0 (minimal-k) or 1 (k+1 representative on same FP plateau).
-    """
-    v: ti.i32 = cfg_val
-    if v < 0:
-        v = 0
-    rep: ti.i32 = 0
-    fp: ti.i32 = v
-    if v >= FG_PLATEAU_REP_STRIDE:
-        rep = v // FG_PLATEAU_REP_STRIDE
-        fp = v - rep * FG_PLATEAU_REP_STRIDE
-        if rep > 0:
-            rep = 1
-    if fp < 0:
-        fp = 0
-    return ti.Vector([fp, rep])
-@ti.func
 def _forced_from_fp_target_with_rep(
     raw_fill: ti.f32,
     base_ceil: ti.i32,
@@ -550,6 +498,101 @@ def _fg_sig_is_dominated(
                 dominated = 1
     return dominated
 @ti.func
+def _fg_sig_equal(
+    sig_a: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
+    sig_b: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
+) -> ti.i32:
+    same: ti.i32 = 1
+    for w in ti.static(range(FG_CFG_DEDUPE_SIG_WORDS)):
+        if sig_a[w] != sig_b[w]:
+            same = 0
+    return same
+@ti.func
+def _forced_to_fp_target(raw_fill: ti.f32, base_ceil: ti.i32, forced_count: ti.i32) -> ti.i32:
+    fp: ti.i32 = ti.cast(ti.ceil(raw_fill + ti.cast(ti.max(forced_count, 0), ti.f32) * 0.5), ti.i32) - base_ceil
+    if fp < 0:
+        fp = 0
+    return fp
+@ti.func
+def _fg_frontier_copy_path(
+    local_work_idx: ti.i32,
+    dst_slot: ti.i32,
+    src_slot: ti.i32,
+    action_sec: ti.i32,
+    forced_count: ti.i32,
+    n_sections: ti.i32,
+):
+    for s in ti.static(range(FG_MAX_SECTIONS)):
+        v: ti.i32 = 0
+        if src_slot >= 0:
+            v = ti.cast(fg_frontier_forced_counts[local_work_idx, src_slot, s], ti.i32)
+        if s == action_sec and s < n_sections:
+            v = forced_count
+        fg_frontier_forced_counts[local_work_idx, dst_slot, s] = v
+@ti.func
+def _fg_frontier_insert(
+    local_work_idx: ti.i32,
+    base_slot: ti.i32,
+    count: ti.i32,
+    capacity: ti.i32,
+    state_idx: ti.i32,
+    sig: ti.types.vector(FG_CFG_DEDUPE_SIG_WORDS, ti.i32),
+    src_slot: ti.i32,
+    action_sec: ti.i32,
+    forced_count: ti.i32,
+    n_sections: ti.i32,
+) -> ti.i32:
+    out: ti.i32 = count
+    dominated: ti.i32 = 0
+    for j in range(capacity):
+        if j < count:
+            slot = base_slot + j
+            if fg_frontier_state_idx[local_work_idx, slot] == state_idx:
+                old_sig = fg_cfg_dedupe_sig[local_work_idx, slot]
+                if _fg_sig_equal(old_sig, sig) != 0 or _fg_sig_is_dominated(old_sig, sig) != 0:
+                    dominated = 1
+                elif _fg_sig_is_dominated(sig, old_sig) != 0:
+                    fg_frontier_state_idx[local_work_idx, slot] = -2
+                    fg_cfg_dedupe_hash[local_work_idx, slot] = ti.u64(0)
+    if dominated == 0:
+        if out < capacity:
+            dst = base_slot + out
+            fg_frontier_state_idx[local_work_idx, dst] = state_idx
+            fg_cfg_dedupe_sig[local_work_idx, dst] = sig
+            fg_cfg_dedupe_hash[local_work_idx, dst] = _fg_signature_hash(sig)
+            fg_cfg_dedupe_rep_cfg_idx[local_work_idx, dst] = out
+            _fg_frontier_copy_path(local_work_idx, dst, src_slot, action_sec, forced_count, n_sections)
+            out += 1
+        else:
+            fg_cfg_dedupe_active[local_work_idx] = 0
+            fg_frontier_overflow[None] = 1
+    return out
+@ti.func
+def _fg_frontier_compact(local_work_idx: ti.i32, base_slot: ti.i32, count: ti.i32, capacity: ti.i32) -> ti.i32:
+    write_idx: ti.i32 = 0
+    for read_idx in range(capacity):
+        if read_idx < count:
+            src = base_slot + read_idx
+            if fg_frontier_state_idx[local_work_idx, src] >= 0:
+                dst = base_slot + write_idx
+                if dst != src:
+                    fg_frontier_state_idx[local_work_idx, dst] = fg_frontier_state_idx[local_work_idx, src]
+                    fg_cfg_dedupe_sig[local_work_idx, dst] = fg_cfg_dedupe_sig[local_work_idx, src]
+                    fg_cfg_dedupe_hash[local_work_idx, dst] = fg_cfg_dedupe_hash[local_work_idx, src]
+                    fg_cfg_dedupe_rep_cfg_idx[local_work_idx, dst] = fg_cfg_dedupe_rep_cfg_idx[local_work_idx, src]
+                    for s in ti.static(range(FG_MAX_SECTIONS)):
+                        fg_frontier_forced_counts[local_work_idx, dst, s] = fg_frontier_forced_counts[
+                            local_work_idx, src, s
+                        ]
+                write_idx += 1
+    for clear_idx in range(capacity):
+        if clear_idx >= write_idx and clear_idx < count:
+            slot = base_slot + clear_idx
+            fg_frontier_state_idx[local_work_idx, slot] = -1
+            fg_cfg_dedupe_hash[local_work_idx, slot] = ti.u64(0)
+            fg_cfg_dedupe_rep_cfg_idx[local_work_idx, slot] = -1
+    return write_idx
+@ti.func
 def _fg_config_signature(
     global_cfg_idx: ti.i32,
     cfg_base: ti.i32,
@@ -571,10 +614,8 @@ def _fg_config_signature(
     if local_cfg_idx < 0:
         local_cfg_idx = 0
     fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-    rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
     if cfg_mode != 0:
         fp_targets_vec = _fg_decode_fp_targets_vec(_fg_base_cfg_idx(local_cfg_idx, n_sections), ftff_idx, n_sections)
-        rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
     m0 = ti.cast(0, ti.u32)
     m1 = ti.cast(0, ti.u32)
     m2 = ti.cast(0, ti.u32)
@@ -595,20 +636,17 @@ def _fg_config_signature(
             base_notes_s = 0
         fp_target: ti.i32 = 0
         rep_alt: ti.i32 = 0
+        forced_direct: ti.i32 = 0
         if sec < n_sections:
             if cfg_mode != 0:
                 fp_target = fp_targets_vec[sec]
-                if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                    rep_alt = rep_flags_vec[sec]
             else:
                 cfg_raw: ti.i32 = fg_forced_counts[global_cfg_idx, sec]
-                decoded = _decode_fp_target_and_rep_flag(cfg_raw)
-                fp_target = decoded[0]
-                if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                    rep_alt = decoded[1]
+                forced_direct = ti.max(0, ti.min(cfg_raw, non_fever_base))
+                fp_target = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_direct)
             if fp_target < 0:
                 fp_target = 0
-            if sec < FG_MAX_SECTIONS:
+            if sec < FG_MAX_SECTIONS and cfg_mode != 0:
                 pair_cap_forced: ti.i32 = 0
                 if pair_caps_from_timeline != 0:
                     if sec < fever_acts:
@@ -622,7 +660,7 @@ def _fg_config_signature(
                 notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
                 fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                 fp_target = ti.min(fp_target, fp_cap)
-        forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+        forced_val: ti.i32 = forced_direct if cfg_mode == 0 else _forced_from_fp_target_with_rep(
             non_fever_base_f,
             non_fever_base,
             fp_target,
@@ -1039,63 +1077,6 @@ def fg_upload_cfg_ranges_kernel(
         fg_cfg_start_list[i] = cfg_start[i]
         fg_cfg_len_list[i] = cfg_len[i]
 @ti.kernel
-def fg_compute_max_fp_for_ftff_kernel(
-    n_pairs: ti.i32,
-    n_base_pairs: ti.i32,
-    n_sections: ti.i32,
-    song_slot: ti.i32,
-    gem_scale_fever: ti.i32,
-    base_ft_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    base_ff_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    non_fever_base_by_ff: ti.types.ndarray(dtype=ti.i16, ndim=1),
-    fp_cap_table: ti.types.ndarray(dtype=ti.i16, ndim=2),
-):
-    """
-    Compute per-(ftff_pair, section) max-FP caps directly into fg_cfg_max_fp.
-    Uses GPU-resident ft/ff lists and per-song timeline grids; avoids downloading
-    the full max-FP matrix to CPU.
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    for pair_idx, sec in ti.ndrange(n_pairs, n_sections):
-        max_fp: ti.i32 = 0
-        ft_g = fg_ft_list[pair_idx]
-        ff_g = fg_ff_list[pair_idx]
-        for b in range(n_base_pairs):
-            ft_idx = base_ft_stat[b] + ft_g * gem_scale_fever
-            ff_idx = base_ff_stat[b] + ff_g * gem_scale_fever
-            if ft_idx < 0:
-                ft_idx = 0
-            if ft_idx > 160:
-                ft_idx = 160
-            if ff_idx < 0:
-                ff_idx = 0
-            if ff_idx > 160:
-                ff_idx = 160
-            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
-            if sec >= fever_acts:
-                continue
-            gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
-            if gap < 0:
-                gap = 0
-            base_notes = ti.cast(non_fever_base_by_ff[ff_idx], ti.i32)
-            base_cap = base_notes
-            cap = base_cap
-            if sec == 1:
-                cap = (cap * 3) // 5
-            elif sec >= 2:
-                cap = (cap * 3) // 10
-            hard_cap = _fg_section_forced_cap(sec)
-            if cap > hard_cap:
-                cap = hard_cap
-            if cap < 0:
-                cap = 0
-            if cap > 50:
-                cap = 50
-            fp = ti.cast(fp_cap_table[ff_idx, cap], ti.i32)
-            if fp > max_fp:
-                max_fp = fp
-        fg_cfg_max_fp[pair_idx, sec] = max_fp
-@ti.kernel
 def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
     """
     Compute per-ftff config length from fg_cfg_max_fp and store in fg_cfg_total_len_list.
@@ -1394,7 +1375,6 @@ def fg_stage1_waves_kernel(
                         continue
                 fp_targets_vec4 = ti.Vector.zero(ti.i32, 4)
                 fp_targets_vec16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-                rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
                 if cfg_mode != 0:
                     local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
                     if owner_cap_reduce != 0:
@@ -1402,7 +1382,6 @@ def fg_stage1_waves_kernel(
                     if local_cfg_idx < 0:
                         local_cfg_idx = 0
                     base_local_cfg_idx: ti.i32 = _fg_base_cfg_idx(local_cfg_idx, n_sections)
-                    rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
                     if ti.static(use_small_sections):
                         if owner_cap_reduce != 0:
                             fp_targets_vec4 = _fg_decode_fp_targets_with_caps_vec4(
@@ -1442,6 +1421,7 @@ def fg_stage1_waves_kernel(
                         base_notes_s = 0
                     fp_target: ti.i32 = 0
                     rep_alt: ti.i32 = 0
+                    forced_direct: ti.i32 = 0
                     if sec < n_sections:
                         if cfg_mode != 0:
                             if ti.static(use_small_sections):
@@ -1449,20 +1429,16 @@ def fg_stage1_waves_kernel(
                                     fp_target = fp_targets_vec4[sec]
                             else:
                                 fp_target = fp_targets_vec16[sec]
-                            if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                                rep_alt = rep_flags_vec[sec]
                         else:
                             read_cfg_idx: ti.i32 = cfg_read_base + cfg_idx
                             if use_cfg_dedupe != 0:
                                 read_cfg_idx = global_cfg_idx
                             cfg_raw: ti.i32 = fg_forced_counts[read_cfg_idx, sec]
-                            decoded = _decode_fp_target_and_rep_flag(cfg_raw)
-                            fp_target = decoded[0]
-                            if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                                rep_alt = decoded[1]
+                            forced_direct = ti.max(0, ti.min(cfg_raw, non_fever_base))
+                            fp_target = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_direct)
                         if fp_target < 0:
                             fp_target = 0
-                        if sec < FG_MAX_SECTIONS:
+                        if sec < FG_MAX_SECTIONS and cfg_mode != 0:
                             pair_cap_forced: ti.i32 = 0
                             if pair_caps_from_timeline != 0:
                                 if sec < fever_acts:
@@ -1476,7 +1452,7 @@ def fg_stage1_waves_kernel(
                             notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
                             fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                             fp_target = ti.min(fp_target, fp_cap)
-                    forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+                    forced_val: ti.i32 = forced_direct if cfg_mode == 0 else _forced_from_fp_target_with_rep(
                         non_fever_base_f,
                         non_fever_base,
                         fp_target,
@@ -1811,18 +1787,17 @@ def fg_stage1_kernel(
                     base_notes_s = 0
                 fp_target: ti.i32 = 0
                 rep_alt: ti.i32 = 0
+                forced_direct: ti.i32 = 0
                 if sec < n_sections:
                     if cfg_mode != 0:
                         fp_target = fp_targets_vec[sec]
                     else:
                         cfg_raw: ti.i32 = fg_forced_counts[cfg_read_base + cfg_idx, sec]
-                        decoded = _decode_fp_target_and_rep_flag(cfg_raw)
-                        fp_target = decoded[0]
-                        if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                            rep_alt = decoded[1]
+                        forced_direct = ti.max(0, ti.min(cfg_raw, non_fever_base))
+                        fp_target = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_direct)
                     if fp_target < 0:
                         fp_target = 0
-                    if sec < FG_MAX_SECTIONS:
+                    if sec < FG_MAX_SECTIONS and cfg_mode != 0:
                         pair_cap_forced: ti.i32 = 0
                         if pair_caps_from_timeline != 0:
                             if sec < fever_acts:
@@ -1836,7 +1811,7 @@ def fg_stage1_kernel(
                         notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
                         fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                         fp_target = ti.min(fp_target, fp_cap)
-                forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+                forced_val: ti.i32 = forced_direct if cfg_mode == 0 else _forced_from_fp_target_with_rep(
                     non_fever_base_f,
                     non_fever_base,
                     fp_target,
@@ -2004,6 +1979,358 @@ def fg_stage1_kernel(
             fg_stage1_packed[g, ftff_idx] = (ti.cast(best_final, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
         else:
             fg_stage1_packed[g, ftff_idx] = ti.cast(-1, ti.i64) << 32
+@ti.kernel
+def fg_stage1_prefix_frontier_kernel(
+    work_offset: ti.i32,
+    local_work_items: ti.i32,
+    frontier_slots: ti.i32,
+    total_notes: ti.i32,
+    long_notes: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    n_sections: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+):
+    """
+    Cap-free exact ForceGreats prefix frontier.
+
+    Each work item owns one `(genome, FT/FF)` pair. The kernel expands natural
+    forced-count actions `0..ceil(raw_fill)`, prunes dominated prefix surfaces
+    only at identical future-visible timeline states, and stores the winning
+    forced-count representative for Stage 2.
+    """
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+    head_len: ti.i32 = ti.min(total_notes, 100)
+    body_len: ti.i32 = ti.max(total_notes - head_len, 0)
+    non_fever_cas: ti.f32 = ti.max(0.0, ti.cast(total_notes - long_notes, ti.f32) * 0.333)
+    capacity: ti.i32 = frontier_slots // 2
+    if capacity < 1:
+        fg_frontier_overflow[None] = 1
+    for local_work_idx in range(local_work_items):
+        global_work_idx = work_offset + local_work_idx
+        g = fg_flat_work_genome[global_work_idx]
+        ftff_idx = fg_flat_work_ftff[global_work_idx]
+        fg_cfg_dedupe_active[local_work_idx] = 1
+        for clear_slot in range(frontier_slots):
+            fg_frontier_state_idx[local_work_idx, clear_slot] = -1
+            fg_cfg_dedupe_hash[local_work_idx, clear_slot] = ti.u64(0)
+            fg_cfg_dedupe_rep_cfg_idx[local_work_idx, clear_slot] = -1
+            for s_clear in ti.static(range(FG_MAX_SECTIONS)):
+                fg_frontier_forced_counts[local_work_idx, clear_slot, s_clear] = 0
+        ft_gems: ti.i32 = fg_ft_list[ftff_idx]
+        ff_gems: ti.i32 = fg_ff_list[ftff_idx]
+        if ft_gems + ff_gems > total_budget or capacity < 1:
+            continue
+        base_stats = kernels_helpers.genome_base_stats[g]
+        base_pp: ti.i32 = base_stats[0]
+        base_cm: ti.i32 = base_stats[1]
+        base_fm: ti.i32 = base_stats[2]
+        base_p_val: ti.i32 = base_stats[3]
+        base_s_val: ti.i32 = base_stats[4]
+        base_ft_stat: ti.i32 = base_stats[5]
+        base_ff_stat: ti.i32 = base_stats[6]
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, base_ft_stat + ft_gems * gem_scale_fever))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, base_ff_stat + ff_gems * gem_scale_fever))
+        ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+        non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
+        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
+        if non_fever_base < 0:
+            non_fever_base = 0
+
+        empty_sig = ti.Vector.zero(ti.i32, FG_CFG_DEDUPE_SIG_WORDS)
+        fg_frontier_state_idx[local_work_idx, 0] = 0
+        fg_cfg_dedupe_sig[local_work_idx, 0] = empty_sig
+        fg_cfg_dedupe_hash[local_work_idx, 0] = _fg_signature_hash(empty_sig)
+        fg_cfg_dedupe_rep_cfg_idx[local_work_idx, 0] = 0
+        cur_base: ti.i32 = 0
+        next_base: ti.i32 = capacity
+        cur_count: ti.i32 = 1
+
+        for sec in range(FG_MAX_SECTIONS):
+            if sec >= n_sections or fg_cfg_dedupe_active[local_work_idx] == 0:
+                continue
+            for clear_next in range(capacity):
+                slot = next_base + clear_next
+                fg_frontier_state_idx[local_work_idx, slot] = -1
+                fg_cfg_dedupe_hash[local_work_idx, slot] = ti.u64(0)
+                fg_cfg_dedupe_rep_cfg_idx[local_work_idx, slot] = -1
+            next_count: ti.i32 = 0
+            for cur_i in range(capacity):
+                if cur_i >= cur_count:
+                    continue
+                src_slot = cur_base + cur_i
+                current_idx = fg_frontier_state_idx[local_work_idx, src_slot]
+                if current_idx < 0:
+                    continue
+                base_sig = fg_cfg_dedupe_sig[local_work_idx, src_slot]
+                for forced_k in range(non_fever_base + 1):
+                    if fg_cfg_dedupe_active[local_work_idx] == 0:
+                        continue
+                    fp_target: ti.i32 = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_k)
+                    base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
+                    if base_notes_s < 0:
+                        base_notes_s = 0
+                    section_start: ti.i32 = current_idx
+                    end_normal: ti.i32 = ti.min(total_notes, section_start + base_notes_s + fp_target)
+                    actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
+                    forced_app: ti.i32 = ti.min(forced_k, actual_notes)
+                    carry_time: ti.f32 = 0.0
+                    carry_idx: ti.i32 = 0
+                    sig = base_sig
+                    if forced_app > 0:
+                        forced_start: ti.i32 = section_start + ti.cast(sec > 0, ti.i32)
+                        forced_end: ti.i32 = forced_start + forced_app - 1
+                        forced_end = ti.min(forced_end, end_normal - 1)
+                        if forced_end >= forced_start and forced_end < total_notes:
+                            carry_time = song_timestamps_great_candidate[forced_end]
+                            carry_idx = forced_end
+                        head_cap: ti.i32 = 100 - forced_start
+                        if head_cap < 0:
+                            head_cap = 0
+                        head_n: ti.i32 = forced_app
+                        if head_n > head_cap:
+                            head_n = head_cap
+                        sig[10] += forced_app - head_n
+                        if head_n > 0:
+                            masks_forced = _or_head_mask_range(
+                                ti.cast(sig[6], ti.u32),
+                                ti.cast(sig[7], ti.u32),
+                                ti.cast(sig[8], ti.u32),
+                                ti.cast(sig[9], ti.u32),
+                                forced_start,
+                                forced_start + head_n,
+                            )
+                            sig[6] = ti.cast(masks_forced[0], ti.i32)
+                            sig[7] = ti.cast(masks_forced[1], ti.i32)
+                            sig[8] = ti.cast(masks_forced[2], ti.i32)
+                            sig[9] = ti.cast(masks_forced[3], ti.i32)
+                    next_idx: ti.i32 = end_normal
+                    if next_idx < total_notes:
+                        fever_end_idx = _fg_fever_end_idx_from_tables(next_idx, carry_time, carry_idx, ft_idx, total_notes)
+                        if fever_end_idx <= next_idx:
+                            fever_end_idx = ti.min(total_notes, next_idx + 1)
+                        if next_idx < head_len:
+                            head_end = ti.min(head_len, fever_end_idx)
+                            masks = _or_head_mask_range(
+                                ti.cast(sig[0], ti.u32),
+                                ti.cast(sig[1], ti.u32),
+                                ti.cast(sig[2], ti.u32),
+                                ti.cast(sig[3], ti.u32),
+                                next_idx,
+                                head_end,
+                            )
+                            sig[0] = ti.cast(masks[0], ti.i32)
+                            sig[1] = ti.cast(masks[1], ti.i32)
+                            sig[2] = ti.cast(masks[2], ti.i32)
+                            sig[3] = ti.cast(masks[3], ti.i32)
+                        if fever_end_idx > head_len:
+                            body_start = head_len if next_idx < head_len else next_idx
+                            if fever_end_idx > body_start:
+                                sig[4] += fever_end_idx - body_start
+                        next_idx = fever_end_idx
+                    seen_body: ti.i32 = ti.max(0, next_idx - head_len)
+                    sig[5] = ti.max(0, seen_body - sig[4])
+                    next_count = _fg_frontier_insert(
+                        local_work_idx,
+                        next_base,
+                        next_count,
+                        capacity,
+                        next_idx,
+                        sig,
+                        src_slot,
+                        sec,
+                        forced_k,
+                        n_sections,
+                    )
+            next_count = _fg_frontier_compact(local_work_idx, next_base, next_count, capacity)
+            old_base = cur_base
+            cur_base = next_base
+            next_base = old_base
+            cur_count = next_count
+
+        for cur_i in range(capacity):
+            if cur_i >= cur_count:
+                continue
+            slot = cur_base + cur_i
+            current_idx = fg_frontier_state_idx[local_work_idx, slot]
+            if current_idx < 0:
+                continue
+            sig = fg_cfg_dedupe_sig[local_work_idx, slot]
+            tail_sec: ti.i32 = n_sections
+            while current_idx < total_notes:
+                base_notes_s: ti.i32 = non_fever_base - 1 if tail_sec == 0 else non_fever_base
+                if base_notes_s < 0:
+                    base_notes_s = 0
+                current_idx = ti.min(total_notes, current_idx + base_notes_s)
+                if current_idx >= total_notes:
+                    break
+                fever_end_idx = _fg_fever_end_idx_from_tables(current_idx, 0.0, 0, ft_idx, total_notes)
+                if fever_end_idx <= current_idx:
+                    fever_end_idx = ti.min(total_notes, current_idx + 1)
+                if current_idx < head_len:
+                    head_end = ti.min(head_len, fever_end_idx)
+                    masks = _or_head_mask_range(
+                        ti.cast(sig[0], ti.u32),
+                        ti.cast(sig[1], ti.u32),
+                        ti.cast(sig[2], ti.u32),
+                        ti.cast(sig[3], ti.u32),
+                        current_idx,
+                        head_end,
+                    )
+                    sig[0] = ti.cast(masks[0], ti.i32)
+                    sig[1] = ti.cast(masks[1], ti.i32)
+                    sig[2] = ti.cast(masks[2], ti.i32)
+                    sig[3] = ti.cast(masks[3], ti.i32)
+                if fever_end_idx > head_len:
+                    body_start = head_len if current_idx < head_len else current_idx
+                    if fever_end_idx > body_start:
+                        sig[4] += fever_end_idx - body_start
+                current_idx = fever_end_idx
+                tail_sec += 1
+            sig[5] = ti.max(0, body_len - sig[4])
+            fg_cfg_dedupe_sig[local_work_idx, slot] = sig
+
+        budget: ti.i32 = total_budget - ft_gems - ff_gems
+        if budget < 0:
+            continue
+        p_val: ti.i32 = base_p_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_p_ft) + (
+            ff_gems * GEM_STAT_TO_ELEMENT * is_p_ff
+        )
+        s_val: ti.i32 = base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (
+            ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff
+        )
+        best_final: ti.i32 = -1
+        best_base: ti.i32 = 0
+        best_cfg: ti.i32 = -1
+        best_pp: ti.i32 = 0
+        best_cm: ti.i32 = 0
+        best_fm: ti.i32 = 0
+        best_ov: ti.i32 = 0
+        best_sp: ti.i32 = 0
+        best_fp: ti.i32 = 0
+        for cur_i in range(capacity):
+            if cur_i >= cur_count:
+                continue
+            slot = cur_base + cur_i
+            if fg_frontier_state_idx[local_work_idx, slot] < 0:
+                continue
+            sig = fg_cfg_dedupe_sig[local_work_idx, slot]
+            opt = _optimize_core_bits(
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                ti.cast(sig[0], ti.u32),
+                ti.cast(sig[1], ti.u32),
+                ti.cast(sig[2], ti.u32),
+                ti.cast(sig[3], ti.u32),
+                head_len,
+                sig[4],
+                sig[5],
+            )
+            base_score: ti.i32 = opt[0]
+            final_pp: ti.i32 = opt[1]
+            final_cm: ti.i32 = opt[2]
+            final_p_val: ti.i32 = opt[4]
+            final_s_val: ti.i32 = opt[5]
+            gems_pp: ti.i32 = opt[6]
+            gems_cm: ti.i32 = opt[7]
+            gems_fm: ti.i32 = opt[8]
+            gems_ov: ti.i32 = opt[9]
+            pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
+            combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
+            combo_span_scaled: ti.f32 = (combo_mul - 1.0) * 0.01
+            base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
+            combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
+            great_penalty_base_head: ti.i32 = (
+                ti.cast(ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)), ti.i32)
+                + ti.cast(ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)), ti.i32)
+                + 150
+            )
+            great_penalty_base_raw: ti.f32 = (
+                (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0))
+                + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0))
+                + 150.0
+            )
+            great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
+            body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
+            score_penalty_total: ti.i32 = sig[10] * body_penalty
+            for note_idx in ti.static(range(100)):
+                word = note_idx // 32
+                bit = note_idx - word * 32
+                mask_word: ti.u32 = ti.cast(sig[6 + word], ti.u32)
+                if (mask_word & (ti.u32(1) << bit)) != ti.u32(0):
+                    if note_idx == 99:
+                        score_penalty_total += body_penalty
+                    else:
+                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                        score_penalty_total += ti.max(0, perfect_val - great_val)
+            fill_penalty_total: ti.i32 = 0
+            for s in ti.static(range(FG_MAX_SECTIONS)):
+                if s < n_sections:
+                    forced_n = ti.cast(fg_frontier_forced_counts[local_work_idx, slot, s], ti.i32)
+                    fill_penalty_total += _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_n) * combo_value
+            final_score: ti.i32 = base_score - score_penalty_total
+            if final_score < 0:
+                final_score = 0
+            if (final_score > best_final) or (final_score == best_final and cur_i < best_cfg):
+                best_final = final_score
+                best_base = base_score
+                best_cfg = cur_i
+                best_pp = gems_pp
+                best_cm = gems_cm
+                best_fm = gems_fm
+                best_ov = gems_ov
+                best_sp = score_penalty_total
+                best_fp = fill_penalty_total
+                for s in ti.static(range(FG_MAX_SECTIONS)):
+                    if s < n_sections:
+                        fg_stage1_cfg_counts[g, ftff_idx, s] = ti.cast(
+                            fg_frontier_forced_counts[local_work_idx, slot, s],
+                            ti.i32,
+                        )
+                    else:
+                        fg_stage1_cfg_counts[g, ftff_idx, s] = 0
+        if best_final >= 0:
+            fg_stage1_cfg_idx[g, ftff_idx] = best_cfg
+            fg_stage1_final_score[g, ftff_idx] = best_final
+            fg_stage1_base_score[g, ftff_idx] = best_base
+            fg_stage1_g_pp[g, ftff_idx] = best_pp
+            fg_stage1_g_cm[g, ftff_idx] = best_cm
+            fg_stage1_g_fm[g, ftff_idx] = best_fm
+            fg_stage1_g_ov[g, ftff_idx] = best_ov
+            fg_stage1_score_penalty[g, ftff_idx] = best_sp
+            fg_stage1_fill_penalty[g, ftff_idx] = best_fp
+            inverted_idx: ti.i32 = 0x7FFFFFFF - best_cfg
+            fg_stage1_packed[g, ftff_idx] = (ti.cast(best_final, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
+        else:
+            fg_stage1_cfg_idx[g, ftff_idx] = -1
+            fg_stage1_packed[g, ftff_idx] = ti.cast(-1, ti.i64) << 32
 def fg_stage2_recompute_kernel(
     n_genomes: ti.i32,
     n_ftff: ti.i32,
@@ -2134,27 +2461,22 @@ def fg_stage2_recompute_and_update_global_best_kernel(
         cfg_base: ti.i32 = fg_cfg_base_list[best_ftff]
         fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
         cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        cfg_rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        if cfg_mode != 0:
+        if cfg_mode == 2:
+            for s in ti.static(range(FG_MAX_SECTIONS)):
+                if s < n_sections:
+                    cfg_counts_vec[s] = fg_stage1_cfg_counts[gid, best_ftff, s]
+        elif cfg_mode != 0:
             local_cfg_idx: ti.i32 = best_cfg - cfg_base
             if local_cfg_idx < 0:
                 local_cfg_idx = 0
             fp_targets_vec = _fg_decode_fp_targets_vec(_fg_base_cfg_idx(local_cfg_idx, n_sections), best_ftff, n_sections)
-            cfg_rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
-        if cfg_mode != 0:
+        if cfg_mode != 0 and cfg_mode != 2:
             cfg_counts_vec = fp_targets_vec
-            for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
-                if s < n_sections and cfg_rep_flags_vec[s] != 0:
-                    cfg_counts_vec[s] = fp_targets_vec[s] + FG_PLATEAU_REP_STRIDE
         else:
             if best_cfg >= 0:
                 for s in ti.static(range(FG_MAX_SECTIONS)):
                     if s < n_sections:
-                        raw_cfg: ti.i32 = fg_forced_counts[best_cfg, s]
-                        decoded = _decode_fp_target_and_rep_flag(raw_cfg)
-                        cfg_counts_vec[s] = decoded[0]
-                        if s < FG_PLATEAU_REP_MAX_SECTIONS:
-                            cfg_rep_flags_vec[s] = decoded[1]
+                        cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
         m0 = ti.cast(0, ti.u32)
         m1 = ti.cast(0, ti.u32)
         m2 = ti.cast(0, ti.u32)
@@ -2182,22 +2504,30 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                 base_notes_s = 0
             fp_target: ti.i32 = 0
             rep_alt: ti.i32 = 0
+            forced_direct: ti.i32 = 0
             if sec < n_sections:
-                if cfg_mode != 0:
+                if cfg_mode == 2:
+                    forced_direct = cfg_counts_vec[sec]
+                    if forced_direct < 0:
+                        forced_direct = 0
+                    if forced_direct > non_fever_base:
+                        forced_direct = non_fever_base
+                    fp_target = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_direct)
+                elif cfg_mode != 0:
                     fp_target = fp_targets_vec[sec]
                 else:
-                    fp_target = cfg_counts_vec[sec]
-                    if sec < FG_PLATEAU_REP_MAX_SECTIONS:
-                        rep_alt = cfg_rep_flags_vec[sec]
+                    forced_direct = cfg_counts_vec[sec]
+                    if forced_direct < 0:
+                        forced_direct = 0
+                    if forced_direct > non_fever_base:
+                        forced_direct = non_fever_base
+                    fp_target = _forced_to_fp_target(non_fever_base_f, non_fever_base, forced_direct)
                 if fp_target < 0:
                     fp_target = 0
-                if sec < FG_MAX_SECTIONS:
+                if sec < FG_MAX_SECTIONS and cfg_mode != 2 and cfg_mode != 0:
                     pair_cap_forced: ti.i32 = 0
                     if pair_caps_from_timeline != 0:
-                        if sec < fever_acts:
-                            pair_cap_forced = _fg_section_forced_cap(sec)
-                        else:
-                            pair_cap_forced = 0
+                        pair_cap_forced = non_fever_base
                     else:
                         pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
                     if pair_cap_forced < 0:
@@ -2205,7 +2535,7 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                     notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
                     fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
                     fp_target = ti.min(fp_target, fp_cap)
-            forced_val: ti.i32 = _forced_from_fp_target_with_rep(
+            forced_val: ti.i32 = forced_direct if cfg_mode == 2 or cfg_mode == 0 else _forced_from_fp_target_with_rep(
                 non_fever_base_f,
                 non_fever_base,
                 fp_target,

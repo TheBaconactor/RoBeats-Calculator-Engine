@@ -18,9 +18,9 @@ def _has_taichi() -> bool:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list():
+def test_fg_gpu_tasks_batching_allows_prefix_frontier_without_counts_list():
     """
-    Regression: when batching fg_tasks, some tasks provide only counts_max_fp (implicit configs)
+    Regression: when batching fg_tasks, some tasks provide only the prefix-frontier descriptor
     and omit counts_list. The batching submit must still run and allow a global download.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
@@ -74,8 +74,9 @@ def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list():
     ftff_pairs_np = np.asarray(ftff_pairs, dtype=np.int32)
 
     # Intentionally omit counts_list; this used to break batching submit logic.
-    task_list = {"counts_max_fp": [0, 0, 0], "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
-    task_np = {"counts_max_fp": [0, 0, 0], "ftff_pairs": ftff_pairs_np, "base_cfg_offset": 0}
+    descriptor = {"mode": "gpu", "n_sections": 3, "song_slot": 0, "gem_scale_fever": 3}
+    task_list = {"counts_max_fp": descriptor, "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
+    task_np = {"counts_max_fp": descriptor, "ftff_pairs": ftff_pairs_np, "base_cfg_offset": 0}
 
     fg_reset_global_best(n_genomes)
     solve_force_greats_finder_gpu_tasks(

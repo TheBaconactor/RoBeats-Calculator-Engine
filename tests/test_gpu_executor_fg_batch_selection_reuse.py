@@ -68,10 +68,10 @@ def test_fg_batch_pack_reuses_selection_upload_for_equivalent_arrays(monkeypatch
     GpuExecutor._instance = None
 
 
-def test_fg_breakpoint_payload_reuses_pre_split_base_vectors(monkeypatch):
+def test_fg_breakpoint_payload_uses_prefix_frontier_descriptor(monkeypatch):
     """
-    Fused FG payload builder should forward pre-split base_ft/base_ff vectors so
-    downstream task prep can skip repeated `(n,2)->(n,)` host slicing.
+    Fused FG payload builder should request the cap-free GPU prefix frontier,
+    not a precomputed max-FP matrix.
     """
     GpuExecutor._instance = None
     executor = GpuExecutor()
@@ -116,8 +116,6 @@ def test_fg_breakpoint_payload_reuses_pre_split_base_vectors(monkeypatch):
         "n_sections": 3,
         "ftff_pairs": np.array([[0, 0], [2, 1]], dtype=np.int32),
         "base_stats_pairs": np.array([[100, 80], [110, 85]], dtype=np.int32),
-        "non_fever_base_by_ff": np.zeros((161,), dtype=np.int16),
-        "fp_cap_table": np.zeros((161, 51), dtype=np.int16),
         "genome_stats_list": np.array([[100, 100, 100, 200, 120, 80, 80]], dtype=np.int32),
         "timestamps_np": np.linspace(0.0, 5.0, 32, dtype=np.float32),
         "great_candidate_timestamps_np": None,
@@ -143,9 +141,6 @@ def test_fg_breakpoint_payload_reuses_pre_split_base_vectors(monkeypatch):
     assert len(fg_tasks) == 1
     compute = (fg_tasks[0].get("counts_max_fp") or {}) if isinstance(fg_tasks[0], dict) else {}
     assert isinstance(compute, dict)
-    base_ft = np.asarray(compute.get("base_ft"))
-    base_ff = np.asarray(compute.get("base_ff"))
-    assert base_ft.tolist() == [100, 110]
-    assert base_ff.tolist() == [80, 85]
+    assert compute == {"mode": "gpu", "n_sections": 3, "song_slot": 0, "gem_scale_fever": 3}
 
     GpuExecutor._instance = None

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
-
 from .entry_resolution import (
     selected_count as _selected_count,
     sig_results_has_fg_improvement as _sig_results_has_fg_improvement,
@@ -35,7 +33,6 @@ def _should_skip_full_download_no_candidates(
 
 
 __all__ = [
-    "FG_PLATEAU_REP_STRIDE",
     "_build_topk_keep_signature_set",
     "_default_fused_payloads_per_request",
     "_extract_group_payload",

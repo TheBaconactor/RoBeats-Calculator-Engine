@@ -10,8 +10,6 @@ def test_gpu_executor_rejects_fg_preuploaded_genome_stats():
         "n_sections": 1,
         "ftff_pairs": np.asarray([[0, 0]], dtype=np.int32),
         "base_stats_pairs": np.asarray([[0, 0]], dtype=np.int32),
-        "non_fever_base_by_ff": np.asarray([0], dtype=np.int16),
-        "fp_cap_table": np.asarray([[0]], dtype=np.int16),
         "song_slot": 1,
         "gem_scale_fever": 3,
         "genome_stats_list": None,

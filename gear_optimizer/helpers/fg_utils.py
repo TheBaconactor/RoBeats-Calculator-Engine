@@ -5,9 +5,6 @@ from gear_optimizer.core.parsing import env_flag
 
 
 logger = logging.getLogger(__name__)
-# Hard cap fallbacks to prevent config explosion
-# Section 1 can have more FG than section 2, etc. (diminishing returns)
-MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
 
 
 def _fp_cap_from_forced(scorer, ft_stat: int, ff_stat: int, forced_cap: int) -> int:
@@ -137,16 +134,18 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
             print(f"[FG] No useful sections (gap={gap}, activations={useful_sections})")
         return [()]
 
-    # Use analyzed caps if none provided, with MAX_SECTION_CAPS as backup
+    # Use the production natural cap: counts above non_fever_base are clamped by
+    # the timeline model and cannot create a distinct result.
     if section_caps is None:
         section_caps = []
+        natural_cap = 0
+        try:
+            natural_cap = int(scorer.get_fever_params(80, 80)[0] or 0)
+        except Exception as e:
+            logger.debug(f"fg_utils:collect_analytical_breakpoints: {e}")
+            natural_cap = 0
         for i in range(actual_sections):
-            if i < len(analyzed_caps) and analyzed_caps[i] > 0:
-                # Use analyzed cap, but also respect MAX_SECTION_CAPS
-                cap = min(analyzed_caps[i], MAX_SECTION_CAPS[i] if i < len(MAX_SECTION_CAPS) else 4)
-            else:
-                cap = MAX_SECTION_CAPS[i] if i < len(MAX_SECTION_CAPS) else 4
-            section_caps.append(cap)
+            section_caps.append(int(max(natural_cap, analyzed_caps[i] if i < len(analyzed_caps) else 0)))
     else:
         section_caps = section_caps[:actual_sections]
 
@@ -381,13 +380,11 @@ def iter_analytical_breakpoint_groups(
 
             analyzed_caps = analysis.get("section_caps") or []
             for sec in range(useful_sections):
-                if sec < len(analyzed_caps) and analyzed_caps[sec] > 0:
-                    cap = min(
-                        int(analyzed_caps[sec]),
-                        MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4,
-                    )
-                else:
-                    cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
+                try:
+                    cap = int(scorer.get_fever_params(ft_stat, ff_stat)[0] or 0)
+                except Exception as e:
+                    logger.debug(f"fg_utils:_process_pair: {e}")
+                    cap = int(analyzed_caps[sec] if sec < len(analyzed_caps) else 0)
 
                 if cap <= 0:
                     continue
