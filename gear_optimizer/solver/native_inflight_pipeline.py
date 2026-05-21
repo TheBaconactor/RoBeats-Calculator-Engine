@@ -1415,8 +1415,22 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             ref_arrays = gpu_inputs.ref_arrays if isinstance(gpu_inputs.ref_arrays, dict) else None
             if calc_song and ref_arrays:
                 _warmup_fg_finder_runtime(calc_song, ref_arrays, gpu_client=gpu_client)
+                from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
+                from gear_optimizer.solver.taichi_gem.force_greats.prefix_frontier_prebuild import (
+                    prebuild_fg_prefix_frontier_cache,
+                )
+
+                song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
+                prebuild_fg_prefix_frontier_cache(
+                    calc_song,
+                    ref_arrays,
+                    gpu_client=gpu_client,
+                    song_slot=int(song_slot),
+                    total_budget=int(TOTAL_GEM_BUDGET),
+                )
         except Exception as e:
             logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
+            raise
     t_finder_warmup = time.perf_counter()
     _maybe_prewarm_fg_chart_scorer(song)
     t_chart_prewarm = time.perf_counter()

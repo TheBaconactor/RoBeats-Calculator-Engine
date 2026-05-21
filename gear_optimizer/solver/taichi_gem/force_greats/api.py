@@ -1358,45 +1358,46 @@ def solve_force_greats_finder_gpu_tasks(
                     continue
                 cache_keys = _prefix_cache_keys_for_work(int(work_offset), int(local_work_items))
                 cached_payloads: list[FgPrefixFrontierPayload] = []
-                if cache_keys is not None:
-                    cache_hit = True
-                    for cache_key in cache_keys:
-                        if cache_key is None:
-                            cached_payloads.append(empty_payload)
-                            continue
-                        payload = load_fg_prefix_frontier_payload(cache_key)
-                        if payload is None or int(payload.n_sections) != int(n_sections):
-                            cache_hit = False
-                            break
-                        cached_payloads.append(payload)
-                    if cache_hit:
-                        if bool(prebuild_only):
-                            continue
-                        _upload_fg_prefix_frontier_payloads(cached_payloads, n_sections=int(n_sections))
-                        fg_kernels.fg_stage1_score_cached_prefix_frontier_kernel(
-                            int(work_offset),
-                            int(local_work_items),
-                            int(total_notes),
-                            int(long_notes),
-                            int(total_budget),
-                            int(gem_scale_fever),
-                            int(n_sections),
-                            int(is_p_ft),
-                            int(is_s_ft),
-                            int(is_p_ff),
-                            int(is_s_ff),
-                            int(is_p_pp),
-                            int(is_s_pp),
-                            int(is_p_cm),
-                            int(is_s_cm),
-                            int(is_p_fm),
-                            int(is_s_fm),
-                            int(is_p_ov),
-                            int(is_s_ov),
-                        )
+                if cache_keys is None:
+                    raise RuntimeError("FG prefix frontier cache keys unavailable; run the full cache prebuild")
+                cache_hit = True
+                for cache_key in cache_keys:
+                    if cache_key is None:
+                        cached_payloads.append(empty_payload)
                         continue
-                elif bool(prebuild_only):
-                    raise RuntimeError("FG prefix frontier prebuild requires cacheable effective FT/FF keys")
+                    payload = load_fg_prefix_frontier_payload(cache_key)
+                    if payload is None or int(payload.n_sections) != int(n_sections):
+                        cache_hit = False
+                        break
+                    cached_payloads.append(payload)
+                if cache_hit:
+                    if bool(prebuild_only):
+                        continue
+                    _upload_fg_prefix_frontier_payloads(cached_payloads, n_sections=int(n_sections))
+                    fg_kernels.fg_stage1_score_cached_prefix_frontier_kernel(
+                        int(work_offset),
+                        int(local_work_items),
+                        int(total_notes),
+                        int(long_notes),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(n_sections),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                    )
+                    continue
+                if not bool(prebuild_only):
+                    raise RuntimeError("FG prefix frontier cache miss during live scoring; run the full cache prebuild")
                 fg_kernels.fg_stage1_prefix_frontier_kernel(
                     int(work_offset),
                     int(local_work_items),
