@@ -861,6 +861,7 @@ def solve_force_greats_finder_gpu_tasks(
     return_raw: bool = True,
     upload_genome_stats: bool = True,
     genome_stats_preuploaded: bool = False,
+    prebuild_only: bool = False,
 ) -> None:
     """
     Execute multiple FG finder tasks as one logical GPU job.
@@ -1369,6 +1370,8 @@ def solve_force_greats_finder_gpu_tasks(
                             break
                         cached_payloads.append(payload)
                     if cache_hit:
+                        if bool(prebuild_only):
+                            continue
                         _upload_fg_prefix_frontier_payloads(cached_payloads, n_sections=int(n_sections))
                         fg_kernels.fg_stage1_score_cached_prefix_frontier_kernel(
                             int(work_offset),
@@ -1392,6 +1395,8 @@ def solve_force_greats_finder_gpu_tasks(
                             int(is_s_ov),
                         )
                         continue
+                elif bool(prebuild_only):
+                    raise RuntimeError("FG prefix frontier prebuild requires cacheable effective FT/FF keys")
                 fg_kernels.fg_stage1_prefix_frontier_kernel(
                     int(work_offset),
                     int(local_work_items),
@@ -1413,6 +1418,7 @@ def solve_force_greats_finder_gpu_tasks(
                     int(is_s_fm),
                     int(is_p_ov),
                     int(is_s_ov),
+                    int(0 if bool(prebuild_only) else 1),
                 )
                 ti.sync()
                 try:
@@ -1452,6 +1458,8 @@ def solve_force_greats_finder_gpu_tasks(
                         f"[PERF] FG prefix frontier: stage1_sync_wall={stage1_wall * 1000:.1f}ms "
                         f"(genomes={n_genomes} ftff={n_ftff})"
                     )
+            if bool(prebuild_only):
+                return
             t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
             fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
                 int(n_genomes),
@@ -1652,6 +1660,8 @@ def solve_force_greats_finder_gpu_tasks(
     use_gpu_max_fp = bool(max_fp_compute_ctx)
     if use_gpu_max_fp and not all(task.get("max_fp_compute") is not None for task in prepared_tasks):
         raise ValueError("Cannot mix prefix-frontier FG tasks with explicit counts_list tasks")
+    if bool(prebuild_only) and not use_gpu_max_fp:
+        raise ValueError("FG prefix frontier prebuild requires GPU prefix-frontier tasks")
     prefix_cache_base_key = None
     if use_gpu_max_fp:
         prefix_cache_base_key = fg_prefix_frontier_base_cache_key(

@@ -2056,6 +2056,7 @@ def fg_stage1_prefix_frontier_kernel(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    score_after_build: ti.i32,
 ):
     """
     Cap-free exact ForceGreats prefix frontier.
@@ -2275,6 +2276,8 @@ def fg_stage1_prefix_frontier_kernel(
                     fg_cfg_dedupe_rep_cfg_idx[local_work_idx, dst] = -1
         fg_cfg_dedupe_rep_count[local_work_idx] = cur_count
         cur_base = 0
+        if score_after_build == 0:
+            continue
 
         budget: ti.i32 = total_budget - ft_gems - ff_gems
         if budget < 0:

@@ -56,6 +56,11 @@ It does not cache final candidate scores. PP/CM/FM/value stats and gem budget ar
 so the artifact is reusable across candidates that share the same song and effective FT/FF indices
 without crossing candidate-specific scoring boundaries.
 
+The finder now warms this cache before each live prefix-frontier scoring submission. That prebuild
+uses the exact candidate/effective-FTFF task tile that the solver is about to score, then the live
+pass scores from the cached surfaces. It intentionally does not prebuild every `161 x 161` FT/FF
+pair at app startup, because that would move the explosion into startup work instead of removing it.
+
 Measured on a synthetic high-cap probe (`natural_cap=201`, `sections=4`, equivalent explicit rows
 `1,664,966,416`), cold build took about `7.01s`, the first warm run took about `1.44s` including
 cached-score kernel compilation, and a disk-hot run after compilation took about `0.016s` with
@@ -73,7 +78,8 @@ Updated tests assert that:
 - retired `FG_COMPUTE_BREAKPOINTS` requests fail loudly.
 - prefix-frontier disk artifacts round-trip exact signatures/counts and are keyed by effective
   FT/FF indices;
-- a second GPU solve can load the disk artifact and skip the frontier build kernel.
+- a prebuild-only GPU pass writes the disk artifact without updating global best;
+- a live GPU solve can load that prebuilt disk artifact and skip the frontier build kernel.
 
 ## Complexity impact
 

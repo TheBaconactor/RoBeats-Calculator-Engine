@@ -101,7 +101,7 @@ def test_fg_gpu_tasks_batching_allows_prefix_frontier_without_counts_list():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_fg_prefix_frontier_disk_cache_skips_rebuild(monkeypatch, tmp_path):
+def test_fg_prefix_frontier_prebuild_disk_cache_skips_live_rebuild(monkeypatch, tmp_path):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
     from gear_optimizer.solver.taichi_gem.force_greats import prefix_frontier_cache
@@ -149,9 +149,11 @@ def test_fg_prefix_frontier_disk_cache_skips_rebuild(monkeypatch, tmp_path):
         ref_arrays=ref_arrays,
         return_raw=True,
         accumulate_global=True,
+        prebuild_only=True,
         **flags,
     )
-    first = fg_api.fg_download_global_best(len(genome_stats_arr))
+    prebuild_only = fg_api.fg_download_global_best(len(genome_stats_arr))
+    np.testing.assert_array_equal(prebuild_only["final_score"], np.asarray([-1], dtype=np.int32))
     assert list(tmp_path.glob("*.npz"))
 
     with prefix_frontier_cache._FG_PREFIX_FRONTIER_LOCK:
@@ -175,6 +177,6 @@ def test_fg_prefix_frontier_disk_cache_skips_rebuild(monkeypatch, tmp_path):
         accumulate_global=True,
         **flags,
     )
-    second = fg_api.fg_download_global_best(len(genome_stats_arr))
+    out = fg_api.fg_download_global_best(len(genome_stats_arr))
 
-    np.testing.assert_array_equal(second["final_score"], first["final_score"])
+    assert int(out["final_score"][0]) >= 0

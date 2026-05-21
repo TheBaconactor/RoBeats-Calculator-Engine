@@ -269,6 +269,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 logger.debug(f"gpu_dispatch:_submit_solve_force_greats_finder_tasks: {e}")
             timeline_precompute_queued = True
         return solve_force_greats_finder_gpu_tasks(*args, fg_tasks=fg_tasks, **kwargs)
+    def _uses_prefix_frontier_tasks(tasks: list[dict]) -> bool:
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            desc = task.get("counts_max_fp")
+            if isinstance(desc, dict) and str(desc.get("mode") or "") == "gpu":
+                return True
+        return False
     from .gpu_dispatch_async import plan_fg_async_threshold_flush, resolve_fg_async_batching_settings
     async_settings = resolve_fg_async_batching_settings(gpu_client=gpu_client, song_slot=int(song_slot), perf=perf)
     in_process = bool(async_settings.in_process)
@@ -498,6 +506,22 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
                 except (ValueError, TypeError):
                     submit_kwargs["base_cfg_offset"] = 0
+            if task_tile and _uses_prefix_frontier_tasks(task_tile):
+                prebuild_kwargs = dict(submit_kwargs)
+                prebuild_kwargs["prebuild_only"] = True
+                _submit_solve_force_greats_finder(
+                    genome_stats_arr,
+                    timestamps,
+                    great_candidates,
+                    long_notes,
+                    last_note_time,
+                    placeholder_counts,
+                    placeholder_pairs,
+                    blocking=True,
+                    **prebuild_kwargs,
+                )
+                genome_stats_uploaded = True
+                submit_kwargs["upload_genome_stats"] = False
             if need_reset:
                 submit_kwargs["fg_reset_before"] = True
                 need_reset = False
@@ -1534,20 +1558,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     group_futures.append(fut)
                     else:
                         for ftff_chunk in _iter_ftff_chunks(group_pairs, int(fg_fields.FG_MAX_FTFF)):
-                            _submit_solve_force_greats_finder_tasks(
-                                genome_stats_arr,
-                                timestamps,
-                                great_candidates,
-                                long_notes,
-                                last_note_time,
-                                fg_tasks=[
-                                    {
-                                        "counts_list": counts_list if counts_list else None,
-                                        "counts_max_fp": counts_max_fp if counts_max_fp else None,
-                                        "ftff_pairs": ftff_chunk,
-                                        "base_cfg_offset": int(group_cfg_offset),
-                                    }
-                                ],
+                            task_payload = {
+                                "counts_list": counts_list if counts_list else None,
+                                "counts_max_fp": counts_max_fp if counts_max_fp else None,
+                                "ftff_pairs": ftff_chunk,
+                                "base_cfg_offset": int(group_cfg_offset),
+                            }
+                            solve_kwargs = dict(
                                 n_sections=n_sections,
                                 **flag_kwargs,
                                 ref_arrays=ref_arrays,
@@ -1559,7 +1576,29 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 return_raw=True,
                                 accumulate_global=True,
                                 base_cfg_offset=group_cfg_offset,
-                                upload_genome_stats=True,
+                            )
+                            uses_prefix_frontier = _uses_prefix_frontier_tasks([task_payload])
+                            if uses_prefix_frontier:
+                                _submit_solve_force_greats_finder_tasks(
+                                    genome_stats_arr,
+                                    timestamps,
+                                    great_candidates,
+                                    long_notes,
+                                    last_note_time,
+                                    fg_tasks=[task_payload],
+                                    upload_genome_stats=True,
+                                    prebuild_only=True,
+                                    **solve_kwargs,
+                                )
+                            _submit_solve_force_greats_finder_tasks(
+                                genome_stats_arr,
+                                timestamps,
+                                great_candidates,
+                                long_notes,
+                                last_note_time,
+                                fg_tasks=[task_payload],
+                                upload_genome_stats=not uses_prefix_frontier,
+                                **solve_kwargs,
                             )
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0

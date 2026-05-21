@@ -95,10 +95,12 @@ def test_fg_task_only_group_key_tracks_shared_inputs_and_knobs():
     key_a = fg_task_only_group_key(args, dict(kwargs))
     key_b = fg_task_only_group_key(args, dict(kwargs))
     key_c = fg_task_only_group_key(args, {**kwargs, "song_slot": 3})
+    key_prebuild = fg_task_only_group_key(args, {**kwargs, "prebuild_only": True})
 
     assert key_a is not None
     assert key_a == key_b
     assert key_a != key_c
+    assert key_a != key_prebuild
     assert fg_task_only_group_key((1, 2), kwargs) is None
 
 

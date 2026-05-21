@@ -1260,6 +1260,7 @@ def fg_task_only_group_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tup
         int(kwargs.get("is_s_ov", 0) or 0),
         int(kwargs.get("base_cfg_offset", 0) or 0),
         kwargs.get("cfg_chunk"),
+        bool(kwargs.get("prebuild_only", False)),
         int(long_notes or 0),
         float(last_note_time or 0.0),
     )
