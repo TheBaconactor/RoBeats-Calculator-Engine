@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import argparse
 import multiprocessing
 import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Sequence
 
-from gear_optimizer.core.config import get_config_path, load_config
+from gear_optimizer.core.config import find_and_cache_paths, get_config_path, load_config, load_paths_cache
 from gear_optimizer.core.parsing import config_bool, env_flag
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def common_init() -> None:
@@ -99,3 +106,97 @@ def run() -> int:
     except Exception as exc:
         print(f"Fatal Error: {exc}")
         return 1
+
+
+def _sync_optimizer_csvs_from_exported_data(repo_root: Path) -> None:
+    exporter = repo_root / "tools" / "data" / "export_game_data_gear_minis.py"
+    exported_data = repo_root / "Data" / "exported_game_data.json"
+    gears_out = repo_root / "Data" / "Gear" / "Gears.csv"
+    minis_out = repo_root / "Data" / "Gear" / "Minis.csv"
+
+    if not exporter.exists():
+        raise FileNotFoundError(f"Missing exporter script: {exporter}")
+    if not exported_data.exists():
+        raise FileNotFoundError(f"Missing exported game data: {exported_data}")
+
+    cmd = [
+        sys.executable,
+        str(exporter),
+        "--input",
+        str(exported_data),
+        "--gears-out",
+        str(gears_out),
+        "--minis-out",
+        str(minis_out),
+    ]
+    print("Syncing optimizer gear/mini CSVs from exported_game_data.json ...")
+    subprocess.run(cmd, check=True, cwd=str(repo_root))
+
+
+def sync_data() -> int:
+    common_init()
+    try:
+        _sync_optimizer_csvs_from_exported_data(REPO_ROOT)
+        return 0
+    except Exception as exc:
+        print(f"Fatal Error: {exc}")
+        return 1
+
+
+def meta() -> int:
+    common_init()
+    print("=" * 60)
+    print("GENERAL META - Universal Loadout Finder")
+    print("=" * 60)
+    print()
+    try:
+        from gear_optimizer.data.database import init_db
+        from general_meta import export_general_meta_json, run_general_meta
+
+        find_and_cache_paths()
+        cfg = load_config(get_config_path(str(REPO_ROOT / "config.ini")))
+        paths = load_paths_cache()
+        init_db()
+        results = run_general_meta(cfg, paths)
+        output_path = export_general_meta_json(results)
+        print("\n" + "=" * 60)
+        print("GENERAL META COMPLETE")
+        print("=" * 60)
+        print(f"\nResults exported to: {output_path}")
+        print(f"Processed {len(results.get('results', {}))} elemental combinations")
+        return 0
+    except KeyboardInterrupt:
+        print("\nCancelled by user.")
+        return 0
+    except Exception as exc:
+        print(f"\nFatal Error: {exc}")
+        import traceback
+
+        traceback.print_exc()
+        return 1
+
+
+def create_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="metafinder")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("run", help="Run optimizer.")
+    sub.add_parser("meta", help="Run GeneralMeta analysis.")
+    sub.add_parser("sync-data", help="Regenerate Data/Gear CSVs from Data/exported_game_data.json.")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = create_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.command == "run":
+        return run()
+    if args.command == "meta":
+        return meta()
+    if args.command == "sync-data":
+        return sync_data()
+    parser.error(f"Unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
