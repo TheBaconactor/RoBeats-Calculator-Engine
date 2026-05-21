@@ -119,6 +119,31 @@ def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
         cap = 0
     return cap
 @ti.func
+def _fg_plateau_rep_multiplier(n_sections: ti.i32) -> ti.i32:
+    reps: ti.i32 = 1
+    for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
+        if s < n_sections:
+            reps *= 2
+    return reps
+@ti.func
+def _fg_base_cfg_idx(local_cfg_idx: ti.i32, n_sections: ti.i32) -> ti.i32:
+    reps: ti.i32 = _fg_plateau_rep_multiplier(n_sections)
+    out: ti.i32 = local_cfg_idx
+    if reps > 1:
+        out = local_cfg_idx // reps
+    return out
+@ti.func
+def _fg_rep_flags_vec(local_cfg_idx: ti.i32, n_sections: ti.i32):
+    out = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+    reps: ti.i32 = _fg_plateau_rep_multiplier(n_sections)
+    mask: ti.i32 = 0
+    if reps > 1:
+        mask = local_cfg_idx - (local_cfg_idx // reps) * reps
+    for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
+        if s < n_sections:
+            out[s] = (mask >> s) & 1
+    return out
+@ti.func
 def _fg_decode_fp_targets_vec(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
     """
     Decode a rectangular config index into per-section FP targets (last section fastest).
@@ -546,8 +571,10 @@ def _fg_config_signature(
     if local_cfg_idx < 0:
         local_cfg_idx = 0
     fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+    rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
     if cfg_mode != 0:
-        fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+        fp_targets_vec = _fg_decode_fp_targets_vec(_fg_base_cfg_idx(local_cfg_idx, n_sections), ftff_idx, n_sections)
+        rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
     m0 = ti.cast(0, ti.u32)
     m1 = ti.cast(0, ti.u32)
     m2 = ti.cast(0, ti.u32)
@@ -571,6 +598,8 @@ def _fg_config_signature(
         if sec < n_sections:
             if cfg_mode != 0:
                 fp_target = fp_targets_vec[sec]
+                if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                    rep_alt = rep_flags_vec[sec]
             else:
                 cfg_raw: ti.i32 = fg_forced_counts[global_cfg_idx, sec]
                 decoded = _decode_fp_target_and_rep_flag(cfg_raw)
@@ -898,6 +927,7 @@ def fg_cfg_dedupe_build_kernel(
                         total_eff *= ti.cast(max_fp_eff + 1, ti.i64)
                 if total_eff < 1:
                     total_eff = 1
+                total_eff *= ti.cast(_fg_plateau_rep_multiplier(n_sections), ti.i64)
                 if total_eff < ti.cast(total_len, ti.i64):
                     dedupe_owner_cap_prefilter = 1
                     dedupe_loop_len = ti.cast(total_eff, ti.i32)
@@ -905,10 +935,19 @@ def fg_cfg_dedupe_build_kernel(
             while cfg_local < dedupe_loop_len and active != 0:
                 global_cfg_idx: ti.i32 = cfg_base + cfg_local
                 if dedupe_owner_cap_prefilter != 0:
+                    rep_mul: ti.i32 = _fg_plateau_rep_multiplier(n_sections)
+                    base_cfg_local: ti.i32 = cfg_local
+                    rep_mask: ti.i32 = 0
+                    if rep_mul > 1:
+                        base_cfg_local = cfg_local // rep_mul
+                        rep_mask = cfg_local - base_cfg_local * rep_mul
                     prefiltered_targets = _fg_decode_fp_targets_with_caps_vec(
-                        cfg_local, dedupe_prefilter_caps, n_sections
+                        base_cfg_local, dedupe_prefilter_caps, n_sections
                     )
-                    global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec(prefiltered_targets, ftff_idx, n_sections)
+                    global_cfg_idx = (
+                        cfg_base + _fg_encode_fp_targets_vec(prefiltered_targets, ftff_idx, n_sections) * rep_mul
+                        + rep_mask
+                    )
                 sig = _fg_config_signature(
                     global_cfg_idx,
                     cfg_base,
@@ -991,38 +1030,6 @@ def fg_cfg_dedupe_build_kernel(
         fg_cfg_dedupe_rep_count[local_work_idx] = rep_count
         fg_cfg_dedupe_active[local_work_idx] = active
 @ti.kernel
-def fg_generate_fp_targets_cartesian_kernel(
-    n_cfg: ti.i32,
-    cfg_dst_offset: ti.i32,
-    cfg_src_offset: ti.i32,
-    n_sections: ti.i32,
-    max_fp_by_section: ti.types.ndarray(dtype=ti.i32, ndim=1),
-):
-    """
-    Generate rectangular FP-target configs directly on GPU.
-    This replaces CPU `itertools.product(*ranges)` materialization for the common
-    breakpoint-mode case where each section is simply `range(0, max_fp+1)`.
-    Ordering matches Python's `itertools.product`:
-      - last dimension (section n-1) varies fastest
-      - first dimension (section 0) varies slowest
-    """
-    for i in range(n_cfg):
-        idx = ti.i32(cfg_src_offset + i)
-        for sec in range(FG_MAX_SECTIONS):
-            if sec < n_sections:
-                fg_forced_counts[cfg_dst_offset + i, sec] = 0
-            else:
-                fg_forced_counts[cfg_dst_offset + i, sec] = 0
-        for k in range(n_sections):
-            sec = (n_sections - 1) - k
-            base = ti.i32(0)
-            if sec < FG_MAX_SECTIONS:
-                base = ti.max(1, ti.i32(max_fp_by_section[sec]) + 1)
-                val = idx % base
-                idx = idx // base
-                fg_forced_counts[cfg_dst_offset + i, sec] = val
-@ti.kernel
-@ti.kernel
 def fg_upload_cfg_ranges_kernel(
     n_ftff: ti.i32,
     cfg_start: ti.types.ndarray(dtype=ti.i32, ndim=1),
@@ -1097,6 +1104,7 @@ def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
         total: ti.i64 = 1
         for s in range(n_sections):
             total = total * (ti.cast(fg_cfg_max_fp[i, s], ti.i64) + 1)
+        total *= ti.cast(_fg_plateau_rep_multiplier(n_sections), ti.i64)
         if total < 1:
             total = 1
         if total > 2147483647:
@@ -1386,32 +1394,35 @@ def fg_stage1_waves_kernel(
                         continue
                 fp_targets_vec4 = ti.Vector.zero(ti.i32, 4)
                 fp_targets_vec16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+                rep_flags_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
                 if cfg_mode != 0:
                     local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
                     if owner_cap_reduce != 0:
                         local_cfg_idx = cfg_read_offset + cfg_idx
                     if local_cfg_idx < 0:
                         local_cfg_idx = 0
+                    base_local_cfg_idx: ti.i32 = _fg_base_cfg_idx(local_cfg_idx, n_sections)
+                    rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
                     if ti.static(use_small_sections):
                         if owner_cap_reduce != 0:
                             fp_targets_vec4 = _fg_decode_fp_targets_with_caps_vec4(
-                                local_cfg_idx, owner_max_fp4, n_sections
+                                base_local_cfg_idx, owner_max_fp4, n_sections
                             )
                             global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec4(
                                 fp_targets_vec4, ftff_idx, n_sections
                             )
                         else:
-                            fp_targets_vec4 = _fg_decode_fp_targets_vec4(local_cfg_idx, ftff_idx, n_sections)
+                            fp_targets_vec4 = _fg_decode_fp_targets_vec4(base_local_cfg_idx, ftff_idx, n_sections)
                     else:
                         if owner_cap_reduce != 0:
                             fp_targets_vec16 = _fg_decode_fp_targets_with_caps_vec(
-                                local_cfg_idx, owner_max_fp16, n_sections
+                                base_local_cfg_idx, owner_max_fp16, n_sections
                             )
                             global_cfg_idx = cfg_base + _fg_encode_fp_targets_vec(
                                 fp_targets_vec16, ftff_idx, n_sections
                             )
                         else:
-                            fp_targets_vec16 = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+                            fp_targets_vec16 = _fg_decode_fp_targets_vec(base_local_cfg_idx, ftff_idx, n_sections)
                 m0 = ti.cast(0, ti.u32)
                 m1 = ti.cast(0, ti.u32)
                 m2 = ti.cast(0, ti.u32)
@@ -1438,6 +1449,8 @@ def fg_stage1_waves_kernel(
                                     fp_target = fp_targets_vec4[sec]
                             else:
                                 fp_target = fp_targets_vec16[sec]
+                            if sec < FG_PLATEAU_REP_MAX_SECTIONS:
+                                rep_alt = rep_flags_vec[sec]
                         else:
                             read_cfg_idx: ti.i32 = cfg_read_base + cfg_idx
                             if use_cfg_dedupe != 0:
@@ -2126,9 +2139,13 @@ def fg_stage2_recompute_and_update_global_best_kernel(
             local_cfg_idx: ti.i32 = best_cfg - cfg_base
             if local_cfg_idx < 0:
                 local_cfg_idx = 0
-            fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
+            fp_targets_vec = _fg_decode_fp_targets_vec(_fg_base_cfg_idx(local_cfg_idx, n_sections), best_ftff, n_sections)
+            cfg_rep_flags_vec = _fg_rep_flags_vec(local_cfg_idx, n_sections)
         if cfg_mode != 0:
             cfg_counts_vec = fp_targets_vec
+            for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
+                if s < n_sections and cfg_rep_flags_vec[s] != 0:
+                    cfg_counts_vec[s] = fp_targets_vec[s] + FG_PLATEAU_REP_STRIDE
         else:
             if best_cfg >= 0:
                 for s in ti.static(range(FG_MAX_SECTIONS)):

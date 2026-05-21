@@ -34,7 +34,7 @@ def test_fg_batch_pack_reuses_selection_upload_for_equivalent_arrays(monkeypatch
 
     def _fake_run(payload, *, batch_pack_idx=None):
         preupload_flags.append(bool(payload.get("fg_selection_inputs_preuploaded", False)))
-        return {"_packed_batch": True, "n_sections": 1, "implicit_cfgs": False}
+        return {"_packed_batch": True, "n_sections": 1, "implicit_cfgs": True}
 
     monkeypatch.setattr(executor, "_run_fg_solve_with_breakpoints_payload", _fake_run)
 
@@ -76,9 +76,6 @@ def test_fg_breakpoint_payload_reuses_pre_split_base_vectors(monkeypatch):
     GpuExecutor._instance = None
     executor = GpuExecutor()
     executor._in_process_queues = True
-
-    monkeypatch.setenv("FG_IMPLICIT_CONFIGS", "1")
-    monkeypatch.setenv("FG_MAX_FP_GPU_COMPUTE", "1")
 
     captured: dict[str, object] = {}
     fake_api = types.ModuleType("gear_optimizer.solver.taichi_gem.force_greats.api")

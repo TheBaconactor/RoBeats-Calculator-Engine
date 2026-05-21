@@ -39,10 +39,7 @@ from .signature_frontier import (
 from . import gpu_dispatch_caches as _dispatch_caches
 from .gpu_dispatch_batching import (
     _build_topk_keep_signature_set,
-    _build_section_k1_valid_fps,
     _default_fused_payloads_per_request,
-    _expand_plateau_rep_counts_from_max_fp,
-    _expand_plateau_rep_counts_list,
     _extract_group_payload,
     _has_valid_k1_rep,
     _is_empty_pairs,
@@ -70,11 +67,8 @@ logger = logging.getLogger(__name__)
 _GPU_STRICT = env_flag("GPU_STRICT", "1")
 __all__ = [
     "FG_PLATEAU_REP_STRIDE",
-    "_build_section_k1_valid_fps",
     "_build_topk_keep_signature_set",
     "_default_fused_payloads_per_request",
-    "_expand_plateau_rep_counts_from_max_fp",
-    "_expand_plateau_rep_counts_list",
     "_extract_group_payload",
     "_has_valid_k1_rep",
     "_is_empty_pairs",
@@ -147,14 +141,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     from ....solver.taichi_gem.force_greats.api import (
         fg_select_signature_frontier_batch,
         solve_force_greats_finder_gpu,
+        solve_force_greats_finder_gpu_tasks,
     )
     meta = calc_song.get("metadata", {}) or {}
     p_color = meta.get("Primary Color", "")
     s_color = meta.get("Secondary Color", "")
-    from ....helpers.fg_utils import (
-        collect_analytical_breakpoints,
-        _sample_stat_pairs,
-    )
     from ....solver.analytical_fg import create_scorer_from_calc_song, create_chart_scorer_from_calc_song
     from ....solver.taichi_gem.force_greats import fields as fg_fields
     from ....solver.taichi_gem.force_greats.api import (
@@ -268,6 +259,26 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 logger.debug(f"gpu_dispatch:_submit_solve_force_greats_finder: {e}")
             timeline_precompute_queued = True
         return solve_force_greats_finder_gpu(*args, **kwargs)
+    def _submit_solve_force_greats_finder_tasks(*args, fg_tasks: list[dict], blocking: bool = True, **kwargs):
+        nonlocal timeline_precompute_queued
+        if gpu_client is not None:
+            raise RuntimeError("direct FG task solve is only used without a GPU client")
+        if kwargs.pop("ga_stage_coords", None) is not None:
+            raise RuntimeError("GA->FG resident genome-stat staging has been removed")
+        kwargs.pop("ga_stage_table_slot", None)
+        kwargs.pop("ensure_timeline_precompute", None)
+        kwargs.pop("calc_song", None)
+        kwargs.pop("ga_stage_n_slots", None)
+        need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
+        if need_timeline_precompute:
+            try:
+                from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+                slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
+                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(slot0))
+            except Exception as e:
+                logger.debug(f"gpu_dispatch:_submit_solve_force_greats_finder_tasks: {e}")
+            timeline_precompute_queued = True
+        return solve_force_greats_finder_gpu_tasks(*args, fg_tasks=fg_tasks, **kwargs)
     from .gpu_dispatch_async import plan_fg_async_threshold_flush, resolve_fg_async_batching_settings
     async_settings = resolve_fg_async_batching_settings(gpu_client=gpu_client, song_slot=int(song_slot), perf=perf)
     in_process = bool(async_settings.in_process)
@@ -546,7 +557,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_group_meta_cached = 0
     fg_group_meta_built = 0
     gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
-    per_pair_breakpoints = env_get("FG_PER_FTFF_BREAKPOINTS", "1") == "1"
+    per_pair_breakpoints = True
     breakpoint_group_cache_enabled = env_flag("FG_BREAKPOINT_GROUP_CACHE", "1")
     try:
         breakpoint_group_cache_max_pairs = max(
@@ -878,7 +889,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         frontier_groups_reduced=int(frontier_groups_reduced),
     )
     use_timing_envelope_fg = _uses_timing_envelope_fg(calc_song)
-    chart_key = _dispatch_caches.chart_signature_key(calc_song)
     if use_timing_envelope_fg:
         fg_scorer, fg_scorer_cache_hit = _dispatch_caches.get_cached_chart_scorer(
             calc_song, ref_arrays, create_chart_scorer_from_calc_song
@@ -1093,51 +1103,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         )
         ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
         counts_list = None
-        if not per_pair_breakpoints:
-            rep_pairs = None
-            try:
-                reps = [
-                    (sig_rows_map.get(sig0) or {}).get("base_stats")
-                    for sig0 in sig_list
-                    if isinstance(sig_rows_map.get(sig0), dict)
-                ]
-                rep_pairs = {
-                    (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0))
-                    for bs in reps
-                    if isinstance(bs, dict)
-                }
-            except (KeyError, TypeError, ValueError, AttributeError):
-                rep_pairs = None
-            variant_key = ()
-            if rep_pairs:
-                try:
-                    variant_key = tuple(_sample_stat_pairs(rep_pairs, max_pairs=16))
-                except Exception as e:
-                    logger.debug(f"gpu_dispatch:_submit_chunk: {e}")
-                    variant_key = ()
-            group_counts_list = _dispatch_caches.get_cached_analytical_breakpoints(
-                chart_key=chart_key,
-                num_sections=int(n_sections),
-                variant_key=variant_key,
-                compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs),
-            )
-            if not group_counts_list:
-                group_counts_list = [tuple([0] * int(n_sections))]
-            if n_sections <= 0:
-                counts_list = [()]
-            else:
-                counts_list = list(group_counts_list)
-            if bool(env_flag("FG_PLATEAU_EXACT_REP", "1")) and 0 < int(n_sections) <= 4:
-                plateau_k1_valid = _build_section_k1_valid_fps(
-                    fg_scorer,
-                    int(n_sections),
-                    rep_pairs or set(),
-                )
-                counts_list = _expand_plateau_rep_counts_list(
-                    counts_list,
-                    n_sections=int(n_sections),
-                    section_k1_valid_fps=plateau_k1_valid,
-                )
         if perf:
             t_cfg_build_sec += time.perf_counter() - _t_cfg0
         color_flags = build_color_flag_values(p_color, s_color, sel_color)
@@ -1154,10 +1119,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             "return_raw": True,
             "accumulate_global": True,
         }
-        use_gpu_breakpoints = env_flag("FG_BREAKPOINTS_GPU", "1")
         fg_breakpoints_non_fever_base_by_ff = None
         fg_breakpoints_fp_cap_table = None
-        if per_pair_breakpoints and use_gpu_breakpoints:
+        if per_pair_breakpoints:
             try:
                 fg_breakpoints_non_fever_base_by_ff = song_data_cache.get("fg_breakpoints_non_fever_base_by_ff")
                 fg_breakpoints_fp_cap_table = song_data_cache.get("fg_breakpoints_fp_cap_table")
@@ -1221,7 +1185,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             est_cfgs = max(1, int(min(int(merge_cfg_limit), int(est_cfgs * 1.25))))
             max_by_threads = int(merge_threads_limit // max(1, (n_pairs_for_est * est_cfgs)))
             if max_by_threads > 0:
-                fused_floor = 128 if (bool(fused_breakpoints_solve) and use_gpu_breakpoints) else 0
+                fused_floor = 128 if bool(fused_breakpoints_solve) else 0
                 min_batch = max(fused_floor, 32) if in_process else 16
                 max_genomes_per_batch = max(min_batch, min(int(max_genomes_per_batch), int(max_by_threads)))
         min_tail = 16 if in_process else 8
@@ -1445,7 +1409,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     bool(fused_breakpoints_solve)
                     and gpu_client is not None
                     and in_process
-                    and use_gpu_breakpoints
                     and (non_fever_base_by_ff is not None)
                     and (fp_cap_table is not None)
                     and (not _is_empty_pairs(ftff_pairs_submit))
@@ -1548,12 +1511,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     and int(len(active_ftff_pairs or [])) > 0
                     and int(len(active_ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
                 )
-                plateau_exact_enabled = bool(env_flag("FG_PLATEAU_EXACT_REP", "1"))
-                plateau_exact_sections = bool(plateau_exact_enabled and 0 < int(n_sections) <= 4)
-                if plateau_exact_sections:
-                    can_cache_max_fp_matrix = False
-                    max_fp_matrix = None
-                if max_fp_matrix is None and use_gpu_breakpoints:
+                if max_fp_matrix is None:
                     def _compute_max_fp_blocking():
                         try:
                             return _submit_compute_breakpoints_max_fp(blocking=True)
@@ -1676,37 +1634,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     need_reset = True
                 else:
                     _submit_fg_reset_global_best(n_pending, blocking=True)
-                max_fp_counts_cache: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
                 for group in group_iter:
                     if cacheable_groups_accum is not None:
                         cacheable_groups_accum.append(group)
                     group_count += 1
                     counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
-                    plateau_exact_sections = bool(env_flag("FG_PLATEAU_EXACT_REP", "1") and 0 < int(n_sections) <= 4)
-                    if plateau_exact_sections:
-                        plateau_k1_valid = _build_section_k1_valid_fps(
-                            fg_scorer,
-                            int(n_sections),
-                            {(int(ft), int(ff)) for ft, ff in (group_pairs or [])},
-                            max_fp_per_section=(
-                                [max(0, int(v or 0)) for v in list(counts_max_fp)[: int(n_sections)]]
-                                if counts_max_fp
-                                else None
-                            ),
-                        ) if group_pairs else None
-                        if counts_list:
-                            counts_list = _expand_plateau_rep_counts_list(
-                                counts_list,
-                                n_sections=int(n_sections),
-                                section_k1_valid_fps=plateau_k1_valid,
-                            )
-                        elif counts_max_fp:
-                            counts_list = _expand_plateau_rep_counts_from_max_fp(
-                                counts_max_fp,
-                                n_sections=int(n_sections),
-                                section_k1_valid_fps=plateau_k1_valid,
-                            )
-                            counts_max_fp = []
                     if (not counts_list and not counts_max_fp) or _is_empty_pairs(group_pairs):
                         continue
                     group_cfg_offset = int(cfg_next_base)
@@ -1732,6 +1664,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             max_fp_norm = [0] * int(n_sections)
                         for v in max_fp_norm[: int(n_sections)]:
                             cfg_len0 *= int(v) + 1
+                        cfg_len0 *= 1 << min(max(int(n_sections), 0), 4)
                         cfg_windows.append(
                             {
                                 "base": int(group_cfg_offset),
@@ -1813,34 +1746,21 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                 if fut is not None:
                                     group_futures.append(fut)
                     else:
-                        counts_for_solve = counts_list
-                        if (not counts_for_solve) and counts_max_fp:
-                            try:
-                                import itertools as _it
-                                max_fp_key = tuple(
-                                    max(0, int(v or 0)) for v in list(counts_max_fp)[: int(n_sections)]
-                                ) or tuple([0] * int(n_sections))
-                            except (ValueError, TypeError):
-                                max_fp_key = None
-                            if max_fp_key is not None:
-                                cached = max_fp_counts_cache.get(max_fp_key)
-                                if cached is not None:
-                                    counts_for_solve = cached
-                                else:
-                                    ranges = [range(0, int(v) + 1) for v in max_fp_key]
-                                    counts_for_solve = list(_it.product(*ranges))
-                                    max_fp_counts_cache[max_fp_key] = counts_for_solve
-                        if not counts_for_solve:
-                            counts_for_solve = [tuple([0] * int(n_sections))]
                         for ftff_chunk in _iter_ftff_chunks(group_pairs, int(fg_fields.FG_MAX_FTFF)):
-                            _submit_solve_force_greats_finder(
+                            _submit_solve_force_greats_finder_tasks(
                                 genome_stats_arr,
                                 timestamps,
                                 great_candidates,
                                 long_notes,
                                 last_note_time,
-                                counts_for_solve,
-                                ftff_chunk,
+                                fg_tasks=[
+                                    {
+                                        "counts_list": counts_list if counts_list else None,
+                                        "counts_max_fp": counts_max_fp if counts_max_fp else None,
+                                        "ftff_pairs": ftff_chunk,
+                                        "base_cfg_offset": int(group_cfg_offset),
+                                    }
+                                ],
                                 n_sections=n_sections,
                                 **flag_kwargs,
                                 ref_arrays=ref_arrays,
@@ -1857,7 +1777,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                         if len(gpu_call_shapes) < 12:
-                            gpu_call_shapes.append((n_pending, len(counts_list), len(group_pairs), int(n_sections)))
+                            gpu_call_shapes.append((n_pending, int(cfg_len0), len(group_pairs), int(n_sections)))
                     n_gpu_calls += 1
                 if cacheable_groups_accum is not None:
                     _dispatch_caches.store_cached_breakpoint_groups(
@@ -1959,167 +1879,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 selected_indices = global_results.get("selected_indices")
                 cfg_idx_arr = global_results.get("cfg_idx")
                 cfg_counts_arr = decode_cfg_counts_from_windows(cfg_idx_arr, cfg_windows, n_sections)
-            else:
-                _t_gpu0 = time.perf_counter() if perf else 0.0
-                if len(ftff_pairs) > int(fg_fields.FG_MAX_FTFF):
-                    if gpu_client is not None:
-                        need_reset = True
-                    else:
-                        _submit_fg_reset_global_best(n_pending, blocking=True)
-                    if gpu_client is not None:
-                        counts_list_packed = counts_list
-                        if counts_list:
-                            try:
-                                arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
-                                if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
-                                    counts_list_packed = arr_cfg
-                            except (ValueError, TypeError, KeyError):
-                                counts_list_packed = counts_list
-                        pairs_packed = ftff_pairs
-                        try:
-                            if ftff_pairs is not None and not isinstance(ftff_pairs, _np.ndarray):
-                                pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
-                        except (ValueError, TypeError, KeyError):
-                            pairs_packed = ftff_pairs
-                        for ftff_chunk in _iter_ftff_chunks(pairs_packed, int(fg_fields.FG_MAX_FTFF)):
-                            fg_tasks_batch.append(
-                                {
-                                    "counts_list": counts_list_packed,
-                                    "ftff_pairs": ftff_chunk,
-                                }
-                            )
-                            _maybe_emit_first_gpu_task_queued(
-                                queue_mode="breakpoints_batched",
-                                queue_len=int(len(fg_tasks_batch)),
-                                pair_count=int(_safe_metric_count(ftff_chunk)),
-                                cfg_count=int(_safe_metric_count(counts_list)),
-                                n_sections_value=int(n_sections),
-                                n_pending_value=int(n_pending),
-                            )
-                            should_submit_tasks = len(fg_tasks_batch) >= fg_async_tasks_per_request
-                            if (not bool(enforce_single_request)) and (not first_gpu_submit_emitted):
-                                should_submit_tasks = True
-                            if should_submit_tasks:
-                                flush_plan = plan_fg_async_threshold_flush(
-                                    pending_tasks=len(fg_tasks_batch),
-                                    tasks_per_request=fg_async_tasks_per_request,
-                                )
-                                if int(flush_plan.submit_count) > 0:
-                                    submit_batch = fg_tasks_batch[: int(flush_plan.submit_count)]
-                                    fg_tasks_batch = fg_tasks_batch[int(flush_plan.submit_count) :]
-                                    _flush_fg_tasks_batch(batch=submit_batch)
-                    else:
-                        for ftff_chunk in _iter_ftff_chunks(ftff_pairs, int(fg_fields.FG_MAX_FTFF)):
-                            _submit_solve_force_greats_finder(
-                                genome_stats_arr,  # numpy array instead of list[dict]
-                                timestamps,
-                                great_candidates,
-                                long_notes,
-                                last_note_time,
-                                counts_list,
-                                ftff_chunk,
-                                n_sections=n_sections,
-                                **flag_kwargs,
-                                ref_arrays=ref_arrays,
-                                total_budget=TOTAL_GEM_BUDGET,
-                                gem_scale_fever=GEM_SCALE_FEVER,
-                                pair_caps_grid=pair_caps_grid,
-                                pair_caps_from_timeline=bool(pair_caps_from_timeline),
-                                song_slot=int(song_slot),
-                                return_raw=True,  # Return numpy arrays, not list[dict]
-                                accumulate_global=True,
-                                upload_genome_stats=True,
-                            )
-                    download_future = _flush_fg_tasks_batch(
-                        download_after=True,
-                        download_topk=int(download_topk_k) if download_topk_enabled else None,
-                        download_base_scores=download_base_scores,
-                        download_keep_mask=download_keep_mask,
-                    )
-                    if hasattr(download_future, "result"):
-                        _t_dl0 = time.perf_counter() if perf else 0.0
-                        gpu_results = download_future.result()
-                        if perf:
-                            try:
-                                t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
-                            except (ValueError, TypeError):
-                                pass
-                        for fut in fg_async_futures:
-                            if hasattr(fut, "done") and fut.done():
-                                _ = fut.exception()
-                    else:
-                        gpu_results = None
-                        for fut in fg_async_futures:
-                            _t_wait0 = time.perf_counter() if perf else 0.0
-                            fut.result()
-                            if perf:
-                                try:
-                                    t_gpu_wait_sec += time.perf_counter() - _t_wait0
-                                except (ValueError, TypeError):
-                                    pass
-                        fg_async_futures.clear()
-                    if gpu_results is None:
-                        gpu_results = _submit_fg_download_global_best(
-                            n_pending,
-                            blocking=True,
-                            topk=int(download_topk_k) if download_topk_enabled else None,
-                            base_scores=download_base_scores,
-                            keep_mask=download_keep_mask,
-                        )
-                else:
-                    gpu_results = _submit_solve_force_greats_finder(
-                        genome_stats_arr,  # numpy array instead of list[dict]
-                        timestamps,
-                        great_candidates,
-                        long_notes,
-                        last_note_time,
-                        counts_list,
-                        ftff_pairs,
-                        n_sections=n_sections,
-                        **flag_kwargs,
-                        ref_arrays=ref_arrays,
-                        total_budget=TOTAL_GEM_BUDGET,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        pair_caps_grid=pair_caps_grid,
-                        pair_caps_from_timeline=bool(pair_caps_from_timeline),
-                        song_slot=int(song_slot),
-                        return_raw=True,  # Return numpy arrays, not list[dict]
-                        upload_genome_stats=True,
-                    )
-                if perf:
-                    t_gpu_calls_sec += time.perf_counter() - _t_gpu0
-                    if len(gpu_call_shapes) < 12:
-                        gpu_call_shapes.append((n_pending, len(counts_list), len(ftff_pairs), int(n_sections)))
-                n_gpu_calls += 1
-                result_final = gpu_results["final_score"]
-                result_base = gpu_results["base_score"]
-                result_cfg_idx = gpu_results["cfg_idx"]
-                result_ft = gpu_results["FT"]
-                result_ff = gpu_results["FF"]
-                result_g_pp = gpu_results["g_pp"]
-                result_g_cm = gpu_results["g_cm"]
-                result_g_fm = gpu_results["g_fm"]
-                result_g_ov = gpu_results["g_ov"]
-                selected_indices = gpu_results.get("selected_indices")
-                cfg_counts_arr = None
-                try:
-                    import numpy as _np
-                    cfg_idx_np = _np.asarray(result_cfg_idx, dtype=_np.int32) if result_cfg_idx is not None else None
-                    if cfg_idx_np is not None and counts_list:
-                        n_out = int(cfg_idx_np.shape[0])
-                        cfg_counts_arr = _np.zeros((int(n_out), int(n_sections)), dtype=_np.int32)
-                        for gi in range(int(n_out)):
-                            ci = int(cfg_idx_np[gi])
-                            if ci < 0 or ci >= int(len(counts_list)):
-                                continue
-                            try:
-                                row = counts_list[ci]
-                                for s in range(int(n_sections)):
-                                    cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
-                            except (ValueError, TypeError, KeyError, IndexError):
-                                continue
-                except (ValueError, TypeError, KeyError):
-                    cfg_counts_arr = None
             apply_sigs = pending_sigs
             apply_pending = pending
             if selected_indices is not None:

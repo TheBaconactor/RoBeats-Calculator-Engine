@@ -66,11 +66,11 @@ def test_prepare_fg_breakpoint_payload_inputs_normalizes_arrays_and_config():
     np.testing.assert_array_equal(prepared.base_ff, np.asarray([20, 40], dtype=np.int32))
 
 
-def test_prepare_fg_breakpoint_payload_inputs_reads_implicit_cfg_env():
+def test_prepare_fg_breakpoint_payload_inputs_ignores_removed_implicit_cfg_env():
     prepared = prepare_fg_breakpoint_payload_inputs(_payload(), env_get=lambda _key, _default: "0")
 
     assert prepared is not None
-    assert prepared.implicit_cfgs is False
+    assert prepared.implicit_cfgs is True
 
 
 def test_maybe_precompute_fg_breakpoint_timeline_ignores_disabled_payload():

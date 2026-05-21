@@ -8,10 +8,7 @@ from .entry_resolution import (
 )
 from .gpu_dispatch_batching import (
     _build_topk_keep_signature_set,
-    _build_section_k1_valid_fps,
     _default_fused_payloads_per_request,
-    _expand_plateau_rep_counts_from_max_fp,
-    _expand_plateau_rep_counts_list,
     _extract_group_payload,
     _has_valid_k1_rep,
     _is_empty_pairs,
@@ -39,11 +36,8 @@ def _should_skip_full_download_no_candidates(
 
 __all__ = [
     "FG_PLATEAU_REP_STRIDE",
-    "_build_section_k1_valid_fps",
     "_build_topk_keep_signature_set",
     "_default_fused_payloads_per_request",
-    "_expand_plateau_rep_counts_from_max_fp",
-    "_expand_plateau_rep_counts_list",
     "_extract_group_payload",
     "_has_valid_k1_rep",
     "_is_empty_pairs",

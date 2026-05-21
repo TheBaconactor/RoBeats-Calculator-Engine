@@ -18,7 +18,7 @@ def _has_taichi() -> bool:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list(monkeypatch: pytest.MonkeyPatch):
+def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list():
     """
     Regression: when batching fg_tasks, some tasks provide only counts_max_fp (implicit configs)
     and omit counts_list. The batching submit must still run and allow a global download.
@@ -29,8 +29,6 @@ def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list(monkeypa
         fg_reset_global_best,
         solve_force_greats_finder_gpu_tasks,
     )
-
-    monkeypatch.setenv("FG_IMPLICIT_CONFIGS", "1")
 
     # Small deterministic song
     timestamps = np.linspace(0.0, 10.0, 40, dtype=np.float32)

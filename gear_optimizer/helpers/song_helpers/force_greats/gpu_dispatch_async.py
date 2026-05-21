@@ -53,11 +53,6 @@ def warmup_force_greats_finder_runtime_imports() -> None:
     all threads actually queue behind one import. The GPU executor calls this
     during its warmup; the prep path calls it only as a cheap cached fallback.
     """
-    from gear_optimizer.helpers.fg_utils import (
-        _sample_stat_pairs,
-        collect_analytical_breakpoints,
-        iter_analytical_breakpoint_groups,
-    )
     from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song, create_scorer_from_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
     from gear_optimizer.solver.taichi_gem.force_greats.api import (
@@ -68,9 +63,6 @@ def warmup_force_greats_finder_runtime_imports() -> None:
     )
 
     _ = (
-        _sample_stat_pairs,
-        collect_analytical_breakpoints,
-        iter_analytical_breakpoint_groups,
         create_chart_scorer_from_calc_song,
         create_scorer_from_calc_song,
         fg_fields,

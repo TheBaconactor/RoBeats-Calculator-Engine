@@ -89,7 +89,7 @@ def test_execute_fg_solve_with_breakpoints_batch_reuses_selection_upload(monkeyp
 
     def run_payload(payload, *, batch_pack_idx=None):
         preupload_flags.append(bool(payload.get("fg_selection_inputs_preuploaded", False)))
-        return {"_packed_batch": True, "n_sections": 1, "implicit_cfgs": False}
+        return {"_packed_batch": True, "n_sections": 1, "implicit_cfgs": True}
 
     base_scores = np.asarray([100, 200], dtype=np.int32)
     keep_mask = np.asarray([1, 0], dtype=np.int32)
@@ -172,7 +172,7 @@ def test_run_fg_solve_with_breakpoints_payload_orchestrates_task_solve(monkeypat
         song_slot=3,
         gem_scale_fever=3,
         solve_kwargs_payload={"song_slot": 3},
-        implicit_cfgs=False,
+        implicit_cfgs=True,
     )
     task_plan = SimpleNamespace(
         fg_tasks=[{"task": 1}],

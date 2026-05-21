@@ -863,10 +863,10 @@ def solve_force_greats_finder_gpu_tasks(
     expensive `genome_base_stats` upload across many small breakpoint groups.
 
     Each task must be a dict containing:
-      - counts_list: list of FP-target configs (explicit window mode)
+      - counts_list: list of explicit FP-target configs
         OR
       - counts_max_fp:
-          - list[int] of per-section max FP (GPU-generated rectangular configs), OR
+          - list[int] of per-section max FP (implicit rectangular configs), OR
           - ndarray shape (n_pairs, n_sections) for per-pair max-FP caps (no CPU grouping)
       - ftff_pairs: list of (ft_gems, ff_gems)
       - optional base_cfg_offset: global cfg index offset
@@ -880,10 +880,8 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    use_gpu_cfg_ranges = _FG_GPU_CFG_RANGES
-
     # Packed mega-job mode:
-    # - Upload all config windows into the global config table once (at their base_cfg_offset)
+    # - Keep counts_max_fp windows implicit; explicit counts_list tasks are uploaded as fixed rows.
     # - Batch FT/FF pairs across all tasks into a single Stage-1/Stage-2 sequence per FG_MAX_FTFF chunk
     # - Keep Stage 1 buffers alive across cfg bands (cfg_chunk) to avoid TDR while preserving correctness
 
@@ -893,7 +891,6 @@ def solve_force_greats_finder_gpu_tasks(
     # Ensure shared Taichi runtime + base fields + reference arrays are ready.
     gem_api.ensure_ready(ref_arrays)
     fg_fields.ensure_ready_with_warmup()
-    implicit_cfgs = _FG_IMPLICIT_CONFIGS
 
     try:
         max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
@@ -906,6 +903,7 @@ def solve_force_greats_finder_gpu_tasks(
     n_sections = int(n_sections) if int(n_sections) > 0 else 1
     if n_sections > fg_fields.FG_MAX_SECTIONS:
         raise ValueError(f"Too many FG sections: {n_sections} > {fg_fields.FG_MAX_SECTIONS}")
+    plateau_rep_multiplier = 1 << min(max(int(n_sections), 0), int(fg_kernels.FG_PLATEAU_REP_MAX_SECTIONS))
 
     # Upload song buffers (cached) and ensure fever-end tables exist.
     timestamps_np = np.asarray(timestamps_np, dtype=np.float32)
@@ -1073,7 +1071,7 @@ def solve_force_greats_finder_gpu_tasks(
                 else:
                     max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
 
-        if counts_max_fp_compute is not None and implicit_cfgs:
+        if counts_max_fp_compute is not None:
             per_pair_max_fp_gpu = True
             max_fp_empty = False
         if (cfg_empty and max_fp_empty) or ftff_empty:
@@ -1158,6 +1156,7 @@ def solve_force_greats_finder_gpu_tasks(
                 continue
             try:
                 cfg_len_matrix = np.prod(np.maximum(max_fp_matrix, 0) + 1, axis=1, dtype=np.int64)
+                cfg_len_matrix *= int(plateau_rep_multiplier)
             except Exception as e:
                 logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
                 cfg_len_matrix = None
@@ -1191,7 +1190,6 @@ def solve_force_greats_finder_gpu_tasks(
         except Exception as e:
             logger.debug(f"api:solve_force_greats_finder_gpu_tasks: {e}")
             cfg_base = int(base_cfg_offset)
-        use_implicit = bool(counts_max_fp and implicit_cfgs)
         if counts_max_fp:
             try:
                 max_fp_list = [max(0, int(x or 0)) for x in list(counts_max_fp)[: int(n_sections)]]
@@ -1204,6 +1202,7 @@ def solve_force_greats_finder_gpu_tasks(
                 cfg_len = 1
                 for v in max_fp_list:
                     cfg_len *= int(v) + 1
+                cfg_len *= int(plateau_rep_multiplier)
         else:
             cfg_len = int(len(fg_configs))
         if cfg_len <= 0:
@@ -1227,37 +1226,10 @@ def solve_force_greats_finder_gpu_tasks(
             uploaded_cfg_keys.add(key)
             if cfg_base < 0:
                 raise ValueError("base_cfg_offset must be >= 0 for packed FG tasks")
-            # Only enforce the fg_forced_counts backing store limit when we actually use it.
-            if (not use_implicit) and (int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS)):
+            if (not counts_max_fp) and (int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS)):
                 raise ValueError("Packed FG tasks exceed FG_MAX_CONFIGS")
 
-            if counts_max_fp:
-                if use_implicit:
-                    # Implicit rectangular configs: Stage 1 kernels decode FP targets directly,
-                    # so there is no cfg table generation/upload step.
-                    pass
-                else:
-                    # GPU-native rectangular config generation (no host materialization).
-                    max_fp_arr = np.zeros((int(fg_fields.FG_MAX_SECTIONS),), dtype=np.int32)
-                    for i, v in enumerate(max_fp_list[: int(fg_fields.FG_MAX_SECTIONS)]):
-                        max_fp_arr[i] = int(v)
-                    # Chunk generation to keep kernels bounded (mirrors staging chunking).
-                    gen_chunk = int(min(int(cfg_len), int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)))
-                    if gen_chunk <= 0:
-                        gen_chunk = int(min(int(cfg_len), 4096))
-                    for cfg_off in range(0, int(cfg_len), int(gen_chunk)):
-                        n_cfg = min(int(gen_chunk), int(cfg_len) - int(cfg_off))
-                        if n_cfg <= 0:
-                            continue
-                        fg_kernels.fg_generate_fp_targets_cartesian_kernel(
-                            int(n_cfg),
-                            int(cfg_base) + int(cfg_off),
-                            int(cfg_off),
-                            int(n_sections),
-                            max_fp_arr,
-                        )
-                        cfg_upload_kernels += 1
-            else:
+            if not counts_max_fp:
                 # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
                 #
                 # IMPORTANT: the staging buffer is capped (default 4096 rows). Some songs/configurations can produce
@@ -1314,7 +1286,7 @@ def solve_force_greats_finder_gpu_tasks(
                     fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
                     cfg_upload_kernels += 1
 
-        cfg_mode = 1 if use_implicit else 0
+        cfg_mode = 1 if counts_max_fp else 0
         max_fp_arr = None
         if cfg_mode:
             try:
@@ -1493,8 +1465,7 @@ def solve_force_greats_finder_gpu_tasks(
                     int(max_fp_sections_i),
                 )
                 if (
-                    _FG_GPU_SURFACE_PAIR_REDUCTION
-                    and int(n_ftff) <= int(_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS)
+                    int(n_ftff) <= int(_FG_SURFACE_PAIR_REDUCTION_MAX_PAIRS)
                     and int(max_fp_sections_i) > 0
                 ):
                     fg_kernels.fg_zero_dominated_surface_pairs_kernel(
@@ -1507,15 +1478,7 @@ def solve_force_greats_finder_gpu_tasks(
                         int(is_p_ff),
                         int(is_s_ff),
                     )
-                if not use_gpu_cfg_ranges:
-                    # Host needs per-ftff lengths to compute the exact span for the reducer.
-                    try:
-                        cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
-                    except Exception as e:
-                        logger.debug(f"api:_flush_chunk: {e}")
-                else:
-                    # Avoid downloading the full len list (1024 ints) just to compute max().
-                    fg_kernels.fg_reduce_cfg_total_len_max_kernel(int(n_ftff))
+                fg_kernels.fg_reduce_cfg_total_len_max_kernel(int(n_ftff))
             except Exception as e:
                 raise RuntimeError(f"FG max-FP GPU compute failed: {type(e).__name__}: {e}") from e
 
@@ -1535,7 +1498,7 @@ def solve_force_greats_finder_gpu_tasks(
         # When per-FT/FF max-FP caps are computed on GPU, `max_cfg_len` is not known ahead of time,
         # which can make the global `cfg_chunk` conservative and inflate band count (more launches).
         # We can safely tune per-chunk banding after we observe `max_cfg_len_chunk` from the GPU.
-        if use_gpu_max_fp and use_gpu_cfg_ranges and max_fp_compute_ctx is not None:
+        if use_gpu_max_fp and max_fp_compute_ctx is not None:
             try:
                 max_cfg_len_chunk = int(fg_fields.fg_cfg_total_len_max[None])
             except Exception as e:
@@ -1564,7 +1527,7 @@ def solve_force_greats_finder_gpu_tasks(
         if int(max_cfg_len_chunk) > int(fg_fields.FG_CFG_DEDUPE_MAX_REPS):
             raise RuntimeError(
                 "FG config surface dedupe needs a representative table at least as large as the config span; "
-                "increase FG_CFG_DEDUPE_MAX_REPS."
+                "reduce the config span or raise the compiled representative-table capacity."
             )
         dedupe_slots = max(1, int(max_cfg_len_chunk))
         stage1_band_count = 0

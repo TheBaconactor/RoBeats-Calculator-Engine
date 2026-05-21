@@ -49,12 +49,7 @@ except Exception as e:
     logger.debug(f"fields:_next_pow2: {e}")
     _fg_cfg_dedupe_work_items_env = 512
 FG_CFG_DEDUPE_WORK_ITEMS = max(128, min(int(_fg_cfg_dedupe_work_items_env), 2048))
-try:
-    _fg_cfg_dedupe_max_reps_env = int(env_get("FG_CFG_DEDUPE_MAX_REPS", "512") or "512")
-except Exception as e:
-    logger.debug(f"fields:_next_pow2: {e}")
-    _fg_cfg_dedupe_max_reps_env = 512
-FG_CFG_DEDUPE_MAX_REPS = max(512, min(int(_fg_cfg_dedupe_max_reps_env), 8192))
+FG_CFG_DEDUPE_MAX_REPS = 8192
 FG_CFG_DEDUPE_SIG_WORDS = 11
 song_timestamps: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 song_timestamps_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32

@@ -1,10 +1,11 @@
 import numpy as np
 
+import gear_optimizer.solver.gpu_executor_fg as fg_exec
 from gear_optimizer.solver.gpu_executor_fg import prepare_fg_breakpoint_payload_inputs
 from gear_optimizer.solver.gpu_executor_fg import build_fg_breakpoint_tasks
 
 
-def _prepared(*, implicit_cfgs="1", **overrides):
+def _prepared(**overrides):
     payload = {
         "n_sections": 2,
         "ftff_pairs": np.asarray([[0, 0], [1, 0]], dtype=np.int32),
@@ -16,7 +17,7 @@ def _prepared(*, implicit_cfgs="1", **overrides):
         "solve_kwargs": {"total_budget": 90},
     }
     payload.update(overrides)
-    prepared = prepare_fg_breakpoint_payload_inputs(payload, env_get=lambda _key, _default: implicit_cfgs)
+    prepared = prepare_fg_breakpoint_payload_inputs(payload, env_get=lambda _key, _default: "0")
     assert prepared is not None
     return prepared
 
@@ -27,7 +28,6 @@ def test_build_fg_breakpoint_tasks_uses_gpu_compute_descriptor_by_default():
     plan = build_fg_breakpoint_tasks(
         prepared,
         compute_max_fp_matrix_fn=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not compute")),
-        env_flag_fn=lambda key, default: key != "FG_FUSED_SURFACE_PAIR_REDUCTION",
     )
 
     assert plan.cfg_windows is None
@@ -40,28 +40,29 @@ def test_build_fg_breakpoint_tasks_uses_gpu_compute_descriptor_by_default():
     np.testing.assert_array_equal(counts["base_ff"], np.asarray([20, 40], dtype=np.int32))
 
 
-def test_build_fg_breakpoint_tasks_full_matrix_when_gpu_compute_disabled():
+def test_build_fg_breakpoint_tasks_uses_matrix_after_pair_surface_reduction(monkeypatch):
     expected = np.asarray([[1, 2], [3, 4]], dtype=np.int16)
+    monkeypatch.setattr(fg_exec, "_fg_max_ftff", lambda: 1)
 
     plan = build_fg_breakpoint_tasks(
         _prepared(),
         compute_max_fp_matrix_fn=lambda **_kwargs: expected,
-        env_flag_fn=lambda key, default: False if key == "FG_MAX_FP_GPU_COMPUTE" else True,
+        perf_counter_fn=iter([10.0, 10.125]).__next__,
     )
 
     assert len(plan.fg_tasks) == 1
-    assert plan.fg_tasks[0]["counts_max_fp"] is expected
+    np.testing.assert_array_equal(plan.fg_tasks[0]["counts_max_fp"], expected)
+    assert plan.fg_tasks[0]["counts_list"] is None
 
 
-def test_build_fg_breakpoint_tasks_applies_surface_pair_reduction():
+def test_build_fg_breakpoint_tasks_applies_surface_pair_reduction(monkeypatch):
     prepared = _prepared(ftff_pairs=np.asarray([[0, 0], [1, 0]], dtype=np.int32))
     max_fp = np.asarray([[2, 2], [2, 2]], dtype=np.int16)
+    monkeypatch.setattr(fg_exec, "_fg_max_ftff", lambda: 1)
 
     plan = build_fg_breakpoint_tasks(
         prepared,
         compute_max_fp_matrix_fn=lambda **_kwargs: max_fp,
-        env_flag_fn=lambda _key, _default: True,
-        env_int_fn=lambda _key, _default: 1,
         perf_counter_fn=iter([10.0, 10.125]).__next__,
     )
 
@@ -71,22 +72,20 @@ def test_build_fg_breakpoint_tasks_applies_surface_pair_reduction():
     assert plan.fg_tasks[0]["counts_max_fp"].tolist() == [[2, 2]]
 
 
-def test_build_fg_breakpoint_tasks_explicit_cfg_windows_group_by_max_fp_rows():
+def test_build_fg_breakpoint_tasks_keeps_implicit_max_fp_matrix_rows(monkeypatch):
     max_fp = np.asarray([[1, 0], [1, 0], [0, 2]], dtype=np.int16)
+    monkeypatch.setattr(fg_exec, "_fg_max_ftff", lambda: 1)
     prepared = _prepared(
-        implicit_cfgs="0",
         ftff_pairs=np.asarray([[0, 0], [1, 0], [0, 1]], dtype=np.int32),
     )
 
     plan = build_fg_breakpoint_tasks(
         prepared,
         compute_max_fp_matrix_fn=lambda **_kwargs: max_fp,
-        fg_max_ftff_fn=lambda: 1,
     )
 
-    assert plan.cfg_windows == [
-        {"base": 0, "len": 3, "kind": "max_fp", "max_fp": [0, 2], "n_sections": 2},
-        {"base": 3, "len": 2, "kind": "max_fp", "max_fp": [1, 0], "n_sections": 2},
-    ]
-    assert [task["base_cfg_offset"] for task in plan.fg_tasks] == [0, 3, 3]
-    assert [task["ftff_pairs"].tolist() for task in plan.fg_tasks] == [[[0, 1]], [[0, 0]], [[1, 0]]]
+    assert plan.cfg_windows is None
+    assert len(plan.fg_tasks) == 1
+    assert plan.fg_tasks[0]["counts_list"] is None
+    assert plan.fg_tasks[0]["counts_max_fp"].tolist() == [[1, 0], [0, 2]]
+    assert plan.fg_tasks[0]["ftff_pairs"].tolist() == [[0, 0], [0, 1]]

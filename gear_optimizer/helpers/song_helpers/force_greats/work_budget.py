@@ -47,6 +47,7 @@ def fg_task_cfg_count(task: dict, *, n_sections: int) -> int:
             total *= 1
         if total >= _WORK_ESTIMATE_LIMIT:
             return _WORK_ESTIMATE_LIMIT
+    total *= 1 << min(max(int(n_sections), 0), 4)
     return max(1, int(total))
 
 
@@ -86,6 +87,10 @@ def _fallback_cfg_len_per_pair(payload: dict, *, pair_count: int) -> np.ndarray 
         if cfg_len >= _WORK_ESTIMATE_LIMIT:
             cfg_len = _WORK_ESTIMATE_LIMIT
             break
+    cfg_len = min(
+        int(_WORK_ESTIMATE_LIMIT),
+        int(cfg_len) * (1 << min(max(int(n_sections), 0), 4)),
+    )
     return np.full((max(0, int(pair_count)),), int(cfg_len), dtype=np.int64)
 
 
@@ -154,6 +159,7 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
     max_cells = 2_000_000
     pair_chunk = max(1, int(max_cells // max(1, base_total)))
     n_sections_i = max(0, int(n_sections))
+    plateau_rep_multiplier = 1 << min(n_sections_i, 4)
     base_ff_row = base_ff.reshape(1, base_total)
 
     for start in range(0, pair_total, pair_chunk):
@@ -181,7 +187,10 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
             if bool(np.all(chunk_lens >= int(_WORK_ESTIMATE_LIMIT))):
                 break
 
-        cfg_lens[int(start) : int(end)] = chunk_lens
+        cfg_lens[int(start) : int(end)] = np.minimum(
+            chunk_lens * int(plateau_rep_multiplier),
+            int(_WORK_ESTIMATE_LIMIT),
+        )
 
     return cfg_lens
 

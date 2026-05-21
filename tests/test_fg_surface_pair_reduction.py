@@ -84,20 +84,21 @@ def test_fg_pair_reduction_is_after_gpu_surface_not_before_payload() -> None:
     assert "_reduce_ftff_pairs_by_resolved_stat_cost(" not in body
     assert "_filter_ftff_pairs_by_resolved_window_max(" not in body
     assert "FGPreSubmitReduceMs" not in body
-    assert "FGSurfacePairReduceMs" in body
+    assert "fg_surface_pair_reduce_sec" in body
 
 
 def test_fused_and_explicit_paths_use_shared_surface_reduction_contract() -> None:
     dispatch_body = inspect.getsource(gpu_dispatch.process_force_greats_gpu_finder)
     executor_body = inspect.getsource(gpu_executor.GpuExecutor._run_fg_solve_with_breakpoints_payload)
+    executor_runner_body = inspect.getsource(gpu_executor_fg.run_fg_solve_with_breakpoints_payload)
     executor_task_body = inspect.getsource(gpu_executor_fg.build_fg_breakpoint_tasks)
 
     assert "reduce_ftff_pairs_by_max_fp_surface(" in dispatch_body
-    assert "_build_fg_breakpoint_tasks(" in executor_body
+    assert "run_fg_solve_with_breakpoints_payload(" in executor_body
+    assert "build_fg_breakpoint_tasks(" in executor_runner_body
     assert "reduce_ftff_pairs_by_max_fp_surface(" in executor_task_body
     assert "_reduce_ftff_pairs_by_max_fp_surface(" not in dispatch_body
     assert "_reduce_ftff_pairs_by_max_fp_surface(" not in executor_task_body
-    assert "FG_FUSED_SURFACE_PAIR_REDUCTION" in executor_task_body
 
 
 def test_surface_reduction_result_object_is_single_contract() -> None:
@@ -154,7 +155,7 @@ def test_gpu_surface_pair_reduction_runs_after_gpu_max_fp_before_stage1() -> Non
     stage1_pos = body.index("fg_stage1_init")
 
     assert cfg_len_pos < reduce_pos < max_pos < stage1_pos
-    assert "_FG_GPU_SURFACE_PAIR_REDUCTION_MAX_PAIRS" in body
+    assert "_FG_SURFACE_PAIR_REDUCTION_MAX_PAIRS" in body
 
 
 def test_gpu_surface_pair_reduction_kernel_uses_same_lossless_dominance_contract() -> None:

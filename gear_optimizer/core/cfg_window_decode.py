@@ -5,9 +5,15 @@ import logging
 
 import numpy as np
 
+from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
+
 
 
 logger = logging.getLogger(__name__)
+def _rep_mask_width(n_sections: int) -> int:
+    return min(max(int(n_sections), 0), 4)
+
+
 def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sections: int):
     """
     Decode packed `cfg_idx` values into per-section FP targets using window metadata.
@@ -59,6 +65,9 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
             w = cfg_windows[window_index]
             base = int(w.get("base", 0) or 0)
             local = int(x - base)
+            rep_bits = _rep_mask_width(n_sections_i)
+            rep_mask = int(local & ((1 << rep_bits) - 1)) if rep_bits > 0 else 0
+            base_local = int(local >> rep_bits)
             if str(w.get("kind") or "") == "list":
                 lst = w.get("counts_list") or []
                 if 0 <= local < len(lst):
@@ -68,13 +77,15 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
                 continue
 
             max_fp_vec = list(w.get("max_fp") or [])
-            rem = int(local)
+            rem = int(base_local)
             for s in range(n_sections_i - 1, -1, -1):
                 basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
                 if basev <= 0:
                     basev = 1
                 val = rem % basev
                 rem //= basev
+                if s < rep_bits and ((rep_mask >> s) & 1) != 0:
+                    val += int(FG_PLATEAU_REP_STRIDE)
                 cfg_counts[gi, s] = int(val)
 
         return cfg_counts

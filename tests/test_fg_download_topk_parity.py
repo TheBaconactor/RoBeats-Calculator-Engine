@@ -18,7 +18,7 @@ def _has_taichi() -> bool:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_fg_global_best_topk_selection_matches_cpu_sort(monkeypatch: pytest.MonkeyPatch):
+def test_fg_global_best_topk_selection_matches_cpu_sort():
     """
     Strong parity: GPU-side top-K global_best selection must match CPU sorting/filtering.
 
@@ -33,9 +33,6 @@ def test_fg_global_best_topk_selection_matches_cpu_sort(monkeypatch: pytest.Monk
         fg_reset_global_best,
         solve_force_greats_finder_gpu_tasks,
     )
-
-    # Keep this test stable regardless of user env defaults.
-    monkeypatch.setenv("FG_IMPLICIT_CONFIGS", "1")
 
     # Deterministic synthetic song
     timestamps = np.linspace(0.0, 120.0, 180, dtype=np.float32)
