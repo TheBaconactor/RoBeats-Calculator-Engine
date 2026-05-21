@@ -31,6 +31,36 @@ those carry variables losslessly.
 Materialized configs now store direct forced counts. The standalone max-FP table request is retired,
 and missing frontier capacity raises at the host boundary instead of silently falling back.
 
+## Disk cache
+
+The cold frontier build is still expensive for large natural caps, so the GPU path now persists the
+compact frontier artifact under `bin/fg_prefix_frontier_cache`, mirroring the timeline frontier cache
+shape. The cache key includes:
+
+- song timestamp signature;
+- Great-candidate timestamp signature;
+- total notes, long notes, and section count;
+- Fever Time and Fever Fill Rate lookup signatures;
+- effective `ft_idx` and `ff_idx`;
+- cache algorithm version.
+
+The payload stores only score-sufficient FG surfaces and one representative direct forced-count row
+per surface:
+
+```text
+surface_signature[count, 11]
+forced_counts[count, n_sections]
+```
+
+It does not cache final candidate scores. PP/CM/FM/value stats and gem budget are still scored live,
+so the artifact is reusable across candidates that share the same song and effective FT/FF indices
+without crossing candidate-specific scoring boundaries.
+
+Measured on a synthetic high-cap probe (`natural_cap=201`, `sections=4`, equivalent explicit rows
+`1,664,966,416`), cold build took about `7.01s`, the first warm run took about `1.44s` including
+cached-score kernel compilation, and a disk-hot run after compilation took about `0.016s` with
+identical scores.
+
 ## Tests
 
 Updated tests assert that:
@@ -41,6 +71,9 @@ Updated tests assert that:
 - fused work budgeting uses the prefix-frontier estimate instead of section cap tables;
 - implicit packed config decoding no longer depends on `FG_PLATEAU_REP_STRIDE`;
 - retired `FG_COMPUTE_BREAKPOINTS` requests fail loudly.
+- prefix-frontier disk artifacts round-trip exact signatures/counts and are keyed by effective
+  FT/FF indices;
+- a second GPU solve can load the disk artifact and skip the frontier build kernel.
 
 ## Complexity impact
 
@@ -48,3 +81,7 @@ This removes the production max-FP table contract, section cap imports, and pack
 constant. It adds one GPU prefix-frontier kernel and a small exact-capacity overflow check. The
 remaining capacity is a compiled scratch-space limit, not a search cap: overflow is an error because
 the exact frontier did not fit.
+
+The cache adds a small persistent artifact owner plus upload/download staging kernels. That is extra
+surface area, but it moves repeated work to a reusable exact artifact rather than reintroducing
+section caps or CPU config generation.

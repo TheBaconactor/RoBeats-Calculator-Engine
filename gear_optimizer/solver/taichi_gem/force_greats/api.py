@@ -13,6 +13,12 @@ from __future__ import annotations
 
 from .. import api as gem_api
 from .api_support import *  # noqa: F401,F403
+from .prefix_frontier_cache import (
+    fg_prefix_frontier_base_cache_key,
+    fg_prefix_frontier_cache_key,
+    load_fg_prefix_frontier_payload,
+    save_fg_prefix_frontier_payload,
+)
 
 def _solve_force_greats_finder_gpu_impl(
     genome_stats_list: list[dict[str, Any]] | np.ndarray | None,
@@ -939,6 +945,7 @@ def solve_force_greats_finder_gpu_tasks(
         raise ValueError("genome_stats_preuploaded=True has been removed; pass and upload explicit genome stats")
     p = _get_gpu_profiler()
     want_xfer_stats = bool(_PERF_TIMING or _FG_TRANSFER_TRACE or p is not None)
+    stats_host_np: np.ndarray | None = None
 
     # Upload per-genome base stats once (or reuse the existing GPU-resident buffer).
     if genome_stats_list is None:
@@ -965,6 +972,7 @@ def solve_force_greats_finder_gpu_tasks(
                 stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
                 stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
         stats_active = stats_buf[:n_genomes, :7]
+        stats_host_np = np.ascontiguousarray(stats_active, dtype=np.int32)
         _t_up0 = time.perf_counter() if want_xfer_stats else 0.0
         gem_fields.genome_base_stats.from_numpy(stats_active)
         if _t_up0:
@@ -1003,6 +1011,10 @@ def solve_force_greats_finder_gpu_tasks(
                 "Skipping genome stats upload without a compatible prior upload; "
                 "this indicates a misuse of upload_genome_stats=False."
             )
+        if isinstance(genome_stats_list, np.ndarray):
+            stats_host_np = np.ascontiguousarray(genome_stats_list[:n_genomes, :7], dtype=np.int32)
+        elif _fg_genome_stats_buf is not None:
+            stats_host_np = np.ascontiguousarray(_fg_genome_stats_buf[:n_genomes, :7], dtype=np.int32)
 
     # Pack tasks: upload config windows into the global cfg table (explicit window mode) and prepare streaming
     # FT/FF chunks using fixed-size numpy buffers (avoid per-pair Python tuple materialization).
@@ -1304,10 +1316,82 @@ def solve_force_greats_finder_gpu_tasks(
             frontier_slots = int(fg_fields.FG_CFG_DEDUPE_MAX_REPS)
             work_chunk = int(fg_fields.FG_CFG_DEDUPE_WORK_ITEMS)
             t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+            empty_payload = FgPrefixFrontierPayload(
+                signatures=np.zeros((0, fg_fields.FG_CFG_DEDUPE_SIG_WORDS), dtype=np.int32),
+                forced_counts=np.zeros((0, int(n_sections)), dtype=np.int32),
+                count=0,
+                n_sections=int(n_sections),
+            )
+
+            def _prefix_cache_keys_for_work(work_offset_i: int, local_work_items_i: int) -> list[tuple | None] | None:
+                if prefix_cache_base_key is None or stats_host_np is None:
+                    return None
+                keys: list[tuple | None] = []
+                for local_idx in range(int(local_work_items_i)):
+                    global_idx = int(work_offset_i) + int(local_idx)
+                    genome_idx = global_idx // int(n_ftff_i)
+                    ftff_local_idx = global_idx - (genome_idx * int(n_ftff_i))
+                    if genome_idx < 0 or genome_idx >= int(n_genomes):
+                        return None
+                    ft_gems_i = int(ft_active[ftff_local_idx])
+                    ff_gems_i = int(ff_active[ftff_local_idx])
+                    if ft_gems_i + ff_gems_i > int(total_budget):
+                        keys.append(None)
+                        continue
+                    base_ft_i = int(stats_host_np[genome_idx, 5])
+                    base_ff_i = int(stats_host_np[genome_idx, 6])
+                    ft_idx_i = max(0, min(160, base_ft_i + (ft_gems_i * int(gem_scale_fever))))
+                    ff_idx_i = max(0, min(160, base_ff_i + (ff_gems_i * int(gem_scale_fever))))
+                    keys.append(
+                        fg_prefix_frontier_cache_key(
+                            prefix_cache_base_key,
+                            ft_idx=int(ft_idx_i),
+                            ff_idx=int(ff_idx_i),
+                        )
+                    )
+                return keys
+
             for work_offset in range(0, int(n_work_items), int(work_chunk)):
                 local_work_items = min(int(work_chunk), int(n_work_items) - int(work_offset))
                 if local_work_items <= 0:
                     continue
+                cache_keys = _prefix_cache_keys_for_work(int(work_offset), int(local_work_items))
+                cached_payloads: list[FgPrefixFrontierPayload] = []
+                if cache_keys is not None:
+                    cache_hit = True
+                    for cache_key in cache_keys:
+                        if cache_key is None:
+                            cached_payloads.append(empty_payload)
+                            continue
+                        payload = load_fg_prefix_frontier_payload(cache_key)
+                        if payload is None or int(payload.n_sections) != int(n_sections):
+                            cache_hit = False
+                            break
+                        cached_payloads.append(payload)
+                    if cache_hit:
+                        _upload_fg_prefix_frontier_payloads(cached_payloads, n_sections=int(n_sections))
+                        fg_kernels.fg_stage1_score_cached_prefix_frontier_kernel(
+                            int(work_offset),
+                            int(local_work_items),
+                            int(total_notes),
+                            int(long_notes),
+                            int(total_budget),
+                            int(gem_scale_fever),
+                            int(n_sections),
+                            int(is_p_ft),
+                            int(is_s_ft),
+                            int(is_p_ff),
+                            int(is_s_ff),
+                            int(is_p_pp),
+                            int(is_s_pp),
+                            int(is_p_cm),
+                            int(is_s_cm),
+                            int(is_p_fm),
+                            int(is_s_fm),
+                            int(is_p_ov),
+                            int(is_s_ov),
+                        )
+                        continue
                 fg_kernels.fg_stage1_prefix_frontier_kernel(
                     int(work_offset),
                     int(local_work_items),
@@ -1330,6 +1414,26 @@ def solve_force_greats_finder_gpu_tasks(
                     int(is_p_ov),
                     int(is_s_ov),
                 )
+                ti.sync()
+                try:
+                    overflow = int(fg_fields.fg_frontier_overflow[None])
+                except Exception as e:
+                    raise RuntimeError(
+                        f"FG prefix frontier overflow status read failed: {type(e).__name__}: {e}"
+                    ) from e
+                if overflow:
+                    raise RuntimeError(
+                        "FG prefix frontier exceeded its exact representative capacity; "
+                        "increase the compiled frontier capacity before running this song."
+                    )
+                if cache_keys is not None:
+                    built_payloads = _download_fg_prefix_frontier_payloads(
+                        local_work_items=int(local_work_items),
+                        n_sections=int(n_sections),
+                    )
+                    for cache_key, payload in zip(cache_keys, built_payloads, strict=False):
+                        if cache_key is not None and payload is not None:
+                            save_fg_prefix_frontier_payload(cache_key, payload)
             ti.sync()
             try:
                 overflow = int(fg_fields.fg_frontier_overflow[None])
@@ -1548,6 +1652,18 @@ def solve_force_greats_finder_gpu_tasks(
     use_gpu_max_fp = bool(max_fp_compute_ctx)
     if use_gpu_max_fp and not all(task.get("max_fp_compute") is not None for task in prepared_tasks):
         raise ValueError("Cannot mix prefix-frontier FG tasks with explicit counts_list tasks")
+    prefix_cache_base_key = None
+    if use_gpu_max_fp:
+        prefix_cache_base_key = fg_prefix_frontier_base_cache_key(
+            timestamps=timestamps_np,
+            great_candidate_timestamps=timestamps_np
+            if great_candidate_timestamps_np is None
+            else great_candidate_timestamps_np,
+            total_notes=int(total_notes),
+            long_notes=int(long_notes),
+            n_sections=int(n_sections),
+            ref_arrays=ref_arrays,
+        )
 
     for task in prepared_tasks:
         ftff_pairs = task.get("ftff_pairs")
