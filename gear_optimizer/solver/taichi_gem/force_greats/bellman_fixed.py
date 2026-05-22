@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import ceil
 from typing import Any
 
 import numpy as np
@@ -53,76 +54,11 @@ def _fg_bellman_build_prefix_kernel(
     normal_total_out[0] = total
 
 
-@ti.func
-def _fg_bellman_transition_value(
-    i,
-    first,
-    k,
-    n,
-    raw_fever_fill,
-    real_fever_time,
-    use_forced_great_timing,
-    timestamps: ti.template(),
-    great_candidate_timestamps: ti.template(),
-    fever_gain_prefix: ti.template(),
-    forced_penalty_prefix: ti.template(),
-    later_value: ti.template(),
-):
-    notes_to_fill: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(k, ti.f32) * 0.5), ti.i32)
-    if first != 0:
-        notes_to_fill -= 1
-    if notes_to_fill < 0:
-        notes_to_fill = 0
-
-    a: ti.i32 = i + notes_to_fill
-    val: ti.i64 = 0
-    next_idx: ti.i32 = n
-    active: ti.i32 = 0
-    if a < n:
-        end_normal: ti.i32 = a
-        actual_notes: ti.i32 = end_normal - i
-        if actual_notes < 0:
-            actual_notes = 0
-        forced_applied: ti.i32 = k
-        if forced_applied > actual_notes:
-            forced_applied = actual_notes
-        forced_start: ti.i32 = i
-        if first == 0:
-            forced_start = i + 1
-        forced_end_for_timing: ti.i32 = forced_start + forced_applied - 1
-        start_time: ti.f32 = timestamps[a]
-        if (
-            use_forced_great_timing != 0
-            and forced_applied > 0
-            and forced_end_for_timing >= forced_start
-            and forced_end_for_timing < end_normal
-            and forced_end_for_timing < n
-        ):
-            forced_t: ti.f32 = great_candidate_timestamps[forced_end_for_timing]
-            if forced_t > start_time:
-                start_time = forced_t
-        e: ti.i32 = _fg_bellman_lower_bound(timestamps, n, start_time + real_fever_time)
-        if e <= a:
-            e = a + 1
-        if e > n:
-            e = n
-        penalty_end: ti.i32 = forced_start + forced_applied
-        if penalty_end > n:
-            penalty_end = n
-        if forced_start > n:
-            forced_start = n
-        fever_gain: ti.i64 = fever_gain_prefix[e] - fever_gain_prefix[a]
-        forced_penalty: ti.i64 = forced_penalty_prefix[penalty_end] - forced_penalty_prefix[forced_start]
-        val = fever_gain - forced_penalty + later_value[e]
-        next_idx = e
-        active = 1
-    return ti.Vector([val, ti.cast(next_idx, ti.i64), ti.cast(active, ti.i64)])
-
-
 @ti.kernel
 def _fg_bellman_solve_kernel(
     n: ti.i32,
-    non_fever_base: ti.i32,
+    action_count: ti.i32,
+    action_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
     raw_fever_fill: ti.f32,
     real_fever_time: ti.f32,
     use_forced_great_timing: ti.i32,
@@ -135,10 +71,6 @@ def _fg_bellman_solve_kernel(
     later_next: ti.types.ndarray(dtype=ti.i32, ndim=1),
     first_out: ti.types.ndarray(dtype=ti.i64, ndim=1),
 ):
-    b: ti.i32 = non_fever_base
-    if b < 0:
-        b = 0
-
     later_value[n] = 0
     later_choice[n] = 0
     later_next[n] = n
@@ -149,58 +81,143 @@ def _fg_bellman_solve_kernel(
         best: ti.i64 = 0
         best_k: ti.i32 = 0
         best_next: ti.i32 = n
-        for k in range(b + 1):
-            trans = _fg_bellman_transition_value(
-                i,
-                0,
-                k,
-                n,
-                raw_fever_fill,
-                real_fever_time,
-                use_forced_great_timing,
-                timestamps,
-                great_candidate_timestamps,
-                fever_gain_prefix,
-                forced_penalty_prefix,
-                later_value,
-            )
-            if trans[2] != 0 and trans[0] > best:
-                best = trans[0]
-                best_k = k
-                best_next = ti.cast(trans[1], ti.i32)
+        for action_idx in range(action_count):
+            k: ti.i32 = action_values[action_idx]
+            notes_to_fill: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(k, ti.f32) * 0.5), ti.i32)
+            a: ti.i32 = i + notes_to_fill
+            if a < n:
+                actual_notes: ti.i32 = a - i
+                if actual_notes < 0:
+                    actual_notes = 0
+                forced_applied: ti.i32 = k
+                if forced_applied > actual_notes:
+                    forced_applied = actual_notes
+                forced_start: ti.i32 = i + 1
+                forced_end_for_timing: ti.i32 = forced_start + forced_applied - 1
+                start_time: ti.f32 = timestamps[a]
+                if (
+                    use_forced_great_timing != 0
+                    and forced_applied > 0
+                    and forced_end_for_timing >= forced_start
+                    and forced_end_for_timing < a
+                    and forced_end_for_timing < n
+                ):
+                    forced_t: ti.f32 = great_candidate_timestamps[forced_end_for_timing]
+                    if forced_t > start_time:
+                        start_time = forced_t
+                e: ti.i32 = _fg_bellman_lower_bound(timestamps, n, start_time + real_fever_time)
+                if e <= a:
+                    e = a + 1
+                if e > n:
+                    e = n
+                penalty_end: ti.i32 = forced_start + forced_applied
+                if penalty_end > n:
+                    penalty_end = n
+                if forced_start > n:
+                    forced_start = n
+                val: ti.i64 = (
+                    fever_gain_prefix[e]
+                    - fever_gain_prefix[a]
+                    - (forced_penalty_prefix[penalty_end] - forced_penalty_prefix[forced_start])
+                    + later_value[e]
+                )
+                if val > best:
+                    best = val
+                    best_k = k
+                    best_next = e
         later_value[i] = best
         later_choice[i] = best_k
         later_next[i] = best_next
 
+    first_out[0] = 0
+    first_out[1] = 0
+    first_out[2] = n
+    first_out[3] = 0
+
+
+@ti.kernel
+def _fg_bellman_first_kernel(
+    n: ti.i32,
+    action_count: ti.i32,
+    action_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    raw_fever_fill: ti.f32,
+    real_fever_time: ti.f32,
+    use_forced_great_timing: ti.i32,
+    timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    great_candidate_timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    fever_gain_prefix: ti.types.ndarray(dtype=ti.i64, ndim=1),
+    forced_penalty_prefix: ti.types.ndarray(dtype=ti.i64, ndim=1),
+    later_value: ti.types.ndarray(dtype=ti.i64, ndim=1),
+    first_out: ti.types.ndarray(dtype=ti.i64, ndim=1),
+):
     first_best: ti.i64 = 0
     first_k: ti.i32 = 0
     first_next: ti.i32 = n
     first_active: ti.i32 = 0
-    for k in range(b + 1):
-        trans = _fg_bellman_transition_value(
-            0,
-            1,
-            k,
-            n,
-            raw_fever_fill,
-            real_fever_time,
-            use_forced_great_timing,
-            timestamps,
-            great_candidate_timestamps,
-            fever_gain_prefix,
-            forced_penalty_prefix,
-            later_value,
-        )
-        if trans[2] != 0 and trans[0] > first_best:
-            first_best = trans[0]
-            first_k = k
-            first_next = ti.cast(trans[1], ti.i32)
-            first_active = 1
+    ti.loop_config(serialize=True)
+    for action_idx in range(action_count):
+        k: ti.i32 = action_values[action_idx]
+        notes_to_fill: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(k, ti.f32) * 0.5), ti.i32) - 1
+        if notes_to_fill < 0:
+            notes_to_fill = 0
+        a: ti.i32 = notes_to_fill
+        if a < n:
+            actual_notes: ti.i32 = a
+            if actual_notes < 0:
+                actual_notes = 0
+            forced_applied: ti.i32 = k
+            if forced_applied > actual_notes:
+                forced_applied = actual_notes
+            forced_end_for_timing: ti.i32 = forced_applied - 1
+            start_time: ti.f32 = timestamps[a]
+            if (
+                use_forced_great_timing != 0
+                and forced_applied > 0
+                and forced_end_for_timing >= 0
+                and forced_end_for_timing < a
+                and forced_end_for_timing < n
+            ):
+                forced_t: ti.f32 = great_candidate_timestamps[forced_end_for_timing]
+                if forced_t > start_time:
+                    start_time = forced_t
+            e: ti.i32 = _fg_bellman_lower_bound(timestamps, n, start_time + real_fever_time)
+            if e <= a:
+                e = a + 1
+            if e > n:
+                e = n
+            penalty_end: ti.i32 = forced_applied
+            if penalty_end > n:
+                penalty_end = n
+            val: ti.i64 = (
+                fever_gain_prefix[e]
+                - fever_gain_prefix[a]
+                - (forced_penalty_prefix[penalty_end] - forced_penalty_prefix[0])
+                + later_value[e]
+            )
+            if val > first_best:
+                first_best = val
+                first_k = k
+                first_next = e
+                first_active = 1
 
     first_out[0] = first_best
     first_out[1] = ti.cast(first_k, ti.i64)
     first_out[2] = ti.cast(first_next, ti.i64)
     first_out[3] = ti.cast(first_active, ti.i64)
+
+
+def _fg_bellman_action_values(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
+    b = max(0, int(non_fever_base))
+    actions: list[int] = []
+    last_notes_to_fill: int | None = None
+    for k in range(b + 1):
+        notes_to_fill = int(ceil(float(raw_fever_fill) + (float(k) * 0.5)))
+        if bool(use_forced_great_timing) or last_notes_to_fill is None or notes_to_fill != last_notes_to_fill:
+            actions.append(int(k))
+        last_notes_to_fill = int(notes_to_fill)
+    if not actions:
+        actions.append(0)
+    return np.ascontiguousarray(np.asarray(actions, dtype=np.int32))
 
 
 @ti.kernel
@@ -284,11 +301,18 @@ def solve_force_greats_bellman_fixed_stats_gpu(
     first_out = np.zeros((4,), dtype=np.int64)
     out_counts = np.zeros((n,), dtype=np.int32)
     debug_out = np.zeros((2,), dtype=np.int64)
+    action_values = _fg_bellman_action_values(
+        raw_fever_fill=float(raw_fever_fill),
+        non_fever_base=int(b),
+        use_forced_great_timing=bool(use_forced_great_timing),
+    )
+    action_count = int(action_values.shape[0])
 
     _fg_bellman_build_prefix_kernel(n, normal, fever, fever_gain_prefix, normal_total)
     _fg_bellman_solve_kernel(
         n,
-        b,
+        int(action_count),
+        action_values,
         float(raw_fever_fill),
         float(real_fever_time),
         1 if bool(use_forced_great_timing) else 0,
@@ -299,6 +323,20 @@ def solve_force_greats_bellman_fixed_stats_gpu(
         later_value,
         later_choice,
         later_next,
+        first_out,
+    )
+    _fg_bellman_first_kernel(
+        n,
+        int(action_count),
+        action_values,
+        float(raw_fever_fill),
+        float(real_fever_time),
+        1 if bool(use_forced_great_timing) else 0,
+        ts,
+        great_ts,
+        fever_gain_prefix,
+        penalty_prefix,
+        later_value,
         first_out,
     )
     _fg_bellman_reconstruct_kernel(n, first_out, later_choice, later_next, out_counts, debug_out)
@@ -312,7 +350,7 @@ def solve_force_greats_bellman_fixed_stats_gpu(
         best_delta=int(best_delta),
         best_forced_counts=tuple(int(v) for v in out_counts[:section_count]),
         states_evaluated=int(n),
-        transitions_evaluated=int((n + 1) * (b + 1)),
+        transitions_evaluated=int((n + 1) * int(action_count)),
         max_k_used=int(debug_out[1]),
         section_count=int(section_count),
         non_fever_base=int(b),

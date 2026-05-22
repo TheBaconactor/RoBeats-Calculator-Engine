@@ -156,12 +156,15 @@ def process_force_greats_bellman_fixed_gpu(
         )
         if not bellman.best_forced_counts or max(int(v) for v in bellman.best_forced_counts) <= 0:
             continue
+        paired_base_score = int(entry_base_score(entry))
+        if int(bellman.best_score) <= paired_base_score:
+            continue
 
         payload = _force_payload_from_bellman(
             eval_data=eval_data,
             stats=stats,
             selected_element=selected,
-            base_score=int(entry_base_score(entry)),
+            base_score=int(paired_base_score),
             fg_score=int(bellman.best_score),
             forced_counts=bellman.best_forced_counts,
         )
