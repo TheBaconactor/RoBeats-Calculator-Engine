@@ -262,72 +262,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-    def _prebuild_fg_prefix_frontier_cache_startup(self, cfg, song_queue, ref_arrays: dict) -> None:
-        runtime_settings = self._current_runtime_settings(cfg)
-        if bool(runtime_settings.iteration_engine.manual_force_greats):
-            return
-        if not song_queue:
-            return
-        from gear_optimizer.data.song_io import get_base_calc_song
-        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-        from gear_optimizer.solver.taichi_gem.force_greats.prefix_frontier_prebuild import (
-            prebuild_fg_prefix_frontier_cache,
-        )
-
-        gpu_client = None
-        try:
-            from gear_optimizer.solver.gpu_executor import get_gpu_executor
-            from gear_optimizer.solver.gpu_service import GpuServiceClient
-
-            executor = get_gpu_executor()
-            if bool(getattr(executor, "is_running", False)):
-                gpu_client = GpuServiceClient(executor)
-                gpu_client.start(start_executor=False)
-        except Exception as e:
-            logger.debug(f"app:_prebuild_fg_prefix_frontier_cache_startup: {e}")
-            gpu_client = None
-        t0 = time.perf_counter()
-        total = 0
-        built = 0
-        disk = 0
-        try:
-            for item in song_queue:
-                if not isinstance(item, tuple) or not item:
-                    continue
-                song_path = str(item[0] or "").strip()
-                if not song_path:
-                    continue
-                calc_song = get_base_calc_song(song_path, {})
-                apply_timing_envelope(calc_song)
-                summary = prebuild_fg_prefix_frontier_cache(
-                    calc_song,
-                    ref_arrays,
-                    gpu_client=gpu_client,
-                )
-                total += int(summary.total)
-                built += int(summary.built)
-                disk += int(summary.disk)
-            elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
-            logger.info(
-                "[Startup][GPU] FG prefix frontier cache ready: total=%s built=%s disk=%s elapsed=%.1fs",
-                int(total),
-                int(built),
-                int(disk),
-                elapsed_ms / 1000.0,
-            )
-            emit_profile_event(
-                component="fg_prefix_cache",
-                event="startup_prebuild_done",
-                metrics={
-                    "total": int(total),
-                    "built": int(built),
-                    "disk": int(disk),
-                    "elapsed_ms": elapsed_ms,
-                },
-            )
-        finally:
-            if gpu_client is not None:
-                gpu_client.close()
     def _profiling_mode_enabled(self, cfg=None) -> bool:
         if bool(getattr(ENV, "debug_profile", False)) or bool(getattr(ENV, "perf_timing_unconditional", False)):
             return True
@@ -505,7 +439,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 data_root=PATHS.data_dir,
             )
             self._configure_execution_and_prewarm(cfg)
-            self._prebuild_fg_prefix_frontier_cache_startup(cfg, song_queue, ref_arrays)
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
             manager = multiprocessing.Manager()

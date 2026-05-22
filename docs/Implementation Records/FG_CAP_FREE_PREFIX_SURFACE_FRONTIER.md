@@ -58,11 +58,12 @@ It does not cache final candidate scores. PP/CM/FM/value stats and gem budget ar
 so the artifact is reusable across candidates that share the same song and effective FT/FF indices
 without crossing candidate-specific scoring boundaries.
 
-Startup now prebuilds the complete effective-FT/FF grid before live FG scoring. For each queued
-song and required section count, the prebuild walks all `161 x 161` effective stat cells, skips
-cells already present in the shard, and builds missing prefix-frontier surfaces on the GPU. Native
-FG prep and the finder also enforce the same prebuild invariant for non-app entrypoints. Live
-scoring no longer builds missing frontiers; a cache miss during live scoring is an error.
+The app does not prebuild FG shards for the full startup song queue. A full all-song queue can span
+thousands of charts and turns the exact cache into a large cold-build job. Instead, the native FG
+prep/finder owner prebuilds the complete effective-FT/FF grid for the active song before live FG
+scoring. For each required section count, that prebuild walks all `161 x 161` effective stat cells,
+skips cells already present in the shard, and builds missing prefix-frontier surfaces on the GPU.
+Live scoring no longer builds missing frontiers; a cache miss during live scoring is an error.
 
 Measured on a synthetic high-cap probe (`natural_cap=201`, `sections=4`, equivalent explicit rows
 `1,664,966,416`), cold build took about `7.01s`, the first warm run took about `1.44s` including
