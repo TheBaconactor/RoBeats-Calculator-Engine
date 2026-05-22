@@ -5,9 +5,6 @@ import logging
 
 import numpy as np
 
-from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
-
-
 
 logger = logging.getLogger(__name__)
 _WORK_ESTIMATE_LIMIT = 1_000_000_000_000
@@ -80,10 +77,20 @@ def _fallback_cfg_len_per_pair(payload: dict, *, pair_count: int) -> np.ndarray 
     if n_sections <= 0:
         return None
 
+    max_base = 0
+    try:
+        non_fever_base_by_ff = np.asarray(payload.get("non_fever_base_by_ff"), dtype=np.int32)
+        if non_fever_base_by_ff.ndim == 1 and int(non_fever_base_by_ff.size) > 0:
+            max_base = int(np.max(non_fever_base_by_ff))
+    except Exception as e:
+        logger.debug(f"work_budget:_fallback_cfg_len_per_pair: {e}")
+        max_base = 0
+    if max_base <= 0:
+        max_base = 1
+
     cfg_len = 1
-    for sec in range(max(0, int(n_sections))):
-        cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
-        cfg_len *= max(1, int(cap) + 1)
+    for _sec in range(max(0, int(n_sections))):
+        cfg_len *= max(1, int(max_base) + 1)
         if cfg_len >= _WORK_ESTIMATE_LIMIT:
             cfg_len = _WORK_ESTIMATE_LIMIT
             break
@@ -123,7 +130,6 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
         pairs = np.asarray(pairs_raw, dtype=np.int32)
         base_pairs = np.asarray(base_raw, dtype=np.int32)
         non_fever_base_by_ff = np.asarray(payload.get("non_fever_base_by_ff"), dtype=np.int16)
-        fp_cap_table = np.asarray(payload.get("fp_cap_table"), dtype=np.int16)
     except Exception as e:
         logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
@@ -134,9 +140,6 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
     if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
-    if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
-        return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
-
     try:
         gem_scale = int(payload.get("gem_scale_fever", 3) or 3)
     except Exception as e:
@@ -170,16 +173,7 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
 
         for sec in range(n_sections_i):
             base_notes = non_fever_base_by_ff[ff_idx].astype(np.int32, copy=False)
-            cap = base_notes
-            if sec == 1:
-                cap = (cap * 3) // 5
-            elif sec >= 2:
-                cap = (cap * 3) // 10
-
-            hard_cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
-            cap = np.clip(cap, 0, min(50, int(hard_cap))).astype(np.intp, copy=False)
-            fp = fp_cap_table[ff_idx, cap].astype(np.int32, copy=False)
-            max_fp = np.max(fp, axis=1).astype(np.int64, copy=False) if int(fp.size) > 0 else 0
+            max_fp = np.max(np.maximum(base_notes, 0), axis=1).astype(np.int64, copy=False)
             chunk_lens = np.minimum(
                 chunk_lens * np.maximum(1, max_fp + 1),
                 int(_WORK_ESTIMATE_LIMIT),

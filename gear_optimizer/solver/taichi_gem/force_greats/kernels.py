@@ -99,26 +99,6 @@ FG_STAGE1_OWNER_CAP_REDUCTION = env_flag("FG_STAGE1_OWNER_CAP_REDUCTION")
 FG_STAGE1_DIRECT_ATOMIC = env_flag("FG_STAGE1_DIRECT_ATOMIC", "1")
 FG_PLATEAU_REP_MAX_SECTIONS = 4
 @ti.func
-def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
-    cap: ti.i32 = 4
-    if sec == 0:
-        cap = 50
-    elif sec == 1:
-        cap = 30
-    elif sec == 2:
-        cap = 15
-    elif sec == 3:
-        cap = 10
-    elif sec == 4:
-        cap = 8
-    elif sec == 5:
-        cap = 6
-    elif sec == 6:
-        cap = 5
-    elif sec < 0 or sec >= FG_MAX_SECTIONS:
-        cap = 0
-    return cap
-@ti.func
 def _fg_plateau_rep_multiplier(n_sections: ti.i32) -> ti.i32:
     reps: ti.i32 = 1
     for s in ti.static(range(FG_PLATEAU_REP_MAX_SECTIONS)):
@@ -612,7 +592,7 @@ def _fg_config_signature(
                 pair_cap_forced: ti.i32 = 0
                 if pair_caps_from_timeline != 0:
                     if sec < fever_acts:
-                        pair_cap_forced = _fg_section_forced_cap(sec)
+                        pair_cap_forced = non_fever_base
                     else:
                         pair_cap_forced = 0
                 else:
@@ -907,7 +887,7 @@ def fg_cfg_dedupe_build_kernel(
                         pair_cap_forced_eff: ti.i32 = 0
                         if pair_caps_from_timeline != 0:
                             if sec_cap < fever_acts:
-                                pair_cap_forced_eff = _fg_section_forced_cap(sec_cap)
+                                pair_cap_forced_eff = non_fever_base
                             else:
                                 pair_cap_forced_eff = 0
                         else:
@@ -1074,24 +1054,8 @@ def fg_compute_max_fp_for_ftff_kernel(
             fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
             if sec >= fever_acts:
                 continue
-            gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
-            if gap < 0:
-                gap = 0
             base_notes = ti.cast(non_fever_base_by_ff[ff_idx], ti.i32)
-            base_cap = base_notes
-            cap = base_cap
-            if sec == 1:
-                cap = (cap * 3) // 5
-            elif sec >= 2:
-                cap = (cap * 3) // 10
-            hard_cap = _fg_section_forced_cap(sec)
-            if cap > hard_cap:
-                cap = hard_cap
-            if cap < 0:
-                cap = 0
-            if cap > 50:
-                cap = 50
-            fp = ti.cast(fp_cap_table[ff_idx, cap], ti.i32)
+            fp = base_notes
             if fp > max_fp:
                 max_fp = fp
         fg_cfg_max_fp[pair_idx, sec] = max_fp
@@ -1350,7 +1314,7 @@ def fg_stage1_waves_kernel(
                             pair_cap_forced_eff: ti.i32 = 0
                             if pair_caps_from_timeline != 0:
                                 if sec_cap < fever_acts:
-                                    pair_cap_forced_eff = _fg_section_forced_cap(sec_cap)
+                                    pair_cap_forced_eff = non_fever_base
                                 else:
                                     pair_cap_forced_eff = 0
                             else:
@@ -1466,7 +1430,7 @@ def fg_stage1_waves_kernel(
                             pair_cap_forced: ti.i32 = 0
                             if pair_caps_from_timeline != 0:
                                 if sec < fever_acts:
-                                    pair_cap_forced = _fg_section_forced_cap(sec)
+                                    pair_cap_forced = non_fever_base
                                 else:
                                     pair_cap_forced = 0
                             else:
@@ -1826,7 +1790,7 @@ def fg_stage1_kernel(
                         pair_cap_forced: ti.i32 = 0
                         if pair_caps_from_timeline != 0:
                             if sec < fever_acts:
-                                pair_cap_forced = _fg_section_forced_cap(sec)
+                                pair_cap_forced = non_fever_base
                             else:
                                 pair_cap_forced = 0
                         else:
@@ -2195,7 +2159,7 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                     pair_cap_forced: ti.i32 = 0
                     if pair_caps_from_timeline != 0:
                         if sec < fever_acts:
-                            pair_cap_forced = _fg_section_forced_cap(sec)
+                            pair_cap_forced = non_fever_base
                         else:
                             pair_cap_forced = 0
                     else:

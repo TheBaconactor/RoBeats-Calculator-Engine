@@ -131,7 +131,7 @@ def build_fg_group_meta(
             meta["skip"] = True
             return meta
 
-        max_per_section = min(int(non_fever_base or 0), 15)
+        max_per_section = max(0, int(non_fever_base or 0))
         meta["skip"] = False
         meta["n_sections"] = int(n_sections)
         meta["max_per_section"] = int(max_per_section)

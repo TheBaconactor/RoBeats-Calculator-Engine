@@ -22,20 +22,6 @@ bp_pair_ft = None  # (MAX_PAIRS,) i32 - FT stat indices to scan
 bp_pair_ff = None  # (MAX_PAIRS,) i32 - FF stat indices to scan
 bp_result_mask = None  # (16, 64) i32 - breakpoint mask per (section, count)
 
-# ForceGreats section forced-count caps (must match `gear_optimizer.helpers.fg_utils.MAX_SECTION_CAPS`
-# and `gear_optimizer.solver.taichi_gem.force_greats.kernels._FG_SECTION_FORCED_CAPS`).
-_FG_SECTION_FORCED_CAPS = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4)
-
-
-@ti.func
-def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
-    cap: ti.i32 = 4
-    for i in ti.static(range(len(_FG_SECTION_FORCED_CAPS))):
-        if sec == ti.i32(i):
-            cap = ti.i32(_FG_SECTION_FORCED_CAPS[i])
-    return cap
-
-
 @ti.kernel
 def fg_compute_max_fp_by_pair_kernel(
     n_pairs: ti.i32,
@@ -48,7 +34,7 @@ def fg_compute_max_fp_by_pair_kernel(
     base_ft_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
     base_ff_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
     non_fever_base_by_ff: ti.types.ndarray(dtype=ti.i16, ndim=1),  # (161,)
-    fp_cap_table: ti.types.ndarray(dtype=ti.i16, ndim=2),  # (161, 51)
+    fp_cap_table: ti.types.ndarray(dtype=ti.i16, ndim=2),
     out_max_fp: ti.types.ndarray(dtype=ti.i16, ndim=2),  # (n_pairs, n_sections)
 ):
     """
@@ -62,11 +48,8 @@ def fg_compute_max_fp_by_pair_kernel(
 
     Notes:
     - Uses `grid_gap` and `grid_fever_activations` (baseline timeline grid).
-    - Uses integer math for section scaling to avoid float drift:
-        sec0: base_cap
-        sec1: floor(base_cap * 0.6) == (3*base_cap)//5
-        sec>=2: floor(base_cap * 0.3) == (3*base_cap)//10
-    - `fp_cap_table[ff_idx, forced_cap]` must be computed on CPU with the exact ceil rules.
+    - The old per-section forced-count caps were removed; the remaining exact
+      count limit is the production `non_fever_base` clamp.
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
 
@@ -92,34 +75,8 @@ def fg_compute_max_fp_by_pair_kernel(
             if sec >= fever_acts:
                 continue
 
-            gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
-            if gap < 0:
-                gap = 0
-
             base_notes = ti.cast(non_fever_base_by_ff[ff_idx], ti.i32)
-            # NOTE: Do not cap by `gap` here.
-            #
-            # Using `gap = total_notes - last_fever_end_idx` as a hard cap is overly strict when
-            # fever overflows to song end (gap=0) and can incorrectly collapse breakpoint ranges
-            # to [0] for most/all FT/FF pairs. The breakpoint "cap" is used to bound search, not
-            # to enforce correctness; correctness is handled by the full FG evaluation.
-            base_cap = base_notes
-
-            cap = base_cap
-            if sec == 1:
-                cap = (cap * 3) // 5
-            elif sec >= 2:
-                cap = (cap * 3) // 10
-
-            hard_cap = _fg_section_forced_cap(sec)
-            if cap > hard_cap:
-                cap = hard_cap
-            if cap < 0:
-                cap = 0
-            if cap > 50:
-                cap = 50
-
-            fp = ti.cast(fp_cap_table[ff_idx, cap], ti.i32)
+            fp = base_notes
             if fp > max_fp:
                 max_fp = fp
 

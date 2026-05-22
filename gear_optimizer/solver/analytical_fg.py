@@ -141,22 +141,10 @@ class AnalyticalFGScorer:
         # Rule 2: Gap constraint
         gap = self.total_notes - last_fever_end_idx
 
-        # Rule 3: Section-based caps
-        # Sections beyond activations have no benefit from FG
+        # Rule 3: Sections beyond activations have no benefit from FG.
         useful_sections = activations
 
-        # Calculate per-section caps based on gap
-        section_caps = []
-        for sec in range(useful_sections):
-            # Later sections have less impact, so lower caps
-            base_cap = non_fever_base
-            if sec == 0:
-                cap = base_cap
-            elif sec == 1:
-                cap = int(base_cap * 0.6)
-            else:
-                cap = int(base_cap * 0.3)
-            section_caps.append(max(0, cap))
+        section_caps = [max(0, int(non_fever_base)) for _ in range(useful_sections)]
 
         result = {
             "fever_activations": activations,

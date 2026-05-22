@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import product
 from math import floor
 from typing import Any, Mapping
 
@@ -198,25 +197,10 @@ def ftff_pairs_for_search(
 
 
 def build_force_greats_counts_list(num_sections: int, non_fever_base: int) -> list[tuple[int, ...]]:
-    n = int(num_sections)
-    if n <= 0:
-        return []
-    cap_s0 = min(int(non_fever_base or 0), 50)
-    cap_s1 = min(int(non_fever_base or 0), 25)
-    cap_s2 = min(int(non_fever_base or 0), 15)
-    if n == 1:
-        return [(s0,) for s0 in range(cap_s0 + 1)]
-    if n == 2:
-        return [(s0, s1) for s0 in range(cap_s0 + 1) for s1 in range(cap_s1 + 1)]
-    if n == 3:
-        return [
-            (s0, s1, s2)
-            for s0 in range(cap_s0 + 1)
-            for s1 in range(cap_s1 + 1)
-            for s2 in range(cap_s2 + 1)
-        ]
-    cap = min(int(non_fever_base or 0), 5)
-    return [tuple(int(v) for v in counts) for counts in product(range(cap + 1), repeat=n)]
+    raise RuntimeError(
+        "CPU ForceGreats count-list generation was removed; use the GPU fixed-stats Bellman solver "
+        "or a GPU production FG path."
+    )
 
 
 def compute_great_penalty_base(primary_val: int, secondary_val: int) -> int:

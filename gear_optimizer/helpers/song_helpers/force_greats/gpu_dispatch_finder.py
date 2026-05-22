@@ -693,7 +693,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
             if n_sections <= 0:
                 continue
-            max_per_section = min(int(non_fever_base or 0), 15)
+            max_per_section = max(0, int(non_fever_base or 0))
             key = (str(sel_color), int(n_sections), int(max_per_section))
             sig = stats_signature(base_stats, calc_song, sel_color)
             ga_run_idx = eval_data.get("_ga_gpu_run_idx")
@@ -1155,10 +1155,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     raw_fill = non_fever_cas0 * ff_mult
                     ceil_raw = _np.ceil(raw_fill)
                     fg_breakpoints_non_fever_base_by_ff = _np.clip(ceil_raw, 0, 32767).astype(_np.int16)
-                    fg_breakpoints_fp_cap_table = _np.zeros((161, 51), dtype=_np.int16)
-                    for forced_cap in range(0, 51):
-                        fp = _np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
-                        fg_breakpoints_fp_cap_table[:, forced_cap] = _np.maximum(0, fp).astype(_np.int16)
+                    fg_breakpoints_fp_cap_table = _np.zeros((1, 1), dtype=_np.int16)
                     try:
                         song_data_cache["fg_breakpoints_non_fever_base_by_ff"] = fg_breakpoints_non_fever_base_by_ff
                         song_data_cache["fg_breakpoints_fp_cap_table"] = fg_breakpoints_fp_cap_table

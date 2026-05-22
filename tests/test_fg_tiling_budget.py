@@ -4,7 +4,6 @@ from gear_optimizer.helpers.song_helpers.force_greats.work_budget import (
     estimate_fused_payload_threads as _estimate_fused_payload_threads,
     split_items_by_work_budget as _split_items_by_work_budget,
 )
-from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
 
 import numpy as np
 
@@ -35,37 +34,30 @@ def test_estimate_fused_payload_threads_uses_n_genomes_override():
     assert _estimate_fused_payload_threads(payload) == 42
 
 
-def test_estimate_fused_payload_threads_counts_forced_config_volume():
-    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
-    fp_cap_table[:, :] = np.arange(51, dtype=np.int16)
+def test_estimate_fused_payload_threads_counts_natural_config_volume():
     payload = {
         "n_sections": 2,
         "ftff_pairs": np.asarray([(0, 0), (1, 0)], dtype=np.int32),
         "base_stats_pairs": np.asarray([(10, 0)], dtype=np.int32),
         "non_fever_base_by_ff": np.full((161,), 10, dtype=np.int16),
-        "fp_cap_table": fp_cap_table,
+        "fp_cap_table": np.zeros((1, 1), dtype=np.int16),
         "gem_scale_fever": 3,
         "solve_kwargs": {"n_genomes_override": 3},
     }
-    # sec0 cap=10 -> 11 configs; sec1 cap=(10*3)//5=6 -> 7 configs.
-    # Work is genomes * pairs * (11*7) * plateau reps.
-    assert _estimate_fused_payload_threads(payload) == 3 * 2 * 77 * 4
+    # Each section uses the production natural cap (10), no later-section heuristic caps.
+    assert _estimate_fused_payload_threads(payload) == 3 * 2 * 121 * 4
 
 
 def test_fused_payload_cfg_len_vectorized_matches_pairwise_reference():
     pairs = np.asarray([(0, 0), (1, 3), (5, 7), (13, 2), (21, 11), (34, 5), (55, 13)], dtype=np.int32)
     base_pairs = np.asarray([(10, 0), (12, 9), (14, 17), (16, 31)], dtype=np.int32)
     non_fever_base_by_ff = (np.arange(161, dtype=np.int16) % 37) + 3
-    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
-    for ff in range(161):
-        for cap in range(51):
-            fp_cap_table[ff, cap] = (ff * 3 + cap * 5) % 17
     payload = {
         "n_sections": 4,
         "ftff_pairs": pairs,
         "base_stats_pairs": base_pairs,
         "non_fever_base_by_ff": non_fever_base_by_ff,
-        "fp_cap_table": fp_cap_table,
+        "fp_cap_table": np.zeros((1, 1), dtype=np.int16),
         "gem_scale_fever": 3,
     }
 
@@ -75,14 +67,7 @@ def test_fused_payload_cfg_len_vectorized_matches_pairwise_reference():
         per_pair_cfg = 1
         for sec in range(4):
             base_notes = non_fever_base_by_ff[ff_idx].astype(np.int32)
-            cap = base_notes
-            if sec == 1:
-                cap = (cap * 3) // 5
-            elif sec >= 2:
-                cap = (cap * 3) // 10
-            hard_cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
-            cap = np.clip(cap, 0, min(50, hard_cap)).astype(np.int32)
-            max_fp = int(np.max(fp_cap_table[ff_idx, cap]))
+            max_fp = int(np.max(np.maximum(base_notes, 0)))
             per_pair_cfg *= max(1, max_fp + 1)
         expected.append(per_pair_cfg * 16)
 

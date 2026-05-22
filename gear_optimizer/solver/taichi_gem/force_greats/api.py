@@ -1118,7 +1118,7 @@ def solve_force_greats_finder_gpu_tasks(
                 continue
             if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
                 continue
-            if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
+            if fp_cap_table.ndim != 2:
                 continue
             # IMPORTANT: packed-task streaming uses `total_pairs` to size the work estimate.
             # If we don't count pairs here, the function returns early and never runs Stage-1/2,

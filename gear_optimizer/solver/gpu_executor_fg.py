@@ -1047,11 +1047,11 @@ def execute_fg_compute_breakpoints(
             success=False,
             error="FG_COMPUTE_BREAKPOINTS non_fever_base_by_ff must be shape (>=161,)",
         )
-    if fp_cap_table.ndim != 2 or fp_cap_table.shape[0] < 161 or fp_cap_table.shape[1] < 51:
+    if fp_cap_table.ndim != 2:
         return GpuResponse(
             request_id=request.request_id,
             success=False,
-            error="FG_COMPUTE_BREAKPOINTS fp_cap_table must be shape (>=161, >=51)",
+            error="FG_COMPUTE_BREAKPOINTS fp_cap_table must be a 2-D placeholder",
         )
     try:
         out = compute_matrix_fn(

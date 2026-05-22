@@ -22,7 +22,6 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
     """
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
     from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
-    from gear_optimizer.helpers.fg_utils import _fp_cap_from_forced, MAX_SECTION_CAPS
     from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
     from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
@@ -94,17 +93,7 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
             for sec in range(n_sections):
                 if sec >= int(fever_activations):
                     continue
-                hard_cap = int(MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4)
-                cap = int(non_fever_base)
-                if sec == 1:
-                    cap = (cap * 3) // 5
-                elif sec >= 2:
-                    cap = (cap * 3) // 10
-                cap = min(cap, hard_cap)
-                cap = max(0, min(50, int(cap)))
-                if cap <= 0:
-                    continue
-                fp_cap = int(_fp_cap_from_forced(scorer, ft_stat, ff_stat, int(cap)))
+                fp_cap = int(non_fever_base)
                 if fp_cap > max_fp_by_sec[sec]:
                     max_fp_by_sec[sec] = int(fp_cap)
 
@@ -116,10 +105,7 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
     raw_fill = non_fever_cas * ref_ff
     ceil_raw = np.ceil(raw_fill)
     non_fever_base_by_ff = np.clip(ceil_raw, 0, 32767).astype(np.int16)
-    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
-    for forced_cap in range(0, 51):
-        fp = np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
-        fp_cap_table[:, forced_cap] = np.maximum(0, fp).astype(np.int16)
+    fp_cap_table = np.zeros((1, 1), dtype=np.int16)
 
     # GPU kernel evaluation.
     pair_ft = np.asarray([p[0] for p in ftff_pairs], dtype=np.int32)
