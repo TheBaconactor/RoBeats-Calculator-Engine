@@ -168,7 +168,8 @@ def test_fg_prefix_frontier_prebuild_disk_cache_skips_live_rebuild(monkeypatch, 
     )
     prebuild_only = fg_api.fg_download_global_best(len(genome_stats_arr))
     np.testing.assert_array_equal(prebuild_only["final_score"], np.asarray([-1], dtype=np.int32))
-    assert list(tmp_path.glob("*.npz"))
+    assert list(tmp_path.glob("*.sqlite3"))
+    assert not list(tmp_path.glob("*.npz"))
 
     with prefix_frontier_cache._FG_PREFIX_FRONTIER_LOCK:
         prefix_frontier_cache._FG_PREFIX_FRONTIER_CACHE.clear()

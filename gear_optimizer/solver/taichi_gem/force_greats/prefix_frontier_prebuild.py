@@ -13,8 +13,7 @@ from gear_optimizer.core.utils import safe_int
 from .prefix_frontier_cache import (
     fg_prefix_frontier_cache_dir,
     fg_prefix_frontier_base_cache_key,
-    fg_prefix_frontier_cache_key,
-    fg_prefix_frontier_cache_path,
+    fg_prefix_frontier_existing_cells,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,11 +83,11 @@ def _missing_cells_for_section(
     base_key: tuple,
     stat_max: int,
 ) -> list[tuple[int, int]]:
+    existing = fg_prefix_frontier_existing_cells(base_key, stat_max=int(stat_max))
     missing: list[tuple[int, int]] = []
     for ft_idx in range(int(stat_max) + 1):
         for ff_idx in range(int(stat_max) + 1):
-            cache_key = fg_prefix_frontier_cache_key(base_key, ft_idx=int(ft_idx), ff_idx=int(ff_idx))
-            if not fg_prefix_frontier_cache_path(cache_key).exists():
+            if (int(ft_idx), int(ff_idx)) not in existing:
                 missing.append((int(ft_idx), int(ff_idx)))
     return missing
 

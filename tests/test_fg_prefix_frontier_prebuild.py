@@ -72,6 +72,8 @@ def test_fg_prefix_frontier_prebuild_builds_complete_grid_and_skips_disk_hits(tm
     assert [len(call) for call in calls] == [4, 4, 1]
     built_cells = {(int(row[0]), int(row[1])) for call in calls for row in call}
     assert built_cells == {(ft, ff) for ft in range(3) for ff in range(3)}
+    assert len(list(tmp_path.glob("*.sqlite3"))) == 1
+    assert not list(tmp_path.glob("*.npz"))
 
     calls.clear()
     _FG_PREFIX_FRONTIER_PREBUILD_DONE.clear()

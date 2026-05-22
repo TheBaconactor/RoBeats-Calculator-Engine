@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
 import threading
-import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +16,7 @@ from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 
-FG_PREFIX_FRONTIER_CACHE_VERSION = "fg-prefix-frontier-v1"
+FG_PREFIX_FRONTIER_CACHE_VERSION = "fg-prefix-frontier-v2"
 _FG_PREFIX_FRONTIER_CACHE_MAX = max(1, int(env_get("FG_PREFIX_FRONTIER_CACHE_MAX", "128") or "128"))
 _FG_PREFIX_FRONTIER_CACHE: "OrderedDict[tuple, FgPrefixFrontierPayload]" = OrderedDict()
 _FG_PREFIX_FRONTIER_LOCK = threading.RLock()
@@ -64,9 +64,67 @@ def fg_prefix_frontier_cache_key(base_key: tuple, *, ft_idx: int, ff_idx: int) -
     return tuple(base_key) + (int(ft_idx), int(ff_idx))
 
 
+def _digest_key(key: tuple) -> str:
+    return hashlib.blake2b(repr(tuple(key)).encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _split_cache_key(cache_key: tuple) -> tuple[tuple, int, int]:
+    key = tuple(cache_key)
+    if len(key) < 3:
+        raise ValueError("FG prefix frontier cache key is missing FT/FF indices")
+    return key[:-2], int(key[-2]), int(key[-1])
+
+
+def fg_prefix_frontier_shard_path(base_key: tuple) -> Path:
+    digest = _digest_key(tuple(base_key))
+    return fg_prefix_frontier_cache_dir() / f"{digest}.sqlite3"
+
+
 def fg_prefix_frontier_cache_path(cache_key: tuple) -> Path:
-    digest = hashlib.blake2b(repr(tuple(cache_key)).encode("utf-8"), digest_size=16).hexdigest()
-    return fg_prefix_frontier_cache_dir() / f"{digest}.npz"
+    base_key, _ft_idx, _ff_idx = _split_cache_key(cache_key)
+    return fg_prefix_frontier_shard_path(base_key)
+
+
+def _connect_shard(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payloads (
+            ft_idx INTEGER NOT NULL,
+            ff_idx INTEGER NOT NULL,
+            count INTEGER NOT NULL,
+            n_sections INTEGER NOT NULL,
+            signatures BLOB NOT NULL,
+            forced_counts BLOB NOT NULL,
+            PRIMARY KEY (ft_idx, ff_idx)
+        )
+        """
+    )
+    return conn
+
+
+def fg_prefix_frontier_existing_cells(base_key: tuple, *, stat_max: int) -> set[tuple[int, int]]:
+    path = fg_prefix_frontier_shard_path(tuple(base_key))
+    if not path.exists():
+        return set()
+    max_i = int(stat_max)
+    with sqlite3.connect(str(path)) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT ft_idx, ff_idx FROM payloads WHERE ft_idx BETWEEN 0 AND ? AND ff_idx BETWEEN 0 AND ?",
+                (max_i, max_i),
+            ).fetchall()
+        except sqlite3.Error:
+            return set()
+    return {(int(ft), int(ff)) for ft, ff in rows}
+
+
+def fg_prefix_frontier_cache_files() -> list[Path]:
+    root = fg_prefix_frontier_cache_dir()
+    if not root.exists():
+        return []
+    return sorted(root.glob("*.sqlite3"))
 
 
 def _payload_from_arrays(
@@ -110,26 +168,27 @@ def load_fg_prefix_frontier_payload(cache_key: tuple) -> FgPrefixFrontierPayload
             _FG_PREFIX_FRONTIER_CACHE.move_to_end(key)
             return cached
 
-    path = fg_prefix_frontier_cache_path(key)
+    base_key, ft_idx, ff_idx = _split_cache_key(key)
+    path = fg_prefix_frontier_shard_path(base_key)
     if not path.exists():
         return None
     try:
-        with np.load(path, allow_pickle=False) as data:
-            version = str(data["version"].item())
-            if version != FG_PREFIX_FRONTIER_CACHE_VERSION:
-                return None
-            payload = _payload_from_arrays(
-                signatures=np.asarray(data["signatures"], dtype=np.int32),
-                forced_counts=np.asarray(data["forced_counts"], dtype=np.int32),
-                count=int(np.asarray(data["count"]).item()),
-                n_sections=int(np.asarray(data["n_sections"]).item()),
-            )
+        with sqlite3.connect(str(path)) as conn:
+            row = conn.execute(
+                "SELECT count, n_sections, signatures, forced_counts FROM payloads WHERE ft_idx = ? AND ff_idx = ?",
+                (int(ft_idx), int(ff_idx)),
+            ).fetchone()
+        if row is None:
+            return None
+        count_i, n_sections_i, sig_blob, counts_blob = row
+        payload = _payload_from_arrays(
+            signatures=np.frombuffer(sig_blob, dtype=np.int32).copy().reshape(int(count_i), 11),
+            forced_counts=np.frombuffer(counts_blob, dtype=np.int32).copy().reshape(int(count_i), int(n_sections_i)),
+            count=int(count_i),
+            n_sections=int(n_sections_i),
+        )
     except Exception as e:
         logger.debug(f"prefix_frontier_cache:load_fg_prefix_frontier_payload: {e}")
-        try:
-            path.unlink(missing_ok=True)
-        except Exception as unlink_error:
-            logger.debug(f"prefix_frontier_cache:load_fg_prefix_frontier_payload: {unlink_error}")
         return None
     if payload is None:
         return None
@@ -141,38 +200,109 @@ def load_fg_prefix_frontier_payload(cache_key: tuple) -> FgPrefixFrontierPayload
     return payload
 
 
-def save_fg_prefix_frontier_payload(cache_key: tuple, payload: FgPrefixFrontierPayload) -> None:
-    if not isinstance(payload, FgPrefixFrontierPayload):
-        return
-    key = tuple(cache_key)
-    path = fg_prefix_frontier_cache_path(key)
-    tmp: Path | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
-        np.savez_compressed(
-            tmp,
-            version=np.asarray(FG_PREFIX_FRONTIER_CACHE_VERSION),
-            count=np.asarray(int(payload.count), dtype=np.int32),
-            n_sections=np.asarray(int(payload.n_sections), dtype=np.int32),
-            signatures=np.asarray(payload.signatures[: int(payload.count), :11], dtype=np.int32),
-            forced_counts=np.asarray(
-                payload.forced_counts[: int(payload.count), : int(payload.n_sections)],
-                dtype=np.int32,
-            ),
-        )
-        tmp.replace(path)
-    except Exception as e:
-        logger.debug(f"prefix_frontier_cache:save_fg_prefix_frontier_payload: {e}")
-        if tmp is not None:
-            try:
-                tmp.unlink(missing_ok=True)
-            except Exception as unlink_error:
-                logger.debug(f"prefix_frontier_cache:save_fg_prefix_frontier_payload: {unlink_error}")
-        return
-
+def load_fg_prefix_frontier_payloads(cache_keys: list[tuple | None]) -> list[FgPrefixFrontierPayload | None]:
+    out: list[FgPrefixFrontierPayload | None] = [None for _ in cache_keys]
+    grouped: dict[tuple, list[tuple[int, int, int, tuple]]] = {}
     with _FG_PREFIX_FRONTIER_LOCK:
-        _FG_PREFIX_FRONTIER_CACHE[key] = payload
-        _FG_PREFIX_FRONTIER_CACHE.move_to_end(key)
-        while len(_FG_PREFIX_FRONTIER_CACHE) > int(_FG_PREFIX_FRONTIER_CACHE_MAX):
-            _FG_PREFIX_FRONTIER_CACHE.popitem(last=False)
+        for idx, cache_key in enumerate(cache_keys):
+            if cache_key is None:
+                continue
+            key = tuple(cache_key)
+            cached = _FG_PREFIX_FRONTIER_CACHE.get(key)
+            if isinstance(cached, FgPrefixFrontierPayload):
+                _FG_PREFIX_FRONTIER_CACHE.move_to_end(key)
+                out[idx] = cached
+                continue
+            base_key, ft_idx, ff_idx = _split_cache_key(key)
+            grouped.setdefault(base_key, []).append((idx, int(ft_idx), int(ff_idx), key))
+    for base_key, entries in grouped.items():
+        path = fg_prefix_frontier_shard_path(base_key)
+        if not path.exists():
+            continue
+        wanted: dict[tuple[int, int], list[tuple[int, tuple]]] = {}
+        for idx, ft, ff, key in entries:
+            wanted.setdefault((int(ft), int(ff)), []).append((idx, key))
+        try:
+            with sqlite3.connect(str(path)) as conn:
+                for ft_idx, ff_idx, count_i, n_sections_i, sig_blob, counts_blob in conn.execute(
+                    "SELECT ft_idx, ff_idx, count, n_sections, signatures, forced_counts FROM payloads"
+                ):
+                    items = wanted.get((int(ft_idx), int(ff_idx)))
+                    if not items:
+                        continue
+                    payload = _payload_from_arrays(
+                        signatures=np.frombuffer(sig_blob, dtype=np.int32).copy().reshape(int(count_i), 11),
+                        forced_counts=np.frombuffer(counts_blob, dtype=np.int32)
+                        .copy()
+                        .reshape(int(count_i), int(n_sections_i)),
+                        count=int(count_i),
+                        n_sections=int(n_sections_i),
+                    )
+                    if payload is None:
+                        continue
+                    for out_idx, key in items:
+                        out[out_idx] = payload
+                    with _FG_PREFIX_FRONTIER_LOCK:
+                        for _out_idx, key in items:
+                            _FG_PREFIX_FRONTIER_CACHE[key] = payload
+                            _FG_PREFIX_FRONTIER_CACHE.move_to_end(key)
+                        while len(_FG_PREFIX_FRONTIER_CACHE) > int(_FG_PREFIX_FRONTIER_CACHE_MAX):
+                            _FG_PREFIX_FRONTIER_CACHE.popitem(last=False)
+        except Exception as e:
+            logger.debug(f"prefix_frontier_cache:load_fg_prefix_frontier_payloads: {e}")
+    return out
+
+
+def save_fg_prefix_frontier_payload(cache_key: tuple, payload: FgPrefixFrontierPayload) -> None:
+    save_fg_prefix_frontier_payloads([(cache_key, payload)])
+
+
+def save_fg_prefix_frontier_payloads(items: list[tuple[tuple, FgPrefixFrontierPayload]]) -> None:
+    items = [(tuple(cache_key), payload) for cache_key, payload in items if isinstance(payload, FgPrefixFrontierPayload)]
+    if not items:
+        return
+    grouped: dict[tuple, list[tuple[tuple, int, int, FgPrefixFrontierPayload]]] = {}
+    for key, payload in items:
+        base_key, ft_idx, ff_idx = _split_cache_key(key)
+        grouped.setdefault(base_key, []).append((key, int(ft_idx), int(ff_idx), payload))
+    for base_key, entries in grouped.items():
+        path = fg_prefix_frontier_shard_path(base_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with _connect_shard(path) as conn:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO payloads
+                    (ft_idx, ff_idx, count, n_sections, signatures, forced_counts)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            int(ft_idx),
+                            int(ff_idx),
+                            int(payload.count),
+                            int(payload.n_sections),
+                            sqlite3.Binary(
+                                np.ascontiguousarray(
+                                    payload.signatures[: int(payload.count), :11], dtype=np.int32
+                                ).tobytes()
+                            ),
+                            sqlite3.Binary(
+                                np.ascontiguousarray(
+                                    payload.forced_counts[: int(payload.count), : int(payload.n_sections)],
+                                    dtype=np.int32,
+                                ).tobytes()
+                            ),
+                        )
+                        for _key, ft_idx, ff_idx, payload in entries
+                    ],
+                )
+        except Exception as e:
+            logger.debug(f"prefix_frontier_cache:save_fg_prefix_frontier_payloads: {e}")
+            return
+        with _FG_PREFIX_FRONTIER_LOCK:
+            for key, _ft_idx, _ff_idx, payload in entries:
+                _FG_PREFIX_FRONTIER_CACHE[key] = payload
+                _FG_PREFIX_FRONTIER_CACHE.move_to_end(key)
+            while len(_FG_PREFIX_FRONTIER_CACHE) > int(_FG_PREFIX_FRONTIER_CACHE_MAX):
+                _FG_PREFIX_FRONTIER_CACHE.popitem(last=False)

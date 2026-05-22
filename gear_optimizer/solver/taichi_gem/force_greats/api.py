@@ -16,8 +16,8 @@ from .api_support import *  # noqa: F401,F403
 from .prefix_frontier_cache import (
     fg_prefix_frontier_base_cache_key,
     fg_prefix_frontier_cache_key,
-    load_fg_prefix_frontier_payload,
-    save_fg_prefix_frontier_payload,
+    load_fg_prefix_frontier_payloads,
+    save_fg_prefix_frontier_payloads,
 )
 
 def _solve_force_greats_finder_gpu_impl(
@@ -1360,12 +1360,12 @@ def solve_force_greats_finder_gpu_tasks(
                 cached_payloads: list[FgPrefixFrontierPayload] = []
                 if cache_keys is None:
                     raise RuntimeError("FG prefix frontier cache keys unavailable; run the full cache prebuild")
+                cached_payloads_raw = load_fg_prefix_frontier_payloads(cache_keys)
                 cache_hit = True
-                for cache_key in cache_keys:
+                for cache_key, payload in zip(cache_keys, cached_payloads_raw, strict=False):
                     if cache_key is None:
                         cached_payloads.append(empty_payload)
                         continue
-                    payload = load_fg_prefix_frontier_payload(cache_key)
                     if payload is None or int(payload.n_sections) != int(n_sections):
                         cache_hit = False
                         break
@@ -1438,9 +1438,11 @@ def solve_force_greats_finder_gpu_tasks(
                         local_work_items=int(local_work_items),
                         n_sections=int(n_sections),
                     )
+                    payload_items = []
                     for cache_key, payload in zip(cache_keys, built_payloads, strict=False):
                         if cache_key is not None and payload is not None:
-                            save_fg_prefix_frontier_payload(cache_key, payload)
+                            payload_items.append((cache_key, payload))
+                    save_fg_prefix_frontier_payloads(payload_items)
             ti.sync()
             try:
                 overflow = int(fg_fields.fg_frontier_overflow[None])

@@ -36,3 +36,10 @@ def test_fg_prefix_frontier_cache_round_trip_and_effective_key(tmp_path, monkeyp
     assert loaded.n_sections == 2
     np.testing.assert_array_equal(loaded.signatures, payload.signatures)
     np.testing.assert_array_equal(loaded.forced_counts, payload.forced_counts)
+    batch = cache.load_fg_prefix_frontier_payloads([key_a, key_b, key_a])
+    assert batch[0] is not None
+    assert batch[1] is None
+    assert batch[2] is not None
+    np.testing.assert_array_equal(batch[2].forced_counts, payload.forced_counts)
+    assert len(list(tmp_path.glob("*.sqlite3"))) == 1
+    assert not list(tmp_path.glob("*.npz"))
