@@ -14,7 +14,7 @@ def test_process_force_greats_gpu_failure_raises_without_cpu_fallback(monkeypatc
     def _fake_cpu(**kwargs):
         return []
 
-    monkeypatch.setattr(core, "process_force_greats_gpu_finder", _boom)
+    monkeypatch.setattr(core, "process_force_greats_bellman_fixed_gpu", _boom)
     monkeypatch.setattr(core, "_process_force_greats_cpu", _fake_cpu)
 
     class _Registry:
@@ -116,16 +116,12 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
     seen: list[tuple[int, object]] = []
     registry = object()
 
-    def _fake_gpu_finder(
+    def _fake_bellman_adapter(
         loadout_entries,
         calc_song,
         ref_arrays,
         meta_primary_color,
         *,
-        use_gpu=False,
-        fg_search_radius=None,
-        perf_timing=False,
-        gpu_client=None,
         ga_candidates=None,
         ga_registry=None,
     ):
@@ -134,10 +130,6 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
             calc_song,
             ref_arrays,
             meta_primary_color,
-            use_gpu,
-            fg_search_radius,
-            perf_timing,
-            gpu_client,
             ga_registry,
         )
         seen.append((len(list(ga_candidates or [])), ga_registry))
@@ -155,7 +147,7 @@ def test_process_force_greats_forwards_direct_ga_candidates(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(core, "process_force_greats_gpu_finder", _fake_gpu_finder)
+    monkeypatch.setattr(core, "process_force_greats_bellman_fixed_gpu", _fake_bellman_adapter)
 
     ga_candidates = [
         {
