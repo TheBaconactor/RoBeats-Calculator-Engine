@@ -5,10 +5,12 @@ import logging
 
 import numpy as np
 
+from gear_optimizer.helpers.fg_utils import MAX_SECTION_CAPS
+
 
 
 logger = logging.getLogger(__name__)
-_PREFIX_FRONTIER_WORK_ESTIMATE = 8192
+_WORK_ESTIMATE_LIMIT = 1_000_000_000_000
 
 
 def sequence_len(value: Any) -> int:
@@ -32,12 +34,21 @@ def fg_task_cfg_count(task: dict, *, n_sections: int) -> int:
     if counts_list is not None:
         return max(1, int(sequence_len(counts_list)))
 
-    raw_counts_max_fp = (task or {}).get("counts_max_fp")
-    if isinstance(raw_counts_max_fp, dict) and str(raw_counts_max_fp.get("mode") or "") == "gpu":
-        return int(_PREFIX_FRONTIER_WORK_ESTIMATE)
-    if raw_counts_max_fp is not None:
-        raise ValueError("counts_max_fp rectangles were removed; use the GPU prefix frontier descriptor")
-    return 1
+    counts_max_fp = list((task or {}).get("counts_max_fp") or [])
+    if not counts_max_fp:
+        return 1
+
+    total = 1
+    for v in counts_max_fp[: max(0, int(n_sections))]:
+        try:
+            total *= max(1, int(v or 0) + 1)
+        except Exception as e:
+            logger.debug(f"work_budget:fg_task_cfg_count: {e}")
+            total *= 1
+        if total >= _WORK_ESTIMATE_LIMIT:
+            return _WORK_ESTIMATE_LIMIT
+    total *= 1 << min(max(int(n_sections), 0), 4)
+    return max(1, int(total))
 
 
 def estimate_fg_task_threads(task: dict, *, n_sections: int, n_genomes: int) -> int:
@@ -69,7 +80,18 @@ def _fallback_cfg_len_per_pair(payload: dict, *, pair_count: int) -> np.ndarray 
     if n_sections <= 0:
         return None
 
-    return np.full((max(0, int(pair_count)),), int(_PREFIX_FRONTIER_WORK_ESTIMATE), dtype=np.int64)
+    cfg_len = 1
+    for sec in range(max(0, int(n_sections))):
+        cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
+        cfg_len *= max(1, int(cap) + 1)
+        if cfg_len >= _WORK_ESTIMATE_LIMIT:
+            cfg_len = _WORK_ESTIMATE_LIMIT
+            break
+    cfg_len = min(
+        int(_WORK_ESTIMATE_LIMIT),
+        int(cfg_len) * (1 << min(max(int(n_sections), 0), 4)),
+    )
+    return np.full((max(0, int(pair_count)),), int(cfg_len), dtype=np.int64)
 
 
 def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
@@ -100,6 +122,8 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
     try:
         pairs = np.asarray(pairs_raw, dtype=np.int32)
         base_pairs = np.asarray(base_raw, dtype=np.int32)
+        non_fever_base_by_ff = np.asarray(payload.get("non_fever_base_by_ff"), dtype=np.int16)
+        fp_cap_table = np.asarray(payload.get("fp_cap_table"), dtype=np.int16)
     except Exception as e:
         logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
@@ -108,10 +132,67 @@ def fused_payload_cfg_len_per_pair(payload: dict) -> np.ndarray | None:
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
     if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2 or int(base_pairs.shape[0]) <= 0:
         return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
+    if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
+        return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
+    if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
+        return _fallback_cfg_len_per_pair(payload, pair_count=int(pair_count))
+
+    try:
+        gem_scale = int(payload.get("gem_scale_fever", 3) or 3)
+    except Exception as e:
+        logger.debug(f"work_budget:fused_payload_cfg_len_per_pair: {e}")
+        gem_scale = 3
+
+    pairs = np.asarray(pairs[:, :2], dtype=np.int32)
+    base_ff = np.asarray(base_pairs[:, 1], dtype=np.int32)
     pair_total = int(pairs.shape[0])
-    if pair_total <= 0:
-        return np.ones((0,), dtype=np.int64)
-    return np.full((pair_total,), int(_PREFIX_FRONTIER_WORK_ESTIMATE), dtype=np.int64)
+    base_total = int(base_ff.shape[0])
+    cfg_lens = np.ones((pair_total,), dtype=np.int64)
+    if pair_total <= 0 or base_total <= 0:
+        return cfg_lens
+
+    # The old estimator walked every FT/FF pair in Python and did a tiny vector
+    # op per pair. Full-window FG has 4,186 pairs, so this became visible CPU
+    # dead air before each GPU submit. Process pair chunks as 2-D NumPy grids:
+    # pair_count x base_signature_count, bounded so wide real groups do not
+    # allocate surprise-huge temporaries.
+    max_cells = 2_000_000
+    pair_chunk = max(1, int(max_cells // max(1, base_total)))
+    n_sections_i = max(0, int(n_sections))
+    plateau_rep_multiplier = 1 << min(n_sections_i, 4)
+    base_ff_row = base_ff.reshape(1, base_total)
+
+    for start in range(0, pair_total, pair_chunk):
+        end = min(pair_total, int(start) + int(pair_chunk))
+        pair_ff = pairs[int(start) : int(end), 1].reshape(int(end) - int(start), 1)
+        ff_idx = np.clip(base_ff_row + pair_ff * int(gem_scale), 0, 160).astype(np.intp, copy=False)
+        chunk_lens = np.ones((int(end) - int(start),), dtype=np.int64)
+
+        for sec in range(n_sections_i):
+            base_notes = non_fever_base_by_ff[ff_idx].astype(np.int32, copy=False)
+            cap = base_notes
+            if sec == 1:
+                cap = (cap * 3) // 5
+            elif sec >= 2:
+                cap = (cap * 3) // 10
+
+            hard_cap = int(MAX_SECTION_CAPS[sec]) if sec < len(MAX_SECTION_CAPS) else 4
+            cap = np.clip(cap, 0, min(50, int(hard_cap))).astype(np.intp, copy=False)
+            fp = fp_cap_table[ff_idx, cap].astype(np.int32, copy=False)
+            max_fp = np.max(fp, axis=1).astype(np.int64, copy=False) if int(fp.size) > 0 else 0
+            chunk_lens = np.minimum(
+                chunk_lens * np.maximum(1, max_fp + 1),
+                int(_WORK_ESTIMATE_LIMIT),
+            ).astype(np.int64, copy=False)
+            if bool(np.all(chunk_lens >= int(_WORK_ESTIMATE_LIMIT))):
+                break
+
+        cfg_lens[int(start) : int(end)] = np.minimum(
+            chunk_lens * int(plateau_rep_multiplier),
+            int(_WORK_ESTIMATE_LIMIT),
+        )
+
+    return cfg_lens
 
 
 def estimate_fused_payload_threads(payload: dict) -> int:

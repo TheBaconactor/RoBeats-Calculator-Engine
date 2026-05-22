@@ -4,7 +4,7 @@ import time
 from typing import Any
 import logging
 
-from ....core.constants import GEM_SCALE_FEVER
+from ....core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER
 from ....core.utils import get_selected_element
 from ....solver.scoring import _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
@@ -203,7 +203,8 @@ def _build_raw_gpu_result(
         cfg_idx_i = int(cfg_idx) if cfg_idx is not None else -1
         cfg_counts = list(counts_list[cfg_idx_i]) if 0 <= cfg_idx_i < len(counts_list) else []
 
-    forced_counts: list[int] = []
+    fp_counts: list[int] = []
+    rep_flags: list[int] = []
     for raw_val in list(cfg_counts or []):
         try:
             raw_i = int(raw_val)
@@ -212,7 +213,21 @@ def _build_raw_gpu_result(
             raw_i = 0
         if raw_i < 0:
             raw_i = 0
-        forced_counts.append(int(raw_i))
+        rep_flag_i = 0
+        fp_i = int(raw_i)
+        if raw_i >= int(FG_PLATEAU_REP_STRIDE):
+            rep_flag_i = 1
+            fp_i = int(raw_i % int(FG_PLATEAU_REP_STRIDE))
+        fp_counts.append(int(fp_i))
+        rep_flags.append(int(rep_flag_i))
+
+    forced_counts = fp_counts
+    if fp_counts and fg_scorer is not None:
+        try:
+            forced_counts = fp_targets_to_forced_counts(fp_counts, rep_flags, base_stats, ft_val, ff_val, fg_scorer)
+        except Exception as e:
+            logger.debug(f"result_application:_build_raw_gpu_result: {e}")
+            forced_counts = fp_counts
 
     gem_counts = {
         "Perfect Points": g_pp_i,

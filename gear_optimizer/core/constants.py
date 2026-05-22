@@ -66,6 +66,7 @@ DIFFICULTIES = ("Easy", "Normal", "Hard")
 # --- FORCE GREATS OPTIMIZATION ---
 # Production FG always searches the full FT/FF gem allocation grid.
 FG_SEARCH_RADIUS = -1
+FG_PLATEAU_REP_STRIDE = 64
 
 # --- MEMORY MANAGEMENT CONSTANTS ---
 DEFAULT_MEMORY_GUARD_PERCENT = 50.0

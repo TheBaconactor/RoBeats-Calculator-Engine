@@ -25,7 +25,6 @@ from ..api.sync_policy import maybe_sync
 from .. import fields as gem_fields
 from . import fields as fg_fields
 from . import kernels as fg_kernels
-from .prefix_frontier_cache import FgPrefixFrontierPayload
 
 logger = logging.getLogger(__name__)
 
@@ -410,80 +409,6 @@ def _get_forced_counts_staging(rows: int) -> Any:
         staging = ti.ndarray(dtype=ti.i32, shape=(int(rows), fg_fields.FG_MAX_SECTIONS))
         _fg_forced_counts_staging_pool[int(rows)] = staging
     return staging
-
-
-def _upload_fg_prefix_frontier_payloads(
-    payloads: list[FgPrefixFrontierPayload],
-    *,
-    n_sections: int,
-) -> int:
-    local_work_items = int(len(payloads))
-    if local_work_items <= 0:
-        return 0
-    n_sections_i = max(1, min(int(n_sections), int(fg_fields.FG_MAX_SECTIONS)))
-    max_reps = max(1, max(int(p.count) for p in payloads))
-    max_reps = min(int(max_reps), int(fg_fields.FG_CFG_DEDUPE_MAX_REPS))
-    rep_counts = np.zeros((local_work_items,), dtype=np.int32)
-    signatures = np.zeros((local_work_items, max_reps, fg_fields.FG_CFG_DEDUPE_SIG_WORDS), dtype=np.int32)
-    forced_counts = np.zeros((local_work_items, max_reps, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
-    for i, payload in enumerate(payloads):
-        count = min(int(payload.count), int(max_reps))
-        rep_counts[i] = int(count)
-        if count <= 0:
-            continue
-        signatures[i, :count, :] = np.asarray(payload.signatures[:count, :], dtype=np.int32)
-        forced_counts[i, :count, :n_sections_i] = np.asarray(
-            payload.forced_counts[:count, :n_sections_i],
-            dtype=np.int32,
-        )
-    fg_kernels.fg_upload_prefix_frontier_cache_kernel(
-        int(local_work_items),
-        int(max_reps),
-        int(n_sections_i),
-        rep_counts,
-        signatures,
-        forced_counts,
-    )
-    return int(max_reps)
-
-
-def _download_fg_prefix_frontier_payloads(
-    *,
-    local_work_items: int,
-    n_sections: int,
-) -> list[FgPrefixFrontierPayload | None]:
-    local_work_items_i = int(local_work_items)
-    if local_work_items_i <= 0:
-        return []
-    n_sections_i = max(1, min(int(n_sections), int(fg_fields.FG_MAX_SECTIONS)))
-    rep_counts = np.asarray(fg_fields.fg_cfg_dedupe_rep_count.to_numpy()[:local_work_items_i], dtype=np.int32)
-    max_reps = int(np.max(rep_counts)) if rep_counts.size else 0
-    if max_reps <= 0:
-        return [None for _ in range(local_work_items_i)]
-    signatures = np.zeros((local_work_items_i, max_reps, fg_fields.FG_CFG_DEDUPE_SIG_WORDS), dtype=np.int32)
-    forced_counts = np.zeros((local_work_items_i, max_reps, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
-    fg_kernels.fg_download_prefix_frontier_cache_kernel(
-        int(local_work_items_i),
-        int(max_reps),
-        int(n_sections_i),
-        signatures,
-        forced_counts,
-    )
-    out: list[FgPrefixFrontierPayload | None] = []
-    for i in range(local_work_items_i):
-        count = int(rep_counts[i])
-        if count <= 0:
-            out.append(None)
-            continue
-        out.append(
-            FgPrefixFrontierPayload(
-                signatures=np.ascontiguousarray(signatures[i, :count, :], dtype=np.int32),
-                forced_counts=np.ascontiguousarray(forced_counts[i, :count, :n_sections_i], dtype=np.int32),
-                count=int(count),
-                n_sections=int(n_sections_i),
-            )
-        )
-    return out
 
 
 def _is_vulkan_backend_failure(exc: BaseException) -> bool:

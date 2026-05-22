@@ -23,10 +23,14 @@ class _DummyExecutor:
 
 
 def _work_budget_payload(pair_count: int) -> dict:
+    fp_cap_table = np.zeros((161, 51), dtype=np.int16)
+    fp_cap_table[:, :] = np.arange(51, dtype=np.int16)
     return {
         "n_sections": 2,
         "ftff_pairs": np.asarray([(i, 0) for i in range(pair_count)], dtype=np.int32),
         "base_stats_pairs": np.asarray([(10, 0)], dtype=np.int32),
+        "non_fever_base_by_ff": np.full((161,), 10, dtype=np.int16),
+        "fp_cap_table": fp_cap_table,
         "gem_scale_fever": 3,
         "solve_kwargs": {"n_genomes_override": 1},
     }
@@ -176,7 +180,7 @@ def test_fg_submit_splits_single_oversized_payload_and_merges_full_results(monke
 def test_fg_submit_splits_payload_by_config_work_before_owner_request(monkeypatch):
     executor = _DummyExecutor()
     monkeypatch.setenv("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", "100")
-    monkeypatch.setenv("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "20000")
+    monkeypatch.setenv("FG_BREAKPOINTS_MAX_WORK_PER_REQUEST", "160")
     monkeypatch.setenv("FG_BREAKPOINTS_MAX_PAYLOADS_PER_REQUEST", "64")
     monkeypatch.setenv("FG_BREAKPOINTS_BATCH_MAX_PAYLOADS", "64")
     client = GpuServiceClient(executor=executor)

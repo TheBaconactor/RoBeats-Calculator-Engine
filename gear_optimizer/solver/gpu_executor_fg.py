@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 from gear_optimizer.core.cfg_window_decode import decode_cfg_counts_from_windows
+from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 logger = logging.getLogger(__name__)
 def execute_fg_select_signature_frontier_batch(
@@ -96,6 +97,84 @@ def execute_fg_download_global_best(
     )
 def decode_cfg_counts_from_windows_for_gpu(cfg_idx: Any, cfg_windows: list[dict], n_sections: int) -> Any:
     return decode_cfg_counts_from_windows(cfg_idx, cfg_windows, n_sections)
+def decode_cfg_counts_from_max_fp_matrix(
+    cfg_idx: Any,
+    ft_vals: Any,
+    ff_vals: Any,
+    max_fp_matrix: Any,
+    ftff_pairs: Any,
+    n_sections: int,
+) -> Any:
+    import numpy as np
+    if cfg_idx is None or max_fp_matrix is None or ft_vals is None or ff_vals is None:
+        return None
+    try:
+        n_sections_i = int(n_sections)
+    except (ValueError, TypeError):
+        return None
+    if n_sections_i <= 0:
+        return None
+    try:
+        cfg_idx_np = np.asarray(cfg_idx, dtype=np.int64)
+        ft_np = np.asarray(ft_vals, dtype=np.int32)
+        ff_np = np.asarray(ff_vals, dtype=np.int32)
+    except Exception as e:
+        logger.debug(f"gpu_executor_fg:decode_cfg_counts_from_max_fp_matrix: {e}")
+        return None
+    if cfg_idx_np.shape[0] != ft_np.shape[0] or cfg_idx_np.shape[0] != ff_np.shape[0]:
+        return None
+    try:
+        pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+    except Exception as e:
+        logger.debug(f"gpu_executor_fg:decode_cfg_counts_from_max_fp_matrix: {e}")
+        return None
+    if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+        return None
+    try:
+        max_fp_arr = np.asarray(max_fp_matrix, dtype=np.int32)
+    except Exception as e:
+        logger.debug(f"gpu_executor_fg:decode_cfg_counts_from_max_fp_matrix: {e}")
+        return None
+    if max_fp_arr.ndim != 2 or int(max_fp_arr.shape[0]) != int(pairs_arr.shape[0]):
+        return None
+    try:
+        pair_index: dict[tuple[int, int], int] = {}
+        for i in range(int(pairs_arr.shape[0])):
+            ft_i = int(pairs_arr[i, 0])
+            ff_i = int(pairs_arr[i, 1])
+            pair_index[(ft_i, ff_i)] = int(i)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    n_out = int(cfg_idx_np.shape[0])
+    cfg_counts = np.zeros((int(n_out), int(n_sections_i)), dtype=np.int32)
+    rep_bits = min(max(int(n_sections_i), 0), 4)
+    for gi in range(int(n_out)):
+        row = pair_index.get((int(ft_np[gi]), int(ff_np[gi])), -1)
+        if row < 0:
+            continue
+        idx = int(cfg_idx_np[gi])
+        if idx < 0:
+            continue
+        rep_mask = int(idx & ((1 << rep_bits) - 1)) if rep_bits > 0 else 0
+        idx >>= int(rep_bits)
+        try:
+            max_fp_row = max_fp_arr[row]
+        except Exception as e:
+            logger.debug(f"gpu_executor_fg:decode_cfg_counts_from_max_fp_matrix: {e}")
+            continue
+        for s in range(int(n_sections_i) - 1, -1, -1):
+            try:
+                basev = int(max(0, int(max_fp_row[s] if s < len(max_fp_row) else 0))) + 1
+            except (ValueError, TypeError, IndexError):
+                basev = 1
+            if basev <= 0:
+                basev = 1
+            val = idx % basev
+            idx //= basev
+            if s < rep_bits and ((rep_mask >> s) & 1) != 0:
+                val += int(FG_PLATEAU_REP_STRIDE)
+            cfg_counts[gi, s] = int(val)
+    return cfg_counts
 def fg_selection_array_sig(
     arr: Any,
     *,
@@ -199,6 +278,8 @@ def pack_or_download_fg_breakpoint_result(
             "gem_scale_fever": int(prepared.gem_scale_fever),
             "base_ft": prepared.base_ft,
             "base_ff": prepared.base_ff,
+            "non_fever_base_by_ff": prepared.non_fever_base_by_ff,
+            "fp_cap_table": prepared.fp_cap_table,
             "surface_pair_drops": int(task_plan.surface_pair_drops),
             "surface_pair_reduce_ms": int(round(float(task_plan.surface_pair_reduce_sec) * 1000.0)),
         }
@@ -221,8 +302,12 @@ def finalize_fg_breakpoint_result(
     gem_scale_fever: int,
     base_ft: Any,
     base_ff: Any,
+    non_fever_base_by_ff: Any,
+    fp_cap_table: Any,
     fused_surface_pair_drops: int,
     fused_surface_pair_reduce_sec: float,
+    compute_max_fp_matrix_fn: Callable[..., Any],
+    decode_cfg_counts_from_max_fp_matrix_fn: Callable[..., Any],
     decode_cfg_counts_from_windows_fn: Callable[..., Any],
 ) -> Any:
     if not isinstance(result, dict):
@@ -237,7 +322,26 @@ def finalize_fg_breakpoint_result(
                 if result_ft.ndim == 1 and result_ff.ndim == 1 and int(result_ft.shape[0]) == int(
                     result_ff.shape[0]
                 ):
-                    cfg_counts = None
+                    max_fp_rows = compute_max_fp_matrix_fn(
+                        pair_ft=result_ft,
+                        pair_ff=result_ff,
+                        base_ft=base_ft,
+                        base_ff=base_ff,
+                        n_sections=int(n_sections),
+                        song_slot=int(song_slot),
+                        gem_scale_fever=int(gem_scale_fever),
+                        non_fever_base_by_ff=non_fever_base_by_ff,
+                        fp_cap_table=fp_cap_table,
+                    )
+                    result_pairs = np.stack([result_ft, result_ff], axis=1)
+                    cfg_counts = decode_cfg_counts_from_max_fp_matrix_fn(
+                        result.get("cfg_idx"),
+                        result_ft,
+                        result_ff,
+                        max_fp_rows,
+                        result_pairs,
+                        int(n_sections),
+                    )
             except (ValueError, TypeError, KeyError):
                 cfg_counts = None
         elif cfg_windows:
@@ -261,6 +365,8 @@ class PreparedFgBreakpointPayloadInputs:
     base_arr: Any
     base_ft: Any
     base_ff: Any
+    non_fever_base_by_ff: Any
+    fp_cap_table: Any
     song_slot: int
     gem_scale_fever: int
     solve_kwargs_payload: dict[str, Any]
@@ -288,9 +394,11 @@ def prepare_fg_breakpoint_payload_inputs(
         return None
     ftff_pairs = payload.get("ftff_pairs")
     base_stats_pairs = payload.get("base_stats_pairs")
+    non_fever_base_by_ff = payload.get("non_fever_base_by_ff")
+    fp_cap_table = payload.get("fp_cap_table")
     song_slot = int(payload.get("song_slot", 0) or 0)
     gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
-    if ftff_pairs is None or base_stats_pairs is None:
+    if ftff_pairs is None or base_stats_pairs is None or non_fever_base_by_ff is None or fp_cap_table is None:
         raise ValueError("FG_SOLVE_WITH_BREAKPOINTS missing required breakpoint inputs")
     try:
         pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
@@ -317,6 +425,8 @@ def prepare_fg_breakpoint_payload_inputs(
         base_arr=base_arr,
         base_ft=base_ft,
         base_ff=base_ff,
+        non_fever_base_by_ff=non_fever_base_by_ff,
+        fp_cap_table=fp_cap_table,
         song_slot=int(song_slot),
         gem_scale_fever=int(gem_scale_fever),
         solve_kwargs_payload=solve_kwargs_payload,
@@ -406,6 +516,8 @@ def execute_fg_solve_with_breakpoints_batch(
     in_process_queues: bool,
     raise_if_abort_requested: Callable[[], None],
     run_payload_fn: Callable[..., Any],
+    compute_max_fp_matrix_fn: Callable[..., Any],
+    decode_cfg_counts_from_max_fp_matrix_fn: Callable[..., Any],
     decode_cfg_counts_from_windows_fn: Callable[..., Any],
     download_packed_topk_batch_fn: Callable[[int], list[Any]],
     download_batch_max_fn: Callable[[], int],
@@ -516,8 +628,31 @@ def execute_fg_solve_with_breakpoints_batch(
                             try:
                                 result_ft = np.asarray(result.get("FT"), dtype=np.int32)
                                 result_ff = np.asarray(result.get("FF"), dtype=np.int32)
-                                if result_ft.ndim == 1 and result_ff.ndim == 1:
-                                    cfg_counts = None
+                                if (
+                                    result_ft.ndim == 1
+                                    and result_ff.ndim == 1
+                                    and int(result_ft.shape[0]) == int(result_ff.shape[0])
+                                ):
+                                    max_fp_rows = compute_max_fp_matrix_fn(
+                                        pair_ft=result_ft,
+                                        pair_ff=result_ff,
+                                        base_ft=np.asarray(ctx.get("base_ft"), dtype=np.int32),
+                                        base_ff=np.asarray(ctx.get("base_ff"), dtype=np.int32),
+                                        n_sections=int(n_sections),
+                                        song_slot=int(ctx.get("song_slot", 0) or 0),
+                                        gem_scale_fever=int(ctx.get("gem_scale_fever", 0) or 0),
+                                        non_fever_base_by_ff=ctx.get("non_fever_base_by_ff"),
+                                        fp_cap_table=ctx.get("fp_cap_table"),
+                                    )
+                                    result_pairs = np.stack([result_ft, result_ff], axis=1)
+                                    cfg_counts = decode_cfg_counts_from_max_fp_matrix_fn(
+                                        result.get("cfg_idx"),
+                                        result_ft,
+                                        result_ff,
+                                        max_fp_rows,
+                                        result_pairs,
+                                        int(n_sections),
+                                    )
                             except (ValueError, TypeError):
                                 cfg_counts = None
                         elif cfg_windows:
@@ -583,10 +718,12 @@ def run_fg_solve_with_breakpoints_payload(
     raise_if_abort_requested: Callable[[], None],
     env_get_fn: Callable[..., Any],
     precompute_timeline_fn: Callable[..., Any],
+    compute_max_fp_matrix_fn: Callable[..., Any],
     solve_force_greats_finder_gpu_tasks_fn: Callable[..., Any],
     reset_global_best_fn: Callable[..., Any],
     download_global_best_fn: Callable[..., Any],
     pack_global_best_topk_to_batch_fn: Callable[..., Any],
+    decode_cfg_counts_from_max_fp_matrix_fn: Callable[..., Any],
     decode_cfg_counts_from_windows_fn: Callable[..., Any],
 ) -> Any:
     raise_if_abort_requested()
@@ -597,11 +734,16 @@ def run_fg_solve_with_breakpoints_payload(
     n_sections = prepared.n_sections
     base_ft = prepared.base_ft
     base_ff = prepared.base_ff
+    non_fever_base_by_ff = prepared.non_fever_base_by_ff
+    fp_cap_table = prepared.fp_cap_table
     song_slot = prepared.song_slot
     gem_scale_fever = prepared.gem_scale_fever
     solve_kwargs_payload = prepared.solve_kwargs_payload
     implicit_cfgs = prepared.implicit_cfgs
-    task_plan = build_fg_breakpoint_tasks(prepared)
+    task_plan = build_fg_breakpoint_tasks(
+        prepared,
+        compute_max_fp_matrix_fn=compute_max_fp_matrix_fn,
+    )
     fg_tasks = task_plan.fg_tasks
     cfg_windows = task_plan.cfg_windows
     fused_surface_pair_drops = int(task_plan.surface_pair_drops)
@@ -640,8 +782,12 @@ def run_fg_solve_with_breakpoints_payload(
         gem_scale_fever=int(gem_scale_fever),
         base_ft=base_ft,
         base_ff=base_ff,
+        non_fever_base_by_ff=non_fever_base_by_ff,
+        fp_cap_table=fp_cap_table,
         fused_surface_pair_drops=int(fused_surface_pair_drops),
         fused_surface_pair_reduce_sec=float(fused_surface_pair_reduce_sec),
+        compute_max_fp_matrix_fn=compute_max_fp_matrix_fn,
+        decode_cfg_counts_from_max_fp_matrix_fn=decode_cfg_counts_from_max_fp_matrix_fn,
         decode_cfg_counts_from_windows_fn=decode_cfg_counts_from_windows_fn,
     )
 import logging
@@ -656,22 +802,79 @@ class FgBreakpointTaskPlan:
 def build_fg_breakpoint_tasks(
     prepared: PreparedFgBreakpointPayloadInputs,
     *,
+    compute_max_fp_matrix_fn: Callable[..., Any],
     perf_counter_fn: Callable[[], float] = perf_counter,
 ) -> FgBreakpointTaskPlan:
+    import numpy as np
     n_sections = prepared.n_sections
     pairs_arr = prepared.pairs_arr
+    base_arr = prepared.base_arr
+    base_ft = prepared.base_ft
+    base_ff = prepared.base_ff
+    non_fever_base_by_ff = prepared.non_fever_base_by_ff
+    fp_cap_table = prepared.fp_cap_table
     song_slot = prepared.song_slot
     gem_scale_fever = prepared.gem_scale_fever
+    solve_kwargs_payload = prepared.solve_kwargs_payload
     fg_tasks: list[dict[str, Any]] = []
     cfg_windows: list[dict] | None = None
     fused_surface_pair_drops = 0
     fused_surface_pair_reduce_sec = 0.0
-    counts_max_fp_task: Any = {
-        "mode": "gpu",
-        "n_sections": int(n_sections),
-        "song_slot": int(song_slot),
-        "gem_scale_fever": int(gem_scale_fever),
-    }
+    max_fp_matrix_for_task = None
+    pair_reduce_min_pairs = max(1, int(_fg_max_ftff()) + 1)
+    if int(pairs_arr.shape[0]) >= int(pair_reduce_min_pairs):
+        _t_surface = perf_counter_fn()
+        try:
+            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+            max_fp_matrix = compute_max_fp_matrix_fn(
+                pair_ft=pair_ft,
+                pair_ff=pair_ff,
+                base_ft=base_ft,
+                base_ff=base_ff,
+                n_sections=int(n_sections),
+                song_slot=int(song_slot),
+                gem_scale_fever=int(gem_scale_fever),
+                non_fever_base_by_ff=non_fever_base_by_ff,
+                fp_cap_table=fp_cap_table,
+            )
+            from gear_optimizer.helpers.song_helpers.force_greats.ftff_pairs import (
+                reduce_ftff_pairs_by_max_fp_surface,
+            )
+            surface_reduction = reduce_ftff_pairs_by_max_fp_surface(
+                pairs_arr,
+                max_fp_matrix,
+                n_sections=int(n_sections),
+                total_budget=int(solve_kwargs_payload.get("total_budget", 90) or 90),
+                is_p_ft=int(solve_kwargs_payload.get("is_p_ft", 0) or 0),
+                is_s_ft=int(solve_kwargs_payload.get("is_s_ft", 0) or 0),
+                is_p_ff=int(solve_kwargs_payload.get("is_p_ff", 0) or 0),
+                is_s_ff=int(solve_kwargs_payload.get("is_s_ff", 0) or 0),
+            )
+            fused_surface_pair_drops = max(0, int(surface_reduction.dropped))
+            if fused_surface_pair_drops > 0:
+                pairs_arr = np.ascontiguousarray(surface_reduction.pairs, dtype=np.int32)
+                max_fp_matrix_for_task = np.ascontiguousarray(surface_reduction.max_fp_matrix, dtype=np.int16)
+            else:
+                max_fp_matrix_for_task = np.ascontiguousarray(max_fp_matrix, dtype=np.int16)
+        except Exception as e:
+            raise RuntimeError(f"fused surface pair reduction failed: {type(e).__name__}: {e}") from e
+        finally:
+            fused_surface_pair_reduce_sec = perf_counter_fn() - _t_surface
+    if max_fp_matrix_for_task is None:
+        counts_max_fp_task: Any = {
+            "mode": "gpu",
+            "base_stats_pairs": base_arr,
+            "base_ft": base_ft,
+            "base_ff": base_ff,
+            "non_fever_base_by_ff": non_fever_base_by_ff,
+            "fp_cap_table": fp_cap_table,
+            "n_sections": int(n_sections),
+            "song_slot": int(song_slot),
+            "gem_scale_fever": int(gem_scale_fever),
+        }
+    else:
+        counts_max_fp_task = max_fp_matrix_for_task
     fg_tasks.append(
         {
             "counts_list": None,
@@ -699,11 +902,212 @@ def execute_fg_compute_breakpoints(
     precompute_timeline_fn: Callable[..., Any],
     compute_matrix_fn: Callable[..., Any],
 ) -> GpuResponse:
-    return GpuResponse(
-        request_id=request.request_id,
-        success=False,
-        error="FG_COMPUTE_BREAKPOINTS was removed; ForceGreats uses the cap-free prefix frontier during solve",
+    """
+    Compute per-FT/FF breakpoint ranges for ForceGreatsFinder on the GPU-owner thread.
+    Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
+    Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
+    """
+    import numpy as np
+    payload = request.payload or {}
+    ensure_timeline_precompute = bool(payload.get("ensure_timeline_precompute", False))
+    if ensure_timeline_precompute:
+        calc_song = payload.get("calc_song")
+        ref_arrays = payload.get("ref_arrays")
+        song_slot0 = int(payload.get("song_slot", 0) or 0)
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS ensure_timeline_precompute requires calc_song/ref_arrays dicts",
+            )
+        try:
+            precompute_timeline_fn(calc_song, ref_arrays, song_slot=int(song_slot0))
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_COMPUTE_BREAKPOINTS timeline precompute failed: {type(e).__name__}: {e}",
+            )
+    ftff_pairs = payload.get("ftff_pairs", None)
+    if ftff_pairs is None:
+        ftff_pairs = []
+    base_stats_pairs = payload.get("base_stats_pairs", None)
+    if base_stats_pairs is None:
+        base_stats_pairs = []
+    n_sections = int(payload.get("n_sections", 0) or 0)
+    song_slot = int(payload.get("song_slot", 0) or 0)
+    gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
+    non_fever_base_by_ff = payload.get("non_fever_base_by_ff")
+    fp_cap_table = payload.get("fp_cap_table")
+    if n_sections <= 0:
+        return GpuResponse(request_id=request.request_id, success=True, result=np.zeros((0, 0), dtype=np.int16))
+    pairs_arr = None
+    base_arr = None
+    try:
+        if isinstance(ftff_pairs, np.ndarray):
+            pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+            if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+                pairs_arr = None
+        if isinstance(base_stats_pairs, np.ndarray):
+            base_arr = np.asarray(base_stats_pairs, dtype=np.int32)
+            if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
+                base_arr = None
+    except Exception as e:
+        logger.debug(f"gpu_executor:execute_fg_compute_breakpoints: {e}")
+        pairs_arr = None
+        base_arr = None
+    if pairs_arr is not None and int(pairs_arr.shape[0]) <= 0:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=np.zeros((0, int(n_sections)), dtype=np.int16),
+        )
+    if pairs_arr is not None and (base_arr is not None and int(base_arr.shape[0]) <= 0):
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=np.zeros((int(pairs_arr.shape[0]), int(n_sections)), dtype=np.int16),
+        )
+    if pairs_arr is None:
+        try:
+            pairs_list = list(ftff_pairs)
+        except Exception as e:
+            logger.debug(f"gpu_executor:execute_fg_compute_breakpoints: {e}")
+            pairs_list = []
+        if not pairs_list:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=True,
+                result=np.zeros((0, int(n_sections)), dtype=np.int16),
+            )
+    else:
+        pairs_list = None
+    if base_arr is None:
+        try:
+            base_list = list(base_stats_pairs)
+        except Exception as e:
+            logger.debug(f"gpu_executor:execute_fg_compute_breakpoints: {e}")
+            base_list = []
+        if not base_list:
+            n_pairs = int(pairs_arr.shape[0]) if pairs_arr is not None else int(len(pairs_list))
+            return GpuResponse(
+                request_id=request.request_id,
+                success=True,
+                result=np.zeros((n_pairs, int(n_sections)), dtype=np.int16),
+            )
+    else:
+        base_list = None
+    if pairs_arr is not None:
+        try:
+            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+        except Exception as e:
+            logger.debug(f"gpu_executor:execute_fg_compute_breakpoints: {e}")
+            pair_ft = np.asarray([], dtype=np.int32)
+            pair_ff = np.asarray([], dtype=np.int32)
+    else:
+        try:
+            pair_ft = np.asarray([int(p[0]) for p in pairs_list], dtype=np.int32)
+            pair_ff = np.asarray([int(p[1]) for p in pairs_list], dtype=np.int32)
+        except (ValueError, TypeError):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS invalid ftff_pairs (expected list of (ft, ff))",
+            )
+    if base_arr is not None:
+        try:
+            base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
+            base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
+        except Exception as e:
+            logger.debug(f"gpu_executor:execute_fg_compute_breakpoints: {e}")
+            base_ft = np.asarray([], dtype=np.int32)
+            base_ff = np.asarray([], dtype=np.int32)
+    else:
+        try:
+            base_ft = np.asarray([int(p[0]) for p in base_list], dtype=np.int32)
+            base_ff = np.asarray([int(p[1]) for p in base_list], dtype=np.int32)
+        except (ValueError, TypeError):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS invalid base_stats_pairs (expected list of (ft_stat, ff_stat))",
+            )
+    if non_fever_base_by_ff is None or fp_cap_table is None:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error="FG_COMPUTE_BREAKPOINTS missing non_fever_base_by_ff/fp_cap_table",
+        )
+    non_fever_base_by_ff = np.asarray(non_fever_base_by_ff, dtype=np.int16)
+    fp_cap_table = np.asarray(fp_cap_table, dtype=np.int16)
+    if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error="FG_COMPUTE_BREAKPOINTS non_fever_base_by_ff must be shape (>=161,)",
+        )
+    if fp_cap_table.ndim != 2 or fp_cap_table.shape[0] < 161 or fp_cap_table.shape[1] < 51:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error="FG_COMPUTE_BREAKPOINTS fp_cap_table must be shape (>=161, >=51)",
+        )
+    try:
+        out = compute_matrix_fn(
+            pair_ft=pair_ft,
+            pair_ff=pair_ff,
+            base_ft=base_ft,
+            base_ff=base_ff,
+            n_sections=int(n_sections),
+            song_slot=int(song_slot),
+            gem_scale_fever=int(gem_scale_fever),
+            non_fever_base_by_ff=non_fever_base_by_ff,
+            fp_cap_table=fp_cap_table,
+        )
+    except Exception as e:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error=f"FG_COMPUTE_BREAKPOINTS kernel failed: {type(e).__name__}: {e}",
+        )
+    return GpuResponse(request_id=request.request_id, success=True, result=out)
+def compute_fg_breakpoints_max_fp_matrix(
+    *,
+    pair_ft,
+    pair_ff,
+    base_ft,
+    base_ff,
+    n_sections: int,
+    song_slot: int,
+    gem_scale_fever: int,
+    non_fever_base_by_ff,
+    fp_cap_table,
+):
+    import numpy as np
+    pair_ft = np.ascontiguousarray(pair_ft, dtype=np.int32)
+    pair_ff = np.ascontiguousarray(pair_ff, dtype=np.int32)
+    base_ft = np.ascontiguousarray(base_ft, dtype=np.int32)
+    base_ff = np.ascontiguousarray(base_ff, dtype=np.int32)
+    non_fever_base_by_ff = np.ascontiguousarray(non_fever_base_by_ff, dtype=np.int16)
+    fp_cap_table = np.ascontiguousarray(fp_cap_table, dtype=np.int16)
+    out = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
+    from .taichi_gem.kernels import kernels_breakpoints
+    kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
+        int(pair_ft.shape[0]),
+        int(base_ft.shape[0]),
+        int(n_sections),
+        int(song_slot),
+        int(gem_scale_fever),
+        pair_ft,
+        pair_ff,
+        base_ft,
+        base_ff,
+        non_fever_base_by_ff,
+        fp_cap_table,
+        out,
     )
+    return out
 from dataclasses import dataclass
 from gear_optimizer.solver.gpu_executor_batching import order_responses_for_requests
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
@@ -1260,7 +1664,6 @@ def fg_task_only_group_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tup
         int(kwargs.get("is_s_ov", 0) or 0),
         int(kwargs.get("base_cfg_offset", 0) or 0),
         kwargs.get("cfg_chunk"),
-        bool(kwargs.get("prebuild_only", False)),
         int(long_notes or 0),
         float(last_note_time or 0.0),
     )

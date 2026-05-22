@@ -13,6 +13,8 @@ def _payload(**overrides):
         "n_sections": 2,
         "ftff_pairs": [[1, 2]],
         "base_stats_pairs": [[10, 20], [30, 40]],
+        "non_fever_base_by_ff": np.zeros((161,), dtype=np.int16),
+        "fp_cap_table": np.zeros((161, 51), dtype=np.int16),
         "song_slot": 3,
         "gem_scale_fever": 5,
         "solve_kwargs": {"total_budget": 90},

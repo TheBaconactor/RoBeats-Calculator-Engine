@@ -1,3 +1,5 @@
+import numpy as np
+
 from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch_caches as gpu_dispatch
 
 
@@ -143,3 +145,80 @@ def test_breakpoint_group_cache_peek_miss_does_not_eagerly_materialize_groups():
     cached = gpu_dispatch.peek_cached_breakpoint_groups(**common)
     assert calls["n"] == 1
     assert cached == groups
+
+
+def test_max_fp_matrix_cache_reuses_identical_matrix():
+    with gpu_dispatch._FG_MAX_FP_MATRIX_LOCK:
+        gpu_dispatch._FG_MAX_FP_MATRIX_CACHE.clear()
+
+    calls = {"n": 0}
+
+    def _compute():
+        calls["n"] += 1
+        return np.asarray([[1, 2], [3, 4]], dtype=np.int16)
+
+    kwargs = dict(
+        calc_song=_base_calc_song(),
+        n_sections=2,
+        ftff_pairs=[(0, 0), (1, 0)],
+        base_stats_pairs=[(100, 100)],
+        gem_scale_fever=3,
+        compute_fn=_compute,
+    )
+
+    matrix_1, hit_1 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
+    matrix_2, hit_2 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
+
+    assert hit_1 is False
+    assert hit_2 is True
+    assert calls["n"] == 1
+    assert np.array_equal(matrix_1, matrix_2)
+
+    matrix_1[0, 0] = 99
+    matrix_3, hit_3 = gpu_dispatch.get_cached_max_fp_matrix(**kwargs)
+
+    assert hit_3 is True
+    assert int(matrix_3[0, 0]) == 1
+
+
+def test_max_fp_matrix_cache_is_partitioned_by_timing_envelope_context():
+    with gpu_dispatch._FG_MAX_FP_MATRIX_LOCK:
+        gpu_dispatch._FG_MAX_FP_MATRIX_CACHE.clear()
+
+    calls = {"n": 0}
+
+    def _compute():
+        calls["n"] += 1
+        return np.asarray([[5]], dtype=np.int16)
+
+    calc_song_a = _base_calc_song()
+    calc_song_a["metadata"].update(
+        {
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeFGCarry": "full",
+        }
+    )
+    calc_song_b = _base_calc_song()
+    calc_song_b["metadata"].update(
+        {
+            "TimingEnvelopeApplied": True,
+            "TimingEnvelopeMode": "late",
+            "TimingEnvelopeFGCarry": "late",
+        }
+    )
+
+    common = dict(
+        n_sections=1,
+        ftff_pairs=[(0, 0)],
+        base_stats_pairs=[(100, 100)],
+        gem_scale_fever=3,
+        compute_fn=_compute,
+    )
+
+    _matrix_a, hit_a = gpu_dispatch.get_cached_max_fp_matrix(calc_song=calc_song_a, **common)
+    _matrix_b, hit_b = gpu_dispatch.get_cached_max_fp_matrix(calc_song=calc_song_b, **common)
+
+    assert hit_a is False
+    assert hit_b is False
+    assert calls["n"] == 2

@@ -107,11 +107,15 @@ from gear_optimizer.solver.gpu_executor_refs import (
     ref_arrays_sig as _ref_arrays_sig,
 )
 from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter
-from gear_optimizer.solver.gpu_executor_fg import execute_fg_compute_breakpoints as _execute_fg_compute_breakpoints
+from gear_optimizer.solver.gpu_executor_fg import (
+    compute_fg_breakpoints_max_fp_matrix as _compute_fg_breakpoints_max_fp_matrix,
+    execute_fg_compute_breakpoints as _execute_fg_compute_breakpoints,
+)
 from gear_optimizer.solver.gpu_executor_fg import (
     execute_fg_download_global_best as _execute_fg_download_global_best,
     execute_fg_reset_global_best as _execute_fg_reset_global_best,
     execute_fg_select_signature_frontier_batch as _execute_fg_select_signature_frontier_batch,
+    decode_cfg_counts_from_max_fp_matrix as _decode_cfg_counts_from_max_fp_matrix,
     decode_cfg_counts_from_windows_for_gpu as _decode_cfg_counts_from_windows_for_gpu,
 )
 from gear_optimizer.solver.gpu_executor_fg import (
@@ -1387,19 +1391,24 @@ class GpuExecutor:
         )
     def _execute_fg_compute_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
-        Retired request. ForceGreats now builds cap-free prefix frontiers inside the solve.
+        Compute per-FT/FF breakpoint ranges for ForceGreatsFinder on the GPU-owner thread.
+        Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
+        Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
         """
         return _execute_fg_compute_breakpoints(
             request,
             precompute_timeline_fn=_precompute_timeline_gpu,
-            compute_matrix_fn=None,
+            compute_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
         )
     def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
         Fused FG path for in-process mode:
-          - build exact cap-free prefix frontiers on GPU
+          - compute max-FP breakpoint caps on-GPU (no host download)
+          - group FT/FF pairs by max-FP row on the executor thread
           - run FG tasks with GPU accumulation
           - download global best and return `cfg_counts` directly (avoid host-side cfg decoding)
+        This removes a whole request boundary (FG_COMPUTE_BREAKPOINTS + SOLVE_FORCE_GREATS_FINDER)
+        and keeps the intermediate max-FP matrix off the CPU.
         """
         return _execute_fg_solve_with_breakpoints(
             request,
@@ -1424,6 +1433,8 @@ class GpuExecutor:
             in_process_queues=bool(self._in_process_queues),
             raise_if_abort_requested=self._raise_if_abort_requested,
             run_payload_fn=self._run_fg_solve_with_breakpoints_payload,
+            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
+            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
             decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
             download_packed_topk_batch_fn=download_packed_topk_batch,
             download_batch_max_fn=download_batch_max,
@@ -1445,10 +1456,12 @@ class GpuExecutor:
             raise_if_abort_requested=self._raise_if_abort_requested,
             env_get_fn=_ENV_GET,
             precompute_timeline_fn=_precompute_timeline_gpu,
+            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
             solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
             reset_global_best_fn=fg_reset_global_best,
             download_global_best_fn=fg_download_global_best,
             pack_global_best_topk_to_batch_fn=pack_global_best_topk_to_batch,
+            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
             decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
         )
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:

@@ -6,6 +6,7 @@ reference tables + base genome stats fields for scoring.
 """
 from __future__ import annotations
 import logging
+import numpy as np
 import taichi as ti
 from ..runtime import init_taichi, is_initialized
 from ..fields import MAX_GENOMES, MAX_SONG_SLOTS
@@ -39,6 +40,7 @@ except Exception as e:
 FG_DOWNLOAD_BATCH_MAX = max(1, min(int(_fg_download_batch_env), 256))
 FG_PACKED_COLS = 11 + FG_MAX_SECTIONS
 FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
+_FG_SECTION_FORCED_CAPS_DEFAULT = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4)
 FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # MAX_GENOMES * FG_MAX_FTFF
 FG_STAGE1_WAVE_SLOTS_MAX = 8  # max waves for FG_STAGE1_BLOCK_DIM<=256 (used by wave-staging kernels)
 try:
@@ -70,9 +72,6 @@ fg_cfg_dedupe_sig: ti.Field | None = None  # vector[FG_CFG_DEDUPE_SIG_WORDS] per
 fg_cfg_dedupe_rep_cfg_idx: ti.Field | None = None  # original global cfg_idx per representative
 fg_cfg_dedupe_rep_count: ti.Field | None = None  # representatives per local work item
 fg_cfg_dedupe_active: ti.Field | None = None  # 1=representative table valid, 0=dedupe overflow/invalid
-fg_frontier_state_idx: ti.Field | None = None  # (FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_DEDUPE_MAX_REPS) i32
-fg_frontier_forced_counts: ti.Field | None = None  # (FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_DEDUPE_MAX_REPS, FG_MAX_SECTIONS) i32
-fg_frontier_overflow: ti.Field | None = None  # () i32
 fg_best_final_score: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_cfg_idx: ti.Field | None = None  # (MAX_GENOMES,) i32
@@ -97,7 +96,6 @@ fg_stage1_g_fm: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 fg_stage1_g_ov: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 fg_stage1_score_penalty: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 fg_stage1_fill_penalty: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_cfg_counts: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF, FG_MAX_SECTIONS) i32
 fg_flat_work_genome: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS,) i32
 fg_flat_work_ftff: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS,) i32
 fg_global_best_final_score: ti.Field | None = None  # (MAX_SONG_SLOTS, MAX_GENOMES) i32
@@ -165,7 +163,6 @@ def reset_fields_state() -> None:
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_cfg_dedupe_hash, fg_cfg_dedupe_sig, fg_cfg_dedupe_rep_cfg_idx
     global fg_cfg_dedupe_rep_count, fg_cfg_dedupe_active
-    global fg_frontier_state_idx, fg_frontier_forced_counts, fg_frontier_overflow
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
@@ -174,7 +171,7 @@ def reset_fields_state() -> None:
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
-    global fg_stage1_score_penalty, fg_stage1_fill_penalty, fg_stage1_cfg_counts
+    global fg_stage1_score_penalty, fg_stage1_fill_penalty
     global fg_flat_work_genome, fg_flat_work_ftff
     song_timestamps = None
     song_timestamps_great_candidate = None
@@ -196,9 +193,6 @@ def reset_fields_state() -> None:
     fg_cfg_dedupe_rep_cfg_idx = None
     fg_cfg_dedupe_rep_count = None
     fg_cfg_dedupe_active = None
-    fg_frontier_state_idx = None
-    fg_frontier_forced_counts = None
-    fg_frontier_overflow = None
     fg_best_final_score = None
     fg_best_base_score = None
     fg_best_cfg_idx = None
@@ -227,7 +221,6 @@ def reset_fields_state() -> None:
     fg_stage1_g_ov = None
     fg_stage1_score_penalty = None
     fg_stage1_fill_penalty = None
-    fg_stage1_cfg_counts = None
     fg_flat_work_genome = None
     fg_flat_work_ftff = None
     global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
@@ -325,9 +318,6 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_cfg_dedupe_rep_cfg_idx = fg_cfg_dedupe_rep_cfg_idx
     kernels_module.fg_cfg_dedupe_rep_count = fg_cfg_dedupe_rep_count
     kernels_module.fg_cfg_dedupe_active = fg_cfg_dedupe_active
-    kernels_module.fg_frontier_state_idx = fg_frontier_state_idx
-    kernels_module.fg_frontier_forced_counts = fg_frontier_forced_counts
-    kernels_module.fg_frontier_overflow = fg_frontier_overflow
     kernels_module.fg_best_final_score = fg_best_final_score
     kernels_module.fg_best_base_score = fg_best_base_score
     kernels_module.fg_best_cfg_idx = fg_best_cfg_idx
@@ -350,7 +340,6 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_stage1_g_ov = fg_stage1_g_ov
     kernels_module.fg_stage1_score_penalty = fg_stage1_score_penalty
     kernels_module.fg_stage1_fill_penalty = fg_stage1_fill_penalty
-    kernels_module.fg_stage1_cfg_counts = fg_stage1_cfg_counts
     kernels_module.fg_stage1_packed = fg_stage1_packed
     kernels_module.fg_stage1_wave_best = fg_stage1_wave_best
     kernels_module.FG_STAGE1_HAS_AUX_FIELDS = fg_stage1_final_score is not None
@@ -418,14 +407,13 @@ def allocate_fields() -> None:
     global fg_cfg_total_len_max
     global fg_cfg_dedupe_hash, fg_cfg_dedupe_sig, fg_cfg_dedupe_rep_cfg_idx
     global fg_cfg_dedupe_rep_count, fg_cfg_dedupe_active
-    global fg_frontier_state_idx, fg_frontier_forced_counts, fg_frontier_overflow
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
     global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
-    global fg_stage1_score_penalty, fg_stage1_fill_penalty, fg_stage1_cfg_counts
+    global fg_stage1_score_penalty, fg_stage1_fill_penalty
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_flat_work_genome, fg_flat_work_ftff
     global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
@@ -452,6 +440,9 @@ def allocate_fields() -> None:
     fg_fever_end_idx_great_candidate = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
     fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
     fg_section_forced_caps = ti.field(dtype=ti.i32, shape=FG_MAX_SECTIONS)
+    caps_np = np.zeros((FG_MAX_SECTIONS,), dtype=np.int32)
+    caps_np[: len(_FG_SECTION_FORCED_CAPS_DEFAULT)] = np.asarray(_FG_SECTION_FORCED_CAPS_DEFAULT, dtype=np.int32)
+    fg_section_forced_caps.from_numpy(caps_np)
     fg_pair_caps = ti.field(dtype=ti.i32, shape=(FG_MAX_STAT + 1, FG_MAX_STAT + 1, FG_MAX_SECTIONS))
     fg_ft_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
     fg_ff_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
@@ -471,12 +462,6 @@ def allocate_fields() -> None:
     fg_cfg_dedupe_rep_cfg_idx = ti.field(dtype=ti.i32, shape=(FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_DEDUPE_MAX_REPS))
     fg_cfg_dedupe_rep_count = ti.field(dtype=ti.i32, shape=FG_CFG_DEDUPE_WORK_ITEMS)
     fg_cfg_dedupe_active = ti.field(dtype=ti.i32, shape=FG_CFG_DEDUPE_WORK_ITEMS)
-    fg_frontier_state_idx = ti.field(dtype=ti.i32, shape=(FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_DEDUPE_MAX_REPS))
-    fg_frontier_forced_counts = ti.field(
-        dtype=ti.i32,
-        shape=(FG_CFG_DEDUPE_WORK_ITEMS, FG_CFG_DEDUPE_MAX_REPS, FG_MAX_SECTIONS),
-    )
-    fg_frontier_overflow = ti.field(dtype=ti.i32, shape=())
     fg_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_cfg_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -494,16 +479,15 @@ def allocate_fields() -> None:
     fg_best_packed_download_staging_1024 = (
         ti.field(dtype=ti.i32, shape=(1024, FG_PACKED_COLS)) if int(MAX_GENOMES) >= 1024 else None
     )
-    fg_stage1_final_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_base_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+    fg_stage1_final_score = None
+    fg_stage1_base_score = None
     fg_stage1_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_pp = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_cm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_fm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_ov = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_score_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF, FG_MAX_SECTIONS))
+    fg_stage1_g_pp = None
+    fg_stage1_g_cm = None
+    fg_stage1_g_fm = None
+    fg_stage1_g_ov = None
+    fg_stage1_score_penalty = None
+    fg_stage1_fill_penalty = None
     fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_wave_best = ti.field(dtype=ti.u64, shape=(FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX))
     fg_flat_work_genome = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)

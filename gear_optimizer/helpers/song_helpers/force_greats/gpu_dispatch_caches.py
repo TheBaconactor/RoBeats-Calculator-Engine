@@ -4,6 +4,7 @@ import threading
 from typing import Any
 import logging
 
+import numpy as np
 from cachetools import LRUCache
 
 from ....core.utils import timing_envelope_timing_context
@@ -23,6 +24,11 @@ _FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
 _FG_BREAKPOINT_GROUP_CACHE_MAX = max(1, int(env_get("FG_BREAKPOINT_GROUP_CACHE_MAX", "64") or "64"))
 _FG_BREAKPOINT_GROUPS_CACHE: LRUCache = LRUCache(maxsize=_FG_BREAKPOINT_GROUP_CACHE_MAX)
 _FG_BREAKPOINT_GROUPS_LOCK = threading.Lock()
+
+_FG_MAX_FP_MATRIX_CACHE_MAX = max(1, int(env_get("FG_MAX_FP_MATRIX_CACHE_MAX", "64") or "64"))
+_FG_MAX_FP_MATRIX_CACHE: LRUCache = LRUCache(maxsize=_FG_MAX_FP_MATRIX_CACHE_MAX)
+_FG_MAX_FP_MATRIX_LOCK = threading.Lock()
+
 
 def chart_signature_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
@@ -115,28 +121,6 @@ def normalize_pair_signature(pairs: Any) -> tuple[tuple[int, int], ...]:
         return ()
 
 
-def freeze_counts_descriptor(value: Any) -> tuple[str, int, int, int] | None:
-    if isinstance(value, dict) and str(value.get("mode") or "") == "gpu":
-        return (
-            "gpu",
-            int(value.get("n_sections", 0) or 0),
-            int(value.get("song_slot", 0) or 0),
-            int(value.get("gem_scale_fever", 3) or 3),
-        )
-    return None
-
-
-def thaw_counts_descriptor(value: Any) -> dict[str, int | str] | list:
-    if isinstance(value, tuple) and len(value) == 4 and value[0] == "gpu":
-        return {
-            "mode": "gpu",
-            "n_sections": int(value[1]),
-            "song_slot": int(value[2]),
-            "gem_scale_fever": int(value[3]),
-        }
-    return []
-
-
 def freeze_breakpoint_groups(groups: list[dict]) -> tuple[tuple[object, ...], ...]:
     frozen: list[tuple[object, ...]] = []
     for group in groups or []:
@@ -146,7 +130,7 @@ def freeze_breakpoint_groups(groups: list[dict]) -> tuple[tuple[object, ...], ..
             (
                 normalize_pair_signature(group.get("ftff_pairs")),
                 tuple(tuple(int(v) for v in row) for row in list(group.get("counts_list") or [])),
-                freeze_counts_descriptor(group.get("counts_max_fp")),
+                tuple(int(v) for v in list(group.get("counts_max_fp") or [])),
                 tuple(tuple(int(v) for v in bp) for bp in list(group.get("section_breakpoints") or []))
                 if group.get("section_breakpoints") is not None
                 else None,
@@ -165,7 +149,7 @@ def thaw_breakpoint_groups(frozen_groups: Any) -> list[dict]:
             {
                 "ftff_pairs": list(ftff_pairs or []),
                 "counts_list": list(counts_list or []),
-                "counts_max_fp": thaw_counts_descriptor(counts_max_fp),
+                "counts_max_fp": list(counts_max_fp or []),
                 "section_breakpoints": tuple(section_breakpoints or ()) if section_breakpoints is not None else None,
             }
         )
@@ -293,6 +277,38 @@ def get_cached_breakpoint_groups(
     return computed, False
 
 
+def get_cached_max_fp_matrix(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    gem_scale_fever: int,
+    compute_fn,
+):
+    key = (
+        chart_signature_key(calc_song),
+        timing_envelope_timing_context(calc_song),
+        int(n_sections),
+        normalize_pair_signature(ftff_pairs),
+        normalize_pair_signature(base_stats_pairs),
+        int(gem_scale_fever),
+    )
+    with _FG_MAX_FP_MATRIX_LOCK:
+        cached = _FG_MAX_FP_MATRIX_CACHE.get(key)
+        if cached is not None:
+            return np.array(cached, dtype=np.int16, copy=True), True
+
+    computed = compute_fn()
+    if computed is None:
+        return None, False
+
+    frozen = np.ascontiguousarray(np.asarray(computed, dtype=np.int16))
+    with _FG_MAX_FP_MATRIX_LOCK:
+        _FG_MAX_FP_MATRIX_CACHE[key] = frozen
+    return np.array(frozen, dtype=np.int16, copy=True), False
+
+
 __all__ = [
     "_FG_ANALYTICAL_BREAKPOINTS_CACHE",
     "_FG_ANALYTICAL_BREAKPOINTS_LOCK",
@@ -300,15 +316,16 @@ __all__ = [
     "_FG_BREAKPOINT_GROUPS_LOCK",
     "_FG_CHART_SCORER_CACHE",
     "_FG_CHART_SCORER_LOCK",
+    "_FG_MAX_FP_MATRIX_CACHE",
+    "_FG_MAX_FP_MATRIX_LOCK",
     "chart_signature_key",
-    "freeze_counts_descriptor",
     "freeze_breakpoint_groups",
     "get_cached_analytical_breakpoints",
     "get_cached_breakpoint_groups",
     "get_cached_chart_scorer",
+    "get_cached_max_fp_matrix",
     "normalize_pair_signature",
     "peek_cached_breakpoint_groups",
     "store_cached_breakpoint_groups",
-    "thaw_counts_descriptor",
     "thaw_breakpoint_groups",
 ]

@@ -7,8 +7,9 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flag_values
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.core.constants import FG_PLATEAU_REP_STRIDE, GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
 from gear_optimizer.core.utils import safe_int
+from gear_optimizer.helpers.song_helpers.force_greats.result_application import fp_targets_to_forced_counts
 from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
 from gear_optimizer.solver.candidate_solver_cache import FgCandidateCacheShard, fg_context_digest
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
@@ -123,12 +124,28 @@ def _materialize_best(
     else:
         raw_counts = list(counts[cfg_idx]) if 0 <= cfg_idx < len(counts) else []
 
-    forced_counts: list[int] = []
+    fp_targets: list[int] = []
+    rep_flags: list[int] = []
     for raw_val in raw_counts:
         raw_i = safe_int(raw_val, 0)
         if raw_i < 0:
             raw_i = 0
-        forced_counts.append(int(raw_i))
+        rep_flag = 0
+        fp_target = int(raw_i)
+        if raw_i >= int(FG_PLATEAU_REP_STRIDE):
+            rep_flag = 1
+            fp_target = int(raw_i % int(FG_PLATEAU_REP_STRIDE))
+        fp_targets.append(int(fp_target))
+        rep_flags.append(int(rep_flag))
+
+    forced_counts = fp_targets_to_forced_counts(
+        fp_targets,
+        rep_flags,
+        base_stats,
+        safe_int(best.get("FT", 0), 0),
+        safe_int(best.get("FF", 0), 0),
+        fg_scorer,
+    )
     result = build_fg_result_dict(
         base_score=int(best.get("base_score", 0) or 0),
         total_score_penalty=int(best.get("score_penalty", 0) or 0),
@@ -138,7 +155,7 @@ def _materialize_best(
         penalty_analysis={},
         non_fever_base=int(non_fever_base),
     )
-    result["fp_targets"] = list(forced_counts)
+    result["fp_targets"] = list(fp_targets)
     result["gem_counts"] = best.get("gem_counts", {}) or {}
     result["FT"] = int(best.get("FT", 0) or 0)
     result["FF"] = int(best.get("FF", 0) or 0)
