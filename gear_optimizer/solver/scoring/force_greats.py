@@ -55,7 +55,6 @@ from .fg_policy import (
     normalize_ft_ff_search_ranges,
     resolve_stat_factors,
 )
-from .stats_ops import apply_gems_to_base_stats
 
 
 
@@ -551,12 +550,12 @@ def run_force_greats_hill_climb(
     """
     Removed legacy count-list finder entry point.
 
-    Production finder-mode ForceGreats must enter through the GPU finder
-    pipeline (`process_force_greats` / `process_force_greats_gpu_finder`).
+    Production finder-mode ForceGreats must enter through the Bellman
+    pipeline (`process_force_greats`).
     """
     raise RuntimeError(
-        "legacy ForceGreats count-list hill climb was removed; use process_force_greats_gpu_finder "
-        "through the production ForceGreats pipeline"
+        "legacy ForceGreats count-list hill climb was removed; use process_force_greats "
+        "through the Bellman ForceGreats pipeline"
     )
 
 
@@ -663,7 +662,7 @@ def apply_force_greats_to_result(
     search_radius=FG_SEARCH_RADIUS,
 ):
     """
-    Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.
+    Evaluate forced-great penalties for a manual result dict.
     Returns a cloned variant with the adjusted score while leaving the original untouched.
     Uses FG_CACHE to avoid redundant calculations for identical stats.
 
@@ -680,15 +679,11 @@ def apply_force_greats_to_result(
     if not stats:
         return None
 
-    gem_counts = data_dict.get("GemCounts") or {}
     selected_color = data_dict.get("Selected Element", extract_song_meta(calc_song).primary_color)
     ft_gems = data_dict.get("FT", 0)
     ff_gems = data_dict.get("FF", 0)
-
-    # Extract base stats (remove gems) to avoid double counting during FG re-optimization.
-    # Needed even on cache hits so the returned FG variant can report the *actual*
-    # gem allocations/stats used for the FG score.
-    base_stats = _extract_base_stats(stats, gem_counts, selected_color, ft_gems, ff_gems)
+    if use_finder:
+        raise RuntimeError("legacy ForceGreats finder mode was removed; use the GPU Bellman production path")
 
     # Use stats directly - the original evaluate_force_greats correctly uses
     # the FT/FF values already in stats (from the main gem solver)
@@ -698,32 +693,16 @@ def apply_force_greats_to_result(
     # This must vary when FG timing/carry inputs vary.
     sig = full_pipeline_signature(stats, calc_song, selected_color)
     manual_tuple = tuple(manual_counts) if manual_counts else ()
-    if use_finder:
-        # Finder depends on the FT/FF search window center and (optionally) GPU mode.
-        fg_cache_key = (sig, "finder", int(ft_gems), int(ff_gems), int(search_radius), bool(use_gpu))
-    else:
-        fg_cache_key = (sig, "manual", manual_tuple)
+    fg_cache_key = (sig, "manual", manual_tuple)
 
     # Check cache first
     cached_fg = FG_CACHE.get(fg_cache_key)
     if cached_fg is not None:
         fg_result = cached_fg
     else:
-        if use_finder:
-            fg_result = run_force_greats_hill_climb(
-                base_stats,
-                calc_song,
-                ref_arrays,
-                selected_color=selected_color,
-                center_ft=ft_gems,
-                center_ff=ff_gems,
-                search_radius=search_radius,
-                use_gpu=use_gpu,
-            )
-        else:
-            # Manual path - does NOT re-optimize gems, so uses original stats (with gems)
-            # Evaluate penalty on existing configuration
-            fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
+        # Manual path - does NOT re-optimize gems, so uses original stats (with gems)
+        # Evaluate penalty on existing configuration
+        fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
 
         # Cache the result (even if None)
         FG_CACHE[fg_cache_key] = fg_result
@@ -733,7 +712,7 @@ def apply_force_greats_to_result(
 
     fg_info = {
         "enabled": True,
-        "mode": "finder" if use_finder else "manual",
+        "mode": "manual",
         "algo_version": FORCE_GREATS_ALGO_VERSION,
         "search_radius": int(search_radius),
         "center_ft": int(ft_gems),
@@ -749,36 +728,4 @@ def apply_force_greats_to_result(
     fg_variant["Score"] = fg_result["final_score"]
     fg_variant["ForceGreats"] = fg_info
 
-    # Finder path re-optimizes gems for the FG timeline; reflect the actual
-    # gem allocation and resulting Stats in the returned variant so persistence/UI
-    # matches the computed FG score.
-    if use_finder:
-        try:
-            fg_gem_counts = fg_result.get("gem_counts") or {}
-            fg_ft = int(fg_result.get("FT", ft_gems) or 0)
-            fg_ff = int(fg_result.get("FF", ff_gems) or 0)
-
-            g_pp = int(fg_gem_counts.get("Perfect Points", 0) or 0)
-            g_cm = int(fg_gem_counts.get("Combo Multiplier", 0) or 0)
-            g_fm = int(fg_gem_counts.get("Fever Multiplier", 0) or 0)
-            g_ov = int(fg_gem_counts.get("Element", 0) or 0)
-
-            final_stats = apply_gems_to_base_stats(
-                base_stats,
-                selected_color,
-                fg_ft,
-                fg_ff,
-                g_pp,
-                g_cm,
-                g_fm,
-                g_ov,
-                add_missing_element_key=True,
-            )
-
-            fg_variant["FT"] = fg_ft
-            fg_variant["FF"] = fg_ff
-            fg_variant["GemCounts"] = fg_gem_counts
-            fg_variant["Stats"] = final_stats
-        except Exception as e:
-            logger.debug(f"force_greats:apply_force_greats_to_result: {e}")
     return fg_variant

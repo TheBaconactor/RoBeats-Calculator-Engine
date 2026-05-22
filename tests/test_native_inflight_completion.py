@@ -1,4 +1,5 @@
 from concurrent.futures import Future
+import inspect
 
 from gear_optimizer.solver.native_inflight_orchestrator import (
     CompletionTracker,
@@ -6,6 +7,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     finish_deferred_fg_completion,
     has_waitable_work,
     mark_song_completed,
+    run_native_inflight_song_pipeline,
 )
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
@@ -165,7 +167,6 @@ def test_finish_deferred_fg_completion_advances_waiting_bundle():
 
     finished = finish_deferred_fg_completion(
         song,
-        fg_failed=True,
         completed_songs=set(),
         advance_bundle=lambda *args, **kwargs: advanced.append((args, kwargs)),
     )
@@ -178,7 +179,7 @@ def test_finish_deferred_fg_completion_advances_waiting_bundle():
             {
                 "song_name": "Song Bundle FG",
                 "record_info": {"improved": True},
-                "failed": True,
+                "failed": False,
             },
         )
     ]
@@ -193,7 +194,6 @@ def test_finish_deferred_fg_completion_marks_drain_at_end_song_done():
 
     finished = finish_deferred_fg_completion(
         song,
-        fg_failed=False,
         completed_songs=completed,
         memory_resume_tracker=memory,
         bundle_completed_cb=None,
@@ -214,9 +214,15 @@ def test_finish_deferred_fg_completion_noops_when_no_completion_is_pending():
 
     finished = finish_deferred_fg_completion(
         song,
-        fg_failed=False,
         completed_songs=set(),
         advance_bundle=lambda *_args, **_kwargs: None,
     )
 
     assert finished is False
+
+
+def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_zero_fg():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    assert "raise RuntimeError(f\"FG worker failed for {fg_song.config.task_key}\") from exc" in src
+    assert "post_sender.send(build_failed_fg_update_payload(fg_song))" not in src

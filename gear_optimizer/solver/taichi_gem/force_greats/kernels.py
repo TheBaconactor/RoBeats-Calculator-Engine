@@ -26,7 +26,6 @@ song_timestamps_great_candidate = None
 fg_fever_end_idx_song = None
 fg_fever_end_idx_great_candidate = None
 fg_forced_counts = None
-fg_section_forced_caps = None
 fg_pair_caps = None
 fg_ft_list = None
 fg_ff_list = None

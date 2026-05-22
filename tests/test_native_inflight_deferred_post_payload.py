@@ -1,6 +1,5 @@
 from gear_optimizer.solver.native_inflight_config import make_native_song
 from gear_optimizer.solver.native_inflight_orchestrator import (
-    build_failed_fg_update_payload,
     build_fg_update_payload,
     build_native_song_error_payload,
     build_native_task_error_payload,
@@ -54,28 +53,6 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
     assert payload["_error"] == "bad task"
     assert payload["_error_type"] == "ValueError"
     assert payload["_suppress_progress"] is True
-
-
-def test_failed_fg_update_payload_uses_result_event_owner_shape():
-    cfg_dict = {"IterationEngine": {}}
-    song = make_native_song(
-        song_name="Failed FG Song",
-        task_key="failed-fg-song",
-        db_key="failed-fg-db",
-        fp="Data/Hard/failed_fg_song.txt",
-        cfg_dict=cfg_dict,
-    )
-
-    payload = build_failed_fg_update_payload(song)
-
-    assert payload == {
-        "_fg_update": True,
-        "song": "Failed FG Song",
-        "db_key": "failed-fg-db",
-        "persist_entries": [],
-        "file_path": "Data/Hard/failed_fg_song.txt",
-        "cfg_dict": cfg_dict,
-    }
 
 
 def test_fg_update_payload_uses_shared_result_event_shape():
@@ -253,7 +230,6 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
-    gpu_client = object()
 
     def _fake_process_force_greats(*args, **kwargs):
         calls["args"] = args
@@ -283,9 +259,8 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         loadout_entries={},
     )
 
-    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
+    fg_pipeline.run_fg_job_sync(song, gpu_client=object())
 
-    assert calls["gpu_client"] is gpu_client
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
     assert song.runtime.db.record_info["song"] == "pytest_native_inline_fg_runner"
     assert song.runtime.db.record_info["record_update"] is True

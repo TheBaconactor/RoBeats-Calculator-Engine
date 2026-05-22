@@ -9,6 +9,7 @@ from ....core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TI
 from ....core.utils import safe_int
 from ....solver.scoring.fg_policy import build_penalty_table_and_body, extract_fg_song_inputs, resolve_stat_factors
 from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
+from ....solver.scoring.stats_scoring import evaluate_stats_score
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
 from ..ga_entry_utils import materialize_entry_names
@@ -82,12 +83,67 @@ def _force_payload_from_bellman(
     payload["forced_counts"] = list(forced_counts)
     payload["ForceGreats"] = {
         "enabled": True,
-        "mode": "finder",
+        "mode": "bellman",
         "algo_version": int(FORCE_GREATS_ALGO_VERSION),
         "config": config,
         "final_score": int(fg_score),
     }
     return payload
+
+
+def _int_gem(gems: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        if key in gems:
+            return int(gems.get(key) or 0)
+    return 0
+
+
+def _fixed_stat_payloads_for_bellman(
+    eval_data: dict[str, Any],
+    *,
+    selected: str,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    paired_base_score: int,
+):
+    stats = materialize_stats_from_payload(eval_data, selected_element=selected, mutate_payload=True)
+    if not stats:
+        raise ValueError("ForceGreats Bellman requires materialized fixed Stats for each candidate")
+    yield eval_data, stats, int(paired_base_score)
+
+    base_stats = eval_data.get("BaseStats")
+    gems = eval_data.get("GemCounts")
+    if not (isinstance(base_stats, dict) and base_stats and isinstance(gems, dict)):
+        return
+
+    overflow = _int_gem(gems, "Element", "Element Overflow", "ElementOverflow")
+    if overflow <= 0:
+        return
+
+    ft0 = int(eval_data.get("FT", gems.get("Fever Time", 0)) or 0)
+    ff0 = int(eval_data.get("FF", gems.get("Fever Fill", gems.get("Fever Fill Rate", 0))) or 0)
+    seen = {(ft0, ff0, overflow)}
+    for field in ("FT", "FF"):
+        ft = ft0 + (1 if field == "FT" else 0)
+        ff = ff0 + (1 if field == "FF" else 0)
+        key = (int(ft), int(ff), int(overflow - 1))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = dict(eval_data)
+        next_gems = dict(gems)
+        next_gems["Element"] = int(overflow - 1)
+        candidate["GemCounts"] = next_gems
+        candidate["FT"] = int(ft)
+        candidate["FF"] = int(ff)
+        candidate.pop("Stats", None)
+        expanded_stats = materialize_stats_from_payload(candidate, selected_element=selected, mutate_payload=True)
+        if not expanded_stats:
+            raise ValueError("ForceGreats Bellman core expansion produced no materialized Stats")
+        base_score = evaluate_stats_score(expanded_stats, calc_song, ref_arrays)
+        candidate["BaseScore"] = int(base_score)
+        candidate["Score"] = int(base_score)
+        yield candidate, expanded_stats, int(base_score)
 
 
 def process_force_greats_bellman_fixed_gpu(
@@ -116,7 +172,7 @@ def process_force_greats_bellman_fixed_gpu(
         center_ft = int(eval_data.get("FT", 0) or 0)
         center_ff = int(eval_data.get("FF", 0) or 0)
         cached_force = entry.get("force")
-        if cached_force and cache_validation.is_cached_force_valid_for_finder(cached_force, selected, center_ft, center_ff):
+        if cached_force and cache_validation.is_cached_force_valid_for_bellman(cached_force, selected, center_ft, center_ff):
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             fg_score = int(entry.get("fg_score", 0) or cached_force.get("Score", 0) or 0)
             base_score = int(cached_force.get("BaseScore", 0) or entry_base_score(entry))
@@ -134,55 +190,59 @@ def process_force_greats_bellman_fixed_gpu(
             )
             continue
 
-        stats = materialize_stats_from_payload(eval_data, selected_element=selected, mutate_payload=True)
-        if not stats:
-            raise ValueError("ForceGreats Bellman requires materialized fixed Stats for each candidate")
-
-        song_inputs, normal, fever, penalty_prefix, raw_fill, non_fever_base, real_fever_time = _fixed_note_surfaces(
-            stats,
-            calc_song,
-            ref_arrays,
-        )
-        bellman = solve_force_greats_bellman_fixed_stats_gpu(
-            timestamps=song_inputs.timestamps,
-            great_candidate_timestamps=song_inputs.great_candidates,
-            raw_fever_fill=float(raw_fill),
-            non_fever_base=int(non_fever_base),
-            real_fever_time=float(real_fever_time),
-            normal_score_per_note=normal,
-            fever_score_per_note=fever,
-            forced_great_penalty_prefix=penalty_prefix,
-            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-        )
-        if not bellman.best_forced_counts or max(int(v) for v in bellman.best_forced_counts) <= 0:
-            continue
         paired_base_score = int(entry_base_score(entry))
-        if int(bellman.best_score) <= paired_base_score:
-            continue
+        for fixed_eval_data, stats, fixed_base_score in _fixed_stat_payloads_for_bellman(
+            eval_data,
+            selected=selected,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            paired_base_score=paired_base_score,
+        ):
+            song_inputs, normal, fever, penalty_prefix, raw_fill, non_fever_base, real_fever_time = _fixed_note_surfaces(
+                stats,
+                calc_song,
+                ref_arrays,
+            )
+            bellman = solve_force_greats_bellman_fixed_stats_gpu(
+                timestamps=song_inputs.timestamps,
+                great_candidate_timestamps=song_inputs.great_candidates,
+                raw_fever_fill=float(raw_fill),
+                non_fever_base=int(non_fever_base),
+                real_fever_time=float(real_fever_time),
+                normal_score_per_note=normal,
+                fever_score_per_note=fever,
+                forced_great_penalty_prefix=penalty_prefix,
+                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            )
+            if not bellman.best_forced_counts or max(int(v) for v in bellman.best_forced_counts) <= 0:
+                continue
+            if int(bellman.best_score) <= int(fixed_base_score):
+                continue
 
-        payload = _force_payload_from_bellman(
-            eval_data=eval_data,
-            stats=stats,
-            selected_element=selected,
-            base_score=int(paired_base_score),
-            fg_score=int(bellman.best_score),
-            forced_counts=bellman.best_forced_counts,
-        )
-        entry["force"] = payload
-        entry["fg_score"] = int(bellman.best_score)
-        gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-        variants.append(
-            {
-                "data": payload,
-                "gear": gear_names,
-                "minis": mini_names,
-                "score": int(payload["BaseScore"]),
-                "base_score": int(payload["BaseScore"]),
-                "fg_score": int(bellman.best_score),
-                "_entry_ref": entry,
-                "_is_ga": str(entry.get("_source") or "") == "ga",
-            }
-        )
+            payload = _force_payload_from_bellman(
+                eval_data=fixed_eval_data,
+                stats=stats,
+                selected_element=selected,
+                base_score=int(fixed_base_score),
+                fg_score=int(bellman.best_score),
+                forced_counts=bellman.best_forced_counts,
+            )
+            if int(bellman.best_score) > safe_int(entry.get("fg_score", 0), 0):
+                entry["force"] = payload
+                entry["fg_score"] = int(bellman.best_score)
+            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
+            variants.append(
+                {
+                    "data": payload,
+                    "gear": gear_names,
+                    "minis": mini_names,
+                    "score": int(payload["BaseScore"]),
+                    "base_score": int(payload["BaseScore"]),
+                    "fg_score": int(bellman.best_score),
+                    "_entry_ref": entry,
+                    "_is_ga": str(entry.get("_source") or "") == "ga",
+                }
+            )
 
     variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
     return variants[: int(LOADOUTS_PER_SONG_LIMIT)]

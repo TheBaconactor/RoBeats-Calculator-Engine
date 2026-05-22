@@ -770,10 +770,10 @@ class GpuExecutor:
                                 self._write_heartbeat(phase="warmup_fg_cached", force=True)
                                 from .taichi_gem.force_greats import fields as fg_fields
                                 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                                    warmup_force_greats_finder_runtime_imports,
+                                    warmup_force_greats_bellman_runtime_imports,
                                 )
                                 fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_finder_runtime_imports()
+                                warmup_force_greats_bellman_runtime_imports()
                             if warmup_ga:
                                 self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
                                 from .taichi_gem.api import ga_operations as ga_ops
@@ -794,10 +794,10 @@ class GpuExecutor:
                                 t0 = perf_counter()
                                 from .taichi_gem.force_greats import fields as fg_fields
                                 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                                    warmup_force_greats_finder_runtime_imports,
+                                    warmup_force_greats_bellman_runtime_imports,
                                 )
                                 fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_finder_runtime_imports()
+                                warmup_force_greats_bellman_runtime_imports()
                                 dt_ms = (perf_counter() - t0) * 1000.0
                                 if ENV.perf_timing:
                                     logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
@@ -835,10 +835,10 @@ class GpuExecutor:
                     if warmup_fg:
                         from .taichi_gem.force_greats import fields as fg_fields
                         from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                            warmup_force_greats_finder_runtime_imports,
+                            warmup_force_greats_bellman_runtime_imports,
                         )
                         fg_fields.ensure_ready_with_warmup()
-                        warmup_force_greats_finder_runtime_imports()
+                        warmup_force_greats_bellman_runtime_imports()
                     if warmup_ga:
                         from .taichi_gem.api import ga_operations as ga_ops
                         ga_ops.warmup_ga_kernels()

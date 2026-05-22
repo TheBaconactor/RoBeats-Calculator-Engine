@@ -7,7 +7,6 @@ from concurrent.futures import Future
 from gear_optimizer.solver.native_inflight_pipeline import (
     NativeFGPipeline,
     NativeFGPipelineSettings,
-    count_fg_group_meta_ready,
     read_native_fg_pipeline_settings,
 )
 from gear_optimizer.solver.native_inflight_config import make_native_song
@@ -83,21 +82,6 @@ def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(m
     assert settings.prep_workers == 3
     assert settings.static_prep_max_inflight == 3
     assert settings.db_prefetch_workers == 6
-
-
-def test_count_fg_group_meta_ready_counts_only_materialized_candidate_meta():
-    assert (
-        count_fg_group_meta_ready(
-            [
-                {"Data": {"_fg_group_meta": {"ready": True}}},
-                {"Data": {"_fg_group_meta": []}},
-                {"Data": {}},
-                {"NoData": {"_fg_group_meta": {"ready": True}}},
-                "not-a-candidate",
-            ]
-        )
-        == 1
-    )
 
 
 def test_native_fg_pipeline_queue_pop_credit_and_submit():

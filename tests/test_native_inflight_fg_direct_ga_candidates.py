@@ -46,7 +46,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         fg_direct_ga_candidates=True,
         manual_force_greats=False,
         force_greats_config=[],
-        fg_search_radius=5,
         prev_record=None,
         db_best_fg_score=0,
         song_name="AfterLife (Hard) by KepoWorld",
@@ -64,7 +63,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
-def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
+def test_run_fg_job_sync_uses_bellman_entry_for_non_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
@@ -101,7 +100,6 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
         fg_direct_ga_candidates=False,
         manual_force_greats=False,
         force_greats_config=[],
-        fg_search_radius=5,
         prev_record=None,
         db_best_fg_score=0,
         song_name="AfterLife (Hard) by KepoWorld",
@@ -115,8 +113,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     gpu_client = SimpleNamespace(name="gpu")
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
-    assert calls["fg_search_radius"] == 5
     assert calls["args"][0] == {}
-    assert calls["args"][4] == {"Perfect Points": []}
+    assert calls["args"][2] == {"Perfect Points": []}
     assert calls["ga_candidates"] is None
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

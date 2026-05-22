@@ -240,7 +240,7 @@ def _build_raw_gpu_result(
 
     fg_info = {
         "enabled": True,
-        "mode": "finder",
+        "mode": "breakpoint",
         "algo_version": int(FORCE_GREATS_ALGO_VERSION),
         "config": config_dict,
         "final_score": final_score_i,

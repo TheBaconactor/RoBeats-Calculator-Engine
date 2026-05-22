@@ -15,7 +15,6 @@ from .gpu_dispatch_batching import (
     _should_use_fused_breakpoints_solve,
     _uses_timing_envelope_fg,
 )
-from .gpu_dispatch_finder import process_force_greats_gpu_finder
 
 
 def _should_skip_full_download_no_candidates(
@@ -46,5 +45,4 @@ __all__ = [
     "_sig_results_has_fg_improvement",
     "_should_use_fused_breakpoints_solve",
     "_uses_timing_envelope_fg",
-    "process_force_greats_gpu_finder",
 ]

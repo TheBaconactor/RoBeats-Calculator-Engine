@@ -399,7 +399,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if ie.manual_force_greats:
                 fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
             else:
-                fg_status = "Finder"
+                fg_status = "Bellman"
             logger.info(f" >> [ForceGreats] {fg_status}")
             ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)

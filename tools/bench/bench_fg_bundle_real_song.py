@@ -7,7 +7,7 @@ time *between* FG GPU jobs when many FG jobs are queued.
 This script:
   - Loads a real song .txt chart (calc_song) + ref arrays.
   - Pulls FG seed loadouts from the DB (team_buff_* tables when present).
-  - Runs `process_force_greats(..., use_gpu=True)` for N jobs.
+  - Runs the GPU `process_force_greats(...)` route for N jobs.
   - Optionally runs jobs concurrently to stress the GPU request queue and coalescing.
   - Writes a GPU executor trace CSV and prints a gap/utilization summary.
 
@@ -26,7 +26,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-from gear_optimizer.core.parsing import env_get
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -156,16 +155,14 @@ def main() -> int:
     if not args.no_trace:
         os.environ["GPU_EXECUTOR_TRACE_PATH"] = str(args.trace)
 
-    from gear_optimizer.core.config import load_config, read_fg_candidate_limit, read_fg_search_radius
+    from gear_optimizer.core.config import load_config, read_fg_candidate_limit
     from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, TOTAL_ROWS
     from gear_optimizer.core.utils import cfg_to_dict
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
     from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
-    from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.gpu_service import GpuServiceClient
 
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
@@ -200,13 +197,9 @@ def main() -> int:
     found_name = str(meta.get("Song Name") or meta.get("Song_Name") or "").strip()
     difficulty = str(meta.get("Difficulty") or "").strip()
     p_color = str(meta.get("Primary Color") or "").strip()
-    s_color = str(meta.get("Secondary Color") or "").strip()
-    build_details = make_build_details_fn(p_color, s_color, difficulty)
 
     limit_cfg = int(read_fg_candidate_limit(cfg, default=FG_CANDIDATE_LIMIT, min_limit=1) or FG_CANDIDATE_LIMIT)
     limit = int(args.candidate_limit) if int(args.candidate_limit or 0) > 0 else int(limit_cfg)
-    radius = read_fg_search_radius(cfg)
-    radius = int(radius) if radius is not None else int(env_get("FG_SEARCH_RADIUS", "5") or "5")
 
     team_buff = str(args.team_buff or "").strip().upper()
     if not team_buff:
@@ -227,8 +220,6 @@ def main() -> int:
     if not seeds:
         raise SystemExit(f"No persisted loadouts for {found_name!r}. Run optimizer first or point EVOLUTION_DB_PATH.")
 
-    force_cfg = cfg_dict.get("ForceGreats", {}) if isinstance(cfg_dict, dict) else {}
-
     def _make_entries() -> dict:
         out = {}
         for i, row in enumerate(seeds):
@@ -243,24 +234,14 @@ def main() -> int:
             out[f"seed_{i}"] = e
         return out
 
-    gpu_client = GpuServiceClient()
-    gpu_client.start(start_executor=True, in_process_queues=True)
-
     def _run_one() -> float:
         entries = _make_entries()
         t0 = time.perf_counter()
         process_force_greats(
             entries,
-            False,
-            force_cfg,
             calc_song,
             ref_arrays,
             p_color,
-            build_details,
-            use_gpu=True,
-            fg_search_radius=int(radius),
-            perf_timing=False,
-            gpu_client=gpu_client,
         )
         return time.perf_counter() - t0
 
@@ -269,7 +250,7 @@ def main() -> int:
     print(
         "[fg-bundle] "
         f"song={found_name!r} diff={difficulty!r} fp={song_fp!r} "
-        f"jobs={jobs} workers={workers} candidate_limit={limit} radius={radius} team_buff={team_buff}"
+        f"jobs={jobs} workers={workers} candidate_limit={limit} team_buff={team_buff}"
     )
 
     t0 = time.perf_counter()
@@ -282,11 +263,6 @@ def main() -> int:
             except Exception:
                 durs.append(0.0)
     wall = time.perf_counter() - t0
-
-    try:
-        gpu_client.close()
-    except Exception:
-        pass
 
     if durs:
         durs_sorted = sorted(durs)

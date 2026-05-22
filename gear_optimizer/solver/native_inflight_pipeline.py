@@ -39,17 +39,6 @@ class NativeFGJobCompletion:
     song: NativeSong
     future: concurrent.futures.Future
     submit_t0: float
-def count_fg_group_meta_ready(candidates: Any) -> int:
-    ready = 0
-    for candidate in candidates or []:
-        if not isinstance(candidate, dict):
-            continue
-        data = candidate.get("Data")
-        if not isinstance(data, dict):
-            continue
-        if isinstance(data.get("_fg_group_meta"), dict):
-            ready += 1
-    return int(ready)
 def read_native_fg_pipeline_settings(
     cfg0: Any,
     *,
@@ -530,7 +519,6 @@ def run_fg_job_sync(
     from gear_optimizer.solver.native_inflight_orchestrator import (
         build_fg_persist_entries,
         build_fg_update_payload,
-        ensure_fg_build_details,
     )
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
@@ -545,11 +533,10 @@ def run_fg_job_sync(
             metrics={
                 "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     fg_prep_future = getattr(song.runtime.fg, "fg_prep_future", None)
     if fg_prep_future is not None:
         prep_wait_t0 = time.perf_counter()
@@ -560,7 +547,7 @@ def run_fg_job_sync(
             except AttributeError:
                 pass
         except Exception as e:
-            logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+            logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
         finally:
             try:
                 emit_profile_event(
@@ -572,7 +559,7 @@ def run_fg_job_sync(
                     },
                 )
             except Exception as e:
-                logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+                logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
             song.runtime.fg.fg_prep_future = None
     if getattr(song.runtime.fg, "loadout_entries", None) is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
@@ -590,12 +577,12 @@ def run_fg_job_sync(
                 if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
                 else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
-    build_details = ensure_fg_build_details(song)
+        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+    if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
+        raise RuntimeError("Manual ForceGreats is not supported by the GPU Bellman production path")
     try:
         emit_profile_event(
             component="inflight_fg_worker",
@@ -606,11 +593,10 @@ def run_fg_job_sync(
                 if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
                 else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-                "ga_candidates_group_meta_ready": int(count_fg_group_meta_ready(getattr(song.runtime.decode, "ga_candidates", None))),
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     try:
         emit_profile_event(
             component="inflight_fg_worker",
@@ -621,18 +607,12 @@ def run_fg_job_sync(
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     fg_variants = process_force_greats(
         getattr(song.runtime.fg, "loadout_entries", None) or {},
-        bool(getattr(song.gpu_inputs, "manual_force_greats", False)),
-        getattr(song.gpu_inputs, "force_greats_config", None),
         active_fg_calc_song,
         getattr(song.gpu_inputs, "ref_arrays", None),
         getattr(song.gpu_inputs, "meta_primary_color", ""),
-        build_details,
-        fg_search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
-        perf_timing=_truthy(env_get("PERF_TIMING", "0")),
-        gpu_client=gpu_client,
         ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
         if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
         else None,
@@ -655,7 +635,7 @@ def run_fg_job_sync(
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     if progress_cb is not None:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
@@ -663,7 +643,7 @@ def run_fg_job_sync(
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
             except Exception as e:
-                logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
+                logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     else:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
@@ -827,25 +807,18 @@ class InflightGAPipeline:
 import json
 import logging
 import os
-import threading
 from typing import Optional
 import numpy as np
-from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
+from gear_optimizer.core.config import read_fg_candidate_limit
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
-from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_caches import get_cached_chart_scorer
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
 from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.data.song_io import clone_calc_song
-from gear_optimizer.solver.analytical_fg import create_chart_scorer_from_calc_song
-from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 logger = logging.getLogger(__name__)
-_FG_FINDER_RUNTIME_WARMED = False
-_FG_FINDER_RUNTIME_WARM_LOCK = threading.Lock()
 _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 def thread_cpu_time_s() -> float:
     """Best-effort per-thread CPU timer for CPU-side stage profiling."""
@@ -891,31 +864,6 @@ def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
     except AttributeError:
         pass
     return fg_calc_song
-def _maybe_prewarm_fg_chart_scorer(song: NativeSong) -> None:
-    """
-    Precompute the expensive per-song AnalyticalFGScorer during FG prep.
-    This moves one-time per-song CPU work out of the FG dispatch pre-first-submit window so
-    the GPU stays fed when FG work exists.
-    Safe-by-default:
-    - Only runs for GPU finder when chart prewarm is explicitly enabled.
-    - Uses the shared LRU cache, so the later dispatch sees a cheap cache hit.
-    """
-    try:
-        if not _truthy(env_get("INFLIGHT_FG_CHART_PREWARM", "0")):
-            return
-        if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-            return
-        calc_song = resolve_active_fg_calc_song(song)
-        ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
-        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
-            return
-        if bool(getattr(song.runtime.prep, "fg_chart_scorer_prewarmed", False)):
-            return
-        get_cached_chart_scorer(calc_song, ref_arrays, create_chart_scorer_from_calc_song)
-        song.runtime.prep.fg_chart_scorer_prewarmed = True
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_maybe_prewarm_fg_chart_scorer: {e}")
-        return
 class InFlightStageProfiler:
     def __init__(self, *, enabled: bool, out_path: str | None = None) -> None:
         self.enabled = bool(enabled)
@@ -1064,13 +1012,6 @@ class InFlightStageProfiler:
                 json.dump(summary, fh, indent=2, sort_keys=True)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
-def _prewarm_fg_baseline_point(calc_song: dict, ref_arrays: dict) -> None:
-    if not calc_song or not ref_arrays:
-        return
-    try:
-        fg_baseline_params({"Fever Time": 0, "Fever Fill Rate": 0}, calc_song, ref_arrays, prefer_grid=False)
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_prewarm_fg_baseline_point: {e}")
 def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
     if not calc_song or not ref_arrays:
         return
@@ -1085,177 +1026,6 @@ def run_cpu_prewarm_for_song(song: NativeSong) -> None:
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
         return
     _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-        _prewarm_fg_baseline_point(calc_song, ref_arrays)
-def _warmup_fg_finder_runtime(
-    calc_song: dict, ref_arrays: dict, *, gpu_client: Optional[GpuServiceClient] = None
-) -> None:
-    global _FG_FINDER_RUNTIME_WARMED
-    if _FG_FINDER_RUNTIME_WARMED:
-        return
-    if not calc_song or not ref_arrays:
-        return
-    with _FG_FINDER_RUNTIME_WARM_LOCK:
-        if _FG_FINDER_RUNTIME_WARMED:
-            return
-        try:
-            from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
-                plan_fg_async_threshold_flush,
-                resolve_fg_async_batching_settings,
-                warmup_force_greats_finder_runtime_imports,
-            )
-            warmup_force_greats_finder_runtime_imports()
-            _ = (
-                plan_fg_async_threshold_flush,
-                resolve_fg_async_batching_settings,
-                warmup_force_greats_finder_runtime_imports,
-            )
-            song_slot = 0
-            try:
-                if isinstance(calc_song, dict):
-                    song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
-            except (ValueError, TypeError, KeyError):
-                song_slot = 0
-            resolve_fg_async_batching_settings(
-                gpu_client=gpu_client,
-                song_slot=int(song_slot),
-                perf=False,
-            )
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:_warmup_fg_finder_runtime: {e}")
-            return
-        _FG_FINDER_RUNTIME_WARMED = True
-def read_fg_group_meta_prime_settings() -> tuple[int, bool, int]:
-    prime_group_meta_limit = 0
-    prime_group_meta_limit_explicit = False
-    try:
-        raw = env_get("INFLIGHT_FG_GROUP_META_PRIME_LIMIT")
-        if raw is not None and str(raw).strip() != "":
-            prime_group_meta_limit = int(raw)
-            prime_group_meta_limit_explicit = True
-    except (ValueError, TypeError):
-        prime_group_meta_limit = 0
-        prime_group_meta_limit_explicit = False
-    return (
-        max(0, min(int(prime_group_meta_limit), 512)),
-        bool(prime_group_meta_limit_explicit),
-        0,
-    )
-def _default_fg_group_meta_prime_limit(max_candidates: int) -> int:
-    try:
-        raw = env_get("INFLIGHT_FG_GROUP_META_AUTO_PRIME_CANDIDATE_LIMIT")
-        if raw is not None and str(raw).strip() != "":
-            return max(0, min(int(raw), int(max_candidates), 512))
-    except (ValueError, TypeError):
-        pass
-    return max(0, min(8, int(max_candidates), 512))
-def collect_fg_group_meta_payload(song: NativeSong, *, limit: int, start_index: int = 0) -> dict[int, dict]:
-    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
-    if not isinstance(ga_candidates, list) or not ga_candidates:
-        return {}
-    calc_song = resolve_active_fg_calc_song(song)
-    if not isinstance(calc_song, dict) or not calc_song:
-        return {}
-    start_i = max(0, int(start_index))
-    if start_i >= len(ga_candidates):
-        return {}
-    limit_i = int(limit)
-    if limit_i <= 0:
-        stop_i = int(len(ga_candidates))
-    else:
-        stop_i = int(start_i + limit_i)
-    stop_i = max(start_i, min(int(stop_i), int(len(ga_candidates)), 512))
-    if stop_i <= start_i:
-        return {}
-    ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
-    if not isinstance(ref_arrays, dict):
-        ref_arrays = {}
-    payload: dict[int, dict] = {}
-    for idx, candidate in enumerate(list(ga_candidates[start_i:stop_i]), start=start_i):
-        if not isinstance(candidate, dict):
-            continue
-        data = candidate.get("Data")
-        if not isinstance(data, dict):
-            continue
-        if isinstance(data.get("_fg_group_meta"), dict):
-            continue
-        base_stats = data.get("BaseStats")
-        if not isinstance(base_stats, dict) or not base_stats:
-            continue
-        try:
-            fg_group_meta = build_fg_group_meta(
-                base_stats=base_stats,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                selected_element=str(data.get("Selected Element", "") or ""),
-                center_ft=int(data.get("FT", 0) or 0),
-                center_ff=int(data.get("FF", 0) or 0),
-                primary_color=str(getattr(song.gpu_inputs, "meta_primary_color", "") or ""),
-                secondary_color=str(getattr(song.gpu_inputs, "meta_secondary_color", "") or ""),
-                run_idx=data.get("_ga_gpu_run_idx"),
-                row_idx=data.get("_ga_gpu_row_idx"),
-                prefer_grid=False,
-            )
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:collect_fg_group_meta_payload: {e}")
-            continue
-        if isinstance(fg_group_meta, dict):
-            payload[int(idx)] = fg_group_meta
-    return payload
-def apply_fg_group_meta_payload(song: NativeSong, payload: dict[int, dict] | None) -> int:
-    if not isinstance(payload, dict) or not payload:
-        return 0
-    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
-    if not isinstance(ga_candidates, list) or not ga_candidates:
-        return 0
-    applied = 0
-    for idx, fg_group_meta in payload.items():
-        try:
-            idx_i = int(idx)
-        except (ValueError, TypeError):
-            continue
-        if idx_i < 0 or idx_i >= len(ga_candidates):
-            continue
-        candidate = ga_candidates[idx_i]
-        if not isinstance(candidate, dict):
-            continue
-        data = candidate.get("Data")
-        if not isinstance(data, dict):
-            continue
-        if isinstance(data.get("_fg_group_meta"), dict):
-            continue
-        if not isinstance(fg_group_meta, dict):
-            continue
-        data["_fg_group_meta"] = fg_group_meta
-        applied += 1
-    return int(applied)
-def _resolve_fg_group_meta_prime_limit(
-    song: Any,
-    *,
-    explicit_limit: int,
-    explicit_enabled: bool,
-) -> int:
-    if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-        return 0
-    ga_candidates = getattr(song.runtime.decode, "ga_candidates", None)
-    if not isinstance(ga_candidates, list) or not ga_candidates:
-        return 0
-    max_candidates = max(0, min(int(len(ga_candidates)), 512))
-    if max_candidates <= 0:
-        return 0
-    if bool(explicit_enabled):
-        return max(0, min(int(explicit_limit), int(max_candidates)))
-    return _default_fg_group_meta_prime_limit(max_candidates)
-def prime_fg_group_meta_for_song(song: NativeSong, *, limit: int) -> int:
-    limit_i = max(0, min(int(limit), 512))
-    if limit_i <= 0:
-        return 0
-    return int(
-        apply_fg_group_meta_payload(
-            song,
-            collect_fg_group_meta_payload(song, limit=limit_i),
-        )
-    )
 def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -1306,7 +1076,7 @@ def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[
 def prepare_fg_static_sync(song: NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
-    Finder-mode FG consumes GA candidates directly. The late FG prep still owns
+    Bellman FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
     config = getattr(song, 'config', song)
@@ -1319,7 +1089,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
     runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
     song.runtime.fg.fg_build_details = make_build_details_fn(
         gpu_inputs.meta_primary_color,
@@ -1391,39 +1160,19 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg.fg_search_radius = read_fg_search_radius(cfg)
-    active_fg_calc_song = resolve_active_fg_calc_song(song)
-    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-        try:
-            calc_song = active_fg_calc_song if isinstance(active_fg_calc_song, dict) else None
-            ref_arrays = gpu_inputs.ref_arrays if isinstance(gpu_inputs.ref_arrays, dict) else None
-            if calc_song and ref_arrays:
-                _warmup_fg_finder_runtime(calc_song, ref_arrays, gpu_client=gpu_client)
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
-    t_finder_warmup = time.perf_counter()
-    _maybe_prewarm_fg_chart_scorer(song)
-    t_chart_prewarm = time.perf_counter()
+    resolve_active_fg_calc_song(song)
     ga_candidates = runtime.decode.ga_candidates if isinstance(runtime.decode.ga_candidates, list) else list(runtime.decode.ga_candidates or [])
     preselect_ga_candidates = len(ga_candidates)
-    is_gpu_selected_payload = False
-    try:
-        if ga_candidates:
-            d0 = ga_candidates[0].get("Data") if isinstance(ga_candidates[0], dict) else None
-            if isinstance(d0, dict) and ("_ga_gpu_run_idx" in d0 or "_ga_gpu_row_idx" in d0):
-                is_gpu_selected_payload = True
-    except (KeyError, TypeError, ValueError, AttributeError):
-        is_gpu_selected_payload = False
     t_candidate_select0 = time.perf_counter()
-    if is_gpu_selected_payload:
-        ga_candidates = ga_candidates[: int(fg_candidate_limit)]
-    else:
-        ga_candidates = select_fg_candidates(
-            ga_candidates,
-            limit=fg_candidate_limit,
-            primary_color=str(gpu_inputs.meta_primary_color or ""),
-            secondary_color=str(gpu_inputs.meta_secondary_color or ""),
-        )
+    ga_candidates = select_effective_unique_ga_candidates(
+        ga_candidates,
+        limit=fg_candidate_limit,
+        registry=getattr(gpu_inputs, "registry", None),
+        minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
+        primary_color=str(gpu_inputs.meta_primary_color or ""),
+        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
+        selected_color=str((getattr(song.gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
+    )
     t_candidate_select = time.perf_counter()
     runtime.decode.ga_candidates = ga_candidates
     hydrated_fg_stats = False
@@ -1436,20 +1185,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             cfg_data=getattr(song.gpu_inputs, "cfg_data", None),
         )
     t_select = time.perf_counter()
-    (
-        prime_group_meta_limit,
-        prime_group_meta_limit_explicit,
-        _,
-    ) = read_fg_group_meta_prime_settings()
-    prime_group_meta_limit = _resolve_fg_group_meta_prime_limit(
-        song,
-        explicit_limit=int(prime_group_meta_limit),
-        explicit_enabled=bool(prime_group_meta_limit_explicit),
-    )
-    group_meta_primed = 0
-    if int(prime_group_meta_limit) > 0:
-        group_meta_primed = prime_fg_group_meta_for_song(song, limit=int(prime_group_meta_limit))
-    t_group_meta = time.perf_counter()
     t_db = time.perf_counter()
     build_details = song.runtime.fg.fg_build_details
     if not callable(build_details):
@@ -1472,12 +1207,9 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         )
     t_build = time.perf_counter()
     select_ms = (t_select - t0) * 1000.0
-    finder_warmup_ms = (t_finder_warmup - t0) * 1000.0
-    chart_prewarm_ms = (t_chart_prewarm - t_finder_warmup) * 1000.0
     candidate_select_ms = (t_candidate_select - t_candidate_select0) * 1000.0
     hydrate_stats_ms = (t_select - t_candidate_select) * 1000.0
-    group_meta_ms = (t_group_meta - t_select) * 1000.0
-    db_wait_ms = (t_db - t_group_meta) * 1000.0
+    db_wait_ms = (t_db - t_select) * 1000.0
     build_ms = (t_build - t_db) * 1000.0
     total_ms = (t_build - t0) * 1000.0
     try:
@@ -1489,9 +1221,8 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             "[PERF][FGPrep] "
             f"limit={fg_candidate_limit} ga_in={preselect_ga_candidates} ga={len(ga_candidates)} "
             f"loadouts={loadouts_n} select={select_ms:.1f}ms "
-            f"finder_warmup={finder_warmup_ms:.1f}ms chart_prewarm={chart_prewarm_ms:.1f}ms "
             f"candidate_select={candidate_select_ms:.1f}ms hydrate={hydrate_stats_ms:.1f}ms "
-            f"group_meta={group_meta_ms:.1f}ms db_wait={db_wait_ms:.1f}ms "
+            f"db_wait={db_wait_ms:.1f}ms "
             f"build={build_ms:.1f}ms total={total_ms:.1f}ms"
         )
     try:
@@ -1506,19 +1237,13 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             metrics={
                 "queue_wait_ms": float(queue_wait_ms),
                 "select_ms": float(select_ms),
-                "finder_warmup_ms": float(finder_warmup_ms),
-                "chart_prewarm_ms": float(chart_prewarm_ms),
                 "candidate_select_ms": float(candidate_select_ms),
                 "hydrate_stats_ms": float(hydrate_stats_ms),
-                "group_meta_ms": float(group_meta_ms),
-                "group_meta_primed": int(group_meta_primed),
-                "group_meta_target": int(prime_group_meta_limit),
                 "db_wait_ms": float(db_wait_ms),
                 "build_ms": float(build_ms),
                 "total_ms": float(total_ms),
                 "preselect_ga_candidates": int(preselect_ga_candidates),
                 "ga_candidates": int(len(ga_candidates or [])),
-                "gpu_selected_payload": int(bool(is_gpu_selected_payload)),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
                 "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),

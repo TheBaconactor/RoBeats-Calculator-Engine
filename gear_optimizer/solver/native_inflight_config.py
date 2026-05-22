@@ -754,7 +754,6 @@ class NativeSongDecodeState:
 class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
     fg_candidate_limit: int = 0
-    fg_search_radius: Optional[int] = None
     fg_calc_song: Optional[CalcSong | JsonDict] = None
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None

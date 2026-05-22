@@ -4,7 +4,7 @@ This pipeline is designed to keep the GPU continuously busy in native GA mode by
 - Preparing the next songs' CPU-only data while the GPU runs the current song.
 - Executing GPU-native GA on the Taichi/Vulkan owner thread (GpuExecutor) via an in-process
   request queue (no per-song process overhead, minimal transfers).
-- Scheduling ForceGreatsFinder work via continuous credit-based interleaving,
+- Scheduling ForceGreats Bellman work via continuous credit-based interleaving,
   with CPU grouping/prep performed off the GPU thread and GPU kernels submitted via the executor.
 """
 from __future__ import annotations
@@ -742,16 +742,14 @@ def run_native_inflight_song_pipeline(
                 fut = fg_completion.future
                 t_submit = fg_completion.submit_t0
                 did_work = True
-                fg_failed = False
                 try:
                     fut.result()
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
-                        fg_failed = False
+                        pass
                     else:
-                        fg_failed = True
                         try:
                             emit_profile_event(
                                 component="inflight_fg_worker",
@@ -772,15 +770,10 @@ def run_native_inflight_song_pipeline(
                             logger.exception("[NativeInflight][FG] worker failed for %s", fg_song.config.task_key)
                         except Exception as e:
                             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                        raise RuntimeError(f"FG worker failed for {fg_song.config.task_key}") from exc
                 if not bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):
                     try:
                         _emit_deferred_post_payload(fg_song)
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                if fg_failed:
-                    try:
-                        if post_sender is not None and bool(getattr(fg_song.runtime.bundle, "bundle_wait_for_fg", False)):
-                            post_sender.send(build_failed_fg_update_payload(fg_song))
                     except Exception as e:
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 try:
@@ -795,7 +788,6 @@ def run_native_inflight_song_pipeline(
                 )
                 finish_deferred_fg_completion(
                     fg_song,
-                    fg_failed=bool(fg_failed),
                     completed_songs=completed_songs,
                     memory_resume_tracker=memory_resume_tracker,
                     bundle_completed_cb=bundle_completed_cb,
@@ -1289,7 +1281,6 @@ def emit_deferred_post_payload(
 def finish_deferred_fg_completion(
     song: NativeSong,
     *,
-    fg_failed: bool,
     completed_songs: set[str],
     memory_resume_tracker=None,
     bundle_completed_cb=None,
@@ -1303,7 +1294,7 @@ def finish_deferred_fg_completion(
             bundle_parent,
             song_name=str(song.config.song_name),
             record_info=getattr(song.runtime.db, "record_info", None),
-            failed=bool(fg_failed),
+            failed=False,
         )
         song.runtime.bundle.bundle_wait_for_fg = False
         return True
@@ -1421,8 +1412,6 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
         "file_path": song.config.fp,
         "cfg_dict": song.config.cfg_dict,
     }
-def build_failed_fg_update_payload(song: NativeSong) -> dict[str, Any]:
-    return build_fg_update_payload(song, persist_entries=[])
 def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
