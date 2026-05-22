@@ -38,7 +38,7 @@ def test_load_fg_breakpoint_coalesce_limits_clamps_values():
 def test_load_fg_breakpoint_coalesce_limits_uses_defaults_for_invalid_values():
     limits = load_fg_breakpoint_coalesce_limits(env_get_fn=lambda _key, _default: "not-an-int")
 
-    assert limits == FgBreakpointCoalesceLimits(max_payloads=64, max_pairs=256)
+    assert limits == FgBreakpointCoalesceLimits(max_payloads=1, max_pairs=256)
 
 
 def test_fg_breakpoint_payload_pair_count_handles_arrays_lists_and_bad_values():
@@ -131,6 +131,22 @@ def test_plan_fg_breakpoint_coalescing_groups_until_limits():
     )
 
     assert [[entry.request.request_id for entry in group] for group in plan.groups] == [[1, 2], [3]]
+
+
+def test_plan_fg_breakpoint_coalescing_keeps_single_large_pair_payload_direct():
+    requests = [
+        _req(1, {"payloads": [{"ftff_pairs": [[0, 0] for _ in range(620)]}]}),
+        _req(2, {"payloads": [{"ftff_pairs": [[1, 1] for _ in range(4)]}]}),
+    ]
+
+    plan = plan_fg_breakpoint_coalescing(
+        requests,
+        payload_dict_fn=lambda req: dict(req.payload or {}),
+        limits=FgBreakpointCoalesceLimits(max_payloads=8, max_pairs=256),
+    )
+
+    assert plan.oversized == []
+    assert [[entry.request.request_id for entry in group] for group in plan.groups] == [[1], [2]]
 
 
 def test_build_fg_breakpoint_group_bundle_merges_payloads_and_tracks_slices():
@@ -294,3 +310,20 @@ def test_coalesce_fg_solve_with_breakpoints_batch_requests_falls_back_when_not_i
         "gpu_executor.fg_breakpoints_coalesce",
         "coalescing unavailable (not in-process); falling back to per-request execution",
     )
+
+
+def test_coalesce_fg_solve_with_breakpoints_batch_requests_executes_single_entry_group_direct():
+    direct_calls = []
+
+    responses = coalesce_fg_solve_with_breakpoints_batch_requests(
+        [_req(5, {"payloads": [{"ftff_pairs": [[0, 0] for _ in range(620)]}]})],
+        in_process_queues=True,
+        execute_request=lambda req: direct_calls.append(req.request_id)
+        or GpuResponse(request_id=req.request_id, success=True, result=["direct"]),
+        execute_batch=lambda req: GpuResponse(request_id=req.request_id, success=True, result=[]),
+        payload_dict_fn=lambda req: dict(req.payload or {}),
+        warn_fallback_fn=lambda *args, **kwargs: None,
+    )
+
+    assert direct_calls == [5]
+    assert responses[0].result == ["direct"]

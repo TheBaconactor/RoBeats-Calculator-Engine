@@ -1144,9 +1144,9 @@ def load_fg_breakpoint_coalesce_limits(
     env_get_fn: Callable[[str, Any], Any] = env_get,
 ) -> FgBreakpointCoalesceLimits:
     try:
-        max_payloads = int(env_get_fn("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
+        max_payloads = int(env_get_fn("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "1") or "1")
     except (ValueError, TypeError):
-        max_payloads = 64
+        max_payloads = 1
     max_payloads = max(1, min(int(max_payloads), 512))
     try:
         max_pairs = int(env_get_fn("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "256") or "256")
@@ -1235,6 +1235,14 @@ def plan_fg_breakpoint_coalescing(
             n_payloads=int(n_payloads),
             n_pairs=int(n_pairs),
         )
+        if int(limits.max_pairs) > 0 and n_pairs > int(limits.max_pairs) and n_payloads == 1:
+            if cur:
+                groups.append(cur)
+                cur = []
+                cur_payloads = 0
+                cur_pairs = 0
+            groups.append([entry])
+            continue
         if n_payloads > int(limits.max_payloads) or (limits.max_pairs > 0 and n_pairs > int(limits.max_pairs)):
             oversized.append(
                 FgBreakpointOversizedEntry(
@@ -1408,7 +1416,7 @@ def coalesce_fg_solve_with_breakpoints_batch_requests(
         return order_responses_for_requests(requests, out)
     for group in groups:
         if len(group) == 1:
-            out.append(execute_request(group[0][0]))
+            out.append(execute_request(group[0].request))
             continue
         try:
             bundle = build_fg_breakpoint_group_bundle(group)

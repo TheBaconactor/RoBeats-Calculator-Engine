@@ -196,13 +196,6 @@ def ftff_pairs_for_search(
     ]
 
 
-def build_force_greats_counts_list(num_sections: int, non_fever_base: int) -> list[tuple[int, ...]]:
-    raise RuntimeError(
-        "CPU ForceGreats count-list generation was removed; use the GPU fixed-stats Bellman solver "
-        "or a GPU production FG path."
-    )
-
-
 def compute_great_penalty_base(primary_val: int, secondary_val: int) -> int:
     return int(floor((int(primary_val) * 2) * (2.0 / 3.0)) + floor(int(secondary_val) * (2.0 / 3.0)) + 150)
 

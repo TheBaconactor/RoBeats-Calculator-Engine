@@ -5,7 +5,7 @@ This module provides the force greats optimization pipeline:
 - _compute_force_greats_timeline: Compute fever timeline with force greats applied
 - evaluate_force_greats: Recompute fever timeline and penalties when greats are forced
 - evaluate_fg_with_gem_iteration: ForceGreats evaluation WITH full gem solver (FT/FF iteration)
-- run_force_greats_hill_climb: Brute-force enumeration of all ForceGreats configurations
+- run_force_greats_hill_climb: removed legacy count-list finder entry point
 - apply_force_greats_to_result: Apply FG penalties to a result dict
 - _extract_base_stats: Extract base stats by reversing gem contributions
 
@@ -47,14 +47,10 @@ from .fg_policy import (
     BASE_STAT_KEYS,
     accumulate_fg_penalties,
     build_fg_result_dict,
-    build_force_greats_counts_list,
-    build_gpu_fg_result_dict,
     build_penalty_table_and_body,
-    copy_base_stats,
     extract_fg_context,
     extract_fg_song_inputs,
     extract_song_meta,
-    ftff_pairs_for_search,
     iter_ft_ff_budget_pairs,
     normalize_ft_ff_search_ranges,
     resolve_stat_factors,
@@ -553,156 +549,15 @@ def run_force_greats_hill_climb(
     use_gpu: bool = False,
 ):
     """
-    Brute-force enumeration of all ForceGreats configurations WITH gem re-optimization.
+    Removed legacy count-list finder entry point.
 
-    For each FG config, re-runs the full gem solver (FT/FF iteration) to find
-    optimal gems for that specific FG timeline. This guarantees finding the
-    global optimum instead of getting stuck with gems optimized for normal timeline.
-
-    NOTE: This function now expects stats to be the gem-optimized Stats dict from
-    the main solver. It extracts base stats and uses the new gem iteration function.
+    Production finder-mode ForceGreats must enter through the GPU finder
+    pipeline (`process_force_greats` / `process_force_greats_gpu_finder`).
     """
-    _ = search_radius
-    search_radius = FG_SEARCH_RADIUS
-
-    # Get baseline info from existing stats
-    baseline = evaluate_force_greats(stats, calc_song, ref_arrays, [])
-    if not baseline:
-        return None
-
-    num_sections = baseline["num_non_fever_sections"]
-    if num_sections == 0:
-        return baseline
-
-    # Safety: excessive sections (e.g. 0 fill rate -> 1000+ sections) breaks brute force & GPU limits.
-    # Return baseline as-is since FG is effectively impossible/useless in this case.
-    if num_sections > 20:
-        return baseline
-
-    # Selected element is a loadout/config property (overflow target), not always the song primary.
-    # Default to song primary only if missing.
-    song_meta = extract_song_meta(calc_song, default_primary="Rush")
-    selected_color = selected_color or song_meta.primary_color or "Rush"
-
-    # Extract base stats (before gems) - use stats directly since we want gear+mini stats
-    # The GPU path now returns gem-adjusted stats, so we need to reverse
-    # For simplicity, we can use the stats as-is since evaluate_fg_with_gem_iteration
-    # handles the gem allocation internally
-    base_stats = copy_base_stats(stats)
-
-    non_fever_base = baseline.get("non_fever_base", 20)
-    # Calculate FT/FF search window. Negative radius means full FT/FF grid.
-    search_ranges = None
-    if search_radius is not None and int(search_radius) >= 0 and center_ft is not None and center_ff is not None:
-        search_ranges = (
-            center_ft - search_radius,
-            center_ft + search_radius,
-            center_ff - search_radius,
-            center_ff + search_radius,
-        )
-
-    counts_list = build_force_greats_counts_list(num_sections, non_fever_base)
-
-    # --------------------------------------------------------------------
-    # FULL GPU FINDER PATH (when enabled):
-    #   Runs FG timeline + gem optimization + penalties entirely on GPU and
-    #   reduces to the best FG config per loadout.
-    # --------------------------------------------------------------------
-    if use_gpu:
-        try:
-            from ..taichi_gem.force_greats.api import solve_force_greats_finder_gpu
-
-            fg_context = extract_fg_context(calc_song, selected_color)
-            song_inputs = fg_context.song_inputs
-            if song_inputs.total_notes <= 0:
-                return None
-
-            p_color = fg_context.primary_color
-            s_color = fg_context.secondary_color
-
-            # FT/FF window list (no budgets here; GPU computes budget=total_budget-ft-ff)
-            ftff_pairs = ftff_pairs_for_search(search_ranges, total_budget=TOTAL_GEM_BUDGET)
-
-            # Single-genome input (base stats; GPU allocates gems)
-            genome_stats_list = [
-                {
-                    "base_pp": int(base_stats.get("Perfect Points", 0)),
-                    "base_cm": int(base_stats.get("Combo Multiplier", 0)),
-                    "base_fm": int(base_stats.get("Fever Multiplier", 0)),
-                    "base_ft_stat": int(base_stats.get("Fever Time", 0)),
-                    "base_ff_stat": int(base_stats.get("Fever Fill Rate", 0)),
-                    "base_p_val": int(base_stats.get(p_color, 0)),
-                    "base_s_val": int(base_stats.get(s_color, 0)),
-                }
-            ]
-
-            out = solve_force_greats_finder_gpu(
-                genome_stats_list,
-                song_inputs.timestamps,
-                song_inputs.great_candidates,
-                song_inputs.long_notes,
-                song_inputs.last_note_time,
-                counts_list,
-                ftff_pairs,
-                n_sections=len(counts_list[0]) if counts_list else 1,
-                **fg_context.color_flags.as_dict(),
-                ref_arrays=ref_arrays,
-                total_budget=TOTAL_GEM_BUDGET,
-                gem_scale_fever=GEM_SCALE_FEVER,
-            )
-            best = out[0] if out else None
-            if not best:
-                return None
-
-            cfg_idx = best.get("cfg_idx", -1)
-            cfg_counts = (
-                list(counts_list[cfg_idx]) if (cfg_idx is not None and 0 <= int(cfg_idx) < len(counts_list)) else []
-            )
-
-            result = build_gpu_fg_result_dict(
-                best=best,
-                config_counts=cfg_counts,
-                num_sections=int(num_sections),
-                non_fever_base=int(non_fever_base),
-            )
-            result["ForceGreats"] = {
-                "config": result.get("config_dict", {}),
-                "base_score": result.get("base_score", 0),
-            }
-            return result
-        except Exception as e:
-            raise RuntimeError(f"FG full finder failed: {type(e).__name__}: {e}") from e
-
-    if use_gpu:
-        raise RuntimeError("FG full finder produced no result.")
-
-    # --------------------------------------------------------------------
-    # CPU reference path: evaluate each FG config individually (CPU-only)
-    # --------------------------------------------------------------------
-    best_result = None
-    best_score = -1
-
-    for counts in counts_list:
-        candidate = evaluate_fg_with_gem_iteration(
-            base_stats,
-            calc_song,
-            ref_arrays,
-            selected_color,
-            list(counts),
-            search_ranges,
-            use_gpu=False,
-        )
-        if candidate and candidate.get("final_score", -1) > (best_score if best_score >= 0 else -1):
-            best_result = candidate
-            best_score = candidate["final_score"]
-
-    if best_result:
-        best_result["ForceGreats"] = {
-            "config": best_result.get("config_dict", {}),
-            "base_score": best_result.get("base_score", 0),
-        }
-
-    return best_result
+    raise RuntimeError(
+        "legacy ForceGreats count-list hill climb was removed; use process_force_greats_gpu_finder "
+        "through the production ForceGreats pipeline"
+    )
 
 
 def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0):

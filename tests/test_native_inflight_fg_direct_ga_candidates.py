@@ -4,13 +4,13 @@ from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import NativeFgCandidateSurface
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
     registry = object()
 
-    def _fake_score_native_fg_candidate_surface(**kwargs):
+    def _fake_process_force_greats(*args, **kwargs):
+        calls["args"] = args
         calls.update(kwargs)
         return [
             {
@@ -23,23 +23,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_surface", _fake_score_native_fg_candidate_surface)
-
-    surface = NativeFgCandidateSurface()
-    surface.append(
-        loadout_hash="direct-ga",
-        entry=None,
-        candidate=None,
-        base_data={},
-        base_stats={"Perfect Points": 1},
-        base_score=99,
-        selected_color="Rush",
-        center_ft=0,
-        center_ff=0,
-        gear=[],
-        minis=[],
-        is_ga=True,
-    )
+    monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
     song = make_native_song(
         fg_prep_future=None,
@@ -60,7 +44,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=True,
-        fg_candidate_surface=surface,
         manual_force_greats=False,
         force_greats_config=[],
         fg_search_radius=5,
@@ -75,18 +58,19 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     fg_pipeline.run_fg_job_sync(song, gpu_client=SimpleNamespace())
 
-    assert calls["surface"] is song.runtime.fg.fg_candidate_surface
-    assert calls["loadout_entries"] == {}
+    assert calls["args"][0] == {}
+    assert calls["ga_candidates"] is song.runtime.decode.ga_candidates
+    assert calls["ga_registry"] is registry
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
 def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import NativeFgCandidateSurface
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
 
-    def _fake_score_native_fg_candidate_surface(**kwargs):
+    def _fake_process_force_greats(*args, **kwargs):
+        calls["args"] = args
         calls.update(kwargs)
         return [
             {
@@ -99,23 +83,7 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(fg_pipeline, "score_native_fg_candidate_surface", _fake_score_native_fg_candidate_surface)
-
-    surface = NativeFgCandidateSurface()
-    surface.append(
-        loadout_hash="db",
-        entry=None,
-        candidate=None,
-        base_data={},
-        base_stats={"Perfect Points": 1},
-        base_score=100,
-        selected_color="Rush",
-        center_ft=0,
-        center_ff=0,
-        gear=[],
-        minis=[],
-        is_ga=False,
-    )
+    monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
 
     song = make_native_song(
         fg_prep_future=None,
@@ -131,7 +99,6 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=False,
-        fg_candidate_surface=surface,
         manual_force_greats=False,
         force_greats_config=[],
         fg_search_radius=5,
@@ -148,8 +115,8 @@ def test_run_fg_job_sync_treats_exact_dp_config_as_finder(monkeypatch):
     gpu_client = SimpleNamespace(name="gpu")
     fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
-    assert calls["search_radius"] == -1
-    assert calls["surface"] is song.runtime.fg.fg_candidate_surface
-    assert calls["loadout_entries"] == {}
-    assert calls["ref_arrays"] == {"Perfect Points": []}
+    assert calls["fg_search_radius"] == 5
+    assert calls["args"][0] == {}
+    assert calls["args"][4] == {"Perfect Points": []}
+    assert calls["ga_candidates"] is None
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

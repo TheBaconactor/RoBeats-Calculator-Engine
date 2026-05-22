@@ -753,7 +753,6 @@ class NativeSongDecodeState:
 @dataclass
 class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
-    fg_candidate_surface: Any | None = None
     fg_candidate_limit: int = 0
     fg_search_radius: Optional[int] = None
     fg_calc_song: Optional[CalcSong | JsonDict] = None

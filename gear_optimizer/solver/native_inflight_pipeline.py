@@ -11,10 +11,6 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
-from gear_optimizer.helpers.song_helpers.force_greats.native_ga_variants import (
-    build_native_fg_candidate_surface,
-    score_native_fg_candidate_surface,
-)
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
@@ -626,36 +622,24 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:_count_fg_group_meta_ready: {e}")
-    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-        if getattr(song.runtime.fg, "fg_candidate_surface", None) is None:
-            prepare_fg_job_sync(song, gpu_client=gpu_client)
-            try:
-                song.runtime.fg.fg_dynamic_prep_done = True
-            except AttributeError:
-                pass
-        fg_variants = score_native_fg_candidate_surface(
-            surface=getattr(song.runtime.fg, "fg_candidate_surface", None),
-            loadout_entries=getattr(song.runtime.fg, "loadout_entries", None) or {},
-            calc_song=active_fg_calc_song,
-            ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
-            search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
-            gpu_client=gpu_client,
-        )
-    else:
-        fg_variants = process_force_greats(
-            getattr(song.runtime.fg, "loadout_entries", None) or {},
-            bool(getattr(song.gpu_inputs, "manual_force_greats", False)),
-            getattr(song.gpu_inputs, "force_greats_config", None),
-            active_fg_calc_song,
-            getattr(song.gpu_inputs, "ref_arrays", None),
-            getattr(song.gpu_inputs, "meta_primary_color", ""),
-            build_details,
-            fg_search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
-            perf_timing=_truthy(env_get("PERF_TIMING", "0")),
-            gpu_client=gpu_client,
-            ga_candidates=getattr(song.runtime.decode, "ga_candidates", None) if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False)) else None,
-            ga_registry=getattr(song.gpu_inputs, "registry", None) if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False)) else None,
-        )
+    fg_variants = process_force_greats(
+        getattr(song.runtime.fg, "loadout_entries", None) or {},
+        bool(getattr(song.gpu_inputs, "manual_force_greats", False)),
+        getattr(song.gpu_inputs, "force_greats_config", None),
+        active_fg_calc_song,
+        getattr(song.gpu_inputs, "ref_arrays", None),
+        getattr(song.gpu_inputs, "meta_primary_color", ""),
+        build_details,
+        fg_search_radius=getattr(song.runtime.fg, "fg_search_radius", None),
+        perf_timing=_truthy(env_get("PERF_TIMING", "0")),
+        gpu_client=gpu_client,
+        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
+        if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
+        else None,
+        ga_registry=getattr(song.gpu_inputs, "registry", None)
+        if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
+        else None,
+    )
     song.runtime.fg.fg_variants = list(fg_variants or [])
     try:
         song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
@@ -1486,15 +1470,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             materialize_ga_details=False,
             ga_registry=gpu_inputs.registry,
         )
-    runtime.fg.fg_candidate_surface = build_native_fg_candidate_surface(
-        loadout_entries=runtime.fg.loadout_entries or {},
-        ga_candidates=ga_candidates if bool(runtime.fg.fg_direct_ga_candidates) else None,
-        default_selected_color=str(gpu_inputs.meta_primary_color or ""),
-        primary_color=str(gpu_inputs.meta_primary_color or ""),
-        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
-        minis_by_name=gpu_inputs.minis_by_name,
-        registry=gpu_inputs.registry if bool(runtime.fg.fg_direct_ga_candidates) else None,
-    )
     t_build = time.perf_counter()
     select_ms = (t_select - t0) * 1000.0
     finder_warmup_ms = (t_finder_warmup - t0) * 1000.0
@@ -1546,7 +1521,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "gpu_selected_payload": int(bool(is_gpu_selected_payload)),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
-                "fg_surface_rows": int(len(getattr(song.runtime.fg, "fg_candidate_surface", None) or [])),
                 "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),
             },
         )
