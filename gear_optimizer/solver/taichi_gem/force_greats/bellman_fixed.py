@@ -168,6 +168,8 @@ def _fg_bellman_solve_kernel(
     action_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
     action_fill_later: ti.types.ndarray(dtype=ti.i32, ndim=1),
     action_forced_later: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    action_fill_first: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    action_forced_first: ti.types.ndarray(dtype=ti.i32, ndim=1),
     real_fever_time: ti.f32,
     use_forced_great_timing: ti.i32,
     timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
@@ -243,40 +245,16 @@ def _fg_bellman_solve_kernel(
         later_choice[i] = best_k
         later_next[i] = best_next
 
-    first_out[0] = 0
-    first_out[1] = 0
-    first_out[2] = n
-    first_out[3] = 0
-    solve_debug_out[0] = transitions
-
-
-@ti.kernel
-def _fg_bellman_first_kernel(
-    n: ti.i32,
-    action_count: ti.i32,
-    action_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    action_fill_first: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    action_forced_first: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    real_fever_time: ti.f32,
-    use_forced_great_timing: ti.i32,
-    timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    great_candidate_timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    fever_gain_prefix: ti.types.ndarray(dtype=ti.i64, ndim=1),
-    forced_penalty_prefix: ti.types.ndarray(dtype=ti.i64, ndim=1),
-    later_value: ti.types.ndarray(dtype=ti.i64, ndim=1),
-    first_out: ti.types.ndarray(dtype=ti.i64, ndim=1),
-):
     first_best: ti.i64 = 0
     first_k: ti.i32 = 0
     first_next: ti.i32 = n
     first_active: ti.i32 = 0
-    transitions: ti.i64 = 0
+    first_transitions: ti.i64 = 0
     prev_fill: ti.i32 = -1
     prev_start_time: ti.f32 = -1.0
     prev_e: ti.i32 = -1
     action_idx: ti.i32 = 0
     active: ti.i32 = 1
-    ti.loop_config(serialize=True)
     while action_idx < action_count and active != 0:
         k: ti.i32 = action_values[action_idx]
         notes_to_fill: ti.i32 = action_fill_first[action_idx]
@@ -297,7 +275,7 @@ def _fg_bellman_first_kernel(
             )
             if not (notes_to_fill == prev_fill and start_time == prev_start_time):
                 if not (notes_to_fill == prev_fill and e == prev_e):
-                    transitions += 1
+                    first_transitions += 1
                     penalty_end: ti.i32 = forced_applied
                     if penalty_end > n:
                         penalty_end = n
@@ -321,7 +299,8 @@ def _fg_bellman_first_kernel(
     first_out[1] = ti.cast(first_k, ti.i64)
     first_out[2] = ti.cast(first_next, ti.i64)
     first_out[3] = ti.cast(first_active, ti.i64)
-    first_out[4] = transitions
+    first_out[4] = first_transitions
+    solve_debug_out[0] = transitions
 
 
 def _fg_bellman_action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
@@ -475,6 +454,8 @@ def solve_force_greats_bellman_fixed_stats_gpu(
         action_values,
         action_fill_later,
         action_forced_later,
+        action_fill_first,
+        action_forced_first,
         float(real_fever_time),
         1 if bool(use_forced_great_timing) else 0,
         ts,
@@ -487,21 +468,6 @@ def solve_force_greats_bellman_fixed_stats_gpu(
         first_out,
         solve_debug,
         reachable,
-    )
-    _fg_bellman_first_kernel(
-        n,
-        int(action_count),
-        action_values,
-        action_fill_first,
-        action_forced_first,
-        float(real_fever_time),
-        1 if bool(use_forced_great_timing) else 0,
-        ts,
-        great_ts,
-        fever_gain_prefix,
-        penalty_prefix,
-        later_value,
-        first_out,
     )
     _fg_bellman_reconstruct_kernel(n, first_out, later_choice, later_next, out_counts, debug_out)
     ti.sync()
