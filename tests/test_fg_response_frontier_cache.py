@@ -228,11 +228,13 @@ def test_run_fg_response_frontier_prebuild_uses_pool_scope(tmp_path: Path, monke
 
 def test_fg_response_frontier_prebuild_defaults_to_full_budget_keys() -> None:
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
+        _resolve_prebuild_worker_count,
         read_fg_response_frontier_cache_prebuild_settings,
     )
 
     settings = read_fg_response_frontier_cache_prebuild_settings(None)
 
+    assert _resolve_prebuild_worker_count() == 8
     assert len(settings.stat_keys) > 1000
 
 

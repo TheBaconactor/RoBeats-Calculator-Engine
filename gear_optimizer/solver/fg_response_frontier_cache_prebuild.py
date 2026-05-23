@@ -48,6 +48,7 @@ class FgResponseFrontierCachePrebuildSettings:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
+_PREBUILD_WORKERS = 8
 
 
 def _init_prebuild_worker(ref_arrays: dict, stat_keys: tuple[tuple[int, int], ...]) -> None:
@@ -243,7 +244,7 @@ def read_fg_response_frontier_cache_prebuild_settings(_cfg) -> FgResponseFrontie
 
 
 def _resolve_prebuild_worker_count() -> int:
-    return max(1, min(8, int(os.cpu_count() or 1)))
+    return _PREBUILD_WORKERS
 
 
 def _build_prebuild_executor(
