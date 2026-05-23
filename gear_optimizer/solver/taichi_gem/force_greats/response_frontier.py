@@ -47,11 +47,75 @@ __all__ = [
     "solve_force_greats_response_frontier_for_ftff",
 ]
 
+_ResponsePair = tuple[int, int, int, dict[str, Any], FgResponseFrontierResult, float, float]
+
 
 def _ftff_stat_key(stats_after_ftff: dict[str, Any]) -> tuple[int, int]:
     ff_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Fill Rate", 0) or 0)))
     ft_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Time", 0) or 0)))
     return int(ft_stat), int(ff_stat)
+
+
+def _score_elements(stats: dict[str, Any], primary_color: str, secondary_color: str) -> tuple[int, int]:
+    return (
+        int(stats.get(str(primary_color or ""), 0) or 0),
+        int(stats.get(str(secondary_color or ""), 0) or 0),
+    )
+
+
+def _response_pair_dominates(
+    a: _ResponsePair,
+    b: _ResponsePair,
+    *,
+    primary_color: str,
+    secondary_color: str,
+) -> bool:
+    if a[4] is not b[4]:
+        return False
+    if int(a[2]) < int(b[2]):
+        return False
+    a_primary, a_secondary = _score_elements(a[3], primary_color, secondary_color)
+    b_primary, b_secondary = _score_elements(b[3], primary_color, secondary_color)
+    return int(a_primary) >= int(b_primary) and int(a_secondary) >= int(b_secondary)
+
+
+def _prune_dominated_ftff_response_pairs(
+    pairs: list[_ResponsePair],
+    *,
+    primary_color: str,
+    secondary_color: str,
+) -> list[_ResponsePair]:
+    by_frontier: dict[int, list[_ResponsePair]] = {}
+    for pair in pairs:
+        by_frontier.setdefault(id(pair[4]), []).append(pair)
+
+    out: list[_ResponsePair] = []
+    for bucket in by_frontier.values():
+        kept: list[_ResponsePair] = []
+        for pair in bucket:
+            if any(
+                _response_pair_dominates(
+                    other,
+                    pair,
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                )
+                for other in kept
+            ):
+                continue
+            kept = [
+                other
+                for other in kept
+                if not _response_pair_dominates(
+                    pair,
+                    other,
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                )
+            ]
+            kept.append(pair)
+        out.extend(kept)
+    return out
 
 
 def solve_force_greats_response_frontier_for_ftff(
@@ -159,13 +223,19 @@ def solve_force_greats_response_frontier_batch_gpu(
         pair_inputs.append((int(ft), int(ff), stats_after_ftff, key))
         stat_keys.append(key)
     payload = build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=stat_keys).payload
-    groups: list[tuple[int, dict[str, Any], tuple[FgResponseSurface, ...]]] = []
-    pair_records: list[tuple[int, int, dict[str, Any], FgResponseFrontierResult, float, float]] = []
+    pair_records: list[_ResponsePair] = []
     for ft, ff, stats_after_ftff, (ft_stat, ff_stat) in pair_inputs:
         raw_fill, _non_fever_base, real_fever_time = payload.geometry_for_stats(ft_stat=ft_stat, ff_stat=ff_stat)
         frontier = payload.frontier_for_stats(ft_stat=ft_stat, ff_stat=ff_stat)
-        groups.append((int(total_budget) - int(ft) - int(ff), stats_after_ftff, frontier.first_frontier))
-        pair_records.append((int(ft), int(ff), stats_after_ftff, frontier, float(raw_fill), float(real_fever_time)))
+        residual = int(total_budget) - int(ft) - int(ff)
+        pair_records.append((int(ft), int(ff), int(residual), stats_after_ftff, frontier, float(raw_fill), float(real_fever_time)))
+
+    pair_records = _prune_dominated_ftff_response_pairs(
+        pair_records,
+        primary_color=str(song_inputs.primary_color or ""),
+        secondary_color=str(song_inputs.secondary_color or ""),
+    )
+    groups = [(int(residual), stats_after_ftff, frontier.first_frontier) for _ft, _ff, residual, stats_after_ftff, frontier, _raw_fill, _real_fever_time in pair_records]
 
     inner_rows, _surface_rows = _optimize_response_surfaces_gpu(
         groups,
@@ -184,7 +254,7 @@ def solve_force_greats_response_frontier_batch_gpu(
     if best_row is None or best_idx < 0:
         raise ValueError("response frontier exact GPU batch produced no pair result")
 
-    ft, ff, _stats_after_ftff, frontier, raw_fill, real_fever_time = pair_records[best_idx]
+    ft, ff, _residual, _stats_after_ftff, frontier, raw_fill, real_fever_time = pair_records[best_idx]
     inner = FgResponseInnerResult(
         best_score=int(best_row[0]),
         surface_index=int(best_row[1]),

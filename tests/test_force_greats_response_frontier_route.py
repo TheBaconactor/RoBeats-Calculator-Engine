@@ -236,6 +236,46 @@ def test_response_frontier_cache_validation_rejects_legacy_modes():
     assert is_cached_force_valid_for_response_frontier(payload, "Rush") is True
 
 
+def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+        _prune_dominated_ftff_response_pairs,
+    )
+
+    surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+    def frontier():
+        return FgResponseFrontierResult(
+            first_frontier=(surface,),
+            state_frontiers={},
+            states_evaluated=1,
+            actions=1,
+            transitions_evaluated=1,
+            generated_surfaces=1,
+            retained_surfaces_total=1,
+            max_state_frontier=1,
+            non_fever_base=5,
+            seconds=0.0,
+        )
+
+    pack_a = frontier()
+    pack_b = frontier()
+    dominated_same_pack = (1, 2, 10, {"Rush": 50, "Flow": 20}, pack_a, 0.0, 0.0)
+    dominator_same_pack = (0, 2, 11, {"Rush": 50, "Flow": 21}, pack_a, 0.0, 0.0)
+    same_stats_other_pack = (1, 2, 10, {"Rush": 50, "Flow": 20}, pack_b, 0.0, 0.0)
+
+    kept = _prune_dominated_ftff_response_pairs(
+        [dominated_same_pack, dominator_same_pack, same_stats_other_pack],
+        primary_color="Rush",
+        secondary_color="Flow",
+    )
+
+    assert any(pair is dominator_same_pack for pair in kept)
+    assert any(pair is same_stats_other_pack for pair in kept)
+    assert not any(pair is dominated_same_pack for pair in kept)
+
+
 def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     from types import SimpleNamespace
 
