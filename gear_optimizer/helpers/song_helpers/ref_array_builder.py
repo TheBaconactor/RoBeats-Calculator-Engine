@@ -30,16 +30,22 @@ _EXACT_REPLAY_REF_ARRAYS_CACHE: dict[str, np.ndarray] | None = None
 
 
 def build_ref_arrays_from_stats(stats_table, *, dtype=np.float64) -> dict[str, np.ndarray]:
+    if not stats_table or len(stats_table) < TOTAL_ROWS + 1:
+        raise ValueError(
+            f"Stats lookup table must contain at least {TOTAL_ROWS + 1} rows; "
+            f"got {len(stats_table) if stats_table else 0}"
+        )
     ref_arrays: dict[str, np.ndarray] = {}
     for i, name in enumerate(_STAT_NAMES):
         values = []
         for v in range(TOTAL_ROWS + 1):
             lookup_index = TOTAL_ROWS - v
             try:
-                val = stats_table[lookup_index][i] if stats_table else 0
-            except Exception as e:
-                logger.debug(f"ref_array_builder:build_ref_arrays_from_stats: {e}")
-                val = 0
+                val = stats_table[lookup_index][i]
+            except Exception as exc:
+                raise ValueError(
+                    f"Stats lookup table row {lookup_index} must contain {len(_STAT_NAMES)} columns"
+                ) from exc
             values.append(val)
         ref_arrays[name] = np.array(values, dtype=dtype)
     return ref_arrays
