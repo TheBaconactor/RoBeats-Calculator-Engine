@@ -254,29 +254,6 @@ def _full_budget_ftff_stat_keys() -> tuple[tuple[int, int], ...]:
     return tuple(sorted(out))
 
 
-def _parse_stat_keys(raw: str | None) -> tuple[tuple[int, int], ...]:
-    text = str(raw or "").strip()
-    if not text:
-        return ()
-    normalized = text.strip().lower().replace("_", "-")
-    if normalized in {"full", "full-budget", "budget", "budget-90", "all-budget"}:
-        return _full_budget_ftff_stat_keys()
-    out: set[tuple[int, int]] = set()
-    for token in text.replace(";", ",").split(","):
-        item = token.strip()
-        if not item:
-            continue
-        normalized_item = item.lower().replace("_", "-")
-        if normalized_item in {"full", "full-budget", "budget", "budget-90", "all-budget"}:
-            out.update(_full_budget_ftff_stat_keys())
-            continue
-        parts = item.replace(":", "/").split("/")
-        if len(parts) != 2:
-            raise ValueError(f"invalid FG response prebuild stat key: {item!r}")
-        out.add((safe_int(parts[0], 0), safe_int(parts[1], 0)))
-    return tuple(sorted(out))
-
-
 def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontierCachePrebuildSettings:
     scope = _cfg_get(
         cfg,
@@ -304,7 +281,6 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
         "FGResponseFrontierCachePrebuildExecutor",
         "process",
     )
-    stat_keys = _parse_stat_keys(_cfg_get(cfg, "FGResponseFrontierCachePrebuildStatKeys", ""))
 
     raw_scope = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_SCOPE")
     if raw_scope is not None and str(raw_scope).strip():
@@ -318,9 +294,6 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
     raw_executor = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_EXECUTOR")
     if raw_executor is not None and str(raw_executor).strip():
         executor = str(raw_executor).strip()
-    raw_stat_keys = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_STAT_KEYS")
-    if raw_stat_keys is not None and str(raw_stat_keys).strip():
-        stat_keys = _parse_stat_keys(raw_stat_keys)
 
     scope_key = str(scope or "pool").strip().lower()
     if scope_key not in {"queue", "pool", "all"}:
@@ -335,7 +308,7 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
         workers=int(workers),
         max_songs=max(0, int(max_songs or 0)),
         executor=executor_key,
-        stat_keys=tuple(stat_keys),
+        stat_keys=_full_budget_ftff_stat_keys(),
     )
 
 
@@ -451,10 +424,7 @@ def run_fg_response_frontier_cache_prebuild(
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
     if not settings.stat_keys:
-        logger.info(
-            "[FGResponseCache] Startup prebuild skipped: response-frontier cache is sparse and requires loadout FT/FF stat keys."
-        )
-        return FgResponseFrontierCachePrebuildSummary(total=0)
+        raise ValueError("FG response-frontier prebuild requires the full-budget FT/FF stat-key set")
 
     removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
     if int(removed_tmp) > 0:

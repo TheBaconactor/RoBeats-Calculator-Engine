@@ -185,13 +185,14 @@ def test_fg_response_frontier_prebuild_skips_warm_disk_cache(tmp_path: Path, mon
 
 
 def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_response_frontier_cache_prebuild
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         reset_fg_response_frontier_payload_cache,
     )
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_DISK_CACHE", "1")
+    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_full_budget_ftff_stat_keys", lambda: ((0, 0),))
     reset_fg_response_frontier_payload_cache()
     song_path = tmp_path / "unit_song.txt"
     _write_song(song_path)
@@ -201,9 +202,8 @@ def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monk
     cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildScope", "queue")
     cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildWorkers", "1")
     cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildExecutor", "thread")
-    cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildStatKeys", "0:0")
 
-    summary = run_fg_response_frontier_cache_prebuild(
+    summary = fg_response_frontier_cache_prebuild.run_fg_response_frontier_cache_prebuild(
         cfg=cfg,
         song_queue=[(str(song_path), "FG Cache Unit", "Easy")],
         ref_arrays=_ref_arrays(),
@@ -224,20 +224,24 @@ def test_fg_response_frontier_prebuild_defaults_to_parallel_gpu_build() -> None:
 
     assert settings.executor == "process"
     assert settings.workers == 0
+    assert len(settings.stat_keys) > 1000
 
 
-def test_fg_response_frontier_prebuild_full_budget_stat_keys(monkeypatch) -> None:
+def test_fg_response_frontier_prebuild_ignores_stat_key_flags(monkeypatch) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
         read_fg_response_frontier_cache_prebuild_settings,
     )
 
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_STAT_KEYS", "full-budget")
+    cfg = configparser.ConfigParser()
+    cfg.add_section("IterationEngine")
+    cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildStatKeys", "0:0")
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_STAT_KEYS", "0:0")
+    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_full_budget_ftff_stat_keys", lambda: ((7, 8),))
 
-    settings = read_fg_response_frontier_cache_prebuild_settings(None)
+    settings = read_fg_response_frontier_cache_prebuild_settings(cfg)
 
-    assert len(settings.stat_keys) > 1000
-    assert settings.stat_keys == tuple(sorted(settings.stat_keys))
-    assert (0, 0) in settings.stat_keys
+    assert settings.stat_keys == ((7, 8),)
 
 
 def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatch) -> None:
