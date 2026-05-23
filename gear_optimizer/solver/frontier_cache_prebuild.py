@@ -44,8 +44,8 @@ def run_frontier_cache_prebuilds(
     Coordinate exact frontier cache construction before Taichi scoring.
 
     Timeline frontier construction intentionally remains on the existing CPU
-    path. FG response-frontier construction uses its sparse loadout-key cache
-    owner and may skip when no exact FT/FF stat-key set is known yet.
+    path. FG response-frontier construction uses the exact full-budget FT/FF
+    cache owner and runs unconditionally during startup.
     """
     queue_items = list(song_queue or [])
     started = time.perf_counter()

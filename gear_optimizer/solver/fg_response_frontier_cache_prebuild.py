@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_timeline_frontier_cache_paths
 
 logger = logging.getLogger(__name__)
@@ -45,10 +43,6 @@ class FgResponseFrontierCachePrebuildSummary:
 
 @dataclass(frozen=True)
 class FgResponseFrontierCachePrebuildSettings:
-    scope: str = "pool"
-    workers: int = 0
-    max_songs: int = 0
-    executor: str = "process"
     stat_keys: tuple[tuple[int, int], ...] = ()
 
 
@@ -75,13 +69,13 @@ class FgResponseFrontierCachePrebuilder:
     def __init__(
         self,
         *,
-        settings: FgResponseFrontierCachePrebuildSettings,
         song_paths: list[str],
         ref_arrays: dict,
+        stat_keys: tuple[tuple[int, int], ...],
     ):
-        self.settings = settings
         self.song_paths = list(song_paths)
         self.ref_arrays = dict(ref_arrays)
+        self.stat_keys = tuple(stat_keys or ())
         self._executor: concurrent.futures.Executor | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -91,12 +85,11 @@ class FgResponseFrontierCachePrebuilder:
     def start(self) -> None:
         if not self.song_paths:
             return
-        worker_count = _resolve_prebuild_worker_count(self.settings.workers)
+        worker_count = _resolve_prebuild_worker_count()
         self._executor = _build_prebuild_executor(
-            executor_kind=self.settings.executor,
             worker_count=worker_count,
             ref_arrays=self.ref_arrays,
-            stat_keys=self.settings.stat_keys,
+            stat_keys=self.stat_keys,
         )
         self._thread = threading.Thread(
             target=self.run_to_completion,
@@ -109,14 +102,13 @@ class FgResponseFrontierCachePrebuilder:
         if not self.song_paths:
             self.summary = FgResponseFrontierCachePrebuildSummary(total=0)
             return self.summary
-        worker_count = _resolve_prebuild_worker_count(self.settings.workers)
+        worker_count = _resolve_prebuild_worker_count()
         owns_executor = self._executor is None
         if owns_executor:
             self._executor = _build_prebuild_executor(
-                executor_kind=self.settings.executor,
                 worker_count=worker_count,
                 ref_arrays=self.ref_arrays,
-                stat_keys=self.settings.stat_keys,
+                stat_keys=self.stat_keys,
             )
         try:
             return self._run()
@@ -159,7 +151,7 @@ class FgResponseFrontierCachePrebuilder:
                     build_fg_response_frontier_cache_for_path,
                     path,
                     self.ref_arrays,
-                    stat_keys=self.settings.stat_keys,
+                    stat_keys=self.stat_keys,
                 ): path
                 for path in self.song_paths
                 if not self._stop.is_set()
@@ -226,16 +218,6 @@ class FgResponseFrontierCachePrebuilder:
         return self.summary
 
 
-def _cfg_get(cfg, option: str, fallback: str) -> str:
-    if cfg is None:
-        return fallback
-    try:
-        return str(cfg.get("IterationEngine", option, fallback=fallback) or fallback)
-    except Exception as exc:
-        logger.debug("fg_response_frontier_cache_prebuild:_cfg_get: %s", exc)
-        return fallback
-
-
 def _full_budget_ftff_stat_keys() -> tuple[tuple[int, int], ...]:
     from gear_optimizer.core.constants import TOTAL_GEM_BUDGET, TOTAL_ROWS
     from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
@@ -254,88 +236,22 @@ def _full_budget_ftff_stat_keys() -> tuple[tuple[int, int], ...]:
     return tuple(sorted(out))
 
 
-def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontierCachePrebuildSettings:
-    scope = _cfg_get(
-        cfg,
-        "FGResponseFrontierCachePrebuildScope",
-        _cfg_get(cfg, "TimelineFrontierCachePrebuildScope", "pool"),
-    )
-    workers = safe_int(
-        _cfg_get(
-            cfg,
-            "FGResponseFrontierCachePrebuildWorkers",
-            "0",
-        ),
-        0,
-    )
-    max_songs = safe_int(
-        _cfg_get(
-            cfg,
-            "FGResponseFrontierCachePrebuildMaxSongs",
-            _cfg_get(cfg, "TimelineFrontierCachePrebuildMaxSongs", "0"),
-        ),
-        0,
-    )
-    executor = _cfg_get(
-        cfg,
-        "FGResponseFrontierCachePrebuildExecutor",
-        "process",
-    )
-
-    raw_scope = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_SCOPE")
-    if raw_scope is not None and str(raw_scope).strip():
-        scope = str(raw_scope).strip()
-    raw_workers = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_WORKERS")
-    if raw_workers is not None and str(raw_workers).strip():
-        workers = safe_int(raw_workers, workers)
-    raw_max = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_MAX_SONGS")
-    if raw_max is not None and str(raw_max).strip():
-        max_songs = safe_int(raw_max, max_songs)
-    raw_executor = env_get("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_EXECUTOR")
-    if raw_executor is not None and str(raw_executor).strip():
-        executor = str(raw_executor).strip()
-
-    scope_key = str(scope or "pool").strip().lower()
-    if scope_key not in {"queue", "pool", "all"}:
-        scope_key = "pool"
-
-    executor_key = str(executor or "process").strip().lower()
-    if executor_key not in {"process", "thread"}:
-        executor_key = "process"
-
+def read_fg_response_frontier_cache_prebuild_settings(_cfg) -> FgResponseFrontierCachePrebuildSettings:
     return FgResponseFrontierCachePrebuildSettings(
-        scope=scope_key,
-        workers=int(workers),
-        max_songs=max(0, int(max_songs or 0)),
-        executor=executor_key,
         stat_keys=_full_budget_ftff_stat_keys(),
     )
 
 
-def _resolve_prebuild_worker_count(raw_workers: int) -> int:
-    try:
-        workers = int(raw_workers)
-    except Exception as exc:
-        logger.debug("fg_response_frontier_cache_prebuild:_resolve_prebuild_worker_count: %s", exc)
-        workers = 0
-    if workers <= 0:
-        workers = min(8, int(os.cpu_count() or 1))
-    return max(1, workers)
+def _resolve_prebuild_worker_count() -> int:
+    return max(1, min(8, int(os.cpu_count() or 1)))
 
 
 def _build_prebuild_executor(
     *,
-    executor_kind: str,
     worker_count: int,
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
 ) -> concurrent.futures.Executor:
-    kind = str(executor_kind or "process").strip().lower()
-    if kind == "thread":
-        return concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, int(worker_count)),
-            thread_name_prefix="FGResponseCacheBuild",
-        )
     return concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(worker_count)),
         initializer=_init_prebuild_worker,
@@ -402,10 +318,8 @@ def _fg_response_frontier_prebuild_paths(
     paths = ordered_timeline_frontier_cache_paths(
         queue_paths=queue_paths,
         data_root=data_root,
-        scope=settings.scope,
+        scope="pool",
     )
-    if settings.max_songs > 0:
-        paths = paths[: int(settings.max_songs)]
     return settings, paths
 
 
@@ -430,7 +344,11 @@ def run_fg_response_frontier_cache_prebuild(
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
 
-    prebuilder = FgResponseFrontierCachePrebuilder(settings=settings, song_paths=paths, ref_arrays=ref_arrays)
+    prebuilder = FgResponseFrontierCachePrebuilder(
+        song_paths=paths,
+        ref_arrays=ref_arrays,
+        stat_keys=settings.stat_keys,
+    )
     return prebuilder.run_to_completion()
 
 

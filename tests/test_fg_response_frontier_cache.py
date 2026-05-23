@@ -184,7 +184,9 @@ def test_fg_response_frontier_prebuild_skips_warm_disk_cache(tmp_path: Path, mon
     assert second.skipped is True
 
 
-def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monkeypatch) -> None:
+def test_run_fg_response_frontier_prebuild_uses_pool_scope(tmp_path: Path, monkeypatch) -> None:
+    import concurrent.futures
+
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         reset_fg_response_frontier_payload_cache,
@@ -193,15 +195,23 @@ def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monk
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_DISK_CACHE", "1")
     monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_full_budget_ftff_stat_keys", lambda: ((0, 0),))
+    seen_scope: list[str] = []
+
+    def _fake_paths(*, queue_paths, data_root, scope):
+        seen_scope.append(str(scope))
+        return list(queue_paths)
+
+    def _thread_executor(*, worker_count, ref_arrays, stat_keys):
+        return concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "ordered_timeline_frontier_cache_paths", _fake_paths)
+    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_build_prebuild_executor", _thread_executor)
     reset_fg_response_frontier_payload_cache()
     song_path = tmp_path / "unit_song.txt"
     _write_song(song_path)
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildScope", "queue")
-    cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildWorkers", "1")
-    cfg.set("IterationEngine", "FGResponseFrontierCachePrebuildExecutor", "thread")
 
     summary = fg_response_frontier_cache_prebuild.run_fg_response_frontier_cache_prebuild(
         cfg=cfg,
@@ -213,17 +223,16 @@ def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monk
     assert summary.completed == 1
     assert summary.failures == 0
     assert summary.built == 1
+    assert seen_scope == ["pool"]
 
 
-def test_fg_response_frontier_prebuild_defaults_to_parallel_gpu_build() -> None:
+def test_fg_response_frontier_prebuild_defaults_to_full_budget_keys() -> None:
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
         read_fg_response_frontier_cache_prebuild_settings,
     )
 
     settings = read_fg_response_frontier_cache_prebuild_settings(None)
 
-    assert settings.executor == "process"
-    assert settings.workers == 0
     assert len(settings.stat_keys) > 1000
 
 
@@ -242,6 +251,27 @@ def test_fg_response_frontier_prebuild_ignores_stat_key_flags(monkeypatch) -> No
     settings = read_fg_response_frontier_cache_prebuild_settings(cfg)
 
     assert settings.stat_keys == ((7, 8),)
+
+
+def test_fg_response_frontier_prebuild_has_no_public_flags() -> None:
+    forbidden = (
+        "FGResponseFrontierCachePrebuildScope",
+        "FGResponseFrontierCachePrebuildWorkers",
+        "FGResponseFrontierCachePrebuildMaxSongs",
+        "FGResponseFrontierCachePrebuildExecutor",
+        "FGResponseFrontierCachePrebuildStatKeys",
+        "FG_RESPONSE_FRONTIER_CACHE_PREBUILD",
+    )
+    paths = list(Path("gear_optimizer").rglob("*.py")) + [Path("config.ini"), Path("config.profile.ini")]
+    offenders: list[tuple[str, str]] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for token in forbidden:
+            if token in text:
+                offenders.append((str(path), token))
+    assert offenders == []
 
 
 def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatch) -> None:
