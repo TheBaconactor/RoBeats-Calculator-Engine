@@ -1,8 +1,12 @@
 """
-Run repeatable GA/FG kernel-shape sweeps using the maintained microbenches.
+Run repeatable GA kernel-shape sweeps using the maintained microbenches.
 
 This harness always launches each case in a fresh subprocess so Taichi/kernel env
 overrides that are cached at import time are measured correctly.
+
+Note: the legacy finder FG batch microbench was removed with the Bellman-only FG
+production route. Use `tools/bench/bench_fg_bundle_real_song.py` for real-song FG
+profiling instead.
 """
 
 from __future__ import annotations
@@ -74,28 +78,8 @@ def build_ga_sweep_cases(
     return cases
 
 
-def build_fg_sweep_cases(
-    *,
-    stage1_block_dims: list[int],
-    target_threads: list[int],
-) -> list[dict[str, Any]]:
-    cases: list[dict[str, Any]] = []
-    for stage1_block_dim, target_thread_budget in itertools.product(stage1_block_dims, target_threads):
-        env = {
-            "FG_STAGE1_BLOCK_DIM": int(stage1_block_dim),
-            "FG_TARGET_THREADS_PER_KERNEL": int(target_thread_budget),
-        }
-        label = f"stage1_{int(stage1_block_dim)}_threads_{int(target_thread_budget)}"
-        cases.append({"label": label, "env": env})
-    return cases
-
-
 def rank_ga_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(results, key=lambda item: float(item.get("iters_per_sec", 0.0)), reverse=True)
-
-
-def rank_fg_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(results, key=lambda item: float(item.get("steady_iters_per_sec", 0.0)), reverse=True)
 
 
 def _default_out_path() -> Path:
@@ -160,7 +144,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=("ga", "fg", "both"), default="both")
+    ap.add_argument("--mode", choices=("ga",), default="ga")
     ap.add_argument("--out", type=str, default="", help="Write sweep results JSON to this path.")
     ap.add_argument("--top", type=int, default=5, help="How many top cases to print per sweep.")
     ap.add_argument("--dry-run", action="store_true", help="Print the planned cases without executing them.")
@@ -178,31 +162,16 @@ def main() -> int:
     ap.add_argument("--ga-prune-plateaus", type=int, default=1)
     ap.add_argument("--ga-kernel-profiler", action="store_true")
 
-    ap.add_argument("--fg-stage1-block-dims", default="64,128")
-    ap.add_argument("--fg-target-threads", default="2000000,4000000,6000000")
-    ap.add_argument("--fg-mode", choices=("executor", "direct"), default="direct")
-    ap.add_argument("--fg-genomes", type=int, default=1024)
-    ap.add_argument("--fg-sections", type=int, default=3)
-    ap.add_argument("--fg-max-fp", default="5,5,5")
-    ap.add_argument("--fg-tasks", type=int, default=16)
-    ap.add_argument("--fg-ftff", type=int, default=128)
-    ap.add_argument("--fg-iters", type=int, default=4)
-    ap.add_argument("--fg-warmup", type=int, default=1)
-    ap.add_argument("--fg-seed", type=int, default=1337)
-    ap.add_argument("--fg-reuse-genome-stats", action="store_true")
-    ap.add_argument("--fg-no-profiler", action="store_true")
-    ap.add_argument("--fg-kernel-profiler", action="store_true")
     args = ap.parse_args()
 
     payload: dict[str, Any] = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "mode": str(args.mode),
         "ga": None,
-        "fg": None,
     }
     out_path = Path(str(args.out)).resolve() if str(args.out).strip() else _default_out_path()
 
-    if args.mode in {"ga", "both"}:
+    if args.mode == "ga":
         ga_cases = build_ga_sweep_cases(
             taichi_block_dims=parse_csv_ints(str(args.ga_taichi_block_dims)),
             reduce_block_dims=parse_csv_ints(str(args.ga_reduce_block_dims)),
@@ -254,68 +223,6 @@ def main() -> int:
             ranked = rank_ga_results(ga_results)
             payload["ga"] = {
                 "cases": ga_results,
-                "best": ranked[0] if ranked else None,
-                "top": ranked[: max(1, int(args.top))],
-            }
-
-    if args.mode in {"fg", "both"}:
-        fg_cases = build_fg_sweep_cases(
-            stage1_block_dims=parse_csv_ints(str(args.fg_stage1_block_dims)),
-            target_threads=parse_csv_ints(str(args.fg_target_threads)),
-        )
-        print(f"[fg] planned cases: {len(fg_cases)}")
-        if args.dry_run:
-            for case in fg_cases:
-                print(f"  - {case['label']}: {case['env']}")
-        else:
-            fg_results: list[dict[str, Any]] = []
-            for idx, case in enumerate(fg_cases, start=1):
-                print(f"[fg] case {idx}/{len(fg_cases)} {case['label']}")
-                script_args = [
-                    "--mode",
-                    str(args.fg_mode),
-                    "--genomes",
-                    str(int(args.fg_genomes)),
-                    "--sections",
-                    str(int(args.fg_sections)),
-                    "--max-fp",
-                    str(args.fg_max_fp),
-                    "--tasks",
-                    str(int(args.fg_tasks)),
-                    "--ftff",
-                    str(int(args.fg_ftff)),
-                    "--iters",
-                    str(int(args.fg_iters)),
-                    "--warmup",
-                    str(int(args.fg_warmup)),
-                    "--seed",
-                    str(int(args.fg_seed)),
-                ]
-                if args.fg_reuse_genome_stats:
-                    script_args.append("--reuse-genome-stats")
-                if args.fg_no_profiler:
-                    script_args.append("--no-profiler")
-                if args.fg_kernel_profiler:
-                    script_args.append("--kernel-profiler")
-                result = _run_case(
-                    script_relative_path="tools/bench/bench_fg_batch_throughput.py",
-                    script_args=script_args,
-                    env_overrides=case["env"],
-                    verbose=bool(args.verbose),
-                )
-                result["label"] = case["label"]
-                fg_results.append(result)
-                kernel_pct = result.get("kernel_profiler_wall_pct")
-                kernel_suffix = (
-                    f" kernel%={float(kernel_pct):.2f}" if isinstance(kernel_pct, (float, int)) else ""
-                )
-                print(
-                    f"  -> steady_mean={float(result.get('steady_mean_wall_sec', 0.0)):.6f}s "
-                    f"steady_iters/sec={float(result.get('steady_iters_per_sec', 0.0)):.3f}{kernel_suffix}"
-                )
-            ranked = rank_fg_results(fg_results)
-            payload["fg"] = {
-                "cases": fg_results,
                 "best": ranked[0] if ranked else None,
                 "top": ranked[: max(1, int(args.top))],
             }

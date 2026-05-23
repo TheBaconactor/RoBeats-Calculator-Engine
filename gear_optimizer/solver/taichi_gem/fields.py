@@ -36,7 +36,6 @@ MAX_TIMELINE_FRONTIER_SURFACES = max(1, min(int(MAX_TIMELINE_FRONTIER_SURFACES),
 MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
-MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 GA_FTFF_REDUCE_BLOCK_DIM = env_int(
     "GA_FTFF_REDUCE_BLOCK_DIM", 256
 )  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
@@ -79,9 +78,6 @@ song_group_starts: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> first 
 song_group_base_t_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms
 song_group_low_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> min feasible carry (ms)
 song_group_high_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> max feasible carry (ms)
-bp_pair_ft: ti.Field = None  # (MAX_BP_PAIRS,) i32
-bp_pair_ff: ti.Field = None  # (MAX_BP_PAIRS,) i32
-bp_result_mask: ti.Field = None  # (16, 64) i32
 genome_base_stats: ti.Field = None
 population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (genome,slot)
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
@@ -200,7 +196,6 @@ def reset_fields_state() -> None:
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
-    global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
     global item_stats, base_fixed_stats
@@ -265,9 +260,6 @@ def reset_fields_state() -> None:
     song_group_base_t_ms = None
     song_group_low_ms = None
     song_group_high_ms = None
-    bp_pair_ft = None
-    bp_pair_ff = None
-    bp_result_mask = None
     genome_base_stats = None
     population_indices = None
     population_next_indices = None
@@ -408,7 +400,6 @@ def allocate_fields():
     """
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global exact_pp_best_gems_prefix
-    global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global \
         population_indices, \
@@ -457,9 +448,6 @@ def allocate_fields():
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
     exact_pp_best_gems_prefix = ti.field(dtype=ti.i16, shape=(16, GRID_SIZE, MAX_TOTAL_BUDGET + 1))
-    bp_pair_ft = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
-    bp_pair_ff = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
-    bp_result_mask = ti.field(dtype=ti.i32, shape=(16, 64))
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
     population_next_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
@@ -744,13 +732,6 @@ def bind_fields(kernels_module):
     target.island_boundaries = island_boundaries
     target.island_elite_indices = island_elite_indices
     target.island_elite_count = island_elite_count
-    try:
-        from .kernels import kernels_breakpoints
-        kernels_breakpoints.bp_pair_ft = bp_pair_ft
-        kernels_breakpoints.bp_pair_ff = bp_pair_ff
-        kernels_breakpoints.bp_result_mask = bp_result_mask
-    except Exception as e:
-        logger.debug(f"fields:bind_fields: {e}")
 def ensure_fields_allocated():
     """
     Ensure Taichi is initialized and fields are allocated.

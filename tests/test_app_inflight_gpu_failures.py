@@ -14,13 +14,11 @@ def _make_minimal_app() -> GearOptimizerApp:
     app = object.__new__(GearOptimizerApp)
     app._progress = None
     app._progress_counts_driven = False
-    app._robeatsmeta_api = None
     app._stop_requested_now = lambda: False
     app._start_post_processor = lambda _total: (object(), object())
     app._stop_post_processor = lambda _queue, _proc: None
     app._set_runtime_progress_counts = lambda **_kwargs: None
     app._progress_event = lambda **_kwargs: None
-    app._maybe_mark_robeatsmeta_song_batch_computed = lambda *_args, **_kwargs: None
     app._effective_total_tasks = lambda tasks: len(tasks or [])
     return app
 
