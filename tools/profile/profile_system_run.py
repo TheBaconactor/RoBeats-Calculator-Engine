@@ -1675,12 +1675,8 @@ def _parse_gpu_executor_trace(trace_path: Path | list[Path] | tuple[Path, ...]) 
 
     fg_type_names = {
         "process_force_greats",
-        "solve_force_greats_finder_gpu",
-        "fg_reset_global_best",
-        "fg_download_global_best",
-        "fg_solve_with_breakpoints",
-        "fg_solve_with_breakpoints_batch",
-        "ga_fg_fused_solve_with_breakpoints",
+        "process_force_greats_bellman_fixed_gpu",
+        "solve_force_greats_bellman_fixed_stats_gpu",
     }
 
     def _batch_req_count(types: str) -> int:

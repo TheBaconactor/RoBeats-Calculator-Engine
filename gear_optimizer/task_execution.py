@@ -159,7 +159,6 @@ class TaskExecutionMixin:
                         post_queue=post_queue,
                         stop_requested=self._stop_requested_now,
                         progress_cb=self._progress_event,
-                        bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
                     )
                 )
                 return
