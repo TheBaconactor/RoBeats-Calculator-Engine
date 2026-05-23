@@ -373,12 +373,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             is_fresh_queue = ignore_resume or not memory_resume_exists
             if is_fresh_queue:
                 self._stats_verified_once = True
-            ie = runtime_settings.iteration_engine
-            fg_debug = bool(ie.force_greats_debug)
-            if ie.manual_force_greats:
-                fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
-            else:
-                fg_status = "Bellman"
+            fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
+            fg_status = "Bellman"
             logger.info(f" >> [ForceGreats] {fg_status}")
             ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)

@@ -4,6 +4,7 @@ This folder stores standalone research artifacts that are not required for day-t
 
 ## Files
 
+- `inventory_coverage_complexity.md` — NP-completeness proof, reduction analysis, structural theorems for the inventory coverage problem
 - `math_first_rewrite_proposal.md`
 
 ## Bundles

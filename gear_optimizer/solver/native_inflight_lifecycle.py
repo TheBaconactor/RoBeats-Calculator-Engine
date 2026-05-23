@@ -895,8 +895,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     fixed_stats = prepared_config.fixed_stats
     current_gear_list = prepared_config.current_gear_list
     current_mini_list = prepared_config.current_mini_list
-    force_greats_config = prepared_config.force_greats_config
-    manual_force_greats = prepared_config.manual_force_greats
     db_context = prepared_core.db_context
     db_key = db_context.db_key
     prev_record = db_context.prev_record
@@ -1049,8 +1047,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             fixed_stats=fixed_stats,
             current_gear_list=current_gear_list,
             current_mini_list=current_mini_list,
-            force_greats_config=force_greats_config,
-            manual_force_greats=bool(manual_force_greats),
             registry=registry,
             cfg_data=cfg_data,
             color_flags=color_flags,

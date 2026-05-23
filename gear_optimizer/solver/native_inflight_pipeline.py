@@ -299,29 +299,8 @@ class NativeFGPipeline:
         external_song_groups: Iterable[Iterable[NativeSong]] = (),
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
-        if int(self.settings.static_prep_max_inflight) <= 0:
-            return False
-        if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-            return False
-        if getattr(song.runtime.fg, "fg_static_prep_future", None) is not None:
-            return False
-        if bool(getattr(song.runtime.fg, "fg_static_prep_done", False)):
-            return False
-        if int(self.active_static_prep_count(*external_song_groups)) >= int(self.static_prep_budget()):
-            return False
-        try:
-            static_future = self.prep_executor.submit(prep_fn, song)
-            song.runtime.fg.fg_static_prep_future = static_future
-            if register_future is not None:
-                register_future(static_future)
-            return True
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:start_static_prep: {e}")
-            try:
-                song.runtime.fg.fg_static_prep_future = None
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:start_static_prep: {e}")
-            return False
+        _ = song, prep_fn, external_song_groups, register_future
+        return False
     def start_pending_prep(
         self,
         prep_fn: Callable[..., Any],
@@ -581,8 +560,6 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
-    if bool(getattr(song.gpu_inputs, "manual_force_greats", False)):
-        raise RuntimeError("Manual ForceGreats is not supported by the GPU Bellman production path")
     try:
         emit_profile_event(
             component="inflight_fg_worker",
@@ -608,17 +585,14 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+    song.runtime.fg.fg_direct_ga_candidates = True
     fg_variants = process_force_greats(
         getattr(song.runtime.fg, "loadout_entries", None) or {},
         active_fg_calc_song,
         getattr(song.gpu_inputs, "ref_arrays", None),
         getattr(song.gpu_inputs, "meta_primary_color", ""),
-        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None)
-        if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
-        else None,
-        ga_registry=getattr(song.gpu_inputs, "registry", None)
-        if bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))
-        else None,
+        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
+        ga_registry=getattr(song.gpu_inputs, "registry", None),
     )
     song.runtime.fg.fg_variants = list(fg_variants or [])
     try:
@@ -1089,19 +1063,13 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
+    runtime.fg.fg_direct_ga_candidates = True
     song.runtime.fg.fg_build_details = make_build_details_fn(
         gpu_inputs.meta_primary_color,
         gpu_inputs.meta_secondary_color,
         config.effective_difficulty,
     )
     resolve_active_fg_calc_song(song)
-    if not bool(runtime.fg.fg_direct_ga_candidates):
-        try:
-            song.runtime.fg.fg_static_prep_done = True
-        except AttributeError:
-            pass
-        return
     if getattr(song.runtime.fg, "loadout_entries", None) is not None:
         try:
             song.runtime.fg.fg_static_prep_done = True
@@ -1176,7 +1144,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     t_candidate_select = time.perf_counter()
     runtime.decode.ga_candidates = ga_candidates
     hydrated_fg_stats = False
-    if not bool(getattr(song.gpu_inputs, "manual_force_greats", False)) and ga_candidates:
+    if ga_candidates:
         hydrated_fg_stats = True
         hydrate_fg_candidate_stats(
             ga_candidates,
@@ -1192,12 +1160,11 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             gpu_inputs.meta_primary_color, gpu_inputs.meta_secondary_color, config.effective_difficulty
         )
         song.runtime.fg.fg_build_details = build_details
-    runtime.fg.fg_direct_ga_candidates = not bool(gpu_inputs.manual_force_greats)
-    loadout_ga_candidates = [] if bool(runtime.fg.fg_direct_ga_candidates) else list(ga_candidates or [])
-    if getattr(song.runtime.fg, "loadout_entries", None) is None or not bool(runtime.fg.fg_direct_ga_candidates):
+    runtime.fg.fg_direct_ga_candidates = True
+    if getattr(song.runtime.fg, "loadout_entries", None) is None:
         runtime.fg.loadout_entries = build_loadout_entries(
             config.db_key,
-            loadout_ga_candidates,
+            [],
             gpu_inputs.gears_by_name,
             gpu_inputs.minis_by_name,
             build_details,

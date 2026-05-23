@@ -329,19 +329,8 @@ def test_native_fg_pipeline_start_static_prep_counts_external_and_owned_lanes():
         assert pipeline.start_static_prep(disabled, lambda _song: None) is False
         assert disabled.runtime.fg.fg_static_prep_future is None
 
-        external = make_native_song(
-            task_key="external",
-            song_name="External",
-            manual_force_greats=True,
-        )
-        external.runtime.fg.fg_static_prep_future = Future()
-        pipeline.pending.append(external)
-
-        song = make_native_song(
-            task_key="static-a",
-            song_name="Static A",
-            manual_force_greats=True,
-        )
+        external = make_native_song(task_key="external", song_name="External")
+        song = make_native_song(task_key="static-a", song_name="Static A")
         registered: list[Future] = []
 
         def _static_prep(_song):
@@ -354,19 +343,10 @@ def test_native_fg_pipeline_start_static_prep_counts_external_and_owned_lanes():
                 external_song_groups=([external],),
                 register_future=registered.append,
             )
-            is True
+            is False
         )
-        assert len(registered) == 1
-        assert song.runtime.fg.fg_static_prep_future is registered[0]
-        assert pipeline.active_static_prep_count([external, song]) == 2
-
-        blocked = make_native_song(
-            task_key="static-b",
-            song_name="Static B",
-            manual_force_greats=True,
-        )
-        assert pipeline.start_static_prep(blocked, _static_prep, external_song_groups=([song],)) is False
-        assert blocked.runtime.fg.fg_static_prep_future is None
+        assert registered == []
+        assert song.runtime.fg.fg_static_prep_future is None
     finally:
         release.set()
         if external is not None and isinstance(external.runtime.fg.fg_static_prep_future, Future):

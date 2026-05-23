@@ -56,14 +56,10 @@ def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
 
     Returns:
         tuple: (ga_settings, fixed_stats, current_gear_stats, current_gear_list,
-                current_mini_stats, current_mini_list, force_greats_config,
-                manual_force_greats)
+                current_mini_stats, current_mini_list)
     """
+    read_iteration_engine_settings(cfg)
     ga_settings = GAEvolutionSettings.from_cfg(cfg)
-
-    ie = read_iteration_engine_settings(cfg)
-    force_greats_config = list(ie.force_greats_config or [])
-    manual_force_greats = bool(ie.manual_force_greats)
 
     team_buff, team_color = apply_baseline_team_buff_config(cfg, calc_song)
     # Keep auto-buff selection silent so the UI stays clean.
@@ -86,6 +82,4 @@ def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
         current_gear_list,
         current_mini_stats,
         current_mini_list,
-        force_greats_config,
-        manual_force_greats,
     )

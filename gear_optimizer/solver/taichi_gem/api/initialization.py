@@ -93,6 +93,7 @@ def _build_exact_pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
 # Stores (n_genomes, hash_bytes) of last uploaded stats
 _GENOME_STATS_CACHE = None
 _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
+_TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
 
 def hard_reset_taichi(*, reason: str | None = None) -> None:
@@ -102,7 +103,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     Intended as a recovery path for Vulkan backend failures (e.g. semaphore
     allocation errors) and long-running sessions.
     """
-    global _ref_loaded, _last_ref_arrays_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE
+    global _ref_loaded, _last_ref_arrays_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE, _TIMING_RESPONSE_COMBO_CACHE
 
     # Reset runtime first (frees Vulkan resources)
     _reset_taichi_runtime(reason=reason)
@@ -127,6 +128,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _last_ref_arrays_sig = None
     _GENOME_STATS_CACHE = None
     _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
+    _TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
     try:
         from .timeline import reset_timeline_state as _reset_timeline_state
@@ -205,6 +207,65 @@ def _ensure_ftff_combo_tables(
     _FTFF_COMBO_CACHE["key"] = cache_key
     _FTFF_COMBO_CACHE["n_combos"] = n_combos
     return n_combos
+
+
+def _ensure_timing_response_combo_tables(
+    *,
+    combo_ft: np.ndarray,
+    combo_ff: np.ndarray,
+    cache_key: object,
+) -> int:
+    ensure_ready()
+    ft_vals = np.asarray(combo_ft, dtype=np.int32).reshape(-1)
+    ff_vals = np.asarray(combo_ff, dtype=np.int32).reshape(-1)
+    if ft_vals.shape != ff_vals.shape:
+        raise ValueError("timing response FT/FF combo arrays must have the same shape")
+    n_combos = int(ft_vals.shape[0])
+    if n_combos <= 0:
+        raise ValueError("timing response combo table is empty")
+    if n_combos > int(fields.MAX_TIMING_RESPONSE_COMBOS):
+        raise ValueError(
+            "timing response combo table exceeds GPU capacity: "
+            f"{n_combos} > {int(fields.MAX_TIMING_RESPONSE_COMBOS)}"
+        )
+
+    table_key = ("timing-response", cache_key, int(n_combos))
+    if _TIMING_RESPONSE_COMBO_CACHE.get("key") == table_key:
+        return int(_TIMING_RESPONSE_COMBO_CACHE.get("n_combos") or 0)
+
+    ft = np.zeros((int(fields.MAX_TIMING_RESPONSE_COMBOS),), dtype=np.int32)
+    ff = np.zeros((int(fields.MAX_TIMING_RESPONSE_COMBOS),), dtype=np.int32)
+    ft[:n_combos] = ft_vals
+    ff[:n_combos] = ff_vals
+
+    fields.timing_response_combo_ft.from_numpy(ft)
+    fields.timing_response_combo_ff.from_numpy(ff)
+    _TIMING_RESPONSE_COMBO_CACHE["key"] = table_key
+    _TIMING_RESPONSE_COMBO_CACHE["n_combos"] = n_combos
+    return n_combos
+
+
+def _upload_timing_response_genome_rows(
+    *,
+    genome_offsets: np.ndarray,
+    genome_lengths: np.ndarray,
+    n_genomes: int,
+) -> None:
+    ensure_ready()
+    n = int(n_genomes)
+    if n < 0 or n > int(fields.MAX_GENOMES):
+        raise ValueError(f"n_genomes={n} outside supported range 0..{int(fields.MAX_GENOMES)}")
+    offsets_in = np.asarray(genome_offsets, dtype=np.int32).reshape(-1)
+    lengths_in = np.asarray(genome_lengths, dtype=np.int32).reshape(-1)
+    if offsets_in.shape[0] < n or lengths_in.shape[0] < n:
+        raise ValueError("timing response genome offset/length arrays are shorter than n_genomes")
+
+    offsets = np.zeros((int(fields.MAX_GENOMES),), dtype=np.int32)
+    lengths = np.zeros((int(fields.MAX_GENOMES),), dtype=np.int32)
+    offsets[:n] = offsets_in[:n]
+    lengths[:n] = lengths_in[:n]
+    fields.timing_response_genome_offset.from_numpy(offsets)
+    fields.timing_response_genome_length.from_numpy(lengths)
 
 
 # ============================================================================

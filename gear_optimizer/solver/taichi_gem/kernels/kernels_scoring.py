@@ -406,6 +406,73 @@ def _semi_exact_upper_bound(
 
 
 @ti.func
+def response_score_upper_bound_relaxed(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.f32:
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
+    w_pp: ti.i32 = (pp_p_delta << 1) + pp_s_delta
+    w_cm: ti.i32 = (cm_p_delta << 1) + cm_s_delta
+    w_fm: ti.i32 = (fm_p_delta << 1) + fm_s_delta
+    w_ov: ti.i32 = (ov_p_delta << 1) + ov_s_delta
+    w_max: ti.i32 = ti.max(ti.max(w_pp, w_cm), ti.max(w_fm, w_ov))
+
+    pp_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_pp + (budget * GEM_SCALE_NORMAL)))
+    cm_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_cm + (budget * GEM_SCALE_NORMAL)))
+    fm_stat: ti.i32 = ti.min(MAX_STAT, ti.max(0, cur_fm + (budget * GEM_SCALE_FEVER)))
+
+    base_lane: ti.i32 = (cur_p_val << 1) + cur_s_val + (budget * w_max)
+    base_value: ti.f32 = ti.cast(base_lane, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+    combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+    fever_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+    head_len_c: ti.i32 = ti.max(0, ti.min(head_len, 100))
+    sigma_hf: ti.i32 = (head_len_c * (head_len_c + 1)) // 2
+    body_total: ti.i32 = ti.max(0, count_fever + count_normal)
+
+    return _semi_exact_upper_bound(
+        base_value,
+        combo_mul,
+        fever_mul,
+        body_total,
+        0,
+        0,
+        head_len_c,
+        0,
+        sigma_hf,
+    )
+
+
+@ti.func
 def _exact_bound_ub_for_cm_fm(
     budget: ti.i32,
     g_cm: ti.i32,

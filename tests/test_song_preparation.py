@@ -65,8 +65,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
             [{"Name": "G"}],
             {"mini": 3},
             [{"Name": "M"}],
-            [["fg"]],
-            0,
         ),
     )
 
@@ -84,8 +82,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
     assert prepared.current_gear_list == [{"Name": "G"}]
     assert prepared.current_mini_stats == {"mini": 3}
     assert prepared.current_mini_list == [{"Name": "M"}]
-    assert prepared.force_greats_config == [["fg"]]
-    assert prepared.manual_force_greats is False
 
 
 def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
@@ -103,8 +99,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         current_gear_list=[],
         current_mini_stats={},
         current_mini_list=[],
-        force_greats_config=[],
-        manual_force_greats=False,
     )
     db_context = PreparedSongDbContext(
         baseline_team_buff="T5",

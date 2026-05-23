@@ -262,3 +262,111 @@ __all__ = [
     "binary_search_left",
     "precompute_fever_end_idx_kernel",
 ]
+
+try:
+    from .kernels_skyline import (
+        skyline_seed_rng_kernel,
+        skyline_seed_rng_runs_kernel,
+        skyline_load_initial_population_kernel,
+        skyline_load_initial_populations_batch_kernel,
+        skyline_generate_initial_populations_kernel,
+        skyline_upload_item_stats_and_slots_kernel,
+        skyline_copy_population_indices_from_ndarray_kernel,
+        SKYLINE_build_exact_eval_reuse_map_kernel,
+        SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel,
+        SKYLINE_propagate_exact_eval_reuse_base_stats_kernel,
+        SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel,
+        skyline_aggregate_genome_stats_kernel,
+        skyline_aggregate_and_init_best_kernel,
+        skyline_next_generation_full_kernel,
+        skyline_next_generation_full_runs_kernel,
+        skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
+        SKYLINE_swap_population_kernel,
+    )
+    from .skyline_eval import (
+        skyline_find_best_combo_warmstart_kernel,
+        skyline_refresh_scores_and_update_runs_best_kernel,
+        skyline_write_scores_from_key_kernel,
+        skyline_write_best_results_from_key_kernel,
+        skyline_write_best_results_and_update_runs_best_kernel,
+        SKYLINE_INIT_global_best_kernel,
+        skyline_pack_global_best_kernel,
+        skyline_update_global_best_kernel,
+        skyline_pack_and_store_run_payload_kernel,
+        skyline_pack_and_store_run_payload_segmented_kernel,
+        skyline_pack_fg_candidates_table_segmented_kernel,
+        skyline_pack_run_payload_kernel,
+        skyline_copy_run_payload_to_download_staging_kernel,
+        skyline_copy_runs_payload_to_download_staging_kernel,
+        skyline_copy_fg_candidates_table_to_download_staging_kernel,
+        skyline_select_fg_candidates_coords_kernel,
+        skyline_copy_fg_selected_payload_to_download_staging_kernel,
+        SKYLINE_INIT_runs_best_kernel,
+        skyline_update_runs_best_kernel,
+        skyline_store_runs_payload_snapshot_segmented_kernel,
+        skyline_find_island_elites_kernel,
+        skyline_island_migration_kernel,
+        skyline_island_migration_runs_kernel,
+        skyline_write_best_and_update_global_kernel,
+    )
+except ImportError:
+    pass
+else:
+    _SKYLINE_KERNEL_REEXPORTS = {
+        "skyline_seed_rng_kernel": skyline_seed_rng_kernel,
+        "skyline_seed_rng_runs_kernel": skyline_seed_rng_runs_kernel,
+        "skyline_load_initial_population_kernel": skyline_load_initial_population_kernel,
+        "skyline_load_initial_populations_batch_kernel": skyline_load_initial_populations_batch_kernel,
+        "skyline_generate_initial_populations_kernel": skyline_generate_initial_populations_kernel,
+        "skyline_upload_item_stats_and_slots_kernel": skyline_upload_item_stats_and_slots_kernel,
+        "skyline_copy_population_indices_from_ndarray_kernel": skyline_copy_population_indices_from_ndarray_kernel,
+        "SKYLINE_build_exact_eval_reuse_map_kernel": SKYLINE_build_exact_eval_reuse_map_kernel,
+        "SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel": (
+            SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel
+        ),
+        "SKYLINE_propagate_exact_eval_reuse_base_stats_kernel": (
+            SKYLINE_propagate_exact_eval_reuse_base_stats_kernel
+        ),
+        "SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel": (
+            SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel
+        ),
+        "skyline_aggregate_genome_stats_kernel": skyline_aggregate_genome_stats_kernel,
+        "skyline_aggregate_and_init_best_kernel": skyline_aggregate_and_init_best_kernel,
+        "skyline_next_generation_full_kernel": skyline_next_generation_full_kernel,
+        "skyline_next_generation_full_runs_kernel": skyline_next_generation_full_runs_kernel,
+        "skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel": (
+            skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel
+        ),
+        "SKYLINE_swap_population_kernel": SKYLINE_swap_population_kernel,
+        "skyline_find_best_combo_warmstart_kernel": skyline_find_best_combo_warmstart_kernel,
+        "skyline_refresh_scores_and_update_runs_best_kernel": skyline_refresh_scores_and_update_runs_best_kernel,
+        "skyline_write_scores_from_key_kernel": skyline_write_scores_from_key_kernel,
+        "skyline_write_best_results_from_key_kernel": skyline_write_best_results_from_key_kernel,
+        "skyline_write_best_results_and_update_runs_best_kernel": (
+            skyline_write_best_results_and_update_runs_best_kernel
+        ),
+        "SKYLINE_INIT_global_best_kernel": SKYLINE_INIT_global_best_kernel,
+        "skyline_pack_global_best_kernel": skyline_pack_global_best_kernel,
+        "skyline_update_global_best_kernel": skyline_update_global_best_kernel,
+        "skyline_pack_and_store_run_payload_kernel": skyline_pack_and_store_run_payload_kernel,
+        "skyline_pack_and_store_run_payload_segmented_kernel": skyline_pack_and_store_run_payload_segmented_kernel,
+        "skyline_pack_fg_candidates_table_segmented_kernel": skyline_pack_fg_candidates_table_segmented_kernel,
+        "skyline_pack_run_payload_kernel": skyline_pack_run_payload_kernel,
+        "skyline_copy_run_payload_to_download_staging_kernel": skyline_copy_run_payload_to_download_staging_kernel,
+        "skyline_copy_runs_payload_to_download_staging_kernel": skyline_copy_runs_payload_to_download_staging_kernel,
+        "skyline_copy_fg_candidates_table_to_download_staging_kernel": (
+            skyline_copy_fg_candidates_table_to_download_staging_kernel
+        ),
+        "skyline_select_fg_candidates_coords_kernel": skyline_select_fg_candidates_coords_kernel,
+        "skyline_copy_fg_selected_payload_to_download_staging_kernel": (
+            skyline_copy_fg_selected_payload_to_download_staging_kernel
+        ),
+        "SKYLINE_INIT_runs_best_kernel": SKYLINE_INIT_runs_best_kernel,
+        "skyline_update_runs_best_kernel": skyline_update_runs_best_kernel,
+        "skyline_store_runs_payload_snapshot_segmented_kernel": skyline_store_runs_payload_snapshot_segmented_kernel,
+        "skyline_find_island_elites_kernel": skyline_find_island_elites_kernel,
+        "skyline_island_migration_kernel": skyline_island_migration_kernel,
+        "skyline_island_migration_runs_kernel": skyline_island_migration_runs_kernel,
+        "skyline_write_best_and_update_global_kernel": skyline_write_best_and_update_global_kernel,
+    }
+    __all__.extend(_SKYLINE_KERNEL_REEXPORTS)

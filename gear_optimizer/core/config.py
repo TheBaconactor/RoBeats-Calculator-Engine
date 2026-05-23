@@ -6,7 +6,6 @@ import configparser
 import json
 import logging
 import os
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,97 +219,29 @@ def compute_memory_guard_limit(cfg):
     if not candidates:
         return 0
     return int(min(candidates))
-def load_force_greats_config(cfg):
-    """
-    Parse [ForceGreats] options into a list indexed by non-fever section (0-based).
-    Keys follow the pattern NonFever{N}; missing values default to zero.
-    Args:
-        cfg: ConfigParser instance
-    Returns:
-        list: Force greats values per section, or empty list if not configured
-    """
-    if not cfg or not cfg.has_section("ForceGreats"):
-        return []
-    entries = []
+def _assert_no_obsolete_force_greats_modes(cfg: Any) -> None:
+    if cfg is None:
+        return
     try:
-        for opt, raw in cfg.items("ForceGreats"):
-            match = re.match(r"nonfever(\d+)", opt.strip().lower())
-            if not match:
-                continue
-            idx = max(0, safe_int(match.group(1)) - 1)
-            val = max(0, safe_int(raw, 0))
-            entries.append((idx, val))
-    except (ValueError, KeyError, AttributeError, TypeError, configparser.Error) as e:
-        warn_fallback("config.force_greats.section", "failed to parse [ForceGreats] section; using empty config", exc=e)
-        logging.debug(f"[ForceGreats Config] Failed to parse ForceGreats section: {e}")
-        return []
-    if not entries:
-        return []
-    max_idx = max(idx for idx, _ in entries)
-    values = [0] * (max_idx + 1)
-    for idx, val in entries:
-        values[idx] = val
-    return values
-def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
-    """
-    Parse an inline ForceGreats manual config from [IterationEngine].
-    Supported formats:
-      - Comma/space-separated ints: "0,1,0" or "0 1 0"
-      - JSON list: "[0, 1, 0]"
-      - Single int: "3" (equivalent to "3" for NonFever1)
-    Returns:
-      list[int]: Parsed values (may be empty).
-    """
-    if not cfg:
-        return []
-    try:
-        raw = cfg.get("IterationEngine", key, fallback="").strip()
-    except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback(
-            "config.force_greats.inline.read",
-            "failed reading inline ForceGreats config; using empty config",
-            context={"key": key},
-            exc=exc,
-        )
-        return []
-    if not raw:
-        return []
-    if raw.startswith("[") and raw.endswith("]"):
-        try:
-            arr = json.loads(raw)
-            if not isinstance(arr, list):
-                return []
-            out = []
-            for v in arr:
-                out.append(max(0, safe_int(v, 0)))
-            while out and out[-1] == 0:
-                out.pop()
-            return out
-        except (json.JSONDecodeError, TypeError, ValueError) as e:
-            warn_fallback(
-                "config.force_greats.inline.json",
-                "failed parsing inline ForceGreats JSON list; using empty config",
-                context={"key": key, "value": raw},
-                exc=e,
+        if cfg.has_section("ForceGreats"):
+            raise ValueError(
+                "[ForceGreats] manual config was removed; Bellman is the only supported ForceGreats scorer."
             )
-            logging.debug(f"[ForceGreats Config] Failed to parse {key} JSON list: {e}")
-            return []
-    parts = re.split(r"[,\s]+", raw)
-    values = []
-    for p in parts:
-        p = (p or "").strip()
-        if not p:
-            continue
-        if "=" in p:
-            try:
-                _, rhs = p.split("=", 1)
-                p = rhs.strip()
-            except ValueError:
-                continue
-        values.append(max(0, safe_int(p, 0)))
-    while values and values[-1] == 0:
-        values.pop()
-    return values
+        if cfg.has_option("IterationEngine", "ForceGreatsManual"):
+            raw = str(cfg.get("IterationEngine", "ForceGreatsManual", fallback="") or "").strip()
+            if raw:
+                raise ValueError(
+                    "IterationEngine.ForceGreatsManual was removed; Bellman is the only supported ForceGreats scorer."
+                )
+        for option in ("ForceGreatsMode", "FG_SolverMode", "ForceGreatsFinder", "FG_SearchRadius"):
+            if cfg.has_option("IterationEngine", option):
+                raise ValueError(
+                    f"IterationEngine.{option} was removed; Bellman is the only supported ForceGreats scorer."
+                )
+    except (AttributeError, TypeError, configparser.Error) as exc:
+        raise ValueError("Invalid ForceGreats config surface; Bellman is the only supported scorer.") from exc
+
+
 @dataclass(frozen=True)
 class IterationEngineSettings:
     """
@@ -318,8 +249,6 @@ class IterationEngineSettings:
     Centralizing this avoids logic drift across the app, workers, and solver code.
     """
     force_greats_debug: bool
-    force_greats_config: list[int]
-    manual_force_greats: bool
 @dataclass(frozen=True, slots=True)
 class GPUExecutionSettings:
     gpu_song_slots: int = 0
@@ -523,19 +452,12 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     Important semantics:
     - Production optimizer mode is always active.
     - These are no longer config switches; they are native runtime policy.
-    - A non-empty manual FG config disables finder mode (deliberate override).
+    - ForceGreats has exactly one production scorer: Bellman.
     """
+    _assert_no_obsolete_force_greats_modes(cfg)
     force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False) if cfg is not None else False
-    force_greats_config = load_force_greats_config(cfg) if cfg is not None else []
-    if not force_greats_config and cfg is not None:
-        inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
-        if inline_cfg:
-            force_greats_config = inline_cfg
-    manual_force_greats = any(force_greats_config)
     return IterationEngineSettings(
         force_greats_debug=bool(force_greats_debug),
-        force_greats_config=list(force_greats_config or []),
-        manual_force_greats=bool(manual_force_greats),
     )
 def read_fg_candidate_limit(
     cfg: Any,
@@ -558,16 +480,6 @@ def read_fg_candidate_limit(
         clamp_min=int(min_limit),
         clamp_max=int(max_limit),
     )
-def read_fg_search_radius(cfg: Any) -> int | None:
-    """
-    Return the production FG search radius policy.
-
-    FG no longer accepts a config override for this value. The finder always
-    searches the full FT/FF allocation grid and lets exact-safe reductions shape
-    the work after that.
-    """
-    _ = cfg
-    return -1
 def find_and_cache_paths():
     """
     Automatically discover data file paths and cache them.

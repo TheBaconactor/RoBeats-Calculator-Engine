@@ -81,7 +81,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         best_minis=["M1"],
         current_gear_list=[],
         current_mini_list=[],
-        manual_force_greats=False,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,

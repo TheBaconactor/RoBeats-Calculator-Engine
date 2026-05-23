@@ -1,7 +1,9 @@
 import configparser
 
+import pytest
 
-def test_force_greats_section_loads_manual_config(monkeypatch):
+
+def test_force_greats_section_is_rejected(monkeypatch):
     import gear_optimizer.helpers.song_helpers.song_config as song_config
 
     # Avoid touching filesystem-backed gear/mini lookups; not relevant for this config test.
@@ -18,19 +20,8 @@ def test_force_greats_section_loads_manual_config(monkeypatch):
 
     calc_song = {"metadata": {"Primary Color": "Rush"}}
 
-    (
-        _ga_settings,
-        _fixed_stats,
-        _current_gear_stats,
-        _current_gear_list,
-        _current_mini_stats,
-        _current_mini_list,
-        force_greats_config,
-        manual_force_greats,
-    ) = song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
-
-    assert force_greats_config == [0, 2]
-    assert manual_force_greats is True
+    with pytest.raises(ValueError, match="Bellman is the only supported ForceGreats scorer"):
+        song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
 
 
 def test_setup_song_config_applies_t5_to_song_primary(monkeypatch):

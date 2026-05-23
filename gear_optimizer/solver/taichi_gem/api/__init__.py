@@ -29,9 +29,32 @@ try:
 except ImportError:
     pass
 
+# Import from parallel_solvers
+try:
+    from .parallel_solvers import (
+        solve_genomes_with_ftff,
+        solve_genomes_from_registry,
+    )
+except ImportError:
+    pass
+
 # Import from fixed_scoring
 try:
     from .fixed_scoring import score_fixed_stats_gpu
+except ImportError:
+    pass
+
+# Import from skyline_operations
+try:
+    from .skyline_operations import (
+        skyline_upload_population_indices,
+        skyline_upload_item_stats,
+        skyline_upload_base_fixed_stats,
+        skyline_aggregate_stats,
+        skyline_evaluate_population,
+        skyline_download_scores,
+        skyline_download_results,
+    )
 except ImportError:
     pass
 
@@ -102,8 +125,19 @@ __all__ = [
     "_maybe_sync",
     # Timeline
     "precompute_timeline_gpu",
+    # Parallel solvers
+    "solve_genomes_with_ftff",
+    "solve_genomes_from_registry",
     # Fixed score
     "score_fixed_stats_gpu",
+    # Skyline operations
+    "skyline_upload_population_indices",
+    "skyline_upload_item_stats",
+    "skyline_upload_base_fixed_stats",
+    "skyline_aggregate_stats",
+    "skyline_evaluate_population",
+    "skyline_download_scores",
+    "skyline_download_results",
     # GA operations
     "ga_upload_population_indices",
     "ga_upload_initial_populations",

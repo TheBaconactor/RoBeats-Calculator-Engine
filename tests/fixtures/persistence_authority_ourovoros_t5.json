@@ -157,7 +157,7 @@
       "Selected Element": "Flow",
       "ForceGreats": {
         "enabled": true,
-        "mode": "finder",
+        "mode": "bellman",
         "algo_version": 3,
         "config": {
           "NonFever1": 0,

@@ -11,7 +11,6 @@ from gear_optimizer.core.config import (
     InflightSettings,
     load_config,
     read_fg_candidate_limit,
-    read_fg_search_radius,
     read_iteration_engine_settings,
 )
 
@@ -44,7 +43,6 @@ def _build_config() -> configparser.ConfigParser:
                 "SongRepeats": "0",
                 "LoopRestartWaitSec": "99.5",
                 "FG_CandidateLimit": "9999",
-                "FG_SearchRadius": "",
             },
             "CalculateSong": {
                 "Difficulty": "",
@@ -52,10 +50,6 @@ def _build_config() -> configparser.ConfigParser:
                 "TargetPrimary": "",
                 "TargetSecondary": "Rush",
                 "LoopForever": "true",
-            },
-            "ForceGreats": {
-                "NonFever1": "0",
-                "NonFever2": "3",
             },
         }
     )
@@ -105,11 +99,25 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.loop_restart_wait_sec == 60.0
 
     assert ie.force_greats_debug is False
-    assert ie.force_greats_config == [0, 3]
-    assert ie.manual_force_greats is True
 
     assert read_fg_candidate_limit(cfg, default=51, min_limit=1) == 5000
-    assert read_fg_search_radius(cfg) == -1
+
+
+@pytest.mark.parametrize(
+    "cfg_dict",
+    [
+        {"ForceGreats": {"NonFever1": "1"}},
+        {"IterationEngine": {"ForceGreatsManual": "1"}},
+        {"IterationEngine": {"FG_SolverMode": "exact_dp"}},
+        {"IterationEngine": {"FG_SearchRadius": "-1"}},
+    ],
+)
+def test_non_bellman_force_greats_config_is_rejected(cfg_dict):
+    cfg = configparser.ConfigParser()
+    cfg.read_dict(cfg_dict)
+
+    with pytest.raises(ValueError, match="Bellman is the only supported ForceGreats scorer"):
+        read_iteration_engine_settings(cfg)
 
 
 def test_repo_config_keeps_song_selection_loop_flag_only():

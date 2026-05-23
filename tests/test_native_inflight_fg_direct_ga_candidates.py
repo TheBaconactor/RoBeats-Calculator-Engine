@@ -44,8 +44,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=True,
-        manual_force_greats=False,
-        force_greats_config=[],
         prev_record=None,
         db_best_fg_score=0,
         song_name="AfterLife (Hard) by KepoWorld",
@@ -63,7 +61,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
-def test_run_fg_job_sync_uses_bellman_entry_for_non_direct_ga_candidates(monkeypatch):
+def test_run_fg_job_sync_forces_bellman_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}
@@ -98,8 +96,6 @@ def test_run_fg_job_sync_uses_bellman_entry_for_non_direct_ga_candidates(monkeyp
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
         fg_direct_ga_candidates=False,
-        manual_force_greats=False,
-        force_greats_config=[],
         prev_record=None,
         db_best_fg_score=0,
         song_name="AfterLife (Hard) by KepoWorld",
@@ -115,5 +111,5 @@ def test_run_fg_job_sync_uses_bellman_entry_for_non_direct_ga_candidates(monkeyp
 
     assert calls["args"][0] == {}
     assert calls["args"][2] == {"Perfect Points": []}
-    assert calls["ga_candidates"] is None
+    assert calls["ga_candidates"] is song.runtime.decode.ga_candidates
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

@@ -36,6 +36,8 @@ MAX_TIMELINE_FRONTIER_SURFACES = max(1, min(int(MAX_TIMELINE_FRONTIER_SURFACES),
 MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
+MAX_TIMING_RESPONSE_COMBOS = env_int("GPU_TIMING_RESPONSE_ANTICHAIN_COMBOS", 2_000_000)
+MAX_TIMING_RESPONSE_COMBOS = max(MAX_FTFF_COMBOS, min(int(MAX_TIMING_RESPONSE_COMBOS), 8_000_000))
 GA_FTFF_REDUCE_BLOCK_DIM = env_int(
     "GA_FTFF_REDUCE_BLOCK_DIM", 256
 )  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
@@ -138,6 +140,16 @@ GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed 
 GA_FG_SELECTED_MAX = 5000  # Must cover clamp in `read_fg_candidate_limit` (<=5000).
 GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
 GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = GA_FTFF_REDUCE_BLOCK_DIM
+SKYLINE_FG_CANDIDATES_PER_RUN = GA_FG_CANDIDATES_PER_RUN
+SKYLINE_FG_CANDIDATE_COLS = GA_FG_CANDIDATE_COLS
+SKYLINE_INIT_HEURISTIC_K = GA_INIT_HEURISTIC_K
+SKYLINE_EXACT_EVAL_HASH_KEY_COLS = GA_EXACT_EVAL_HASH_KEY_COLS
+SKYLINE_EXACT_EVAL_HASH_SIZE = GA_EXACT_EVAL_HASH_SIZE
+SKYLINE_FG_SELECTED_PAYLOAD_COLS = GA_FG_SELECTED_PAYLOAD_COLS
+SKYLINE_FG_SELECTED_MAX = GA_FG_SELECTED_MAX
+SKYLINE_FG_SELECTED_HASH_SIZE = GA_FG_SELECTED_HASH_SIZE
+SKYLINE_FG_SELECTED_STUBS_MAX = GA_FG_SELECTED_STUBS_MAX
 ga_fg_select_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy
 ga_fg_select_hash_keys: ti.Field = None  # (HASH_SIZE, 9) i32
 ga_fg_select_stub_count: ti.Field = None  # (1,) i32
@@ -166,11 +178,132 @@ genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
+timing_response_combo_ft: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FT gems per antichain entry
+timing_response_combo_ff: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FF gems per antichain entry
+timing_response_genome_offset: ti.Field = None  # (MAX_GENOMES,) i32 offset into timing_response_combo_*
+timing_response_genome_length: ti.Field = None  # (MAX_GENOMES,) i32 antichain length per genome row
 chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome
 chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
+DEFAULT_MAX_SKYLINE_RUNS = DEFAULT_MAX_GA_RUNS
+DEFAULT_MAX_SKYLINE_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
+MAX_SKYLINE_RUNS = MAX_GA_RUNS
+MAX_SKYLINE_RUN_GENOMES = MAX_GA_RUN_GENOMES
+
+skyline_initial_populations: ti.Field = None
+skyline_init_heuristic_topk: ti.Field = None
+skyline_scores: ti.Field = None
+skyline_rng_state: ti.Field = None
+skyline_parent_a: ti.Field = None
+skyline_parent_b: ti.Field = None
+skyline_exact_eval_hash_used: ti.Field = None
+skyline_exact_eval_hash_keys: ti.Field = None
+skyline_exact_eval_hash_sort_keys: ti.Field = None
+skyline_exact_eval_hash_sort_indices: ti.Field = None
+skyline_exact_eval_rep_idx: ti.Field = None
+skyline_exact_eval_unique_count: ti.Field = None
+skyline_global_best_score: ti.Field = None
+skyline_global_best_genome: ti.Field = None
+skyline_global_best_results: ti.Field = None
+skyline_global_best_scan_key: ti.Field = None
+skyline_global_best_packed: ti.Field = None
+skyline_run_payload_packed: ti.Field = None
+skyline_run_payload_download_staging_256: ti.Field = None
+skyline_runs_payload_packed: ti.Field = None
+skyline_runs_payload_download_staging_16: ti.Field = None
+skyline_runs_payload_download_staging_64: ti.Field = None
+skyline_runs_payload_download_staging_128: ti.Field = None
+skyline_fg_candidates_packed: ti.Field = None
+skyline_fg_candidates_download_staging: ti.Field = None
+skyline_fg_select_hash_used: ti.Field = None
+skyline_fg_select_hash_keys: ti.Field = None
+skyline_fg_select_stub_count: ti.Field = None
+skyline_fg_select_stub_run: ti.Field = None
+skyline_fg_select_stub_row: ti.Field = None
+skyline_fg_select_stub_score: ti.Field = None
+skyline_fg_select_stub_fg_proxy: ti.Field = None
+skyline_fg_select_stub_center_ft: ti.Field = None
+skyline_fg_select_stub_center_ff: ti.Field = None
+skyline_fg_select_stub_ids: ti.Field = None
+skyline_fg_select_selected_mask: ti.Field = None
+skyline_fg_selected_count: ti.Field = None
+skyline_fg_selected_coords: ti.Field = None
+skyline_fg_selected_payload_staging_256: ti.Field = None
+skyline_fg_selected_payload_staging_1024: ti.Field = None
+skyline_fg_selected_payload_staging_5000: ti.Field = None
 _fields_allocated = False
 _grid_fields_allocated = False
+
+
+def _sync_skyline_aliases() -> None:
+    global MAX_SKYLINE_RUNS, MAX_SKYLINE_RUN_GENOMES
+    global skyline_initial_populations, skyline_init_heuristic_topk
+    global skyline_scores, skyline_rng_state, skyline_parent_a, skyline_parent_b
+    global skyline_exact_eval_hash_used, skyline_exact_eval_hash_keys
+    global skyline_exact_eval_hash_sort_keys, skyline_exact_eval_hash_sort_indices
+    global skyline_exact_eval_rep_idx, skyline_exact_eval_unique_count
+    global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results
+    global skyline_global_best_scan_key, skyline_global_best_packed
+    global skyline_run_payload_packed, skyline_run_payload_download_staging_256
+    global skyline_runs_payload_packed
+    global skyline_runs_payload_download_staging_16
+    global skyline_runs_payload_download_staging_64
+    global skyline_runs_payload_download_staging_128
+    global skyline_fg_candidates_packed, skyline_fg_candidates_download_staging
+    global skyline_fg_select_hash_used, skyline_fg_select_hash_keys
+    global skyline_fg_select_stub_count, skyline_fg_select_stub_run, skyline_fg_select_stub_row
+    global skyline_fg_select_stub_score, skyline_fg_select_stub_fg_proxy
+    global skyline_fg_select_stub_center_ft, skyline_fg_select_stub_center_ff, skyline_fg_select_stub_ids
+    global skyline_fg_select_selected_mask, skyline_fg_selected_count, skyline_fg_selected_coords
+    global skyline_fg_selected_payload_staging_256
+    global skyline_fg_selected_payload_staging_1024
+    global skyline_fg_selected_payload_staging_5000
+
+    MAX_SKYLINE_RUNS = int(MAX_GA_RUNS)
+    MAX_SKYLINE_RUN_GENOMES = int(MAX_GA_RUN_GENOMES)
+    skyline_initial_populations = ga_initial_populations
+    skyline_init_heuristic_topk = ga_init_heuristic_topk
+    skyline_scores = ga_scores
+    skyline_rng_state = ga_rng_state
+    skyline_parent_a = ga_parent_a
+    skyline_parent_b = ga_parent_b
+    skyline_exact_eval_hash_used = ga_exact_eval_hash_used
+    skyline_exact_eval_hash_keys = ga_exact_eval_hash_keys
+    skyline_exact_eval_hash_sort_keys = ga_exact_eval_hash_sort_keys
+    skyline_exact_eval_hash_sort_indices = ga_exact_eval_hash_sort_indices
+    skyline_exact_eval_rep_idx = ga_exact_eval_rep_idx
+    skyline_exact_eval_unique_count = ga_exact_eval_unique_count
+    skyline_global_best_score = ga_global_best_score
+    skyline_global_best_genome = ga_global_best_genome
+    skyline_global_best_results = ga_global_best_results
+    skyline_global_best_scan_key = ga_global_best_scan_key
+    skyline_global_best_packed = ga_global_best_packed
+    skyline_run_payload_packed = ga_run_payload_packed
+    skyline_run_payload_download_staging_256 = ga_run_payload_download_staging_256
+    skyline_runs_payload_packed = ga_runs_payload_packed
+    skyline_runs_payload_download_staging_16 = ga_runs_payload_download_staging_16
+    skyline_runs_payload_download_staging_64 = ga_runs_payload_download_staging_64
+    skyline_runs_payload_download_staging_128 = ga_runs_payload_download_staging_128
+    skyline_fg_candidates_packed = ga_fg_candidates_packed
+    skyline_fg_candidates_download_staging = ga_fg_candidates_download_staging
+    skyline_fg_select_hash_used = ga_fg_select_hash_used
+    skyline_fg_select_hash_keys = ga_fg_select_hash_keys
+    skyline_fg_select_stub_count = ga_fg_select_stub_count
+    skyline_fg_select_stub_run = ga_fg_select_stub_run
+    skyline_fg_select_stub_row = ga_fg_select_stub_row
+    skyline_fg_select_stub_score = ga_fg_select_stub_score
+    skyline_fg_select_stub_fg_proxy = ga_fg_select_stub_fg_proxy
+    skyline_fg_select_stub_center_ft = ga_fg_select_stub_center_ft
+    skyline_fg_select_stub_center_ff = ga_fg_select_stub_center_ff
+    skyline_fg_select_stub_ids = ga_fg_select_stub_ids
+    skyline_fg_select_selected_mask = ga_fg_select_selected_mask
+    skyline_fg_selected_count = ga_fg_selected_count
+    skyline_fg_selected_coords = ga_fg_selected_coords
+    skyline_fg_selected_payload_staging_256 = ga_fg_selected_payload_staging_256
+    skyline_fg_selected_payload_staging_1024 = ga_fg_selected_payload_staging_1024
+    skyline_fg_selected_payload_staging_5000 = ga_fg_selected_payload_staging_5000
+
+
 def is_fields_allocated() -> bool:
     """Check if main fields have been allocated."""
     return _fields_allocated
@@ -214,6 +347,10 @@ def reset_fields_state() -> None:
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
+    global timing_response_combo_ft, timing_response_combo_ff
+    global timing_response_genome_offset, timing_response_genome_length
+    global timing_response_combo_ft, timing_response_combo_ff
+    global timing_response_genome_offset, timing_response_genome_length
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
@@ -264,6 +401,7 @@ def reset_fields_state() -> None:
     population_indices = None
     population_next_indices = None
     ga_initial_populations = None
+    ga_init_heuristic_topk = None
     item_stats = None
     base_fixed_stats = None
     ga_scores = None
@@ -331,8 +469,13 @@ def reset_fields_state() -> None:
     chunk_best_results = None
     ftff_combo_ft = None
     ftff_combo_ff = None
+    timing_response_combo_ft = None
+    timing_response_combo_ff = None
+    timing_response_genome_offset = None
+    timing_response_genome_length = None
     MAX_GA_RUNS = int(DEFAULT_MAX_GA_RUNS)
     MAX_GA_RUN_GENOMES = int(DEFAULT_MAX_GA_RUN_GENOMES)
+    _sync_skyline_aliases()
     _fields_allocated = False
     _grid_fields_allocated = False
     _last_uploaded_grid_id = None
@@ -363,6 +506,11 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
         MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
     if max_genomes is not None:
         MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
+    _sync_skyline_aliases()
+
+
+def configure_skyline_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
+    configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
 def _maybe_configure_ga_run_buffers_from_env() -> None:
     """
     Best-effort GA buffer sizing before the first field allocation.
@@ -423,6 +571,8 @@ def allocate_fields():
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
+    global timing_response_combo_ft, timing_response_combo_ff
+    global timing_response_genome_offset, timing_response_genome_length
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
@@ -502,6 +652,10 @@ def allocate_fields():
     chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
+    timing_response_combo_ft = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
+    timing_response_combo_ff = ti.field(dtype=ti.i32, shape=MAX_TIMING_RESPONSE_COMBOS)
+    timing_response_genome_offset = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    timing_response_genome_length = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
@@ -563,6 +717,7 @@ def allocate_fields():
     island_boundaries = ti.field(dtype=ti.i32, shape=MAX_ISLANDS + 1)  # [start0, start1, ..., end_last]
     island_elite_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)  # Output: elite genome indices
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
+    _sync_skyline_aliases()
     _fields_allocated = True
     logger.debug("[Taichi] Allocated GPU fields: %s genomes", MAX_GENOMES)
 def allocate_grid_fields():
@@ -729,6 +884,47 @@ def bind_fields(kernels_module):
     target.ga_fg_selected_payload_staging_256 = ga_fg_selected_payload_staging_256
     target.ga_fg_selected_payload_staging_1024 = ga_fg_selected_payload_staging_1024
     target.ga_fg_selected_payload_staging_5000 = ga_fg_selected_payload_staging_5000
+    target.skyline_initial_populations = skyline_initial_populations
+    target.skyline_init_heuristic_topk = skyline_init_heuristic_topk
+    target.skyline_scores = skyline_scores
+    target.skyline_rng_state = skyline_rng_state
+    target.skyline_parent_a = skyline_parent_a
+    target.skyline_parent_b = skyline_parent_b
+    target.skyline_exact_eval_hash_used = skyline_exact_eval_hash_used
+    target.skyline_exact_eval_hash_keys = skyline_exact_eval_hash_keys
+    target.skyline_exact_eval_hash_sort_keys = skyline_exact_eval_hash_sort_keys
+    target.skyline_exact_eval_hash_sort_indices = skyline_exact_eval_hash_sort_indices
+    target.skyline_exact_eval_rep_idx = skyline_exact_eval_rep_idx
+    target.skyline_exact_eval_unique_count = skyline_exact_eval_unique_count
+    target.skyline_global_best_score = skyline_global_best_score
+    target.skyline_global_best_genome = skyline_global_best_genome
+    target.skyline_global_best_results = skyline_global_best_results
+    target.skyline_global_best_scan_key = skyline_global_best_scan_key
+    target.skyline_global_best_packed = skyline_global_best_packed
+    target.skyline_runs_payload_packed = skyline_runs_payload_packed
+    target.skyline_run_payload_packed = skyline_run_payload_packed
+    target.skyline_fg_candidates_packed = skyline_fg_candidates_packed
+    target.skyline_fg_candidates_download_staging = skyline_fg_candidates_download_staging
+    target.skyline_fg_select_hash_used = skyline_fg_select_hash_used
+    target.skyline_fg_select_hash_keys = skyline_fg_select_hash_keys
+    target.skyline_fg_select_stub_count = skyline_fg_select_stub_count
+    target.skyline_fg_select_stub_run = skyline_fg_select_stub_run
+    target.skyline_fg_select_stub_row = skyline_fg_select_stub_row
+    target.skyline_fg_select_stub_score = skyline_fg_select_stub_score
+    target.skyline_fg_select_stub_fg_proxy = skyline_fg_select_stub_fg_proxy
+    target.skyline_fg_select_stub_center_ft = skyline_fg_select_stub_center_ft
+    target.skyline_fg_select_stub_center_ff = skyline_fg_select_stub_center_ff
+    target.skyline_fg_select_stub_ids = skyline_fg_select_stub_ids
+    target.skyline_fg_select_selected_mask = skyline_fg_select_selected_mask
+    target.skyline_fg_selected_count = skyline_fg_selected_count
+    target.skyline_fg_selected_coords = skyline_fg_selected_coords
+    target.skyline_fg_selected_payload_staging_256 = skyline_fg_selected_payload_staging_256
+    target.skyline_fg_selected_payload_staging_1024 = skyline_fg_selected_payload_staging_1024
+    target.skyline_fg_selected_payload_staging_5000 = skyline_fg_selected_payload_staging_5000
+    target.timing_response_combo_ft = timing_response_combo_ft
+    target.timing_response_combo_ff = timing_response_combo_ff
+    target.timing_response_genome_offset = timing_response_genome_offset
+    target.timing_response_genome_length = timing_response_genome_length
     target.island_boundaries = island_boundaries
     target.island_elite_indices = island_elite_indices
     target.island_elite_count = island_elite_count
