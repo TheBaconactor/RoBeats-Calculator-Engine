@@ -12,10 +12,13 @@ Tier note:
 
 When you need tiered leaderboards, compute them **on demand** from the persisted baseline candidates.
 
-On-demand recompute is **GPU-backed**:
+On-demand recompute uses **CPU exact replay** via `gear_optimizer/helpers/song_helpers/team_buff_tiers.py`:
 
-- Base score: `taichi_gem.api.fixed_scoring.score_fixed_stats_gpu(...)`
-- FG score: `taichi_gem.force_greats.api.solve_force_greats_finder_gpu(...)` (fixed-stats evaluation)
+- Base score: `solver.scoring.exact_rescore.score_fixed_value_exact(...)`
+- FG score: `solver.scoring.exact_rescore.evaluate_force_greats_exact(...)`
+
+Production FG optimization itself remains GPU Bellman-only; tier recompute does not call the removed
+finder GPU API.
 
 ## What Is Stored (Default DB)
 
