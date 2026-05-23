@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from heapq import nsmallest
 import re
-from math import ceil
 import logging
 
-from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
+from ...core.constants import TOTAL_ROWS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     normalize_team_buff_sequence,
@@ -266,61 +265,6 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
 
 
-def _force_counts_to_fp_targets(
-    forced_counts: list[int],
-    *,
-    calc_song: dict,
-    ff_stat: int,
-    ref_arrays: dict,
-) -> list[int]:
-    """
-    Convert persisted forced-count configs back into the GPU finder's FP-target form.
-
-    Compact DB payloads persist `ForceGreats.config` as actual forced Great counts per
-    section, but the low-level GPU finder consumes fill-penalty targets (FP targets).
-    Replaying persisted counts directly into the GPU solver underestimates FG scores.
-    """
-    counts = [max(0, int(x)) for x in list(forced_counts or [])]
-    if not counts:
-        return []
-
-    try:
-        song_data = calc_song.get("song_data", {}) or {}
-        timestamps = song_data.get("timestamps")
-        total_notes = int(len(timestamps)) if timestamps is not None else 0
-    except Exception as e:
-        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
-        total_notes = 0
-
-    if total_notes <= 0:
-        try:
-            total_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Total Notes"), 0)
-        except Exception as e:
-            logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
-            total_notes = 0
-
-    try:
-        long_notes = _safe_int((calc_song.get("metadata", {}) or {}).get("Long Notes"), 0)
-    except Exception as e:
-        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
-        long_notes = 0
-
-    try:
-        ff_factor = float(lookup_reference_py(int(ff_stat), ref_arrays["Fever Fill Rate"], TOTAL_ROWS))
-        raw_fill = max(0.0, float(total_notes - long_notes) * float(FEVER_FILL_BASE_RATE)) * float(ff_factor)
-        base_notes = int(ceil(raw_fill))
-    except Exception as e:
-        logger.debug(f"team_buff_tiers:_force_counts_to_fp_targets: {e}")
-        return counts
-
-    fp_targets: list[int] = []
-    for forced in counts:
-        if forced <= 0:
-            fp_targets.append(0)
-            continue
-        fp_targets.append(max(0, int(ceil(raw_fill + (float(forced) * 0.5)) - base_notes)))
-    return fp_targets
-
 def _team_buff_delta_map(
     *,
     base_team_buff: str,
@@ -531,7 +475,6 @@ def compute_team_buff_tier_leaderboards(
             fg_ff_stat = int(ff_idx)
             fg_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
             fg_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
-            fg_fp_targets = []
             if fg_counts:
                 fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
                 fg_stats = (
@@ -547,12 +490,6 @@ def compute_team_buff_tier_leaderboards(
                 fg_ff_stat = _safe_int(fg_stats.get("Fever Fill Rate", 0), 0)
                 fg_cm_stat = _safe_int(fg_stats.get("Combo Multiplier", 0), 0)
                 fg_fm_stat = _safe_int(fg_stats.get("Fever Multiplier", 0), 0)
-                fg_fp_targets = _force_counts_to_fp_targets(
-                    fg_counts,
-                    calc_song=group_song,
-                    ff_stat=int(fg_ff_stat),
-                    ref_arrays=ref_arrays,
-                )
 
             per_entry.append(
                 {
@@ -583,7 +520,6 @@ def compute_team_buff_tier_leaderboards(
                         "cm_stat": int(fg_cm_stat),
                         "fm_stat": int(fg_fm_stat),
                         "counts": fg_counts,
-                        "fp_targets": fg_fp_targets,
                         "config": (
                             (force_obj.get("ForceGreats", {}) or {}).get("config")
                             if isinstance(force_obj, dict)

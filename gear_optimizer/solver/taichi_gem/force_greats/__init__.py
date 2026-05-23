@@ -1,8 +1,7 @@
 """
-ForceGreatsFinder GPU implementation (Taichi/Vulkan).
+ForceGreats GPU implementation (Taichi/Vulkan).
 
-This subpackage hosts the ForceGreats (FG) finder kernels + Python wrapper.
-It is intentionally isolated from the main gem solver modules for maintainability.
+Production FG uses the fixed-stats Bellman solver in `bellman_fixed.py`.
 """
 
 from .bellman_fixed import FgBellmanFixedStatsResult, solve_force_greats_bellman_fixed_stats_gpu

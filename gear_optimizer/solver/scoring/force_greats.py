@@ -9,7 +9,6 @@ import logging
 import threading
 
 import numpy as np
-from cachetools import LRUCache
 
 from ...core.utils import safe_int
 from ..fever_timeline import calculate_force_greats_timeline_indices
@@ -24,9 +23,7 @@ from .fg_policy import (
 from .runtime_state import FORCE_GREATS_ALGO_VERSION  # noqa: F401 -- re-exported for FG helpers
 
 
-
 logger = logging.getLogger(__name__)
-FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
 
 # Thread-local scratch buffers for Force Greats timeline computation.
 # This avoids per-call NumPy allocations in hot loops without introducing

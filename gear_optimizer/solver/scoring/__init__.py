@@ -17,7 +17,6 @@ from .stats_scoring import (
     _song_cache_key,
 )
 from .force_greats import (
-    FG_TIMELINE_CACHE,
     _compute_force_greats_timeline,
     evaluate_force_greats,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "fg_baseline_params",
     "_force_greats_counts_to_dict",
     "_song_cache_key",
-    "FG_TIMELINE_CACHE",
     "_compute_force_greats_timeline",
     "evaluate_force_greats",
 ]
