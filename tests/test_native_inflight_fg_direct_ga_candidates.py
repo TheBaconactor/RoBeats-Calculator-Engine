@@ -61,7 +61,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
-def test_run_fg_job_sync_forces_bellman_direct_ga_candidates(monkeypatch):
+def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
     calls: dict[str, object] = {}

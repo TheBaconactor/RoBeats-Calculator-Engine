@@ -1,7 +1,7 @@
 """Scoring package public API surface.
 
 The live package exposes runtime state, stat helpers, and Force Greats
-evaluation for tooling/rescoring. Production FG uses the Bellman GPU path.
+evaluation for tooling/rescoring. Production FG uses the response-frontier GPU path.
 """
 
 from .runtime_state import (

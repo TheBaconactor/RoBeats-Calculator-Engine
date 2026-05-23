@@ -1,4 +1,4 @@
-"""Minimal ForceGreats API stubs for Bellman-only production FG."""
+"""Minimal ForceGreats API stubs for response-frontier production FG."""
 from __future__ import annotations
 
 from . import fields

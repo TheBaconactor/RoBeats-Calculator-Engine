@@ -4,7 +4,7 @@ This pipeline is designed to keep the GPU continuously busy in native GA mode by
 - Preparing the next songs' CPU-only data while the GPU runs the current song.
 - Executing GPU-native GA on the Taichi/Vulkan owner thread (GpuExecutor) via an in-process
   request queue (no per-song process overhead, minimal transfers).
-- Scheduling ForceGreats Bellman work via continuous credit-based interleaving,
+- Scheduling ForceGreats response-frontier work via continuous credit-based interleaving,
   with CPU grouping/prep performed off the GPU thread and GPU kernels submitted via the executor.
 """
 from __future__ import annotations

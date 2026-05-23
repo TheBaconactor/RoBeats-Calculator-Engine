@@ -31,6 +31,9 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
         return None
     if n_sections_i <= 0:
         return None
+    for window in cfg_windows:
+        if isinstance(window, dict) and (str(window.get("kind") or "") == "list" or "counts_list" in window):
+            raise ValueError("legacy FG counts_list config windows are not supported")
 
     try:
         cfg_idx_np = np.asarray(cfg_idx, dtype=np.int32)
@@ -68,14 +71,6 @@ def decode_cfg_counts_from_windows(cfg_idx: Any, cfg_windows: list[dict], n_sect
             rep_bits = _rep_mask_width(n_sections_i)
             rep_mask = int(local & ((1 << rep_bits) - 1)) if rep_bits > 0 else 0
             base_local = int(local >> rep_bits)
-            if str(w.get("kind") or "") == "list":
-                lst = w.get("counts_list") or []
-                if 0 <= local < len(lst):
-                    row = lst[local]
-                    for s in range(n_sections_i):
-                        cfg_counts[gi, s] = int(row[s]) if s < len(row) else 0
-                continue
-
             max_fp_vec = list(w.get("max_fp") or [])
             rem = int(base_local)
             for s in range(n_sections_i - 1, -1, -1):

@@ -350,7 +350,7 @@ def _stale_00_hard_fg_force_payload() -> dict:
         },
         "ForceGreats": {
             "enabled": True,
-            "mode": "bellman",
+            "mode": "response_frontier",
             "algo_version": 3,
             "config": {"NonFever1": 5, "NonFever2": 0},
             "final_score": 32521173,

@@ -1,7 +1,7 @@
 """
 Force Greats timeline and manual evaluation helpers.
 
-Production FG optimization uses the Bellman GPU path (`process_force_greats`).
+Production FG optimization uses the response-frontier GPU path (`process_force_greats`).
 This module retains CPU timeline/penalty evaluation for tooling and rescoring.
 """
 

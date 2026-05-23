@@ -1,29 +1,29 @@
-"""Minimal ForceGreats field/runtime stubs for Bellman-only production FG."""
+"""Minimal ForceGreats field/runtime stubs for response-frontier production FG."""
 from __future__ import annotations
 
-_bellman_warmed = False
+_response_frontier_warmed = False
 
 
 def reset_fields_state() -> None:
     """Reset module-level warmup state after `ti.reset()`."""
-    global _bellman_warmed
-    _bellman_warmed = False
+    global _response_frontier_warmed
+    _response_frontier_warmed = False
 
 
 def ensure_ready_with_warmup() -> None:
     """
-    Ensure Taichi is initialized and Bellman FG runtime imports are loaded.
+    Ensure Taichi is initialized and response-frontier FG runtime imports are loaded.
 
-    Production FG uses Bellman only; legacy finder kernels/fields are gone.
+    Production FG uses response-frontier search; legacy finder kernels/fields are gone.
     """
-    global _bellman_warmed
+    global _response_frontier_warmed
     from ..runtime import init_taichi, is_initialized
-    from gear_optimizer.helpers.song_helpers.force_greats.bellman_warmup import (
-        warmup_force_greats_bellman_runtime_imports,
+    from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
+        warmup_force_greats_response_frontier_runtime_imports,
     )
 
     if not is_initialized():
         init_taichi()
-    if not _bellman_warmed:
-        warmup_force_greats_bellman_runtime_imports()
-        _bellman_warmed = True
+    if not _response_frontier_warmed:
+        warmup_force_greats_response_frontier_runtime_imports()
+        _response_frontier_warmed = True

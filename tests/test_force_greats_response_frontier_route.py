@@ -3,13 +3,13 @@ from gear_optimizer.solver.native_inflight_config import make_native_song
 import pytest
 
 
-def test_process_force_greats_bellman_failure_raises_directly(monkeypatch):
+def test_process_force_greats_response_frontier_failure_raises_directly(monkeypatch):
     from gear_optimizer.helpers.song_helpers.force_greats import core
 
     def _boom(*_args, **_kwargs):
-        raise RuntimeError("bellman path failed")
+        raise RuntimeError("response frontier path failed")
 
-    monkeypatch.setattr(core, "process_force_greats_bellman_fixed_gpu", _boom)
+    monkeypatch.setattr(core, "process_force_greats_response_frontier_gpu", _boom)
 
     class _Registry:
         @staticmethod
@@ -30,7 +30,7 @@ def test_process_force_greats_bellman_failure_raises_directly(monkeypatch):
         }
     ]
 
-    with pytest.raises(RuntimeError, match="bellman path failed"):
+    with pytest.raises(RuntimeError, match="response frontier path failed"):
         core.process_force_greats(
             loadout_entries={},
             calc_song={"metadata": {}, "song_data": {}},
@@ -41,7 +41,7 @@ def test_process_force_greats_bellman_failure_raises_directly(monkeypatch):
         )
 
 
-def test_prepare_fg_job_sync_uses_db_only_entries_for_bellman_route(monkeypatch):
+def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(monkeypatch):
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
@@ -98,7 +98,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_bellman_route(monkeypatch)
     assert len(song.runtime.decode.ga_candidates or []) == 1
 
 
-def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_bellman(monkeypatch):
+def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(monkeypatch):
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
@@ -152,13 +152,13 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_bellman(monkeypatc
     assert any((cand.get("Gear") or [None])[0] == "KeepG1" for cand in selected)
 
 
-def test_process_force_greats_forwards_direct_ga_candidates_to_bellman(monkeypatch):
+def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier(monkeypatch):
     from gear_optimizer.helpers.song_helpers.force_greats import core
 
     seen: list[tuple[int, object]] = []
     registry = object()
 
-    def _fake_bellman(
+    def _fake_response_frontier(
         loadout_entries,
         calc_song,
         ref_arrays,
@@ -189,7 +189,7 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_bellman(monkeypat
             }
         ]
 
-    monkeypatch.setattr(core, "process_force_greats_bellman_fixed_gpu", _fake_bellman)
+    monkeypatch.setattr(core, "process_force_greats_response_frontier_gpu", _fake_response_frontier)
 
     ga_candidates = [
         {
@@ -214,8 +214,10 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_bellman(monkeypat
     assert int(out[0]["fg_score"]) == 101
 
 
-def test_bellman_cache_validation_rejects_legacy_finder_mode():
-    from gear_optimizer.helpers.song_helpers.force_greats.cache_validation import is_cached_force_valid_for_bellman
+def test_response_frontier_cache_validation_rejects_legacy_modes():
+    from gear_optimizer.helpers.song_helpers.force_greats.cache_validation import (
+        is_cached_force_valid_for_response_frontier,
+    )
 
     payload = {
         "Selected Element": "Rush",
@@ -225,42 +227,74 @@ def test_bellman_cache_validation_rejects_legacy_finder_mode():
         },
     }
 
-    assert is_cached_force_valid_for_bellman(payload, "Rush", 0, 0) is False
+    assert is_cached_force_valid_for_response_frontier(payload, "Rush") is False
+
+    payload["ForceGreats"]["mode"] = "bellman"
+    assert is_cached_force_valid_for_response_frontier(payload, "Rush") is False
+
+    payload["ForceGreats"]["mode"] = "response_frontier"
+    assert is_cached_force_valid_for_response_frontier(payload, "Rush") is True
 
 
-def test_process_force_greats_expands_overflow_to_fever_fill_for_bellman(monkeypatch):
-    import numpy as np
+def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import bellman_fixed_adapter as adapter
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseFrontierResult,
+        FgResponseFrontierSolveResult,
+        FgResponseInnerResult,
+        FgResponseSurface,
+    )
 
-    def _fake_surfaces(stats, calc_song, ref_arrays):
-        fill = int((stats or {}).get("Fever Fill Rate", 0) or 0)
-        song_inputs = SimpleNamespace(
-            timestamps=np.asarray([0.0, 1.0], dtype=np.float32),
-            great_candidates=np.asarray([0.0, 1.0], dtype=np.float32),
-            use_forced_great_timing=False,
+    calls = []
+
+    def _fake_response_frontier(*, base_stats, calc_song, ref_arrays, selected_color, **_kwargs):
+        calls.append((dict(base_stats), selected_color, calc_song, ref_arrays))
+        surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        frontier = FgResponseFrontierResult(
+            first_frontier=(surface,),
+            state_frontiers={},
+            states_evaluated=1,
+            actions=1,
+            transitions_evaluated=1,
+            generated_surfaces=1,
+            retained_surfaces_total=1,
+            max_state_frontier=1,
+            non_fever_base=5,
+            seconds=0.0,
         )
-        return (
-            song_inputs,
-            np.asarray([1, 1], dtype=np.int32),
-            np.asarray([2, 2], dtype=np.int32),
-            np.asarray([0, 0, 0], dtype=np.int64),
-            float(fill),
-            2,
-            1.0,
+        inner = FgResponseInnerResult(
+            best_score=150,
+            surface_index=0,
+            g_pp=1,
+            g_cm=2,
+            g_fm=3,
+            g_ov=4,
+            final_pp=11,
+            final_cm=12,
+            final_fm=13,
+            final_primary=14,
+            final_secondary=15,
+        )
+        return FgResponseFrontierSolveResult(
+            best_score=150,
+            ft=6,
+            ff=7,
+            gem_counts={"Perfect Points": 1, "Combo Multiplier": 2, "Fever Multiplier": 3, "Element": 4},
+            stats={**base_stats, "Fever Time": 6, "Fever Fill Rate": 7},
+            surface=surface,
+            frontier=frontier,
+            inner=inner,
+            seconds=0.0,
+            forced_counts=(5, 0),
         )
 
-    def _fake_bellman(*, raw_fever_fill, **_kwargs):
-        if int(raw_fever_fill) >= 3:
-            return SimpleNamespace(best_score=150, best_forced_counts=(5, 0))
-        return SimpleNamespace(best_score=100, best_forced_counts=(0, 0))
-
-    monkeypatch.setattr(adapter, "_fixed_note_surfaces", _fake_surfaces)
-    monkeypatch.setattr(adapter, "solve_force_greats_bellman_fixed_stats_gpu", _fake_bellman)
+    monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
+    monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_batch_gpu", _fake_response_frontier)
     monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
 
-    out = adapter.process_force_greats_bellman_fixed_gpu(
+    out = adapter.process_force_greats_response_frontier_gpu(
         {},
         {"metadata": {}, "song_data": {}},
         {},
@@ -288,12 +322,15 @@ def test_process_force_greats_expands_overflow_to_fever_fill_for_bellman(monkeyp
         ],
     )
 
+    assert len(calls) == 1
+    assert calls[0][1] == "Rush"
     assert len(out) == 1
     assert out[0]["fg_score"] == 150
     assert out[0]["base_score"] == 100
-    assert out[0]["data"]["FF"] == 1
-    assert out[0]["data"]["GemCounts"]["Element"] == 0
-    assert out[0]["data"]["ForceGreats"]["mode"] == "bellman"
+    assert out[0]["data"]["FT"] == 6
+    assert out[0]["data"]["FF"] == 7
+    assert out[0]["data"]["GemCounts"]["Element"] == 4
+    assert out[0]["data"]["ForceGreats"]["mode"] == "response_frontier"
     assert out[0]["data"]["ForceGreats"]["config"] == {"NonFever1": 5, "NonFever2": 0}
     assert out[0]["gear"] == ["G1"]
     assert out[0]["minis"] == ["M1"]

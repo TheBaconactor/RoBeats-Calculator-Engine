@@ -112,11 +112,11 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
         {"IterationEngine": {"FG_SearchRadius": "-1"}},
     ],
 )
-def test_non_bellman_force_greats_config_is_rejected(cfg_dict):
+def test_non_response_frontier_force_greats_config_is_rejected(cfg_dict):
     cfg = configparser.ConfigParser()
     cfg.read_dict(cfg_dict)
 
-    with pytest.raises(ValueError, match="Bellman is the only supported ForceGreats scorer"):
+    with pytest.raises(ValueError, match="response-frontier is the only supported ForceGreats scorer"):
         read_iteration_engine_settings(cfg)
 
 

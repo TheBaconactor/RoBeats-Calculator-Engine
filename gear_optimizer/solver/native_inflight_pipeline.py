@@ -1050,7 +1050,7 @@ def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[
 def prepare_fg_static_sync(song: NativeSong) -> None:
     """
     Prepare the GA-invariant part of FG while GA is still running.
-    Bellman FG consumes GA candidates directly. The late FG prep still owns
+    Response-frontier FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
     config = getattr(song, 'config', song)

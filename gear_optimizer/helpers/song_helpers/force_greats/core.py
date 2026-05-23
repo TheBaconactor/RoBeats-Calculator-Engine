@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from .bellman_fixed_adapter import process_force_greats_bellman_fixed_gpu
+from .response_frontier_adapter import process_force_greats_response_frontier_gpu
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def process_force_greats(
 ):
     total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
     logger.debug("[ForceGreats] Processing %s candidate loadouts (DB + GA)...", total_entries)
-    return process_force_greats_bellman_fixed_gpu(
+    return process_force_greats_response_frontier_gpu(
         loadout_entries,
         calc_song,
         ref_arrays,

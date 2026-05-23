@@ -4,15 +4,14 @@ import time
 from typing import Any, Callable
 
 from gear_optimizer.core.parsing import env_flag, env_get
-from gear_optimizer.helpers.song_helpers.force_greats.bellman_fixed_adapter import (
-    _fixed_note_surfaces,
-    _fixed_stat_payloads_for_bellman,
-)
 from gear_optimizer.solver.force_greats_common import extract_base_stats
 from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
-from gear_optimizer.solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
+from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score
+from gear_optimizer.solver.taichi_gem.force_greats import (
+    FgResponseFrontierSolveResult,
+    FgResponseSurface,
+    solve_force_greats_response_frontier_batch_gpu,
+)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -44,162 +43,14 @@ def _candidate_base_stats(data: dict[str, Any], *, selected_color: str) -> dict[
     return dict(base_stats)
 
 
-def _gem_count(gem_counts: Any, key: str) -> int:
-    if not isinstance(gem_counts, dict):
-        return 0
-    return _safe_int(gem_counts.get(key, 0), 0)
-
-
 def _stable_int_mapping_key(values: dict[str, Any]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted((str(key), _safe_int(value, 0)) for key, value in dict(values or {}).items()))
 
 
-def _solve_bellman_fixed_payload(
-    *,
-    stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-):
-    song_inputs, normal, fever, penalty_prefix, raw_fill, non_fever_base, real_fever_time = _fixed_note_surfaces(
-        stats,
-        calc_song,
-        ref_arrays,
-    )
-    bellman = solve_force_greats_bellman_fixed_stats_gpu(
-        timestamps=song_inputs.timestamps,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        raw_fever_fill=float(raw_fill),
-        non_fever_base=int(non_fever_base),
-        real_fever_time=float(real_fever_time),
-        normal_score_per_note=normal,
-        fever_score_per_note=fever,
-        forced_great_penalty_prefix=penalty_prefix,
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-    )
-    return bellman, int(non_fever_base)
-
-
-def _empty_bellman_batch_stats() -> dict[str, int]:
-    return {
-        "gpu_batches": 0,
-        "groups": 0,
-        "input_genomes": 0,
-        "unique_genomes": 0,
-        "deduped_genomes": 0,
-        "dedupe_groups": 0,
-    }
-
-
-def _score_skyline_bellman_force_greats_batch(
-    *,
-    prepared: list[dict[str, Any]],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-) -> tuple[list[dict[str, Any] | None], dict[str, int]]:
-    if not prepared:
-        return [], _empty_bellman_batch_stats()
-
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    total_notes = int(len(timestamps)) if timestamps is not None else 0
-    if total_notes <= 0:
-        return [None for _ in prepared], _empty_bellman_batch_stats()
-
-    results: list[dict[str, Any] | None] = [None for _ in prepared]
-    result_cache: dict[tuple[Any, ...], dict[str, Any] | None] = {}
-    result_cache_hits = 0
-    cache_member_counts: dict[tuple[Any, ...], int] = {}
-    group_keys: set[tuple[Any, ...]] = set()
-    gpu_batches = 0
-    input_genomes = 0
-
-    for idx, prep in enumerate(prepared):
-        data = prep["data"]
-        base_stats = dict(prep["base_stats"])
-        base_score = _safe_int(prep.get("base_score", 0), 0)
-        selected_color = str(prep.get("selected_color", "") or "")
-        center_ft = _safe_int(prep.get("center_ft", 0), 0)
-        center_ff = _safe_int(prep.get("center_ff", 0), 0)
-        gem_counts = dict(data.get("GemCounts") or {}) if isinstance(data.get("GemCounts"), dict) else {}
-
-        input_genomes += 1
-        group_keys.add((selected_color,))
-
-        result_key = (
-            selected_color,
-            _stable_int_mapping_key(base_stats),
-            _stable_int_mapping_key(gem_counts),
-            int(center_ft),
-            int(center_ff),
-        )
-        cache_member_counts[result_key] = int(cache_member_counts.get(result_key, 0)) + 1
-        if result_key in result_cache:
-            cached = result_cache[result_key]
-            results[idx] = dict(cached) if isinstance(cached, dict) else None
-            result_cache_hits += 1
-            continue
-
-        eval_data = dict(data)
-        eval_data["BaseStats"] = dict(base_stats)
-        eval_data["GemCounts"] = dict(gem_counts)
-        eval_data["FT"] = int(center_ft)
-        eval_data["FF"] = int(center_ff)
-        eval_data["Selected Element"] = selected_color
-        eval_data["BaseScore"] = int(base_score)
-        eval_data["Score"] = int(base_score)
-
-        best_result: dict[str, Any] | None = None
-        for fixed_eval_data, stats, fixed_base_score in _fixed_stat_payloads_for_bellman(
-            eval_data,
-            selected=selected_color,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            paired_base_score=int(base_score),
-        ):
-            bellman, non_fever_base = _solve_bellman_fixed_payload(
-                stats=stats,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-            )
-            gpu_batches += 1
-            forced_counts = tuple(int(value) for value in bellman.best_forced_counts)
-            if not forced_counts or max(forced_counts) <= 0:
-                continue
-            if int(bellman.best_score) <= int(fixed_base_score):
-                continue
-
-            variant_gem_counts = (
-                dict(fixed_eval_data.get("GemCounts") or {}) if isinstance(fixed_eval_data, dict) else {}
-            )
-            candidate_result = {
-                "base_score": int(fixed_base_score),
-                "final_score": int(bellman.best_score),
-                "score_penalty": 0,
-                "fill_penalty": 0,
-                "total_penalty": 0,
-                "num_non_fever_sections": int(bellman.section_count),
-                "penalty_analysis": {},
-                "config_counts": list(forced_counts),
-                "config_dict": _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts))),
-                "non_fever_base": int(non_fever_base),
-                "gem_counts": dict(variant_gem_counts),
-                "FT": _safe_int(fixed_eval_data.get("FT", center_ft), center_ft),
-                "FF": _safe_int(fixed_eval_data.get("FF", center_ff), center_ff),
-            }
-            if best_result is None or int(candidate_result["final_score"]) > int(best_result["final_score"]):
-                best_result = candidate_result
-
-        results[idx] = best_result
-        result_cache[result_key] = dict(best_result) if isinstance(best_result, dict) else None
-
-    return results, {
-        "gpu_batches": int(gpu_batches),
-        "groups": int(len(group_keys)),
-        "input_genomes": int(input_genomes),
-        "unique_genomes": int(len(result_cache)),
-        "deduped_genomes": int(result_cache_hits),
-        "dedupe_groups": sum(1 for count in cache_member_counts.values() if int(count) > 1),
-    }
+def _gem_count(gem_counts: Any, key: str) -> int:
+    if not isinstance(gem_counts, dict):
+        return 0
+    return _safe_int(gem_counts.get(key, 0), 0)
 
 
 def _percentile_int(values: list[int], pct: float) -> int:
@@ -241,57 +92,112 @@ def _genome_names(genome: Any, start: int, stop: int) -> list[str]:
     return [_item_name(item) for item in genome[start:stop]]
 
 
+def _surface_payload(surface: FgResponseSurface) -> dict[str, int]:
+    return {
+        "fever0": int(surface.fever0),
+        "fever1": int(surface.fever1),
+        "fever2": int(surface.fever2),
+        "fever3": int(surface.fever3),
+        "great0": int(surface.great0),
+        "great1": int(surface.great1),
+        "great2": int(surface.great2),
+        "great3": int(surface.great3),
+        "body_fever": int(surface.body_fever),
+        "body_great": int(surface.body_great),
+    }
+
+
 def _materialize_force_payload(
     *,
     base_data: dict[str, Any],
     base_stats: dict[str, Any],
-    fg_result: dict[str, Any],
+    fg_result: FgResponseFrontierSolveResult,
     selected_color: str,
-    center_ft: int,
-    center_ff: int,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
 ) -> dict[str, Any]:
-    final_score = _safe_int(fg_result.get("final_score", 0), 0)
-    fg_ft = _safe_int(fg_result.get("FT", center_ft), center_ft)
-    fg_ff = _safe_int(fg_result.get("FF", center_ff), center_ff)
-    gem_counts = fg_result.get("gem_counts") if isinstance(fg_result.get("gem_counts"), dict) else {}
-
-    g_pp = _gem_count(gem_counts, "Perfect Points")
-    g_cm = _gem_count(gem_counts, "Combo Multiplier")
-    g_fm = _gem_count(gem_counts, "Fever Multiplier")
-    g_ov = _gem_count(gem_counts, "Element")
+    forced_counts = tuple(int(v) for v in fg_result.forced_counts)
+    config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
+    base_score = int(evaluate_stats_score(fg_result.stats, calc_song, ref_arrays))
 
     force_payload = dict(base_data)
-    force_payload["BaseScore"] = _safe_int(
-        fg_result.get("base_score", base_data.get("BaseScore", base_data.get("Score", 0))),
-        0,
-    )
-    force_payload["Score"] = int(final_score)
-    force_payload["FT"] = int(fg_ft)
-    force_payload["FF"] = int(fg_ff)
-    force_payload["GemCounts"] = dict(gem_counts)
+    force_payload["BaseScore"] = int(base_score)
+    force_payload["Score"] = int(fg_result.best_score)
+    force_payload["FT"] = int(fg_result.ft)
+    force_payload["FF"] = int(fg_result.ff)
+    force_payload["GemCounts"] = dict(fg_result.gem_counts)
     force_payload["BaseStats"] = dict(base_stats)
-    force_payload["Stats"] = apply_gems_to_base_stats(
-        base_stats,
-        str(selected_color or ""),
-        int(fg_ft),
-        int(fg_ff),
-        int(g_pp),
-        int(g_cm),
-        int(g_fm),
-        int(g_ov),
-        add_missing_element_key=True,
-    )
+    force_payload["Stats"] = dict(fg_result.stats)
+    force_payload["Selected Element"] = str(selected_color or force_payload.get("Selected Element", "") or "")
+    force_payload["forced_counts"] = list(forced_counts)
     force_payload["ForceGreats"] = {
         "enabled": True,
-        "mode": "bellman",
+        "mode": "response_frontier",
         "algo_version": int(FORCE_GREATS_ALGO_VERSION),
-        "center_ft": int(center_ft),
-        "center_ff": int(center_ff),
-        "config": fg_result.get("config_dict", {}) or {},
-        "final_score": int(final_score),
+        "config": config,
+        "final_score": int(fg_result.best_score),
+        "response_surface": _surface_payload(fg_result.surface),
+        "frontier_first_surfaces": int(len(fg_result.frontier.first_frontier)),
+        "frontier_states": int(fg_result.frontier.states_evaluated),
+        "frontier_max_state": int(fg_result.frontier.max_state_frontier),
+        "frontier_transitions": int(fg_result.frontier.transitions_evaluated),
+        "non_fever_base": int(fg_result.frontier.non_fever_base),
     }
-    force_payload["forced_counts"] = list(fg_result.get("config_counts") or [])
     return force_payload
+
+
+def _empty_batch_stats() -> dict[str, int]:
+    return {
+        "gpu_batches": 0,
+        "groups": 0,
+        "input_genomes": 0,
+        "unique_genomes": 0,
+        "deduped_genomes": 0,
+        "dedupe_groups": 0,
+    }
+
+
+def _score_skyline_response_force_greats_batch(
+    *,
+    prepared: list[dict[str, Any]],
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+) -> tuple[list[FgResponseFrontierSolveResult | None], dict[str, int]]:
+    if not prepared:
+        return [], _empty_batch_stats()
+
+    results: list[FgResponseFrontierSolveResult | None] = [None for _ in prepared]
+    result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult | None] = {}
+    cache_member_counts: dict[tuple[Any, ...], int] = {}
+    result_cache_hits = 0
+
+    for idx, prep in enumerate(prepared):
+        base_stats = dict(prep["base_stats"])
+        selected_color = str(prep.get("selected_color", "") or "")
+        result_key = (selected_color, _stable_int_mapping_key(base_stats))
+        cache_member_counts[result_key] = int(cache_member_counts.get(result_key, 0)) + 1
+        if result_key in result_cache:
+            results[idx] = result_cache[result_key]
+            result_cache_hits += 1
+            continue
+
+        result = solve_force_greats_response_frontier_batch_gpu(
+            base_stats=base_stats,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            selected_color=selected_color,
+        )
+        results[idx] = result
+        result_cache[result_key] = result
+
+    return results, {
+        "gpu_batches": int(len(result_cache)),
+        "groups": int(len({str(item.get("selected_color", "") or "") for item in prepared})),
+        "input_genomes": int(len(prepared)),
+        "unique_genomes": int(len(result_cache)),
+        "deduped_genomes": int(result_cache_hits),
+        "dedupe_groups": sum(1 for count in cache_member_counts.values() if int(count) > 1),
+    }
 
 
 def score_retained_skyline_force_greats(
@@ -303,15 +209,8 @@ def score_retained_skyline_force_greats(
     use_gpu: bool,
     status_cb: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """
-    Score retained skyline candidates on the production ForceGreats surface.
-
-    This is intentionally candidate-local: skyline supplies a retained loadout, then
-    FG solves the joint gem allocation + forced-great configuration for that loadout.
-    It does not enable any FG ceiling pruning.
-    """
     if not use_gpu:
-        raise RuntimeError("Skyline native FG is GPU-only; CPU FG scoring is not a production path.")
+        raise RuntimeError("Skyline FG is GPU-only; CPU FG scoring is not a production path.")
 
     if status_cb is None:
 
@@ -335,7 +234,6 @@ def score_retained_skyline_force_greats(
             break
 
     prepared: list[dict[str, Any]] = []
-
     for idx, rec in enumerate(candidate_records):
         data = rec.get("data")
         if not isinstance(data, dict) or not data:
@@ -344,9 +242,6 @@ def score_retained_skyline_force_greats(
         base_score = _safe_int(rec.get("base_score", data.get("BaseScore", data.get("Score", 0))), 0)
         selected_color = str(data.get("Selected Element", "") or default_selected_color or "")
         base_stats = _candidate_base_stats(data, selected_color=selected_color)
-        center_ft = _safe_int(data.get("FT", 0), 0)
-        center_ff = _safe_int(data.get("FF", 0), 0)
-
         prepared.append(
             {
                 "idx": int(idx),
@@ -355,49 +250,42 @@ def score_retained_skyline_force_greats(
                 "base_score": int(base_score),
                 "selected_color": selected_color,
                 "base_stats": base_stats,
-                "center_ft": int(center_ft),
-                "center_ff": int(center_ff),
             }
         )
 
     call_t0 = time.perf_counter()
-    fg_results, batch_stats = _score_skyline_bellman_force_greats_batch(
+    fg_results, batch_stats = _score_skyline_response_force_greats_batch(
         prepared=prepared,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
     )
     fg_elapsed_total = float(time.perf_counter() - call_t0)
-    exact_calls = int(len(prepared))
     fg_elapsed_each = float(fg_elapsed_total) / float(max(1, len(prepared)))
 
     fg_gains = 0
     telemetry_rows: list[dict[str, Any]] = []
-
     for idx, prep in enumerate(prepared):
         rec = prep["rec"]
         data = prep["data"]
         base_score = int(prep["base_score"])
         selected_color = str(prep["selected_color"])
         base_stats = dict(prep["base_stats"])
-        center_ft = int(prep["center_ft"])
-        center_ff = int(prep["center_ff"])
         fg_result = fg_results[idx] if idx < len(fg_results) else None
-        fg_elapsed = float(fg_elapsed_each)
 
         fg_score = base_score
         fg_base_score = base_score
         force_payload = None
-        if isinstance(fg_result, dict) and fg_result:
-            fg_score = _safe_int(fg_result.get("final_score", base_score), base_score)
-            fg_base_score = _safe_int(fg_result.get("base_score", base_score), base_score)
+        if isinstance(fg_result, FgResponseFrontierSolveResult):
+            fg_score = int(fg_result.best_score)
             force_payload = _materialize_force_payload(
                 base_data=data,
                 base_stats=base_stats,
                 fg_result=fg_result,
                 selected_color=selected_color,
-                center_ft=center_ft,
-                center_ff=center_ff,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
             )
+            fg_base_score = int(force_payload["BaseScore"])
 
         fg_delta = int(fg_score) - int(base_score)
         if fg_delta > 0:
@@ -419,61 +307,53 @@ def score_retained_skyline_force_greats(
         rec["fg_score"] = int(fg_score)
         rec["fg_delta"] = int(fg_delta)
         rec["fg_base_score"] = int(fg_base_score)
-        rec["fg_elapsed_s"] = float(fg_elapsed)
+        rec["fg_elapsed_s"] = float(fg_elapsed_each)
 
-        rank = int(idx + 1)
         force_counts = []
         force_gem_counts = {}
-        force_ft = center_ft
-        force_ff = center_ff
+        force_ft = _safe_int(data.get("FT", 0), 0)
+        force_ff = _safe_int(data.get("FF", 0), 0)
         if isinstance(force_payload, dict):
             force_counts = _int_list(force_payload.get("forced_counts"))
             force_gem_counts = (
                 dict(force_payload.get("GemCounts") or {}) if isinstance(force_payload.get("GemCounts"), dict) else {}
             )
-            force_ft = _safe_int(force_payload.get("FT", center_ft), center_ft)
-            force_ff = _safe_int(force_payload.get("FF", center_ff), center_ff)
+            force_ft = _safe_int(force_payload.get("FT", force_ft), force_ft)
+            force_ff = _safe_int(force_payload.get("FF", force_ff), force_ff)
 
-        telemetry_row = {
-            "rank": int(rank),
-            "sample_source": str(rec.get("sample_source", "") or ""),
-            "base_score": int(base_score),
-            "base_gap_to_best": int(max(0, int(candidate_records[0].get("base_score", 0) or 0) - int(base_score)))
-            if candidate_records
-            else 0,
-            "fg_score": int(fg_score),
-            "fg_delta": int(fg_delta),
-            "fg_base_score": int(fg_base_score),
-            "fg_elapsed_s": float(fg_elapsed),
-            "gear_names": _genome_names(rec.get("genome"), 0, 6),
-            "mini_names": _genome_names(rec.get("genome"), 6, 9),
-            "genome_ids": list(data.get("GenomeIDs") or []) if isinstance(data.get("GenomeIDs"), list) else [],
-            "ft": int(center_ft),
-            "ff": int(center_ff),
-            "fg_ft": int(force_ft),
-            "fg_ff": int(force_ff),
-            "fg_gem_pp": _gem_count(force_gem_counts, "Perfect Points"),
-            "fg_gem_cm": _gem_count(force_gem_counts, "Combo Multiplier"),
-            "fg_gem_fm": _gem_count(force_gem_counts, "Fever Multiplier"),
-            "fg_gem_element": _gem_count(force_gem_counts, "Element"),
-            "base_pp": int(base_stats.get("Perfect Points", 0) or 0),
-            "base_cm": int(base_stats.get("Combo Multiplier", 0) or 0),
-            "base_fm": int(base_stats.get("Fever Multiplier", 0) or 0),
-            "base_ft": int(base_stats.get("Fever Time", 0) or 0),
-            "base_ff": int(base_stats.get("Fever Fill Rate", 0) or 0),
-            "base_primary": int(base_stats.get(str(calc_song.get("metadata", {}).get("Primary Color", "")), 0) or 0),
-            "base_secondary": int(
-                base_stats.get(str(calc_song.get("metadata", {}).get("Secondary Color", "")), 0) or 0
-            ),
-            "force_count_sum": int(sum(int(x) for x in force_counts)) if force_counts else 0,
-            "force_sections": int(len(force_counts)),
-            "force_counts": list(force_counts),
-        }
-        telemetry_rows.append(telemetry_row)
+        rank = int(idx + 1)
+        telemetry_rows.append(
+            {
+                "rank": int(rank),
+                "sample_source": str(rec.get("sample_source", "") or ""),
+                "base_score": int(base_score),
+                "base_gap_to_best": int(
+                    max(0, int(candidate_records[0].get("base_score", 0) or 0) - int(base_score))
+                )
+                if candidate_records
+                else 0,
+                "fg_score": int(fg_score),
+                "fg_delta": int(fg_delta),
+                "fg_base_score": int(fg_base_score),
+                "fg_elapsed_s": float(fg_elapsed_each),
+                "gear_names": _genome_names(rec.get("genome"), 0, 6),
+                "mini_names": _genome_names(rec.get("genome"), 6, 9),
+                "genome_ids": list(data.get("GenomeIDs") or []) if isinstance(data.get("GenomeIDs"), list) else [],
+                "fg_ft": int(force_ft),
+                "fg_ff": int(force_ff),
+                "fg_gem_pp": _gem_count(force_gem_counts, "Perfect Points"),
+                "fg_gem_cm": _gem_count(force_gem_counts, "Combo Multiplier"),
+                "fg_gem_fm": _gem_count(force_gem_counts, "Fever Multiplier"),
+                "fg_gem_element": _gem_count(force_gem_counts, "Element"),
+                "force_count_sum": int(sum(int(x) for x in force_counts)) if force_counts else 0,
+                "force_sections": int(len(force_counts)),
+                "force_counts": list(force_counts),
+            }
+        )
 
-        if (idx + 1) % 16 == 0 or (idx + 1) == len(candidate_records):
+        if (idx + 1) % 8 == 0 or (idx + 1) == len(candidate_records):
             status_cb(
-                "skyline: native FG scored "
+                "skyline: response-frontier FG scored "
                 f"{idx + 1}/{len(candidate_records)} candidates "
                 f"(best_fg={int(best_fg_score)})"
             )
@@ -486,12 +366,10 @@ def score_retained_skyline_force_greats(
     outside_best_row = max(outside_rows, key=lambda row: int(row["fg_score"]), default=None)
 
     summary = {
-        "mode": "skyline_bellman_fixed_gpu",
+        "mode": "response_frontier_ftff_batch_gpu",
         "candidate_count": int(len(candidate_records)),
-        "bucket_count": 0,
-        "ceiling_dp_calls": 0,
-        "exact_calls": int(exact_calls),
-        "bellman_calls": int(exact_calls),
+        "exact_calls": int(len(prepared)),
+        "response_frontier_calls": int(len(prepared)),
         "gpu_batches": int(batch_stats.get("gpu_batches", 0) if isinstance(batch_stats, dict) else 0),
         "batch_groups": int(batch_stats.get("groups", 0) if isinstance(batch_stats, dict) else 0),
         "fg_batch_input_genomes": int(
@@ -506,7 +384,7 @@ def score_retained_skyline_force_greats(
         "hypothetical_skipped_by_ceiling": 0,
         "fg_gains": int(fg_gains),
         "best_fg_score": int(best_fg_score),
-        "best_fg_base_score": _safe_int(best_record.get("base_score", 0), 0) if best_record else 0,
+        "best_fg_base_score": _safe_int(best_record.get("fg_base_score", 0), 0) if best_record else 0,
         "topk_reference": int(topk_reference),
         "topk_best_fg_score": int(topk_best),
         "best_outside_topk_fg_score": int(outside_best_row["fg_score"]) if outside_best_row else 0,

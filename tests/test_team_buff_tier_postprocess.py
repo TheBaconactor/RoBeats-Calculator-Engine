@@ -78,7 +78,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
         "force": {
             "details": {
                 "Stats": stats_a,
-                "ForceGreats": {"mode": "bellman", "config": {"NonFever1": 1}},
+                "ForceGreats": {"mode": "response_frontier", "config": {"NonFever1": 1}},
             }
         },
     }

@@ -374,7 +374,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if is_fresh_queue:
                 self._stats_verified_once = True
             fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
-            fg_status = "Bellman"
+            fg_status = "ResponseFrontier"
             logger.info(f" >> [ForceGreats] {fg_status}")
             ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)

@@ -20,7 +20,7 @@ def test_force_greats_section_is_rejected(monkeypatch):
 
     calc_song = {"metadata": {"Primary Color": "Rush"}}
 
-    with pytest.raises(ValueError, match="Bellman is the only supported ForceGreats scorer"):
+    with pytest.raises(ValueError, match="response-frontier is the only supported ForceGreats scorer"):
         song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
 
 

@@ -225,21 +225,21 @@ def _assert_no_obsolete_force_greats_modes(cfg: Any) -> None:
     try:
         if cfg.has_section("ForceGreats"):
             raise ValueError(
-                "[ForceGreats] manual config was removed; Bellman is the only supported ForceGreats scorer."
+                "[ForceGreats] manual config was removed; response-frontier is the only supported ForceGreats scorer."
             )
         if cfg.has_option("IterationEngine", "ForceGreatsManual"):
             raw = str(cfg.get("IterationEngine", "ForceGreatsManual", fallback="") or "").strip()
             if raw:
                 raise ValueError(
-                    "IterationEngine.ForceGreatsManual was removed; Bellman is the only supported ForceGreats scorer."
+                    "IterationEngine.ForceGreatsManual was removed; response-frontier is the only supported ForceGreats scorer."
                 )
         for option in ("ForceGreatsMode", "FG_SolverMode", "ForceGreatsFinder", "FG_SearchRadius"):
             if cfg.has_option("IterationEngine", option):
                 raise ValueError(
-                    f"IterationEngine.{option} was removed; Bellman is the only supported ForceGreats scorer."
+                    f"IterationEngine.{option} was removed; response-frontier is the only supported ForceGreats scorer."
                 )
     except (AttributeError, TypeError, configparser.Error) as exc:
-        raise ValueError("Invalid ForceGreats config surface; Bellman is the only supported scorer.") from exc
+        raise ValueError("Invalid ForceGreats config surface; response-frontier is the only supported scorer.") from exc
 
 
 @dataclass(frozen=True)
@@ -452,7 +452,7 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     Important semantics:
     - Production optimizer mode is always active.
     - These are no longer config switches; they are native runtime policy.
-    - ForceGreats has exactly one production scorer: Bellman.
+    - ForceGreats has exactly one production scorer: response-frontier.
     """
     _assert_no_obsolete_force_greats_modes(cfg)
     force_greats_debug = cfg_get_bool(cfg, "IterationEngine", "ForceGreatsDebug", False) if cfg is not None else False
