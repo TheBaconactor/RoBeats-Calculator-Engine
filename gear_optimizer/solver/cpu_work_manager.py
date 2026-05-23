@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
+from typing import TextIO
 
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_prebuild import run_frontier_cache_prebuilds
@@ -24,10 +26,13 @@ class CpuWorkManager:
         song_queue,
         ref_arrays: dict,
         data_root,
+        announce_stream: TextIO | None = None,
     ) -> None:
         t0 = time.perf_counter()
         message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers asynchronously..."
-        print(message, flush=True)
+        stream = announce_stream or sys.stdout
+        stream.write(f"{message}\n")
+        stream.flush()
         logger.info(message)
         emit_profile_event(
             component="cpu_work_manager",

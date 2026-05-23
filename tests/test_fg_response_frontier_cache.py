@@ -356,3 +356,33 @@ def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch, capsys) -> No
     assert seen == [[("0", "Song", "Easy")]]
     captured = capsys.readouterr()
     assert "Building and caching exact timeline + FG response frontiers asynchronously" in captured.out
+
+
+def test_cpu_work_manager_announces_to_explicit_visible_stream(monkeypatch) -> None:
+    import io
+
+    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
+    from gear_optimizer.solver.frontier_cache_prebuild import FrontierCachePrebuildSummary
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+
+    def _fake_frontiers(*, cfg, song_queue, ref_arrays, data_root):
+        return FrontierCachePrebuildSummary(
+            timeline=TimelineFrontierCachePrebuildSummary(total=1, completed=1),
+            fg_response=FgResponseFrontierCachePrebuildSummary(total=1, completed=1),
+            elapsed_ms=1.0,
+        )
+
+    visible = io.StringIO()
+    monkeypatch.setattr(cpu_work_manager, "run_frontier_cache_prebuilds", _fake_frontiers)
+
+    CpuWorkManager().run_startup(
+        cfg=None,
+        song_queue=(),
+        ref_arrays={},
+        data_root=None,
+        announce_stream=visible,
+    )
+
+    assert "Building and caching exact timeline + FG response frontiers asynchronously" in visible.getvalue()
