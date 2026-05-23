@@ -43,8 +43,8 @@ def fg_compute_max_fp_by_pair_kernel(
     Computes the per-(ftff_pair, section) maximum fill-penalty cap (FP cap) across
     all provided base (FT stat, FF stat) pairs.
 
-    This matches the behavior of `helpers.fg_utils.iter_analytical_breakpoint_groups`
-    where per-section breakpoints are simply `range(0, max_fp + 1)`.
+    This matches the legacy analytical breakpoint grouping where per-section
+    breakpoints are simply `range(0, max_fp + 1)`.
 
     Notes:
     - Uses `grid_gap` and `grid_fever_activations` (baseline timeline grid).

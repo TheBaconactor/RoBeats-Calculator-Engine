@@ -26,12 +26,10 @@ from collections import defaultdict, deque
 from time import perf_counter
 from typing import Any, Optional, Dict
 from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
-    FG_REQUEST_TYPES,
     is_ga_recovery_request as _is_ga_recovery_request,
     is_no_batch_request_type as _is_no_batch_request_type,
     ResponseDeliveryTracker,
@@ -47,7 +45,6 @@ from gear_optimizer.solver.gpu_executor_profile import (
     batch_trace_context as _batch_trace_context,
     estimate_request_work_units,
     load_workload_profile_settings as _load_workload_profile_settings,
-    payload_dict as _payload_dict,
     record_workload_batch_state as _record_workload_batch_state,
     emit_workload_batch_profile as _emit_workload_batch_profile,
     emit_workload_stop_summary as _emit_workload_stop_summary,
@@ -107,34 +104,6 @@ from gear_optimizer.solver.gpu_executor_refs import (
     ref_arrays_sig as _ref_arrays_sig,
 )
 from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter
-from gear_optimizer.solver.gpu_executor_fg import (
-    compute_fg_breakpoints_max_fp_matrix as _compute_fg_breakpoints_max_fp_matrix,
-    execute_fg_compute_breakpoints as _execute_fg_compute_breakpoints,
-)
-from gear_optimizer.solver.gpu_executor_fg import (
-    execute_fg_download_global_best as _execute_fg_download_global_best,
-    execute_fg_reset_global_best as _execute_fg_reset_global_best,
-    execute_fg_select_signature_frontier_batch as _execute_fg_select_signature_frontier_batch,
-    decode_cfg_counts_from_max_fp_matrix as _decode_cfg_counts_from_max_fp_matrix,
-    decode_cfg_counts_from_windows_for_gpu as _decode_cfg_counts_from_windows_for_gpu,
-)
-from gear_optimizer.solver.gpu_executor_fg import (
-    execute_fg_solve_with_breakpoints as _execute_fg_solve_with_breakpoints,
-    execute_fg_solve_with_breakpoints_batch as _execute_fg_solve_with_breakpoints_batch,
-    run_fg_solve_with_breakpoints_payload as _run_fg_solve_with_breakpoints_payload,
-)
-from gear_optimizer.solver.gpu_executor_fg import (
-    execute_solve_force_greats_finder as _execute_solve_force_greats_finder,
-)
-from gear_optimizer.solver.gpu_executor_fg import (
-    coalesce_fg_task_requests as _coalesce_fg_task_requests,
-)
-from gear_optimizer.solver.gpu_executor_fg import (
-    coalesce_fg_solve_with_breakpoints_batch_requests as _coalesce_fg_solve_with_breakpoints_batch_requests,
-)
-from gear_optimizer.solver.gpu_executor_batching import (
-    coalesce_ga_fg_fused_requests as _coalesce_ga_fg_fused_requests,
-)
 from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
@@ -158,12 +127,10 @@ from gear_optimizer.solver.gpu_executor_profile import (
     exec_breakdown_enabled as _exec_breakdown_enabled,
     executor_profile_log_message as _executor_profile_log_message,
     exec_breakdown_summary_log_message as _exec_breakdown_summary_log_message,
-    fg_tasks_per_sec_log_message as _fg_tasks_per_sec_log_message,
     gpu_profiler_snapshot as _gpu_profiler_snapshot,
     idle_transition_summary_log_message as _idle_transition_summary_log_message,
     profile_events_output_enabled as _profile_events_output_enabled,
     record_exec_breakdown_stats as _record_exec_breakdown_stats,
-    record_fg_task_batch_stats as _record_fg_task_batch_stats,
     record_pack_stats as _record_pack_stats,
     record_request_latency_stats as _record_request_latency_stats,
     request_latency_summary_log_message as _request_latency_summary_log_message,
@@ -203,15 +170,6 @@ class GpuExecutor:
         return cls._instance
     def __init__(self):
         if self._initialized:
-            for patched_name in (
-                "_coalesce_fg_solve_with_breakpoints_batch_requests",
-                "_execute_request",
-                "_execute_fg_solve_with_breakpoints_batch",
-            ):
-                try:
-                    self.__dict__.pop(patched_name, None)
-                except (KeyError, AttributeError):
-                    pass
             return
         self._request_queue: Optional[multiprocessing.Queue] = None
         self._response_queues: Dict[int, multiprocessing.Queue] = {}
@@ -259,10 +217,6 @@ class GpuExecutor:
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
         self._last_work_req_type: Optional[GpuRequestType] = None
-        self._fg_tasks_batches = 0
-        self._fg_tasks_total = 0
-        self._fg_tasks_max = 0
-        self._fg_tasks_batch_hist = defaultdict(int)
         self._lat_sample_cap = 5000
         self._lat_counts = defaultdict(int)
         self._lat_total_sec = defaultdict(float)
@@ -302,15 +256,7 @@ class GpuExecutor:
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
-            GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
-            GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
-            GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST: self._execute_fg_download_global_best,
-            GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH: self._execute_fg_select_signature_frontier_batch,
-            GpuRequestType.FG_COMPUTE_BREAKPOINTS: self._execute_fg_compute_breakpoints,
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS: self._execute_fg_solve_with_breakpoints,
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: self._execute_fg_solve_with_breakpoints_batch,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._execute_ga_fg_fused_solve_with_breakpoints,
         }
     def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
         self._pack_sec = _record_pack_stats(
@@ -384,19 +330,6 @@ class GpuExecutor:
             lat_in_exec_samples=self._lat_in_exec_samples,
             sample_cap=int(self._lat_sample_cap),
         )
-    def _record_fg_tasks_batch(self, task_count: int) -> None:
-        if not self._profile_enabled:
-            return
-        stats = _record_fg_task_batch_stats(
-            task_count,
-            batches=self._fg_tasks_batches,
-            total=self._fg_tasks_total,
-            max_tasks=self._fg_tasks_max,
-            batch_hist=self._fg_tasks_batch_hist,
-        )
-        self._fg_tasks_batches = stats.batches
-        self._fg_tasks_total = stats.total
-        self._fg_tasks_max = stats.max_tasks
     def _record_workload_batch(self, metrics: dict[str, Any]) -> None:
         if not metrics:
             return
@@ -481,10 +414,6 @@ class GpuExecutor:
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
         self._last_work_req_type = None
-        self._fg_tasks_batches = 0
-        self._fg_tasks_total = 0
-        self._fg_tasks_max = 0
-        self._fg_tasks_batch_hist = defaultdict(int)
         try:
             self._lat_counts.clear()
             self._lat_total_sec.clear()
@@ -568,23 +497,10 @@ class GpuExecutor:
                     req_type_counts=self._req_type_counts,
                     req_type_pack_sec=self._req_type_pack_sec,
                     batch_size_counts=self._batch_size_counts,
-                    fg_tasks_batches=int(self._fg_tasks_batches),
-                    fg_tasks_total=int(self._fg_tasks_total),
-                    fg_tasks_max=int(self._fg_tasks_max),
-                    fg_tasks_batch_hist=self._fg_tasks_batch_hist,
                     idle_gaps_count=len(self._idle_gaps),
                     idle_summary=idle_summary,
                 )
             )
-            try:
-                fg_tasks_msg = _fg_tasks_per_sec_log_message(
-                    req_type_exec_sec=self._req_type_exec_sec,
-                    fg_tasks_total=int(self._fg_tasks_total),
-                )
-                if fg_tasks_msg:
-                    logger.debug(fg_tasks_msg)
-            except Exception as e:
-                logger.debug(f"gpu_executor:stop: {e}")
             try:
                 if self._lat_counts:
                     rows = _build_request_latency_summary(
@@ -769,7 +685,7 @@ class GpuExecutor:
                             if warmup_fg:
                                 self._write_heartbeat(phase="warmup_fg_cached", force=True)
                                 from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                from gear_optimizer.helpers.song_helpers.force_greats.bellman_warmup import (
                                     warmup_force_greats_bellman_runtime_imports,
                                 )
                                 fg_fields.ensure_ready_with_warmup()
@@ -793,7 +709,7 @@ class GpuExecutor:
                                     logger.debug(f"gpu_executor:_executor_loop: {e}")
                                 t0 = perf_counter()
                                 from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                                from gear_optimizer.helpers.song_helpers.force_greats.bellman_warmup import (
                                     warmup_force_greats_bellman_runtime_imports,
                                 )
                                 fg_fields.ensure_ready_with_warmup()
@@ -834,7 +750,7 @@ class GpuExecutor:
                 try:
                     if warmup_fg:
                         from .taichi_gem.force_greats import fields as fg_fields
-                        from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch_async import (
+                        from gear_optimizer.helpers.song_helpers.force_greats.bellman_warmup import (
                             warmup_force_greats_bellman_runtime_imports,
                         )
                         fg_fields.ensure_ready_with_warmup()
@@ -900,7 +816,6 @@ class GpuExecutor:
                         batch_id=int(self._workload_batch_seq),
                         estimate_work_units_fn=estimate_request_work_units,
                         coalescable_request_types=COALESCABLE_REQUEST_TYPES,
-                        fg_request_types=FG_REQUEST_TYPES,
                     )
                     if trace_enabled:
                         trace_shared_kwargs = _batch_trace_context(batch_metrics)
@@ -958,11 +873,6 @@ class GpuExecutor:
                 self._write_heartbeat(phase="running", batch=batch)
                 grouped_handlers = {
                     GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
-                    GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._coalesce_fg_task_requests,
-                    GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: (
-                        self._coalesce_fg_solve_with_breakpoints_batch_requests
-                    ),
-                    GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._coalesce_ga_fg_fused_requests,
                 }
                 def _execute_grouped_requests(
                     request_type: GpuRequestType, requests: list[GpuRequest], handler
@@ -1249,82 +1159,9 @@ class GpuExecutor:
             except queue.Empty:
                 break  # No more pending requests
         return batch
-    def _coalesce_fg_task_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
-        """
-        Coalesce multiple SOLVE_FORCE_GREATS_FINDER requests into a single GPU call when they are task-only.
-        This targets the common pattern where callers enqueue many small `fg_tasks` batches, each of which:
-          - provides `kwargs['fg_tasks']`
-          - does NOT request reset/download in the same call
-          - shares the same song/genome inputs and scalar knobs
-        IMPORTANT: preserve request ordering relative to "barrier" FG requests (reset/download).
-        A download request must never be executed before earlier task-only requests in the same batch,
-        or it can read a partial global-best state and return fewer/incorrect results.
-        """
-        from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
-        return _coalesce_fg_task_requests(
-            requests,
-            in_process_queues=bool(self._in_process_queues),
-            execute_request=self._execute_request,
-            payload_dict_fn=_payload_dict,
-            solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
-            record_fg_tasks_batch=self._record_fg_tasks_batch,
-            record_pack=self._record_pack,
-            perf_counter_fn=perf_counter,
-            env_get_fn=env_get,
-        )
-    def _coalesce_fg_solve_with_breakpoints_batch_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
-        """
-        Coalesce multiple `FG_SOLVE_WITH_BREAKPOINTS_BATCH` requests.
-        Each request contains `payload['payloads'] = list[dict]` (one dict per fused solve). We flatten all
-        payloads, execute them sequentially on the owner thread, and then split the results back into
-        per-request slices.
-        This reduces request queue overhead and prevents small FG jobs from creating GPU bubbles when many
-        FG jobs are produced concurrently (in-flight drain mode).
-        """
-        return _coalesce_fg_solve_with_breakpoints_batch_requests(
-            requests,
-            in_process_queues=bool(self._in_process_queues),
-            execute_request=self._execute_request,
-            execute_batch=self._execute_fg_solve_with_breakpoints_batch,
-            payload_dict_fn=_payload_dict,
-            warn_fallback_fn=warn_fallback,
-            env_get_fn=env_get,
-        )
-    def _coalesce_ga_fg_fused_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
-        """
-        Coalesce GA->FG fused requests by routing through the FG breakpoint batch handler.
-        Each request payload matches `FG_SOLVE_WITH_BREAKPOINTS` input. We pack request payloads
-        into one synthetic `FG_SOLVE_WITH_BREAKPOINTS_BATCH` call and then split outputs.
-        """
-        return _coalesce_ga_fg_fused_requests(
-            requests,
-            in_process_queues=bool(self._in_process_queues),
-            execute_request=self._execute_request,
-            coalesce_fg_breakpoint_batch=self._coalesce_fg_solve_with_breakpoints_batch_requests,
-            warn_fallback_fn=warn_fallback,
-        )
-    def _execute_solve_force_greats_finder(self, request: GpuRequest) -> GpuResponse:
-        """Execute solve_force_greats_finder_gpu on GPU."""
-        from .taichi_gem.force_greats.api import (
-            fg_download_global_best,
-            fg_reset_global_best,
-            solve_force_greats_finder_gpu,
-            solve_force_greats_finder_gpu_tasks,
-        )
-        return _execute_solve_force_greats_finder(
-            request,
-            solve_fn=solve_force_greats_finder_gpu,
-            tasks_fn=solve_force_greats_finder_gpu_tasks,
-            reset_global_best_fn=fg_reset_global_best,
-            download_global_best_fn=fg_download_global_best,
-            precompute_timeline_fn=_precompute_timeline_gpu,
-            record_tasks_batch_fn=self._record_fg_tasks_batch,
-        )
+
     def _execute_gpu_native_ga_run_batch(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        """
-        Execute multiple GPU_NATIVE_GA_RUN requests on the owner thread.
-        This keeps request dispatch in one executor pass and reduces per-request routing overhead.
-        """
+        """Execute multiple GPU_NATIVE_GA_RUN requests on the owner thread."""
         return _execute_gpu_native_ga_run_batch(
             requests,
             abort_requested=self.abort_requested,
@@ -1334,6 +1171,7 @@ class GpuExecutor:
             env_get_fn=env_get,
             estimate_work_units_fn=estimate_request_work_units,
         )
+
     def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
         return _execute_gpu_native_ga_run_chunk(
             requests,
@@ -1341,129 +1179,16 @@ class GpuExecutor:
             aborted_response=self._aborted_response,
             execute_single=self._execute_gpu_native_ga_run,
         )
-    def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
-        """
-        Fused GA->FG request.
-        Payload contract matches `FG_SOLVE_WITH_BREAKPOINTS`; this type exists so callers can
-        explicitly mark the GA->FG fast path and the executor can batch/coalesce it separately.
-        """
-        return self._execute_fg_solve_with_breakpoints(request)
+
     def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
-        """
-        Execute a full GPU-native GA run on the GPU-owner thread.
-        This request is intended for the GPU-native in-flight pipeline where
-        CPU-side population building is done elsewhere and the GPU thread
-        stays busy running Taichi kernels back-to-back.
-        """
+        """Execute a full GPU-native GA run on the GPU-owner thread."""
         return _execute_gpu_native_ga_run_request(
             request,
             in_process_queues=bool(self._in_process_queues),
             abort_requested=self.abort_requested,
             raise_if_abort_requested=self._raise_if_abort_requested,
         )
-    def _execute_fg_reset_global_best(self, request: GpuRequest) -> GpuResponse:
-        """Reset FG global-best accumulation fields on the GPU."""
-        from .taichi_gem.force_greats.api import fg_reset_global_best
-        return _execute_fg_reset_global_best(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            reset_fn=fg_reset_global_best,
-        )
-    def _execute_fg_download_global_best(self, request: GpuRequest) -> GpuResponse:
-        """Download FG global-best accumulation results from the GPU."""
-        from .taichi_gem.force_greats.api import fg_download_global_best
-        return _execute_fg_download_global_best(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            download_fn=fg_download_global_best,
-        )
-    def _execute_fg_select_signature_frontier_batch(self, request: GpuRequest) -> GpuResponse:
-        """
-        Select multiple FG signature frontiers on the GPU-owner thread.
-        This is the in-process/owned equivalent of calling
-        `taichi_gem.force_greats.api.fg_select_signature_frontier_batch()` directly.
-        """
-        from .taichi_gem.force_greats.api import fg_select_signature_frontier_batch
-        return _execute_fg_select_signature_frontier_batch(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            select_fn=fg_select_signature_frontier_batch,
-        )
-    def _execute_fg_compute_breakpoints(self, request: GpuRequest) -> GpuResponse:
-        """
-        Compute per-FT/FF breakpoint ranges for ForceGreatsFinder on the GPU-owner thread.
-        Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
-        Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
-        """
-        return _execute_fg_compute_breakpoints(
-            request,
-            precompute_timeline_fn=_precompute_timeline_gpu,
-            compute_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
-        )
-    def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
-        """
-        Fused FG path for in-process mode:
-          - compute max-FP breakpoint caps on-GPU (no host download)
-          - group FT/FF pairs by max-FP row on the executor thread
-          - run FG tasks with GPU accumulation
-          - download global best and return `cfg_counts` directly (avoid host-side cfg decoding)
-        This removes a whole request boundary (FG_COMPUTE_BREAKPOINTS + SOLVE_FORCE_GREATS_FINDER)
-        and keeps the intermediate max-FP matrix off the CPU.
-        """
-        return _execute_fg_solve_with_breakpoints(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            raise_if_abort_requested=self._raise_if_abort_requested,
-            run_payload_fn=self._run_fg_solve_with_breakpoints_payload,
-        )
-    def _execute_fg_solve_with_breakpoints_batch(self, request: GpuRequest) -> GpuResponse:
-        """
-        Batch multiple `FG_SOLVE_WITH_BREAKPOINTS` payloads into a single executor request.
-        This reduces request/lock overhead when the FG pipeline must split work into multiple
-        genome batches (signature chunks) for the same song/group.
-        """
-        def download_packed_topk_batch(n_payloads: int):
-            from .taichi_gem.force_greats.api import fg_download_packed_topk_batch
-            return fg_download_packed_topk_batch(int(n_payloads))
-        def download_batch_max() -> int:
-            from .taichi_gem.force_greats import fields as fg_fields
-            return int(getattr(fg_fields, "FG_DOWNLOAD_BATCH_MAX", 0) or 0)
-        return _execute_fg_solve_with_breakpoints_batch(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            raise_if_abort_requested=self._raise_if_abort_requested,
-            run_payload_fn=self._run_fg_solve_with_breakpoints_payload,
-            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
-            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
-            decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
-            download_packed_topk_batch_fn=download_packed_topk_batch,
-            download_batch_max_fn=download_batch_max,
-        )
-    def _run_fg_solve_with_breakpoints_payload(
-        self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
-    ) -> Any:
-        try:
-            from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
-            from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
-        except Exception as e:
-            raise RuntimeError(f"missing FG APIs: {type(e).__name__}: {e}") from e
-        def pack_global_best_topk_to_batch(*args, **kwargs):
-            from .taichi_gem.force_greats.api import fg_pack_global_best_topk_to_batch
-            return fg_pack_global_best_topk_to_batch(*args, **kwargs)
-        return _run_fg_solve_with_breakpoints_payload(
-            payload,
-            batch_pack_idx=batch_pack_idx,
-            raise_if_abort_requested=self._raise_if_abort_requested,
-            env_get_fn=_ENV_GET,
-            precompute_timeline_fn=_precompute_timeline_gpu,
-            compute_max_fp_matrix_fn=_compute_fg_breakpoints_max_fp_matrix,
-            solve_force_greats_finder_gpu_tasks_fn=solve_force_greats_finder_gpu_tasks,
-            reset_global_best_fn=fg_reset_global_best,
-            download_global_best_fn=fg_download_global_best,
-            pack_global_best_topk_to_batch_fn=pack_global_best_topk_to_batch,
-            decode_cfg_counts_from_max_fp_matrix_fn=_decode_cfg_counts_from_max_fp_matrix,
-            decode_cfg_counts_from_windows_fn=_decode_cfg_counts_from_windows_for_gpu,
-        )
+
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
         """Load reference arrays."""
         from .taichi_gem.api import load_ref_arrays

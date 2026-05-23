@@ -300,27 +300,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
                 return True
         return False
-    def _maybe_mark_robeatsmeta_song_batch_computed(
-        self,
-        song_name: str | None,
-        completed_songs: set[str] | None = None,
-    ) -> bool:
-        _ = song_name, completed_songs
-        return False
-    def _mark_robeatsmeta_song_started(self, song_name: str | None) -> None:
-        _ = song_name
-    def _update_robeatsmeta_runtime_status(
-        self,
-        *,
-        status: str | None = None,
-        current_song: str | None = None,
-        completed: int | None = None,
-        total: int | None = None,
-        failed: int | None = None,
-    ) -> None:
-        _ = status, current_song, completed, total, failed
-    def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle", available: bool = True) -> None:
-        _ = status, available
     def _set_runtime_progress_counts(
         self,
         *,
@@ -972,7 +951,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return False
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
-            self._clear_robeatsmeta_runtime_status(status="idle", available=True)
             if status_queue:
                 try:
                     status_queue.put(None)

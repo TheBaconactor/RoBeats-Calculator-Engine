@@ -660,39 +660,6 @@ def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
     assert (fg_entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
 
 
-def test_retained_fg_variant_force_base_score_matches_paired_entry_score():
-    from gear_optimizer.helpers.song_helpers.force_greats.retained_variants import retain_and_build_fg_variants
-
-    entry = {
-        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-        "minis": ["M1", "M2", "M3"],
-        "score": 1000,
-        "base_score": 1000,
-        "fg_score": 1200,
-        "force": {
-            "BaseScore": 9999,
-            "Score": 1200,
-            "BaseStats": _stats(100),
-            "ForceGreats": {"config": {"NonFever1": 1}},
-        },
-    }
-
-    variants = retain_and_build_fg_variants(
-        entry_items=[("h1", entry)],
-        sig_results={},
-        entry_sig={},
-        loadout_entries={},
-        direct_ga_items=[],
-        loadouts_per_song_limit=1,
-        entry_base_score_fn=lambda _entry: 1000,
-    )
-
-    assert variants
-    assert variants[0]["base_score"] == 1000
-    assert variants[0]["data"]["BaseScore"] == 1000
-    assert variants[0]["data"]["Score"] == 1200
-
-
 def test_native_inflight_fg_persist_entries_preserves_paired_base_score_in_fg_table(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries

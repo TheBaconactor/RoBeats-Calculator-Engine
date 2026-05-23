@@ -201,8 +201,14 @@ def build_executor_profile_stats(**kwargs: Any) -> dict[str, Any]:
 
 
 def build_executor_stats(**kwargs: Any) -> dict[str, Any]:
-    _ = kwargs
-    return {}
+    stats: dict[str, Any] = {
+        "requests_processed": int(kwargs.get("requests_processed", 0) or 0),
+        "registered_workers": int(kwargs.get("registered_workers", 0) or 0),
+    }
+    profile = kwargs.get("profile")
+    if profile:
+        stats["profile"] = profile
+    return stats
 
 
 class ExecutorTraceWriter:
@@ -257,8 +263,9 @@ def summarize_batch(
     pressure_hint: float = 0.0,
     age_samples: list[float] | None = None,
     work_units_samples: list[float] | None = None,
+    **kwargs: Any,
 ) -> dict[str, Any]:
-    _ = age_samples, work_units_samples
+    _ = age_samples, work_units_samples, kwargs
     dominant_type = batch[0].request_type if batch else None
     return {
         "batch_size": int(len(batch)),

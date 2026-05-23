@@ -11,15 +11,7 @@ class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
     LOAD_REF_ARRAYS = "load_ref_arrays"
-    SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
-    FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
-    FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
-    FG_SELECT_SIGNATURE_FRONTIER_BATCH = "fg_select_signature_frontier_batch"
-    FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
-    FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
-    FG_SOLVE_WITH_BREAKPOINTS_BATCH = "fg_solve_with_breakpoints_batch"
-    GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS = "ga_fg_fused_solve_with_breakpoints"
     SHUTDOWN = "shutdown"
 
 

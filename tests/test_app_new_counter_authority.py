@@ -16,11 +16,8 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._run_current_song_label = ""
     app._runtime_status_name = "idle"
     app._tui_progress = None
-    app._robeatsmeta_api = None
     app._tui_publish = lambda **_kwargs: None
     app._set_runtime_progress_counts = lambda **_kwargs: None
-    app._update_robeatsmeta_runtime_status = lambda **_kwargs: None
-    app._mark_robeatsmeta_song_started = lambda *_args, **_kwargs: None
     return app
 
 
