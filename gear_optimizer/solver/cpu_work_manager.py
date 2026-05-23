@@ -26,7 +26,9 @@ class CpuWorkManager:
         data_root,
     ) -> None:
         t0 = time.perf_counter()
-        logger.info("[Startup][CPU] Building exact frontier caches before Taichi init...")
+        message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers asynchronously..."
+        print(message, flush=True)
+        logger.info(message)
         emit_profile_event(
             component="cpu_work_manager",
             event="startup_cpu_work_start",

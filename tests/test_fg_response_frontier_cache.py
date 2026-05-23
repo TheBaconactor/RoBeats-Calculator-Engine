@@ -304,7 +304,34 @@ def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatc
     ]
 
 
-def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch) -> None:
+def test_frontier_cache_prebuild_runs_timeline_and_fg_async(monkeypatch) -> None:
+    import threading
+
+    from gear_optimizer.solver import frontier_cache_prebuild
+    from gear_optimizer.solver.frontier_cache_prebuild import run_frontier_cache_prebuilds
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+
+    timeline_started = threading.Event()
+    fg_started = threading.Event()
+
+    def _fake_timeline(*, cfg, song_queue, ref_arrays, data_root):
+        timeline_started.set()
+        assert fg_started.wait(timeout=1.0)
+        return TimelineFrontierCachePrebuildSummary(total=1, completed=1)
+
+    def _fake_fg(*, cfg, song_queue, ref_arrays, data_root):
+        fg_started.set()
+        assert timeline_started.wait(timeout=1.0)
+        return FgResponseFrontierCachePrebuildSummary(total=1, completed=1)
+
+    monkeypatch.setattr(frontier_cache_prebuild, "run_timeline_frontier_cache_prebuild", _fake_timeline)
+    monkeypatch.setattr(frontier_cache_prebuild, "run_fg_response_frontier_cache_prebuild", _fake_fg)
+
+    run_frontier_cache_prebuilds(cfg=None, song_queue=(), ref_arrays={}, data_root=None)
+
+
+def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch, capsys) -> None:
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
     from gear_optimizer.solver.frontier_cache_prebuild import FrontierCachePrebuildSummary
@@ -327,3 +354,5 @@ def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch) -> None:
     CpuWorkManager().run_startup(cfg=None, song_queue=queue, ref_arrays={}, data_root=None)
 
     assert seen == [[("0", "Song", "Easy")]]
+    captured = capsys.readouterr()
+    assert "Building and caching exact timeline + FG response frontiers asynchronously" in captured.out
