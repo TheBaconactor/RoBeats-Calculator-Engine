@@ -78,28 +78,8 @@ def build_ga_sweep_cases(
     return cases
 
 
-def build_fg_sweep_cases(
-    *,
-    stage1_block_dims: list[int],
-    target_threads: list[int],
-) -> list[dict[str, Any]]:
-    cases: list[dict[str, Any]] = []
-    for stage1_block_dim, target_thread_budget in itertools.product(stage1_block_dims, target_threads):
-        env = {
-            "FG_STAGE1_BLOCK_DIM": int(stage1_block_dim),
-            "FG_TARGET_THREADS_PER_KERNEL": int(target_thread_budget),
-        }
-        label = f"stage1_{int(stage1_block_dim)}_threads_{int(target_thread_budget)}"
-        cases.append({"label": label, "env": env})
-    return cases
-
-
 def rank_ga_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(results, key=lambda item: float(item.get("iters_per_sec", 0.0)), reverse=True)
-
-
-def rank_fg_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(results, key=lambda item: float(item.get("steady_iters_per_sec", 0.0)), reverse=True)
 
 
 def _default_out_path() -> Path:
@@ -191,7 +171,7 @@ def main() -> int:
     }
     out_path = Path(str(args.out)).resolve() if str(args.out).strip() else _default_out_path()
 
-    if args.mode in {"ga", "both"}:
+    if args.mode == "ga":
         ga_cases = build_ga_sweep_cases(
             taichi_block_dims=parse_csv_ints(str(args.ga_taichi_block_dims)),
             reduce_block_dims=parse_csv_ints(str(args.ga_reduce_block_dims)),
