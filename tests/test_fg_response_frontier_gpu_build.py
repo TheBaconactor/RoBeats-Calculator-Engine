@@ -8,6 +8,7 @@ import pytest
 def test_fg_response_frontier_gpu_build_matches_cpu_reference_small_chart() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu import (
         build_force_greats_response_frontier_gpu,
+        build_force_greats_response_frontiers_gpu_batch,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import build_force_greats_response_frontier
 
@@ -30,3 +31,33 @@ def test_fg_response_frontier_gpu_build_matches_cpu_reference_small_chart() -> N
     assert gpu.states_evaluated == reference.states_evaluated
     assert gpu.actions == reference.actions
     assert gpu.transitions_evaluated == reference.transitions_evaluated
+
+    geometries = (
+        (2.25, 7, 0.55),
+        (2.25, 7, 0.8),
+        (1.4, 5, 0.55),
+    )
+    references = tuple(
+        build_force_greats_response_frontier(
+            timestamps=timestamps,
+            great_candidate_timestamps=great_candidates,
+            raw_fever_fill=raw_fill,
+            non_fever_base=non_fever_base,
+            real_fever_time=real_fever_time,
+            use_forced_great_timing=True,
+        )
+        for raw_fill, non_fever_base, real_fever_time in geometries
+    )
+    batch = build_force_greats_response_frontiers_gpu_batch(
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidates,
+        geometries=geometries,
+        use_forced_great_timing=True,
+    )
+
+    assert tuple(frontier.first_frontier for frontier in batch) == tuple(
+        frontier.first_frontier for frontier in references
+    )
+    assert tuple(frontier.state_frontiers for frontier in batch) == tuple(
+        frontier.state_frontiers for frontier in references
+    )

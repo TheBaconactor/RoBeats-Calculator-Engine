@@ -16,7 +16,7 @@ from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSE
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
-from .response_build_gpu import build_force_greats_response_frontier_gpu
+from .response_build_gpu import build_force_greats_response_frontiers_gpu_batch
 from .response_types import FgResponseFrontierResult, FgResponseSurface
 
 _FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v1"
@@ -503,6 +503,7 @@ def build_response_frontier_cache_payload(
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
     frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
     frontier_by_geometry: dict[tuple[float, int, float, bool], FgResponseFrontierResult] = {}
+    missing_by_geometry: dict[tuple[float, int, float, bool], tuple[tuple, tuple[float, int, float]]] = {}
     source_counts: Counter[str] = Counter()
     for ft_stat, ff_stat in keys:
         raw_fill = float(raw_fill_by_ff[ff_stat])
@@ -520,19 +521,45 @@ def build_response_frontier_cache_payload(
         if frontier is None:
             frontier = _memory_get(cache_key)
         if frontier is None:
-            frontier = build_force_greats_response_frontier_gpu(
-                timestamps=song_inputs.timestamps,
-                great_candidate_timestamps=song_inputs.great_candidates,
-                raw_fever_fill=raw_fill,
-                non_fever_base=non_fever_base,
-                real_fever_time=real_fever_time,
-                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            missing_by_geometry.setdefault(
+                geometry_key,
+                (cache_key, (float(raw_fill), int(non_fever_base), float(real_fever_time))),
             )
             source = "built"
-        _memory_put(cache_key, frontier)
-        frontier_by_geometry[geometry_key] = frontier
-        frontier_by_key[(int(ft_stat), int(ff_stat))] = frontier
+        else:
+            frontier_by_geometry[geometry_key] = frontier
         source_counts[source] += 1
+    if missing_by_geometry:
+        missing_items = tuple(missing_by_geometry.items())
+        built_frontiers = build_force_greats_response_frontiers_gpu_batch(
+            timestamps=song_inputs.timestamps,
+            great_candidate_timestamps=song_inputs.great_candidates,
+            geometries=tuple(item[1][1] for item in missing_items),
+            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+        )
+        if len(built_frontiers) != len(missing_items):
+            raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
+        for (geometry_key, (cache_key, _geometry)), frontier in zip(missing_items, built_frontiers, strict=True):
+            _memory_put(cache_key, frontier)
+            frontier_by_geometry[geometry_key] = frontier
+    for ft_stat, ff_stat in keys:
+        raw_fill = float(raw_fill_by_ff[ff_stat])
+        non_fever_base = int(non_fever_base_by_ff[ff_stat])
+        real_fever_time = float(real_time_by_ft[ft_stat])
+        geometry_key = (raw_fill, non_fever_base, real_fever_time, bool(song_inputs.use_forced_great_timing))
+        frontier = frontier_by_geometry.get(geometry_key)
+        if frontier is None:
+            raise ValueError(f"FG response frontier geometry was not built: {geometry_key!r}")
+        _memory_put(
+            fg_response_frontier_geometry_cache_key(
+                calc_song,
+                ref_arrays,
+                ft_stat=ft_stat,
+                ff_stat=ff_stat,
+            ),
+            frontier,
+        )
+        frontier_by_key[(int(ft_stat), int(ff_stat))] = frontier
     payload = FgResponseFrontierCachePayload(
         frontier_by_key=frontier_by_key,
         raw_fill_by_ff=raw_fill_by_ff,

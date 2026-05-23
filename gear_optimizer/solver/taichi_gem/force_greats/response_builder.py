@@ -109,6 +109,23 @@ def _edge_surface(*, n: int, fever_start: int, fever_end: int, great_start: int,
     )
 
 
+def _append_response_edge_bucket(bucket: list[FgResponseSurface], surface: FgResponseSurface) -> bool:
+    write = 0
+    kept_new = True
+    for kept_surface in bucket:
+        if response_surface_dominates(kept_surface, surface):
+            kept_new = False
+            break
+        if not response_surface_dominates(surface, kept_surface):
+            bucket[write] = kept_surface
+            write += 1
+    if not kept_new:
+        return False
+    del bucket[write:]
+    bucket.append(surface)
+    return True
+
+
 def _combine(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
     return FgResponseSurface(
         int(edge.fever0 | tail.fever0),
@@ -126,7 +143,9 @@ def _combine(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurf
 
 def response_surface_dominates(a: FgResponseSurface, b: FgResponseSurface) -> bool:
     return (
-        (int(b.fever0) & ~int(a.fever0)) == 0
+        int(a.body_fever) >= int(b.body_fever)
+        and int(a.body_great) <= int(b.body_great)
+        and (int(b.fever0) & ~int(a.fever0)) == 0
         and (int(b.fever1) & ~int(a.fever1)) == 0
         and (int(b.fever2) & ~int(a.fever2)) == 0
         and (int(b.fever3) & ~int(a.fever3)) == 0
@@ -134,42 +153,74 @@ def response_surface_dominates(a: FgResponseSurface, b: FgResponseSurface) -> bo
         and (int(a.great1) & ~int(b.great1)) == 0
         and (int(a.great2) & ~int(b.great2)) == 0
         and (int(a.great3) & ~int(b.great3)) == 0
-        and int(a.body_fever) >= int(b.body_fever)
-        and int(a.body_great) <= int(b.body_great)
     )
 
 
 def _reduce_frontier(surfaces: list[FgResponseSurface]) -> tuple[FgResponseSurface, ...]:
     if not surfaces:
         return (_EMPTY_SURFACE,)
-    unique = list(dict.fromkeys(surfaces))
-    if len(unique) <= 1:
-        return tuple(unique)
-
-    order = sorted(
-        range(len(unique)),
-        key=lambda idx: (
-            -int(unique[idx].body_fever),
-            int(unique[idx].body_great),
-            -int(unique[idx].fever0).bit_count()
-            - int(unique[idx].fever1).bit_count()
-            - int(unique[idx].fever2).bit_count()
-            - int(unique[idx].fever3).bit_count(),
-            int(unique[idx].great0).bit_count()
-            + int(unique[idx].great1).bit_count()
-            + int(unique[idx].great2).bit_count()
-            + int(unique[idx].great3).bit_count(),
-        ),
-    )
-    sorted_surfaces = [unique[idx] for idx in order]
-    keep = [True] * len(sorted_surfaces)
-    for i, cand in enumerate(sorted_surfaces):
-        if not keep[i]:
+    kept: list[FgResponseSurface] = []
+    seen: set[FgResponseSurface] = set()
+    for cand in surfaces:
+        if cand in seen:
             continue
-        for j in range(i + 1, len(sorted_surfaces)):
-            if keep[j] and response_surface_dominates(cand, sorted_surfaces[j]):
-                keep[j] = False
-    return tuple(surface for idx, surface in enumerate(sorted_surfaces) if keep[idx])
+        seen.add(cand)
+        dominated = False
+        write = 0
+        cf0 = cand.fever0
+        cf1 = cand.fever1
+        cf2 = cand.fever2
+        cf3 = cand.fever3
+        cg0 = cand.great0
+        cg1 = cand.great1
+        cg2 = cand.great2
+        cg3 = cand.great3
+        cbf = cand.body_fever
+        cbg = cand.body_great
+        for kept_surface in kept:
+            kf0 = kept_surface.fever0
+            kf1 = kept_surface.fever1
+            kf2 = kept_surface.fever2
+            kf3 = kept_surface.fever3
+            kg0 = kept_surface.great0
+            kg1 = kept_surface.great1
+            kg2 = kept_surface.great2
+            kg3 = kept_surface.great3
+            kbf = kept_surface.body_fever
+            kbg = kept_surface.body_great
+            if (
+                kbf >= cbf
+                and kbg <= cbg
+                and (cf0 & ~kf0) == 0
+                and (cf1 & ~kf1) == 0
+                and (cf2 & ~kf2) == 0
+                and (cf3 & ~kf3) == 0
+                and (kg0 & ~cg0) == 0
+                and (kg1 & ~cg1) == 0
+                and (kg2 & ~cg2) == 0
+                and (kg3 & ~cg3) == 0
+            ):
+                dominated = True
+                break
+            if not (
+                cbf >= kbf
+                and cbg <= kbg
+                and (kf0 & ~cf0) == 0
+                and (kf1 & ~cf1) == 0
+                and (kf2 & ~cf2) == 0
+                and (kf3 & ~cf3) == 0
+                and (cg0 & ~kg0) == 0
+                and (cg1 & ~kg1) == 0
+                and (cg2 & ~kg2) == 0
+                and (cg3 & ~kg3) == 0
+            ):
+                kept[write] = kept_surface
+                write += 1
+        if dominated:
+            continue
+        del kept[write:]
+        kept.append(cand)
+    return tuple(kept)
 
 
 def build_force_greats_response_frontier(
@@ -212,7 +263,7 @@ def build_force_greats_response_frontier(
 
     def edge_surfaces_for_state(i: int, *, first: bool) -> list[tuple[int, FgResponseSurface]]:
         nonlocal transitions
-        out: list[tuple[int, FgResponseSurface]] = []
+        edge_buckets: dict[int, list[FgResponseSurface]] = {}
         fills = first_fill if first else later_fill
         forced_values = first_forced if first else later_forced
         prev_fill = -1
@@ -240,23 +291,22 @@ def build_force_greats_response_frontier(
                 prev_start_time = start_time
                 prev_e = e
                 continue
-            transitions += 1
             great_end = min(n, int(forced_start) + int(forced_applied))
-            out.append(
-                (
-                    int(e),
-                    _edge_surface(
-                        n=n,
-                        fever_start=int(a),
-                        fever_end=int(e),
-                        great_start=int(forced_start),
-                        great_end=int(great_end),
-                    ),
-                )
+            _append_response_edge_bucket(
+                edge_buckets.setdefault(int(e), []),
+                _edge_surface(
+                    n=n,
+                    fever_start=int(a),
+                    fever_end=int(e),
+                    great_start=int(forced_start),
+                    great_end=int(great_end),
+                ),
             )
             prev_fill = fill
             prev_start_time = start_time
             prev_e = e
+        out = [(int(e), surface) for e, bucket in edge_buckets.items() for surface in bucket]
+        transitions += len(out)
         return out
 
     first_edges = edge_surfaces_for_state(0, first=True)

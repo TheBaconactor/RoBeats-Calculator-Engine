@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 
-@dataclass(frozen=True, slots=True)
-class FgResponseSurface:
+class FgResponseSurface(NamedTuple):
     fever0: int
     fever1: int
     fever2: int
