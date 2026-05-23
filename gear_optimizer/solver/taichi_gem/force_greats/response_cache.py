@@ -21,7 +21,9 @@ from .response_types import FgResponseFrontierResult, FgResponseSurface
 
 _FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v1"
 _MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
+_PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
 _frontier_cache: OrderedDict[tuple, FgResponseFrontierResult] = OrderedDict()
+_payload_cache: OrderedDict[tuple, FgResponseFrontierCachePayload] = OrderedDict()
 _frontier_cache_lock = threading.RLock()
 
 
@@ -201,9 +203,26 @@ def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
             _frontier_cache.popitem(last=False)
 
 
+def _payload_memory_get(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
+    with _frontier_cache_lock:
+        payload = _payload_cache.get(cache_key)
+        if payload is not None:
+            _payload_cache.move_to_end(cache_key)
+        return payload
+
+
+def _payload_memory_put(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
+    with _frontier_cache_lock:
+        _payload_cache[cache_key] = payload
+        _payload_cache.move_to_end(cache_key)
+        while len(_payload_cache) > int(_PAYLOAD_CACHE_MAX):
+            _payload_cache.popitem(last=False)
+
+
 def reset_fg_response_frontier_payload_cache() -> None:
     with _frontier_cache_lock:
         _frontier_cache.clear()
+        _payload_cache.clear()
 
 
 def _pack_frontier(frontier: FgResponseFrontierResult) -> dict[str, np.ndarray]:
@@ -580,6 +599,16 @@ def fg_response_frontier_payload_cache_info(
 ) -> FgResponseFrontierCacheInfo:
     keys = normalize_fg_response_stat_keys(stat_keys)
     payload_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
+    payload = _payload_memory_get(payload_key)
+    if payload is not None:
+        return FgResponseFrontierCacheInfo(
+            cache_key=payload_key,
+            disk_path=_fg_response_disk_cache_path(payload_key),
+            cache_source="memory",
+            total_notes=int(payload.total_notes),
+            long_notes=int(payload.long_notes),
+            frontier_count=int(len(payload.frontier_by_key)),
+        )
     if env_flag("FG_RESPONSE_FRONTIER_DISK_CACHE", "1") and _fg_response_disk_cache_path(payload_key).exists():
         song_inputs = extract_fg_song_inputs(calc_song)
         return FgResponseFrontierCacheInfo(
@@ -622,11 +651,24 @@ def build_or_load_response_frontier_payload(
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
     cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
-    payload = _load_payload(cache_key)
+    payload = _payload_memory_get(cache_key)
+    if payload is not None:
+        return FgResponseFrontierPrewarmResult(
+            payload=payload,
+            cache_key=cache_key,
+            disk_path=_fg_response_disk_cache_path(cache_key),
+            cache_source="memory",
+            elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+            total_notes=int(payload.total_notes),
+            long_notes=int(payload.long_notes),
+            frontier_count=int(len(payload.frontiers)),
+        )
     source = "disk"
+    payload = _load_payload(cache_key)
     if payload is None:
         payload, source = build_response_frontier_cache_payload(calc_song, ref_arrays, stat_keys=keys)
         _save_payload(cache_key, payload)
+    _payload_memory_put(cache_key, payload)
     _put_payload_frontiers(calc_song, ref_arrays, payload)
     return FgResponseFrontierPrewarmResult(
         payload=payload,

@@ -98,6 +98,29 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert set(second.payload.frontier_by_key) == set(keys)
 
 
+def test_fg_response_frontier_payload_memory_cache_precedes_disk(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_DISK_CACHE", "1")
+    response_cache.reset_fg_response_frontier_payload_cache()
+    keys = ((0, 0), (3, 0), (0, 3))
+
+    first = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=keys)
+    assert first.cache_source == "built"
+
+    def _raise_disk_load(_cache_key):
+        raise AssertionError("resident response-frontier payload should not hit disk")
+
+    monkeypatch.setattr(response_cache, "_load_payload", _raise_disk_load)
+    info = response_cache.fg_response_frontier_payload_cache_info(_calc_song(), _ref_arrays(), stat_keys=keys)
+    assert info.cache_source == "memory"
+
+    second = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=keys)
+    assert second.cache_source == "memory"
+    assert second.payload is first.payload
+
+
 def test_fg_response_frontier_prebuild_uses_runtime_cache_key(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import build_fg_response_frontier_cache_for_path
