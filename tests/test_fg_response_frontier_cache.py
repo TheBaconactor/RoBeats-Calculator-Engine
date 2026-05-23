@@ -215,15 +215,29 @@ def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monk
     assert summary.built == 1
 
 
-def test_fg_response_frontier_prebuild_defaults_to_serial_gpu_build() -> None:
+def test_fg_response_frontier_prebuild_defaults_to_parallel_gpu_build() -> None:
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
         read_fg_response_frontier_cache_prebuild_settings,
     )
 
     settings = read_fg_response_frontier_cache_prebuild_settings(None)
 
-    assert settings.executor == "thread"
-    assert settings.workers == 1
+    assert settings.executor == "process"
+    assert settings.workers == 0
+
+
+def test_fg_response_frontier_prebuild_full_budget_stat_keys(monkeypatch) -> None:
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
+        read_fg_response_frontier_cache_prebuild_settings,
+    )
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_PREBUILD_STAT_KEYS", "full-budget")
+
+    settings = read_fg_response_frontier_cache_prebuild_settings(None)
+
+    assert len(settings.stat_keys) > 1000
+    assert settings.stat_keys == tuple(sorted(settings.stat_keys))
+    assert (0, 0) in settings.stat_keys
 
 
 def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatch) -> None:

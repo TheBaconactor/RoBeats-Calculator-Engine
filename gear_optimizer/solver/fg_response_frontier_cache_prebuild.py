@@ -46,9 +46,9 @@ class FgResponseFrontierCachePrebuildSummary:
 @dataclass(frozen=True)
 class FgResponseFrontierCachePrebuildSettings:
     scope: str = "pool"
-    workers: int = 1
+    workers: int = 0
     max_songs: int = 0
-    executor: str = "thread"
+    executor: str = "process"
     stat_keys: tuple[tuple[int, int], ...] = ()
 
 
@@ -236,14 +236,39 @@ def _cfg_get(cfg, option: str, fallback: str) -> str:
         return fallback
 
 
+def _full_budget_ftff_stat_keys() -> tuple[tuple[int, int], ...]:
+    from gear_optimizer.core.constants import TOTAL_GEM_BUDGET, TOTAL_ROWS
+    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
+    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+
+    out: set[tuple[int, int]] = set()
+    ft_values, ff_values, _remaining = ftff_combo_arrays(int(TOTAL_GEM_BUDGET))
+    for ft, ff in zip(ft_values, ff_values, strict=True):
+        stats = apply_gems_to_base_stats({}, "", int(ft), int(ff), 0, 0, 0, 0)
+        out.add(
+            (
+                max(0, min(int(TOTAL_ROWS), int(stats.get("Fever Time", 0) or 0))),
+                max(0, min(int(TOTAL_ROWS), int(stats.get("Fever Fill Rate", 0) or 0))),
+            )
+        )
+    return tuple(sorted(out))
+
+
 def _parse_stat_keys(raw: str | None) -> tuple[tuple[int, int], ...]:
     text = str(raw or "").strip()
     if not text:
         return ()
+    normalized = text.strip().lower().replace("_", "-")
+    if normalized in {"full", "full-budget", "budget", "budget-90", "all-budget"}:
+        return _full_budget_ftff_stat_keys()
     out: set[tuple[int, int]] = set()
     for token in text.replace(";", ",").split(","):
         item = token.strip()
         if not item:
+            continue
+        normalized_item = item.lower().replace("_", "-")
+        if normalized_item in {"full", "full-budget", "budget", "budget-90", "all-budget"}:
+            out.update(_full_budget_ftff_stat_keys())
             continue
         parts = item.replace(":", "/").split("/")
         if len(parts) != 2:
@@ -262,9 +287,9 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
         _cfg_get(
             cfg,
             "FGResponseFrontierCachePrebuildWorkers",
-            "1",
+            "0",
         ),
-        1,
+        0,
     )
     max_songs = safe_int(
         _cfg_get(
@@ -277,7 +302,7 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
     executor = _cfg_get(
         cfg,
         "FGResponseFrontierCachePrebuildExecutor",
-        "thread",
+        "process",
     )
     stat_keys = _parse_stat_keys(_cfg_get(cfg, "FGResponseFrontierCachePrebuildStatKeys", ""))
 
@@ -321,7 +346,7 @@ def _resolve_prebuild_worker_count(raw_workers: int) -> int:
         logger.debug("fg_response_frontier_cache_prebuild:_resolve_prebuild_worker_count: %s", exc)
         workers = 0
     if workers <= 0:
-        workers = int(os.cpu_count() or 1)
+        workers = min(8, int(os.cpu_count() or 1))
     return max(1, workers)
 
 
