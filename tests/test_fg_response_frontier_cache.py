@@ -92,7 +92,7 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
 
     response_cache.reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "build_force_greats_response_frontier", _raise_build)
+    monkeypatch.setattr(response_cache, "build_force_greats_response_frontier_gpu", _raise_build)
     second = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=keys)
     assert second.cache_source == "disk"
     assert set(second.payload.frontier_by_key) == set(keys)
@@ -190,6 +190,17 @@ def test_run_fg_response_frontier_prebuild_uses_queue_scope(tmp_path: Path, monk
     assert summary.completed == 1
     assert summary.failures == 0
     assert summary.built == 1
+
+
+def test_fg_response_frontier_prebuild_defaults_to_serial_gpu_build() -> None:
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
+        read_fg_response_frontier_cache_prebuild_settings,
+    )
+
+    settings = read_fg_response_frontier_cache_prebuild_settings(None)
+
+    assert settings.executor == "thread"
+    assert settings.workers == 1
 
 
 def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatch) -> None:

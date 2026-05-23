@@ -16,7 +16,7 @@ from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSE
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
-from .response_builder import build_force_greats_response_frontier
+from .response_build_gpu import build_force_greats_response_frontier_gpu
 from .response_types import FgResponseFrontierResult, FgResponseSurface
 
 _FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v1"
@@ -520,7 +520,7 @@ def build_response_frontier_cache_payload(
         if frontier is None:
             frontier = _memory_get(cache_key)
         if frontier is None:
-            frontier = build_force_greats_response_frontier(
+            frontier = build_force_greats_response_frontier_gpu(
                 timestamps=song_inputs.timestamps,
                 great_candidate_timestamps=song_inputs.great_candidates,
                 raw_fever_fill=raw_fill,

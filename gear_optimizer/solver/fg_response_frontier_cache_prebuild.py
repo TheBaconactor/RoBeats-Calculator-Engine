@@ -46,9 +46,9 @@ class FgResponseFrontierCachePrebuildSummary:
 @dataclass(frozen=True)
 class FgResponseFrontierCachePrebuildSettings:
     scope: str = "pool"
-    workers: int = 0
+    workers: int = 1
     max_songs: int = 0
-    executor: str = "process"
+    executor: str = "thread"
     stat_keys: tuple[tuple[int, int], ...] = ()
 
 
@@ -262,9 +262,9 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
         _cfg_get(
             cfg,
             "FGResponseFrontierCachePrebuildWorkers",
-            _cfg_get(cfg, "TimelineFrontierCachePrebuildWorkers", "0"),
+            "1",
         ),
-        0,
+        1,
     )
     max_songs = safe_int(
         _cfg_get(
@@ -277,7 +277,7 @@ def read_fg_response_frontier_cache_prebuild_settings(cfg) -> FgResponseFrontier
     executor = _cfg_get(
         cfg,
         "FGResponseFrontierCachePrebuildExecutor",
-        _cfg_get(cfg, "TimelineFrontierCachePrebuildExecutor", "process"),
+        "thread",
     )
     stat_keys = _parse_stat_keys(_cfg_get(cfg, "FGResponseFrontierCachePrebuildStatKeys", ""))
 
