@@ -1527,7 +1527,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             return 0
         if base_candidate_cache is None:
             raise RuntimeError("base candidate cache enabled but shard is not loaded")
-        if not base_candidate_cache.rows:
+        if not base_candidate_cache.has_entries:
             return 0
         stats_arr = np.asarray(stats_rows)
         if stats_arr.size == 0:
@@ -2178,4 +2178,3 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             f"Internal error: expected a single selected-payload segment, got {len(payload_segments)} segments"
         )
     return payload_segments[0]
-

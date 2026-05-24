@@ -32,7 +32,7 @@ class StopController:
         self._stop_file_env_raw = ""
         self._stop_file_cached_path = os.path.join(self._bin_dir, "STOP")
         self._stop_file_poll_raw = ""
-        self._stop_file_poll_sec = 0.1
+        self._stop_file_poll_sec = 1.0
         self._stop_file_next_check_monotonic = 0.0
         self._stop_file_present_cache = False
         self._settings_refresh_sec = 1.0
@@ -88,14 +88,14 @@ class StopController:
             self._stop_file_next_check_monotonic = 0.0
             self._stop_file_present_cache = False
 
-        stop_file_poll_raw = str(env_get("METAFINDER_STOP_FILE_POLL_SEC", "0.1") or "0.1").strip()
+        stop_file_poll_raw = str(env_get("METAFINDER_STOP_FILE_POLL_SEC", "1.0") or "1.0").strip()
         if force or stop_file_poll_raw != self._stop_file_poll_raw:
             self._stop_file_poll_raw = stop_file_poll_raw
             try:
-                stop_file_poll_sec = float(stop_file_poll_raw or "0.1")
+                stop_file_poll_sec = float(stop_file_poll_raw or "1.0")
             except Exception as e:
                 logger.debug(f"app_stop_control:_refresh_runtime_settings: {e}")
-                stop_file_poll_sec = 0.1
+                stop_file_poll_sec = 1.0
             self._stop_file_poll_sec = max(0.01, float(stop_file_poll_sec))
 
     def stop_requested_now(self) -> bool:

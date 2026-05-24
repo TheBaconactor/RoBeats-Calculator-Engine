@@ -10,7 +10,8 @@ from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
-    solve_force_greats_response_frontier_batch_gpu,
+    reconstruct_force_greats_response_counts,
+    solve_force_greats_response_frontier_many_gpu,
 )
 from ..ga_entry_utils import materialize_entry_names
 from . import cache_validation
@@ -51,10 +52,27 @@ def _force_payload_from_response_frontier(
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    base_score: int | None = None,
 ) -> dict[str, Any]:
-    forced_counts = tuple(int(v) for v in result.forced_counts)
+    if result.forced_counts:
+        forced_counts = tuple(int(v) for v in result.forced_counts)
+    else:
+        song_inputs = extract_fg_song_inputs(calc_song)
+        forced_counts = tuple(
+            int(v)
+            for v in reconstruct_force_greats_response_counts(
+                frontier=result.frontier,
+                target_surface=result.surface,
+                timestamps=song_inputs.timestamps,
+                great_candidate_timestamps=song_inputs.great_candidates,
+                raw_fever_fill=float(result.raw_fever_fill),
+                real_fever_time=float(result.real_fever_time),
+                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            )
+        )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
+    if base_score is None:
+        base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
 
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
@@ -103,6 +121,9 @@ def process_force_greats_response_frontier_gpu(
 
     variants: list[dict[str, Any]] = []
     result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
+    pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]]] = []
+    pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
+    pending_keys: set[tuple[Any, ...]] = set()
     for _key, entry in entry_items:
         if not isinstance(entry, dict):
             continue
@@ -134,16 +155,31 @@ def process_force_greats_response_frontier_gpu(
             str(selected or ""),
             tuple(sorted((str(key), safe_int(value, 0)) for key, value in base_stats.items())),
         )
-        result = result_cache.get(cache_key)
-        if result is None:
-            result = solve_force_greats_response_frontier_batch_gpu(
-                base_stats=base_stats,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                selected_color=selected,
-            )
+        pending_jobs.append((entry, eval_data, selected, base_stats, cache_key))
+        if cache_key not in pending_keys:
+            pending_keys.add(cache_key)
+            pending_by_selected.setdefault(str(selected or ""), []).append((cache_key, base_stats))
+
+    for selected, rows in pending_by_selected.items():
+        results = solve_force_greats_response_frontier_many_gpu(
+            base_stats_list=[base_stats for _cache_key, base_stats in rows],
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            selected_color=selected,
+            include_forced_counts=False,
+        )
+        if len(results) != len(rows):
+            raise ValueError("ForceGreats response frontier batch returned the wrong number of results")
+        for (cache_key, _base_stats), result in zip(rows, results, strict=True):
             result_cache[cache_key] = result
 
+    for entry, eval_data, selected, base_stats, cache_key in pending_jobs:
+        result = result_cache.get(cache_key)
+        if result is None:
+            raise ValueError("ForceGreats response frontier batch missed a candidate result")
+        base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
+        if int(result.best_score) <= int(base_score):
+            continue
         payload = _force_payload_from_response_frontier(
             eval_data=eval_data,
             base_stats=base_stats,
@@ -151,9 +187,8 @@ def process_force_greats_response_frontier_gpu(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
+            base_score=int(base_score),
         )
-        if int(result.best_score) <= int(payload["BaseScore"]):
-            continue
 
         if int(result.best_score) > safe_int(entry.get("fg_score", 0), 0):
             entry["force"] = payload

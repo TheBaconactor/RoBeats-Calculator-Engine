@@ -58,6 +58,8 @@ class FgResponseFrontierSolveResult:
     inner: FgResponseInnerResult
     seconds: float
     forced_counts: tuple[int, ...] = ()
+    raw_fever_fill: float = 0.0
+    real_fever_time: float = 0.0
 
 
 _EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -16,6 +17,11 @@ from gear_optimizer.solver.scoring_core import lookup_reference_jit
 from gear_optimizer.solver.taichi_gem import api as gem_api
 
 from .response_types import FgResponseInnerResult, FgResponseSurface
+
+_PACKED_FRONTIER_SURFACE_CACHE_MAX = 8
+_PACKED_FRONTIER_SURFACE_CACHE: OrderedDict[
+    tuple[int, tuple[int, ...]], tuple[tuple[Any, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+] = OrderedDict()
 
 
 @jit(nopython=True, cache=True)
@@ -709,6 +715,222 @@ def _fg_response_inner_batch_kernel(
         out_rows[row, 9] = best_final_secondary
 
 
+@ti.kernel
+def _fg_response_inner_group_kernel(
+    group_count: ti.i32,
+    surface_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
+    surface_counts: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    group_offsets: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_lengths: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    row_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    color_flags: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    ref_pp: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    ref_cm: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    ref_fm: ti.types.ndarray(dtype=ti.f32, ndim=1),
+    out_rows: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    for group in range(group_count):
+        residual_budget: ti.i32 = row_meta[group, 0]
+        cur_pp: ti.i32 = row_meta[group, 1]
+        cur_cm: ti.i32 = row_meta[group, 2]
+        cur_fm: ti.i32 = row_meta[group, 3]
+        cur_primary: ti.i32 = row_meta[group, 4]
+        cur_secondary: ti.i32 = row_meta[group, 5]
+        head_len: ti.i32 = row_meta[group, 6]
+        body_total: ti.i32 = row_meta[group, 7]
+
+        is_p_pp: ti.i32 = color_flags[0]
+        is_s_pp: ti.i32 = color_flags[1]
+        is_p_cm: ti.i32 = color_flags[2]
+        is_s_cm: ti.i32 = color_flags[3]
+        is_p_fm: ti.i32 = color_flags[4]
+        is_s_fm: ti.i32 = color_flags[5]
+        is_p_ov: ti.i32 = color_flags[6]
+        is_s_ov: ti.i32 = color_flags[7]
+
+        pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
+        pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
+        cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
+        cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
+        fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
+        fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
+        ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+        ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
+        allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
+        allow_cm_color: ti.i32 = ti.cast((is_p_cm != 0) | (is_s_cm != 0), ti.i32)
+
+        max_pp_gems: ti.i32 = 0
+        if allow_pp != 0 and cur_pp < MAX_STAT_INDEX:
+            rem_pp: ti.i32 = MAX_STAT_INDEX - cur_pp
+            max_pp_gems = rem_pp // GEM_SCALE_NORMAL
+            if rem_pp % GEM_SCALE_NORMAL != 0:
+                max_pp_gems += 1
+
+        max_cm_gems: ti.i32 = 0
+        if cur_cm < MAX_STAT_INDEX:
+            if allow_cm_color != 0:
+                rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
+                max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+                if rem_cm % GEM_SCALE_NORMAL != 0:
+                    max_cm_gems += 1
+            elif cur_cm <= 50:
+                max_cm_gems = ((50 - cur_cm) // GEM_SCALE_NORMAL) + 1
+
+        max_fm_gems: ti.i32 = 0
+        if cur_fm < MAX_STAT_INDEX:
+            rem_fm: ti.i32 = MAX_STAT_INDEX - cur_fm
+            max_fm_gems = rem_fm // GEM_SCALE_FEVER
+            if rem_fm % GEM_SCALE_FEVER != 0:
+                max_fm_gems += 1
+
+        if max_pp_gems > residual_budget:
+            max_pp_gems = residual_budget
+        if max_cm_gems > residual_budget:
+            max_cm_gems = residual_budget
+        if max_fm_gems > residual_budget:
+            max_fm_gems = residual_budget
+
+        group_best_score: ti.i32 = -1
+        group_best_surface: ti.i32 = 0
+        group_best_pp: ti.i32 = 0
+        group_best_cm: ti.i32 = 0
+        group_best_fm: ti.i32 = 0
+        group_best_ov: ti.i32 = residual_budget
+        group_best_final_pp: ti.i32 = cur_pp
+        group_best_final_cm: ti.i32 = cur_cm
+        group_best_final_fm: ti.i32 = cur_fm
+        group_best_final_primary: ti.i32 = cur_primary + group_best_ov * ov_p_delta
+        group_best_final_secondary: ti.i32 = cur_secondary + group_best_ov * ov_s_delta
+
+        start: ti.i32 = group_offsets[group]
+        length: ti.i32 = group_lengths[group]
+        local_surface: ti.i32 = 0
+        while local_surface < length:
+            surface_row: ti.i32 = start + local_surface
+            fever0: ti.u32 = surface_words[surface_row, 0]
+            fever1: ti.u32 = surface_words[surface_row, 1]
+            fever2: ti.u32 = surface_words[surface_row, 2]
+            fever3: ti.u32 = surface_words[surface_row, 3]
+            great0: ti.u32 = surface_words[surface_row, 4]
+            great1: ti.u32 = surface_words[surface_row, 5]
+            great2: ti.u32 = surface_words[surface_row, 6]
+            great3: ti.u32 = surface_words[surface_row, 7]
+            body_fever: ti.i32 = surface_counts[surface_row, 0]
+            body_great: ti.i32 = surface_counts[surface_row, 1]
+
+            best_score: ti.i32 = -1
+            best_pp: ti.i32 = 0
+            best_cm: ti.i32 = 0
+            best_fm: ti.i32 = 0
+            best_ov: ti.i32 = residual_budget
+            best_final_pp: ti.i32 = cur_pp
+            best_final_cm: ti.i32 = cur_cm
+            best_final_fm: ti.i32 = cur_fm
+            best_final_primary: ti.i32 = cur_primary + best_ov * ov_p_delta
+            best_final_secondary: ti.i32 = cur_secondary + best_ov * ov_s_delta
+
+            g_cm: ti.i32 = 0
+            while g_cm <= max_cm_gems:
+                leftover_after_cm: ti.i32 = residual_budget - g_cm
+                if leftover_after_cm < 0:
+                    break
+                g_fm_max: ti.i32 = max_fm_gems
+                if g_fm_max > leftover_after_cm:
+                    g_fm_max = leftover_after_cm
+                g_fm: ti.i32 = 0
+                while g_fm <= g_fm_max:
+                    leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
+                    g_pp_max: ti.i32 = max_pp_gems
+                    if g_pp_max > leftover_after_fm:
+                        g_pp_max = leftover_after_fm
+                    g_pp: ti.i32 = 0
+                    while g_pp <= g_pp_max:
+                        g_ov: ti.i32 = leftover_after_fm - g_pp
+                        pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
+                        cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
+                        fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
+                        primary_val: ti.i32 = (
+                            cur_primary
+                            + g_pp * pp_p_delta
+                            + g_cm * cm_p_delta
+                            + g_fm * fm_p_delta
+                            + g_ov * ov_p_delta
+                        )
+                        secondary_val: ti.i32 = (
+                            cur_secondary
+                            + g_pp * pp_s_delta
+                            + g_cm * cm_s_delta
+                            + g_fm * fm_s_delta
+                            + g_ov * ov_s_delta
+                        )
+                        score: ti.i32 = _fg_response_score_device(
+                            fever0,
+                            fever1,
+                            fever2,
+                            fever3,
+                            great0,
+                            great1,
+                            great2,
+                            great3,
+                            body_fever,
+                            body_great,
+                            head_len,
+                            body_total,
+                            primary_val,
+                            secondary_val,
+                            _fg_response_lookup_ref(ref_pp, pp_stat),
+                            _fg_response_lookup_ref(ref_cm, cm_stat),
+                            _fg_response_lookup_ref(ref_fm, fm_stat),
+                        )
+                        if score > best_score or (
+                            score == best_score
+                            and (
+                                g_cm < best_cm
+                                or (g_cm == best_cm and (g_fm < best_fm or (g_fm == best_fm and g_pp < best_pp)))
+                            )
+                        ):
+                            best_score = score
+                            best_pp = g_pp
+                            best_cm = g_cm
+                            best_fm = g_fm
+                            best_ov = g_ov
+                            best_final_pp = pp_stat
+                            best_final_cm = cm_stat
+                            best_final_fm = fm_stat
+                            best_final_primary = primary_val
+                            best_final_secondary = secondary_val
+                        g_pp += 1
+                    g_fm += 1
+                g_cm += 1
+
+            if best_score > group_best_score:
+                group_best_score = best_score
+                group_best_surface = local_surface
+                group_best_pp = best_pp
+                group_best_cm = best_cm
+                group_best_fm = best_fm
+                group_best_ov = best_ov
+                group_best_final_pp = best_final_pp
+                group_best_final_cm = best_final_cm
+                group_best_final_fm = best_final_fm
+                group_best_final_primary = best_final_primary
+                group_best_final_secondary = best_final_secondary
+            local_surface += 1
+
+        out_rows[group, 0] = group_best_score
+        out_rows[group, 1] = group_best_surface
+        out_rows[group, 2] = group_best_pp
+        out_rows[group, 3] = group_best_cm
+        out_rows[group, 4] = group_best_fm
+        out_rows[group, 5] = group_best_ov
+        out_rows[group, 6] = group_best_final_pp
+        out_rows[group, 7] = group_best_final_cm
+        out_rows[group, 8] = group_best_final_fm
+        out_rows[group, 9] = group_best_final_primary
+        out_rows[group, 10] = group_best_final_secondary
+
+
 def optimize_response_frontier_inner_exact_gpu(
     surfaces: tuple[FgResponseSurface, ...] | list[FgResponseSurface],
     *,
@@ -746,73 +968,116 @@ def optimize_response_frontier_inner_exact_gpu(
     )
 
 
-def _optimize_response_surfaces_gpu(
-    groups: list[tuple[int, dict[str, Any], tuple[FgResponseSurface, ...]]],
+def _inner_stat_values_for_colors(
+    stats_after_ftff: dict[str, Any] | tuple[int, ...],
+    *,
+    primary_color: str,
+    secondary_color: str,
+) -> tuple[int, int, int, int, int]:
+    if isinstance(stats_after_ftff, tuple):
+        return (
+            int(stats_after_ftff[0]),
+            int(stats_after_ftff[1]),
+            int(stats_after_ftff[2]),
+            int(stats_after_ftff[3]),
+            int(stats_after_ftff[4]),
+        )
+    return (
+        int(stats_after_ftff.get("Perfect Points", 0) or 0),
+        int(stats_after_ftff.get("Combo Multiplier", 0) or 0),
+        int(stats_after_ftff.get("Fever Multiplier", 0) or 0),
+        int(stats_after_ftff.get(str(primary_color or ""), 0) or 0),
+        int(stats_after_ftff.get(str(secondary_color or ""), 0) or 0),
+    )
+
+
+def _pack_response_frontier_surface_pool(
+    frontiers: tuple[Any, ...],
     *,
     total_notes: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    body_total = max(0, int(total_notes) - 100)
+    key = (int(body_total), tuple(id(frontier) for frontier in frontiers))
+    cached = _PACKED_FRONTIER_SURFACE_CACHE.get(key)
+    if cached is not None and cached[0] == frontiers:
+        _PACKED_FRONTIER_SURFACE_CACHE.move_to_end(key)
+        return cached[1], cached[2], cached[3], cached[4]
+
+    offsets = np.zeros(len(frontiers), dtype=np.int32)
+    lengths = np.zeros(len(frontiers), dtype=np.int32)
+    word_blocks: list[np.ndarray] = []
+    count_blocks: list[np.ndarray] = []
+    row_offset = 0
+    for frontier_idx, frontier in enumerate(frontiers):
+        surfaces = tuple(getattr(frontier, "first_frontier"))
+        offsets[frontier_idx] = int(row_offset)
+        lengths[frontier_idx] = int(len(surfaces))
+        if not surfaces:
+            continue
+        words = np.empty((len(surfaces), 8), dtype=np.uint32)
+        counts = np.empty((len(surfaces), 2), dtype=np.int32)
+        for surface_idx, surface in enumerate(surfaces):
+            _validate_surface(surface, body_total=int(body_total))
+            words[surface_idx, 0] = int(surface.fever0)
+            words[surface_idx, 1] = int(surface.fever1)
+            words[surface_idx, 2] = int(surface.fever2)
+            words[surface_idx, 3] = int(surface.fever3)
+            words[surface_idx, 4] = int(surface.great0)
+            words[surface_idx, 5] = int(surface.great1)
+            words[surface_idx, 6] = int(surface.great2)
+            words[surface_idx, 7] = int(surface.great3)
+            counts[surface_idx, 0] = int(surface.body_fever)
+            counts[surface_idx, 1] = int(surface.body_great)
+        word_blocks.append(words)
+        count_blocks.append(counts)
+        row_offset += int(len(surfaces))
+
+    if row_offset > 0:
+        surface_words = np.ascontiguousarray(np.concatenate(word_blocks, axis=0))
+        surface_counts = np.ascontiguousarray(np.concatenate(count_blocks, axis=0))
+    else:
+        surface_words = np.zeros((0, 8), dtype=np.uint32)
+        surface_counts = np.zeros((0, 2), dtype=np.int32)
+    packed = (tuple(frontiers), surface_words, surface_counts, offsets, lengths)
+    _PACKED_FRONTIER_SURFACE_CACHE[key] = packed
+    _PACKED_FRONTIER_SURFACE_CACHE.move_to_end(key)
+    while len(_PACKED_FRONTIER_SURFACE_CACHE) > _PACKED_FRONTIER_SURFACE_CACHE_MAX:
+        _PACKED_FRONTIER_SURFACE_CACHE.popitem(last=False)
+    return surface_words, surface_counts, offsets, lengths
+
+
+def _score_response_group_meta_gpu(
+    *,
+    group_meta: np.ndarray,
+    group_offsets: np.ndarray,
+    group_lengths: np.ndarray,
     primary_color: str,
     secondary_color: str,
     selected_color: str,
     ref_arrays: dict[str, Any],
-) -> tuple[list[tuple[int, int, int, int, int, int, int, int, int, int, int]], int]:
-    rows: list[tuple[int, int, FgResponseSurface]] = []
-    meta: list[list[int]] = []
-    head_len = min(int(total_notes), 100)
-    body_total = max(0, int(total_notes) - 100)
-    for group_idx, (residual_budget, stats_after_ftff, surfaces) in enumerate(groups):
-        cur_pp = int(stats_after_ftff.get("Perfect Points", 0) or 0)
-        cur_cm = int(stats_after_ftff.get("Combo Multiplier", 0) or 0)
-        cur_fm = int(stats_after_ftff.get("Fever Multiplier", 0) or 0)
-        cur_primary = int(stats_after_ftff.get(str(primary_color or ""), 0) or 0)
-        cur_secondary = int(stats_after_ftff.get(str(secondary_color or ""), 0) or 0)
-        for surface_idx, surface in enumerate(tuple(surfaces or ())):
-            _validate_surface(surface, body_total=int(body_total))
-            rows.append((int(group_idx), int(surface_idx), surface))
-            meta.append(
-                [
-                    max(0, int(residual_budget)),
-                    int(cur_pp),
-                    int(cur_cm),
-                    int(cur_fm),
-                    int(cur_primary),
-                    int(cur_secondary),
-                    int(head_len),
-                    int(body_total),
-                ]
-            )
-    if not rows:
-        return [], 0
+    surface_words: np.ndarray,
+    surface_counts: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    group_count = int(group_meta.shape[0])
+    if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
+        raise ValueError("response frontier GPU group metadata arrays have inconsistent lengths")
+    logical_surface_rows = int(np.sum(group_lengths, dtype=np.int64))
+    if logical_surface_rows <= 0:
+        return np.zeros((0, 11), dtype=np.int32), 0
 
     gem_api.ensure_ready()
-    surface_words = np.zeros((len(rows), 8), dtype=np.uint32)
-    surface_counts = np.zeros((len(rows), 2), dtype=np.int32)
-    for idx, (_group_idx, _surface_idx, surface) in enumerate(rows):
-        surface_words[idx] = np.asarray(
-            [
-                int(surface.fever0),
-                int(surface.fever1),
-                int(surface.fever2),
-                int(surface.fever3),
-                int(surface.great0),
-                int(surface.great1),
-                int(surface.great2),
-                int(surface.great3),
-            ],
-            dtype=np.uint32,
-        )
-        surface_counts[idx] = np.asarray([int(surface.body_fever), int(surface.body_great)], dtype=np.int32)
-
-    row_meta = np.ascontiguousarray(np.asarray(meta, dtype=np.int32))
     flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
     ref_pp = np.ascontiguousarray(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
     ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
     ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
-    out_rows = np.zeros((len(rows), 10), dtype=np.int32)
-    _fg_response_inner_batch_kernel(
-        int(len(rows)),
-        surface_words,
-        surface_counts,
-        row_meta,
+    out_rows = np.zeros((group_count, 11), dtype=np.int32)
+    _fg_response_inner_group_kernel(
+        int(group_count),
+        np.ascontiguousarray(surface_words, dtype=np.uint32),
+        np.ascontiguousarray(surface_counts, dtype=np.int32),
+        np.ascontiguousarray(group_offsets, dtype=np.int32),
+        np.ascontiguousarray(group_lengths, dtype=np.int32),
+        np.ascontiguousarray(group_meta, dtype=np.int32),
         flags,
         ref_pp,
         ref_cm,
@@ -820,13 +1085,86 @@ def _optimize_response_surfaces_gpu(
         out_rows,
     )
     ti.sync()
+    return out_rows, int(logical_surface_rows)
+
+
+def _optimize_response_groups_gpu(
+    groups: list[tuple[int, dict[str, Any] | tuple[int, ...], int]],
+    *,
+    total_notes: int,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+    ref_arrays: dict[str, Any],
+    surface_words: np.ndarray,
+    surface_counts: np.ndarray,
+    frontier_offsets: np.ndarray,
+    frontier_lengths: np.ndarray,
+) -> tuple[list[tuple[int, int, int, int, int, int, int, int, int, int, int]], int]:
+    head_len = min(int(total_notes), 100)
+    body_total = max(0, int(total_notes) - 100)
+    group_meta = np.zeros((len(groups), 8), dtype=np.int32)
+    group_offsets = np.zeros(len(groups), dtype=np.int32)
+    group_lengths = np.zeros(len(groups), dtype=np.int32)
+    logical_surface_rows = 0
+
+    for group_idx, (residual_budget, stats_after_ftff, frontier_idx) in enumerate(groups):
+        idx = int(frontier_idx)
+        if idx < 0 or idx >= int(frontier_offsets.shape[0]):
+            raise ValueError(f"response frontier group references unknown packed frontier index: {idx}")
+        length = int(frontier_lengths[idx])
+        if length <= 0:
+            continue
+        if isinstance(stats_after_ftff, tuple):
+            cur_pp = int(stats_after_ftff[0])
+            cur_cm = int(stats_after_ftff[1])
+            cur_fm = int(stats_after_ftff[2])
+            cur_primary = int(stats_after_ftff[3])
+            cur_secondary = int(stats_after_ftff[4])
+        else:
+            cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary = _inner_stat_values_for_colors(
+                stats_after_ftff,
+                primary_color=primary_color,
+                secondary_color=secondary_color,
+            )
+        logical_surface_rows += int(length)
+        group_offsets[group_idx] = int(frontier_offsets[idx])
+        group_lengths[group_idx] = int(length)
+        residual = int(residual_budget)
+        if residual < 0:
+            residual = 0
+        group_meta[group_idx] = (
+            int(residual),
+            int(cur_pp),
+            int(cur_cm),
+            int(cur_fm),
+            int(cur_primary),
+            int(cur_secondary),
+            int(head_len),
+            int(body_total),
+        )
+    if logical_surface_rows <= 0:
+        return [], 0
+
+    out_rows, _surface_rows = _score_response_group_meta_gpu(
+        group_meta=group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        selected_color=selected_color,
+        ref_arrays=ref_arrays,
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+    )
 
     best_by_group: list[tuple[int, int, int, int, int, int, int, int, int, int, int] | None] = [None] * len(groups)
-    for row_idx, (group_idx, surface_idx, _surface) in enumerate(rows):
-        raw = out_rows[row_idx]
-        candidate = (
+    for group_idx in range(len(groups)):
+        if int(group_lengths[group_idx]) <= 0:
+            continue
+        raw = out_rows[group_idx]
+        best_by_group[int(group_idx)] = (
             int(raw[0]),
-            int(surface_idx),
             int(raw[1]),
             int(raw[2]),
             int(raw[3]),
@@ -836,8 +1174,140 @@ def _optimize_response_surfaces_gpu(
             int(raw[7]),
             int(raw[8]),
             int(raw[9]),
+            int(raw[10]),
         )
-        current = best_by_group[int(group_idx)]
-        if current is None or candidate[0] > current[0]:
-            best_by_group[int(group_idx)] = candidate
-    return [row for row in best_by_group if row is not None], int(len(rows))
+    return [row for row in best_by_group if row is not None], int(_surface_rows)
+
+
+def _optimize_response_surfaces_gpu(
+    groups: list[tuple[int, dict[str, Any] | tuple[int, ...], tuple[FgResponseSurface, ...]]],
+    *,
+    total_notes: int,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+    ref_arrays: dict[str, Any],
+) -> tuple[list[tuple[int, int, int, int, int, int, int, int, int, int, int]], int]:
+    head_len = min(int(total_notes), 100)
+    body_total = max(0, int(total_notes) - 100)
+    surface_cache: dict[int, tuple[int, int]] = {}
+    surface_word_blocks: list[np.ndarray] = []
+    surface_count_blocks: list[np.ndarray] = []
+    group_meta = np.zeros((len(groups), 8), dtype=np.int32)
+    group_offsets = np.zeros(len(groups), dtype=np.int32)
+    group_lengths = np.zeros(len(groups), dtype=np.int32)
+    logical_surface_rows = 0
+    unique_surface_rows = 0
+
+    def _inner_stat_values(stats_after_ftff: dict[str, Any] | tuple[int, ...]) -> tuple[int, int, int, int, int]:
+        if isinstance(stats_after_ftff, tuple):
+            return (
+                int(stats_after_ftff[0]),
+                int(stats_after_ftff[1]),
+                int(stats_after_ftff[2]),
+                int(stats_after_ftff[3]),
+                int(stats_after_ftff[4]),
+            )
+        return (
+            int(stats_after_ftff.get("Perfect Points", 0) or 0),
+            int(stats_after_ftff.get("Combo Multiplier", 0) or 0),
+            int(stats_after_ftff.get("Fever Multiplier", 0) or 0),
+            int(stats_after_ftff.get(str(primary_color or ""), 0) or 0),
+            int(stats_after_ftff.get(str(secondary_color or ""), 0) or 0),
+        )
+
+    def _surface_block(surfaces: tuple[FgResponseSurface, ...]) -> tuple[int, int]:
+        nonlocal unique_surface_rows
+        key = id(surfaces)
+        cached = surface_cache.get(key)
+        if cached is not None:
+            return cached
+        words = np.empty((len(surfaces), 8), dtype=np.uint32)
+        counts = np.empty((len(surfaces), 2), dtype=np.int32)
+        for idx, surface in enumerate(surfaces):
+            _validate_surface(surface, body_total=int(body_total))
+            words[idx, 0] = int(surface.fever0)
+            words[idx, 1] = int(surface.fever1)
+            words[idx, 2] = int(surface.fever2)
+            words[idx, 3] = int(surface.fever3)
+            words[idx, 4] = int(surface.great0)
+            words[idx, 5] = int(surface.great1)
+            words[idx, 6] = int(surface.great2)
+            words[idx, 7] = int(surface.great3)
+            counts[idx, 0] = int(surface.body_fever)
+            counts[idx, 1] = int(surface.body_great)
+        cached = (int(unique_surface_rows), int(words.shape[0]))
+        surface_cache[key] = cached
+        surface_word_blocks.append(words)
+        surface_count_blocks.append(counts)
+        unique_surface_rows += int(words.shape[0])
+        return cached
+
+    for group_idx, (residual_budget, stats_after_ftff, surfaces) in enumerate(groups):
+        cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary = _inner_stat_values(stats_after_ftff)
+        surfaces_tuple = tuple(surfaces or ())
+        if not surfaces_tuple:
+            continue
+        offset, length = _surface_block(surfaces_tuple)
+        logical_surface_rows += int(length)
+        group_offsets[group_idx] = int(offset)
+        group_lengths[group_idx] = int(length)
+        group_meta[group_idx] = (
+            max(0, int(residual_budget)),
+            int(cur_pp),
+            int(cur_cm),
+            int(cur_fm),
+            int(cur_primary),
+            int(cur_secondary),
+            int(head_len),
+            int(body_total),
+        )
+    if logical_surface_rows <= 0:
+        return [], 0
+
+    gem_api.ensure_ready()
+    if unique_surface_rows <= 0:
+        raise ValueError("response frontier GPU inner solve has groups but no packed surfaces")
+    surface_words = np.ascontiguousarray(np.concatenate(surface_word_blocks, axis=0))
+    surface_counts = np.ascontiguousarray(np.concatenate(surface_count_blocks, axis=0))
+
+    flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
+    ref_pp = np.ascontiguousarray(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
+    ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
+    ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
+    out_rows = np.zeros((len(groups), 11), dtype=np.int32)
+    _fg_response_inner_group_kernel(
+        int(len(groups)),
+        surface_words,
+        surface_counts,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+    )
+    ti.sync()
+
+    best_by_group: list[tuple[int, int, int, int, int, int, int, int, int, int, int] | None] = [None] * len(groups)
+    for group_idx in range(len(groups)):
+        if int(group_lengths[group_idx]) <= 0:
+            continue
+        raw = out_rows[group_idx]
+        candidate = (
+            int(raw[0]),
+            int(raw[1]),
+            int(raw[2]),
+            int(raw[3]),
+            int(raw[4]),
+            int(raw[5]),
+            int(raw[6]),
+            int(raw[7]),
+            int(raw[8]),
+            int(raw[9]),
+            int(raw[10]),
+        )
+        best_by_group[int(group_idx)] = candidate
+    return [row for row in best_by_group if row is not None], int(logical_surface_rows)

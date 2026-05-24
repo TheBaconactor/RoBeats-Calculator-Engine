@@ -650,7 +650,12 @@ def build_or_load_response_frontier_payload(
 ) -> FgResponseFrontierPrewarmResult:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
-    cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
+    cache_key = (
+        _FG_RESPONSE_CACHE_VERSION,
+        fg_response_frontier_song_cache_key(calc_song),
+        *_ref_axes_cache_key(ref_arrays),
+        keys,
+    )
     payload = _payload_memory_get(cache_key)
     if payload is not None:
         return FgResponseFrontierPrewarmResult(
