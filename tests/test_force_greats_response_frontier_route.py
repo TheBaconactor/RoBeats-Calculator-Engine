@@ -1,6 +1,39 @@
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 import pytest
+import numpy as np
+
+
+def test_nojit_fixed_stats_score_matches_jit_score():
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score, evaluate_stats_score_nojit
+
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 1,
+            "Last Note Time": 1.5,
+        },
+        "song_data": {"timestamps": np.asarray([0.0, 0.25, 0.5, 1.0, 1.5], dtype=np.float32)},
+    }
+    ref_arrays = {
+        "Perfect Points": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+    }
+    stats = {
+        "Perfect Points": 37,
+        "Combo Multiplier": 41,
+        "Fever Multiplier": 59,
+        "Fever Time": 23,
+        "Fever Fill Rate": 29,
+        "Rush": 101,
+        "Flow": 83,
+    }
+
+    assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(stats, calc_song, ref_arrays)
 
 
 def test_process_force_greats_response_frontier_failure_raises_directly(monkeypatch):

@@ -30,6 +30,13 @@ def _ref_arrays() -> dict[str, np.ndarray]:
     }
 
 
+def _varying_ref_arrays() -> dict[str, np.ndarray]:
+    return {
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+    }
+
+
 def _write_song(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -96,6 +103,93 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     second = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=keys)
     assert second.cache_source == "disk"
     assert set(second.payload.frontier_by_key) == set(keys)
+
+
+def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+    )
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_DISK_CACHE", "1")
+    response_cache.reset_fg_response_frontier_payload_cache()
+    calls: list[tuple[tuple[float, int, float], ...]] = []
+
+    def _fake_build(*, geometries, **_kwargs):
+        rows = tuple((float(row[0]), int(row[1]), float(row[2])) for row in geometries)
+        calls.append(rows)
+        return tuple(
+            FgResponseFrontierResult(
+                first_frontier=(FgResponseSurface(idx, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
+                state_frontiers={},
+                states_evaluated=1,
+                actions=1,
+                transitions_evaluated=1,
+                generated_surfaces=1,
+                retained_surfaces_total=1,
+                max_state_frontier=1,
+                non_fever_base=0,
+                seconds=0.0,
+            )
+            for idx, _row in enumerate(rows, start=1)
+        )
+
+    monkeypatch.setattr(response_cache, "build_force_greats_response_frontiers_gpu_batch", _fake_build)
+    ref_arrays = _varying_ref_arrays()
+
+    first = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        ref_arrays,
+        stat_keys=((0, 0), (1, 0)),
+    )
+    assert first.cache_source == "built"
+    assert [len(call) for call in calls] == [2]
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    second = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        ref_arrays,
+        stat_keys=((1, 0), (2, 0)),
+    )
+
+    assert second.cache_source == "built"
+    assert set(second.payload.frontier_by_key) == {(1, 0), (2, 0)}
+    assert [len(call) for call in calls] == [2, 1]
+    assert len(list(tmp_path.glob("*.npz"))) == 1
+
+
+def test_fg_response_frontier_first_only_load_can_restore_full_state(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_DISK_CACHE", "1")
+    response_cache.reset_fg_response_frontier_payload_cache()
+    ref_arrays = _varying_ref_arrays()
+    keys = ((0, 0), (1, 0))
+
+    full = response_cache.build_or_load_response_frontier_payload(_calc_song(), ref_arrays, stat_keys=keys)
+    assert all(frontier.state_frontiers for frontier in full.payload.frontiers)
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    first_only = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        ref_arrays,
+        stat_keys=keys,
+        include_state_frontiers=False,
+    )
+    assert first_only.cache_source == "disk"
+    assert all(not frontier.state_frontiers for frontier in first_only.payload.frontiers)
+
+    restored = response_cache.load_response_frontier_from_bundle(
+        _calc_song(),
+        ref_arrays,
+        ft_stat=1,
+        ff_stat=0,
+    )
+    assert restored.state_frontiers
+    assert restored.first_frontier == full.payload.frontier_for_stats(ft_stat=1, ff_stat=0).first_frontier
 
 
 def test_fg_response_frontier_payload_memory_cache_precedes_disk(tmp_path: Path, monkeypatch) -> None:

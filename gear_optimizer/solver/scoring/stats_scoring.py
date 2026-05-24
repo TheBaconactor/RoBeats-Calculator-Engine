@@ -221,6 +221,55 @@ def evaluate_stats_score(
     )
 
 
+def evaluate_stats_score_nojit(
+    stats,
+    calc_song,
+    ref_arrays,
+    song_timestamps=None,
+    long_notes=None,
+    last_note=None,
+    fever_mask_buffer=None,
+):
+    timestamps = song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
+    total_notes = len(timestamps)
+    long_count = long_notes if long_notes is not None else safe_int(calc_song["metadata"].get("Long Notes"), 0)
+    default_last_note = timestamps[-1] if total_notes else 0.0
+    last_time = (
+        last_note
+        if last_note is not None
+        else safe_float(calc_song["metadata"].get("Last Note Time"), default_last_note)
+    )
+    mask_buffer = fever_mask_buffer
+    if mask_buffer is None or mask_buffer.shape[0] != total_notes:
+        mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    factors = resolve_stat_factors(stats, ref_arrays)
+    fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
+        timestamps,
+        total_notes,
+        float(factors.fever_fill_rate),
+        float(factors.fever_time_stat),
+        long_count,
+        last_time,
+        mask_buffer,
+    )
+
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    total_base = (stats.get(p_color, 0) * 2) + stats.get(s_color, 0) + float(factors.pp_factor)
+    base_f = np.float32(total_base)
+    combo_f = np.float32(float(factors.combo_mul))
+    fever_f = np.float32(float(factors.fever_mul))
+    combo_val = int(base_f * combo_f)
+    fever_val = int(base_f * combo_f * fever_f)
+    score = (int(count_body_fever) * fever_val) + (int(count_body_normal) * combo_val)
+    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    for idx, in_fever in enumerate(fever_mask_head):
+        ramp = base_f + (np.float32(idx + 1) * factor)
+        score += int(ramp * fever_f) if bool(in_fever) else int(ramp)
+    return int(score)
+
+
 def _force_greats_counts_to_dict(counts, sections):
     """Convert force counts to config dict."""
     config = {}

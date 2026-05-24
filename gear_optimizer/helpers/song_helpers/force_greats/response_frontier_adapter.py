@@ -7,12 +7,13 @@ from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
-from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score
+from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score_nojit as evaluate_stats_score
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     reconstruct_force_greats_response_counts,
     solve_force_greats_response_frontier_many_gpu,
 )
+from ....solver.taichi_gem.force_greats.response_cache import load_response_frontier_from_bundle
 from ..ga_entry_utils import materialize_entry_names
 from . import cache_validation
 from .entry_resolution import build_direct_ga_entry_items, entry_base_score
@@ -58,10 +59,18 @@ def _force_payload_from_response_frontier(
         forced_counts = tuple(int(v) for v in result.forced_counts)
     else:
         song_inputs = extract_fg_song_inputs(calc_song)
+        frontier = result.frontier
+        if not frontier.state_frontiers:
+            frontier = load_response_frontier_from_bundle(
+                calc_song,
+                ref_arrays,
+                ft_stat=safe_int(result.stats.get("Fever Time", 0), 0),
+                ff_stat=safe_int(result.stats.get("Fever Fill Rate", 0), 0),
+            )
         forced_counts = tuple(
             int(v)
             for v in reconstruct_force_greats_response_counts(
-                frontier=result.frontier,
+                frontier=frontier,
                 target_surface=result.surface,
                 timestamps=song_inputs.timestamps,
                 great_candidate_timestamps=song_inputs.great_candidates,
@@ -177,6 +186,9 @@ def process_force_greats_response_frontier_gpu(
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
+        known_base_score = int(entry_base_score(entry))
+        if int(result.best_score) <= int(known_base_score):
+            continue
         base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
         if int(result.best_score) <= int(base_score):
             continue
