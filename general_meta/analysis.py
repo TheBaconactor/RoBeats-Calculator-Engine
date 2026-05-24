@@ -11,6 +11,7 @@ from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.core.utils import safe_int as _safe_int
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
+_GENERAL_META_EXCLUDED_RANK_DIFFICULTIES = frozenset({"Easy"})
 
 
 def _effective_score(loadout: dict) -> int:
@@ -24,6 +25,18 @@ def _effective_score(loadout: dict) -> int:
     score = int(loadout.get("score") or 0)
     fg_score = int(loadout.get("fg_score") or 0)
     return max(score, fg_score)
+
+
+def _song_name(song: dict) -> str:
+    return str((song or {}).get("song_name") or "").strip()
+
+
+def _song_difficulty(song: dict) -> str:
+    return str((song or {}).get("difficulty") or "").strip()
+
+
+def _is_general_meta_ranked_song(song: dict) -> bool:
+    return _song_difficulty(song) not in _GENERAL_META_EXCLUDED_RANK_DIFFICULTIES
 
 
 def _loadout_key_fingerprint(gears: tuple[str, ...], mini_sig: tuple[Any, ...]) -> str:
@@ -197,7 +210,17 @@ def find_most_common_loadout(
     Find the most frequently appearing gear+mini SETs for songs in this category.
     Then look up existing DB entries that use each SET to get pre-optimized gems.
     """
-    song_names = {s["song_name"] for s in songs}
+    songs_by_name = {
+        name: song
+        for song in songs
+        if (name := _song_name(song))
+    }
+    song_names = set(songs_by_name)
+    ranked_song_names = {
+        name
+        for name, song in songs_by_name.items()
+        if _is_general_meta_ranked_song(song)
+    }
     relevant_elements = _relevant_elements_for_category(songs)
 
     if loadouts_by_song is None:
@@ -209,10 +232,11 @@ def find_most_common_loadout(
 
     wins: Counter = Counter()
     loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
+    aggregate_loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
     mini_variants: Dict[Tuple[Any, ...], Counter] = {}
     song_win_rows: Dict[Tuple[Any, ...], List[dict]] = {}
 
-    for song_name in song_names:
+    for song_name in sorted(song_names):
         loadouts = (loadouts_by_song or {}).get(song_name, [])
         if not loadouts:
             continue
@@ -228,17 +252,20 @@ def find_most_common_loadout(
         else:
             ordered_gears = sorted(gears)
         loadout_key = (tuple(ordered_gears), sig)
-        wins[loadout_key] += 1
-        loadout_rows.setdefault(loadout_key, []).append(best)
-        mini_variants.setdefault(loadout_key, Counter())[variant_key] += 1
-        song_win_rows.setdefault(loadout_key, []).append(
-            _song_win_entry(
-                best,
-                mode=mode,
-                rank_index=_rank_index_for_song_mode(loadouts, best, mode),
-                team_buff=str(best.get("team_buff") or "").strip() or None,
+        aggregate_loadout_rows.setdefault(loadout_key, []).append(best)
+
+        if song_name in ranked_song_names:
+            wins[loadout_key] += 1
+            loadout_rows.setdefault(loadout_key, []).append(best)
+            mini_variants.setdefault(loadout_key, Counter())[variant_key] += 1
+            song_win_rows.setdefault(loadout_key, []).append(
+                _song_win_entry(
+                    best,
+                    mode=mode,
+                    rank_index=_rank_index_for_song_mode(loadouts, best, mode),
+                    team_buff=str(best.get("team_buff") or "").strip() or None,
+                )
             )
-        )
 
     if not wins:
         return []
@@ -252,6 +279,7 @@ def find_most_common_loadout(
         gears, _sig = key
         loadout_key = _loadout_key_fingerprint(tuple(gears), tuple(_sig))
         rows = loadout_rows.get(key, [])
+        aggregate_rows = aggregate_loadout_rows.get(key, rows)
         peak_in_songs_meta = sorted(
             {
                 str(r.get("song_name") or "")
@@ -277,7 +305,7 @@ def find_most_common_loadout(
         chosen_variant = _pick_representative_variant(variants)
         gem_sums = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
         avg_score = 0
-        for row in rows:
+        for row in aggregate_rows:
             avg_score += int(_effective_score(row))
             try:
                 details = json.loads(row.get("details_json") or "{}")
@@ -291,7 +319,7 @@ def find_most_common_loadout(
             gem_sums["FF"] += int(totals.ff)
             gem_sums["Element"] += int(totals.element)
 
-        denom = max(1, len(rows))
+        denom = max(1, len(aggregate_rows))
         avg_score = int(avg_score / denom)
         if sum(int(v) for v in gem_sums.values()) <= 0:
             avg_gems = {k: 0 for k in gem_sums}
