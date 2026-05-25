@@ -54,7 +54,7 @@ _PREBUILD_WORKERS = max(1, min(3, int(os.cpu_count() or 1)))
 def _init_prebuild_worker(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
-    reducer_threads: int,
+    reducer_threads: int = 1,
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
 

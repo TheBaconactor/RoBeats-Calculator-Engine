@@ -22,6 +22,82 @@ _PACKED_FRONTIER_SURFACE_CACHE_MAX = 8
 _PACKED_FRONTIER_SURFACE_CACHE: OrderedDict[
     tuple[int, tuple[int, ...]], tuple[tuple[Any, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]
 ] = OrderedDict()
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
+_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK = 400_000
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 32_768
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 64_000_000
+
+
+def _response_inner_combo_count(
+    *,
+    residual_budget: int,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    allow_pp: bool,
+) -> int:
+    residual = max(0, int(residual_budget))
+    max_pp_gems = 0
+    if bool(allow_pp) and int(cur_pp) < MAX_STAT_INDEX:
+        rem_pp = MAX_STAT_INDEX - int(cur_pp)
+        max_pp_gems = rem_pp // GEM_SCALE_NORMAL
+        if rem_pp % GEM_SCALE_NORMAL != 0:
+            max_pp_gems += 1
+
+    max_cm_gems = 0
+    if int(cur_cm) < MAX_STAT_INDEX:
+        rem_cm = MAX_STAT_INDEX - int(cur_cm)
+        max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+        if rem_cm % GEM_SCALE_NORMAL != 0:
+            max_cm_gems += 1
+
+    max_fm_gems = 0
+    if int(cur_fm) < MAX_STAT_INDEX:
+        rem_fm = MAX_STAT_INDEX - int(cur_fm)
+        max_fm_gems = rem_fm // GEM_SCALE_FEVER
+        if rem_fm % GEM_SCALE_FEVER != 0:
+            max_fm_gems += 1
+
+    max_pp_gems = min(int(max_pp_gems), int(residual))
+    max_cm_gems = min(int(max_cm_gems), int(residual))
+    max_fm_gems = min(int(max_fm_gems), int(residual))
+
+    count = 0
+    for g_cm in range(int(max_cm_gems) + 1):
+        leftover_after_cm = int(residual) - int(g_cm)
+        if leftover_after_cm < 0:
+            break
+        g_fm_max = min(int(max_fm_gems), int(leftover_after_cm))
+        for g_fm in range(int(g_fm_max) + 1):
+            leftover_after_fm = int(leftover_after_cm) - int(g_fm)
+            count += min(int(max_pp_gems), int(leftover_after_fm)) + 1
+    return max(1, int(count))
+
+
+def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> np.ndarray:
+    group_meta_arr = np.ascontiguousarray(np.asarray(group_meta, dtype=np.int32))
+    if int(group_meta_arr.ndim) != 2 or int(group_meta_arr.shape[1]) < 4:
+        raise ValueError("response frontier combo-count estimator requires group metadata columns 0..3")
+    row_count = int(group_meta_arr.shape[0])
+    if row_count <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    combo_inputs = np.ascontiguousarray(group_meta_arr[:, :4], dtype=np.int32)
+    unique_inputs, inverse = np.unique(combo_inputs, axis=0, return_inverse=True)
+    unique_counts = np.asarray(
+        [
+            _response_inner_combo_count(
+                residual_budget=int(row[0]),
+                cur_pp=int(row[1]),
+                cur_cm=int(row[2]),
+                cur_fm=int(row[3]),
+                allow_pp=allow_pp,
+            )
+            for row in unique_inputs
+        ],
+        dtype=np.int64,
+    )
+    return np.ascontiguousarray(unique_counts[np.asarray(inverse, dtype=np.intp)], dtype=np.int64)
 
 
 @jit(nopython=True, cache=True)
@@ -1058,21 +1134,179 @@ def _score_response_group_meta_gpu(
     ref_pp = np.ascontiguousarray(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
     ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
     ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
+    surface_words_all = np.ascontiguousarray(surface_words, dtype=np.uint32)
+    surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
+    group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
+    group_offsets_all = np.ascontiguousarray(group_offsets, dtype=np.int32)
+    group_lengths_all = np.ascontiguousarray(group_lengths, dtype=np.int32)
+
+    if int(surface_words_all.shape[0]) != int(surface_counts_all.shape[0]):
+        raise ValueError("response frontier GPU surface arrays have inconsistent lengths")
+    if int(surface_words_all.shape[1]) != 8 or int(surface_counts_all.shape[1]) != 2:
+        raise ValueError("response frontier GPU surface arrays have invalid shape")
+
+    flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
+    allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
+    combo_counts = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
+    work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts
+    total_work = int(np.sum(work_by_group, dtype=np.int64))
+    max_group_work = int(np.max(work_by_group)) if group_count > 0 else 0
+    max_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
+    max_thread_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK))
+    max_dispatch_groups = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS))
+    max_surface_dispatch_rows = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
+    max_surface_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
     out_rows = np.zeros((group_count, 11), dtype=np.int32)
-    _fg_response_inner_group_kernel(
-        int(group_count),
-        np.ascontiguousarray(surface_words, dtype=np.uint32),
-        np.ascontiguousarray(surface_counts, dtype=np.int32),
-        np.ascontiguousarray(group_offsets, dtype=np.int32),
-        np.ascontiguousarray(group_lengths, dtype=np.int32),
-        np.ascontiguousarray(group_meta, dtype=np.int32),
-        flags,
-        ref_pp,
-        ref_cm,
-        ref_fm,
-        out_rows,
-    )
-    ti.sync()
+    if (
+        group_count <= max_dispatch_groups
+        and total_work <= max_dispatch_work
+        and max_group_work <= max_thread_work
+    ):
+        _fg_response_inner_group_kernel(
+            int(group_count),
+            surface_words_all,
+            surface_counts_all,
+            group_offsets_all,
+            group_lengths_all,
+            group_meta_all,
+            flags,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            out_rows,
+        )
+        ti.sync()
+        return out_rows, int(logical_surface_rows)
+
+    valid_mask = np.asarray(group_lengths_all > 0, dtype=np.bool_)
+    direct_group_indices = np.flatnonzero(valid_mask & (work_by_group <= int(max_thread_work))).astype(np.int32, copy=False)
+    oversized_group_indices = np.flatnonzero(valid_mask & (work_by_group > int(max_thread_work))).astype(np.int32, copy=False)
+
+    def run_group_dispatch(group_indices: np.ndarray) -> None:
+        dispatch_count = int(group_indices.shape[0])
+        if dispatch_count <= 0:
+            return
+        dispatch_out = np.zeros((dispatch_count, 11), dtype=np.int32)
+        _fg_response_inner_group_kernel(
+            int(dispatch_count),
+            surface_words_all,
+            surface_counts_all,
+            np.ascontiguousarray(group_offsets_all[group_indices], dtype=np.int32),
+            np.ascontiguousarray(group_lengths_all[group_indices], dtype=np.int32),
+            np.ascontiguousarray(group_meta_all[group_indices], dtype=np.int32),
+            flags,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            dispatch_out,
+        )
+        ti.sync()
+        out_rows[group_indices, :] = dispatch_out
+
+    if int(direct_group_indices.shape[0]) > 0:
+        dispatch_indices: list[int] = []
+        dispatch_work = 0
+        for group_idx in direct_group_indices.tolist():
+            group_work = int(work_by_group[int(group_idx)])
+            if dispatch_indices and (
+                len(dispatch_indices) >= int(max_dispatch_groups)
+                or (int(dispatch_work) + int(group_work)) > int(max_dispatch_work)
+            ):
+                run_group_dispatch(np.asarray(dispatch_indices, dtype=np.int32))
+                dispatch_indices.clear()
+                dispatch_work = 0
+            dispatch_indices.append(int(group_idx))
+            dispatch_work += int(group_work)
+        if dispatch_indices:
+            run_group_dispatch(np.asarray(dispatch_indices, dtype=np.int32))
+
+    if int(oversized_group_indices.shape[0]) <= 0:
+        return out_rows, int(logical_surface_rows)
+
+    best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
+    chunk_row_meta_blocks: list[np.ndarray] = []
+    chunk_word_blocks: list[np.ndarray] = []
+    chunk_count_blocks: list[np.ndarray] = []
+    chunk_owner_blocks: list[np.ndarray] = []
+    chunk_local_surface_blocks: list[np.ndarray] = []
+    chunk_surface_rows = 0
+    chunk_work = 0
+
+    def flush_chunk() -> None:
+        nonlocal chunk_surface_rows, chunk_work
+        if chunk_surface_rows <= 0:
+            return
+        chunk_surface_words = np.ascontiguousarray(np.concatenate(chunk_word_blocks, axis=0), dtype=np.uint32)
+        chunk_surface_counts = np.ascontiguousarray(np.concatenate(chunk_count_blocks, axis=0), dtype=np.int32)
+        chunk_row_meta = np.ascontiguousarray(np.concatenate(chunk_row_meta_blocks, axis=0), dtype=np.int32)
+        chunk_owners = np.ascontiguousarray(np.concatenate(chunk_owner_blocks, axis=0), dtype=np.int32)
+        chunk_local_surfaces = np.ascontiguousarray(np.concatenate(chunk_local_surface_blocks, axis=0), dtype=np.int32)
+        chunk_out = np.zeros((chunk_surface_rows, 10), dtype=np.int32)
+        _fg_response_inner_batch_kernel(
+            int(chunk_surface_rows),
+            chunk_surface_words,
+            chunk_surface_counts,
+            chunk_row_meta,
+            flags,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            chunk_out,
+        )
+        ti.sync()
+
+        for row_idx, owner in enumerate(chunk_owners):
+            owner_idx = int(owner)
+            score = int(chunk_out[int(row_idx), 0])
+            if score > int(best_scores[owner_idx]):
+                best_scores[owner_idx] = score
+                out_rows[owner_idx, 0] = score
+                out_rows[owner_idx, 1] = int(chunk_local_surfaces[int(row_idx)])
+                out_rows[owner_idx, 2:] = chunk_out[int(row_idx), 1:]
+
+        chunk_row_meta_blocks.clear()
+        chunk_word_blocks.clear()
+        chunk_count_blocks.clear()
+        chunk_owner_blocks.clear()
+        chunk_local_surface_blocks.clear()
+        chunk_surface_rows = 0
+        chunk_work = 0
+
+    for group_idx in oversized_group_indices.tolist():
+        offset = int(group_offsets_all[int(group_idx)])
+        length = int(group_lengths_all[int(group_idx)])
+        if length <= 0:
+            continue
+        if offset < 0 or offset + length > int(surface_words_all.shape[0]):
+            raise ValueError("response frontier GPU group references surfaces outside the packed pool")
+
+        consumed = 0
+        combo_count = max(1, int(combo_counts[int(group_idx)]))
+        while consumed < length:
+            if chunk_surface_rows >= int(max_surface_dispatch_rows) or chunk_work >= int(max_surface_dispatch_work):
+                flush_chunk()
+
+            row_budget = int(max_surface_dispatch_rows) - int(chunk_surface_rows)
+            work_budget = int(max_surface_dispatch_work) - int(chunk_work)
+            max_take_by_work = max(1, int(work_budget) // int(combo_count))
+            take = min(int(length - consumed), int(row_budget), int(max_take_by_work))
+            if take <= 0:
+                flush_chunk()
+                continue
+            item_work = int(take) * int(combo_count)
+
+            surface_start = int(offset + consumed)
+            surface_stop = int(surface_start + take)
+            chunk_row_meta_blocks.append(np.repeat(group_meta_all[int(group_idx) : int(group_idx) + 1], int(take), axis=0))
+            chunk_word_blocks.append(surface_words_all[surface_start:surface_stop])
+            chunk_count_blocks.append(surface_counts_all[surface_start:surface_stop])
+            chunk_owner_blocks.append(np.full((int(take),), int(group_idx), dtype=np.int32))
+            chunk_local_surface_blocks.append(np.arange(int(consumed), int(consumed + take), dtype=np.int32))
+            chunk_surface_rows += int(take)
+            chunk_work += int(item_work)
+            consumed += int(take)
+
+    flush_chunk()
     return out_rows, int(logical_surface_rows)
 
 

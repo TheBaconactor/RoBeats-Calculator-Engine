@@ -103,6 +103,33 @@ def _score_elements(stats: dict[str, Any], primary_color: str, secondary_color: 
     )
 
 
+def _prune_best_positions_by_frontier(
+    *,
+    positions: np.ndarray,
+    frontier_ids: np.ndarray,
+    residuals: np.ndarray,
+) -> np.ndarray:
+    if int(positions.shape[0]) != int(frontier_ids.shape[0]) or int(positions.shape[0]) != int(residuals.shape[0]):
+        raise ValueError("FG response frontier best-position prune received inconsistent arrays")
+    if int(positions.shape[0]) <= 1:
+        return np.ascontiguousarray(positions, dtype=np.int32)
+
+    unique_frontiers, first_positions = np.unique(frontier_ids, return_index=True)
+    if int(unique_frontiers.shape[0]) == int(frontier_ids.shape[0]):
+        return np.ascontiguousarray(positions, dtype=np.int32)
+
+    sort_order = np.lexsort((positions, -residuals, frontier_ids))
+    sorted_frontiers = frontier_ids[sort_order]
+    first_sorted = np.empty(int(sorted_frontiers.shape[0]), dtype=np.bool_)
+    first_sorted[0] = True
+    first_sorted[1:] = sorted_frontiers[1:] != sorted_frontiers[:-1]
+    best_local_positions = sort_order[first_sorted]
+    if int(unique_frontiers.shape[0]) != int(best_local_positions.shape[0]):
+        raise ValueError("FG response frontier packed prune found inconsistent frontier groups")
+    kept_local = best_local_positions[np.argsort(first_positions, kind="stable")]
+    return np.ascontiguousarray(positions[kept_local], dtype=np.int32)
+
+
 def _element_ftff_delta(color: str, ft: int, ff: int) -> int:
     if str(color or "") == "Beat":
         return int(ft) * GEM_STAT_TO_ELEMENT_SCALE
@@ -356,31 +383,32 @@ def solve_force_greats_response_frontier_many_gpu(
         for candidate_idx, components in enumerate(base_components_by_candidate):
             base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = components
             if complete_scoring_bundle:
+                ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
+                frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
                 best_positions, kept_ft_stats, kept_ff_stats = _best_response_positions_for_base_ftff(
                     total_budget=int(total_budget),
                     base_ft=int(base_ft),
                     base_ff=int(base_ff),
                 )
-                kept_frontiers = frontier_idx_by_stat[kept_ft_stats, kept_ff_stats]
+                best_positions = _prune_best_positions_by_frontier(
+                    positions=best_positions,
+                    frontier_ids=np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32),
+                    residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
+                )
+                kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
+                kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
+                kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
             else:
                 ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
                 frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
-                unique_frontiers, first_positions = np.unique(frontier_idx_seq, return_index=True)
-                if int(unique_frontiers.shape[0]) == int(frontier_idx_seq.shape[0]):
-                    best_positions = pair_positions
-                else:
-                    sort_order = np.lexsort((pair_positions, -residual_values, frontier_idx_seq))
-                    sorted_frontiers = frontier_idx_seq[sort_order]
-                    first_sorted = np.empty(int(sorted_frontiers.shape[0]), dtype=np.bool_)
-                    first_sorted[0] = True
-                    first_sorted[1:] = sorted_frontiers[1:] != sorted_frontiers[:-1]
-                    best_positions_by_frontier = sort_order[first_sorted]
-                    if int(unique_frontiers.shape[0]) != int(best_positions_by_frontier.shape[0]):
-                        raise ValueError("FG response frontier packed prune found inconsistent frontier groups")
-                    best_positions = best_positions_by_frontier[np.argsort(first_positions, kind="stable")]
+                best_positions = _prune_best_positions_by_frontier(
+                    positions=pair_positions,
+                    frontier_ids=frontier_idx_seq,
+                    residuals=residual_values,
+                )
                 kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
                 kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
-                kept_frontiers = frontier_idx_seq[best_positions]
+                kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
             if bool(np.any(kept_frontiers < 0)):
                 raise ValueError("FG response frontier stat key was not loaded for packed batch solve")
             kept_count = int(best_positions.shape[0])
