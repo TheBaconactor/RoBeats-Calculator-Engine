@@ -48,13 +48,20 @@ class FgResponseFrontierCachePrebuildSettings:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
-_PREBUILD_WORKERS = 8
+_PREBUILD_WORKERS = max(1, min(3, int(os.cpu_count() or 1)))
 
 
-def _init_prebuild_worker(ref_arrays: dict, stat_keys: tuple[tuple[int, int], ...]) -> None:
+def _init_prebuild_worker(
+    ref_arrays: dict,
+    stat_keys: tuple[tuple[int, int], ...],
+    reducer_threads: int,
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+
     global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
     _PREBUILD_WORKER_STAT_KEYS = tuple(stat_keys or ())
+    response_build_gpu._FIRST_FRONTIER_REDUCER_THREADS = max(1, int(reducer_threads))
 
 
 def _build_fg_response_frontier_cache_for_path_shared(song_path_text: str) -> FgResponseFrontierCacheBuildResult:
@@ -253,10 +260,11 @@ def _build_prebuild_executor(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
 ) -> concurrent.futures.Executor:
+    reducer_threads = max(1, int(os.cpu_count() or 1) // max(1, int(worker_count)))
     return concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(worker_count)),
         initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ())),
+        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads)),
     )
 
 
@@ -293,7 +301,12 @@ def build_fg_response_frontier_cache_for_path(
                 cache_file=str(cache_info.disk_path),
                 skipped=True,
             )
-    result = build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=stat_keys)
+    result = build_or_load_response_frontier_payload(
+        calc_song,
+        ref_arrays,
+        stat_keys=stat_keys,
+        include_state_frontiers=False,
+    )
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         song=str(calc_song.get("metadata", {}).get("Song Name") or song_path.stem),
@@ -306,6 +319,16 @@ def build_fg_response_frontier_cache_for_path(
         cache_file=str(result.disk_path),
         skipped=False,
     )
+
+
+def _fg_response_frontier_prebuild_priority(path_text: str) -> tuple[int, str]:
+    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    calc_song = get_base_calc_song(str(path_text), {})
+    apply_timing_envelope(calc_song)
+    timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+    return (-int(len(timestamps) if timestamps is not None else 0), str(path_text).lower())
 
 
 def _fg_response_frontier_prebuild_paths(
@@ -321,7 +344,7 @@ def _fg_response_frontier_prebuild_paths(
         data_root=data_root,
         scope="pool",
     )
-    return settings, paths
+    return settings, sorted(paths, key=_fg_response_frontier_prebuild_priority)
 
 
 def run_fg_response_frontier_cache_prebuild(

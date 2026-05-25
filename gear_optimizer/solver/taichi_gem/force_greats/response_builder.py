@@ -110,17 +110,14 @@ def _edge_surface(*, n: int, fever_start: int, fever_end: int, great_start: int,
 
 
 def _append_response_edge_bucket(bucket: list[FgResponseSurface], surface: FgResponseSurface) -> bool:
-    write = 0
-    kept_new = True
     for kept_surface in bucket:
         if response_surface_dominates(kept_surface, surface):
-            kept_new = False
-            break
+            return False
+    write = 0
+    for kept_surface in bucket:
         if not response_surface_dominates(surface, kept_surface):
             bucket[write] = kept_surface
             write += 1
-    if not kept_new:
-        return False
     del bucket[write:]
     bucket.append(surface)
     return True
@@ -165,8 +162,6 @@ def _reduce_frontier(surfaces: list[FgResponseSurface]) -> tuple[FgResponseSurfa
         if cand in seen:
             continue
         seen.add(cand)
-        dominated = False
-        write = 0
         cf0 = cand.fever0
         cf1 = cand.fever1
         cf2 = cand.fever2
@@ -200,26 +195,36 @@ def _reduce_frontier(surfaces: list[FgResponseSurface]) -> tuple[FgResponseSurfa
                 and (kg2 & ~cg2) == 0
                 and (kg3 & ~cg3) == 0
             ):
-                dominated = True
                 break
-            if not (
-                cbf >= kbf
-                and cbg <= kbg
-                and (kf0 & ~cf0) == 0
-                and (kf1 & ~cf1) == 0
-                and (kf2 & ~cf2) == 0
-                and (kf3 & ~cf3) == 0
-                and (cg0 & ~kg0) == 0
-                and (cg1 & ~kg1) == 0
-                and (cg2 & ~kg2) == 0
-                and (cg3 & ~kg3) == 0
-            ):
-                kept[write] = kept_surface
-                write += 1
-        if dominated:
-            continue
-        del kept[write:]
-        kept.append(cand)
+        else:
+            write = 0
+            for kept_surface in kept:
+                kf0 = kept_surface.fever0
+                kf1 = kept_surface.fever1
+                kf2 = kept_surface.fever2
+                kf3 = kept_surface.fever3
+                kg0 = kept_surface.great0
+                kg1 = kept_surface.great1
+                kg2 = kept_surface.great2
+                kg3 = kept_surface.great3
+                kbf = kept_surface.body_fever
+                kbg = kept_surface.body_great
+                if not (
+                    cbf >= kbf
+                    and cbg <= kbg
+                    and (kf0 & ~cf0) == 0
+                    and (kf1 & ~cf1) == 0
+                    and (kf2 & ~cf2) == 0
+                    and (kf3 & ~cf3) == 0
+                    and (cg0 & ~kg0) == 0
+                    and (cg1 & ~kg1) == 0
+                    and (cg2 & ~kg2) == 0
+                    and (cg3 & ~kg3) == 0
+                ):
+                    kept[write] = kept_surface
+                    write += 1
+            del kept[write:]
+            kept.append(cand)
     return tuple(kept)
 
 

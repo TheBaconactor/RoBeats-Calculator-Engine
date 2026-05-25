@@ -686,6 +686,7 @@ def build_response_frontier_cache_payload(
     ref_arrays: dict[str, Any],
     *,
     stat_keys: Iterable[tuple[int, int]],
+    include_state_frontiers: bool = True,
 ) -> tuple[FgResponseFrontierCachePayload, str]:
     keys = normalize_fg_response_stat_keys(stat_keys)
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
@@ -724,6 +725,7 @@ def build_response_frontier_cache_payload(
             great_candidate_timestamps=song_inputs.great_candidates,
             geometries=tuple(item[1][1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            include_state_frontiers=bool(include_state_frontiers),
         )
         if len(built_frontiers) != len(missing_items):
             raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
@@ -846,6 +848,20 @@ def load_response_frontier_from_bundle(
         raise ValueError(f"FG response frontier bundle cache is missing stat key: {key}")
     frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
     frontier = _unpack_frontier_at(data, int(frontier_ids[int(matches[0])]), include_state_frontiers=True)
+    if not frontier.state_frontiers:
+        payload, _source = build_response_frontier_cache_payload(
+            calc_song,
+            ref_arrays,
+            stat_keys=(key,),
+            include_state_frontiers=True,
+        )
+        bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+        bundle = _merge_payloads(_load_payload(bundle_key, include_state_frontiers=True), payload)
+        _save_payload(bundle_key, bundle)
+        with _frontier_cache_lock:
+            _bundle_array_cache.pop(bundle_key, None)
+            _scoring_bundle_cache.pop(bundle_key, None)
+        frontier = payload.frontier_for_stats(ft_stat=int(key[0]), ff_stat=int(key[1]))
     _memory_put(cache_key, frontier)
     return frontier
 
@@ -872,7 +888,12 @@ def build_or_load_response_frontier_scoring_bundle(
         missing = tuple(key for key in keys if key not in available)
         if missing:
             bundle = _load_payload(bundle_key, include_state_frontiers=True)
-            missing_payload, _source = build_response_frontier_cache_payload(calc_song, ref_arrays, stat_keys=missing)
+            missing_payload, _source = build_response_frontier_cache_payload(
+                calc_song,
+                ref_arrays,
+                stat_keys=missing,
+                include_state_frontiers=False,
+            )
             bundle = _merge_payloads(bundle, missing_payload)
             _save_payload(bundle_key, bundle)
             with _frontier_cache_lock:
@@ -976,7 +997,12 @@ def build_or_load_response_frontier_payload(
             if bundle is not None and not include_state_frontiers:
                 bundle = _load_payload(bundle_key, include_state_frontiers=True)
             missing_keys = _payload_missing_keys(bundle, keys) if bundle is not None else keys
-            payload, source = build_response_frontier_cache_payload(calc_song, ref_arrays, stat_keys=missing_keys)
+            payload, source = build_response_frontier_cache_payload(
+                calc_song,
+                ref_arrays,
+                stat_keys=missing_keys,
+                include_state_frontiers=bool(include_state_frontiers),
+            )
             bundle = _merge_payloads(bundle, payload)
             _save_payload(bundle_key, bundle)
             _payload_memory_put(bundle_key, bundle)
