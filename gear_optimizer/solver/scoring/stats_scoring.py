@@ -10,7 +10,7 @@ This module provides functions for evaluating fixed stats without gem optimizati
 
 import threading
 import numpy as np
-from math import floor
+from math import ceil, floor
 import logging
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
@@ -219,6 +219,105 @@ def evaluate_stats_score(
         count_body_fever,
         count_body_normal,
     )
+
+
+def evaluate_stats_score_nojit(
+    stats,
+    calc_song,
+    ref_arrays,
+    song_timestamps=None,
+    long_notes=None,
+    last_note=None,
+    fever_mask_buffer=None,
+):
+    timestamps = song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
+    total_notes = len(timestamps)
+    long_count = long_notes if long_notes is not None else safe_int(calc_song["metadata"].get("Long Notes"), 0)
+    default_last_note = timestamps[-1] if total_notes else 0.0
+    last_time = (
+        last_note
+        if last_note is not None
+        else safe_float(calc_song["metadata"].get("Last Note Time"), default_last_note)
+    )
+    mask_buffer = fever_mask_buffer
+    if mask_buffer is None or mask_buffer.shape[0] != total_notes:
+        mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    factors = resolve_stat_factors(stats, ref_arrays)
+    fever_mask_head, count_body_fever, count_body_normal, _, _ = _calculate_fever_timeline_indices_python(
+        timestamps,
+        total_notes,
+        float(factors.fever_fill_rate),
+        float(factors.fever_time_stat),
+        long_count,
+        last_time,
+        mask_buffer,
+    )
+
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    total_base = (stats.get(p_color, 0) * 2) + stats.get(s_color, 0) + float(factors.pp_factor)
+    base_f = np.float32(total_base)
+    combo_f = np.float32(float(factors.combo_mul))
+    fever_f = np.float32(float(factors.fever_mul))
+    combo_val = int(base_f * combo_f)
+    fever_val = int(base_f * combo_f * fever_f)
+    score = (int(count_body_fever) * fever_val) + (int(count_body_normal) * combo_val)
+    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    for idx, in_fever in enumerate(fever_mask_head):
+        ramp = base_f + (np.float32(idx + 1) * factor)
+        score += int(ramp * fever_f) if bool(in_fever) else int(ramp)
+    return int(score)
+
+
+def _calculate_fever_timeline_indices_python(
+    song_timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes_count,
+    last_note_time,
+    fever_mask_buffer,
+):
+    non_fever_cas = (int(total_notes) - int(long_notes_count)) * float(FEVER_FILL_BASE_RATE)
+    non_fever_base = ceil(non_fever_cas * float(fever_fill_rate))
+    fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+    real_fever_time = fever_time_cas * float(fever_time_stat)
+
+    is_fever = fever_mask_buffer
+    is_fever[:] = False
+    current_note_idx = 0
+    fever_activations = 0
+    fever_section = 0
+    last_fever_end_idx = 0
+
+    while current_note_idx < int(total_notes):
+        fever_section += 1
+        notes_to_fill = int(non_fever_base) - 1 if int(fever_section) == 1 else int(non_fever_base)
+        end_normal_idx = min(int(current_note_idx) + int(notes_to_fill), int(total_notes))
+        current_note_idx = int(end_normal_idx)
+        if current_note_idx >= int(total_notes):
+            break
+
+        if current_note_idx > 0:
+            fever_activations += 1
+            start_time = float(song_timestamps[current_note_idx])
+            end_time = start_time + float(real_fever_time)
+            fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+            is_fever[current_note_idx:fever_end_idx] = True
+            current_note_idx = int(fever_end_idx)
+            last_fever_end_idx = int(fever_end_idx)
+        else:
+            break
+
+    head_limit = min(int(total_notes), 100)
+    fever_mask_head = is_fever[:head_limit]
+    count_body_fever = 0
+    count_body_normal = 0
+    if int(total_notes) > 100:
+        count_body_fever = int(np.count_nonzero(is_fever[100:int(total_notes)]))
+        count_body_normal = int(total_notes) - 100 - int(count_body_fever)
+    return fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx
 
 
 def _force_greats_counts_to_dict(counts, sections):

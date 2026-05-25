@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import struct
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,11 +18,15 @@ from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_
 
 FG_CACHE_SCHEMA_VERSION = 1
 FG_CACHE_SECTION_CAP = 20
-BASE_CACHE_SCHEMA_VERSION = 5
+BASE_CACHE_SCHEMA_VERSION = 6
 _FG_ROW = struct.Struct("<Q7hiiiiBBBBBBBI20h20h")
 _BASE_ROW = struct.Struct("<Q7h8i")
+_BASE_FINGERPRINT = struct.Struct("<Q")
 _PATH_LOCKS: dict[Path, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_BASE_SHARD_MEMORY_CACHE_MAX = 8
+_BASE_SHARD_MEMORY_CACHE: OrderedDict[Path, "BaseCandidateCacheShard"] = OrderedDict()
+_BASE_SHARD_MEMORY_CACHE_LOCK = threading.Lock()
 
 
 def _song_timing_cache_key(calc_song: dict) -> tuple:
@@ -456,26 +461,84 @@ class FgCandidateCacheShard:
 
 
 class BaseCandidateCacheShard:
-    def __init__(self, path: Path, rows: dict[tuple[int, ...], BaseCandidateCacheValue]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        rows: dict[tuple[int, ...], BaseCandidateCacheValue],
+        *,
+        row_count: int = 0,
+    ) -> None:
         self.path = path
         self.rows = dict(rows)
+        self._row_count = max(int(row_count), len(self.rows))
+        self._loaded_stats: set[tuple[int, ...]] = set(self.rows)
 
     @classmethod
     def load(cls, context_digest: str) -> "BaseCandidateCacheShard":
         path = base_cache_path(context_digest)
         rows: dict[tuple[int, ...], BaseCandidateCacheValue] = {}
         if not path.exists():
-            return cls(path, rows)
-        payload = path.read_bytes()
-        if len(payload) % _BASE_ROW.size != 0:
+            shard = cls(path, rows)
+            with _BASE_SHARD_MEMORY_CACHE_LOCK:
+                _BASE_SHARD_MEMORY_CACHE[path] = shard
+                _BASE_SHARD_MEMORY_CACHE.move_to_end(path)
+                while len(_BASE_SHARD_MEMORY_CACHE) > int(_BASE_SHARD_MEMORY_CACHE_MAX):
+                    _BASE_SHARD_MEMORY_CACHE.popitem(last=False)
+            return shard
+        size = path.stat().st_size
+        if int(size) % _BASE_ROW.size != 0:
             raise ValueError(f"base candidate cache file is truncated: {path}")
+        row_count = int(size) // _BASE_ROW.size
+        with _BASE_SHARD_MEMORY_CACHE_LOCK:
+            cached = _BASE_SHARD_MEMORY_CACHE.get(path)
+            if cached is not None and int(cached._row_count) == int(row_count):
+                _BASE_SHARD_MEMORY_CACHE.move_to_end(path)
+                return cached
+        shard = cls(path, rows, row_count=int(row_count))
+        with _BASE_SHARD_MEMORY_CACHE_LOCK:
+            _BASE_SHARD_MEMORY_CACHE[path] = shard
+            _BASE_SHARD_MEMORY_CACHE.move_to_end(path)
+            while len(_BASE_SHARD_MEMORY_CACHE) > int(_BASE_SHARD_MEMORY_CACHE_MAX):
+                _BASE_SHARD_MEMORY_CACHE.popitem(last=False)
+        return shard
+
+    @property
+    def has_entries(self) -> bool:
+        return int(self._row_count) > 0
+
+    def _load_rows_for_stats(self, stats_rows: np.ndarray) -> None:
+        stats_arr = np.asarray(stats_rows)
+        if stats_arr.size == 0 or not self.path.exists():
+            return
+        if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
+            raise ValueError(f"base candidate cache lookup stats shape mismatch: {stats_arr.shape} != (n, 7)")
+
+        wanted: dict[int, set[tuple[int, ...]]] = {}
+        for row in stats_arr:
+            key = stats7_key(row)
+            if key in self._loaded_stats:
+                continue
+            wanted.setdefault(_stats_fingerprint(key), set()).add(key)
+        if not wanted:
+            return
+
+        payload = self.path.read_bytes()
+        if len(payload) % _BASE_ROW.size != 0:
+            raise ValueError(f"base candidate cache file is truncated: {self.path}")
         for offset in range(0, len(payload), _BASE_ROW.size):
+            (fingerprint,) = _BASE_FINGERPRINT.unpack_from(payload, offset)
+            if int(fingerprint) not in wanted:
+                continue
             stats, value = _unpack_base_row(payload[offset : offset + _BASE_ROW.size])
-            previous = rows.get(stats)
+            if stats not in wanted[int(fingerprint)]:
+                continue
+            previous = self.rows.get(stats)
             if previous is not None and previous != value:
-                raise ValueError(f"base candidate cache contains conflicting row for stats={stats}: {path}")
-            rows[stats] = value
-        return cls(path, rows)
+                raise ValueError(f"base candidate cache contains conflicting row for stats={stats}: {self.path}")
+            self.rows[stats] = value
+        for keys in wanted.values():
+            self._loaded_stats.update(keys)
+        self._row_count = max(int(self._row_count), len(payload) // _BASE_ROW.size, len(self.rows))
 
     def put_result8_rows(
         self,
@@ -493,6 +556,7 @@ class BaseCandidateCacheShard:
                 "base candidate cache batch row count mismatch: "
                 f"{stats_arr.shape[0]} != {result_arr.shape[0]}"
             )
+        self._load_rows_for_stats(stats_arr)
 
         pending: dict[tuple[int, ...], BaseCandidateCacheValue] = {}
         for stats_raw, result_raw in zip(stats_arr, result_arr, strict=True):
@@ -524,6 +588,8 @@ class BaseCandidateCacheShard:
             with self.path.open("ab") as fh:
                 fh.write(payload)
         self.rows.update(pending)
+        self._loaded_stats.update(pending)
+        self._row_count += int(len(pending))
         return int(len(pending))
 
     def gpu_rows_for_stats(self, stats_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -536,6 +602,7 @@ class BaseCandidateCacheShard:
             )
         if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
             raise ValueError(f"base candidate cache lookup stats shape mismatch: {stats_arr.shape} != (n, 7)")
+        self._load_rows_for_stats(stats_arr)
 
         selected_stats: list[tuple[int, ...]] = []
         selected_values: list[BaseCandidateCacheValue] = []

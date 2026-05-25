@@ -1,6 +1,39 @@
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 import pytest
+import numpy as np
+
+
+def test_nojit_fixed_stats_score_matches_jit_score():
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score, evaluate_stats_score_nojit
+
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 1,
+            "Last Note Time": 1.5,
+        },
+        "song_data": {"timestamps": np.asarray([0.0, 0.25, 0.5, 1.0, 1.5], dtype=np.float32)},
+    }
+    ref_arrays = {
+        "Perfect Points": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+    }
+    stats = {
+        "Perfect Points": 37,
+        "Combo Multiplier": 41,
+        "Fever Multiplier": 59,
+        "Fever Time": 23,
+        "Fever Fill Rate": 29,
+        "Rush": 101,
+        "Flow": 83,
+    }
+
+    assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(stats, calc_song, ref_arrays)
 
 
 def test_process_force_greats_response_frontier_failure_raises_directly(monkeypatch):
@@ -236,6 +269,98 @@ def test_response_frontier_cache_validation_rejects_legacy_modes():
     assert is_cached_force_valid_for_response_frontier(payload, "Rush") is True
 
 
+def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+        _prune_dominated_ftff_response_pairs,
+    )
+
+    surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+    def frontier():
+        return FgResponseFrontierResult(
+            first_frontier=(surface,),
+            state_frontiers={},
+            states_evaluated=1,
+            actions=1,
+            transitions_evaluated=1,
+            generated_surfaces=1,
+            retained_surfaces_total=1,
+            max_state_frontier=1,
+            non_fever_base=5,
+            seconds=0.0,
+        )
+
+    pack_a = frontier()
+    pack_b = frontier()
+    dominated_same_pack = (1, 2, 10, {"Rush": 50, "Flow": 20}, pack_a, 0.0, 0.0)
+    dominator_same_pack = (0, 2, 11, {"Rush": 50, "Flow": 21}, pack_a, 0.0, 0.0)
+    same_stats_other_pack = (1, 2, 10, {"Rush": 50, "Flow": 20}, pack_b, 0.0, 0.0)
+
+    kept = _prune_dominated_ftff_response_pairs(
+        [dominated_same_pack, dominator_same_pack, same_stats_other_pack],
+        primary_color="Rush",
+        secondary_color="Flow",
+    )
+
+    assert any(pair is dominator_same_pack for pair in kept)
+    assert any(pair is same_stats_other_pack for pair in kept)
+    assert not any(pair is dominated_same_pack for pair in kept)
+
+
+def test_response_frontier_ftff_antichain_matches_naive_dominance():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+        _prune_dominated_ftff_response_pairs,
+        _response_pair_dominates,
+    )
+
+    surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+    def frontier():
+        return FgResponseFrontierResult(
+            first_frontier=(surface,),
+            state_frontiers={},
+            states_evaluated=1,
+            actions=1,
+            transitions_evaluated=1,
+            generated_surfaces=1,
+            retained_surfaces_total=1,
+            max_state_frontier=1,
+            non_fever_base=5,
+            seconds=0.0,
+        )
+
+    pack_a = frontier()
+    pack_b = frontier()
+    pairs = []
+    for frontier_obj in (pack_a, pack_b):
+        for residual in (7, 8, 9):
+            for rush in (10, 12, 12):
+                for flow in (4, 5, 7):
+                    pairs.append((0, 0, residual, {"Rush": rush, "Flow": flow}, frontier_obj, 0.0, 0.0))
+
+    naive = []
+    for pair in pairs:
+        if any(
+            _response_pair_dominates(other, pair, primary_color="Rush", secondary_color="Flow")
+            for other in naive
+        ):
+            continue
+        naive = [
+            other
+            for other in naive
+            if not _response_pair_dominates(pair, other, primary_color="Rush", secondary_color="Flow")
+        ]
+        naive.append(pair)
+
+    kept = _prune_dominated_ftff_response_pairs(pairs, primary_color="Rush", secondary_color="Flow")
+
+    assert kept == naive
+
+
 def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     from types import SimpleNamespace
 
@@ -249,8 +374,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
 
     calls = []
 
-    def _fake_response_frontier(*, base_stats, calc_song, ref_arrays, selected_color, **_kwargs):
-        calls.append((dict(base_stats), selected_color, calc_song, ref_arrays))
+    def _result(base_stats, selected_color):
         surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         frontier = FgResponseFrontierResult(
             first_frontier=(surface,),
@@ -290,8 +414,12 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
             forced_counts=(5, 0),
         )
 
+    def _fake_response_frontier_many(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
+        calls.append((list(base_stats_list), selected_color, calc_song, ref_arrays))
+        return [_result(base_stats, selected_color) for base_stats in base_stats_list]
+
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
-    monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_batch_gpu", _fake_response_frontier)
+    monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_many_gpu", _fake_response_frontier_many)
     monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
 
     out = adapter.process_force_greats_response_frontier_gpu(
@@ -323,6 +451,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     )
 
     assert len(calls) == 1
+    assert len(calls[0][0]) == 1
     assert calls[0][1] == "Rush"
     assert len(out) == 1
     assert out[0]["fg_score"] == 150
@@ -334,3 +463,92 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     assert out[0]["data"]["ForceGreats"]["config"] == {"NonFever1": 5, "NonFever2": 0}
     assert out[0]["gear"] == ["G1"]
     assert out[0]["minis"] == ["M1"]
+
+
+def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
+    from types import SimpleNamespace
+
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseFrontierResult,
+        FgResponseFrontierSolveResult,
+        FgResponseInnerResult,
+        FgResponseSurface,
+    )
+
+    calls: list[int] = []
+
+    def _fake_response_frontier_many(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
+        _ = (calc_song, ref_arrays, selected_color)
+        calls.append(len(base_stats_list))
+        out = []
+        for idx, base_stats in enumerate(base_stats_list):
+            surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, idx, 0)
+            frontier = FgResponseFrontierResult(
+                first_frontier=(surface,),
+                state_frontiers={},
+                states_evaluated=1,
+                actions=1,
+                transitions_evaluated=1,
+                generated_surfaces=1,
+                retained_surfaces_total=1,
+                max_state_frontier=1,
+                non_fever_base=5,
+                seconds=0.0,
+            )
+            inner = FgResponseInnerResult(
+                best_score=200 + idx,
+                surface_index=0,
+                g_pp=0,
+                g_cm=0,
+                g_fm=0,
+                g_ov=1,
+                final_pp=0,
+                final_cm=0,
+                final_fm=0,
+                final_primary=0,
+                final_secondary=0,
+            )
+            out.append(
+                FgResponseFrontierSolveResult(
+                    best_score=200 + idx,
+                    ft=0,
+                    ff=0,
+                    gem_counts={"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 1},
+                    stats={**base_stats, "Rush": int(base_stats.get("Rush", 0) or 0) + 1},
+                    surface=surface,
+                    frontier=frontier,
+                    inner=inner,
+                    seconds=0.0,
+                    forced_counts=(5, 0),
+                )
+            )
+        return out
+
+    monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
+    monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_many_gpu", _fake_response_frontier_many)
+    monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
+
+    out = adapter.process_force_greats_response_frontier_gpu(
+        {},
+        {"metadata": {}, "song_data": {}},
+        {},
+        "Rush",
+        ga_candidates=[
+            {
+                "BaseScore": 100,
+                "Gear": ["G1"],
+                "Minis": ["M1"],
+                "Data": {"BaseStats": {"Perfect Points": 0, "Rush": 10}, "Selected Element": "Rush"},
+            },
+            {
+                "BaseScore": 101,
+                "Gear": ["G2"],
+                "Minis": ["M2"],
+                "Data": {"BaseStats": {"Perfect Points": 0, "Rush": 11}, "Selected Element": "Rush"},
+            },
+        ],
+    )
+
+    assert calls == [2]
+    assert [row["fg_score"] for row in out] == [201, 200]

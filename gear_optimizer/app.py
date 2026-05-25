@@ -412,6 +412,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 song_queue=song_queue,
                 ref_arrays=ref_arrays,
                 data_root=PATHS.data_dir,
+                announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
             )
             self._configure_execution_and_prewarm(cfg)
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
