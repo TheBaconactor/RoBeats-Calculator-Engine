@@ -635,22 +635,6 @@ def _hash9_i32(
 
 
 @ti.func
-def _fg_proxy_from_base_stats7(
-    pp: ti.i32, cm: ti.i32, fm: ti.i32, p_val: ti.i32, s_val: ti.i32, ft: ti.i32, ff: ti.i32
-) -> ti.i64:
-    # Match CPU proxy weights (constant base offsets do not affect ordering).
-    return (
-        ti.cast(fm, ti.i64) * 4
-        + ti.cast(ff, ti.i64) * 4
-        + ti.cast(ft, ti.i64) * 3
-        + ti.cast(cm, ti.i64) * 2
-        + ti.cast(pp, ti.i64)
-        + ti.cast(p_val, ti.i64) * 2
-        + ti.cast(s_val, ti.i64)
-    )
-
-
-@ti.func
 def _better_base(i: ti.i32, j: ti.i32) -> ti.i32:
     better = ti.i32(0)
     decided = ti.i32(0)
@@ -901,7 +885,7 @@ def ga_select_fg_candidates_coords_kernel(
                         s_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 4]
                         ft_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 5]
                         ff_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 6]
-                        kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = _fg_proxy_from_base_stats7(
+                        kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = kernels_helpers.fg_proxy_from_base_stats7(
                             pp, cm, fm, p_val, s_val, ft_stat, ff_stat
                         )
 
@@ -954,7 +938,7 @@ def ga_select_fg_candidates_coords_kernel(
                             s_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 4]
                             ft_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 5]
                             ff_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 6]
-                            kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = _fg_proxy_from_base_stats7(
+                            kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = kernels_helpers.fg_proxy_from_base_stats7(
                                 pp, cm, fm, p_val, s_val, ft_stat, ff_stat
                             )
                     handled = 1  # Already present; treat as handled.

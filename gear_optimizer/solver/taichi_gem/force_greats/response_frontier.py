@@ -49,8 +49,6 @@ __all__ = [
     "response_surface_dominates",
     "score_response_surface_exact",
     "solve_force_greats_response_frontier_batch_gpu",
-    "solve_force_greats_response_frontier_exact",
-    "solve_force_greats_response_frontier_for_ftff",
     "solve_force_greats_response_frontier_many_gpu",
 ]
 
@@ -137,31 +135,6 @@ def _stats_after_ftff_for_inner(
     return out
 
 
-def _inner_stats_after_ftff(
-    base_stats: dict[str, Any],
-    *,
-    ft: int,
-    ff: int,
-    primary_color: str,
-    secondary_color: str,
-) -> _InnerStats:
-    primary = str(primary_color or "")
-    secondary = str(secondary_color or "")
-    ft_i = int(ft)
-    ff_i = int(ff)
-    ft_stat = max(0, min(TOTAL_ROWS, int(base_stats.get("Fever Time", 0) or 0) + ft_i * GEM_SCALE_FEVER))
-    ff_stat = max(0, min(TOTAL_ROWS, int(base_stats.get("Fever Fill Rate", 0) or 0) + ff_i * GEM_SCALE_FEVER))
-    return (
-        int(base_stats.get("Perfect Points", 0) or 0),
-        int(base_stats.get("Combo Multiplier", 0) or 0),
-        int(base_stats.get("Fever Multiplier", 0) or 0),
-        int(base_stats.get(primary, 0) or 0) + _element_ftff_delta(primary, ft_i, ff_i) if primary else 0,
-        int(base_stats.get(secondary, 0) or 0) + _element_ftff_delta(secondary, ft_i, ff_i) if secondary else 0,
-        int(ft_stat),
-        int(ff_stat),
-    )
-
-
 def _response_pair_dominates(
     a: _ResponsePair,
     b: _ResponsePair,
@@ -242,100 +215,6 @@ def _prune_dominated_ftff_response_pairs(
             kept_indices.add(int(idx))
         out.extend(pair for idx, pair in enumerate(bucket) if int(idx) in kept_indices)
     return out
-
-
-def solve_force_greats_response_frontier_for_ftff(
-    *,
-    base_stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    selected_color: str,
-    ft: int,
-    ff: int,
-    total_budget: int = TOTAL_GEM_BUDGET,
-) -> FgResponseFrontierSolveResult:
-    started = time.perf_counter()
-    if int(ft) < 0 or int(ff) < 0 or int(ft) + int(ff) > int(total_budget):
-        raise ValueError("FT/FF gem pair is outside the total gem budget")
-    song_inputs = extract_fg_song_inputs(calc_song)
-    stats_after_ftff = _stats_after_ftff_for_inner(
-        base_stats,
-        ft=int(ft),
-        ff=int(ff),
-        primary_color=str(song_inputs.primary_color or ""),
-        secondary_color=str(song_inputs.secondary_color or ""),
-    )
-    ft_stat, ff_stat = _ftff_stat_key(stats_after_ftff)
-    payload = build_or_load_response_frontier_payload(
-        calc_song,
-        ref_arrays,
-        stat_keys=((ft_stat, ff_stat),),
-    ).payload
-    raw_fill = float(payload.raw_fill_by_ff[ff_stat])
-    real_fever_time = float(payload.real_time_by_ft[ft_stat])
-    frontier = payload.frontier_by_key.get((ft_stat, ff_stat))
-    if frontier is None:
-        raise ValueError(f"FG response frontier stat key was not loaded: {(ft_stat, ff_stat)}")
-    inner = optimize_response_frontier_inner_exact_gpu(
-        frontier.first_frontier,
-        total_notes=int(song_inputs.total_notes),
-        residual_budget=int(total_budget) - int(ft) - int(ff),
-        stats_after_ftff=stats_after_ftff,
-        primary_color=str(song_inputs.primary_color or ""),
-        secondary_color=str(song_inputs.secondary_color or ""),
-        selected_color=str(selected_color or ""),
-        ref_arrays=ref_arrays,
-    )
-    forced_counts = reconstruct_force_greats_response_counts(
-        frontier=frontier,
-        target_surface=frontier.first_frontier[int(inner.surface_index)],
-        timestamps=song_inputs.timestamps,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        raw_fever_fill=float(raw_fill),
-        real_fever_time=float(real_fever_time),
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-    )
-    final_stats = apply_gems_to_base_stats(
-        base_stats,
-        selected_color,
-        int(ft),
-        int(ff),
-        int(inner.g_pp),
-        int(inner.g_cm),
-        int(inner.g_fm),
-        int(inner.g_ov),
-    )
-    return FgResponseFrontierSolveResult(
-        best_score=int(inner.best_score),
-        ft=int(ft),
-        ff=int(ff),
-        gem_counts=build_gem_counts(int(inner.g_pp), int(inner.g_cm), int(inner.g_fm), int(inner.g_ov)),
-        stats=final_stats,
-        surface=frontier.first_frontier[int(inner.surface_index)],
-        frontier=frontier,
-        inner=inner,
-        seconds=float(time.perf_counter() - started),
-        forced_counts=tuple(int(v) for v in forced_counts),
-        raw_fever_fill=float(raw_fill),
-        real_fever_time=float(real_fever_time),
-    )
-
-
-def solve_force_greats_response_frontier_exact(
-    *,
-    base_stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    selected_color: str,
-    total_budget: int = TOTAL_GEM_BUDGET,
-) -> FgResponseFrontierSolveResult:
-    return solve_force_greats_response_frontier_batch_gpu(
-        base_stats=base_stats,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_color=selected_color,
-        total_budget=int(total_budget),
-    )
 
 
 def _solve_result_from_row(

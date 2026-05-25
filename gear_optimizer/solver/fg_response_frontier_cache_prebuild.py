@@ -147,23 +147,11 @@ class FgResponseFrontierCachePrebuilder:
         source_counts: Counter[str] = Counter()
         failures = 0
         completed = 0
-        if isinstance(executor, concurrent.futures.ProcessPoolExecutor):
-            futures = {
-                executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path
-                for path in self.song_paths
-                if not self._stop.is_set()
-            }
-        else:
-            futures = {
-                executor.submit(
-                    build_fg_response_frontier_cache_for_path,
-                    path,
-                    self.ref_arrays,
-                    stat_keys=self.stat_keys,
-                ): path
-                for path in self.song_paths
-                if not self._stop.is_set()
-            }
+        futures = {
+            executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path
+            for path in self.song_paths
+            if not self._stop.is_set()
+        }
         try:
             for future in concurrent.futures.as_completed(futures):
                 if self._stop.is_set():

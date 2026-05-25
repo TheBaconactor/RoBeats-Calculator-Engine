@@ -37,12 +37,13 @@ def test_nojit_fixed_stats_score_matches_jit_score():
 
 
 def test_process_force_greats_response_frontier_failure_raises_directly(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import core
+    from gear_optimizer.helpers.song_helpers import force_greats
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("response frontier path failed")
 
-    monkeypatch.setattr(core, "process_force_greats_response_frontier_gpu", _boom)
+    monkeypatch.setattr(adapter, "process_force_greats_response_frontier_gpu", _boom)
 
     class _Registry:
         @staticmethod
@@ -64,7 +65,7 @@ def test_process_force_greats_response_frontier_failure_raises_directly(monkeypa
     ]
 
     with pytest.raises(RuntimeError, match="response frontier path failed"):
-        core.process_force_greats(
+        force_greats.process_force_greats(
             loadout_entries={},
             calc_song={"metadata": {}, "song_data": {}},
             ref_arrays={},
@@ -186,7 +187,8 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
 
 
 def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import core
+    from gear_optimizer.helpers.song_helpers import force_greats
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
 
     seen: list[tuple[int, object]] = []
     registry = object()
@@ -222,7 +224,7 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
             }
         ]
 
-    monkeypatch.setattr(core, "process_force_greats_response_frontier_gpu", _fake_response_frontier)
+    monkeypatch.setattr(adapter, "process_force_greats_response_frontier_gpu", _fake_response_frontier)
 
     ga_candidates = [
         {
@@ -233,7 +235,7 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
         }
     ]
 
-    out = core.process_force_greats(
+    out = force_greats.process_force_greats(
         loadout_entries={},
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},

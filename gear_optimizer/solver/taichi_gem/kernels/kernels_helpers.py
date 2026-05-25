@@ -567,3 +567,19 @@ def calc_score_with_grid_bits(
     head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
     # Cast each component to i32 first, then add as integers for exact result
     return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
+
+
+@ti.func
+def fg_proxy_from_base_stats7(
+    pp: ti.i32, cm: ti.i32, fm: ti.i32, p_val: ti.i32, s_val: ti.i32, ft: ti.i32, ff: ti.i32
+) -> ti.i64:
+    # Match CPU proxy weights (constant base offsets do not affect ordering).
+    return (
+        ti.cast(fm, ti.i64) * 4
+        + ti.cast(ff, ti.i64) * 4
+        + ti.cast(ft, ti.i64) * 3
+        + ti.cast(cm, ti.i64) * 2
+        + ti.cast(pp, ti.i64)
+        + ti.cast(p_val, ti.i64) * 2
+        + ti.cast(s_val, ti.i64)
+    )

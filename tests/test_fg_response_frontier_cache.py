@@ -295,11 +295,25 @@ def test_run_fg_response_frontier_prebuild_uses_pool_scope(tmp_path: Path, monke
         seen_scope.append(str(scope))
         return list(queue_paths)
 
-    def _thread_executor(*, worker_count, ref_arrays, stat_keys):
-        return concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    def _inline_executor(*, worker_count, ref_arrays, stat_keys):
+        fg_response_frontier_cache_prebuild._init_prebuild_worker(ref_arrays, stat_keys)
+
+        class _InlineExecutor:
+            def submit(self, fn, path):
+                fut = concurrent.futures.Future()
+                try:
+                    fut.set_result(fn(path))
+                except Exception as exc:
+                    fut.set_exception(exc)
+                return fut
+
+            def shutdown(self, wait=True, *, cancel_futures=False):
+                return None
+
+        return _InlineExecutor()
 
     monkeypatch.setattr(fg_response_frontier_cache_prebuild, "ordered_timeline_frontier_cache_paths", _fake_paths)
-    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_build_prebuild_executor", _thread_executor)
+    monkeypatch.setattr(fg_response_frontier_cache_prebuild, "_build_prebuild_executor", _inline_executor)
     reset_fg_response_frontier_payload_cache()
     song_path = tmp_path / "unit_song.txt"
     _write_song(song_path)

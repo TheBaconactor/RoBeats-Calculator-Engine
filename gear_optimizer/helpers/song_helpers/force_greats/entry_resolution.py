@@ -89,25 +89,6 @@ def build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tupl
     return items
 
 
-def merge_retained_direct_ga_entries(
-    loadout_entries, ga_entry_items: list[tuple[str, dict]], retained_hashes: set[str]
-) -> None:
-    if not isinstance(loadout_entries, dict):
-        return
-
-    stale = [k for k, v in loadout_entries.items() if isinstance(v, dict) and bool(v.get("_fg_direct_ga"))]
-    for key in stale:
-        loadout_entries.pop(str(key), None)
-
-    for key, entry in ga_entry_items:
-        if str(key) not in retained_hashes:
-            continue
-        resolved_key = str(entry_loadout_hash(entry) or key)
-        loadout_entries[resolved_key] = entry
-        if resolved_key != str(key):
-            loadout_entries.pop(str(key), None)
-
-
 def sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> bool:
     if not isinstance(sig_results, dict) or not sigs:
         return False

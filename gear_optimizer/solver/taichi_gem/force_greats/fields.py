@@ -10,6 +10,11 @@ def reset_fields_state() -> None:
     _response_frontier_warmed = False
 
 
+def reset_force_greats_api_state() -> None:
+    """Public reset hook for Taichi hard-reset paths."""
+    reset_fields_state()
+
+
 def ensure_ready_with_warmup() -> None:
     """
     Ensure Taichi is initialized and response-frontier FG runtime imports are loaded.

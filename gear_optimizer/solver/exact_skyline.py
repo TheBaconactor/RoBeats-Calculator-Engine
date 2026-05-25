@@ -23,10 +23,8 @@ from gear_optimizer.solver.gear_response_prune import (
     gear_response_phase_seconds,
     prune_local_gear_response_pairs,
 )
-from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
-    mini_combo_skyline as _mini_combo_skyline_common,
 )
 from gear_optimizer.solver.mini_response_prune import (
     MiniLocalResponseFilter,
@@ -72,7 +70,6 @@ _gear_ids_from_codes = _gear_ids_from_codes_common
 _mini_ids_from_code = _mini_ids_from_code_common
 _mini_ids_from_codes = _mini_ids_from_codes_common
 _build_candidate_payload = _build_candidate_payload_common
-_mini_combo_skyline_points_6d_lane_base_with_codes = _mini_combo_skyline_common
 
 SKYLINE_CERTIFICATION_STATUS = "timing_cell_candidate_frontier"
 SKYLINE_CERTIFICATION_NOTE = (
@@ -96,6 +93,22 @@ def _read_skyline_fg_sample_limit() -> int:
         return max(0, int(env_get("SKYLINE_FG_SAMPLE_RANDOM", "1000") or "1000"))
     except (TypeError, ValueError):
         return 1000
+
+
+@dataclass(frozen=True)
+class _FgCandidatePolicy:
+    mode: str
+
+    @property
+    def run_topk_prune(self) -> bool:
+        return str(self.mode) == "topk"
+
+    def skipped_reason(self) -> str:
+        return f"skipped_fg_candidate_mode_{self.mode}"
+
+
+def _fg_candidate_policy(mode: str) -> _FgCandidatePolicy:
+    return _FgCandidatePolicy(str(mode or "topk"))
 
 
 def _record_phase(phase_seconds: dict[str, float], name: str, started: float) -> None:
@@ -528,66 +541,6 @@ def _global_gear_skyline_points_6d_lane_base_with_codes(
     return stats, points, codes
 
 
-def _evaluate_product_exact(
-    *,
-    registry: ItemRegistry,
-    gpu_arrays: dict[str, np.ndarray],
-    base_fixed_stats_arr: np.ndarray,
-    calc_song: dict,
-    ref_arrays: dict,
-    flags: dict[str, int],
-    song_slot: int,
-    gpu_client: Any | None = None,
-    gear_ids: np.ndarray,
-    mini_ids: np.ndarray,
-    gear_codes: np.ndarray,
-    mini_codes: np.ndarray,
-    keep_top_k: int,
-    status_cb: Callable[[str], None] | None,
-) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
-    if gear_ids.size == 0 or mini_ids.size == 0:
-        return None, []
-
-    max_genomes = int(_max_genomes())
-    default_eval_batch = min(max_genomes, 8192)
-    max_batch = max(1, min(max_genomes, int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
-    total = int(gear_ids.shape[0]) * int(mini_ids.shape[0])
-    g_n = int(gear_ids.shape[0])
-    m_n = int(mini_ids.shape[0])
-
-    g_idx = np.repeat(np.arange(g_n, dtype=np.int32), m_n)
-    m_idx = np.tile(np.arange(m_n, dtype=np.int32), g_n)
-
-    def _candidate_batches() -> Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        for offset in range(0, int(total), int(max_batch)):
-            n = min(int(max_batch), int(total) - int(offset))
-            seg = slice(offset, offset + n)
-
-            batch = np.empty((n, 9), dtype=np.int32)
-            batch[:, :6] = gear_ids[g_idx[seg]]
-            batch[:, 6:] = mini_ids[m_idx[seg]]
-
-            batch_gc = gear_codes[g_idx[seg]].astype(np.uint64, copy=False)
-            batch_mc = mini_codes[m_idx[seg]].astype(np.uint64, copy=False)
-            yield batch, batch_gc, batch_mc
-
-    return batched_registry_eval(
-        gpu_arrays=gpu_arrays,
-        base_fixed_stats_arr=base_fixed_stats_arr,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        flags=flags,
-        song_slot=int(song_slot),
-        candidate_total=total,
-        candidate_batches=_candidate_batches(),
-        keep_top_k=int(keep_top_k),
-        gpu_client=gpu_client,
-        status_cb=status_cb,
-        status_label="skyline",
-        status_every=max_batch * 16,
-    )
-
-
 def _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference(
     gear_points: np.ndarray,
     mini_points: np.ndarray,
@@ -813,24 +766,6 @@ def _apply_local_mini_pair_filter(
     return out_g, out_m, int(pg.shape[0] - out_g.shape[0])
 
 
-def _pair_ftff_cap_arrays(
-    *,
-    base_fixed_stats_arr: np.ndarray,
-    gear_points: np.ndarray,
-    mini_points: np.ndarray,
-    pair_gear_idx: np.ndarray,
-    pair_mini_idx: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    _pair_start_cells, ft_caps, ff_caps = _pair_ftff_start_and_cap_arrays(
-        base_fixed_stats_arr=base_fixed_stats_arr,
-        gear_points=gear_points,
-        mini_points=mini_points,
-        pair_gear_idx=pair_gear_idx,
-        pair_mini_idx=pair_mini_idx,
-    )
-    return ft_caps, ff_caps
-
-
 def _pair_ftff_start_and_cap_arrays(
     *,
     base_fixed_stats_arr: np.ndarray,
@@ -1050,10 +985,11 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
 
     base_keep_top_k = int(LOADOUTS_PER_SONG_LIMIT)
     keep_top_k = int(base_keep_top_k)
-    fg_candidate_mode = _read_skyline_fg_candidate_mode()
+    fg_policy = _fg_candidate_policy(_read_skyline_fg_candidate_mode())
+    fg_candidate_mode = fg_policy.mode
     mini_response_reason = "not_run"
     mini_local_filter: MiniLocalResponseFilter | None = None
-    if fg_candidate_mode == "topk":
+    if fg_policy.run_topk_prune:
         status_cb("skyline: mini response-envelope prune")
         mini_prune_result = prune_mini_response_envelope(
             gear_points=gear_points,
@@ -1086,7 +1022,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 f"(reason={mini_response_reason}, time={float(mini_response_stats.seconds_total):.2f}s)"
             )
     else:
-        mini_response_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+        mini_response_reason = fg_policy.skipped_reason()
         phase_counts["mini_response_enabled"] = 0
         phase_counts["mini_response_minis_in"] = int(mini_points.shape[0])
         phase_counts["mini_response_minis_out"] = int(mini_points.shape[0])
@@ -1154,7 +1090,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             return None, [], [], None, [], [], []
 
         gear_response_in = int(pair_g_idx.shape[0])
-        if fg_candidate_mode == "topk":
+        if fg_policy.run_topk_prune:
             status_cb("skyline: local gear response prune")
             pair_g_idx, pair_m_idx, gear_response_stats = prune_local_gear_response_pairs(
                 pair_gear_idx=pair_g_idx,
@@ -1184,7 +1120,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     f"(reason={gear_response_reason}, time={float(gear_response_stats.seconds_total):.2f}s)"
                 )
         else:
-            gear_response_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+            gear_response_reason = fg_policy.skipped_reason()
             phase_counts["gear_response_enabled"] = 0
             phase_counts["gear_response_candidates_in"] = int(gear_response_in)
             phase_counts["gear_response_candidates_out"] = int(pair_g_idx.shape[0])
@@ -1202,7 +1138,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
             keep_top_k = max(int(base_keep_top_k), 1000)
-        if fg_candidate_mode == "topk":
+        if fg_policy.run_topk_prune:
             status_cb("skyline: response-envelope prune")
             pair_g_idx, pair_m_idx, response_stats = prune_response_envelope_pairs(
                 pair_gear_idx=pair_g_idx,
@@ -1236,7 +1172,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 )
             combined_candidate_count = int(pair_g_idx.shape[0])
         else:
-            response_envelope_reason = f"skipped_fg_candidate_mode_{fg_candidate_mode}"
+            response_envelope_reason = fg_policy.skipped_reason()
             phase_counts["response_envelope_enabled"] = 0
             phase_counts["response_envelope_candidates_in"] = int(fixed_timing_candidate_count)
             phase_counts["response_envelope_candidates_out"] = int(fixed_timing_candidate_count)

@@ -153,7 +153,6 @@ def _optimize_response_surface_inner_jit(
     ref_fm,
 ):
     allow_pp = (int(is_p_pp) != 0) or (int(is_s_pp) != 0)
-    allow_cm_color = (int(is_p_cm) != 0) or (int(is_s_cm) != 0)
 
     max_pp_gems = 0
     if allow_pp and int(cur_pp) < MAX_STAT_INDEX:
@@ -164,13 +163,10 @@ def _optimize_response_surface_inner_jit(
 
     max_cm_gems = 0
     if int(cur_cm) < MAX_STAT_INDEX:
-        if allow_cm_color:
-            rem_cm = MAX_STAT_INDEX - int(cur_cm)
-            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-            if rem_cm % GEM_SCALE_NORMAL != 0:
-                max_cm_gems += 1
-        elif int(cur_cm) <= 50:
-            max_cm_gems = ((50 - int(cur_cm)) // GEM_SCALE_NORMAL) + 1
+        rem_cm = MAX_STAT_INDEX - int(cur_cm)
+        max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+        if rem_cm % GEM_SCALE_NORMAL != 0:
+            max_cm_gems += 1
 
     max_fm_gems = 0
     if int(cur_fm) < MAX_STAT_INDEX:
@@ -574,7 +570,6 @@ def _fg_response_inner_batch_kernel(
         ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
 
         allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
-        allow_cm_color: ti.i32 = ti.cast((is_p_cm != 0) | (is_s_cm != 0), ti.i32)
 
         max_pp_gems: ti.i32 = 0
         if allow_pp != 0 and cur_pp < MAX_STAT_INDEX:
@@ -585,13 +580,10 @@ def _fg_response_inner_batch_kernel(
 
         max_cm_gems: ti.i32 = 0
         if cur_cm < MAX_STAT_INDEX:
-            if allow_cm_color != 0:
-                rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
-                max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-                if rem_cm % GEM_SCALE_NORMAL != 0:
-                    max_cm_gems += 1
-            elif cur_cm <= 50:
-                max_cm_gems = ((50 - cur_cm) // GEM_SCALE_NORMAL) + 1
+            rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
+            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+            if rem_cm % GEM_SCALE_NORMAL != 0:
+                max_cm_gems += 1
 
         max_fm_gems: ti.i32 = 0
         if cur_fm < MAX_STAT_INDEX:
@@ -758,7 +750,6 @@ def _fg_response_inner_group_kernel(
         ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
 
         allow_pp: ti.i32 = ti.cast((is_p_pp != 0) | (is_s_pp != 0), ti.i32)
-        allow_cm_color: ti.i32 = ti.cast((is_p_cm != 0) | (is_s_cm != 0), ti.i32)
 
         max_pp_gems: ti.i32 = 0
         if allow_pp != 0 and cur_pp < MAX_STAT_INDEX:
@@ -769,13 +760,10 @@ def _fg_response_inner_group_kernel(
 
         max_cm_gems: ti.i32 = 0
         if cur_cm < MAX_STAT_INDEX:
-            if allow_cm_color != 0:
-                rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
-                max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-                if rem_cm % GEM_SCALE_NORMAL != 0:
-                    max_cm_gems += 1
-            elif cur_cm <= 50:
-                max_cm_gems = ((50 - cur_cm) // GEM_SCALE_NORMAL) + 1
+            rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
+            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+            if rem_cm % GEM_SCALE_NORMAL != 0:
+                max_cm_gems += 1
 
         max_fm_gems: ti.i32 = 0
         if cur_fm < MAX_STAT_INDEX:
@@ -1199,23 +1187,6 @@ def _optimize_response_surfaces_gpu(
     logical_surface_rows = 0
     unique_surface_rows = 0
 
-    def _inner_stat_values(stats_after_ftff: dict[str, Any] | tuple[int, ...]) -> tuple[int, int, int, int, int]:
-        if isinstance(stats_after_ftff, tuple):
-            return (
-                int(stats_after_ftff[0]),
-                int(stats_after_ftff[1]),
-                int(stats_after_ftff[2]),
-                int(stats_after_ftff[3]),
-                int(stats_after_ftff[4]),
-            )
-        return (
-            int(stats_after_ftff.get("Perfect Points", 0) or 0),
-            int(stats_after_ftff.get("Combo Multiplier", 0) or 0),
-            int(stats_after_ftff.get("Fever Multiplier", 0) or 0),
-            int(stats_after_ftff.get(str(primary_color or ""), 0) or 0),
-            int(stats_after_ftff.get(str(secondary_color or ""), 0) or 0),
-        )
-
     def _surface_block(surfaces: tuple[FgResponseSurface, ...]) -> tuple[int, int]:
         nonlocal unique_surface_rows
         key = id(surfaces)
@@ -1244,7 +1215,11 @@ def _optimize_response_surfaces_gpu(
         return cached
 
     for group_idx, (residual_budget, stats_after_ftff, surfaces) in enumerate(groups):
-        cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary = _inner_stat_values(stats_after_ftff)
+        cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary = _inner_stat_values_for_colors(
+            stats_after_ftff,
+            primary_color=str(primary_color or ""),
+            secondary_color=str(secondary_color or ""),
+        )
         surfaces_tuple = tuple(surfaces or ())
         if not surfaces_tuple:
             continue

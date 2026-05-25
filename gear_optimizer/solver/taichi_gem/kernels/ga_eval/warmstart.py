@@ -7,7 +7,6 @@ import taichi as ti
 from .. import kernels_helpers
 from ..kernels_scoring import (
     optimize_core_device_exact_bound,
-    optimize_core_device_refined as optimize_core_device,
     score_solution_from_gems_preloaded,
 )
 MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
@@ -129,52 +128,28 @@ def _solve_combo_warmstart_preloaded(
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
             score: ti.i32 = -1
             res_vec = ti.Vector([ti.i32(-1), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0), ti.i32(0)])
-            if ti.static(use_exact_inner_solver):
-                res_vec = optimize_core_device_exact_bound(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
-            else:
-                res_vec = optimize_core_device(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                )
+            res_vec = optimize_core_device_exact_bound(
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
             raw_score = res_vec[0]
             if raw_score >= 0:
                 score = score_solution_from_gems_preloaded(
@@ -310,7 +285,7 @@ def ga_find_best_combo_warmstart_kernel(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
-    use_exact_inner_solver: ti.template(),  # 0 = greedy/refined, 1 = bounded exact fixed-(FT,FF) solve
+    use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
     reuse_exact_eval_results: ti.template(),
 ):
     """
