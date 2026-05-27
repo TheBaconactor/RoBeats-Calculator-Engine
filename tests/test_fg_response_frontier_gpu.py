@@ -189,6 +189,54 @@ def test_response_frontier_gpu_batch_pack_matches_reference_groups():
     ]
 
 
+def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors_regression():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseSurface,
+        optimize_response_frontier_inner_exact,
+        optimize_response_frontier_inner_exact_gpu,
+    )
+
+    surfaces = (
+        FgResponseSurface(3891411679, 3574856976, 3773757219, 1, 403555616, 720110319, 521210076, 14, 51, 5),
+        FgResponseSurface(2721674337, 3070680269, 3611881923, 14, 0, 0, 327680, 0, 122, 2),
+        FgResponseSurface(575176664, 3487862049, 3702577455, 12, 3719790631, 807105246, 592389840, 3, 84, 36),
+        FgResponseSurface(3601089371, 3643850265, 2374545082, 10, 555465764, 642335206, 1920422149, 4, 109, 6),
+        FgResponseSurface(2790863878, 2438334081, 1839177138, 4, 0, 0, 1, 0, 111, 3),
+        FgResponseSurface(2245692434, 3544458849, 2717638093, 9, 405078720, 605573150, 1308631090, 0, 63, 27),
+        FgResponseSurface(3466214601, 779693237, 2435483384, 1, 828752694, 3515274058, 1859483911, 14, 49, 82),
+        FgResponseSurface(1358034363, 3210050518, 977655363, 13, 621019648, 524296, 77072408, 2, 67, 21),
+        FgResponseSurface(27450701, 2000810147, 1294574002, 1, 168362000, 132612, 538069060, 2, 116, 12),
+        FgResponseSurface(1302787120, 1853818885, 106666315, 9, 537461380, 2415952130, 279568, 6, 121, 3),
+        FgResponseSurface(912726739, 3089068564, 3279260528, 5, 3382240556, 1205898731, 1015706767, 10, 3, 119),
+    )
+    kwargs = {
+        "total_notes": 232,
+        "residual_budget": 23,
+        "stats_after_ftff": {
+            "Perfect Points": 138,
+            "Combo Multiplier": 14,
+            "Fever Multiplier": 195,
+            "Power": 269,
+            "Rush": 266,
+            "Flow": 13,
+            "Beat": 111,
+            "Vibe": 299,
+            "Chill": 294,
+        },
+        "primary_color": "Vibe",
+        "secondary_color": "Chill",
+        "selected_color": "Beat",
+        "ref_arrays": _ref_arrays(),
+    }
+
+    reference = optimize_response_frontier_inner_exact(surfaces, **kwargs)
+    gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
+
+    assert gpu == reference
+    assert gpu.best_score == 246965
+    assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (1, 11, 12, 0, 0)
+
+
 def _strip_trailing_zero_counts(counts):
     out = tuple(int(v) for v in counts)
     while out and out[-1] == 0:
@@ -400,3 +448,76 @@ def test_response_frontier_many_matches_individual_exact_solves():
         (result.best_score, result.ft, result.ff, result.gem_counts, result.forced_counts)
         for result in singles
     ]
+
+
+def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_ft_element_overlap():
+    import itertools
+
+    from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        solve_force_greats_response_frontier_many_gpu,
+    )
+
+    rows = 161
+    ref_arrays = {
+        "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(1.0, 2.0, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
+        "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64),
+        "Fever Time": np.full(rows, 0.4, dtype=np.float64),
+    }
+    timestamps = np.asarray([0.0, 0.3, 0.7, 1.4, 2.2, 3.0, 3.2, 3.4, 4.0], dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Beat",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+        },
+        "song_data": {"timestamps": timestamps},
+    }
+    base_a = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 0,
+        "Flow": 15,
+        "Chill": 0,
+        "Beat": 20,
+        "Vibe": 0,
+    }
+    base_b = {**base_a, "Beat": 23, "Flow": 12, "Combo Multiplier": 3}
+
+    budget = 3
+
+    def brute_best_score(base_stats):
+        best = -1
+        for ft in range(budget + 1):
+            for ff in range(budget - ft + 1):
+                for pp in range(budget - ft - ff + 1):
+                    for cm in range(budget - ft - ff - pp + 1):
+                        for fm in range(budget - ft - ff - pp - cm + 1):
+                            ov = budget - ft - ff - pp - cm - fm
+                            stats = apply_gems_to_base_stats(base_stats, "Rush", ft, ff, pp, cm, fm, ov)
+                            zero = evaluate_force_greats(stats, calc_song, ref_arrays, [0] * 10)
+                            sections = int(zero["num_non_fever_sections"])
+                            cap = int(zero["non_fever_base"])
+                            for counts in itertools.product(range(cap + 1), repeat=sections):
+                                score = int(evaluate_force_greats(stats, calc_song, ref_arrays, counts)["final_score"])
+                                if score > best:
+                                    best = score
+        return int(best)
+
+    results = solve_force_greats_response_frontier_many_gpu(
+        base_stats_list=[base_a, base_b],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color="Rush",
+        total_budget=budget,
+        include_forced_counts=False,
+    )
+
+    assert [result.best_score for result in results] == [brute_best_score(base) for base in (base_a, base_b)]

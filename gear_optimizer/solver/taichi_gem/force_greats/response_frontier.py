@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -130,6 +130,99 @@ def _prune_best_positions_by_frontier(
     return np.ascontiguousarray(positions[kept_local], dtype=np.int32)
 
 
+def _prune_dominated_ftff_response_positions(
+    *,
+    positions: np.ndarray,
+    frontier_ids: np.ndarray,
+    residuals: np.ndarray,
+    primary_values: np.ndarray,
+    secondary_values: np.ndarray,
+) -> np.ndarray:
+    row_count = int(positions.shape[0])
+    if (
+        row_count != int(frontier_ids.shape[0])
+        or row_count != int(residuals.shape[0])
+        or row_count != int(primary_values.shape[0])
+        or row_count != int(secondary_values.shape[0])
+    ):
+        raise ValueError("FG response frontier dominance prune received inconsistent arrays")
+    if row_count <= 1:
+        return np.ascontiguousarray(positions, dtype=np.int32)
+
+    buckets: dict[int, list[int]] = {}
+    frontier_seq = np.asarray(frontier_ids, dtype=np.int32)
+    for local_idx, frontier_id in enumerate(frontier_seq.tolist()):
+        buckets.setdefault(int(frontier_id), []).append(int(local_idx))
+
+    residual_seq = np.asarray(residuals, dtype=np.int32)
+    primary_seq = np.asarray(primary_values, dtype=np.int32)
+    secondary_seq = np.asarray(secondary_values, dtype=np.int32)
+    kept_local_indices: list[int] = []
+    for bucket_indices in buckets.values():
+        if len(bucket_indices) <= 1:
+            kept_local_indices.extend(bucket_indices)
+            continue
+
+        first_idx = int(bucket_indices[0])
+        first_primary = int(primary_seq[first_idx])
+        first_secondary = int(secondary_seq[first_idx])
+        same_score_elements = True
+        best_idx = first_idx
+        best_residual = int(residual_seq[first_idx])
+        for local_idx in bucket_indices[1:]:
+            idx = int(local_idx)
+            primary = int(primary_seq[idx])
+            secondary = int(secondary_seq[idx])
+            if primary != first_primary or secondary != first_secondary:
+                same_score_elements = False
+                break
+            residual = int(residual_seq[idx])
+            if residual > best_residual:
+                best_idx = idx
+                best_residual = residual
+        if same_score_elements:
+            kept_local_indices.append(int(best_idx))
+            continue
+
+        order = sorted(
+            range(len(bucket_indices)),
+            key=lambda idx: (
+                -int(residual_seq[int(bucket_indices[idx])]),
+                -int(primary_seq[int(bucket_indices[idx])]),
+                -int(secondary_seq[int(bucket_indices[idx])]),
+                int(idx),
+            ),
+        )
+        skyline: list[tuple[int, int]] = []
+        kept_bucket_offsets: set[int] = set()
+        for bucket_offset in order:
+            local_idx = int(bucket_indices[int(bucket_offset)])
+            primary = int(primary_seq[local_idx])
+            secondary = int(secondary_seq[local_idx])
+            dominated = False
+            for kept_primary, kept_secondary in skyline:
+                if int(kept_primary) >= primary and int(kept_secondary) >= secondary:
+                    dominated = True
+                    break
+            if dominated:
+                continue
+
+            write = 0
+            for kept_primary, kept_secondary in skyline:
+                if primary >= int(kept_primary) and secondary >= int(kept_secondary):
+                    continue
+                skyline[write] = (int(kept_primary), int(kept_secondary))
+                write += 1
+            del skyline[write:]
+            skyline.append((primary, secondary))
+            kept_bucket_offsets.add(int(bucket_offset))
+        kept_local_indices.extend(
+            int(bucket_indices[idx]) for idx in range(len(bucket_indices)) if int(idx) in kept_bucket_offsets
+        )
+
+    return np.ascontiguousarray(positions[np.asarray(kept_local_indices, dtype=np.intp)], dtype=np.int32)
+
+
 def _element_ftff_delta(color: str, ft: int, ff: int) -> int:
     if str(color or "") == "Beat":
         return int(ft) * GEM_STAT_TO_ELEMENT_SCALE
@@ -183,10 +276,12 @@ def _prune_dominated_ftff_response_pairs(
     *,
     primary_color: str,
     secondary_color: str,
+    frontier_key_of: Callable[[_ResponsePair], int] | None = None,
 ) -> list[_ResponsePair]:
     by_frontier: dict[int, list[_ResponsePair]] = {}
+    identity_of = frontier_key_of or (lambda pair: int(id(pair[4])))
     for pair in pairs:
-        by_frontier.setdefault(id(pair[4]), []).append(pair)
+        by_frontier.setdefault(int(identity_of(pair)), []).append(pair)
 
     out: list[_ResponsePair] = []
     for bucket in by_frontier.values():
@@ -364,10 +459,38 @@ def solve_force_greats_response_frontier_many_gpu(
 
     head_len = min(int(song_inputs.total_notes), 100)
     body_total = max(0, int(song_inputs.total_notes) - 100)
-    if score_elements_constant and not include_forced_counts:
+    if not include_forced_counts:
         scoring_bundle = build_or_load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=stat_keys)
         frontier_idx_by_stat = scoring_bundle.frontier_idx_by_stat
         complete_scoring_bundle = len(scoring_bundle.frontier_idx_by_key) >= (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
+        frontier_count = int(scoring_bundle.frontier_offsets.shape[0])
+        frontier_content_class = np.full((frontier_count,), -1, dtype=np.int32)
+        content_class_by_signature: dict[tuple[int, bytes, bytes], int] = {}
+
+        def ensure_frontier_content_classes(frontier_ids: np.ndarray) -> None:
+            unique_ids = np.unique(np.asarray(frontier_ids, dtype=np.int32))
+            for frontier_idx in unique_ids.tolist():
+                idx = int(frontier_idx)
+                if idx < 0 or idx >= int(frontier_count):
+                    raise ValueError(f"FG response frontier canonicalization saw invalid frontier index: {idx}")
+                if int(frontier_content_class[idx]) >= 0:
+                    continue
+                offset = int(scoring_bundle.frontier_offsets[idx])
+                length = int(scoring_bundle.frontier_lengths[idx])
+                if length <= 0:
+                    raise ValueError("FG response frontier canonicalization saw empty first-frontier content")
+                words_block = scoring_bundle.surface_words[offset : offset + length]
+                counts_block = scoring_bundle.surface_counts[offset : offset + length]
+                signature = (
+                    int(length),
+                    np.ascontiguousarray(words_block, dtype=np.uint32).tobytes(),
+                    np.ascontiguousarray(counts_block, dtype=np.int32).tobytes(),
+                )
+                class_idx = content_class_by_signature.get(signature)
+                if class_idx is None:
+                    class_idx = int(len(content_class_by_signature))
+                    content_class_by_signature[signature] = int(class_idx)
+                frontier_content_class[idx] = int(class_idx)
 
         pair_positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
         group_meta_blocks: list[np.ndarray] = []
@@ -382,33 +505,51 @@ def solve_force_greats_response_frontier_many_gpu(
         group_start = 0
         for candidate_idx, components in enumerate(base_components_by_candidate):
             base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = components
-            if complete_scoring_bundle:
-                ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
-                frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
-                best_positions, kept_ft_stats, kept_ff_stats = _best_response_positions_for_base_ftff(
-                    total_budget=int(total_budget),
-                    base_ft=int(base_ft),
-                    base_ff=int(base_ff),
-                )
-                best_positions = _prune_best_positions_by_frontier(
-                    positions=best_positions,
-                    frontier_ids=np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32),
-                    residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
-                )
-                kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
-                kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
-                kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
+            ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
+            frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
+            ensure_frontier_content_classes(frontier_idx_seq)
+            canonical_frontier_seq = np.ascontiguousarray(frontier_content_class[frontier_idx_seq], dtype=np.int32)
+            if score_elements_constant:
+                if complete_scoring_bundle:
+                    best_positions, _kept_ft_stats, _kept_ff_stats = _best_response_positions_for_base_ftff(
+                        total_budget=int(total_budget),
+                        base_ft=int(base_ft),
+                        base_ff=int(base_ff),
+                    )
+                    best_positions = _prune_best_positions_by_frontier(
+                        positions=best_positions,
+                        frontier_ids=np.ascontiguousarray(canonical_frontier_seq[best_positions], dtype=np.int32),
+                        residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
+                    )
+                else:
+                    best_positions = _prune_best_positions_by_frontier(
+                        positions=pair_positions,
+                        frontier_ids=canonical_frontier_seq,
+                        residuals=residual_values,
+                    )
+                kept_primary_values = np.full((int(best_positions.shape[0]),), int(base_primary), dtype=np.int32)
+                kept_secondary_values = np.full((int(best_positions.shape[0]),), int(base_secondary), dtype=np.int32)
             else:
-                ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
-                frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
-                best_positions = _prune_best_positions_by_frontier(
-                    positions=pair_positions,
-                    frontier_ids=frontier_idx_seq,
-                    residuals=residual_values,
+                primary_values = np.asarray(
+                    int(base_primary) + (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
+                    dtype=np.int32,
                 )
-                kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
-                kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
-                kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
+                secondary_values = np.asarray(
+                    int(base_secondary) + (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
+                    dtype=np.int32,
+                )
+                best_positions = _prune_dominated_ftff_response_positions(
+                    positions=pair_positions,
+                    frontier_ids=canonical_frontier_seq,
+                    residuals=residual_values,
+                    primary_values=primary_values,
+                    secondary_values=secondary_values,
+                )
+                kept_primary_values = np.ascontiguousarray(primary_values[best_positions], dtype=np.int32)
+                kept_secondary_values = np.ascontiguousarray(secondary_values[best_positions], dtype=np.int32)
+            kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
+            kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
+            kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
             if bool(np.any(kept_frontiers < 0)):
                 raise ValueError("FG response frontier stat key was not loaded for packed batch solve")
             kept_count = int(best_positions.shape[0])
@@ -420,8 +561,8 @@ def solve_force_greats_response_frontier_many_gpu(
             meta[:, 1] = int(base_pp)
             meta[:, 2] = int(base_cm)
             meta[:, 3] = int(base_fm)
-            meta[:, 4] = int(base_primary)
-            meta[:, 5] = int(base_secondary)
+            meta[:, 4] = kept_primary_values
+            meta[:, 5] = kept_secondary_values
             meta[:, 6] = int(head_len)
             meta[:, 7] = int(body_total)
             lengths = np.ascontiguousarray(scoring_bundle.frontier_lengths[kept_frontiers], dtype=np.int32)
@@ -533,6 +674,34 @@ def solve_force_greats_response_frontier_many_gpu(
         frontiers,
         total_notes=int(song_inputs.total_notes),
     )
+    frontier_content_class_by_id: dict[int, int] = {}
+    frontier_content_class_by_signature: dict[tuple[int, bytes, bytes], int] = {}
+
+    def canonical_frontier_key(frontier: FgResponseFrontierResult) -> int:
+        marker = int(id(frontier))
+        cached = frontier_content_class_by_id.get(marker)
+        if cached is not None:
+            return int(cached)
+        idx = frontier_idx_by_id.get(marker)
+        if idx is None:
+            raise ValueError("FG response frontier payload is missing a packed frontier index")
+        length = int(frontier_lengths[int(idx)])
+        if length <= 0:
+            raise ValueError("FG response frontier payload contains an empty first frontier")
+        offset = int(frontier_offsets[int(idx)])
+        words_block = surface_words[offset : offset + length]
+        counts_block = surface_counts[offset : offset + length]
+        signature = (
+            int(length),
+            np.ascontiguousarray(words_block, dtype=np.uint32).tobytes(),
+            np.ascontiguousarray(counts_block, dtype=np.int32).tobytes(),
+        )
+        class_idx = frontier_content_class_by_signature.get(signature)
+        if class_idx is None:
+            class_idx = int(len(frontier_content_class_by_signature))
+            frontier_content_class_by_signature[signature] = int(class_idx)
+        frontier_content_class_by_id[marker] = int(class_idx)
+        return int(class_idx)
 
     group_meta_rows: list[tuple[int, int, int, int, int, int, int, int]] = []
     group_offsets_list: list[int] = []
@@ -618,6 +787,7 @@ def solve_force_greats_response_frontier_many_gpu(
                 pair_records,
                 primary_color=primary_color,
                 secondary_color=secondary_color,
+                frontier_key_of=(lambda pair: canonical_frontier_key(pair[4])) if not include_forced_counts else None,
             )
         for pair in pair_records:
             _ft, _ff, residual, stats_after_ftff, frontier, _raw_fill, _real_fever_time = pair

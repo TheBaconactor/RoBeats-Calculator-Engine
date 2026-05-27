@@ -4,6 +4,57 @@ import pytest
 import numpy as np
 
 
+def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier_keys():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        _prune_dominated_ftff_response_pairs,
+        _prune_dominated_ftff_response_positions,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
+
+    frontiers = tuple(FgResponseFrontierResult((), {}, 0, 0, 0, 0, 0, 0, 0, 0.0) for _ in range(4))
+    frontier_classes = (0, 0, 1, 2)
+    class_by_frontier_id = {id(frontier): int(frontier_classes[idx]) for idx, frontier in enumerate(frontiers)}
+    rows = [
+        (0, 5, 10, 10),
+        (1, 6, 9, 10),
+        (1, 6, 11, 10),
+        (2, 2, 5, 5),
+        (2, 4, 5, 5),
+        (3, 7, 12, 8),
+        (3, 6, 8, 12),
+        (3, 5, 7, 7),
+    ]
+    pairs = [
+        (
+            int(idx),
+            0,
+            int(residual),
+            (0, 0, 0, int(primary), int(secondary), 0, 0),
+            frontiers[int(frontier_idx)],
+            0.0,
+            0.0,
+        )
+        for idx, (frontier_idx, residual, primary, secondary) in enumerate(rows)
+    ]
+
+    expected = _prune_dominated_ftff_response_pairs(
+        pairs,
+        primary_color="Beat",
+        secondary_color="Vibe",
+        frontier_key_of=lambda pair: class_by_frontier_id[id(pair[4])],
+    )
+    positions = np.arange(len(rows), dtype=np.int32)
+    got = _prune_dominated_ftff_response_positions(
+        positions=positions,
+        frontier_ids=np.asarray([frontier_classes[frontier_idx] for frontier_idx, *_rest in rows], dtype=np.int32),
+        residuals=np.asarray([residual for _frontier_idx, residual, _primary, _secondary in rows], dtype=np.int32),
+        primary_values=np.asarray([primary for _frontier_idx, _residual, primary, _secondary in rows], dtype=np.int32),
+        secondary_values=np.asarray([secondary for _frontier_idx, _residual, _primary, secondary in rows], dtype=np.int32),
+    )
+
+    assert got.tolist() == [int(pair[0]) for pair in expected]
+
+
 def test_nojit_fixed_stats_score_matches_jit_score():
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score, evaluate_stats_score_nojit
 
