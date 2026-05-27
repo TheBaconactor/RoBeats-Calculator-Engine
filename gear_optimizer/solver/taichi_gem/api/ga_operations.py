@@ -694,6 +694,8 @@ def ga_evaluate_prepared_population(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
+    if use_exact_inner_solver_i == 0:
+        raise ValueError("GA evaluation requires exact inner GPU solving.")
     exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
     exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
     use_base_candidate_cache_i = int(bool(use_base_candidate_cache))

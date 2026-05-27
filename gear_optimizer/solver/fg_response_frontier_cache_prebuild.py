@@ -54,7 +54,7 @@ _PREBUILD_WORKERS = max(1, min(3, int(os.cpu_count() or 1)))
 def _init_prebuild_worker(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
-    reducer_threads: int,
+    reducer_threads: int = 1,
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
 
@@ -147,23 +147,11 @@ class FgResponseFrontierCachePrebuilder:
         source_counts: Counter[str] = Counter()
         failures = 0
         completed = 0
-        if isinstance(executor, concurrent.futures.ProcessPoolExecutor):
-            futures = {
-                executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path
-                for path in self.song_paths
-                if not self._stop.is_set()
-            }
-        else:
-            futures = {
-                executor.submit(
-                    build_fg_response_frontier_cache_for_path,
-                    path,
-                    self.ref_arrays,
-                    stat_keys=self.stat_keys,
-                ): path
-                for path in self.song_paths
-                if not self._stop.is_set()
-            }
+        futures = {
+            executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path
+            for path in self.song_paths
+            if not self._stop.is_set()
+        }
         try:
             for future in concurrent.futures.as_completed(futures):
                 if self._stop.is_set():

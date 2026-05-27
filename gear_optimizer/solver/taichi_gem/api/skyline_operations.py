@@ -9,7 +9,7 @@ This module provides GPU-side skyline operators (selection, crossover, mutation,
 - skyline_aggregate_stats: Aggregate item stats into genome stats on GPU
 - skyline_evaluate_population: Full GPU-native evaluation pipeline
 - skyline_set_scores: Manually set scores for custom evaluation
-- skyline_next_generation: Tournament selection + crossover + mutation + elitism
+- skyline_next_generation_fused*: Fused tournament selection + crossover + mutation + elitism
 - skyline_download_*: Download results from GPU
 
 These functions are called from gpu_executor.py, parallel_solvers.py, warmup paths,
@@ -690,6 +690,8 @@ def skyline_evaluate_population(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
+    if use_exact_inner_solver_i == 0:
+        raise ValueError("Skyline evaluation requires exact inner GPU solving.")
     exact_genome_base_stats_reuse = bool(_skyline_exact_genome_base_stats_reuse_enabled())
     exact_genome_eval_results_reuse = bool(_skyline_exact_genome_eval_results_reuse_enabled())
     # Stronger exact reduction: collapse rows that share the same aggregated score-relevant
@@ -1212,124 +1214,6 @@ def skyline_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -
     buf[:n_genomes] = np.asarray(scores_np[:n_genomes], dtype=np.int32)
     fields.skyline_scores.from_numpy(buf)
     return n_genomes
-
-
-def skyline_next_generation(
-    *,
-    n_genomes: int,
-    n_slots: int = 9,
-    mutation_rate: float = 0.02,
-    tournament_k: int = 3,
-    elite_count: int = 2,
-    elite_indices: np.ndarray | None = None,
-) -> None:
-    """
-    Run one GPU-side skyline operator step on resident population:
-      selection -> crossover+mutation -> [elitism] -> swap buffers.
-
-    Args:
-        n_genomes: Population size
-        n_slots: Slots per genome (default 9)
-        mutation_rate: Probability of mutation per genome (default 0.02)
-        tournament_k: Tournament size for selection (default 3)
-        elite_count: Number of elites to preserve (default 2)
-        elite_indices: Optional array of elite genome indices from current gen.
-                      If provided, these genomes are copied to front of next gen.
-                      If None and elite_count > 0, uses indices [0..elite_count-1].
-    """
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    elite_count = int(elite_count)
-    tournament_k = int(tournament_k)
-    if n_genomes <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    if elite_count < 0:
-        elite_count = 0
-    if elite_count > n_genomes:
-        elite_count = n_genomes
-    if tournament_k < 1:
-        tournament_k = 1
-
-    # Convert probability to uint32 threshold.
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-
-    n_elites = 0
-    if elite_count > 0:
-        if elite_indices is None:
-            elite_arr = np.arange(elite_count, dtype=np.int32)
-        else:
-            elite_arr = np.asarray(elite_indices[:elite_count], dtype=np.int32)
-        n_elites = int(min(n_genomes, int(elite_arr.shape[0])))
-        if n_elites > 0:
-            _upload_island_elites(elite_arr, n_elites)
-
-    # Use the fused next-generation kernel so the older selection/crossover kernels
-    # are no longer on the hot path.
-    kernels.skyline_next_generation_full_kernel(
-        int(n_genomes),
-        int(n_slots),
-        int(n_elites),
-        int(tournament_k),
-        mr_fp,
-        np.uint32(0),  # no immigrants in this call shape
-    )
-    kernels.SKYLINE_swap_population_kernel(int(n_genomes), int(n_slots))
-
-
-def skyline_next_generation_gpu_elites(
-    *,
-    n_genomes: int,
-    n_slots: int = 9,
-    mutation_rate: float = 0.02,
-    tournament_k: int = 3,
-    n_elites: int = 10,
-) -> None:
-    """
-    Run one GPU-side skyline operator step using GPU-resident elite indices.
-
-    This is an optimized version of skyline_next_generation that reads elite indices
-    from the GPU-resident island_elite_indices field (set by skyline_find_island_elites)
-    instead of a CPU ndarray. This avoids the expensive GPU->CPU transfer per generation.
-
-    Args:
-        n_genomes: Population size
-        n_slots: Slots per genome (default 9)
-        mutation_rate: Probability of mutation per genome (default 0.02)
-        tournament_k: Tournament size for selection (default 3)
-        n_elites: Total number of elites to preserve (n_islands * elites_per_island)
-    """
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    n_elites = int(n_elites)
-    tournament_k = int(tournament_k)
-    if n_genomes <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    if n_elites < 0:
-        n_elites = 0
-    if n_elites > n_genomes:
-        n_elites = n_genomes
-    if tournament_k < 1:
-        tournament_k = 1
-
-    # Convert probability to uint32 threshold.
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-
-    # Use fused kernel path (selection+crossover+mutation+elitism), then swap.
-    kernels.skyline_next_generation_full_kernel(
-        int(n_genomes),
-        int(n_slots),
-        int(n_elites),
-        int(tournament_k),
-        mr_fp,
-        np.uint32(0),  # no immigrants in this API
-    )
-    kernels.SKYLINE_swap_population_kernel(int(n_genomes), int(n_slots))
 
 
 def skyline_next_generation_fused(

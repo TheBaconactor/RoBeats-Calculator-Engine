@@ -28,22 +28,3 @@ def is_cached_force_valid_for_response_frontier(cached_force_obj, expected_selec
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True
-
-
-def is_cached_force_valid(cached_force_obj, expected_selected_element) -> bool:
-    """
-    Validate that a DB-cached ForceGreats payload is compatible with the current code/config.
-    This prevents stale FG results (from older algorithms or wrong overflow target) from
-    presenting as score inflation.
-    """
-    if not isinstance(cached_force_obj, dict):
-        return False
-    fg_meta = cached_force_obj.get("ForceGreats") or {}
-    if not isinstance(fg_meta, dict) or not fg_meta:
-        return False
-    if not fg_meta.get("config"):
-        return False
-    cached_sel = get_selected_element(cached_force_obj, "")
-    if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
-        return False
-    return True

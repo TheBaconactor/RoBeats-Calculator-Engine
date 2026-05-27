@@ -97,11 +97,10 @@ from .kernels_ga import (
     ga_swap_population_kernel,  # FUSED: swap
 )
 
-# Import scoring functions and optimize_core_device
+# Import scoring functions
 from .kernels_scoring import (
     _calc_head_score_grid,
     calc_score_cached_device,
-    optimize_core_device,
 )
 
 # Import batch solver kernels

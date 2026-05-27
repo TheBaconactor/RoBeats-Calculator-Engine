@@ -6,9 +6,6 @@ from typing import Any, Callable
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
-FG_BURST_REQUEST_TYPES: frozenset[GpuRequestType] = frozenset()
-
-
 def effective_owner_batch_max(
     base_batch_max: int,
     *,
@@ -41,8 +38,6 @@ class LoopBatchSettings:
     max_batch: int
     wait_overridden: bool
     max_overridden: bool
-    fg_burst_window_ms: int
-    fg_burst_wait_ms: int
 
 
 @dataclass(frozen=True)
@@ -95,21 +90,11 @@ def load_loop_batch_settings(
         max_batch = int(override)
         max_overridden = True
 
-    burst_window, ok = _env_override_int(env_get, "GPU_EXECUTOR_FG_BURST_WINDOW_MS")
-    fg_burst_window_ms = int(burst_window) if ok and burst_window is not None else 6
-    fg_burst_window_ms = max(0, int(fg_burst_window_ms))
-
-    burst_wait, ok = _env_override_int(env_get, "GPU_EXECUTOR_FG_BURST_BATCH_WAIT_MS")
-    fg_burst_wait_ms = int(burst_wait) if ok and burst_wait is not None else 2
-    fg_burst_wait_ms = max(0, min(int(fg_burst_wait_ms), 10))
-
     return LoopBatchSettings(
         wait_ms=int(wait_ms),
         max_batch=int(max_batch),
         wait_overridden=bool(wait_overridden),
         max_overridden=bool(max_overridden),
-        fg_burst_window_ms=int(fg_burst_window_ms),
-        fg_burst_wait_ms=int(fg_burst_wait_ms),
     )
 
 
@@ -118,7 +103,6 @@ def plan_loop_batch(
     *,
     in_process_queues: bool,
     queue_depth_hint: int,
-    fg_burst_active: bool,
 ) -> BatchPlan:
     batch_wait_ms = int(settings.wait_ms)
     batch_max = int(settings.max_batch)
@@ -131,8 +115,6 @@ def plan_loop_batch(
         )
         if not bool(settings.wait_overridden):
             batch_wait_ms = min(int(batch_wait_ms), 6)
-            if bool(fg_burst_active):
-                batch_wait_ms = min(int(batch_wait_ms), int(settings.fg_burst_wait_ms))
 
     if batch_wait_ms < 0:
         batch_wait_ms = 0
@@ -147,7 +129,7 @@ def plan_loop_batch(
     if pressure_hint >= 1.0:
         batch_wait_ms = 0
 
-    planner_mode = "fg_burst" if bool(fg_burst_active) else ("inproc" if bool(in_process_queues) else "static")
+    planner_mode = "inproc" if bool(in_process_queues) else "static"
 
     return BatchPlan(
         wait_ms=int(batch_wait_ms),
@@ -156,38 +138,6 @@ def plan_loop_batch(
         queue_depth_hint=int(queue_depth_hint),
         pressure_hint=float(max(0.0, pressure_hint)),
     )
-
-
-def batch_contains_fg_burst_work(
-    batch: list[Any],
-    *,
-    request_types: frozenset[GpuRequestType] = FG_BURST_REQUEST_TYPES,
-) -> bool:
-    for request in batch or []:
-        request_type = getattr(request, "request_type", None)
-        if request_type == GpuRequestType.SHUTDOWN:
-            continue
-        if request_type in request_types:
-            return True
-    return False
-
-
-def next_fg_burst_until(
-    current_until_s: float,
-    *,
-    saw_fg_work: bool,
-    in_process_queues: bool,
-    window_ms: int,
-    now_s: float,
-) -> float:
-    if not bool(saw_fg_work):
-        return float(current_until_s)
-    if not bool(in_process_queues):
-        return float(current_until_s)
-    if int(window_ms) <= 0:
-        return float(current_until_s)
-    next_until = float(now_s) + (float(window_ms) / 1000.0)
-    return max(float(current_until_s), float(next_until))
 
 
 def _env_ms_as_seconds(
@@ -385,8 +335,6 @@ from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
 logger = logging.getLogger(__name__)
 
-
-FG_REQUEST_TYPES: frozenset[GpuRequestType] = frozenset()
 
 GA_RECOVERY_REQUEST_TYPES = frozenset()
 

@@ -369,7 +369,7 @@ def skyline_find_best_combo_warmstart_kernel(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
-    use_exact_inner_solver: ti.template(),  # Exact-bound fixed-(FT,FF) solve; legacy false route also resolves exact.
+    use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
     reuse_exact_eval_results: ti.template(),
     use_timing_response_antichain: ti.template(),
     score_cull_threshold: ti.i32,

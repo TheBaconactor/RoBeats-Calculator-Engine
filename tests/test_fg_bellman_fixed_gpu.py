@@ -6,7 +6,7 @@ pytestmark = pytest.mark.gpu
 
 
 def test_fg_bellman_fixed_stats_gpu_smoke():
-    from gear_optimizer.solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.bellman_fixed import solve_force_greats_bellman_fixed_stats_gpu
 
     result = solve_force_greats_bellman_fixed_stats_gpu(
         timestamps=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.float32),
@@ -27,7 +27,7 @@ def test_fg_bellman_fixed_stats_gpu_smoke():
 
 
 def test_fg_bellman_fixed_stats_gpu_prunes_fill_plateaus_without_timing():
-    from gear_optimizer.solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.bellman_fixed import solve_force_greats_bellman_fixed_stats_gpu
 
     result = solve_force_greats_bellman_fixed_stats_gpu(
         timestamps=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.float32),
@@ -49,7 +49,7 @@ def test_fg_bellman_fixed_stats_gpu_prunes_fill_plateaus_without_timing():
 
 
 def test_fg_bellman_fixed_stats_gpu_keeps_timing_distinct_plateau_rep():
-    from gear_optimizer.solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.bellman_fixed import solve_force_greats_bellman_fixed_stats_gpu
 
     result = solve_force_greats_bellman_fixed_stats_gpu(
         timestamps=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.float32),
@@ -67,7 +67,7 @@ def test_fg_bellman_fixed_stats_gpu_keeps_timing_distinct_plateau_rep():
 
 
 def test_fg_bellman_fixed_stats_gpu_prunes_same_activation_end_edge():
-    from gear_optimizer.solver.taichi_gem.force_greats import solve_force_greats_bellman_fixed_stats_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.bellman_fixed import solve_force_greats_bellman_fixed_stats_gpu
 
     result = solve_force_greats_bellman_fixed_stats_gpu(
         timestamps=np.asarray([0, 1, 2, 3, 4, 5], dtype=np.float32),

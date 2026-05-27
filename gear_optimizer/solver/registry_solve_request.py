@@ -47,6 +47,10 @@ class RegistrySolveRequest:
     score_cull_threshold: int | None = None
     score_only: bool = False
 
+    def __post_init__(self) -> None:
+        if not bool(self.use_exact_inner_solver):
+            raise ValueError("RegistrySolveRequest requires exact inner GPU solving.")
+
     def to_payload(self) -> dict[str, Any]:
         payload = {
             "population_indices": self.population_indices,

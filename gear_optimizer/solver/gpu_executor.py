@@ -52,13 +52,11 @@ from gear_optimizer.solver.gpu_executor_profile import (
     summarize_batch,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
-    batch_contains_fg_burst_work as _batch_contains_fg_burst_work,
     extend_inprocess_after_first_deadline as _extend_inprocess_after_first_deadline,
     ga_recovery_lookahead_limit as _ga_recovery_lookahead_limit,
     ga_recovery_streak_cap as _ga_recovery_streak_cap,
     load_inprocess_coalesce_settings as _load_inprocess_coalesce_settings,
     load_loop_batch_settings as _load_loop_batch_settings,
-    next_fg_burst_until as _next_fg_burst_until,
     plan_loop_batch as _plan_loop_batch,
     select_inprocess_batch_timeout as _select_inprocess_batch_timeout,
 )
@@ -138,6 +136,18 @@ from gear_optimizer.solver.gpu_executor_profile import (
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
+
+
+def _warmup_fg_response_frontier_runtime() -> None:
+    from .taichi_gem.force_greats import fields as fg_fields
+    from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
+        warmup_force_greats_response_frontier_runtime_imports,
+    )
+
+    fg_fields.ensure_ready_with_warmup()
+    warmup_force_greats_response_frontier_runtime_imports()
+
+
 def _precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
     from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu_fn
     return _precompute_timeline_gpu_fn(calc_song, ref_arrays, song_slot=song_slot)
@@ -684,12 +694,7 @@ class GpuExecutor:
                         try:
                             if warmup_fg:
                                 self._write_heartbeat(phase="warmup_fg_cached", force=True)
-                                from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
-                                    warmup_force_greats_response_frontier_runtime_imports,
-                                )
-                                fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_response_frontier_runtime_imports()
+                                _warmup_fg_response_frontier_runtime()
                             if warmup_ga:
                                 self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
                                 from .taichi_gem.api import ga_operations as ga_ops
@@ -708,12 +713,7 @@ class GpuExecutor:
                                 except Exception as e:
                                     logger.debug(f"gpu_executor:_executor_loop: {e}")
                                 t0 = perf_counter()
-                                from .taichi_gem.force_greats import fields as fg_fields
-                                from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
-                                    warmup_force_greats_response_frontier_runtime_imports,
-                                )
-                                fg_fields.ensure_ready_with_warmup()
-                                warmup_force_greats_response_frontier_runtime_imports()
+                                _warmup_fg_response_frontier_runtime()
                                 dt_ms = (perf_counter() - t0) * 1000.0
                                 if ENV.perf_timing:
                                     logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
@@ -749,12 +749,7 @@ class GpuExecutor:
                 logger.debug(f"gpu_executor:_executor_loop: {e}")
                 try:
                     if warmup_fg:
-                        from .taichi_gem.force_greats import fields as fg_fields
-                        from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
-                            warmup_force_greats_response_frontier_runtime_imports,
-                        )
-                        fg_fields.ensure_ready_with_warmup()
-                        warmup_force_greats_response_frontier_runtime_imports()
+                        _warmup_fg_response_frontier_runtime()
                     if warmup_ga:
                         from .taichi_gem.api import ga_operations as ga_ops
                         ga_ops.warmup_ga_kernels()
@@ -772,7 +767,6 @@ class GpuExecutor:
         self._write_heartbeat(phase="ready", force=True)
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
             return self._response_delivery.try_put(self._response_queues, req, resp)
-        fg_burst_until = 0.0
         env_refresh_counter = 0
         cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
         profile_events_enabled = _profile_events_output_enabled(env_get_fn=env_get)
@@ -789,13 +783,10 @@ class GpuExecutor:
                     cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
                 env_refresh_counter = (env_refresh_counter + 1) % 64
                 queue_depth_hint = _safe_qsize(self._request_queue)
-                fg_burst_window_ms = int(cached_batch_settings.fg_burst_window_ms)
-                fg_burst_active = bool(int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until))
                 batch_plan = _plan_loop_batch(
                     cached_batch_settings,
                     in_process_queues=bool(self._in_process_queues),
                     queue_depth_hint=int(queue_depth_hint),
-                    fg_burst_active=bool(fg_burst_active),
                 )
                 batch_wait_ms = int(batch_plan.wait_ms)
                 batch_max = int(batch_plan.max_batch)
@@ -829,9 +820,6 @@ class GpuExecutor:
                     )
                 if live_enabled:
                     self._maybe_live_report()
-                saw_fg_work = False
-                if self._in_process_queues and int(fg_burst_window_ms) > 0 and batch:
-                    saw_fg_work = _batch_contains_fg_burst_work(batch)
                 if self._profile_enabled:
                     if float(dt_wait) >= float(self._idle_sample_threshold_sec):
                         self._idle_gaps.append(float(dt_wait))
@@ -977,14 +965,6 @@ class GpuExecutor:
                 self._last_work_end_ts = float(work_end_ts)
                 if self._profile_enabled:
                     self._profile_last_work_end_ts = float(work_end_ts)
-                if saw_fg_work and self._in_process_queues and int(fg_burst_window_ms) > 0:
-                    fg_burst_until = _next_fg_burst_until(
-                        fg_burst_until,
-                        saw_fg_work=True,
-                        in_process_queues=bool(self._in_process_queues),
-                        window_ms=int(fg_burst_window_ms),
-                        now_s=perf_counter(),
-                    )
                 batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
                 if self._workload_profile_enabled:
                     self._record_workload_batch(batch_metrics)

@@ -45,7 +45,6 @@ GA_MULTI_RUNS_DEFAULT = 3
 
 # Local search constants
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
-CM_LOOKAHEAD_MAX = 10  # Max lookahead iterations for CM plateau-breaking in gem optimization
 
 # --- GPU GA ISLAND MODEL ---
 # Real-song benchmarks showed island migration amplifying exact-clone pressure
