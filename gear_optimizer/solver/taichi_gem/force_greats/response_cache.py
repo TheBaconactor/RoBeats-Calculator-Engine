@@ -236,8 +236,19 @@ def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
         return frontier
 
 
+def _frontier_satisfies_state_request(
+    frontier: FgResponseFrontierResult | None,
+    *,
+    include_state_frontiers: bool,
+) -> bool:
+    return frontier is not None and (not bool(include_state_frontiers) or bool(frontier.state_frontiers))
+
+
 def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
     with _frontier_cache_lock:
+        existing = _frontier_cache.get(cache_key)
+        if existing is not None and existing.state_frontiers and not frontier.state_frontiers:
+            return
         _frontier_cache[cache_key] = frontier
         _frontier_cache.move_to_end(cache_key)
         while len(_frontier_cache) > int(_MEMORY_CACHE_MAX):
@@ -635,13 +646,20 @@ def _put_payload_frontiers(
 
 
 def _payload_subset(
-    payload: FgResponseFrontierCachePayload,
+    payload: FgResponseFrontierCachePayload | None,
     keys: Iterable[tuple[int, int]],
+    *,
+    include_state_frontiers: bool = False,
 ) -> FgResponseFrontierCachePayload | None:
+    if payload is None:
+        return None
     subset: dict[tuple[int, int], FgResponseFrontierResult] = {}
     for key in normalize_fg_response_stat_keys(keys):
         frontier = payload.frontier_by_key.get(key)
-        if frontier is None:
+        if not _frontier_satisfies_state_request(
+            frontier,
+            include_state_frontiers=bool(include_state_frontiers),
+        ):
             return None
         subset[key] = frontier
     return FgResponseFrontierCachePayload(
@@ -655,11 +673,27 @@ def _payload_subset(
     )
 
 
-def _payload_missing_keys(
-    payload: FgResponseFrontierCachePayload,
+def _payload_missing_or_incomplete_keys(
+    payload: FgResponseFrontierCachePayload | None,
     keys: Iterable[tuple[int, int]],
+    *,
+    include_state_frontiers: bool,
 ) -> tuple[tuple[int, int], ...]:
-    return tuple(key for key in normalize_fg_response_stat_keys(keys) if key not in payload.frontier_by_key)
+    out: list[tuple[int, int]] = []
+    for key in normalize_fg_response_stat_keys(keys):
+        frontier = None if payload is None else payload.frontier_by_key.get(key)
+        if not _frontier_satisfies_state_request(
+            frontier,
+            include_state_frontiers=bool(include_state_frontiers),
+        ):
+            out.append(key)
+    return tuple(out)
+
+
+def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
+    with _frontier_cache_lock:
+        _bundle_array_cache.pop(bundle_key, None)
+        _scoring_bundle_cache.pop(bundle_key, None)
 
 
 def _merge_payloads(
@@ -681,7 +715,7 @@ def _merge_payloads(
     )
 
 
-def build_response_frontier_cache_payload(
+def _build_response_frontier_cache_payload(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     *,
@@ -709,6 +743,16 @@ def build_response_frontier_cache_payload(
         )
         if frontier is None:
             frontier = _memory_get(cache_key)
+            if not _frontier_satisfies_state_request(
+                frontier,
+                include_state_frontiers=bool(include_state_frontiers),
+            ):
+                frontier = None
+        elif not _frontier_satisfies_state_request(
+            frontier,
+            include_state_frontiers=bool(include_state_frontiers),
+        ):
+            frontier = None
         if frontier is None:
             missing_by_geometry.setdefault(
                 geometry_key,
@@ -828,44 +872,6 @@ def fg_response_frontier_payload_cache_info(
     )
 
 
-def load_response_frontier_from_bundle(
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    *,
-    ft_stat: int,
-    ff_stat: int,
-) -> FgResponseFrontierResult:
-    key = _normalize_stat_key((ft_stat, ff_stat))
-    cache_key = fg_response_frontier_geometry_cache_key(calc_song, ref_arrays, ft_stat=key[0], ff_stat=key[1])
-    frontier = _memory_get(cache_key)
-    if frontier is not None and frontier.state_frontiers:
-        return frontier
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
-    data = _load_bundle_arrays(bundle_key)
-    stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
-    matches = np.nonzero((stat_keys[:, 0] == int(key[0])) & (stat_keys[:, 1] == int(key[1])))[0]
-    if int(matches.shape[0]) <= 0:
-        raise ValueError(f"FG response frontier bundle cache is missing stat key: {key}")
-    frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
-    frontier = _unpack_frontier_at(data, int(frontier_ids[int(matches[0])]), include_state_frontiers=True)
-    if not frontier.state_frontiers:
-        payload, _source = build_response_frontier_cache_payload(
-            calc_song,
-            ref_arrays,
-            stat_keys=(key,),
-            include_state_frontiers=True,
-        )
-        bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
-        bundle = _merge_payloads(_load_payload(bundle_key, include_state_frontiers=True), payload)
-        _save_payload(bundle_key, bundle)
-        with _frontier_cache_lock:
-            _bundle_array_cache.pop(bundle_key, None)
-            _scoring_bundle_cache.pop(bundle_key, None)
-        frontier = payload.frontier_for_stats(ft_stat=int(key[0]), ff_stat=int(key[1]))
-    _memory_put(cache_key, frontier)
-    return frontier
-
-
 def build_or_load_response_frontier_scoring_bundle(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
@@ -888,7 +894,7 @@ def build_or_load_response_frontier_scoring_bundle(
         missing = tuple(key for key in keys if key not in available)
         if missing:
             bundle = _load_payload(bundle_key, include_state_frontiers=True)
-            missing_payload, _source = build_response_frontier_cache_payload(
+            missing_payload, _source = _build_response_frontier_cache_payload(
                 calc_song,
                 ref_arrays,
                 stat_keys=missing,
@@ -896,9 +902,7 @@ def build_or_load_response_frontier_scoring_bundle(
             )
             bundle = _merge_payloads(bundle, missing_payload)
             _save_payload(bundle_key, bundle)
-            with _frontier_cache_lock:
-                _bundle_array_cache.pop(bundle_key, None)
-                _scoring_bundle_cache.pop(bundle_key, None)
+            _invalidate_bundle_array_views(bundle_key)
             arrays = _load_bundle_arrays(bundle_key)
     else:
         build_or_load_response_frontier_payload(
@@ -973,7 +977,11 @@ def build_or_load_response_frontier_payload(
     memory_key = cache_key if include_state_frontiers else (*cache_key, _FIRST_FRONTIER_ONLY_MARKER)
     bundle_memory_key = bundle_key if include_state_frontiers else (*bundle_key, _FIRST_FRONTIER_ONLY_MARKER)
     payload = _payload_memory_get(memory_key)
-    if payload is not None:
+    if payload is not None and _payload_subset(
+        payload,
+        keys,
+        include_state_frontiers=bool(include_state_frontiers),
+    ) is not None:
         return FgResponseFrontierPrewarmResult(
             payload=payload,
             cache_key=cache_key,
@@ -986,18 +994,32 @@ def build_or_load_response_frontier_payload(
         )
     source = "disk"
     payload = _load_payload(cache_key, include_state_frontiers=include_state_frontiers)
+    if _payload_subset(
+        payload,
+        keys,
+        include_state_frontiers=bool(include_state_frontiers),
+    ) is None:
+        payload = None
     bundle: FgResponseFrontierCachePayload | None = None
     if payload is None:
         bundle = _payload_memory_get(bundle_memory_key)
         if bundle is None:
             bundle = _load_payload(bundle_key, include_state_frontiers=include_state_frontiers)
         if bundle is not None:
-            payload = _payload_subset(bundle, keys)
+            payload = _payload_subset(
+                bundle,
+                keys,
+                include_state_frontiers=bool(include_state_frontiers),
+            )
         if payload is None:
             if bundle is not None and not include_state_frontiers:
                 bundle = _load_payload(bundle_key, include_state_frontiers=True)
-            missing_keys = _payload_missing_keys(bundle, keys) if bundle is not None else keys
-            payload, source = build_response_frontier_cache_payload(
+            missing_keys = _payload_missing_or_incomplete_keys(
+                bundle,
+                keys,
+                include_state_frontiers=bool(include_state_frontiers),
+            )
+            payload, source = _build_response_frontier_cache_payload(
                 calc_song,
                 ref_arrays,
                 stat_keys=missing_keys,
@@ -1005,8 +1027,13 @@ def build_or_load_response_frontier_payload(
             )
             bundle = _merge_payloads(bundle, payload)
             _save_payload(bundle_key, bundle)
-            _payload_memory_put(bundle_key, bundle)
-            payload = _payload_subset(bundle, keys)
+            _payload_memory_put(bundle_memory_key, bundle)
+            _invalidate_bundle_array_views(bundle_key)
+            payload = _payload_subset(
+                bundle,
+                keys,
+                include_state_frontiers=bool(include_state_frontiers),
+            )
             if payload is None:
                 raise ValueError("FG response frontier bundle did not contain requested keys after build")
         else:
@@ -1015,6 +1042,7 @@ def build_or_load_response_frontier_payload(
         bundle = _merge_payloads(_load_payload(bundle_key), payload)
         _save_payload(bundle_key, bundle)
         _payload_memory_put(bundle_key, bundle)
+        _invalidate_bundle_array_views(bundle_key)
     _payload_memory_put(memory_key, payload)
     _put_payload_frontiers(calc_song, ref_arrays, payload)
     return FgResponseFrontierPrewarmResult(
@@ -1049,13 +1077,11 @@ __all__ = [
     "_fg_response_disk_cache_path",
     "build_or_load_response_frontier_payload",
     "build_or_load_response_frontier_scoring_bundle",
-    "build_response_frontier_cache_payload",
     "cleanup_fg_response_frontier_cache_temp_files",
     "fg_response_frontier_bundle_cache_key",
     "fg_response_frontier_geometry_cache_key",
     "fg_response_frontier_payload_cache_info",
     "fg_response_frontier_payload_cache_key",
-    "load_response_frontier_from_bundle",
     "normalize_fg_response_stat_keys",
     "reset_fg_response_frontier_payload_cache",
 ]

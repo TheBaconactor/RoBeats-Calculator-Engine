@@ -332,11 +332,6 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
 
     monkeypatch.setattr(
         adapter,
-        "load_response_frontier_from_bundle",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("bundle load should not run")),
-    )
-    monkeypatch.setattr(
-        adapter,
         "extract_fg_song_inputs",
         lambda calc_song: SimpleNamespace(timestamps=[0.0], great_candidates=[0.0], use_forced_great_timing=True),
     )
@@ -346,6 +341,8 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         return (1, 0, 1)
 
     monkeypatch.setattr(adapter, "reconstruct_force_greats_response_counts", _fake_reconstruct)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 1000)
+    monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 1230})
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -354,14 +351,57 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         result=result,
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},
-        base_score=1000,
         reconstruction_frontier=full_frontier,
     )
 
     assert seen["frontier"] is full_frontier
     assert payload["forced_counts"] == [1, 0, 1]
+    assert payload["Score"] == 1230
+    assert payload["ForceGreats"]["final_score"] == 1230
     assert payload["ForceGreats"]["frontier_states"] == 9
     assert payload["ForceGreats"]["non_fever_base"] == 11
+
+
+def test_force_payload_requires_state_frontier_when_counts_are_absent(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseFrontierSolveResult,
+        FgResponseInnerResult,
+        FgResponseSurface,
+    )
+
+    surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    result = FgResponseFrontierSolveResult(
+        best_score=1234,
+        ft=1,
+        ff=2,
+        gem_counts={"Perfect Points": 0},
+        stats={"Fever Time": 12, "Fever Fill Rate": 34},
+        surface=surface,
+        frontier=FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 7, 0.0),
+        inner=FgResponseInnerResult(1234, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        seconds=0.0,
+        forced_counts=(),
+        raw_fever_fill=1.0,
+        real_fever_time=2.0,
+    )
+
+    monkeypatch.setattr(
+        adapter,
+        "reconstruct_force_greats_response_counts",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("reconstruction should not run")),
+    )
+
+    with pytest.raises(ValueError, match="requires state frontiers"):
+        adapter._force_payload_from_response_frontier(
+            eval_data={"Selected Element": "Rush"},
+            base_stats={"Perfect Points": 1},
+            selected_element="Rush",
+            result=result,
+            calc_song={"metadata": {}, "song_data": {}},
+            ref_arrays={},
+        )
 
 
 def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypatch):
@@ -418,16 +458,18 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
 
     def _fake_build_payload(calc_song, ref_arrays, *, stat_keys, include_state_frontiers):
         seen_keys.append((tuple(stat_keys), bool(include_state_frontiers)))
-        return SimpleNamespace(frontier_by_key={(10, 20): full_frontier, (30, 40): low_full_frontier}), "built"
+        return SimpleNamespace(
+            payload=SimpleNamespace(frontier_by_key={(10, 20): full_frontier, (30, 40): low_full_frontier})
+        )
 
-    monkeypatch.setattr(adapter, "build_response_frontier_cache_payload", _fake_build_payload)
+    monkeypatch.setattr(adapter, "build_or_load_response_frontier_payload", _fake_build_payload)
 
     seen_payloads = []
 
-    def _fake_force_payload(*, result, reconstruction_frontier=None, base_score=None, **kwargs):
+    def _fake_force_payload(*, result, reconstruction_frontier=None, **kwargs):
         seen_payloads.append((int(result.best_score), reconstruction_frontier))
         return {
-            "BaseScore": int(base_score),
+            "BaseScore": 60,
             "Score": int(result.best_score),
             "ForceGreats": {"config": {"NonFever1": 1}},
             "forced_counts": [1],
@@ -650,6 +692,8 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
     monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_many_gpu", _fake_response_frontier_many)
     monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 150})
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},
@@ -757,6 +801,12 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
     monkeypatch.setattr(adapter, "solve_force_greats_response_frontier_many_gpu", _fake_response_frontier_many)
     monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(
+        adapter,
+        "evaluate_force_greats_exact",
+        lambda stats, *_args, **_kwargs: {"final_score": int(stats["Rush"]) + 189},
+    )
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},

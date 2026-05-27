@@ -5,6 +5,7 @@ from typing import Any
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
+from ....solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score_nojit as evaluate_stats_score
@@ -13,10 +14,7 @@ from ....solver.taichi_gem.force_greats import (
     reconstruct_force_greats_response_counts,
     solve_force_greats_response_frontier_many_gpu,
 )
-from ....solver.taichi_gem.force_greats.response_cache import (
-    build_response_frontier_cache_payload,
-    load_response_frontier_from_bundle,
-)
+from ....solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
 from ..ga_entry_utils import materialize_entry_names
 from . import cache_validation
 from .entry_resolution import build_direct_ga_entry_items, entry_base_score
@@ -56,21 +54,15 @@ def _force_payload_from_response_frontier(
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
-    base_score: int | None = None,
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)
     else:
-        song_inputs = extract_fg_song_inputs(calc_song)
         if not frontier.state_frontiers:
-            frontier = load_response_frontier_from_bundle(
-                calc_song,
-                ref_arrays,
-                ft_stat=safe_int(result.stats.get("Fever Time", 0), 0),
-                ff_stat=safe_int(result.stats.get("Fever Fill Rate", 0), 0),
-            )
+            raise ValueError("ForceGreats response frontier payload requires state frontiers for forced counts")
+        song_inputs = extract_fg_song_inputs(calc_song)
         forced_counts = tuple(
             int(v)
             for v in reconstruct_force_greats_response_counts(
@@ -84,14 +76,17 @@ def _force_payload_from_response_frontier(
             )
         )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    if base_score is None:
-        base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
+    base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
+    exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
+    if not isinstance(exact_fg, dict):
+        raise ValueError("ForceGreats response frontier exact replay failed")
+    final_score = int(exact_fg["final_score"])
 
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
     payload["Stats"] = dict(result.stats)
     payload["BaseScore"] = int(base_score)
-    payload["Score"] = int(result.best_score)
+    payload["Score"] = int(final_score)
     payload["Selected Element"] = str(selected_element or payload.get("Selected Element", "") or "")
     payload["GemCounts"] = dict(result.gem_counts)
     payload["FT"] = int(result.ft)
@@ -102,7 +97,7 @@ def _force_payload_from_response_frontier(
         "mode": "response_frontier",
         "algo_version": int(FORCE_GREATS_ALGO_VERSION),
         "config": config,
-        "final_score": int(result.best_score),
+        "final_score": int(final_score),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),
         "frontier_states": int(frontier.states_evaluated),
         "frontier_max_state": int(frontier.max_state_frontier),
@@ -227,13 +222,13 @@ def process_force_greats_response_frontier_gpu(
     )
     reconstruct_frontier_by_key: dict[tuple[int, int], Any] = {}
     if reconstruct_keys:
-        payload, _source = build_response_frontier_cache_payload(
+        prewarm = build_or_load_response_frontier_payload(
             calc_song,
             ref_arrays,
             stat_keys=reconstruct_keys,
             include_state_frontiers=True,
         )
-        reconstruct_frontier_by_key = dict(payload.frontier_by_key)
+        reconstruct_frontier_by_key = dict(prewarm.payload.frontier_by_key)
 
     for item in shortlisted:
         result = item["result"]
@@ -249,14 +244,14 @@ def process_force_greats_response_frontier_gpu(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            base_score=int(item["base_score"]),
             reconstruction_frontier=reconstruction_frontier,
         )
 
         entry = item["entry"]
-        if int(result.best_score) > safe_int(entry.get("fg_score", 0), 0):
+        exact_fg_score = safe_int(payload.get("Score", 0), 0)
+        if int(exact_fg_score) > safe_int(entry.get("fg_score", 0), 0):
             entry["force"] = payload
-            entry["fg_score"] = int(result.best_score)
+            entry["fg_score"] = int(exact_fg_score)
         variants.append(
             {
                 "data": payload,
@@ -264,7 +259,7 @@ def process_force_greats_response_frontier_gpu(
                 "minis": item["minis"],
                 "score": int(payload["BaseScore"]),
                 "base_score": int(payload["BaseScore"]),
-                "fg_score": int(result.best_score),
+                "fg_score": int(exact_fg_score),
                 "_entry_ref": entry,
                 "_is_ga": bool(item["_is_ga"]),
             }
