@@ -493,6 +493,21 @@ def solve_force_greats_response_frontier_many_gpu(
                 frontier_content_class[idx] = int(class_idx)
 
         pair_positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
+        frontier_idx_seq_by_candidate: list[np.ndarray] = []
+        for ft_stat_seq, ff_stat_seq in stat_key_seq_by_candidate:
+            frontier_idx_seq = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
+            frontier_idx_seq_by_candidate.append(frontier_idx_seq)
+        if frontier_idx_seq_by_candidate:
+            all_frontier_idx = np.concatenate(frontier_idx_seq_by_candidate, axis=0)
+            ensure_frontier_content_classes(all_frontier_idx)
+        primary_ftff_delta_values = np.asarray(
+            (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
+            dtype=np.int32,
+        )
+        secondary_ftff_delta_values = np.asarray(
+            (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
+            dtype=np.int32,
+        )
         group_meta_blocks: list[np.ndarray] = []
         group_offset_blocks: list[np.ndarray] = []
         group_length_blocks: list[np.ndarray] = []
@@ -506,8 +521,7 @@ def solve_force_greats_response_frontier_many_gpu(
         for candidate_idx, components in enumerate(base_components_by_candidate):
             base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = components
             ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
-            frontier_idx_seq = frontier_idx_by_stat[ft_stat_seq, ff_stat_seq]
-            ensure_frontier_content_classes(frontier_idx_seq)
+            frontier_idx_seq = frontier_idx_seq_by_candidate[int(candidate_idx)]
             canonical_frontier_seq = np.ascontiguousarray(frontier_content_class[frontier_idx_seq], dtype=np.int32)
             if score_elements_constant:
                 if complete_scoring_bundle:
@@ -530,14 +544,8 @@ def solve_force_greats_response_frontier_many_gpu(
                 kept_primary_values = np.full((int(best_positions.shape[0]),), int(base_primary), dtype=np.int32)
                 kept_secondary_values = np.full((int(best_positions.shape[0]),), int(base_secondary), dtype=np.int32)
             else:
-                primary_values = np.asarray(
-                    int(base_primary) + (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
-                    dtype=np.int32,
-                )
-                secondary_values = np.asarray(
-                    int(base_secondary) + (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
-                    dtype=np.int32,
-                )
+                primary_values = np.asarray(int(base_primary) + primary_ftff_delta_values, dtype=np.int32)
+                secondary_values = np.asarray(int(base_secondary) + secondary_ftff_delta_values, dtype=np.int32)
                 best_positions = _prune_dominated_ftff_response_positions(
                     positions=pair_positions,
                     frontier_ids=canonical_frontier_seq,
