@@ -212,6 +212,79 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
     assert batch_calls == [4]
 
 
+def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+
+    group_calls: list[int] = []
+    batch_calls: list[int] = []
+
+    def fake_group_kernel(
+        group_count,
+        surface_words,
+        surface_counts,
+        surface_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        allow_pp_template,
+    ):
+        group_calls.append(int(group_count))
+
+    def fake_batch_kernel(
+        row_count,
+        surface_words,
+        surface_counts,
+        surface_head_coeffs,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        allow_pp_template,
+    ):
+        batch_calls.append(int(row_count))
+        out_rows[:, 0] = 1
+
+    monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_batch_kernel)
+
+    surface_count = 20_000
+    group_meta = np.zeros((1, 8), dtype=np.int32)
+    group_meta[0, 0] = 90
+    group_offsets = np.asarray([0], dtype=np.int32)
+    group_lengths = np.asarray([surface_count], dtype=np.int32)
+    surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
+    surface_counts = np.zeros((surface_count, 2), dtype=np.int32)
+    ref_arrays = {
+        "Perfect Points": np.ones(161, dtype=np.float32),
+        "Combo Multiplier": np.ones(161, dtype=np.float32),
+        "Fever Multiplier": np.ones(161, dtype=np.float32),
+    }
+
+    response_inner._score_response_group_meta_gpu(
+        group_meta=group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+        ref_arrays=ref_arrays,
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+    )
+
+    assert group_calls == []
+    assert batch_calls == [surface_count]
+
+
 def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner
 
