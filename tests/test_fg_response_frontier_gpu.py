@@ -83,6 +83,36 @@ def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
     assert gpu == reference
 
 
+def test_response_frontier_gpu_inner_scores_same_color_greats_as_single_color():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        FgResponseSurface,
+        optimize_response_frontier_inner_exact,
+        optimize_response_frontier_inner_exact_gpu,
+    )
+
+    surfaces = (FgResponseSurface(0, 0, 0, 0, 0b1111, 0, 0, 0, 0, 0),)
+    kwargs = {
+        "total_notes": 4,
+        "residual_budget": 0,
+        "stats_after_ftff": {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Chill": 812,
+        },
+        "primary_color": "Chill",
+        "secondary_color": "Chill",
+        "selected_color": "Chill",
+        "ref_arrays": _ref_arrays(),
+    }
+
+    reference = optimize_response_frontier_inner_exact(surfaces, **kwargs)
+    gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
+
+    assert reference.best_score == 4 * 1774
+    assert gpu == reference
+
+
 def test_response_frontier_gpu_batch_pack_matches_reference_groups():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseSurface,

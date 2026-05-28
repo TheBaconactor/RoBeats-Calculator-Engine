@@ -15,6 +15,7 @@ from gear_optimizer.core.constants import (
     TOTAL_ROWS,
 )
 from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 from gear_optimizer.solver.scoring_core import lookup_reference_jit
 from gear_optimizer.solver.taichi_gem import api as gem_api
 
@@ -154,6 +155,7 @@ def _score_response_surface_jit(
     pp_factor,
     combo_mul,
     fever_mul,
+    is_single_color,
 ):
     base_value64 = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
     combo64 = float(combo_mul)
@@ -194,12 +196,16 @@ def _score_response_surface_jit(
         else:
             score += int(ramp)
 
-    great_penalty_base_head = int(np.floor(float(int(primary_val) * 2) * (2.0 / 3.0))) + int(
-        np.floor(float(int(secondary_val)) * (2.0 / 3.0))
-    ) + 150
-    great_penalty_base_raw = (float(int(primary_val) * 2) * (2.0 / 3.0)) + (
-        float(int(secondary_val)) * (2.0 / 3.0)
-    ) + 150.0
+    if int(is_single_color) != 0:
+        great_penalty_base_head = (int(primary_val) * 2) + 150
+        great_penalty_base_raw = float(great_penalty_base_head)
+    else:
+        great_penalty_base_head = int(np.floor(float(int(primary_val)) * (4.0 / 3.0))) + int(
+            np.floor(float(int(secondary_val)) * (2.0 / 3.0))
+        ) + 150
+        great_penalty_base_raw = (float(int(primary_val)) * (4.0 / 3.0)) + (
+            float(int(secondary_val)) * (2.0 / 3.0)
+        ) + 150.0
     penalty_combo_value = int(np.floor(base_value64 * combo64))
     great_combo_value = int(np.floor(great_penalty_base_raw * combo64))
     body_penalty = penalty_combo_value - great_combo_value
@@ -259,6 +265,7 @@ def _optimize_response_surface_inner_jit(
     is_s_fm,
     is_p_ov,
     is_s_ov,
+    is_single_color,
     ref_pp,
     ref_cm,
     ref_fm,
@@ -367,6 +374,7 @@ def _optimize_response_surface_inner_jit(
                     lookup_reference_jit(pp_stat, ref_pp, TOTAL_ROWS),
                     lookup_reference_jit(cm_stat, ref_cm, TOTAL_ROWS),
                     lookup_reference_jit(fm_stat, ref_fm, TOTAL_ROWS),
+                    int(is_single_color),
                 )
                 if score > best_score or (
                     score == best_score
@@ -416,6 +424,7 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(secondary == "Rush"),
         int(primary == selected and bool(selected)),
         int(secondary == selected and bool(selected)),
+        int(is_single_color_song(primary, secondary)),
     )
 
 
@@ -435,6 +444,7 @@ def score_response_surface_exact(
     pp_factor: float,
     combo_mul: float,
     fever_mul: float,
+    single_color: bool,
 ) -> int:
     head_len = min(int(total_notes), 100)
     body_total = max(0, int(total_notes) - 100)
@@ -458,6 +468,7 @@ def score_response_surface_exact(
             float(pp_factor),
             float(combo_mul),
             float(fever_mul),
+            int(bool(single_color)),
         )
     )
 
@@ -568,6 +579,7 @@ def _fg_response_score_device(
     pp_factor: ti.f32,
     combo_mul: ti.f32,
     fever_mul: ti.f32,
+    is_single_color: ti.i32,
 ) -> ti.i32:
     base_value: ti.f32 = ti.cast((primary_val * 2) + secondary_val, ti.f32) + pp_factor
     combo_val: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
@@ -611,16 +623,22 @@ def _fg_response_score_device(
 
     great_bits: ti.u32 = great0 | great1 | great2 | great3
     if body_great > 0 or great_bits != ti.u32(0):
-        great_head_base: ti.i32 = (
-            ti.cast(ti.floor(ti.cast(primary_val * 2, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
-            + ti.cast(ti.floor(ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
-            + 150
-        )
-        great_raw: ti.f32 = (
-            ti.cast(primary_val * 2, ti.f32) * ti.f32(2.0 / 3.0)
-            + ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)
-            + ti.f32(150.0)
-        )
+        great_head_base: ti.i32 = 0
+        great_raw: ti.f32 = ti.f32(0.0)
+        if is_single_color != 0:
+            great_head_base = (primary_val * 2) + 150
+            great_raw = ti.cast(great_head_base, ti.f32)
+        else:
+            great_head_base = (
+                ti.cast(ti.floor(ti.cast(primary_val, ti.f32) * ti.f32(4.0 / 3.0)), ti.i32)
+                + ti.cast(ti.floor(ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
+                + 150
+            )
+            great_raw = (
+                ti.cast(primary_val, ti.f32) * ti.f32(4.0 / 3.0)
+                + ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)
+                + ti.f32(150.0)
+            )
         if body_great > 0:
             body_penalty: ti.i32 = combo_val - ti.cast(ti.floor(great_raw * combo_mul), ti.i32)
             if body_penalty < 0:
@@ -760,6 +778,7 @@ def _fg_response_inner_batch_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
+        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -925,6 +944,7 @@ def _fg_response_inner_batch_kernel(
                                 pp_ref_cache[0],
                                 cm_mul,
                                 fm_mul,
+                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score
@@ -987,6 +1007,7 @@ def _fg_response_inner_batch_kernel(
                                         pp_ref_cache[g_pp],
                                         cm_mul,
                                         fm_mul,
+                                        is_single_color,
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -1028,6 +1049,7 @@ def _fg_response_inner_batch_kernel(
                             pp_ref_base,
                             cm_mul,
                             fm_mul,
+                            is_single_color,
                         )
                         if score > best_score or (
                             score == best_score
@@ -1095,6 +1117,7 @@ def _fg_response_inner_group_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
+        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -1277,6 +1300,7 @@ def _fg_response_inner_group_kernel(
                                     pp_ref_cache[0],
                                     cm_mul,
                                     fm_mul,
+                                    is_single_color,
                                 )
                                 if score > best_score or (
                                     score == best_score
@@ -1339,6 +1363,7 @@ def _fg_response_inner_group_kernel(
                                             pp_ref_cache[g_pp],
                                             cm_mul,
                                             fm_mul,
+                                            is_single_color,
                                         )
                                         if score > best_score or (
                                             score == best_score
@@ -1380,6 +1405,7 @@ def _fg_response_inner_group_kernel(
                                 pp_ref_base,
                                 cm_mul,
                                 fm_mul,
+                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score
