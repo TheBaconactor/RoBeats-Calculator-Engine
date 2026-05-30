@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
-from functools import lru_cache
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.constants import (
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -17,18 +18,24 @@ from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
-from .response_builder import (
-    build_force_greats_response_frontier,
-    reconstruct_force_greats_response_counts,
-    response_surface_dominates,
+from .response_builder import reconstruct_force_greats_response_counts
+from .response_cache import (
+    FgResponseFrontierScoringBundle,
+    _response_axes,
+    frontier_result_from_scoring_bundle_for_stats,
+    load_response_frontier_scoring_bundle,
 )
-from .response_cache import build_or_load_response_frontier_payload, build_or_load_response_frontier_scoring_bundle
+from .response_ftff_prune import (
+    best_response_positions_for_base_ftff,
+    element_ftff_delta,
+    prune_best_positions_by_frontier,
+    prune_dominated_ftff_response_positions,
+)
 from .response_inner import (
-    _pack_response_frontier_surface_pool,
+    _precompute_surface_head_coeffs,
+    _response_group_logical_surface_plan,
+    _response_inner_combo_counts,
     _score_response_group_meta_gpu,
-    optimize_response_frontier_inner_exact,
-    optimize_response_frontier_inner_exact_gpu,
-    score_response_surface_exact,
 )
 from .response_types import (
     FgResponseFrontierResult,
@@ -42,12 +49,10 @@ __all__ = [
     "FgResponseFrontierSolveResult",
     "FgResponseInnerResult",
     "FgResponseSurface",
-    "build_force_greats_response_frontier",
-    "optimize_response_frontier_inner_exact",
-    "optimize_response_frontier_inner_exact_gpu",
+    "FgResponseFrontierPackedScoringBatch",
+    "prepare_force_greats_response_frontier_scoring_batch",
+    "score_prepared_force_greats_response_frontier_batch_gpu",
     "reconstruct_force_greats_response_counts",
-    "response_surface_dominates",
-    "score_response_surface_exact",
     "solve_force_greats_response_frontier_batch_gpu",
     "solve_force_greats_response_frontier_many_gpu",
 ]
@@ -56,179 +61,42 @@ _InnerStats = tuple[int, int, int, int, int, int, int]
 _ResponsePair = tuple[int, int, int, dict[str, Any] | _InnerStats, FgResponseFrontierResult, float, float]
 
 
-@lru_cache(maxsize=4096)
-def _best_response_positions_for_base_ftff(
-    *,
-    total_budget: int,
-    base_ft: int,
-    base_ff: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    ft_values, ff_values, remaining = ftff_combo_arrays(int(total_budget))
-    ft_stat_seq = np.clip(int(base_ft) + (ft_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-    ff_stat_seq = np.clip(int(base_ff) + (ff_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-    canonical_key_seq = ((ft_stat_seq * (TOTAL_ROWS + 1)) + ff_stat_seq).astype(np.int32, copy=False)
-    positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
-    unique_keys, first_positions = np.unique(canonical_key_seq, return_index=True)
-    if int(unique_keys.shape[0]) == int(canonical_key_seq.shape[0]):
-        best_positions = positions
-    else:
-        sort_order = np.lexsort((positions, -np.asarray(remaining, dtype=np.int32), canonical_key_seq))
-        sorted_keys = canonical_key_seq[sort_order]
-        first_sorted = np.empty(int(sorted_keys.shape[0]), dtype=np.bool_)
-        first_sorted[0] = True
-        first_sorted[1:] = sorted_keys[1:] != sorted_keys[:-1]
-        best_positions_by_key = sort_order[first_sorted]
-        if int(unique_keys.shape[0]) != int(best_positions_by_key.shape[0]):
-            raise ValueError("FG response frontier packed prune found inconsistent frontier groups")
-        best_positions = best_positions_by_key[np.argsort(first_positions, kind="stable")]
-    return (
-        np.ascontiguousarray(best_positions, dtype=np.int32),
-        np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32),
-        np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32),
-    )
+@dataclass(frozen=True, slots=True)
+class FgResponseFrontierPackedScoringBatch:
+    started: float
+    stats_inputs: tuple[dict[str, Any], ...]
+    calc_song: dict[str, Any]
+    song_inputs: Any
+    ref_arrays: dict[str, Any]
+    selected_color: str
+    primary_color: str
+    secondary_color: str
+    kept_stat_keys: tuple[tuple[int, int], ...]
+    scoring_bundle: FgResponseFrontierScoringBundle
+    scoring_bundle_ms: float
+    group_meta: np.ndarray
+    group_ft: np.ndarray
+    group_ff: np.ndarray
+    group_ft_stat: np.ndarray
+    group_ff_stat: np.ndarray
+    candidate_slices: tuple[tuple[int, int], ...]
+    scoring_surface_words: np.ndarray
+    scoring_surface_counts: np.ndarray
+    scoring_surface_head_coeffs: np.ndarray
+    scoring_group_offsets: np.ndarray
+    scoring_group_lengths: np.ndarray
+    scoring_logical_owners: np.ndarray
+    scoring_logical_surfaces: np.ndarray
+    scoring_logical_work_cumsum: np.ndarray
+    scoring_unique_frontiers: int
+    scoring_surface_compact_ms: float
+    scoring_surface_head_coeff_ms: float
 
 
 def _ftff_stat_key(stats_after_ftff: dict[str, Any]) -> tuple[int, int]:
     ff_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Fill Rate", 0) or 0)))
     ft_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Time", 0) or 0)))
     return int(ft_stat), int(ff_stat)
-
-
-def _score_elements(stats: dict[str, Any], primary_color: str, secondary_color: str) -> tuple[int, int]:
-    if isinstance(stats, tuple):
-        return int(stats[3]), int(stats[4])
-    return (
-        int(stats.get(str(primary_color or ""), 0) or 0),
-        int(stats.get(str(secondary_color or ""), 0) or 0),
-    )
-
-
-def _prune_best_positions_by_frontier(
-    *,
-    positions: np.ndarray,
-    frontier_ids: np.ndarray,
-    residuals: np.ndarray,
-) -> np.ndarray:
-    if int(positions.shape[0]) != int(frontier_ids.shape[0]) or int(positions.shape[0]) != int(residuals.shape[0]):
-        raise ValueError("FG response frontier best-position prune received inconsistent arrays")
-    if int(positions.shape[0]) <= 1:
-        return np.ascontiguousarray(positions, dtype=np.int32)
-
-    unique_frontiers, first_positions = np.unique(frontier_ids, return_index=True)
-    if int(unique_frontiers.shape[0]) == int(frontier_ids.shape[0]):
-        return np.ascontiguousarray(positions, dtype=np.int32)
-
-    sort_order = np.lexsort((positions, -residuals, frontier_ids))
-    sorted_frontiers = frontier_ids[sort_order]
-    first_sorted = np.empty(int(sorted_frontiers.shape[0]), dtype=np.bool_)
-    first_sorted[0] = True
-    first_sorted[1:] = sorted_frontiers[1:] != sorted_frontiers[:-1]
-    best_local_positions = sort_order[first_sorted]
-    if int(unique_frontiers.shape[0]) != int(best_local_positions.shape[0]):
-        raise ValueError("FG response frontier packed prune found inconsistent frontier groups")
-    kept_local = best_local_positions[np.argsort(first_positions, kind="stable")]
-    return np.ascontiguousarray(positions[kept_local], dtype=np.int32)
-
-
-def _prune_dominated_ftff_response_positions(
-    *,
-    positions: np.ndarray,
-    frontier_ids: np.ndarray,
-    residuals: np.ndarray,
-    primary_values: np.ndarray,
-    secondary_values: np.ndarray,
-) -> np.ndarray:
-    row_count = int(positions.shape[0])
-    if (
-        row_count != int(frontier_ids.shape[0])
-        or row_count != int(residuals.shape[0])
-        or row_count != int(primary_values.shape[0])
-        or row_count != int(secondary_values.shape[0])
-    ):
-        raise ValueError("FG response frontier dominance prune received inconsistent arrays")
-    if row_count <= 1:
-        return np.ascontiguousarray(positions, dtype=np.int32)
-
-    buckets: dict[int, list[int]] = {}
-    frontier_seq = np.asarray(frontier_ids, dtype=np.int32)
-    for local_idx, frontier_id in enumerate(frontier_seq.tolist()):
-        buckets.setdefault(int(frontier_id), []).append(int(local_idx))
-
-    residual_seq = np.asarray(residuals, dtype=np.int32)
-    primary_seq = np.asarray(primary_values, dtype=np.int32)
-    secondary_seq = np.asarray(secondary_values, dtype=np.int32)
-    kept_local_indices: list[int] = []
-    for bucket_indices in buckets.values():
-        if len(bucket_indices) <= 1:
-            kept_local_indices.extend(bucket_indices)
-            continue
-
-        first_idx = int(bucket_indices[0])
-        first_primary = int(primary_seq[first_idx])
-        first_secondary = int(secondary_seq[first_idx])
-        same_score_elements = True
-        best_idx = first_idx
-        best_residual = int(residual_seq[first_idx])
-        for local_idx in bucket_indices[1:]:
-            idx = int(local_idx)
-            primary = int(primary_seq[idx])
-            secondary = int(secondary_seq[idx])
-            if primary != first_primary or secondary != first_secondary:
-                same_score_elements = False
-                break
-            residual = int(residual_seq[idx])
-            if residual > best_residual:
-                best_idx = idx
-                best_residual = residual
-        if same_score_elements:
-            kept_local_indices.append(int(best_idx))
-            continue
-
-        order = sorted(
-            range(len(bucket_indices)),
-            key=lambda idx: (
-                -int(residual_seq[int(bucket_indices[idx])]),
-                -int(primary_seq[int(bucket_indices[idx])]),
-                -int(secondary_seq[int(bucket_indices[idx])]),
-                int(idx),
-            ),
-        )
-        skyline: list[tuple[int, int]] = []
-        kept_bucket_offsets: set[int] = set()
-        for bucket_offset in order:
-            local_idx = int(bucket_indices[int(bucket_offset)])
-            primary = int(primary_seq[local_idx])
-            secondary = int(secondary_seq[local_idx])
-            dominated = False
-            for kept_primary, kept_secondary in skyline:
-                if int(kept_primary) >= primary and int(kept_secondary) >= secondary:
-                    dominated = True
-                    break
-            if dominated:
-                continue
-
-            write = 0
-            for kept_primary, kept_secondary in skyline:
-                if primary >= int(kept_primary) and secondary >= int(kept_secondary):
-                    continue
-                skyline[write] = (int(kept_primary), int(kept_secondary))
-                write += 1
-            del skyline[write:]
-            skyline.append((primary, secondary))
-            kept_bucket_offsets.add(int(bucket_offset))
-        kept_local_indices.extend(
-            int(bucket_indices[idx]) for idx in range(len(bucket_indices)) if int(idx) in kept_bucket_offsets
-        )
-
-    return np.ascontiguousarray(positions[np.asarray(kept_local_indices, dtype=np.intp)], dtype=np.int32)
-
-
-def _element_ftff_delta(color: str, ft: int, ff: int) -> int:
-    if str(color or "") == "Beat":
-        return int(ft) * GEM_STAT_TO_ELEMENT_SCALE
-    if str(color or "") == "Vibe":
-        return int(ff) * GEM_STAT_TO_ELEMENT_SCALE
-    return 0
 
 
 def _stats_after_ftff_for_inner(
@@ -249,94 +117,106 @@ def _stats_after_ftff_for_inner(
         "Fever Fill Rate": int(base_stats.get("Fever Fill Rate", 0) or 0) + int(ff) * GEM_SCALE_FEVER,
     }
     if primary:
-        out[primary] = int(base_stats.get(primary, 0) or 0) + _element_ftff_delta(primary, int(ft), int(ff))
+        out[primary] = int(base_stats.get(primary, 0) or 0) + element_ftff_delta(primary, int(ft), int(ff))
     if secondary:
-        out[secondary] = int(base_stats.get(secondary, 0) or 0) + _element_ftff_delta(secondary, int(ft), int(ff))
+        out[secondary] = int(base_stats.get(secondary, 0) or 0) + element_ftff_delta(secondary, int(ft), int(ff))
     return out
 
 
-def _response_pair_dominates(
-    a: _ResponsePair,
-    b: _ResponsePair,
+def _surface_from_packed_arrays(
     *,
-    primary_color: str,
-    secondary_color: str,
-) -> bool:
-    if a[4] is not b[4]:
-        return False
-    if int(a[2]) < int(b[2]):
-        return False
-    a_primary, a_secondary = _score_elements(a[3], primary_color, secondary_color)
-    b_primary, b_secondary = _score_elements(b[3], primary_color, secondary_color)
-    return int(a_primary) >= int(b_primary) and int(a_secondary) >= int(b_secondary)
+    surface_words: np.ndarray,
+    surface_counts: np.ndarray,
+    surface_idx: int,
+) -> FgResponseSurface:
+    idx = int(surface_idx)
+    if idx < 0 or idx >= int(surface_words.shape[0]) or idx >= int(surface_counts.shape[0]):
+        raise ValueError("response frontier exact GPU selected surface is outside the packed pool")
+    word_row = np.asarray(surface_words[idx], dtype=np.uint32)
+    count_row = np.asarray(surface_counts[idx], dtype=np.int32)
+    return FgResponseSurface(
+        int(word_row[0]),
+        int(word_row[1]),
+        int(word_row[2]),
+        int(word_row[3]),
+        int(word_row[4]),
+        int(word_row[5]),
+        int(word_row[6]),
+        int(word_row[7]),
+        int(count_row[0]),
+        int(count_row[1]),
+    )
 
 
-def _prune_dominated_ftff_response_pairs(
-    pairs: list[_ResponsePair],
+def _pack_scoring_surfaces_for_batch(
     *,
-    primary_color: str,
-    secondary_color: str,
-    frontier_key_of: Callable[[_ResponsePair], int] | None = None,
-) -> list[_ResponsePair]:
-    by_frontier: dict[int, list[_ResponsePair]] = {}
-    identity_of = frontier_key_of or (lambda pair: int(id(pair[4])))
-    for pair in pairs:
-        by_frontier.setdefault(int(identity_of(pair)), []).append(pair)
+    scoring_bundle: FgResponseFrontierScoringBundle,
+    group_meta: np.ndarray,
+    group_ft_stat: np.ndarray,
+    group_ff_stat: np.ndarray,
+    allow_pp: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, float, float]:
+    phase_t0 = time.perf_counter()
+    kept_frontiers = np.ascontiguousarray(
+        scoring_bundle.frontier_idx_by_stat[group_ft_stat, group_ff_stat],
+        dtype=np.int32,
+    )
+    frontier_count = int(scoring_bundle.frontier_lengths.shape[0])
+    if bool(np.any((kept_frontiers < 0) | (kept_frontiers >= frontier_count))):
+        raise ValueError("FG response frontier stat key was not loaded for packed batch solve")
 
-    out: list[_ResponsePair] = []
-    for bucket in by_frontier.values():
-        if len(bucket) <= 1:
-            out.extend(bucket)
-            continue
-        first_primary, first_secondary = _score_elements(bucket[0][3], primary_color, secondary_color)
-        best_idx = 0
-        best_residual = int(bucket[0][2])
-        same_score_elements = True
-        for idx, pair in enumerate(bucket[1:], start=1):
-            primary, secondary = _score_elements(pair[3], primary_color, secondary_color)
-            if int(primary) != int(first_primary) or int(secondary) != int(first_secondary):
-                same_score_elements = False
-                break
-            residual = int(pair[2])
-            if residual > best_residual:
-                best_idx = int(idx)
-                best_residual = int(residual)
-        if same_score_elements:
-            out.append(bucket[best_idx])
-            continue
+    unique_frontiers = np.ascontiguousarray(np.unique(kept_frontiers), dtype=np.int32)
+    frontier_lengths_all = np.asarray(scoring_bundle.frontier_lengths, dtype=np.int32)
+    frontier_offsets_all = np.asarray(scoring_bundle.frontier_offsets, dtype=np.int32)
+    unique_lengths = np.ascontiguousarray(frontier_lengths_all[unique_frontiers], dtype=np.int32)
+    if bool(np.any(unique_lengths <= 0)):
+        raise ValueError("FG response frontier payload contains an empty first frontier")
 
-        rows = [
-            (
-                idx,
-                pair,
-                int(pair[2]),
-                *_score_elements(pair[3], primary_color, secondary_color),
-            )
-            for idx, pair in enumerate(bucket)
-        ]
-        rows.sort(key=lambda row: (-row[2], -row[3], -row[4], row[0]))
-        skyline: list[tuple[int, int]] = []
-        kept_indices: set[int] = set()
-        for idx, _pair, _residual, primary, secondary in rows:
-            dominated = False
-            for kept_primary, kept_secondary in skyline:
-                if int(kept_primary) >= int(primary) and int(kept_secondary) >= int(secondary):
-                    dominated = True
-                    break
-            if dominated:
-                continue
+    local_offsets_by_frontier = np.full((frontier_count,), -1, dtype=np.int32)
+    surface_word_blocks: list[np.ndarray] = []
+    surface_count_blocks: list[np.ndarray] = []
+    cursor = 0
+    for local_idx, frontier_idx in enumerate(unique_frontiers.tolist()):
+        start = int(frontier_offsets_all[int(frontier_idx)])
+        length = int(unique_lengths[int(local_idx)])
+        stop = int(start) + int(length)
+        local_offsets_by_frontier[int(frontier_idx)] = int(cursor)
+        surface_word_blocks.append(scoring_bundle.surface_words[start:stop])
+        surface_count_blocks.append(scoring_bundle.surface_counts[start:stop])
+        cursor += int(length)
 
-            write = 0
-            for kept_primary, kept_secondary in skyline:
-                if int(primary) >= int(kept_primary) and int(secondary) >= int(kept_secondary):
-                    continue
-                skyline[write] = (kept_primary, kept_secondary)
-                write += 1
-            del skyline[write:]
-            skyline.append((int(primary), int(secondary)))
-            kept_indices.add(int(idx))
-        out.extend(pair for idx, pair in enumerate(bucket) if int(idx) in kept_indices)
-    return out
+    surface_words = np.ascontiguousarray(np.concatenate(surface_word_blocks, axis=0), dtype=np.uint32)
+    surface_counts = np.ascontiguousarray(np.concatenate(surface_count_blocks, axis=0), dtype=np.int32)
+    group_offsets = np.ascontiguousarray(local_offsets_by_frontier[kept_frontiers], dtype=np.int32)
+    group_lengths = np.ascontiguousarray(frontier_lengths_all[kept_frontiers], dtype=np.int32)
+    if bool(np.any(group_offsets < 0)) or bool(np.any(group_lengths <= 0)):
+        raise ValueError("FG response frontier payload contains an empty first frontier")
+    combo_counts = _response_inner_combo_counts(group_meta, allow_pp=bool(allow_pp))
+    logical_owners, logical_surfaces, logical_work_cumsum = _response_group_logical_surface_plan(
+        group_lengths,
+        combo_counts,
+    )
+    head_lengths = np.unique(np.ascontiguousarray(group_meta[:, 6], dtype=np.int32))
+    if int(head_lengths.shape[0]) != 1:
+        raise ValueError("response frontier GPU group metadata has inconsistent head length")
+    compact_ms = float((time.perf_counter() - phase_t0) * 1000.0)
+
+    phase_t0 = time.perf_counter()
+    surface_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=int(head_lengths[0]))
+    head_coeff_ms = float((time.perf_counter() - phase_t0) * 1000.0)
+    return (
+        surface_words,
+        surface_counts,
+        surface_head_coeffs,
+        group_offsets,
+        group_lengths,
+        logical_owners,
+        logical_surfaces,
+        logical_work_cumsum,
+        int(unique_frontiers.shape[0]),
+        compact_ms,
+        head_coeff_ms,
+    )
 
 
 def _solve_result_from_row(
@@ -348,6 +228,7 @@ def _solve_result_from_row(
     ref_arrays: dict[str, Any],
     pair: _ResponsePair,
     row: tuple[int, int, int, int, int, int, int, int, int, int, int],
+    surface: FgResponseSurface | None = None,
     include_forced_counts: bool = True,
 ) -> FgResponseFrontierSolveResult:
     ft, ff, _residual, _stats_after_ftff, frontier, raw_fill, real_fever_time = pair
@@ -364,7 +245,7 @@ def _solve_result_from_row(
         final_primary=int(row[9]),
         final_secondary=int(row[10]),
     )
-    surface = frontier.first_frontier[int(inner.surface_index)]
+    surface = surface if surface is not None else frontier.first_frontier[int(inner.surface_index)]
     if include_forced_counts:
         forced_counts = reconstruct_force_greats_response_counts(
             frontier=frontier,
@@ -403,31 +284,28 @@ def _solve_result_from_row(
     )
 
 
-def solve_force_greats_response_frontier_many_gpu(
+def prepare_force_greats_response_frontier_scoring_batch(
     *,
     base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     selected_color: str,
     total_budget: int = TOTAL_GEM_BUDGET,
-    include_forced_counts: bool = True,
-) -> list[FgResponseFrontierSolveResult]:
-    started = time.perf_counter()
-    stats_inputs = [dict(stats) for stats in (base_stats_list or [])]
+    started: float | None = None,
+    scoring_bundle: FgResponseFrontierScoringBundle | None = None,
+) -> FgResponseFrontierPackedScoringBatch:
+    stats_inputs = tuple(dict(stats) for stats in (base_stats_list or []))
     if not stats_inputs:
-        return []
+        raise ValueError("response frontier exact scoring batch requires at least one candidate")
 
-    ft_values, ff_values, _remaining = ftff_combo_arrays(int(total_budget))
+    ft_values, ff_values, remaining = ftff_combo_arrays(int(total_budget))
     if int(ft_values.shape[0]) <= 0:
         raise ValueError("response frontier exact solve found no FT/FF pairs")
 
-    residual_values = np.asarray(_remaining, dtype=np.int32)
+    residual_values = np.asarray(remaining, dtype=np.int32)
     song_inputs = extract_fg_song_inputs(calc_song)
     primary_color = str(song_inputs.primary_color or "")
     secondary_color = str(song_inputs.secondary_color or "")
-    ft_seq = tuple(int(v) for v in ft_values)
-    ff_seq = tuple(int(v) for v in ff_values)
-    residual_seq = tuple(int(v) for v in _remaining)
     primary_ft_delta = GEM_STAT_TO_ELEMENT_SCALE if primary_color == "Beat" else 0
     primary_ff_delta = GEM_STAT_TO_ELEMENT_SCALE if primary_color == "Vibe" else 0
     secondary_ft_delta = GEM_STAT_TO_ELEMENT_SCALE if secondary_color == "Beat" else 0
@@ -440,7 +318,6 @@ def solve_force_greats_response_frontier_many_gpu(
     )
     base_components_by_candidate: list[tuple[int, int, int, int, int, int, int]] = []
     stat_key_seq_by_candidate: list[tuple[np.ndarray, np.ndarray]] = []
-    stat_keys: set[tuple[int, int]] = set()
     for base_stats in stats_inputs:
         base_pp = int(base_stats.get("Perfect Points", 0) or 0)
         base_cm = int(base_stats.get("Combo Multiplier", 0) or 0)
@@ -455,422 +332,374 @@ def solve_force_greats_response_frontier_many_gpu(
         ft_stat_seq = np.clip(base_ft + (ft_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
         ff_stat_seq = np.clip(base_ff + (ff_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
         stat_key_seq_by_candidate.append((ft_stat_seq, ff_stat_seq))
-        stat_keys.update(zip(ft_stat_seq.tolist(), ff_stat_seq.tolist()))
 
     head_len = min(int(song_inputs.total_notes), 100)
     body_total = max(0, int(song_inputs.total_notes) - 100)
-    if not include_forced_counts:
-        scoring_bundle = build_or_load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=stat_keys)
-        frontier_idx_by_stat = scoring_bundle.frontier_idx_by_stat
-        complete_scoring_bundle = len(scoring_bundle.frontier_idx_by_key) >= (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
-        frontier_count = int(scoring_bundle.frontier_offsets.shape[0])
-        frontier_content_class = np.full((frontier_count,), -1, dtype=np.int32)
-        content_class_by_signature: dict[tuple[int, bytes, bytes], int] = {}
+    pair_positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
+    _axes_song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
+    if int(_axes_song_inputs.total_notes) != int(song_inputs.total_notes):
+        raise ValueError("FG response frontier axes do not match song inputs")
+    geometry_class_by_key: dict[tuple[float, int, float, bool], int] = {}
 
-        def ensure_frontier_content_classes(frontier_ids: np.ndarray) -> None:
-            unique_ids = np.unique(np.asarray(frontier_ids, dtype=np.int32))
-            for frontier_idx in unique_ids.tolist():
-                idx = int(frontier_idx)
-                if idx < 0 or idx >= int(frontier_count):
-                    raise ValueError(f"FG response frontier canonicalization saw invalid frontier index: {idx}")
-                if int(frontier_content_class[idx]) >= 0:
-                    continue
-                offset = int(scoring_bundle.frontier_offsets[idx])
-                length = int(scoring_bundle.frontier_lengths[idx])
-                if length <= 0:
-                    raise ValueError("FG response frontier canonicalization saw empty first-frontier content")
-                words_block = scoring_bundle.surface_words[offset : offset + length]
-                counts_block = scoring_bundle.surface_counts[offset : offset + length]
-                signature = (
-                    int(length),
-                    np.ascontiguousarray(words_block, dtype=np.uint32).tobytes(),
-                    np.ascontiguousarray(counts_block, dtype=np.int32).tobytes(),
-                )
-                class_idx = content_class_by_signature.get(signature)
-                if class_idx is None:
-                    class_idx = int(len(content_class_by_signature))
-                    content_class_by_signature[signature] = int(class_idx)
-                frontier_content_class[idx] = int(class_idx)
-
-        pair_positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
-        frontier_idx_seq_by_candidate: list[np.ndarray] = []
-        for ft_stat_seq, ff_stat_seq in stat_key_seq_by_candidate:
-            frontier_idx_seq = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
-            frontier_idx_seq_by_candidate.append(frontier_idx_seq)
-        if frontier_idx_seq_by_candidate:
-            all_frontier_idx = np.concatenate(frontier_idx_seq_by_candidate, axis=0)
-            ensure_frontier_content_classes(all_frontier_idx)
-        primary_ftff_delta_values = np.asarray(
-            (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
-            dtype=np.int32,
-        )
-        secondary_ftff_delta_values = np.asarray(
-            (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
-            dtype=np.int32,
-        )
-        group_meta_blocks: list[np.ndarray] = []
-        group_offset_blocks: list[np.ndarray] = []
-        group_length_blocks: list[np.ndarray] = []
-        group_ft_blocks: list[np.ndarray] = []
-        group_ff_blocks: list[np.ndarray] = []
-        group_ft_stat_blocks: list[np.ndarray] = []
-        group_ff_stat_blocks: list[np.ndarray] = []
-        group_frontier_blocks: list[np.ndarray] = []
-        candidate_slices: list[tuple[int, int]] = []
-        group_start = 0
-        for candidate_idx, components in enumerate(base_components_by_candidate):
-            base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = components
-            ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
-            frontier_idx_seq = frontier_idx_seq_by_candidate[int(candidate_idx)]
-            canonical_frontier_seq = np.ascontiguousarray(frontier_content_class[frontier_idx_seq], dtype=np.int32)
-            if score_elements_constant:
-                if complete_scoring_bundle:
-                    best_positions, _kept_ft_stats, _kept_ff_stats = _best_response_positions_for_base_ftff(
-                        total_budget=int(total_budget),
-                        base_ft=int(base_ft),
-                        base_ff=int(base_ff),
-                    )
-                    best_positions = _prune_best_positions_by_frontier(
-                        positions=best_positions,
-                        frontier_ids=np.ascontiguousarray(canonical_frontier_seq[best_positions], dtype=np.int32),
-                        residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
-                    )
-                else:
-                    best_positions = _prune_best_positions_by_frontier(
-                        positions=pair_positions,
-                        frontier_ids=canonical_frontier_seq,
-                        residuals=residual_values,
-                    )
-                kept_primary_values = np.full((int(best_positions.shape[0]),), int(base_primary), dtype=np.int32)
-                kept_secondary_values = np.full((int(best_positions.shape[0]),), int(base_secondary), dtype=np.int32)
-            else:
-                primary_values = np.asarray(int(base_primary) + primary_ftff_delta_values, dtype=np.int32)
-                secondary_values = np.asarray(int(base_secondary) + secondary_ftff_delta_values, dtype=np.int32)
-                best_positions = _prune_dominated_ftff_response_positions(
-                    positions=pair_positions,
-                    frontier_ids=canonical_frontier_seq,
-                    residuals=residual_values,
-                    primary_values=primary_values,
-                    secondary_values=secondary_values,
-                )
-                kept_primary_values = np.ascontiguousarray(primary_values[best_positions], dtype=np.int32)
-                kept_secondary_values = np.ascontiguousarray(secondary_values[best_positions], dtype=np.int32)
-            kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
-            kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
-            kept_frontiers = np.ascontiguousarray(frontier_idx_seq[best_positions], dtype=np.int32)
-            if bool(np.any(kept_frontiers < 0)):
-                raise ValueError("FG response frontier stat key was not loaded for packed batch solve")
-            kept_count = int(best_positions.shape[0])
-            if kept_count <= 0:
-                raise ValueError("response frontier exact GPU batch produced no pair result")
-
-            meta = np.empty((kept_count, 8), dtype=np.int32)
-            meta[:, 0] = residual_values[best_positions]
-            meta[:, 1] = int(base_pp)
-            meta[:, 2] = int(base_cm)
-            meta[:, 3] = int(base_fm)
-            meta[:, 4] = kept_primary_values
-            meta[:, 5] = kept_secondary_values
-            meta[:, 6] = int(head_len)
-            meta[:, 7] = int(body_total)
-            lengths = np.ascontiguousarray(scoring_bundle.frontier_lengths[kept_frontiers], dtype=np.int32)
-            if bool(np.any(lengths <= 0)):
-                raise ValueError("FG response frontier payload contains an empty first frontier")
-
-            group_meta_blocks.append(meta)
-            group_offset_blocks.append(np.ascontiguousarray(scoring_bundle.frontier_offsets[kept_frontiers], dtype=np.int32))
-            group_length_blocks.append(lengths)
-            group_ft_blocks.append(np.ascontiguousarray(ft_values[best_positions], dtype=np.int32))
-            group_ff_blocks.append(np.ascontiguousarray(ff_values[best_positions], dtype=np.int32))
-            group_ft_stat_blocks.append(kept_ft_stats)
-            group_ff_stat_blocks.append(kept_ff_stats)
-            group_frontier_blocks.append(np.ascontiguousarray(kept_frontiers, dtype=np.int32))
-            candidate_slices.append((int(group_start), int(kept_count)))
-            group_start += int(kept_count)
-
-        group_meta = np.ascontiguousarray(np.concatenate(group_meta_blocks, axis=0), dtype=np.int32)
-        group_offsets_arr = np.ascontiguousarray(np.concatenate(group_offset_blocks, axis=0), dtype=np.int32)
-        group_lengths_arr = np.ascontiguousarray(np.concatenate(group_length_blocks, axis=0), dtype=np.int32)
-        group_ft = np.concatenate(group_ft_blocks, axis=0).astype(np.int32, copy=False)
-        group_ff = np.concatenate(group_ff_blocks, axis=0).astype(np.int32, copy=False)
-        group_ft_stat = np.concatenate(group_ft_stat_blocks, axis=0).astype(np.int32, copy=False)
-        group_ff_stat = np.concatenate(group_ff_stat_blocks, axis=0).astype(np.int32, copy=False)
-        group_frontier_idx = np.concatenate(group_frontier_blocks, axis=0).astype(np.int32, copy=False)
-
-        inner_rows, _surface_rows = _score_response_group_meta_gpu(
-            group_meta=group_meta,
-            group_offsets=group_offsets_arr,
-            group_lengths=group_lengths_arr,
-            primary_color=primary_color,
-            secondary_color=secondary_color,
-            selected_color=str(selected_color or ""),
-            ref_arrays=ref_arrays,
-            surface_words=scoring_bundle.surface_words,
-            surface_counts=scoring_bundle.surface_counts,
-        )
-        if int(inner_rows.shape[0]) != int(group_meta.shape[0]):
-            raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
-
-        out: list[FgResponseFrontierSolveResult] = []
-        for candidate_idx, (start, count) in enumerate(candidate_slices):
-            if int(count) <= 0:
-                raise ValueError("response frontier exact GPU batch produced no pair result")
-            local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
-            row_idx = int(start) + int(local_idx)
-            ft = int(group_ft[row_idx])
-            ff = int(group_ff[row_idx])
-            ft_stat = int(group_ft_stat[row_idx])
-            ff_stat = int(group_ff_stat[row_idx])
-            frontier_idx = int(group_frontier_idx[row_idx])
-            surface_row_idx = int(scoring_bundle.frontier_offsets[frontier_idx]) + int(inner_rows[int(row_idx), 1])
-            surface = FgResponseSurface(
-                int(scoring_bundle.surface_words[surface_row_idx, 0]),
-                int(scoring_bundle.surface_words[surface_row_idx, 1]),
-                int(scoring_bundle.surface_words[surface_row_idx, 2]),
-                int(scoring_bundle.surface_words[surface_row_idx, 3]),
-                int(scoring_bundle.surface_words[surface_row_idx, 4]),
-                int(scoring_bundle.surface_words[surface_row_idx, 5]),
-                int(scoring_bundle.surface_words[surface_row_idx, 6]),
-                int(scoring_bundle.surface_words[surface_row_idx, 7]),
-                int(scoring_bundle.surface_counts[surface_row_idx, 0]),
-                int(scoring_bundle.surface_counts[surface_row_idx, 1]),
+    def geometry_classes_for_stats(ft_stat_seq: np.ndarray, ff_stat_seq: np.ndarray) -> np.ndarray:
+        out = np.empty((int(ft_stat_seq.shape[0]),), dtype=np.int32)
+        forced_timing = bool(song_inputs.use_forced_great_timing)
+        for idx, (ft_stat, ff_stat) in enumerate(zip(ft_stat_seq.tolist(), ff_stat_seq.tolist(), strict=True)):
+            key = (
+                float(raw_fill_by_ff[int(ff_stat)]),
+                int(non_fever_base_by_ff[int(ff_stat)]),
+                float(real_time_by_ft[int(ft_stat)]),
+                forced_timing,
             )
-            frontier = FgResponseFrontierResult((surface,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0)
-            stats_after_ftff: _InnerStats = (
-                int(group_meta[row_idx, 1]),
-                int(group_meta[row_idx, 2]),
-                int(group_meta[row_idx, 3]),
-                int(group_meta[row_idx, 4]),
-                int(group_meta[row_idx, 5]),
-                int(ft_stat),
-                int(ff_stat),
-            )
-            pair: _ResponsePair = (
-                int(ft),
-                int(ff),
-                int(group_meta[row_idx, 0]),
-                stats_after_ftff,
-                frontier,
-                float(scoring_bundle.raw_fill_by_ff[ff_stat]),
-                float(scoring_bundle.real_time_by_ft[ft_stat]),
-            )
-            result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
-            result_row[1] = 0
-            out.append(
-                _solve_result_from_row(
-                    started=started,
-                    base_stats=stats_inputs[int(candidate_idx)],
-                    selected_color=str(selected_color or ""),
-                    song_inputs=song_inputs,
-                    ref_arrays=ref_arrays,
-                    pair=pair,
-                    row=result_row,
-                    include_forced_counts=bool(include_forced_counts),
-                )
-            )
-        return out
+            class_idx = geometry_class_by_key.get(key)
+            if class_idx is None:
+                class_idx = len(geometry_class_by_key)
+                geometry_class_by_key[key] = int(class_idx)
+            out[int(idx)] = int(class_idx)
+        return np.ascontiguousarray(out, dtype=np.int32)
 
-    payload = build_or_load_response_frontier_payload(
-        calc_song,
-        ref_arrays,
-        stat_keys=stat_keys,
-        include_state_frontiers=bool(include_forced_counts),
-    ).payload
-    frontiers = payload.frontiers
-    frontier_idx_by_id = {id(frontier): int(idx) for idx, frontier in enumerate(frontiers)}
-    surface_words, surface_counts, frontier_offsets, frontier_lengths = _pack_response_frontier_surface_pool(
-        frontiers,
-        total_notes=int(song_inputs.total_notes),
+    geometry_idx_seq_by_candidate: list[np.ndarray] = []
+    for ft_stat_seq, ff_stat_seq in stat_key_seq_by_candidate:
+        geometry_idx_seq_by_candidate.append(geometry_classes_for_stats(ft_stat_seq, ff_stat_seq))
+    primary_ftff_delta_values = np.asarray(
+        (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
+        dtype=np.int32,
     )
-    frontier_content_class_by_id: dict[int, int] = {}
-    frontier_content_class_by_signature: dict[tuple[int, bytes, bytes], int] = {}
-
-    def canonical_frontier_key(frontier: FgResponseFrontierResult) -> int:
-        marker = int(id(frontier))
-        cached = frontier_content_class_by_id.get(marker)
-        if cached is not None:
-            return int(cached)
-        idx = frontier_idx_by_id.get(marker)
-        if idx is None:
-            raise ValueError("FG response frontier payload is missing a packed frontier index")
-        length = int(frontier_lengths[int(idx)])
-        if length <= 0:
-            raise ValueError("FG response frontier payload contains an empty first frontier")
-        offset = int(frontier_offsets[int(idx)])
-        words_block = surface_words[offset : offset + length]
-        counts_block = surface_counts[offset : offset + length]
-        signature = (
-            int(length),
-            np.ascontiguousarray(words_block, dtype=np.uint32).tobytes(),
-            np.ascontiguousarray(counts_block, dtype=np.int32).tobytes(),
-        )
-        class_idx = frontier_content_class_by_signature.get(signature)
-        if class_idx is None:
-            class_idx = int(len(frontier_content_class_by_signature))
-            frontier_content_class_by_signature[signature] = int(class_idx)
-        frontier_content_class_by_id[marker] = int(class_idx)
-        return int(class_idx)
-
-    group_meta_rows: list[tuple[int, int, int, int, int, int, int, int]] = []
-    group_offsets_list: list[int] = []
-    group_lengths_list: list[int] = []
-    group_owners: list[tuple[int, _ResponsePair]] = []
-    for candidate_idx, (components, stat_key_seqs) in enumerate(
-        zip(base_components_by_candidate, stat_key_seq_by_candidate, strict=True)
-    ):
+    secondary_ftff_delta_values = np.asarray(
+        (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
+        dtype=np.int32,
+    )
+    group_meta_blocks: list[np.ndarray] = []
+    group_ft_blocks: list[np.ndarray] = []
+    group_ff_blocks: list[np.ndarray] = []
+    group_ft_stat_blocks: list[np.ndarray] = []
+    group_ff_stat_blocks: list[np.ndarray] = []
+    candidate_slices: list[tuple[int, int]] = []
+    kept_stat_keys: set[tuple[int, int]] = set()
+    group_start = 0
+    for candidate_idx, components in enumerate(base_components_by_candidate):
         base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = components
-        ft_stat_seq, ff_stat_seq = stat_key_seqs
+        ft_stat_seq, ff_stat_seq = stat_key_seq_by_candidate[int(candidate_idx)]
+        canonical_frontier_seq = geometry_idx_seq_by_candidate[int(candidate_idx)]
         if score_elements_constant:
-            best_pair_by_frontier: dict[int, _ResponsePair] = {}
-            for ft, ff, residual, ft_stat, ff_stat in zip(
-                ft_seq,
-                ff_seq,
-                residual_seq,
-                ft_stat_seq,
-                ff_stat_seq,
-                strict=True,
-            ):
-                frontier = payload.frontier_by_key.get((ft_stat, ff_stat))
-                if frontier is None:
-                    raise ValueError(f"FG response frontier stat key was not loaded: {(ft_stat, ff_stat)}")
-                marker = id(frontier)
-                current = best_pair_by_frontier.get(marker)
-                if current is not None and int(residual) <= int(current[2]):
-                    continue
-                stats_after_ftff: _InnerStats = (
-                    int(base_pp),
-                    int(base_cm),
-                    int(base_fm),
-                    int(base_primary),
-                    int(base_secondary),
-                    int(ft_stat),
-                    int(ff_stat),
-                )
-                best_pair_by_frontier[marker] = (
-                    int(ft),
-                    int(ff),
-                    int(residual),
-                    stats_after_ftff,
-                    frontier,
-                    float(payload.raw_fill_by_ff[ff_stat]),
-                    float(payload.real_time_by_ft[ft_stat]),
-                )
-            pair_records = list(best_pair_by_frontier.values())
+            best_positions, _kept_ft_stats, _kept_ff_stats = best_response_positions_for_base_ftff(
+                total_budget=int(total_budget),
+                base_ft=int(base_ft),
+                base_ff=int(base_ff),
+            )
+            best_positions = prune_best_positions_by_frontier(
+                positions=best_positions,
+                frontier_ids=np.ascontiguousarray(canonical_frontier_seq[best_positions], dtype=np.int32),
+                residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
+            )
+            kept_primary_values = np.full((int(best_positions.shape[0]),), int(base_primary), dtype=np.int32)
+            kept_secondary_values = np.full((int(best_positions.shape[0]),), int(base_secondary), dtype=np.int32)
         else:
-            pair_records = []
-            for ft, ff, residual, ft_stat, ff_stat in zip(
-                ft_seq,
-                ff_seq,
-                residual_seq,
-                ft_stat_seq,
-                ff_stat_seq,
-                strict=True,
-            ):
-                primary_value = base_primary + int(ft) * primary_ft_delta + int(ff) * primary_ff_delta
-                secondary_value = base_secondary + int(ft) * secondary_ft_delta + int(ff) * secondary_ff_delta
-                stats_after_ftff = (
-                    int(base_pp),
-                    int(base_cm),
-                    int(base_fm),
-                    int(primary_value),
-                    int(secondary_value),
-                    int(ft_stat),
-                    int(ff_stat),
-                )
-                frontier = payload.frontier_by_key.get((ft_stat, ff_stat))
-                if frontier is None:
-                    raise ValueError(f"FG response frontier stat key was not loaded: {(ft_stat, ff_stat)}")
-                pair_records.append(
-                    (
-                        int(ft),
-                        int(ff),
-                        int(residual),
-                        stats_after_ftff,
-                        frontier,
-                        float(payload.raw_fill_by_ff[ff_stat]),
-                        float(payload.real_time_by_ft[ft_stat]),
-                    )
-                )
-            pair_records = _prune_dominated_ftff_response_pairs(
-                pair_records,
-                primary_color=primary_color,
-                secondary_color=secondary_color,
-                frontier_key_of=(lambda pair: canonical_frontier_key(pair[4])) if not include_forced_counts else None,
+            primary_values = np.asarray(int(base_primary) + primary_ftff_delta_values, dtype=np.int32)
+            secondary_values = np.asarray(int(base_secondary) + secondary_ftff_delta_values, dtype=np.int32)
+            best_positions = prune_dominated_ftff_response_positions(
+                positions=pair_positions,
+                frontier_ids=canonical_frontier_seq,
+                residuals=residual_values,
+                primary_values=primary_values,
+                secondary_values=secondary_values,
             )
-        for pair in pair_records:
-            _ft, _ff, residual, stats_after_ftff, frontier, _raw_fill, _real_fever_time = pair
-            frontier_idx = frontier_idx_by_id.get(id(frontier))
-            if frontier_idx is None:
-                raise ValueError("FG response frontier payload is missing a packed frontier index")
-            length = int(frontier_lengths[int(frontier_idx)])
-            if length <= 0:
-                raise ValueError("FG response frontier payload contains an empty first frontier")
-            residual_i = int(residual)
-            if residual_i < 0:
-                residual_i = 0
-            group_meta_rows.append(
-                (
-                    int(residual_i),
-                    int(stats_after_ftff[0]),
-                    int(stats_after_ftff[1]),
-                    int(stats_after_ftff[2]),
-                    int(stats_after_ftff[3]),
-                    int(stats_after_ftff[4]),
-                    int(head_len),
-                    int(body_total),
-                )
-            )
-            group_offsets_list.append(int(frontier_offsets[int(frontier_idx)]))
-            group_lengths_list.append(int(length))
-            group_owners.append((int(candidate_idx), pair))
+            kept_primary_values = np.ascontiguousarray(primary_values[best_positions], dtype=np.int32)
+            kept_secondary_values = np.ascontiguousarray(secondary_values[best_positions], dtype=np.int32)
+        kept_ft_stats = np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32)
+        kept_ff_stats = np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32)
+        kept_count = int(best_positions.shape[0])
+        if kept_count <= 0:
+            raise ValueError("response frontier exact GPU batch produced no pair result")
+        kept_stat_keys.update(zip(kept_ft_stats.tolist(), kept_ff_stats.tolist()))
 
-    if group_meta_rows:
-        group_meta = np.asarray(group_meta_rows, dtype=np.int32)
-        group_offsets_arr = np.asarray(group_offsets_list, dtype=np.int32)
-        group_lengths_arr = np.asarray(group_lengths_list, dtype=np.int32)
-    else:
-        group_meta = np.zeros((0, 8), dtype=np.int32)
-        group_offsets_arr = np.zeros((0,), dtype=np.int32)
-        group_lengths_arr = np.zeros((0,), dtype=np.int32)
-    inner_rows, _surface_rows = _score_response_group_meta_gpu(
+        meta = np.empty((kept_count, 8), dtype=np.int32)
+        meta[:, 0] = residual_values[best_positions]
+        meta[:, 1] = int(base_pp)
+        meta[:, 2] = int(base_cm)
+        meta[:, 3] = int(base_fm)
+        meta[:, 4] = kept_primary_values
+        meta[:, 5] = kept_secondary_values
+        meta[:, 6] = int(head_len)
+        meta[:, 7] = int(body_total)
+
+        group_meta_blocks.append(meta)
+        group_ft_blocks.append(np.ascontiguousarray(ft_values[best_positions], dtype=np.int32))
+        group_ff_blocks.append(np.ascontiguousarray(ff_values[best_positions], dtype=np.int32))
+        group_ft_stat_blocks.append(kept_ft_stats)
+        group_ff_stat_blocks.append(kept_ff_stats)
+        candidate_slices.append((int(group_start), int(kept_count)))
+        group_start += int(kept_count)
+
+    group_meta = np.ascontiguousarray(np.concatenate(group_meta_blocks, axis=0), dtype=np.int32)
+    group_ft = np.ascontiguousarray(np.concatenate(group_ft_blocks, axis=0), dtype=np.int32)
+    group_ff = np.ascontiguousarray(np.concatenate(group_ff_blocks, axis=0), dtype=np.int32)
+    group_ft_stat = np.ascontiguousarray(np.concatenate(group_ft_stat_blocks, axis=0), dtype=np.int32)
+    group_ff_stat = np.ascontiguousarray(np.concatenate(group_ff_stat_blocks, axis=0), dtype=np.int32)
+    kept_stat_keys_tuple = tuple(sorted(kept_stat_keys))
+    bundle_t0 = time.perf_counter()
+    if scoring_bundle is None:
+        scoring_bundle = load_response_frontier_scoring_bundle(
+            calc_song,
+            ref_arrays,
+            stat_keys=kept_stat_keys_tuple,
+        )
+    elif not all(key in scoring_bundle.frontier_idx_by_key for key in kept_stat_keys_tuple):
+        raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+    scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
+    (
+        scoring_surface_words,
+        scoring_surface_counts,
+        scoring_surface_head_coeffs,
+        scoring_group_offsets,
+        scoring_group_lengths,
+        scoring_logical_owners,
+        scoring_logical_surfaces,
+        scoring_logical_work_cumsum,
+        scoring_unique_frontiers,
+        scoring_surface_compact_ms,
+        scoring_surface_head_coeff_ms,
+    ) = _pack_scoring_surfaces_for_batch(
+        scoring_bundle=scoring_bundle,
         group_meta=group_meta,
-        group_offsets=group_offsets_arr,
-        group_lengths=group_lengths_arr,
+        group_ft_stat=group_ft_stat,
+        group_ff_stat=group_ff_stat,
+        allow_pp=bool((primary_color == selected_color) or (secondary_color == selected_color)),
+    )
+    return FgResponseFrontierPackedScoringBatch(
+        started=float(time.perf_counter() if started is None else started),
+        stats_inputs=stats_inputs,
+        calc_song=calc_song,
+        song_inputs=song_inputs,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
         primary_color=primary_color,
         secondary_color=secondary_color,
-        selected_color=str(selected_color or ""),
-        ref_arrays=ref_arrays,
+        kept_stat_keys=kept_stat_keys_tuple,
+        scoring_bundle=scoring_bundle,
+        scoring_bundle_ms=scoring_bundle_ms,
+        group_meta=group_meta,
+        group_ft=group_ft,
+        group_ff=group_ff,
+        group_ft_stat=group_ft_stat,
+        group_ff_stat=group_ff_stat,
+        candidate_slices=tuple(candidate_slices),
+        scoring_surface_words=scoring_surface_words,
+        scoring_surface_counts=scoring_surface_counts,
+        scoring_surface_head_coeffs=scoring_surface_head_coeffs,
+        scoring_group_offsets=scoring_group_offsets,
+        scoring_group_lengths=scoring_group_lengths,
+        scoring_logical_owners=scoring_logical_owners,
+        scoring_logical_surfaces=scoring_logical_surfaces,
+        scoring_logical_work_cumsum=scoring_logical_work_cumsum,
+        scoring_unique_frontiers=scoring_unique_frontiers,
+        scoring_surface_compact_ms=scoring_surface_compact_ms,
+        scoring_surface_head_coeff_ms=scoring_surface_head_coeff_ms,
+    )
+
+
+def score_prepared_force_greats_response_frontier_batch_raw_gpu(
+    batch: FgResponseFrontierPackedScoringBatch,
+    *,
+    include_forced_counts: bool = False,
+) -> np.ndarray:
+    _ = include_forced_counts
+    surface_words = batch.scoring_surface_words
+    surface_counts = batch.scoring_surface_counts
+    surface_head_coeffs = batch.scoring_surface_head_coeffs
+    group_offsets = batch.scoring_group_offsets
+    group_lengths = batch.scoring_group_lengths
+    logical_owners = batch.scoring_logical_owners
+    logical_surfaces = batch.scoring_logical_surfaces
+    logical_work_cumsum = batch.scoring_logical_work_cumsum
+    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
+        batch.group_meta.shape[0]
+    ):
+        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
+    if int(logical_owners.shape[0]) != int(np.sum(group_lengths, dtype=np.int64)) or int(
+        logical_surfaces.shape[0]
+    ) != int(logical_owners.shape[0]):
+        raise ValueError("response frontier prepared logical surface arrays have inconsistent lengths")
+    if int(logical_work_cumsum.shape[0]) != int(logical_owners.shape[0]) + 1:
+        raise ValueError("response frontier prepared logical work array has inconsistent length")
+    if (
+        int(surface_words.ndim) != 2
+        or int(surface_words.shape[1]) != 8
+        or int(surface_counts.ndim) != 2
+        or int(surface_counts.shape[1]) != 2
+        or int(surface_head_coeffs.ndim) != 2
+        or int(surface_head_coeffs.shape[1]) != 4
+    ):
+        raise ValueError("response frontier prepared scoring arrays have invalid shape")
+    inner_rows, _logical_surface_rows = _score_response_group_meta_gpu(
+        group_meta=batch.group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color=batch.primary_color,
+        secondary_color=batch.secondary_color,
+        selected_color=batch.selected_color,
+        ref_arrays=batch.ref_arrays,
         surface_words=surface_words,
         surface_counts=surface_counts,
+        surface_head_coeffs=surface_head_coeffs,
+        logical_owners=logical_owners,
+        logical_surfaces=logical_surfaces,
+        logical_work_cumsum=logical_work_cumsum,
     )
-    if int(inner_rows.shape[0]) != len(group_owners):
+    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
         raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
+    return np.asarray(inner_rows, dtype=np.int32)
 
-    best_by_candidate: list[tuple[_ResponsePair, int] | None] = [None] * len(stats_inputs)
-    for group_idx, owner in enumerate(group_owners):
-        candidate_idx, pair = owner
-        current = best_by_candidate[int(candidate_idx)]
-        if current is None or int(inner_rows[group_idx, 0]) > int(inner_rows[int(current[1]), 0]):
-            best_by_candidate[int(candidate_idx)] = (pair, int(group_idx))
 
+def materialize_prepared_force_greats_response_frontier_batch_results(
+    batch: FgResponseFrontierPackedScoringBatch,
+    inner_rows: np.ndarray,
+    *,
+    include_forced_counts: bool = False,
+) -> list[FgResponseFrontierSolveResult]:
+    scoring_bundle = batch.scoring_bundle
+    surface_words = batch.scoring_surface_words
+    surface_counts = batch.scoring_surface_counts
+    group_offsets = batch.scoring_group_offsets
+    inner_rows = np.asarray(inner_rows, dtype=np.int32)
+    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
+        raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
     out: list[FgResponseFrontierSolveResult] = []
-    for candidate_idx, best in enumerate(best_by_candidate):
-        if best is None:
+    frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
+    for candidate_idx, (start, count) in enumerate(batch.candidate_slices):
+        if int(count) <= 0:
             raise ValueError("response frontier exact GPU batch produced no pair result")
-        pair, row_idx = best
+        local_idx = int(np.argmax(inner_rows[int(start) : int(start) + int(count), 0]))
+        row_idx = int(start) + int(local_idx)
+        ft = int(batch.group_ft[row_idx])
+        ff = int(batch.group_ff[row_idx])
+        ft_stat = int(batch.group_ft_stat[row_idx])
+        ff_stat = int(batch.group_ff_stat[row_idx])
+        stat_key = (int(ft_stat), int(ff_stat))
+        frontier = frontier_by_stat_key.get(stat_key)
+        if frontier is None:
+            frontier = frontier_result_from_scoring_bundle_for_stats(
+                batch.calc_song,
+                batch.ref_arrays,
+                scoring_bundle,
+                ft_stat=int(ft_stat),
+                ff_stat=int(ff_stat),
+            )
+            frontier_by_stat_key[stat_key] = frontier
+        if bool(include_forced_counts) and not frontier.state_frontiers:
+            raise ValueError("FG response frontier scoring payload requires exact reconstruction state")
+        stats_after_ftff: _InnerStats = (
+            int(batch.group_meta[row_idx, 1]),
+            int(batch.group_meta[row_idx, 2]),
+            int(batch.group_meta[row_idx, 3]),
+            int(batch.group_meta[row_idx, 4]),
+            int(batch.group_meta[row_idx, 5]),
+            int(ft_stat),
+            int(ff_stat),
+        )
+        pair: _ResponsePair = (
+            int(ft),
+            int(ff),
+            int(batch.group_meta[row_idx, 0]),
+            stats_after_ftff,
+            frontier,
+            float(scoring_bundle.raw_fill_by_ff[ff_stat]),
+            float(scoring_bundle.real_time_by_ft[ft_stat]),
+        )
+        result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
+        result_surface_idx = int(group_offsets[int(row_idx)]) + int(result_row[1])
+        result_surface = _surface_from_packed_arrays(
+            surface_words=surface_words,
+            surface_counts=surface_counts,
+            surface_idx=int(result_surface_idx),
+        )
         out.append(
             _solve_result_from_row(
-                started=started,
-                base_stats=stats_inputs[int(candidate_idx)],
-                selected_color=str(selected_color or ""),
-                song_inputs=song_inputs,
-                ref_arrays=ref_arrays,
+                started=float(batch.started),
+                base_stats=batch.stats_inputs[int(candidate_idx)],
+                selected_color=batch.selected_color,
+                song_inputs=batch.song_inputs,
+                ref_arrays=batch.ref_arrays,
                 pair=pair,
-                row=inner_rows[int(row_idx)],
+                row=result_row,
+                surface=result_surface,
                 include_forced_counts=bool(include_forced_counts),
             )
         )
     return out
+
+
+def score_prepared_force_greats_response_frontier_batch_gpu(
+    batch: FgResponseFrontierPackedScoringBatch,
+    *,
+    include_forced_counts: bool = False,
+) -> list[FgResponseFrontierSolveResult]:
+    phase_t0 = time.perf_counter()
+    _scoring_bundle = batch.scoring_bundle
+    scoring_bundle_ms = (time.perf_counter() - phase_t0) * 1000.0
+    payload_ms = 0.0
+    compact_ms = float(batch.scoring_surface_compact_ms)
+    head_coeff_ms = float(batch.scoring_surface_head_coeff_ms)
+    phase_t0 = time.perf_counter()
+    inner_rows = score_prepared_force_greats_response_frontier_batch_raw_gpu(batch)
+    gpu_score_ms = (time.perf_counter() - phase_t0) * 1000.0
+    phase_t0 = time.perf_counter()
+    out = materialize_prepared_force_greats_response_frontier_batch_results(
+        batch,
+        inner_rows,
+        include_forced_counts=bool(include_forced_counts),
+    )
+    result_ms = (time.perf_counter() - phase_t0) * 1000.0
+    emit_profile_event(
+        component="fg_response_frontier",
+        event="score_prepared_batch",
+        metrics={
+            "payload_ms": float(payload_ms),
+            "scoring_bundle_ms": float(scoring_bundle_ms),
+            "scoring_bundle_prepare_ms": float(batch.scoring_bundle_ms),
+            "compact_ms": float(compact_ms),
+            "head_coeff_ms": float(head_coeff_ms),
+            "gpu_score_ms": float(gpu_score_ms),
+            "result_ms": float(result_ms),
+            "frontier_materialize_ms": float(result_ms),
+            "candidate_count": int(len(batch.candidate_slices)),
+            "group_count": int(batch.group_meta.shape[0]),
+            "kept_stat_keys": int(len(batch.kept_stat_keys)),
+            "unique_frontiers": int(batch.scoring_unique_frontiers),
+            "surface_rows": int(batch.scoring_surface_words.shape[0]),
+            "include_forced_counts": int(bool(include_forced_counts)),
+            "cache_source": "bundle",
+        },
+    )
+    return out
+
+
+def solve_force_greats_response_frontier_many_gpu(
+    *,
+    base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    selected_color: str,
+    total_budget: int = TOTAL_GEM_BUDGET,
+    include_forced_counts: bool = True,
+) -> list[FgResponseFrontierSolveResult]:
+    started = time.perf_counter()
+    stats_inputs = [dict(stats) for stats in (base_stats_list or [])]
+    if not stats_inputs:
+        return []
+
+    batch = prepare_force_greats_response_frontier_scoring_batch(
+        base_stats_list=stats_inputs,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=selected_color,
+        total_budget=int(total_budget),
+        started=started,
+    )
+    return score_prepared_force_greats_response_frontier_batch_gpu(
+        batch,
+        include_forced_counts=bool(include_forced_counts),
+    )
 
 
 def solve_force_greats_response_frontier_batch_gpu(

@@ -12,6 +12,7 @@ class GpuRequestType(Enum):
 
     LOAD_REF_ARRAYS = "load_ref_arrays"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
+    FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH = "force_greats_response_frontier_score_batch"
     SHUTDOWN = "shutdown"
 
 

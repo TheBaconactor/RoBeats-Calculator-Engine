@@ -13,13 +13,14 @@ import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
-from gear_optimizer.core.parsing import env_flag, env_get
+from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
-from .response_build_gpu import build_force_greats_response_frontiers_gpu_batch
+from .response_build_gpu import build_force_greats_response_first_frontiers_gpu_batch
 from .response_types import FgResponseFrontierResult, FgResponseSurface
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v1"
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v3"
 _MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
 _PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
 _BUNDLE_ARRAY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_BUNDLE_ARRAY_CACHE_MAX", "2") or "2"))
@@ -28,8 +29,35 @@ _payload_cache: OrderedDict[tuple, FgResponseFrontierCachePayload] = OrderedDict
 _bundle_array_cache: OrderedDict[tuple, dict[str, np.ndarray]] = OrderedDict()
 _scoring_bundle_cache: OrderedDict[tuple, FgResponseFrontierScoringBundle] = OrderedDict()
 _frontier_cache_lock = threading.RLock()
+_RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
+_response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
 _BUNDLE_KEY_MARKER = "all-stat-keys"
-_FIRST_FRONTIER_ONLY_MARKER = "first-frontier-only"
+_SCORING_BUNDLE_ARRAY_NAMES = frozenset(
+    (
+        "stat_keys",
+        "frontier_ids",
+        "raw_fill_by_ff",
+        "non_fever_base_by_ff",
+        "real_time_by_ft",
+        "total_notes",
+        "long_notes",
+        "use_forced_great_timing",
+        "frontier_meta",
+        "first_surface_pool",
+        "first_offsets",
+        "first_counts",
+    )
+)
+_FRONTIER_STATE_INDEX_ARRAY_NAMES = frozenset(
+    (
+        "state_offsets",
+        "state_counts",
+        "state_keys",
+        "state_surface_offsets",
+        "state_surface_counts",
+    )
+)
+_FRONTIER_RESULT_ARRAY_NAMES = _SCORING_BUNDLE_ARRAY_NAMES | _FRONTIER_STATE_INDEX_ARRAY_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,14 +122,29 @@ class FgResponseFrontierPrewarmResult:
     long_notes: int
     frontier_count: int
 
+    def for_scoring(
+        self,
+        calc_song: dict[str, Any],
+        ref_arrays: dict[str, Any],
+        *,
+        stat_keys: Iterable[tuple[int, int]],
+    ) -> FgResponseFrontierScoringBundle:
+        return load_response_frontier_scoring_bundle(
+            calc_song,
+            ref_arrays,
+            stat_keys=stat_keys,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierScoringBundle:
+    cache_key: tuple
     frontier_idx_by_key: dict[tuple[int, int], int]
     frontier_idx_by_stat: np.ndarray
     raw_fill_by_ff: np.ndarray
     non_fever_base_by_ff: np.ndarray
     real_time_by_ft: np.ndarray
+    frontier_meta: np.ndarray
     surface_words: np.ndarray
     surface_counts: np.ndarray
     frontier_offsets: np.ndarray
@@ -157,6 +200,12 @@ def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgRes
         surface = FgResponseSurface(*values)
         cache[values] = surface
     return surface
+
+
+def _surface_rows_array(rows: list[tuple[int, ...]]) -> np.ndarray:
+    if not rows:
+        return np.zeros((0, 10), dtype=np.uint32)
+    return np.asarray(rows, dtype=np.uint32).reshape((-1, 10))
 
 
 def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
@@ -236,19 +285,14 @@ def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
         return frontier
 
 
-def _frontier_satisfies_state_request(
-    frontier: FgResponseFrontierResult | None,
-    *,
-    include_state_frontiers: bool,
-) -> bool:
-    return frontier is not None and (not bool(include_state_frontiers) or bool(frontier.state_frontiers))
+def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
+    return frontier is not None and bool(frontier.first_frontier)
 
 
 def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
+    if not frontier.first_frontier:
+        raise ValueError("FG response frontier cache requires first-frontier surfaces")
     with _frontier_cache_lock:
-        existing = _frontier_cache.get(cache_key)
-        if existing is not None and existing.state_frontiers and not frontier.state_frontiers:
-            return
         _frontier_cache[cache_key] = frontier
         _frontier_cache.move_to_end(cache_key)
         while len(_frontier_cache) > int(_MEMORY_CACHE_MAX):
@@ -304,25 +348,21 @@ def _pack_frontier(frontier: FgResponseFrontierResult) -> dict[str, np.ndarray]:
             ],
             dtype=np.int32,
         ),
-        "first_surface_pool": np.asarray(first_rows, dtype=np.int64).reshape((-1, 10))
-        if first_rows
-        else np.zeros((0, 10), dtype=np.int64),
+        "first_surface_pool": _surface_rows_array(first_rows),
         "state_keys": np.asarray(state_keys, dtype=np.int32),
         "state_surface_offsets": np.asarray(state_surface_offsets, dtype=np.int32),
         "state_surface_counts": np.asarray(state_surface_counts, dtype=np.int32),
-        "state_surface_pool": np.asarray(state_surface_rows, dtype=np.int64).reshape((-1, 10))
-        if state_surface_rows
-        else np.zeros((0, 10), dtype=np.int64),
+        "state_surface_pool": _surface_rows_array(state_surface_rows),
     }
 
 
 def _unpack_frontier(data: object) -> FgResponseFrontierResult:
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
-    first_pool = np.asarray(data["first_surface_pool"], dtype=np.int64)
+    first_pool = np.asarray(data["first_surface_pool"], dtype=np.uint32)
     state_keys = np.asarray(data["state_keys"], dtype=np.int32)
     state_surface_offsets = np.asarray(data["state_surface_offsets"], dtype=np.int32)
     state_surface_counts = np.asarray(data["state_surface_counts"], dtype=np.int32)
-    state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.int64)
+    state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.uint32)
     states: dict[int, tuple[FgResponseSurface, ...]] = {}
     for idx, state in enumerate(state_keys):
         surface_start = int(state_surface_offsets[idx])
@@ -388,32 +428,27 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
         "frontier_meta": meta,
         "first_offsets": first_offsets,
         "first_counts": first_counts,
-        "first_surface_pool": np.asarray(first_rows, dtype=np.int64).reshape((-1, 10))
-        if first_rows
-        else np.zeros((0, 10), dtype=np.int64),
+        "first_surface_pool": _surface_rows_array(first_rows),
         "state_offsets": state_offsets,
         "state_counts": state_counts,
         "state_keys": np.asarray(state_keys, dtype=np.int32),
         "state_surface_offsets": np.asarray(state_surface_offsets, dtype=np.int32),
         "state_surface_counts": np.asarray(state_surface_counts, dtype=np.int32),
-        "state_surface_pool": np.asarray(state_surface_rows, dtype=np.int64).reshape((-1, 10))
-        if state_surface_rows
-        else np.zeros((0, 10), dtype=np.int64),
+        "state_surface_pool": _surface_rows_array(state_surface_rows),
     }
 
 
-def _unpack_frontiers(data: object, *, include_state_frontiers: bool = True) -> tuple[FgResponseFrontierResult, ...]:
+def _unpack_frontiers(data: object) -> tuple[FgResponseFrontierResult, ...]:
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
     first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
     first_counts = np.asarray(data["first_counts"], dtype=np.int32)
-    first_pool = np.asarray(data["first_surface_pool"], dtype=np.int64)
-    if include_state_frontiers:
-        state_offsets = np.asarray(data["state_offsets"], dtype=np.int32)
-        state_counts = np.asarray(data["state_counts"], dtype=np.int32)
-        state_keys = np.asarray(data["state_keys"], dtype=np.int32)
-        state_surface_offsets = np.asarray(data["state_surface_offsets"], dtype=np.int32)
-        state_surface_counts = np.asarray(data["state_surface_counts"], dtype=np.int32)
-        state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.int64)
+    first_pool = np.asarray(data["first_surface_pool"], dtype=np.uint32)
+    state_offsets = np.asarray(data["state_offsets"], dtype=np.int32)
+    state_counts = np.asarray(data["state_counts"], dtype=np.int32)
+    state_keys = np.asarray(data["state_keys"], dtype=np.int32)
+    state_surface_offsets = np.asarray(data["state_surface_offsets"], dtype=np.int32)
+    state_surface_counts = np.asarray(data["state_surface_counts"], dtype=np.int32)
+    state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.uint32)
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
@@ -425,15 +460,14 @@ def _unpack_frontiers(data: object, *, include_state_frontiers: bool = True) -> 
             for row_idx in range(first_start, first_start + first_count)
         )
         states: dict[int, tuple[FgResponseSurface, ...]] = {}
-        if include_state_frontiers:
-            state_start = int(state_offsets[idx])
-            for pool_idx in range(state_start, state_start + int(state_counts[idx])):
-                surface_start = int(state_surface_offsets[pool_idx])
-                surface_count = int(state_surface_counts[pool_idx])
-                states[int(state_keys[pool_idx])] = tuple(
-                    _surface_from_row_cached(state_surface_pool[row_idx], surface_cache)
-                    for row_idx in range(surface_start, surface_start + surface_count)
-                )
+        state_start = int(state_offsets[idx])
+        for pool_idx in range(state_start, state_start + int(state_counts[idx])):
+            surface_start = int(state_surface_offsets[pool_idx])
+            surface_count = int(state_surface_counts[pool_idx])
+            states[int(state_keys[pool_idx])] = tuple(
+                _surface_from_row_cached(state_surface_pool[row_idx], surface_cache)
+                for row_idx in range(surface_start, surface_start + surface_count)
+            )
         row = meta[idx]
         out.append(
             FgResponseFrontierResult(
@@ -455,8 +489,6 @@ def _unpack_frontiers(data: object, *, include_state_frontiers: bool = True) -> 
 def _unpack_frontier_at(
     data: object,
     frontier_idx: int,
-    *,
-    include_state_frontiers: bool = True,
 ) -> FgResponseFrontierResult:
     idx = int(frontier_idx)
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
@@ -464,7 +496,7 @@ def _unpack_frontier_at(
         raise ValueError("FG response cache frontier index is outside the bundle")
     first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
     first_counts = np.asarray(data["first_counts"], dtype=np.int32)
-    first_pool = np.asarray(data["first_surface_pool"], dtype=np.int64)
+    first_pool = np.asarray(data["first_surface_pool"], dtype=np.uint32)
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
 
     first_start = int(first_offsets[idx])
@@ -474,21 +506,20 @@ def _unpack_frontier_at(
         for row_idx in range(first_start, first_start + first_count)
     )
     states: dict[int, tuple[FgResponseSurface, ...]] = {}
-    if include_state_frontiers:
-        state_offsets = np.asarray(data["state_offsets"], dtype=np.int32)
-        state_counts = np.asarray(data["state_counts"], dtype=np.int32)
-        state_keys = np.asarray(data["state_keys"], dtype=np.int32)
-        state_surface_offsets = np.asarray(data["state_surface_offsets"], dtype=np.int32)
-        state_surface_counts = np.asarray(data["state_surface_counts"], dtype=np.int32)
-        state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.int64)
-        state_start = int(state_offsets[idx])
-        for pool_idx in range(state_start, state_start + int(state_counts[idx])):
-            surface_start = int(state_surface_offsets[pool_idx])
-            surface_count = int(state_surface_counts[pool_idx])
-            states[int(state_keys[pool_idx])] = tuple(
-                _surface_from_row_cached(state_surface_pool[row_idx], surface_cache)
-                for row_idx in range(surface_start, surface_start + surface_count)
-            )
+    state_offsets = np.asarray(data["state_offsets"], dtype=np.int32)
+    state_counts = np.asarray(data["state_counts"], dtype=np.int32)
+    state_keys = np.asarray(data["state_keys"], dtype=np.int32)
+    state_surface_offsets = np.asarray(data["state_surface_offsets"], dtype=np.int32)
+    state_surface_counts = np.asarray(data["state_surface_counts"], dtype=np.int32)
+    state_surface_pool = np.asarray(data["state_surface_pool"], dtype=np.uint32)
+    state_start = int(state_offsets[idx])
+    for pool_idx in range(state_start, state_start + int(state_counts[idx])):
+        surface_start = int(state_surface_offsets[pool_idx])
+        surface_count = int(state_surface_counts[pool_idx])
+        states[int(state_keys[pool_idx])] = tuple(
+            _surface_from_row_cached(state_surface_pool[row_idx], surface_cache)
+            for row_idx in range(surface_start, surface_start + surface_count)
+        )
     row = meta[idx]
     return FgResponseFrontierResult(
         first_frontier=first_frontier,
@@ -502,6 +533,284 @@ def _unpack_frontier_at(
         non_fever_base=int(row[6]),
         seconds=0.0,
     )
+
+
+class _LazyResponseStateFrontiers(dict[int, tuple[FgResponseSurface, ...]]):
+    __slots__ = (
+        "_bundle_key",
+        "_state_keys",
+        "_state_surface_offsets",
+        "_state_surface_counts",
+        "_state_index_by_key",
+        "_surface_cache",
+    )
+
+    def __init__(
+        self,
+        *,
+        bundle_key: tuple,
+        state_keys: np.ndarray,
+        state_surface_offsets: np.ndarray,
+        state_surface_counts: np.ndarray,
+    ) -> None:
+        super().__init__()
+        self._bundle_key = bundle_key
+        self._state_keys = np.ascontiguousarray(state_keys, dtype=np.int32)
+        self._state_surface_offsets = np.ascontiguousarray(state_surface_offsets, dtype=np.int32)
+        self._state_surface_counts = np.ascontiguousarray(state_surface_counts, dtype=np.int32)
+        self._state_index_by_key: dict[int, int] | None = None
+        self._surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
+
+    def _state_index(self) -> dict[int, int]:
+        index = self._state_index_by_key
+        if index is None:
+            index = {int(state): int(idx) for idx, state in enumerate(self._state_keys.tolist())}
+            self._state_index_by_key = index
+        return index
+
+    def __bool__(self) -> bool:
+        return int(self._state_keys.shape[0]) > 0
+
+    def __len__(self) -> int:
+        return int(self._state_keys.shape[0])
+
+    def __iter__(self):
+        return iter(self._state_index())
+
+    def __contains__(self, key: object) -> bool:
+        try:
+            state = int(key)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        return state in self._state_index()
+
+    def _materialize_state(self, state: int) -> tuple[FgResponseSurface, ...]:
+        existing = dict.get(self, int(state))
+        if existing is not None:
+            return existing
+        local_idx = self._state_index().get(int(state))
+        if local_idx is None:
+            raise KeyError(state)
+        surface_start = int(self._state_surface_offsets[int(local_idx)])
+        surface_count = int(self._state_surface_counts[int(local_idx)])
+        arrays = _load_bundle_array_members(self._bundle_key, names=("state_surface_pool",))
+        state_surface_pool = np.asarray(arrays["state_surface_pool"], dtype=np.uint32)
+        surfaces = tuple(
+            _surface_from_row_cached(state_surface_pool[row_idx], self._surface_cache)
+            for row_idx in range(surface_start, surface_start + surface_count)
+        )
+        dict.__setitem__(self, int(state), surfaces)
+        return surfaces
+
+    def __getitem__(self, key: int) -> tuple[FgResponseSurface, ...]:
+        return self._materialize_state(int(key))
+
+    def get(
+        self,
+        key: int,
+        default: tuple[FgResponseSurface, ...] | None = None,
+    ) -> tuple[FgResponseSurface, ...] | None:
+        try:
+            return self._materialize_state(int(key))
+        except (KeyError, TypeError, ValueError):
+            return default
+
+
+class _DeferredResponseStateFrontiers(dict[int, tuple[FgResponseSurface, ...]]):
+    __slots__ = ("_bundle_key", "_frontier_idx", "_state_count_hint", "_delegate")
+
+    def __init__(self, *, bundle_key: tuple, frontier_idx: int, state_count_hint: int) -> None:
+        super().__init__()
+        self._bundle_key = bundle_key
+        self._frontier_idx = int(frontier_idx)
+        self._state_count_hint = int(state_count_hint)
+        self._delegate: _LazyResponseStateFrontiers | None = None
+
+    def _load_delegate(self) -> _LazyResponseStateFrontiers:
+        delegate = self._delegate
+        if delegate is None:
+            arrays = _load_bundle_array_members(self._bundle_key, names=_FRONTIER_STATE_INDEX_ARRAY_NAMES)
+            state_offsets = np.asarray(arrays["state_offsets"], dtype=np.int32)
+            state_counts = np.asarray(arrays["state_counts"], dtype=np.int32)
+            idx = int(self._frontier_idx)
+            if idx < 0 or idx >= int(state_offsets.shape[0]):
+                raise ValueError("FG response cache frontier index is outside the state index bundle")
+            state_start = int(state_offsets[idx])
+            state_stop = state_start + int(state_counts[idx])
+            delegate = _LazyResponseStateFrontiers(
+                bundle_key=self._bundle_key,
+                state_keys=np.asarray(arrays["state_keys"], dtype=np.int32)[state_start:state_stop],
+                state_surface_offsets=np.asarray(arrays["state_surface_offsets"], dtype=np.int32)[state_start:state_stop],
+                state_surface_counts=np.asarray(arrays["state_surface_counts"], dtype=np.int32)[state_start:state_stop],
+            )
+            self._delegate = delegate
+        return delegate
+
+    def __bool__(self) -> bool:
+        return int(self._state_count_hint) > 0
+
+    def __len__(self) -> int:
+        if self._delegate is None:
+            return int(self._state_count_hint)
+        return len(self._delegate)
+
+    def __iter__(self):
+        return iter(self._load_delegate())
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._load_delegate()
+
+    def __getitem__(self, key: int) -> tuple[FgResponseSurface, ...]:
+        return self._load_delegate()[int(key)]
+
+    def get(
+        self,
+        key: int,
+        default: tuple[FgResponseSurface, ...] | None = None,
+    ) -> tuple[FgResponseSurface, ...] | None:
+        return self._load_delegate().get(int(key), default)
+
+
+class _LazyResponseFirstFrontier:
+    __slots__ = ("_bundle_key", "_first_start", "_first_count", "_materialized", "_surface_cache")
+
+    def __init__(self, *, bundle_key: tuple, first_start: int, first_count: int) -> None:
+        self._bundle_key = bundle_key
+        self._first_start = int(first_start)
+        self._first_count = int(first_count)
+        self._materialized: tuple[FgResponseSurface, ...] | None = None
+        self._surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
+
+    def _as_tuple(self) -> tuple[FgResponseSurface, ...]:
+        materialized = self._materialized
+        if materialized is None:
+            arrays = _load_bundle_array_members(self._bundle_key, names=("first_surface_pool",))
+            first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
+            materialized = tuple(
+                _surface_from_row_cached(first_pool[row_idx], self._surface_cache)
+                for row_idx in range(self._first_start, self._first_start + self._first_count)
+            )
+            self._materialized = materialized
+        return materialized
+
+    def __bool__(self) -> bool:
+        return int(self._first_count) > 0
+
+    def __len__(self) -> int:
+        return int(self._first_count)
+
+    def __iter__(self):
+        return iter(self._as_tuple())
+
+    def __getitem__(self, idx: int) -> FgResponseSurface:
+        return self._as_tuple()[int(idx)]
+
+    def __eq__(self, other: object) -> bool:
+        return self._as_tuple() == other
+
+
+def _frontier_result_from_bundle_arrays(
+    *,
+    bundle_key: tuple,
+    arrays: dict[str, np.ndarray],
+    frontier_idx: int,
+) -> FgResponseFrontierResult:
+    idx = int(frontier_idx)
+    meta = np.asarray(arrays["frontier_meta"], dtype=np.int32)
+    if idx < 0 or idx >= int(meta.shape[0]):
+        raise ValueError("FG response cache frontier index is outside the bundle")
+    first_offsets = np.asarray(arrays["first_offsets"], dtype=np.int32)
+    first_counts = np.asarray(arrays["first_counts"], dtype=np.int32)
+    first_start = int(first_offsets[idx])
+    first_count = int(first_counts[idx])
+    first_frontier = _LazyResponseFirstFrontier(
+        bundle_key=bundle_key,
+        first_start=int(first_start),
+        first_count=int(first_count),
+    )
+    state_offsets = np.asarray(arrays["state_offsets"], dtype=np.int32)
+    state_counts = np.asarray(arrays["state_counts"], dtype=np.int32)
+    state_start = int(state_offsets[idx])
+    state_stop = state_start + int(state_counts[idx])
+    state_frontiers = _LazyResponseStateFrontiers(
+        bundle_key=bundle_key,
+        state_keys=np.asarray(arrays["state_keys"], dtype=np.int32)[state_start:state_stop],
+        state_surface_offsets=np.asarray(arrays["state_surface_offsets"], dtype=np.int32)[state_start:state_stop],
+        state_surface_counts=np.asarray(arrays["state_surface_counts"], dtype=np.int32)[state_start:state_stop],
+    )
+    row = meta[idx]
+    return FgResponseFrontierResult(
+        first_frontier=first_frontier,
+        state_frontiers=state_frontiers,
+        states_evaluated=int(row[0]),
+        actions=int(row[1]),
+        transitions_evaluated=int(row[2]),
+        generated_surfaces=int(row[3]),
+        retained_surfaces_total=int(row[4]),
+        max_state_frontier=int(row[5]),
+        non_fever_base=int(row[6]),
+        seconds=0.0,
+    )
+
+
+def frontier_result_from_scoring_bundle(
+    scoring_bundle: FgResponseFrontierScoringBundle,
+    *,
+    frontier_idx: int,
+) -> FgResponseFrontierResult:
+    idx = int(frontier_idx)
+    meta = np.asarray(scoring_bundle.frontier_meta, dtype=np.int32)
+    if idx < 0 or idx >= int(meta.shape[0]):
+        raise ValueError("FG response scoring bundle frontier index is outside the bundle")
+    first_start = int(scoring_bundle.frontier_offsets[idx])
+    first_count = int(scoring_bundle.frontier_lengths[idx])
+    row = meta[idx]
+    return FgResponseFrontierResult(
+        first_frontier=_LazyResponseFirstFrontier(
+            bundle_key=scoring_bundle.cache_key,
+            first_start=int(first_start),
+            first_count=int(first_count),
+        ),
+        state_frontiers=_DeferredResponseStateFrontiers(
+            bundle_key=scoring_bundle.cache_key,
+            frontier_idx=int(idx),
+            state_count_hint=int(row[0]),
+        ),
+        states_evaluated=int(row[0]),
+        actions=int(row[1]),
+        transitions_evaluated=int(row[2]),
+        generated_surfaces=int(row[3]),
+        retained_surfaces_total=int(row[4]),
+        max_state_frontier=int(row[5]),
+        non_fever_base=int(row[6]),
+        seconds=0.0,
+    )
+
+
+def frontier_result_from_scoring_bundle_for_stats(
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    scoring_bundle: FgResponseFrontierScoringBundle,
+    *,
+    ft_stat: int,
+    ff_stat: int,
+) -> FgResponseFrontierResult:
+    key = _normalize_stat_key((int(ft_stat), int(ff_stat)))
+    geometry_cache_key = fg_response_frontier_geometry_cache_key(
+        calc_song,
+        ref_arrays,
+        ft_stat=int(key[0]),
+        ff_stat=int(key[1]),
+    )
+    cached = _memory_get(geometry_cache_key)
+    if _frontier_is_complete(cached):
+        return cached
+    frontier_idx = scoring_bundle.frontier_idx_by_key.get(key)
+    if frontier_idx is None:
+        raise ValueError(f"FG response frontier scoring bundle is missing stat key: {key}")
+    frontier = frontier_result_from_scoring_bundle(scoring_bundle, frontier_idx=int(frontier_idx))
+    _memory_put(geometry_cache_key, frontier)
+    return frontier
 
 
 def _response_axes(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
@@ -519,8 +828,6 @@ def _response_axes(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> tup
 
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
-    if not env_flag("FG_RESPONSE_FRONTIER_DISK_CACHE", "1"):
-        return
     path = _fg_response_disk_cache_path(cache_key)
     tmp: Path | None = None
     try:
@@ -555,9 +862,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         raise
 
 
-def _load_payload(cache_key: tuple, *, include_state_frontiers: bool = True) -> FgResponseFrontierCachePayload | None:
-    if not env_flag("FG_RESPONSE_FRONTIER_DISK_CACHE", "1"):
-        return None
+def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     path = _fg_response_disk_cache_path(cache_key)
     if not path.exists():
         return None
@@ -568,7 +873,7 @@ def _load_payload(cache_key: tuple, *, include_state_frontiers: bool = True) -> 
                 return None
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
-            frontiers = _unpack_frontiers(data, include_state_frontiers=include_state_frontiers)
+            frontiers = _unpack_frontiers(data)
             frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[idx])
@@ -596,12 +901,73 @@ def _load_payload(cache_key: tuple, *, include_state_frontiers: bool = True) -> 
         return None
 
 
-def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:
+def _payload_disk_info_if_complete(
+    cache_key: tuple,
+    keys: Iterable[tuple[int, int]],
+) -> tuple[int, int, int] | None:
+    requested = set(normalize_fg_response_stat_keys(keys))
+    path = _fg_response_disk_cache_path(cache_key)
+    if not path.exists():
+        return None
+    required = {
+        "version",
+        "stat_keys",
+        "frontier_ids",
+        "frontier_meta",
+        "first_offsets",
+        "first_counts",
+        "first_surface_pool",
+        "state_offsets",
+        "state_counts",
+        "state_keys",
+        "state_surface_offsets",
+        "state_surface_counts",
+        "state_surface_pool",
+        "total_notes",
+        "long_notes",
+    }
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if not required.issubset(set(data.files)):
+                return None
+            version = str(data["version"].item())
+            if version != _FG_RESPONSE_CACHE_VERSION:
+                return None
+            stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
+            frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
+            meta = np.asarray(data["frontier_meta"], dtype=np.int32)
+            if int(stat_keys.shape[0]) != int(frontier_ids.shape[0]):
+                return None
+            present: set[tuple[int, int]] = set()
+            for idx, key_row in enumerate(stat_keys):
+                frontier_idx = int(frontier_ids[int(idx)])
+                if frontier_idx < 0 or frontier_idx >= int(meta.shape[0]):
+                    return None
+                present.add(_normalize_stat_key((int(key_row[0]), int(key_row[1]))))
+            if not requested.issubset(present):
+                return None
+            return (
+                int(np.asarray(data["total_notes"]).item()),
+                int(np.asarray(data["long_notes"]).item()),
+                int(len(requested)),
+            )
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+
+def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
+    requested = tuple(dict.fromkeys(str(name) for name in names))
+    if not requested:
+        raise ValueError("FG response frontier bundle array request was empty")
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and all(name in cached for name in requested):
             _bundle_array_cache.move_to_end(cache_key)
-            return cached
+            return {name: cached[name] for name in requested}
     path = _fg_response_disk_cache_path(cache_key)
     if not path.exists():
         raise ValueError(f"FG response frontier bundle cache is missing: {path}")
@@ -609,14 +975,46 @@ def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:
         version = str(data["version"].item())
         if version != _FG_RESPONSE_CACHE_VERSION:
             raise ValueError("FG response frontier bundle cache version is invalid")
-        arrays = {name: np.asarray(data[name]) for name in data.files if name != "version"}
-        arrays["version"] = np.asarray(data["version"])
+        missing = [name for name in requested if name not in data.files]
+        if missing:
+            raise ValueError(f"FG response frontier bundle cache is missing arrays: {missing[:5]!r}")
+        loaded = {name: np.asarray(data[name]) for name in requested}
     with _frontier_cache_lock:
-        _bundle_array_cache[cache_key] = arrays
-        _bundle_array_cache.move_to_end(cache_key)
+        cached = _bundle_array_cache.get(cache_key)
+        if cached is None:
+            cached = {}
+            _bundle_array_cache[cache_key] = cached
+        cached.update(loaded)
         while len(_bundle_array_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
             _bundle_array_cache.popitem(last=False)
-    return arrays
+        _bundle_array_cache.move_to_end(cache_key)
+        return {name: cached[name] for name in requested}
+
+
+def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:
+    return _load_bundle_array_members(
+        cache_key,
+        names=(
+            "stat_keys",
+            "frontier_ids",
+            "raw_fill_by_ff",
+            "non_fever_base_by_ff",
+            "real_time_by_ft",
+            "total_notes",
+            "long_notes",
+            "use_forced_great_timing",
+            "frontier_meta",
+            "first_offsets",
+            "first_counts",
+            "first_surface_pool",
+            "state_offsets",
+            "state_counts",
+            "state_keys",
+            "state_surface_offsets",
+            "state_surface_counts",
+            "state_surface_pool",
+        ),
+    )
 
 
 def _source_label(counts: Counter[str]) -> str:
@@ -628,38 +1026,16 @@ def _source_label(counts: Counter[str]) -> str:
     return "mixed" if active else "missing"
 
 
-def _put_payload_frontiers(
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    payload: FgResponseFrontierCachePayload,
-) -> None:
-    for ft_stat, ff_stat in payload.frontier_by_key:
-        _memory_put(
-            fg_response_frontier_geometry_cache_key(
-                calc_song,
-                ref_arrays,
-                ft_stat=ft_stat,
-                ff_stat=ff_stat,
-            ),
-            payload.frontier_by_key[(ft_stat, ff_stat)],
-        )
-
-
 def _payload_subset(
     payload: FgResponseFrontierCachePayload | None,
     keys: Iterable[tuple[int, int]],
-    *,
-    include_state_frontiers: bool = False,
 ) -> FgResponseFrontierCachePayload | None:
     if payload is None:
         return None
     subset: dict[tuple[int, int], FgResponseFrontierResult] = {}
     for key in normalize_fg_response_stat_keys(keys):
         frontier = payload.frontier_by_key.get(key)
-        if not _frontier_satisfies_state_request(
-            frontier,
-            include_state_frontiers=bool(include_state_frontiers),
-        ):
+        if not _frontier_is_complete(frontier):
             return None
         subset[key] = frontier
     return FgResponseFrontierCachePayload(
@@ -676,16 +1052,11 @@ def _payload_subset(
 def _payload_missing_or_incomplete_keys(
     payload: FgResponseFrontierCachePayload | None,
     keys: Iterable[tuple[int, int]],
-    *,
-    include_state_frontiers: bool,
 ) -> tuple[tuple[int, int], ...]:
     out: list[tuple[int, int]] = []
     for key in normalize_fg_response_stat_keys(keys):
         frontier = None if payload is None else payload.frontier_by_key.get(key)
-        if not _frontier_satisfies_state_request(
-            frontier,
-            include_state_frontiers=bool(include_state_frontiers),
-        ):
+        if not _frontier_is_complete(frontier):
             out.append(key)
     return tuple(out)
 
@@ -720,13 +1091,12 @@ def _build_response_frontier_cache_payload(
     ref_arrays: dict[str, Any],
     *,
     stat_keys: Iterable[tuple[int, int]],
-    include_state_frontiers: bool = True,
 ) -> tuple[FgResponseFrontierCachePayload, str]:
     keys = normalize_fg_response_stat_keys(stat_keys)
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
     frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
     frontier_by_geometry: dict[tuple[float, int, float, bool], FgResponseFrontierResult] = {}
-    missing_by_geometry: dict[tuple[float, int, float, bool], tuple[tuple, tuple[float, int, float]]] = {}
+    missing_by_geometry: dict[tuple[float, int, float, bool], tuple[float, int, float]] = {}
     source_counts: Counter[str] = Counter()
     for ft_stat, ff_stat in keys:
         raw_fill = float(raw_fill_by_ff[ff_stat])
@@ -735,28 +1105,12 @@ def _build_response_frontier_cache_payload(
         geometry_key = (raw_fill, non_fever_base, real_fever_time, bool(song_inputs.use_forced_great_timing))
         frontier = frontier_by_geometry.get(geometry_key)
         source = "memory"
-        cache_key = fg_response_frontier_geometry_cache_key(
-            calc_song,
-            ref_arrays,
-            ft_stat=ft_stat,
-            ff_stat=ff_stat,
-        )
-        if frontier is None:
-            frontier = _memory_get(cache_key)
-            if not _frontier_satisfies_state_request(
-                frontier,
-                include_state_frontiers=bool(include_state_frontiers),
-            ):
-                frontier = None
-        elif not _frontier_satisfies_state_request(
-            frontier,
-            include_state_frontiers=bool(include_state_frontiers),
-        ):
+        if frontier is not None and not _frontier_is_complete(frontier):
             frontier = None
         if frontier is None:
             missing_by_geometry.setdefault(
                 geometry_key,
-                (cache_key, (float(raw_fill), int(non_fever_base), float(real_fever_time))),
+                (float(raw_fill), int(non_fever_base), float(real_fever_time)),
             )
             source = "built"
         else:
@@ -764,17 +1118,30 @@ def _build_response_frontier_cache_payload(
         source_counts[source] += 1
     if missing_by_geometry:
         missing_items = tuple(missing_by_geometry.items())
-        built_frontiers = build_force_greats_response_frontiers_gpu_batch(
+        build_t0 = time.perf_counter()
+        built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=song_inputs.timestamps,
             great_candidate_timestamps=song_inputs.great_candidates,
-            geometries=tuple(item[1][1] for item in missing_items),
+            geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-            include_state_frontiers=bool(include_state_frontiers),
+        )
+        frontier_build_ms = float((time.perf_counter() - build_t0) * 1000.0)
+        emit_profile_event(
+            component="fg_response_cache",
+            event="frontier_build",
+            metrics={
+                "requested_stat_keys": int(len(keys)),
+                "missing_geometries": int(len(missing_items)),
+                "frontier_build_ms": frontier_build_ms,
+                "total_notes": int(song_inputs.total_notes),
+                "long_notes": int(song_inputs.long_notes),
+            },
         )
         if len(built_frontiers) != len(missing_items):
             raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
-        for (geometry_key, (cache_key, _geometry)), frontier in zip(missing_items, built_frontiers, strict=True):
-            _memory_put(cache_key, frontier)
+        for (geometry_key, _geometry), frontier in zip(missing_items, built_frontiers, strict=True):
+            if not _frontier_is_complete(frontier):
+                raise ValueError("FG response frontier cache requires first-frontier surfaces")
             frontier_by_geometry[geometry_key] = frontier
     for ft_stat, ff_stat in keys:
         raw_fill = float(raw_fill_by_ff[ff_stat])
@@ -784,15 +1151,6 @@ def _build_response_frontier_cache_payload(
         frontier = frontier_by_geometry.get(geometry_key)
         if frontier is None:
             raise ValueError(f"FG response frontier geometry was not built: {geometry_key!r}")
-        _memory_put(
-            fg_response_frontier_geometry_cache_key(
-                calc_song,
-                ref_arrays,
-                ft_stat=ft_stat,
-                ff_stat=ff_stat,
-            ),
-            frontier,
-        )
         frontier_by_key[(int(ft_stat), int(ff_stat))] = frontier
     payload = FgResponseFrontierCachePayload(
         frontier_by_key=frontier_by_key,
@@ -825,19 +1183,18 @@ def fg_response_frontier_payload_cache_info(
             long_notes=int(payload.long_notes),
             frontier_count=int(len(payload.frontier_by_key)),
         )
-    if env_flag("FG_RESPONSE_FRONTIER_DISK_CACHE", "1") and _fg_response_disk_cache_path(payload_key).exists():
-        song_inputs = extract_fg_song_inputs(calc_song)
+    disk_info = _payload_disk_info_if_complete(payload_key, keys)
+    if disk_info is not None:
+        total_notes, long_notes, frontier_count = disk_info
         return FgResponseFrontierCacheInfo(
             cache_key=payload_key,
             disk_path=_fg_response_disk_cache_path(payload_key),
             cache_source="disk",
-            total_notes=int(song_inputs.total_notes),
-            long_notes=int(song_inputs.long_notes),
-            frontier_count=int(len(keys)),
+            total_notes=int(total_notes),
+            long_notes=int(long_notes),
+            frontier_count=int(frontier_count),
         )
     bundle = _payload_memory_get(bundle_key)
-    if bundle is None and env_flag("FG_RESPONSE_FRONTIER_DISK_CACHE", "1"):
-        bundle = _load_payload(bundle_key)
     if bundle is not None:
         subset = _payload_subset(bundle, keys)
         if subset is not None:
@@ -849,79 +1206,34 @@ def fg_response_frontier_payload_cache_info(
                 long_notes=int(subset.long_notes),
                 frontier_count=int(len(subset.frontier_by_key)),
             )
-    source_counts: Counter[str] = Counter()
-    for ft_stat, ff_stat in keys:
-        cache_key = fg_response_frontier_geometry_cache_key(
-            calc_song,
-            ref_arrays,
-            ft_stat=ft_stat,
-            ff_stat=ff_stat,
+    bundle_disk_info = _payload_disk_info_if_complete(bundle_key, keys)
+    if bundle_disk_info is not None:
+        total_notes, long_notes, frontier_count = bundle_disk_info
+        return FgResponseFrontierCacheInfo(
+            cache_key=payload_key,
+            disk_path=_fg_response_disk_cache_path(bundle_key),
+            cache_source="disk",
+            total_notes=int(total_notes),
+            long_notes=int(long_notes),
+            frontier_count=int(frontier_count),
         )
-        if _memory_get(cache_key) is not None:
-            source_counts["memory"] += 1
-        else:
-            source_counts["missing"] += 1
     song_inputs = extract_fg_song_inputs(calc_song)
     return FgResponseFrontierCacheInfo(
         cache_key=payload_key,
         disk_path=_fg_response_disk_cache_path(payload_key),
-        cache_source=_source_label(source_counts),
+        cache_source="missing",
         total_notes=int(song_inputs.total_notes),
         long_notes=int(song_inputs.long_notes),
-        frontier_count=int(len(keys) - int(source_counts.get("missing", 0))),
+        frontier_count=0,
     )
 
 
-def build_or_load_response_frontier_scoring_bundle(
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+def _materialize_scoring_bundle_from_arrays(
     *,
-    stat_keys: Iterable[tuple[int, int]],
+    cache_key: tuple,
+    keys: tuple[tuple[int, int], ...],
+    arrays: dict[str, np.ndarray],
 ) -> FgResponseFrontierScoringBundle:
-    keys = normalize_fg_response_stat_keys(stat_keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
-    bundle: FgResponseFrontierCachePayload | None = None
-    arrays: dict[str, np.ndarray] | None = None
-    try:
-        arrays = _load_bundle_arrays(bundle_key)
-    except ValueError:
-        arrays = None
-    if arrays is not None:
-        available = {
-            _normalize_stat_key((int(row[0]), int(row[1])))
-            for row in np.asarray(arrays["stat_keys"], dtype=np.int32)
-        }
-        missing = tuple(key for key in keys if key not in available)
-        if missing:
-            bundle = _load_payload(bundle_key, include_state_frontiers=True)
-            missing_payload, _source = _build_response_frontier_cache_payload(
-                calc_song,
-                ref_arrays,
-                stat_keys=missing,
-                include_state_frontiers=False,
-            )
-            bundle = _merge_payloads(bundle, missing_payload)
-            _save_payload(bundle_key, bundle)
-            _invalidate_bundle_array_views(bundle_key)
-            arrays = _load_bundle_arrays(bundle_key)
-    else:
-        build_or_load_response_frontier_payload(
-            calc_song,
-            ref_arrays,
-            stat_keys=keys,
-            include_state_frontiers=False,
-        )
-        arrays = _load_bundle_arrays(bundle_key)
-
-    with _frontier_cache_lock:
-        cached_scoring = _scoring_bundle_cache.get(bundle_key)
-        if cached_scoring is not None:
-            if len(cached_scoring.frontier_idx_by_key) >= (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1) or all(
-                key in cached_scoring.frontier_idx_by_key for key in keys
-            ):
-                _scoring_bundle_cache.move_to_end(bundle_key)
-                return cached_scoring
-
     stat_key_rows = np.asarray(arrays["stat_keys"], dtype=np.int32)
     frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32)
     frontier_idx_by_key: dict[tuple[int, int], int] = {}
@@ -937,15 +1249,17 @@ def build_or_load_response_frontier_scoring_bundle(
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     for key, frontier_idx in frontier_idx_by_key.items():
         frontier_idx_by_stat[int(key[0]), int(key[1])] = int(frontier_idx)
-    first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.int64)
+    first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
     surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
-    scoring_bundle = FgResponseFrontierScoringBundle(
+    return FgResponseFrontierScoringBundle(
+        cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
         frontier_idx_by_stat=frontier_idx_by_stat,
         raw_fill_by_ff=np.asarray(arrays["raw_fill_by_ff"], dtype=np.float64),
         non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
         real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
+        frontier_meta=np.asarray(arrays["frontier_meta"], dtype=np.int32),
         surface_words=surface_words,
         surface_counts=surface_counts,
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
@@ -954,6 +1268,31 @@ def build_or_load_response_frontier_scoring_bundle(
         long_notes=int(np.asarray(arrays["long_notes"]).item()),
         use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),
     )
+
+
+def load_response_frontier_scoring_bundle(
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    *,
+    stat_keys: Iterable[tuple[int, int]],
+) -> FgResponseFrontierScoringBundle:
+    keys = normalize_fg_response_stat_keys(stat_keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    if _payload_disk_info_if_complete(bundle_key, keys) is None:
+        raise ValueError(
+            "FG response frontier scoring requires a prebuilt canonical bundle cache for the requested stat keys"
+        )
+    with _frontier_cache_lock:
+        cached_scoring = _scoring_bundle_cache.get(bundle_key)
+        if cached_scoring is not None:
+            if len(cached_scoring.frontier_idx_by_key) >= (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1) or all(
+                key in cached_scoring.frontier_idx_by_key for key in keys
+            ):
+                _scoring_bundle_cache.move_to_end(bundle_key)
+                return cached_scoring
+
+    arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+    scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
     with _frontier_cache_lock:
         _scoring_bundle_cache[bundle_key] = scoring_bundle
         _scoring_bundle_cache.move_to_end(bundle_key)
@@ -962,26 +1301,96 @@ def build_or_load_response_frontier_scoring_bundle(
     return scoring_bundle
 
 
-def build_or_load_response_frontier_payload(
+def load_response_frontier_payload(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     *,
     stat_keys: Iterable[tuple[int, int]],
-    include_state_frontiers: bool = True,
 ) -> FgResponseFrontierPrewarmResult:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
     cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
     bundle_path = _fg_response_disk_cache_path(bundle_key)
-    memory_key = cache_key if include_state_frontiers else (*cache_key, _FIRST_FRONTIER_ONLY_MARKER)
-    bundle_memory_key = bundle_key if include_state_frontiers else (*bundle_key, _FIRST_FRONTIER_ONLY_MARKER)
-    payload = _payload_memory_get(memory_key)
-    if payload is not None and _payload_subset(
-        payload,
-        keys,
-        include_state_frontiers=bool(include_state_frontiers),
-    ) is not None:
+    source = "memory"
+    payload = _payload_memory_get(cache_key)
+    payload = _payload_subset(payload, keys)
+    if payload is None:
+        source = "disk"
+        payload = _payload_subset(_load_payload(cache_key), keys)
+    if payload is None:
+        source = "memory"
+        payload = _payload_subset(_payload_memory_get(bundle_key), keys)
+    if payload is None:
+        source = "disk"
+        payload = _payload_subset(_load_payload(bundle_key), keys)
+    if payload is None:
+        raise ValueError("FG response frontier reconstruction requires a prebuilt canonical bundle cache")
+    _payload_memory_put(cache_key, payload)
+    return FgResponseFrontierPrewarmResult(
+        payload=payload,
+        cache_key=cache_key,
+        disk_path=bundle_path,
+        cache_source=source,
+        elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+        total_notes=int(payload.total_notes),
+        long_notes=int(payload.long_notes),
+        frontier_count=int(len(payload.frontiers)),
+    )
+
+
+def load_response_frontier_result_for_stats(
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    *,
+    ft_stat: int,
+    ff_stat: int,
+) -> FgResponseFrontierResult:
+    key = _normalize_stat_key((int(ft_stat), int(ff_stat)))
+    geometry_cache_key = fg_response_frontier_geometry_cache_key(
+        calc_song,
+        ref_arrays,
+        ft_stat=int(key[0]),
+        ff_stat=int(key[1]),
+    )
+    cached = _memory_get(geometry_cache_key)
+    if _frontier_is_complete(cached):
+        return cached
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    if _payload_disk_info_if_complete(bundle_key, (key,)) is None:
+        raise ValueError("FG response frontier reconstruction requires a prebuilt canonical bundle cache")
+    arrays = _load_bundle_array_members(bundle_key, names=_FRONTIER_RESULT_ARRAY_NAMES)
+    stat_keys = np.asarray(arrays["stat_keys"], dtype=np.int32)
+    frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32)
+    frontier_idx: int | None = None
+    for idx, key_row in enumerate(stat_keys):
+        if key == _normalize_stat_key((int(key_row[0]), int(key_row[1]))):
+            frontier_idx = int(frontier_ids[int(idx)])
+            break
+    if frontier_idx is None:
+        raise ValueError(f"FG response frontier bundle cache is missing stat key: {key}")
+    frontier = _frontier_result_from_bundle_arrays(
+        bundle_key=bundle_key,
+        arrays=arrays,
+        frontier_idx=int(frontier_idx),
+    )
+    _memory_put(geometry_cache_key, frontier)
+    return frontier
+
+
+def build_or_load_response_frontier_payload(
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    *,
+    stat_keys: Iterable[tuple[int, int]],
+) -> FgResponseFrontierPrewarmResult:
+    started = time.perf_counter()
+    keys = normalize_fg_response_stat_keys(stat_keys)
+    cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    bundle_path = _fg_response_disk_cache_path(bundle_key)
+    payload = _payload_memory_get(cache_key)
+    if payload is not None and _payload_subset(payload, keys) is not None:
         return FgResponseFrontierPrewarmResult(
             payload=payload,
             cache_key=cache_key,
@@ -993,58 +1402,57 @@ def build_or_load_response_frontier_payload(
             frontier_count=int(len(payload.frontiers)),
         )
     source = "disk"
-    payload = _load_payload(cache_key, include_state_frontiers=include_state_frontiers)
-    if _payload_subset(
-        payload,
-        keys,
-        include_state_frontiers=bool(include_state_frontiers),
-    ) is None:
+    payload = _load_payload(cache_key)
+    if _payload_subset(payload, keys) is None:
         payload = None
     bundle: FgResponseFrontierCachePayload | None = None
     if payload is None:
-        bundle = _payload_memory_get(bundle_memory_key)
-        if bundle is None:
-            bundle = _load_payload(bundle_key, include_state_frontiers=include_state_frontiers)
-        if bundle is not None:
-            payload = _payload_subset(
-                bundle,
-                keys,
-                include_state_frontiers=bool(include_state_frontiers),
-            )
-        if payload is None:
-            if bundle is not None and not include_state_frontiers:
-                bundle = _load_payload(bundle_key, include_state_frontiers=True)
-            missing_keys = _payload_missing_or_incomplete_keys(
-                bundle,
-                keys,
-                include_state_frontiers=bool(include_state_frontiers),
-            )
-            payload, source = _build_response_frontier_cache_payload(
-                calc_song,
-                ref_arrays,
-                stat_keys=missing_keys,
-                include_state_frontiers=bool(include_state_frontiers),
-            )
-            bundle = _merge_payloads(bundle, payload)
-            _save_payload(bundle_key, bundle)
-            _payload_memory_put(bundle_memory_key, bundle)
-            _invalidate_bundle_array_views(bundle_key)
-            payload = _payload_subset(
-                bundle,
-                keys,
-                include_state_frontiers=bool(include_state_frontiers),
-            )
+        slot_wait_t0 = time.perf_counter()
+        with _response_bundle_build_slots:
+            bundle_slot_wait_ms = float((time.perf_counter() - slot_wait_t0) * 1000.0)
+            bundle = _payload_memory_get(bundle_key)
+            if bundle is None:
+                bundle = _load_payload(bundle_key)
+            if bundle is not None:
+                payload = _payload_subset(bundle, keys)
             if payload is None:
-                raise ValueError("FG response frontier bundle did not contain requested keys after build")
-        else:
-            source = "disk"
-    elif include_state_frontiers:
+                missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
+                build_t0 = time.perf_counter()
+                payload, source = _build_response_frontier_cache_payload(
+                    calc_song,
+                    ref_arrays,
+                    stat_keys=missing_keys,
+                )
+                build_ms = float((time.perf_counter() - build_t0) * 1000.0)
+                save_t0 = time.perf_counter()
+                bundle = _merge_payloads(bundle, payload)
+                _save_payload(bundle_key, bundle)
+                save_ms = float((time.perf_counter() - save_t0) * 1000.0)
+                _payload_memory_put(bundle_key, bundle)
+                _invalidate_bundle_array_views(bundle_key)
+                payload = _payload_subset(bundle, keys)
+                emit_profile_event(
+                    component="fg_response_cache",
+                    event="payload_materialize",
+                    metrics={
+                        "requested_stat_keys": int(len(keys)),
+                        "missing_stat_keys": int(len(missing_keys)),
+                        "payload_build_ms": build_ms,
+                        "bundle_save_ms": save_ms,
+                        "bundle_slot_wait_ms": bundle_slot_wait_ms,
+                        "bundle_stat_keys": int(len(bundle.frontier_by_key)),
+                    },
+                )
+                if payload is None:
+                    raise ValueError("FG response frontier bundle did not contain requested keys after build")
+            else:
+                source = "disk"
+    else:
         bundle = _merge_payloads(_load_payload(bundle_key), payload)
         _save_payload(bundle_key, bundle)
         _payload_memory_put(bundle_key, bundle)
         _invalidate_bundle_array_views(bundle_key)
-    _payload_memory_put(memory_key, payload)
-    _put_payload_frontiers(calc_song, ref_arrays, payload)
+    _payload_memory_put(cache_key, payload)
     return FgResponseFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
@@ -1076,12 +1484,16 @@ __all__ = [
     "_FG_RESPONSE_CACHE_VERSION",
     "_fg_response_disk_cache_path",
     "build_or_load_response_frontier_payload",
-    "build_or_load_response_frontier_scoring_bundle",
     "cleanup_fg_response_frontier_cache_temp_files",
     "fg_response_frontier_bundle_cache_key",
     "fg_response_frontier_geometry_cache_key",
     "fg_response_frontier_payload_cache_info",
     "fg_response_frontier_payload_cache_key",
+    "frontier_result_from_scoring_bundle",
+    "frontier_result_from_scoring_bundle_for_stats",
+    "load_response_frontier_payload",
+    "load_response_frontier_scoring_bundle",
+    "load_response_frontier_result_for_stats",
     "normalize_fg_response_stat_keys",
     "reset_fg_response_frontier_payload_cache",
 ]

@@ -15,11 +15,12 @@ from gear_optimizer.core.constants import (
     TOTAL_ROWS,
 )
 from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 from gear_optimizer.solver.scoring_core import lookup_reference_jit
 from gear_optimizer.solver.taichi_gem import api as gem_api
 
 from .response_types import FgResponseInnerResult, FgResponseSurface
-from .response_surface_meta import precompute_response_surface_head_coeffs
+
 
 _PACKED_FRONTIER_SURFACE_CACHE_MAX = 8
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
@@ -32,7 +33,7 @@ _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
 _FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK = 100_000
 _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
 _FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 262_144
-_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 512_000_000
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 16_000_000_000
 
 
 def _response_inner_combo_count(
@@ -135,6 +136,42 @@ def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> n
     return np.ascontiguousarray(unique_counts[np.asarray(inverse, dtype=np.intp)], dtype=np.int64)
 
 
+def _response_group_logical_surface_plan(
+    group_lengths: np.ndarray,
+    combo_counts: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    group_lengths_arr = np.ascontiguousarray(np.asarray(group_lengths, dtype=np.int32))
+    combo_counts_arr = np.ascontiguousarray(np.asarray(combo_counts, dtype=np.int64))
+    if int(group_lengths_arr.ndim) != 1 or int(combo_counts_arr.ndim) != 1:
+        raise ValueError("response frontier logical surface plan requires one-dimensional inputs")
+    if int(group_lengths_arr.shape[0]) != int(combo_counts_arr.shape[0]):
+        raise ValueError("response frontier logical surface plan inputs have inconsistent lengths")
+    if bool(np.any(group_lengths_arr < 0)):
+        raise ValueError("response frontier logical surface plan received a negative group length")
+    logical_surface_rows = int(np.sum(group_lengths_arr, dtype=np.int64))
+    if logical_surface_rows <= 0:
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        return empty_i32, empty_i32, np.zeros((1,), dtype=np.int64)
+
+    owners = np.ascontiguousarray(
+        np.repeat(np.arange(int(group_lengths_arr.shape[0]), dtype=np.int32), group_lengths_arr),
+        dtype=np.int32,
+    )
+    group_starts = np.empty((int(group_lengths_arr.shape[0]),), dtype=np.int64)
+    group_starts[0] = 0
+    if int(group_lengths_arr.shape[0]) > 1:
+        group_starts[1:] = np.cumsum(group_lengths_arr[:-1], dtype=np.int64)
+    local_surfaces = np.ascontiguousarray(
+        np.arange(logical_surface_rows, dtype=np.int64) - group_starts[owners],
+        dtype=np.int32,
+    )
+    logical_work = np.ascontiguousarray(combo_counts_arr[owners], dtype=np.int64)
+    work_cumsum = np.empty((logical_surface_rows + 1,), dtype=np.int64)
+    work_cumsum[0] = 0
+    np.cumsum(logical_work, dtype=np.int64, out=work_cumsum[1:])
+    return owners, local_surfaces, np.ascontiguousarray(work_cumsum, dtype=np.int64)
+
+
 @jit(nopython=True, cache=True)
 def _score_response_surface_jit(
     fever0,
@@ -154,6 +191,7 @@ def _score_response_surface_jit(
     pp_factor,
     combo_mul,
     fever_mul,
+    is_single_color,
 ):
     base_value64 = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
     combo64 = float(combo_mul)
@@ -194,12 +232,16 @@ def _score_response_surface_jit(
         else:
             score += int(ramp)
 
-    great_penalty_base_head = int(np.floor(float(int(primary_val) * 2) * (2.0 / 3.0))) + int(
-        np.floor(float(int(secondary_val)) * (2.0 / 3.0))
-    ) + 150
-    great_penalty_base_raw = (float(int(primary_val) * 2) * (2.0 / 3.0)) + (
-        float(int(secondary_val)) * (2.0 / 3.0)
-    ) + 150.0
+    if int(is_single_color) != 0:
+        great_penalty_base_head = (int(primary_val) * 2) + 150
+        great_penalty_base_raw = float(great_penalty_base_head)
+    else:
+        great_penalty_base_head = int(np.floor(float(int(primary_val)) * (4.0 / 3.0))) + int(
+            np.floor(float(int(secondary_val)) * (2.0 / 3.0))
+        ) + 150
+        great_penalty_base_raw = (float(int(primary_val)) * (4.0 / 3.0)) + (
+            float(int(secondary_val)) * (2.0 / 3.0)
+        ) + 150.0
     penalty_combo_value = int(np.floor(base_value64 * combo64))
     great_combo_value = int(np.floor(great_penalty_base_raw * combo64))
     body_penalty = penalty_combo_value - great_combo_value
@@ -259,6 +301,7 @@ def _optimize_response_surface_inner_jit(
     is_s_fm,
     is_p_ov,
     is_s_ov,
+    is_single_color,
     ref_pp,
     ref_cm,
     ref_fm,
@@ -367,6 +410,7 @@ def _optimize_response_surface_inner_jit(
                     lookup_reference_jit(pp_stat, ref_pp, TOTAL_ROWS),
                     lookup_reference_jit(cm_stat, ref_cm, TOTAL_ROWS),
                     lookup_reference_jit(fm_stat, ref_fm, TOTAL_ROWS),
+                    int(is_single_color),
                 )
                 if score > best_score or (
                     score == best_score
@@ -416,6 +460,7 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(secondary == "Rush"),
         int(primary == selected and bool(selected)),
         int(secondary == selected and bool(selected)),
+        int(is_single_color_song(primary, secondary)),
     )
 
 
@@ -435,6 +480,7 @@ def score_response_surface_exact(
     pp_factor: float,
     combo_mul: float,
     fever_mul: float,
+    single_color: bool,
 ) -> int:
     head_len = min(int(total_notes), 100)
     body_total = max(0, int(total_notes) - 100)
@@ -458,6 +504,7 @@ def score_response_surface_exact(
             float(pp_factor),
             float(combo_mul),
             float(fever_mul),
+            int(bool(single_color)),
         )
     )
 
@@ -534,6 +581,7 @@ def optimize_response_frontier_inner_exact(
     return best
 
 
+
 @ti.func
 def _fg_response_lookup_ref(ref: ti.template(), idx: ti.i32) -> ti.f32:
     safe_idx: ti.i32 = idx
@@ -568,6 +616,7 @@ def _fg_response_score_device(
     pp_factor: ti.f32,
     combo_mul: ti.f32,
     fever_mul: ti.f32,
+    is_single_color: ti.i32,
 ) -> ti.i32:
     base_value: ti.f32 = ti.cast((primary_val * 2) + secondary_val, ti.f32) + pp_factor
     combo_val: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
@@ -611,16 +660,22 @@ def _fg_response_score_device(
 
     great_bits: ti.u32 = great0 | great1 | great2 | great3
     if body_great > 0 or great_bits != ti.u32(0):
-        great_head_base: ti.i32 = (
-            ti.cast(ti.floor(ti.cast(primary_val * 2, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
-            + ti.cast(ti.floor(ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
-            + 150
-        )
-        great_raw: ti.f32 = (
-            ti.cast(primary_val * 2, ti.f32) * ti.f32(2.0 / 3.0)
-            + ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)
-            + ti.f32(150.0)
-        )
+        great_head_base: ti.i32 = 0
+        great_raw: ti.f32 = ti.f32(0.0)
+        if is_single_color != 0:
+            great_head_base = (primary_val * 2) + 150
+            great_raw = ti.cast(great_head_base, ti.f32)
+        else:
+            great_head_base = (
+                ti.cast(ti.floor(ti.cast(primary_val, ti.f32) * ti.f32(4.0 / 3.0)), ti.i32)
+                + ti.cast(ti.floor(ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)), ti.i32)
+                + 150
+            )
+            great_raw = (
+                ti.cast(primary_val, ti.f32) * ti.f32(4.0 / 3.0)
+                + ti.cast(secondary_val, ti.f32) * ti.f32(2.0 / 3.0)
+                + ti.f32(150.0)
+            )
         if body_great > 0:
             body_penalty: ti.i32 = combo_val - ti.cast(ti.floor(great_raw * combo_mul), ti.i32)
             if body_penalty < 0:
@@ -734,23 +789,30 @@ def _fg_response_inner_batch_kernel(
     surface_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
     surface_counts: ti.types.ndarray(dtype=ti.i32, ndim=2),
     surface_head_coeffs: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    group_offsets: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    logical_owners: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    logical_surfaces: ti.types.ndarray(dtype=ti.i32, ndim=1),
     row_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
     color_flags: ti.types.ndarray(dtype=ti.i32, ndim=1),
     ref_pp: ti.types.ndarray(dtype=ti.f32, ndim=1),
     ref_cm: ti.types.ndarray(dtype=ti.f32, ndim=1),
     ref_fm: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    out_rows: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    out_scores: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    out_details: ti.types.ndarray(dtype=ti.i32, ndim=2),
     allow_pp_template: ti.template(),
 ):
     for row in range(row_count):
-        residual_budget: ti.i32 = row_meta[row, 0]
-        cur_pp: ti.i32 = row_meta[row, 1]
-        cur_cm: ti.i32 = row_meta[row, 2]
-        cur_fm: ti.i32 = row_meta[row, 3]
-        cur_primary: ti.i32 = row_meta[row, 4]
-        cur_secondary: ti.i32 = row_meta[row, 5]
-        head_len: ti.i32 = row_meta[row, 6]
-        body_total: ti.i32 = row_meta[row, 7]
+        owner: ti.i32 = logical_owners[row]
+        local_surface: ti.i32 = logical_surfaces[row]
+        surface_row: ti.i32 = group_offsets[owner] + local_surface
+        residual_budget: ti.i32 = row_meta[owner, 0]
+        cur_pp: ti.i32 = row_meta[owner, 1]
+        cur_cm: ti.i32 = row_meta[owner, 2]
+        cur_fm: ti.i32 = row_meta[owner, 3]
+        cur_primary: ti.i32 = row_meta[owner, 4]
+        cur_secondary: ti.i32 = row_meta[owner, 5]
+        head_len: ti.i32 = row_meta[owner, 6]
+        body_total: ti.i32 = row_meta[owner, 7]
 
         is_p_pp: ti.i32 = color_flags[0]
         is_s_pp: ti.i32 = color_flags[1]
@@ -760,6 +822,7 @@ def _fg_response_inner_batch_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
+        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -833,16 +896,16 @@ def _fg_response_inner_batch_kernel(
             fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
             g_fm_cache += 1
 
-        fever0: ti.u32 = surface_words[row, 0]
-        fever1: ti.u32 = surface_words[row, 1]
-        fever2: ti.u32 = surface_words[row, 2]
-        fever3: ti.u32 = surface_words[row, 3]
-        great0: ti.u32 = surface_words[row, 4]
-        great1: ti.u32 = surface_words[row, 5]
-        great2: ti.u32 = surface_words[row, 6]
-        great3: ti.u32 = surface_words[row, 7]
-        body_fever: ti.i32 = surface_counts[row, 0]
-        body_great: ti.i32 = surface_counts[row, 1]
+        fever0: ti.u32 = surface_words[surface_row, 0]
+        fever1: ti.u32 = surface_words[surface_row, 1]
+        fever2: ti.u32 = surface_words[surface_row, 2]
+        fever3: ti.u32 = surface_words[surface_row, 3]
+        great0: ti.u32 = surface_words[surface_row, 4]
+        great1: ti.u32 = surface_words[surface_row, 5]
+        great2: ti.u32 = surface_words[surface_row, 6]
+        great3: ti.u32 = surface_words[surface_row, 7]
+        body_fever: ti.i32 = surface_counts[surface_row, 0]
+        body_great: ti.i32 = surface_counts[surface_row, 1]
 
         best_score: ti.i32 = -1
         best_pp: ti.i32 = 0
@@ -858,10 +921,10 @@ def _fg_response_inner_batch_kernel(
         body_normal: ti.i32 = body_total - body_fever
         if body_normal < 0:
             body_normal = 0
-        n_hn = surface_head_coeffs[row, 0]
-        n_hf = surface_head_coeffs[row, 1]
-        sigma_hn = surface_head_coeffs[row, 2]
-        sigma_hf = surface_head_coeffs[row, 3]
+        n_hn = surface_head_coeffs[surface_row, 0]
+        n_hf = surface_head_coeffs[surface_row, 1]
+        sigma_hn = surface_head_coeffs[surface_row, 2]
+        sigma_hf = surface_head_coeffs[surface_row, 3]
 
         g_cm: ti.i32 = 0
         while g_cm <= max_cm_gems:
@@ -925,6 +988,7 @@ def _fg_response_inner_batch_kernel(
                                 pp_ref_cache[0],
                                 cm_mul,
                                 fm_mul,
+                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score
@@ -987,6 +1051,7 @@ def _fg_response_inner_batch_kernel(
                                         pp_ref_cache[g_pp],
                                         cm_mul,
                                         fm_mul,
+                                        is_single_color,
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -1028,6 +1093,7 @@ def _fg_response_inner_batch_kernel(
                             pp_ref_base,
                             cm_mul,
                             fm_mul,
+                            is_single_color,
                         )
                         if score > best_score or (
                             score == best_score
@@ -1049,16 +1115,46 @@ def _fg_response_inner_batch_kernel(
                 g_fm += 1
             g_cm += 1
 
-        out_rows[row, 0] = best_score
-        out_rows[row, 1] = best_pp
-        out_rows[row, 2] = best_cm
-        out_rows[row, 3] = best_fm
-        out_rows[row, 4] = best_ov
-        out_rows[row, 5] = best_final_pp
-        out_rows[row, 6] = best_final_cm
-        out_rows[row, 7] = best_final_fm
-        out_rows[row, 8] = best_final_primary
-        out_rows[row, 9] = best_final_secondary
+        out_scores[row] = best_score
+        out_details[row, 0] = best_pp
+        out_details[row, 1] = best_cm
+        out_details[row, 2] = best_fm
+        out_details[row, 3] = best_ov
+        out_details[row, 4] = best_final_pp
+        out_details[row, 5] = best_final_cm
+        out_details[row, 6] = best_final_fm
+        out_details[row, 7] = best_final_primary
+        out_details[row, 8] = best_final_secondary
+
+
+@jit(nopython=True, cache=True)
+def _reduce_response_inner_chunk_jit(
+    row_count,
+    chunk_scores,
+    chunk_details,
+    chunk_owners,
+    chunk_local_surfaces,
+    best_scores,
+    out_rows,
+):
+    row = 0
+    while row < row_count:
+        owner = int(chunk_owners[row])
+        best_row = row
+        best_score = int(chunk_scores[row])
+        row += 1
+        while row < row_count and int(chunk_owners[row]) == owner:
+            score = int(chunk_scores[row])
+            if score > best_score:
+                best_score = score
+                best_row = row
+            row += 1
+        if best_score > int(best_scores[owner]):
+            best_scores[owner] = best_score
+            out_rows[owner, 0] = best_score
+            out_rows[owner, 1] = int(chunk_local_surfaces[best_row])
+            for col in range(9):
+                out_rows[owner, col + 2] = int(chunk_details[best_row, col])
 
 
 @ti.kernel
@@ -1095,6 +1191,7 @@ def _fg_response_inner_group_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
+        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -1277,6 +1374,7 @@ def _fg_response_inner_group_kernel(
                                     pp_ref_cache[0],
                                     cm_mul,
                                     fm_mul,
+                                    is_single_color,
                                 )
                                 if score > best_score or (
                                     score == best_score
@@ -1339,6 +1437,7 @@ def _fg_response_inner_group_kernel(
                                             pp_ref_cache[g_pp],
                                             cm_mul,
                                             fm_mul,
+                                            is_single_color,
                                         )
                                         if score > best_score or (
                                             score == best_score
@@ -1380,6 +1479,7 @@ def _fg_response_inner_group_kernel(
                                 pp_ref_base,
                                 cm_mul,
                                 fm_mul,
+                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score
@@ -1426,6 +1526,7 @@ def _fg_response_inner_group_kernel(
         out_rows[group, 8] = group_best_final_fm
         out_rows[group, 9] = group_best_final_primary
         out_rows[group, 10] = group_best_final_secondary
+
 
 
 def optimize_response_frontier_inner_exact_gpu(
@@ -1558,7 +1659,30 @@ def _precompute_surface_head_coeffs(
             if cached is not None:
                 _SURFACE_HEAD_COEFF_CACHE.move_to_end(key)
                 return cached
-    coeffs = precompute_response_surface_head_coeffs(words, head_len=int(head_len))
+    row_count = int(words.shape[0])
+    coeffs = np.zeros((row_count, 4), dtype=np.int32)
+    head = max(0, min(int(head_len), 100))
+    if row_count > 0 and head > 0:
+        if int(words.ndim) != 2 or int(words.shape[1]) < 4:
+            raise ValueError("response frontier GPU head-coeff precompute requires packed fever words")
+        for block in range(4):
+            start = int(block * 32)
+            if start >= int(head):
+                break
+            take = min(32, int(head) - int(start))
+            if take <= 0:
+                continue
+            block_words = np.ascontiguousarray(words[:, block], dtype=np.uint32)
+            block_bytes = np.ascontiguousarray(block_words.view(np.uint8).reshape(row_count, 4), dtype=np.uint8)
+            block_bits = np.unpackbits(block_bytes, axis=1, bitorder="little")[:, : int(take)].astype(np.int32, copy=False)
+            fever_count = np.sum(block_bits, axis=1, dtype=np.int32)
+            coeffs[:, 1] += fever_count
+            coeffs[:, 0] += int(take) - fever_count
+            positions = np.arange(int(start) + 1, int(start) + int(take) + 1, dtype=np.int32)
+            sigma_hf = np.sum(block_bits * positions.reshape(1, -1), axis=1, dtype=np.int32)
+            coeffs[:, 3] += sigma_hf
+            coeffs[:, 2] += int(np.sum(positions, dtype=np.int32)) - sigma_hf
+    coeffs = np.ascontiguousarray(coeffs, dtype=np.int32)
     if cacheable:
         with _SURFACE_HEAD_COEFF_CACHE_LOCK:
             _SURFACE_HEAD_COEFF_CACHE[key] = coeffs
@@ -1580,6 +1704,9 @@ def _score_response_group_meta_gpu(
     surface_words: np.ndarray,
     surface_counts: np.ndarray,
     surface_head_coeffs: np.ndarray | None = None,
+    logical_owners: np.ndarray | None = None,
+    logical_surfaces: np.ndarray | None = None,
+    logical_work_cumsum: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
@@ -1654,168 +1781,81 @@ def _score_response_group_meta_gpu(
         ti.sync()
         return out_rows, int(logical_surface_rows)
 
-    valid_mask = np.asarray(group_lengths_all > 0, dtype=np.bool_)
-    standard_group_mask = np.asarray(
-        valid_mask & (work_by_group <= int(max_thread_work)),
-        dtype=np.bool_,
-    )
-    direct_group_indices = np.flatnonzero(standard_group_mask).astype(np.int32, copy=False)
-    oversized_group_indices = np.flatnonzero(valid_mask & ~standard_group_mask).astype(
+    valid_group_indices = np.flatnonzero(np.asarray(group_lengths_all > 0, dtype=np.bool_)).astype(
         np.int32,
         copy=False,
     )
-
-    def run_group_dispatch(group_indices: np.ndarray) -> None:
-        dispatch_count = int(group_indices.shape[0])
-        if dispatch_count <= 0:
-            return
-        dispatch_out = np.zeros((dispatch_count, 11), dtype=np.int32)
-        _fg_response_inner_group_kernel(
-            int(dispatch_count),
-            surface_words_all,
-            surface_counts_all,
-            surface_head_coeffs_all,
-            np.ascontiguousarray(group_offsets_all[group_indices], dtype=np.int32),
-            np.ascontiguousarray(group_lengths_all[group_indices], dtype=np.int32),
-            np.ascontiguousarray(group_meta_all[group_indices], dtype=np.int32),
-            flags,
-            ref_pp,
-            ref_cm,
-            ref_fm,
-            dispatch_out,
-            bool(allow_pp),
-        )
-        ti.sync()
-        out_rows[group_indices, :] = dispatch_out
-
-    if int(direct_group_indices.shape[0]) > 0:
-        dispatch_indices: list[int] = []
-        dispatch_work = 0
-        for group_idx in direct_group_indices.tolist():
-            group_work = int(work_by_group[int(group_idx)])
-            if dispatch_indices and (
-                len(dispatch_indices) >= int(max_dispatch_groups)
-                or (int(dispatch_work) + int(group_work)) > int(max_dispatch_work)
-            ):
-                run_group_dispatch(np.asarray(dispatch_indices, dtype=np.int32))
-                dispatch_indices.clear()
-                dispatch_work = 0
-            dispatch_indices.append(int(group_idx))
-            dispatch_work += int(group_work)
-        if dispatch_indices:
-            run_group_dispatch(np.asarray(dispatch_indices, dtype=np.int32))
-
-    if int(oversized_group_indices.shape[0]) <= 0:
+    if int(valid_group_indices.shape[0]) <= 0:
         return out_rows, int(logical_surface_rows)
 
     best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
-    chunk_row_meta_blocks: list[np.ndarray] = []
-    chunk_word_blocks: list[np.ndarray] = []
-    chunk_count_blocks: list[np.ndarray] = []
-    chunk_head_coeff_blocks: list[np.ndarray] = []
-    chunk_owner_blocks: list[np.ndarray] = []
-    chunk_local_surface_blocks: list[np.ndarray] = []
-    chunk_surface_rows = 0
-    chunk_work = 0
+    if logical_owners is None or logical_surfaces is None or logical_work_cumsum is None:
+        logical_owners_all, logical_surfaces_all, logical_work_cumsum_all = _response_group_logical_surface_plan(
+            group_lengths_all,
+            combo_counts,
+        )
+    else:
+        logical_owners_all = np.ascontiguousarray(np.asarray(logical_owners, dtype=np.int32))
+        logical_surfaces_all = np.ascontiguousarray(np.asarray(logical_surfaces, dtype=np.int32))
+        logical_work_cumsum_all = np.ascontiguousarray(np.asarray(logical_work_cumsum, dtype=np.int64))
+    if int(logical_owners_all.shape[0]) != int(logical_surface_rows) or int(logical_surfaces_all.shape[0]) != int(
+        logical_surface_rows
+    ):
+        raise ValueError("response frontier logical surface plan has inconsistent row counts")
+    if int(logical_work_cumsum_all.shape[0]) != int(logical_surface_rows) + 1:
+        raise ValueError("response frontier logical surface work plan has inconsistent row count")
+    if bool(np.any(logical_owners_all < 0)) or bool(np.any(logical_owners_all >= int(group_count))):
+        raise ValueError("response frontier logical surface plan references an invalid group")
+    surface_indices = group_offsets_all[logical_owners_all] + logical_surfaces_all
+    if bool(np.any(logical_surfaces_all < 0)) or bool(np.any(surface_indices < 0)) or bool(
+        np.any(surface_indices >= int(surface_words_all.shape[0]))
+    ):
+        raise ValueError("response frontier logical surface plan references an invalid surface")
 
-    def flush_chunk() -> None:
-        nonlocal chunk_surface_rows, chunk_work
-        if chunk_surface_rows <= 0:
-            return
-        chunk_surface_words = np.ascontiguousarray(np.concatenate(chunk_word_blocks, axis=0), dtype=np.uint32)
-        chunk_surface_counts = np.ascontiguousarray(np.concatenate(chunk_count_blocks, axis=0), dtype=np.int32)
-        chunk_surface_head_coeffs = np.ascontiguousarray(np.concatenate(chunk_head_coeff_blocks, axis=0), dtype=np.int32)
-        chunk_row_meta = np.ascontiguousarray(np.concatenate(chunk_row_meta_blocks, axis=0), dtype=np.int32)
-        chunk_owners = np.ascontiguousarray(np.concatenate(chunk_owner_blocks, axis=0), dtype=np.int32)
-        chunk_local_surfaces = np.ascontiguousarray(np.concatenate(chunk_local_surface_blocks, axis=0), dtype=np.int32)
-        chunk_out = np.zeros((chunk_surface_rows, 10), dtype=np.int32)
+    chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
+    chunk_scores = np.empty((chunk_capacity,), dtype=np.int32)
+    chunk_details = np.empty((chunk_capacity, 9), dtype=np.int32)
+    chunk_start = 0
+    while chunk_start < int(logical_surface_rows):
+        row_stop = min(int(logical_surface_rows), int(chunk_start) + int(max_surface_dispatch_rows))
+        work_limit = int(logical_work_cumsum_all[int(chunk_start)]) + int(max_surface_dispatch_work)
+        work_stop = int(np.searchsorted(logical_work_cumsum_all, work_limit, side="right") - 1)
+        if work_stop <= int(chunk_start):
+            work_stop = int(chunk_start) + 1
+        chunk_stop = min(int(row_stop), int(work_stop), int(logical_surface_rows))
+        row_count = int(chunk_stop) - int(chunk_start)
+        if row_count <= 0:
+            raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
+        scores_view = chunk_scores[:row_count]
+        details_view = chunk_details[:row_count]
         _fg_response_inner_batch_kernel(
-            int(chunk_surface_rows),
-            chunk_surface_words,
-            chunk_surface_counts,
-            chunk_surface_head_coeffs,
-            chunk_row_meta,
+            int(row_count),
+            surface_words_all,
+            surface_counts_all,
+            surface_head_coeffs_all,
+            group_offsets_all,
+            logical_owners_all[int(chunk_start) : int(chunk_stop)],
+            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
+            group_meta_all,
             flags,
             ref_pp,
             ref_cm,
             ref_fm,
-            chunk_out,
+            scores_view,
+            details_view,
             bool(allow_pp),
         )
         ti.sync()
-
-        chunk_scores = np.ascontiguousarray(chunk_out[:, 0], dtype=np.int32)
-        run_starts = np.concatenate(
-            (
-                np.asarray([0], dtype=np.intp),
-                np.flatnonzero(chunk_owners[1:] != chunk_owners[:-1]).astype(np.intp, copy=False) + 1,
-            )
+        _reduce_response_inner_chunk_jit(
+            int(row_count),
+            scores_view,
+            details_view,
+            logical_owners_all[int(chunk_start) : int(chunk_stop)],
+            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
+            best_scores,
+            out_rows,
         )
-        run_stops = np.concatenate((run_starts[1:], np.asarray([int(chunk_scores.shape[0])], dtype=np.intp)))
-        run_owners = np.asarray(chunk_owners[run_starts], dtype=np.intp)
-        run_scores = np.maximum.reduceat(chunk_scores, run_starts)
-        run_lengths = np.asarray(run_stops - run_starts, dtype=np.intp)
-        row_indices = np.arange(int(chunk_scores.shape[0]), dtype=np.intp)
-        best_candidates = np.where(
-            chunk_scores == np.repeat(run_scores, run_lengths),
-            row_indices,
-            int(chunk_scores.shape[0]),
-        )
-        best_row_indices = np.minimum.reduceat(best_candidates, run_starts)
-        improved = run_scores > best_scores[run_owners]
-        if bool(np.any(improved)):
-            improved_owners = run_owners[improved]
-            improved_rows = best_row_indices[improved]
-            best_scores[improved_owners] = run_scores[improved]
-            out_rows[improved_owners, 0] = run_scores[improved]
-            out_rows[improved_owners, 1] = chunk_local_surfaces[improved_rows]
-            out_rows[improved_owners, 2:] = chunk_out[improved_rows, 1:]
-
-        chunk_row_meta_blocks.clear()
-        chunk_word_blocks.clear()
-        chunk_count_blocks.clear()
-        chunk_head_coeff_blocks.clear()
-        chunk_owner_blocks.clear()
-        chunk_local_surface_blocks.clear()
-        chunk_surface_rows = 0
-        chunk_work = 0
-
-    for group_idx in oversized_group_indices.tolist():
-        offset = int(group_offsets_all[int(group_idx)])
-        length = int(group_lengths_all[int(group_idx)])
-        if length <= 0:
-            continue
-        if offset < 0 or offset + length > int(surface_words_all.shape[0]):
-            raise ValueError("response frontier GPU group references surfaces outside the packed pool")
-
-        consumed = 0
-        combo_count = max(1, int(combo_counts[int(group_idx)]))
-        while consumed < length:
-            if chunk_surface_rows >= int(max_surface_dispatch_rows) or chunk_work >= int(max_surface_dispatch_work):
-                flush_chunk()
-
-            row_budget = int(max_surface_dispatch_rows) - int(chunk_surface_rows)
-            work_budget = int(max_surface_dispatch_work) - int(chunk_work)
-            max_take_by_work = max(1, int(work_budget) // int(combo_count))
-            take = min(int(length - consumed), int(row_budget), int(max_take_by_work))
-            if take <= 0:
-                flush_chunk()
-                continue
-            item_work = int(take) * int(combo_count)
-
-            surface_start = int(offset + consumed)
-            surface_stop = int(surface_start + take)
-            chunk_row_meta_blocks.append(np.repeat(group_meta_all[int(group_idx) : int(group_idx) + 1], int(take), axis=0))
-            chunk_word_blocks.append(surface_words_all[surface_start:surface_stop])
-            chunk_count_blocks.append(surface_counts_all[surface_start:surface_stop])
-            chunk_head_coeff_blocks.append(surface_head_coeffs_all[surface_start:surface_stop])
-            chunk_owner_blocks.append(np.full((int(take),), int(group_idx), dtype=np.int32))
-            chunk_local_surface_blocks.append(np.arange(int(consumed), int(consumed + take), dtype=np.int32))
-            chunk_surface_rows += int(take)
-            chunk_work += int(item_work)
-            consumed += int(take)
-
-    flush_chunk()
+        chunk_start = int(chunk_stop)
     return out_rows, int(logical_surface_rows)
 
 

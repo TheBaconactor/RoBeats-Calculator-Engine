@@ -29,7 +29,7 @@ class CpuWorkManager:
         announce_stream: TextIO | None = None,
     ) -> None:
         t0 = time.perf_counter()
-        message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers asynchronously..."
+        message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers before scoring..."
         stream = announce_stream or sys.stdout
         stream.write(f"{message}\n")
         stream.flush()
@@ -94,4 +94,11 @@ class CpuWorkManager:
                 "elapsed_ms": elapsed_ms,
             },
         )
+        timeline_failures = int(timeline_summary.failures)
+        fg_failures = int(fg_summary.failures)
+        if timeline_failures or fg_failures:
+            raise RuntimeError(
+                "Startup frontier cache prebuild failed: "
+                f"timeline_failures={timeline_failures} fg_response_failures={fg_failures}"
+            )
         return None

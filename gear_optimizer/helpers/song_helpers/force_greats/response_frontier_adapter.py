@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
@@ -11,15 +12,30 @@ from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score_nojit as evaluate_stats_score
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
+    prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
-    solve_force_greats_response_frontier_many_gpu,
 )
-from ....solver.taichi_gem.force_greats.response_cache import build_or_load_response_frontier_payload
 from ..ga_entry_utils import materialize_entry_names
 from . import cache_validation
 from .entry_resolution import build_direct_ga_entry_items, entry_base_score
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from .result_application import materialize_stats_from_payload
+
+
+@dataclass(frozen=True, slots=True)
+class FgResponseFrontierPreparedBatch:
+    selected: str
+    rows: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...]
+    batch: Any
+
+
+@dataclass(frozen=True, slots=True)
+class FgResponseFrontierPreparedPlan:
+    calc_song: dict[str, Any]
+    ref_arrays: dict[str, Any]
+    variants: tuple[dict[str, Any], ...]
+    pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]], ...]
+    prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
 
 
 def _base_stats_for_response_frontier(eval_data: dict[str, Any], *, selected: str) -> dict[str, Any]:
@@ -60,8 +76,6 @@ def _force_payload_from_response_frontier(
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)
     else:
-        if not frontier.state_frontiers:
-            raise ValueError("ForceGreats response frontier payload requires state frontiers for forced counts")
         song_inputs = extract_fg_song_inputs(calc_song)
         forced_counts = tuple(
             int(v)
@@ -107,7 +121,7 @@ def _force_payload_from_response_frontier(
     return payload
 
 
-def process_force_greats_response_frontier_gpu(
+def prepare_force_greats_response_frontier_plan(
     loadout_entries,
     calc_song,
     ref_arrays,
@@ -115,7 +129,8 @@ def process_force_greats_response_frontier_gpu(
     *,
     ga_candidates=None,
     ga_registry=None,
-):
+    scoring_bundle=None,
+) -> FgResponseFrontierPreparedPlan:
     direct_ga_items = build_direct_ga_entry_items(ga_candidates, ga_registry=ga_registry)
     base_items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
     if direct_ga_items:
@@ -168,21 +183,52 @@ def process_force_greats_response_frontier_gpu(
             pending_keys.add(cache_key)
             pending_by_selected.setdefault(str(selected or ""), []).append((cache_key, base_stats))
 
+    prepared_batches: list[FgResponseFrontierPreparedBatch] = []
     for selected, rows in pending_by_selected.items():
-        results = solve_force_greats_response_frontier_many_gpu(
+        batch = prepare_force_greats_response_frontier_scoring_batch(
             base_stats_list=[base_stats for _cache_key, base_stats in rows],
             calc_song=calc_song,
             ref_arrays=ref_arrays,
             selected_color=selected,
-            include_forced_counts=False,
+            scoring_bundle=scoring_bundle,
         )
+        prepared_batches.append(
+            FgResponseFrontierPreparedBatch(
+                selected=str(selected or ""),
+                rows=tuple(rows),
+                batch=batch,
+            )
+        )
+
+    return FgResponseFrontierPreparedPlan(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        variants=tuple(variants),
+        pending_jobs=tuple(pending_jobs),
+        prepared_batches=tuple(prepared_batches),
+    )
+
+
+def execute_force_greats_response_frontier_plan(
+    plan: FgResponseFrontierPreparedPlan,
+    *,
+    score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
+) -> list[dict[str, Any]]:
+    calc_song = plan.calc_song
+    ref_arrays = plan.ref_arrays
+    variants = list(plan.variants)
+    result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
+    for prepared in plan.prepared_batches:
+        rows = list(prepared.rows)
+        batch = prepared.batch
+        results = score_prepared_batch(batch, include_forced_counts=False)
         if len(results) != len(rows):
             raise ValueError("ForceGreats response frontier batch returned the wrong number of results")
         for (cache_key, _base_stats), result in zip(rows, results, strict=True):
             result_cache[cache_key] = result
 
     pending_variants: list[dict[str, Any]] = []
-    for entry, eval_data, selected, base_stats, cache_key in pending_jobs:
+    for entry, eval_data, selected, base_stats, cache_key in plan.pending_jobs:
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
@@ -210,33 +256,9 @@ def process_force_greats_response_frontier_gpu(
 
     pending_variants.sort(key=lambda variant: int(variant["fg_score"]), reverse=True)
     shortlisted = pending_variants[: int(LOADOUTS_PER_SONG_LIMIT)]
-    reconstruct_keys = sorted(
-        {
-            (
-                safe_int(item["result"].stats.get("Fever Time", 0), 0),
-                safe_int(item["result"].stats.get("Fever Fill Rate", 0), 0),
-            )
-            for item in shortlisted
-            if not item["result"].forced_counts and not item["result"].frontier.state_frontiers
-        }
-    )
-    reconstruct_frontier_by_key: dict[tuple[int, int], Any] = {}
-    if reconstruct_keys:
-        prewarm = build_or_load_response_frontier_payload(
-            calc_song,
-            ref_arrays,
-            stat_keys=reconstruct_keys,
-            include_state_frontiers=True,
-        )
-        reconstruct_frontier_by_key = dict(prewarm.payload.frontier_by_key)
 
     for item in shortlisted:
         result = item["result"]
-        frontier_key = (
-            safe_int(result.stats.get("Fever Time", 0), 0),
-            safe_int(result.stats.get("Fever Fill Rate", 0), 0),
-        )
-        reconstruction_frontier = reconstruct_frontier_by_key.get(frontier_key, result.frontier)
         payload = _force_payload_from_response_frontier(
             eval_data=item["eval_data"],
             base_stats=item["base_stats"],
@@ -244,7 +266,6 @@ def process_force_greats_response_frontier_gpu(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            reconstruction_frontier=reconstruction_frontier,
         )
 
         entry = item["entry"]
@@ -267,3 +288,26 @@ def process_force_greats_response_frontier_gpu(
 
     variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
     return variants[: int(LOADOUTS_PER_SONG_LIMIT)]
+
+
+def process_force_greats_response_frontier_gpu(
+    loadout_entries,
+    calc_song,
+    ref_arrays,
+    meta_primary_color,
+    *,
+    ga_candidates=None,
+    ga_registry=None,
+    score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
+    scoring_bundle=None,
+):
+    plan = prepare_force_greats_response_frontier_plan(
+        loadout_entries,
+        calc_song,
+        ref_arrays,
+        meta_primary_color,
+        ga_candidates=ga_candidates,
+        ga_registry=ga_registry,
+        scoring_bundle=scoring_bundle,
+    )
+    return execute_force_greats_response_frontier_plan(plan, score_prepared_batch=score_prepared_batch)

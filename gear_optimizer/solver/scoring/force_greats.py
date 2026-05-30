@@ -18,6 +18,7 @@ from .fg_policy import (
     build_fg_result_dict,
     build_penalty_table_and_body,
     extract_fg_song_inputs,
+    is_single_color_song,
     resolve_stat_factors,
 )
 from .runtime_state import FORCE_GREATS_ALGO_VERSION  # noqa: F401 -- re-exported for FG helpers
@@ -191,12 +192,14 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
     secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
     factors = resolve_stat_factors(stats, ref_arrays)
+    single_color = is_single_color_song(song_inputs.primary_color, song_inputs.secondary_color)
     base_value = (primary_val * 2) + secondary_val + float(factors.pp_factor)
     penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
         base_value=float(base_value),
         combo_mul=float(factors.combo_mul),
         primary_val=int(primary_val),
         secondary_val=int(secondary_val),
+        single_color=bool(single_color),
     )
 
     force_counts = list(forced_counts or [])

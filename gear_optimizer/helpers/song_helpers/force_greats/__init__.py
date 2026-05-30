@@ -19,6 +19,9 @@ def process_force_greats(
     ga_registry=None,
 ):
     from .response_frontier_adapter import process_force_greats_response_frontier_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        score_prepared_force_greats_response_frontier_batch_gpu,
+    )
 
     total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
     logger = logging.getLogger(__name__)
@@ -30,4 +33,5 @@ def process_force_greats(
         meta_primary_color,
         ga_candidates=ga_candidates,
         ga_registry=ga_registry,
+        score_prepared_batch=score_prepared_force_greats_response_frontier_batch_gpu,
     )

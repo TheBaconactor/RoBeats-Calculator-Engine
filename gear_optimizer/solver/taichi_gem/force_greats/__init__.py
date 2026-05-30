@@ -5,34 +5,37 @@ Production FG uses the response-frontier solver in `response_frontier.py`.
 """
 
 from .response_frontier import (
+    FgResponseFrontierPackedScoringBatch,
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
     FgResponseInnerResult,
     FgResponseSurface,
-    build_force_greats_response_frontier,
-    optimize_response_frontier_inner_exact,
-    optimize_response_frontier_inner_exact_gpu,
+    prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
-    response_surface_dominates,
-    score_response_surface_exact,
+    materialize_prepared_force_greats_response_frontier_batch_results,
+    score_prepared_force_greats_response_frontier_batch_gpu,
+    score_prepared_force_greats_response_frontier_batch_raw_gpu,
     solve_force_greats_response_frontier_batch_gpu,
     solve_force_greats_response_frontier_many_gpu,
 )
-from .response_build_gpu import build_force_greats_response_frontier_gpu, build_force_greats_response_frontiers_gpu_batch
+from .response_build_gpu import (
+    build_force_greats_response_first_frontiers_gpu_batch,
+    build_force_greats_response_frontiers_gpu_batch,
+)
 
 __all__ = [
+    "FgResponseFrontierPackedScoringBatch",
     "FgResponseFrontierResult",
     "FgResponseFrontierSolveResult",
     "FgResponseInnerResult",
     "FgResponseSurface",
-    "build_force_greats_response_frontier",
-    "build_force_greats_response_frontier_gpu",
+    "build_force_greats_response_first_frontiers_gpu_batch",
     "build_force_greats_response_frontiers_gpu_batch",
-    "optimize_response_frontier_inner_exact",
-    "optimize_response_frontier_inner_exact_gpu",
+    "prepare_force_greats_response_frontier_scoring_batch",
     "reconstruct_force_greats_response_counts",
-    "response_surface_dominates",
-    "score_response_surface_exact",
+    "materialize_prepared_force_greats_response_frontier_batch_results",
+    "score_prepared_force_greats_response_frontier_batch_gpu",
+    "score_prepared_force_greats_response_frontier_batch_raw_gpu",
     "solve_force_greats_response_frontier_batch_gpu",
     "solve_force_greats_response_frontier_many_gpu",
 ]

@@ -1,3 +1,6 @@
+from concurrent.futures import Future
+from types import SimpleNamespace
+
 from gear_optimizer.solver.native_inflight_config import make_native_song
 from gear_optimizer.solver.native_inflight_orchestrator import (
     build_fg_update_payload,
@@ -226,25 +229,9 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-
-    calls: dict[str, object] = {}
-
-    def _fake_process_force_greats(*args, **kwargs):
-        calls["args"] = args
-        calls.update(kwargs)
-        return [
-            {
-                "score": 111,
-                "base_score": 111,
-                "fg_score": 130,
-                "gear": ["G1"],
-                "minis": ["M1"],
-                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            }
-        ]
-
-    monkeypatch.setattr(fg_pipeline, "process_force_greats", _fake_process_force_greats)
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
@@ -256,9 +243,41 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_fg_score=100,
         db_baseline_valid=True,
         loadout_entries={},
+        fg_response_frontier_plan="prepared-plan",
+    )
+    def _fake_execute_response_frontier(_plan, *, score_prepared_batch):
+        return score_prepared_batch("prepared-batch", include_forced_counts=False)
+
+    monkeypatch.setattr(
+        response_frontier_adapter,
+        "execute_force_greats_response_frontier_plan",
+        _fake_execute_response_frontier,
+    )
+    monkeypatch.setattr(
+        response_frontier,
+        "materialize_prepared_force_greats_response_frontier_batch_results",
+        lambda _batch, inner_rows, **_kwargs: inner_rows,
     )
 
-    fg_pipeline.run_fg_job_sync(song, gpu_client=object())
+    def _submit_score_batch(_payload):
+        future = Future()
+        future.set_result(
+            [
+                {
+                    "score": 111,
+                    "base_score": 111,
+                    "fg_score": 130,
+                    "gear": ["G1"],
+                    "minis": ["M1"],
+                    "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                }
+            ]
+        )
+        return SimpleNamespace(future=future)
+
+    gpu_client = SimpleNamespace(submit_force_greats_response_frontier_score_batch=_submit_score_batch)
+
+    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
     assert song.runtime.db.record_info["song"] == "pytest_native_inline_fg_runner"

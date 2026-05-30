@@ -1,6 +1,6 @@
-import time
-from concurrent.futures import ThreadPoolExecutor
-from os import cpu_count
+import concurrent.futures
+import os
+import threading
 from typing import Any
 
 import numpy as np
@@ -14,12 +14,58 @@ from .response_builder import _action_table
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
 _GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
-_FIRST_FRONTIER_REDUCER_THREADS = max(1, int(cpu_count() or 1))
+_FIRST_ONLY_REDUCER_THREADS = max(1, min(int(os.cpu_count() or 1), 8))
+_FIRST_FRONTIER_REDUCER_WARMED = False
+_FIRST_FRONTIER_REDUCER_WARMUP_LOCK = threading.Lock()
 _PackedSurface = tuple[int, int, int, int]
 _NUMBA_SURFACE_TYPE = types.UniTuple(types.uint64, 6)
-_NUMBA_SURFACE_LIST_TYPE = types.ListType(_NUMBA_SURFACE_TYPE)
 _NUMBA_BODY_PAIR_TYPE = types.UniTuple(types.uint64, 2)
 _NUMBA_BODY_PAIR_LIST_TYPE = types.ListType(_NUMBA_BODY_PAIR_TYPE)
+_NUMBA_SURFACE_LIST_TYPE = types.ListType(_NUMBA_SURFACE_TYPE)
+
+
+def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
+    global _FIRST_ONLY_REDUCER_THREADS
+    previous = int(_FIRST_ONLY_REDUCER_THREADS)
+    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1), 8))
+    return previous
+
+
+def _resolve_first_only_reducer_threads(work_items: int) -> int:
+    return max(1, min(int(work_items), int(_FIRST_ONLY_REDUCER_THREADS)))
+
+
+def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
+    return concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, int(max_workers)),
+        thread_name_prefix="FGFirstFrontier",
+    )
+
+
+def warm_force_greats_response_first_frontier_reducer() -> None:
+    """
+    Compile the exact first-frontier reducer once before FG prep workers fan out.
+
+    The reducer remains the single production implementation. This only moves
+    the unavoidable Numba compile cost to startup so the FG prep pool does not
+    stampede-compile it on the first cold candidate bundles.
+    """
+    global _FIRST_FRONTIER_REDUCER_WARMED
+    if bool(_FIRST_FRONTIER_REDUCER_WARMED):
+        return
+    with _FIRST_FRONTIER_REDUCER_WARMUP_LOCK:
+        if bool(_FIRST_FRONTIER_REDUCER_WARMED):
+            return
+        timestamps = np.asarray([0.0, 0.15, 0.4], dtype=np.float32)
+        frontiers = build_force_greats_response_first_frontiers_gpu_batch(
+            timestamps=timestamps,
+            great_candidate_timestamps=timestamps,
+            geometries=((1.0, 2, 0.2),),
+            use_forced_great_timing=True,
+        )
+        if len(frontiers) != 1 or not frontiers[0].first_frontier:
+            raise RuntimeError("FG response first-frontier reducer warmup failed")
+        _FIRST_FRONTIER_REDUCER_WARMED = True
 
 
 @njit(cache=True, nogil=True)
@@ -153,94 +199,42 @@ def _numba_frontier_with_empty_surface():
 
 
 @njit(cache=True, nogil=True)
-def _numba_zero_forced_body_fever(
-    n: int,
-    later_next,
-    later_fill,
-    first_next,
-    first_fill,
-) -> int:
-    if int(first_fill[0]) < 100:
-        return -1
-    edge_e = int(first_next[0])
-    if edge_e < 0:
-        return -1
-    total = int(_numba_body_count(int(first_fill[0]), edge_e, int(n)))
-    state_i = edge_e
-    for _step in range(int(n) + 1):
-        if state_i >= int(n):
-            return total
-        next_i = int(later_next[state_i, 0])
-        if next_i < 0 or next_i <= state_i:
-            return -1
-        total += int(_numba_body_count(state_i + int(later_fill[0]), next_i, int(n)))
-        state_i = next_i
-    return -1
-
-
-@njit(cache=True, nogil=True)
-def _numba_max_body_fever(
-    n: int,
-    action_count: int,
-    later_next,
-    later_fill,
-    first_next,
-    first_fill,
-) -> int:
-    reachable = np.zeros(int(n) + 1, dtype=np.bool_)
-    reachable[int(n)] = True
-    for action_idx in range(int(action_count)):
-        if int(first_fill[action_idx]) >= int(n):
-            break
-        edge_e = int(first_next[action_idx])
-        if edge_e >= 0:
-            reachable[edge_e] = True
-    for state_i in range(int(n)):
-        if not reachable[state_i]:
-            continue
-        for action_idx in range(int(action_count)):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e >= 0:
-                reachable[edge_e] = True
-
-    best = np.zeros(int(n) + 1, dtype=np.int32)
-    for state_i in range(int(n) - 1, -1, -1):
-        if not reachable[state_i]:
-            continue
-        best_value = 0
-        for action_idx in range(int(action_count)):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e < 0:
-                continue
-            fever_count = int(_numba_body_count(state_i + int(later_fill[action_idx]), edge_e, int(n)))
-            candidate = fever_count + int(best[edge_e])
-            if candidate > best_value:
-                best_value = candidate
-        best[state_i] = best_value
-
-    best_first = 0
-    for action_idx in range(int(action_count)):
-        if int(first_fill[action_idx]) >= int(n):
-            break
-        edge_e = int(first_next[action_idx])
-        if edge_e < 0:
-            continue
-        fever_count = int(_numba_body_count(int(first_fill[action_idx]), edge_e, int(n)))
-        candidate = fever_count + int(best[edge_e])
-        if candidate > best_first:
-            best_first = candidate
-    return best_first
-
-
-@njit(cache=True, nogil=True)
 def _numba_single_body_frontier_row(body_fever: int):
     out = np.zeros((1, 6), dtype=np.uint64)
     out[0, 4] = np.uint64(body_fever)
     return out
+
+
+@njit(cache=True, nogil=True)
+def _numba_append_body_tail_surfaces(generated, edge, body_frontier) -> int:
+    count = 0
+    for tail_idx in range(len(body_frontier)):
+        tail_fever, tail_great = body_frontier[tail_idx]
+        generated.append((
+            edge[0],
+            edge[1],
+            edge[2],
+            edge[3],
+            edge[4] + tail_fever,
+            edge[5] + tail_great,
+        ))
+        count += 1
+    return count
+
+
+@njit(cache=True, nogil=True)
+def _numba_append_surface_tail_surfaces(generated, edge, tail_frontier) -> int:
+    count = 0
+    for tail_idx in range(len(tail_frontier)):
+        generated.append(_numba_combine(edge, tail_frontier[tail_idx]))
+        count += 1
+    return count
+
+
+@njit(cache=True, nogil=True)
+def _numba_append_terminal_tail_surface(generated, edge) -> int:
+    generated.append(edge)
+    return 1
 
 
 @njit(cache=True, nogil=True)
@@ -263,6 +257,196 @@ def _numba_prefix_max_update(bit, idx: int, value: int) -> None:
         if int(value) > int(bit[cursor]):
             bit[cursor] = int(value)
         cursor += cursor & -cursor
+
+
+@njit(cache=True, nogil=True)
+def _numba_edge_end_idx_precomputed(
+    n: int,
+    activation_idx: int,
+    forced_start: int,
+    forced_applied: int,
+    use_forced_great_timing_i: int,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+):
+    forced_end = int(forced_start) + int(forced_applied) - 1
+    start_time = timestamps[int(activation_idx)]
+    edge_e = int(timestamp_end_idx[int(real_time_idx), int(activation_idx)])
+    if (
+        int(use_forced_great_timing_i) != 0
+        and int(forced_applied) > 0
+        and int(forced_end) >= int(forced_start)
+        and int(forced_end) < int(activation_idx)
+        and int(forced_end) < int(n)
+    ):
+        forced_t = great_candidate_timestamps[int(forced_end)]
+        if forced_t > start_time:
+            start_time = forced_t
+            edge_e = int(great_end_idx[int(real_time_idx), int(forced_end)])
+    if int(edge_e) <= int(activation_idx):
+        edge_e = int(activation_idx) + 1
+    if int(edge_e) > int(n):
+        edge_e = int(n)
+    return edge_e, start_time
+
+
+@njit(cache=True, nogil=True)
+def _numba_later_edge_from_precomputed(
+    n: int,
+    state_i: int,
+    action_idx: int,
+    later_fill,
+    later_forced,
+    use_forced_great_timing_i: int,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+):
+    fill = int(later_fill[int(action_idx)])
+    activation = int(state_i) + int(fill)
+    if int(activation) >= int(n):
+        return -1, np.float32(-1.0)
+    edge_e, start_time = _numba_edge_end_idx_precomputed(
+        int(n),
+        int(activation),
+        int(state_i) + 1,
+        int(later_forced[int(action_idx)]),
+        int(use_forced_great_timing_i),
+        timestamps,
+        great_candidate_timestamps,
+        timestamp_end_idx,
+        great_end_idx,
+        int(real_time_idx),
+    )
+    if int(edge_e) >= 0 and int(action_idx) > 0:
+        prev_fill = int(later_fill[int(action_idx) - 1])
+        if int(fill) == int(prev_fill):
+            prev_e, prev_start_time = _numba_edge_end_idx_precomputed(
+                int(n),
+                int(state_i) + int(prev_fill),
+                int(state_i) + 1,
+                int(later_forced[int(action_idx) - 1]),
+                int(use_forced_great_timing_i),
+                timestamps,
+                great_candidate_timestamps,
+                timestamp_end_idx,
+                great_end_idx,
+                int(real_time_idx),
+            )
+            if start_time == prev_start_time or int(edge_e) == int(prev_e):
+                return -1, start_time
+    return int(edge_e), start_time
+
+
+@njit(cache=True, nogil=True)
+def _numba_first_edge_from_precomputed(
+    n: int,
+    action_idx: int,
+    first_fill,
+    first_forced,
+    use_forced_great_timing_i: int,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+):
+    fill = int(first_fill[int(action_idx)])
+    if int(fill) >= int(n):
+        return -1, np.float32(-1.0)
+    edge_e, start_time = _numba_edge_end_idx_precomputed(
+        int(n),
+        int(fill),
+        0,
+        int(first_forced[int(action_idx)]),
+        int(use_forced_great_timing_i),
+        timestamps,
+        great_candidate_timestamps,
+        timestamp_end_idx,
+        great_end_idx,
+        int(real_time_idx),
+    )
+    if int(edge_e) >= 0 and int(action_idx) > 0:
+        prev_fill = int(first_fill[int(action_idx) - 1])
+        if int(fill) == int(prev_fill):
+            prev_e, prev_start_time = _numba_edge_end_idx_precomputed(
+                int(n),
+                int(prev_fill),
+                0,
+                int(first_forced[int(action_idx) - 1]),
+                int(use_forced_great_timing_i),
+                timestamps,
+                great_candidate_timestamps,
+                timestamp_end_idx,
+                great_end_idx,
+                int(real_time_idx),
+            )
+            if start_time == prev_start_time or int(edge_e) == int(prev_e):
+                return -1, start_time
+    return int(edge_e), start_time
+
+
+@njit(cache=True, nogil=True)
+def _numba_later_next_precomputed(
+    n: int,
+    state_i: int,
+    action_idx: int,
+    later_fill,
+    later_forced,
+    use_forced_great_timing_i: int,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+) -> int:
+    edge_e, _start_time = _numba_later_edge_from_precomputed(
+        int(n),
+        int(state_i),
+        int(action_idx),
+        later_fill,
+        later_forced,
+        int(use_forced_great_timing_i),
+        timestamps,
+        great_candidate_timestamps,
+        timestamp_end_idx,
+        great_end_idx,
+        int(real_time_idx),
+    )
+    return int(edge_e)
+
+
+@njit(cache=True, nogil=True)
+def _numba_first_next_precomputed(
+    n: int,
+    action_idx: int,
+    first_fill,
+    first_forced,
+    use_forced_great_timing_i: int,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+) -> int:
+    edge_e, _start_time = _numba_first_edge_from_precomputed(
+        int(n),
+        int(action_idx),
+        first_fill,
+        first_forced,
+        int(use_forced_great_timing_i),
+        timestamps,
+        great_candidate_timestamps,
+        timestamp_end_idx,
+        great_end_idx,
+        int(real_time_idx),
+    )
+    return int(edge_e)
 
 
 @njit(cache=True, nogil=True)
@@ -333,287 +517,6 @@ def _numba_reduce_body_first_frontier(
 
 
 @njit(cache=True, nogil=True)
-def _numba_edge_end_idx_precomputed(
-    n: int,
-    activation_idx: int,
-    forced_start: int,
-    forced_applied: int,
-    use_forced_great_timing_i: int,
-    timestamps,
-    great_candidate_timestamps,
-    timestamp_end_idx,
-    great_end_idx,
-) -> int:
-    forced_end = int(forced_start) + int(forced_applied) - 1
-    start_time = timestamps[int(activation_idx)]
-    e = int(timestamp_end_idx[int(activation_idx)])
-    if (
-        int(use_forced_great_timing_i) != 0
-        and int(forced_applied) > 0
-        and int(forced_end) >= int(forced_start)
-        and int(forced_end) < int(activation_idx)
-        and int(forced_end) < int(n)
-    ):
-        forced_t = great_candidate_timestamps[int(forced_end)]
-        if forced_t > start_time:
-            e = int(great_end_idx[int(forced_end)])
-    if e <= int(activation_idx):
-        e = int(activation_idx) + 1
-    if e > int(n):
-        e = int(n)
-    return int(e)
-
-
-@njit(cache=True, nogil=True)
-def _numba_later_next_precomputed(
-    n: int,
-    state_i: int,
-    action_idx: int,
-    later_fill,
-    later_forced,
-    use_forced_great_timing_i: int,
-    timestamps,
-    great_candidate_timestamps,
-    timestamp_end_idx,
-    great_end_idx,
-) -> int:
-    fill = int(later_fill[int(action_idx)])
-    activation = int(state_i) + fill
-    if activation >= int(n):
-        return -1
-    edge_e = _numba_edge_end_idx_precomputed(
-        int(n),
-        int(activation),
-        int(state_i) + 1,
-        int(later_forced[int(action_idx)]),
-        int(use_forced_great_timing_i),
-        timestamps,
-        great_candidate_timestamps,
-        timestamp_end_idx,
-        great_end_idx,
-    )
-    if int(action_idx) > 0 and fill == int(later_fill[int(action_idx) - 1]):
-        prev_e = _numba_edge_end_idx_precomputed(
-            int(n),
-            int(state_i) + int(later_fill[int(action_idx) - 1]),
-            int(state_i) + 1,
-            int(later_forced[int(action_idx) - 1]),
-            int(use_forced_great_timing_i),
-            timestamps,
-            great_candidate_timestamps,
-            timestamp_end_idx,
-            great_end_idx,
-        )
-        if edge_e == prev_e:
-            return -1
-    return int(edge_e)
-
-
-@njit(cache=True, nogil=True)
-def _numba_first_next_precomputed(
-    n: int,
-    action_idx: int,
-    first_fill,
-    first_forced,
-    use_forced_great_timing_i: int,
-    timestamps,
-    great_candidate_timestamps,
-    timestamp_end_idx,
-    great_end_idx,
-) -> int:
-    fill = int(first_fill[int(action_idx)])
-    if fill >= int(n):
-        return -1
-    edge_e = _numba_edge_end_idx_precomputed(
-        int(n),
-        fill,
-        0,
-        int(first_forced[int(action_idx)]),
-        int(use_forced_great_timing_i),
-        timestamps,
-        great_candidate_timestamps,
-        timestamp_end_idx,
-        great_end_idx,
-    )
-    if int(action_idx) > 0 and fill == int(first_fill[int(action_idx) - 1]):
-        prev_e = _numba_edge_end_idx_precomputed(
-            int(n),
-            int(first_fill[int(action_idx) - 1]),
-            0,
-            int(first_forced[int(action_idx) - 1]),
-            int(use_forced_great_timing_i),
-            timestamps,
-            great_candidate_timestamps,
-            timestamp_end_idx,
-            great_end_idx,
-        )
-        if edge_e == prev_e:
-            return -1
-    return int(edge_e)
-
-
-@njit(cache=True, nogil=True)
-def _first_frontier_from_body_tail_next_arrays_numba(
-    n: int,
-    action_count: int,
-    later_next,
-    later_fill,
-    later_forced,
-    first_next,
-    first_fill,
-    first_forced,
-):
-    zero_body_fever = _numba_zero_forced_body_fever(
-        int(n),
-        later_next,
-        later_fill,
-        first_next,
-        first_fill,
-    )
-    if zero_body_fever >= 0:
-        max_body_fever = _numba_max_body_fever(
-            int(n),
-            int(action_count),
-            later_next,
-            later_fill,
-            first_next,
-            first_fill,
-        )
-        if int(zero_body_fever) == int(max_body_fever):
-            return _numba_single_body_frontier_row(zero_body_fever), 0, 0, 1, 1
-
-    reachable = np.zeros(n + 1, dtype=np.bool_)
-    reachable[n] = True
-    state_frontiers = List.empty_list(_NUMBA_BODY_PAIR_LIST_TYPE)
-    for _idx in range(n + 1):
-        state_frontiers.append(List.empty_list(_NUMBA_BODY_PAIR_TYPE))
-    state_frontiers[n] = _numba_body_pair_with_empty_surface()
-
-    first_edges_e = List.empty_list(types.int64)
-    first_edges_fill = List.empty_list(types.int64)
-    first_edges_forced = List.empty_list(types.int64)
-    for action_idx in range(action_count):
-        if int(first_fill[action_idx]) >= int(n):
-            break
-        edge_e = int(first_next[action_idx])
-        if edge_e < 0:
-            continue
-        first_edges_e.append(edge_e)
-        first_edges_fill.append(int(first_fill[action_idx]))
-        first_edges_forced.append(int(first_forced[action_idx]))
-        reachable[edge_e] = True
-
-    for state_i in range(n):
-        if not reachable[state_i]:
-            continue
-        for action_idx in range(action_count):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e >= 0:
-                reachable[edge_e] = True
-
-    states_evaluated = 0
-    retained_total = 1
-    max_state_frontier = 1
-    generated_surfaces = 0
-    best_fever_by_great = np.zeros(int(n) + 1, dtype=np.int32)
-    great_stamp = np.zeros(int(n) + 1, dtype=np.int32)
-    touched_great = np.empty(int(n) + 1, dtype=np.int32)
-    stamp = 0
-    seen_next_stamp = np.zeros(int(n) + 1, dtype=np.int32)
-    next_stamp = 0
-    for state_i in range(n - 1, -1, -1):
-        if not reachable[state_i]:
-            continue
-        states_evaluated += 1
-        frontier = List.empty_list(_NUMBA_BODY_PAIR_TYPE)
-        generated_count = 0
-        next_stamp += 1
-        kept_e = np.empty(int(action_count), dtype=np.int64)
-        kept_fever = np.empty(int(action_count), dtype=np.uint64)
-        kept_great = np.empty(int(action_count), dtype=np.uint64)
-        kept_len = 0
-        for action_idx in range(action_count):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e < 0:
-                continue
-            if seen_next_stamp[edge_e] == next_stamp:
-                continue
-            seen_next_stamp[edge_e] = next_stamp
-            forced_start = state_i + 1
-            kept_e[kept_len] = edge_e
-            kept_fever[kept_len] = _numba_body_count(state_i + int(later_fill[action_idx]), edge_e, int(n))
-            kept_great[kept_len] = _numba_body_count(
-                forced_start,
-                min(int(n), forced_start + int(later_forced[action_idx])),
-                int(n),
-            )
-            kept_len += 1
-
-        if kept_len > 0:
-            stamp += 1
-            touched_count = 0
-            for kept_idx in range(kept_len):
-                tail_frontier = state_frontiers[int(kept_e[kept_idx])]
-                edge_fever = kept_fever[kept_idx]
-                edge_great = kept_great[kept_idx]
-                for tail_idx in range(len(tail_frontier)):
-                    tail_fever, tail_great = tail_frontier[tail_idx]
-                    generated_count += 1
-                    great_value = int(edge_great + tail_great)
-                    fever_value = int(edge_fever + tail_fever)
-                    if great_stamp[great_value] != stamp:
-                        great_stamp[great_value] = stamp
-                        touched_great[touched_count] = great_value
-                        touched_count += 1
-                        best_fever_by_great[great_value] = fever_value
-                    elif fever_value > int(best_fever_by_great[great_value]):
-                        best_fever_by_great[great_value] = fever_value
-            sorted_great = np.sort(touched_great[:touched_count])
-            best_fever_seen = -1
-            has_best = False
-            idx = 0
-            while idx < touched_count:
-                great_value = int(sorted_great[idx])
-                best_for_great = int(best_fever_by_great[great_value])
-                if (not has_best) or best_for_great > best_fever_seen:
-                    frontier.append((np.uint64(best_for_great), np.uint64(great_value)))
-                    best_fever_seen = best_for_great
-                    has_best = True
-                idx += 1
-
-        generated_surfaces += generated_count
-        if generated_count == 0:
-            frontier = _numba_body_pair_with_empty_surface()
-        state_frontiers[state_i] = frontier
-        retained_total += len(frontier)
-        if len(frontier) > max_state_frontier:
-            max_state_frontier = len(frontier)
-
-    first_frontier, first_generated_count = _numba_reduce_body_first_frontier(
-        int(n),
-        first_edges_e,
-        first_edges_fill,
-        first_edges_forced,
-        state_frontiers,
-    )
-    generated_surfaces += first_generated_count
-    retained_total += len(first_frontier)
-    if len(first_frontier) > max_state_frontier:
-        max_state_frontier = len(first_frontier)
-
-    out = np.zeros((len(first_frontier), 6), dtype=np.uint64)
-    for idx in range(len(first_frontier)):
-        surface = first_frontier[idx]
-        for col in range(6):
-            out[idx, col] = surface[col]
-    return out, states_evaluated, generated_surfaces, retained_total, max_state_frontier
-
-
-@njit(cache=True, nogil=True)
 def _numba_zero_forced_body_fever_precomputed(
     n: int,
     later_fill,
@@ -625,6 +528,7 @@ def _numba_zero_forced_body_fever_precomputed(
     great_candidate_timestamps,
     timestamp_end_idx,
     great_end_idx,
+    real_time_idx: int,
 ) -> int:
     if int(first_fill[0]) < 100:
         return -1
@@ -638,6 +542,7 @@ def _numba_zero_forced_body_fever_precomputed(
         great_candidate_timestamps,
         timestamp_end_idx,
         great_end_idx,
+        int(real_time_idx),
     )
     if edge_e < 0:
         return -1
@@ -657,6 +562,7 @@ def _numba_zero_forced_body_fever_precomputed(
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
+            int(real_time_idx),
         )
         if next_i < 0 or next_i <= state_i:
             return -1
@@ -678,6 +584,7 @@ def _numba_max_body_fever_precomputed(
     great_candidate_timestamps,
     timestamp_end_idx,
     great_end_idx,
+    real_time_idx: int,
 ) -> int:
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
@@ -694,6 +601,7 @@ def _numba_max_body_fever_precomputed(
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
+            int(real_time_idx),
         )
         if edge_e >= 0:
             reachable[edge_e] = True
@@ -714,6 +622,7 @@ def _numba_max_body_fever_precomputed(
                 great_candidate_timestamps,
                 timestamp_end_idx,
                 great_end_idx,
+                int(real_time_idx),
             )
             if edge_e >= 0:
                 reachable[edge_e] = True
@@ -737,6 +646,7 @@ def _numba_max_body_fever_precomputed(
                 great_candidate_timestamps,
                 timestamp_end_idx,
                 great_end_idx,
+                int(real_time_idx),
             )
             if edge_e < 0:
                 continue
@@ -760,6 +670,7 @@ def _numba_max_body_fever_precomputed(
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
+            int(real_time_idx),
         )
         if edge_e < 0:
             continue
@@ -783,6 +694,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
     great_candidate_timestamps,
     timestamp_end_idx,
     great_end_idx,
+    real_time_idx: int,
 ):
     zero_body_fever = _numba_zero_forced_body_fever_precomputed(
         int(n),
@@ -795,6 +707,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
         great_candidate_timestamps,
         timestamp_end_idx,
         great_end_idx,
+        int(real_time_idx),
     )
     if zero_body_fever >= 0:
         max_body_fever = _numba_max_body_fever_precomputed(
@@ -809,6 +722,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
+            int(real_time_idx),
         )
         if int(zero_body_fever) == int(max_body_fever):
             return _numba_single_body_frontier_row(zero_body_fever), 0, 0, 1, 1
@@ -836,6 +750,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
+            int(real_time_idx),
         )
         if edge_e < 0:
             continue
@@ -861,6 +776,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
                 great_candidate_timestamps,
                 timestamp_end_idx,
                 great_end_idx,
+                int(real_time_idx),
             )
             if edge_e >= 0:
                 reachable[edge_e] = True
@@ -900,6 +816,7 @@ def _first_frontier_from_body_tail_precomputed_numba(
                 great_candidate_timestamps,
                 timestamp_end_idx,
                 great_end_idx,
+                int(real_time_idx),
             )
             if edge_e < 0:
                 continue
@@ -977,115 +894,257 @@ def _first_frontier_from_body_tail_precomputed_numba(
 
 
 @njit(cache=True, nogil=True)
-def _first_frontier_from_next_arrays_numba(
+def _first_frontier_from_precomputed_end_indices_numba(
     n: int,
     action_count: int,
-    later_next,
     later_fill,
-    later_forced,
-    first_next,
     first_fill,
+    later_forced,
     first_forced,
+    timestamps,
+    great_candidate_timestamps,
+    timestamp_end_idx,
+    great_end_idx,
+    real_time_idx: int,
+    use_forced_great_timing_i: int,
 ):
-    if int(first_fill[0]) >= 100:
-        return _first_frontier_from_body_tail_next_arrays_numba(
+    if int(action_count) > 0 and int(first_fill[0]) >= 100:
+        return _first_frontier_from_body_tail_precomputed_numba(
             int(n),
             int(action_count),
-            later_next,
             later_fill,
             later_forced,
-            first_next,
             first_fill,
             first_forced,
+            int(use_forced_great_timing_i),
+            timestamps,
+            great_candidate_timestamps,
+            timestamp_end_idx,
+            great_end_idx,
+            int(real_time_idx),
         )
 
-    reachable = np.zeros(n + 1, dtype=np.bool_)
-    reachable[n] = True
-    state_frontiers = List.empty_list(_NUMBA_SURFACE_LIST_TYPE)
-    for _idx in range(n + 1):
-        state_frontiers.append(List.empty_list(_NUMBA_SURFACE_TYPE))
-    state_frontiers[n] = _numba_frontier_with_empty_surface()
+    body_tails = List.empty_list(_NUMBA_BODY_PAIR_LIST_TYPE)
+    for _idx in range(int(n) + 1):
+        body_tails.append(List.empty_list(_NUMBA_BODY_PAIR_TYPE))
+    body_tails[int(n)] = _numba_body_pair_with_empty_surface()
 
-    first_edges_e = List.empty_list(types.int64)
-    first_edges_surface = List.empty_list(_NUMBA_SURFACE_TYPE)
-    for action_idx in range(action_count):
-        if int(first_fill[action_idx]) >= int(n):
-            break
-        edge_e = int(first_next[action_idx])
-        if edge_e < 0:
-            continue
-        forced = int(first_forced[action_idx])
-        edge_surface = _numba_pack_edge(
+    reachable = np.zeros(int(n) + 1, dtype=np.bool_)
+    reachable[int(n)] = True
+    for action_idx in range(int(action_count)):
+        edge_e, _start_time = _numba_first_edge_from_precomputed(
             int(n),
-            int(first_fill[action_idx]),
-            edge_e,
-            0,
-            min(int(n), forced),
+            int(action_idx),
+            first_fill,
+            first_forced,
+            int(use_forced_great_timing_i),
+            timestamps,
+            great_candidate_timestamps,
+            timestamp_end_idx,
+            great_end_idx,
+            int(real_time_idx),
         )
-        first_edges_e.append(edge_e)
-        first_edges_surface.append(edge_surface)
-        reachable[edge_e] = True
+        if int(edge_e) >= 0:
+            reachable[int(edge_e)] = True
 
-    for state_i in range(n):
+    for state_i in range(int(n)):
         if not reachable[state_i]:
             continue
-        for action_idx in range(action_count):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e >= 0:
-                reachable[edge_e] = True
+        for action_idx in range(int(action_count)):
+            edge_e, _start_time = _numba_later_edge_from_precomputed(
+                int(n),
+                int(state_i),
+                int(action_idx),
+                later_fill,
+                later_forced,
+                int(use_forced_great_timing_i),
+                timestamps,
+                great_candidate_timestamps,
+                timestamp_end_idx,
+                great_end_idx,
+                int(real_time_idx),
+            )
+            if int(edge_e) >= 0:
+                reachable[int(edge_e)] = True
 
     states_evaluated = 0
     retained_total = 1
     max_state_frontier = 1
     generated_surfaces = 0
-    for state_i in range(n - 1, -1, -1):
+    best_fever_by_great = np.zeros(int(n) + 1, dtype=np.int32)
+    great_stamp = np.zeros(int(n) + 1, dtype=np.int32)
+    touched_great = np.empty(int(n) + 1, dtype=np.int32)
+    stamp = 0
+    seen_next_stamp = np.zeros(int(n) + 1, dtype=np.int32)
+    next_stamp = 0
+
+    for state_i in range(int(n) - 1, 99, -1):
         if not reachable[state_i]:
             continue
         states_evaluated += 1
-        frontier = List.empty_list(_NUMBA_SURFACE_TYPE)
+        frontier = List.empty_list(_NUMBA_BODY_PAIR_TYPE)
         generated_count = 0
-        for action_idx in range(action_count):
-            if state_i + int(later_fill[action_idx]) >= int(n):
-                break
-            edge_e = int(later_next[state_i, action_idx])
-            if edge_e < 0:
-                continue
-            tail_frontier = state_frontiers[edge_e]
-            if len(tail_frontier) == 0:
-                continue
-            forced = int(later_forced[action_idx])
-            forced_start = state_i + 1
-            edge_surface = _numba_pack_edge(
+        next_stamp += 1
+        kept_e = np.empty(int(action_count), dtype=np.int64)
+        kept_fever = np.empty(int(action_count), dtype=np.uint64)
+        kept_great = np.empty(int(action_count), dtype=np.uint64)
+        kept_len = 0
+        for action_idx in range(int(action_count)):
+            edge_e, _start_time = _numba_later_edge_from_precomputed(
                 int(n),
-                state_i + int(later_fill[action_idx]),
-                edge_e,
-                forced_start,
-                min(int(n), forced_start + forced),
+                int(state_i),
+                int(action_idx),
+                later_fill,
+                later_forced,
+                int(use_forced_great_timing_i),
+                timestamps,
+                great_candidate_timestamps,
+                timestamp_end_idx,
+                great_end_idx,
+                int(real_time_idx),
             )
-            for tail_idx in range(len(tail_frontier)):
-                generated_count += 1
-                _numba_append_surface(frontier, _numba_combine(edge_surface, tail_frontier[tail_idx]))
+            if int(edge_e) < 0:
+                continue
+            if seen_next_stamp[int(edge_e)] == next_stamp:
+                continue
+            seen_next_stamp[int(edge_e)] = next_stamp
+            fill = int(later_fill[int(action_idx)])
+            forced_start = int(state_i) + 1
+            kept_e[kept_len] = int(edge_e)
+            kept_fever[kept_len] = _numba_body_count(int(state_i) + int(fill), int(edge_e), int(n))
+            kept_great[kept_len] = _numba_body_count(
+                int(forced_start),
+                min(int(n), int(forced_start) + int(later_forced[int(action_idx)])),
+                int(n),
+            )
+            kept_len += 1
+
+        if kept_len > 0:
+            stamp += 1
+            touched_count = 0
+            for kept_idx in range(kept_len):
+                tail_frontier = body_tails[int(kept_e[kept_idx])]
+                edge_fever = kept_fever[kept_idx]
+                edge_great = kept_great[kept_idx]
+                for tail_idx in range(len(tail_frontier)):
+                    tail_fever, tail_great = tail_frontier[tail_idx]
+                    generated_count += 1
+                    great_value = int(edge_great + tail_great)
+                    fever_value = int(edge_fever + tail_fever)
+                    if great_stamp[great_value] != stamp:
+                        great_stamp[great_value] = stamp
+                        touched_great[touched_count] = great_value
+                        touched_count += 1
+                        best_fever_by_great[great_value] = fever_value
+                    elif fever_value > int(best_fever_by_great[great_value]):
+                        best_fever_by_great[great_value] = fever_value
+            sorted_great = np.sort(touched_great[:touched_count])
+            best_fever_seen = -1
+            has_best = False
+            idx = 0
+            while idx < touched_count:
+                great_value = int(sorted_great[idx])
+                best_for_great = int(best_fever_by_great[great_value])
+                if (not has_best) or best_for_great > best_fever_seen:
+                    frontier.append((np.uint64(best_for_great), np.uint64(great_value)))
+                    best_fever_seen = best_for_great
+                    has_best = True
+                idx += 1
+
         generated_surfaces += generated_count
         if generated_count == 0:
-            frontier = _numba_frontier_with_empty_surface()
-        state_frontiers[state_i] = frontier
+            frontier = _numba_body_pair_with_empty_surface()
+        body_tails[state_i] = frontier
         retained_total += len(frontier)
         if len(frontier) > max_state_frontier:
             max_state_frontier = len(frontier)
 
-    first_frontier = List.empty_list(_NUMBA_SURFACE_TYPE)
+    head_limit = min(int(n), 100)
+    head_frontiers = List.empty_list(_NUMBA_SURFACE_LIST_TYPE)
+    for _idx in range(head_limit):
+        head_frontiers.append(List.empty_list(_NUMBA_SURFACE_TYPE))
+
+    for state_i in range(head_limit - 1, -1, -1):
+        if not reachable[state_i]:
+            continue
+        states_evaluated += 1
+        generated = List.empty_list(_NUMBA_SURFACE_TYPE)
+        generated_count = 0
+        for action_idx in range(int(action_count)):
+            edge_e, _start_time = _numba_later_edge_from_precomputed(
+                int(n),
+                int(state_i),
+                int(action_idx),
+                later_fill,
+                later_forced,
+                int(use_forced_great_timing_i),
+                timestamps,
+                great_candidate_timestamps,
+                timestamp_end_idx,
+                great_end_idx,
+                int(real_time_idx),
+            )
+            if int(edge_e) < 0:
+                continue
+            fill = int(later_fill[int(action_idx)])
+            forced_start = int(state_i) + 1
+            edge = _numba_pack_edge(
+                int(n),
+                int(state_i) + int(fill),
+                int(edge_e),
+                int(forced_start),
+                min(int(n), int(forced_start) + int(later_forced[int(action_idx)])),
+            )
+            if int(edge_e) >= 100:
+                generated_count += _numba_append_body_tail_surfaces(generated, edge, body_tails[int(edge_e)])
+            elif int(edge_e) >= head_limit:
+                generated_count += _numba_append_terminal_tail_surface(generated, edge)
+            else:
+                generated_count += _numba_append_surface_tail_surfaces(generated, edge, head_frontiers[int(edge_e)])
+        generated_surfaces += generated_count
+        frontier = _numba_reduce(generated)
+        head_frontiers[state_i] = frontier
+        retained_total += len(frontier)
+        if len(frontier) > max_state_frontier:
+            max_state_frontier = len(frontier)
+
+    first_generated = List.empty_list(_NUMBA_SURFACE_TYPE)
     first_generated_count = 0
-    for idx in range(len(first_edges_e)):
-        edge_e = first_edges_e[idx]
-        tail_frontier = state_frontiers[edge_e]
-        for tail_idx in range(len(tail_frontier)):
-            first_generated_count += 1
-            _numba_append_surface(first_frontier, _numba_combine(first_edges_surface[idx], tail_frontier[tail_idx]))
+    for action_idx in range(int(action_count)):
+        edge_e, _start_time = _numba_first_edge_from_precomputed(
+            int(n),
+            int(action_idx),
+            first_fill,
+            first_forced,
+            int(use_forced_great_timing_i),
+            timestamps,
+            great_candidate_timestamps,
+            timestamp_end_idx,
+            great_end_idx,
+            int(real_time_idx),
+        )
+        if int(edge_e) < 0:
+            continue
+        fill = int(first_fill[int(action_idx)])
+        edge = _numba_pack_edge(
+            int(n),
+            int(fill),
+            int(edge_e),
+            0,
+            min(int(n), int(first_forced[int(action_idx)])),
+        )
+        if int(edge_e) >= 100:
+            first_generated_count += _numba_append_body_tail_surfaces(first_generated, edge, body_tails[int(edge_e)])
+        elif int(edge_e) >= head_limit:
+            first_generated_count += _numba_append_terminal_tail_surface(first_generated, edge)
+        else:
+            first_generated_count += _numba_append_surface_tail_surfaces(
+                first_generated,
+                edge,
+                head_frontiers[int(edge_e)],
+            )
     generated_surfaces += first_generated_count
-    if first_generated_count == 0:
-        first_frontier = _numba_frontier_with_empty_surface()
+    first_frontier = _numba_reduce(first_generated)
     retained_total += len(first_frontier)
     if len(first_frontier) > max_state_frontier:
         max_state_frontier = len(first_frontier)
@@ -1109,37 +1168,6 @@ def _lower_bound_ts(ts: ti.template(), n, value):
         else:
             hi = mid
     return lo
-
-
-@ti.func
-def _edge_end_idx(
-    n,
-    activation_idx,
-    forced_start,
-    forced_applied,
-    real_fever_time,
-    use_forced_great_timing_i,
-    timestamps: ti.template(),
-    great_candidate_timestamps: ti.template(),
-):
-    forced_end = forced_start + forced_applied - 1
-    start_time = timestamps[activation_idx]
-    if (
-        use_forced_great_timing_i != 0
-        and forced_applied > 0
-        and forced_end >= forced_start
-        and forced_end < activation_idx
-        and forced_end < n
-    ):
-        forced_t = great_candidate_timestamps[forced_end]
-        if forced_t > start_time:
-            start_time = forced_t
-    e = _lower_bound_ts(timestamps, n, ti.cast(start_time + real_fever_time, ti.f32))
-    if e <= activation_idx:
-        e = activation_idx + 1
-    if e > n:
-        e = n
-    return e, start_time
 
 
 @ti.func
@@ -1194,155 +1222,6 @@ def _mask_word(start, end, n, word_idx):
 @ti.func
 def _body_count(start, end, n):
     return ti.max(ti.i32(0), ti.min(end, n) - ti.max(start, ti.i32(100)))
-
-
-@ti.func
-def _write_edge(
-    n,
-    row,
-    action_idx,
-    state_i,
-    first_i,
-    fill,
-    forced_applied,
-    real_fever_time,
-    use_forced_great_timing_i,
-    timestamps: ti.template(),
-    great_candidate_timestamps: ti.template(),
-    valid: ti.template(),
-    next_idx: ti.template(),
-    fever_masks: ti.template(),
-    great_masks: ti.template(),
-    body_counts: ti.template(),
-):
-    activation = fill
-    forced_start = ti.i32(0)
-    if first_i == 0:
-        activation = state_i + fill
-        forced_start = state_i + 1
-
-    edge_e = ti.i32(-1)
-    start_time = ti.f32(-1.0)
-    if activation < n:
-        e, computed_start = _edge_end_idx(
-            n,
-            activation,
-            forced_start,
-            forced_applied,
-            real_fever_time,
-            use_forced_great_timing_i,
-            timestamps,
-            great_candidate_timestamps,
-        )
-        edge_e = e
-        start_time = computed_start
-        valid[row, action_idx] = ti.i8(1)
-        next_idx[row, action_idx] = e
-        great_end = ti.min(n, forced_start + forced_applied)
-        for word in ti.static(range(4)):
-            fever_masks[row, action_idx, word] = _mask_word(activation, e, n, word)
-            great_masks[row, action_idx, word] = _mask_word(forced_start, great_end, n, word)
-        body_counts[row, action_idx, 0] = _body_count(activation, e, n)
-        body_counts[row, action_idx, 1] = _body_count(forced_start, great_end, n)
-    return edge_e, start_time
-
-
-@ti.kernel
-def _build_fg_response_edges_kernel(
-    n: ti.i32,
-    action_count: ti.i32,
-    real_fever_time: ti.f32,
-    use_forced_great_timing_i: ti.i32,
-    timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    great_candidate_timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    later_fill: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    first_fill: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    later_forced: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    first_forced: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    later_valid: ti.types.ndarray(dtype=ti.i8, ndim=2),
-    later_next: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    later_fever_masks: ti.types.ndarray(dtype=ti.u32, ndim=3),
-    later_great_masks: ti.types.ndarray(dtype=ti.u32, ndim=3),
-    later_body_counts: ti.types.ndarray(dtype=ti.i32, ndim=3),
-    first_valid: ti.types.ndarray(dtype=ti.i8, ndim=2),
-    first_next: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    first_fever_masks: ti.types.ndarray(dtype=ti.u32, ndim=3),
-    first_great_masks: ti.types.ndarray(dtype=ti.u32, ndim=3),
-    first_body_counts: ti.types.ndarray(dtype=ti.i32, ndim=3),
-):
-    for state_i, action_idx in ti.ndrange(n, action_count):
-        fill = later_fill[action_idx]
-        forced = later_forced[action_idx]
-        e, start_time = _write_edge(
-            n,
-            state_i,
-            action_idx,
-            state_i,
-            ti.i32(0),
-            fill,
-            forced,
-            real_fever_time,
-            use_forced_great_timing_i,
-            timestamps,
-            great_candidate_timestamps,
-            later_valid,
-            later_next,
-            later_fever_masks,
-            later_great_masks,
-            later_body_counts,
-        )
-        if action_idx > 0 and later_valid[state_i, action_idx] != 0:
-            prev_fill = later_fill[action_idx - 1]
-            if fill == prev_fill:
-                prev_e, prev_start_time = _edge_end_idx(
-                    n,
-                    state_i + prev_fill,
-                    state_i + 1,
-                    later_forced[action_idx - 1],
-                    real_fever_time,
-                    use_forced_great_timing_i,
-                    timestamps,
-                    great_candidate_timestamps,
-                )
-                if start_time == prev_start_time or e == prev_e:
-                    later_valid[state_i, action_idx] = ti.i8(0)
-
-    for action_idx in range(action_count):
-        fill = first_fill[action_idx]
-        forced = first_forced[action_idx]
-        e, start_time = _write_edge(
-            n,
-            ti.i32(0),
-            action_idx,
-            ti.i32(0),
-            ti.i32(1),
-            fill,
-            forced,
-            real_fever_time,
-            use_forced_great_timing_i,
-            timestamps,
-            great_candidate_timestamps,
-            first_valid,
-            first_next,
-            first_fever_masks,
-            first_great_masks,
-            first_body_counts,
-        )
-        if action_idx > 0 and first_valid[0, action_idx] != 0:
-            prev_fill = first_fill[action_idx - 1]
-            if fill == prev_fill:
-                prev_e, prev_start_time = _edge_end_idx(
-                    n,
-                    prev_fill,
-                    ti.i32(0),
-                    first_forced[action_idx - 1],
-                    real_fever_time,
-                    use_forced_great_timing_i,
-                    timestamps,
-                    great_candidate_timestamps,
-                )
-                if start_time == prev_start_time or e == prev_e:
-                    first_valid[0, action_idx] = ti.i8(0)
 
 
 @ti.kernel
@@ -1476,113 +1355,6 @@ def _build_fg_response_edges_batch_kernel(
                         first_valid[geometry_idx, action_idx] = ti.i8(0)
 
 
-@ti.kernel
-def _build_fg_response_next_batch_kernel(
-    n: ti.i32,
-    geometry_count: ti.i32,
-    max_action_count: ti.i32,
-    use_forced_great_timing_i: ti.i32,
-    timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    great_candidate_timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1),
-    real_time_index: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    timestamp_end_idx: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    great_end_idx: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    action_count_by_geometry: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    later_fill: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    first_fill: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    later_forced: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    first_forced: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    later_next: ti.types.ndarray(dtype=ti.i32, ndim=3),
-    first_next: ti.types.ndarray(dtype=ti.i32, ndim=2),
-):
-    for geometry_idx, state_i, action_idx in ti.ndrange(geometry_count, n, max_action_count):
-        if action_idx < action_count_by_geometry[geometry_idx]:
-            rt_idx = real_time_index[geometry_idx]
-            fill = later_fill[geometry_idx, action_idx]
-            activation = state_i + fill
-            edge_e = ti.i32(-1)
-            start_time = ti.f32(-1.0)
-            if activation < n:
-                e, computed_start = _edge_end_idx_precomputed(
-                    n,
-                    activation,
-                    state_i + 1,
-                    later_forced[geometry_idx, action_idx],
-                    use_forced_great_timing_i,
-                    timestamps,
-                    great_candidate_timestamps,
-                    timestamp_end_idx,
-                    great_end_idx,
-                    rt_idx,
-                )
-                edge_e = e
-                start_time = computed_start
-
-            if edge_e >= 0 and action_idx > 0:
-                prev_fill = later_fill[geometry_idx, action_idx - 1]
-                if fill == prev_fill:
-                    prev_e, prev_start_time = _edge_end_idx_precomputed(
-                        n,
-                        state_i + prev_fill,
-                        state_i + 1,
-                        later_forced[geometry_idx, action_idx - 1],
-                        use_forced_great_timing_i,
-                        timestamps,
-                        great_candidate_timestamps,
-                        timestamp_end_idx,
-                        great_end_idx,
-                        rt_idx,
-                    )
-                    if start_time == prev_start_time or edge_e == prev_e:
-                        edge_e = ti.i32(-1)
-            later_next[geometry_idx, state_i, action_idx] = edge_e
-
-    for geometry_idx, action_idx in ti.ndrange(geometry_count, max_action_count):
-        if action_idx < action_count_by_geometry[geometry_idx]:
-            rt_idx = real_time_index[geometry_idx]
-            fill = first_fill[geometry_idx, action_idx]
-            edge_e = ti.i32(-1)
-            start_time = ti.f32(-1.0)
-            if fill < n:
-                e, computed_start = _edge_end_idx_precomputed(
-                    n,
-                    fill,
-                    ti.i32(0),
-                    first_forced[geometry_idx, action_idx],
-                    use_forced_great_timing_i,
-                    timestamps,
-                    great_candidate_timestamps,
-                    timestamp_end_idx,
-                    great_end_idx,
-                    rt_idx,
-                )
-                edge_e = e
-                start_time = computed_start
-
-            if edge_e >= 0 and action_idx > 0:
-                prev_fill = first_fill[geometry_idx, action_idx - 1]
-                if fill == prev_fill:
-                    prev_e, prev_start_time = _edge_end_idx_precomputed(
-                        n,
-                        prev_fill,
-                        ti.i32(0),
-                        first_forced[geometry_idx, action_idx - 1],
-                        use_forced_great_timing_i,
-                        timestamps,
-                        great_candidate_timestamps,
-                        timestamp_end_idx,
-                        great_end_idx,
-                        rt_idx,
-                    )
-                    if start_time == prev_start_time or edge_e == prev_e:
-                        edge_e = ti.i32(-1)
-            first_next[geometry_idx, action_idx] = edge_e
-
-
-def _pack_words(row: np.ndarray) -> int:
-    return int(row[0]) | (int(row[1]) << 32) | (int(row[2]) << 64) | (int(row[3]) << 96)
-
-
 def _unpack_surface(surface: _PackedSurface) -> FgResponseSurface:
     fever, great, body_fever, body_great = surface
     return FgResponseSurface(
@@ -1659,6 +1431,52 @@ def _reduce_packed_frontier(surfaces: list[_PackedSurface]) -> tuple[_PackedSurf
     return tuple(kept)
 
 
+def _first_frontier_result_from_precomputed_end_indices(
+    *,
+    n: int,
+    action_count: int,
+    non_fever_base: int,
+    later_fill: np.ndarray,
+    first_fill: np.ndarray,
+    later_forced: np.ndarray,
+    first_forced: np.ndarray,
+    timestamps: np.ndarray,
+    great_candidate_timestamps: np.ndarray,
+    timestamp_end_idx: np.ndarray,
+    great_end_idx: np.ndarray,
+    real_time_idx: int,
+    use_forced_great_timing: bool,
+) -> FgResponseFrontierResult:
+    first_rows, states_evaluated, generated_surfaces, retained_total, max_state_frontier = (
+        _first_frontier_from_precomputed_end_indices_numba(
+            int(n),
+            int(action_count),
+            later_fill,
+            first_fill,
+            later_forced,
+            first_forced,
+            timestamps,
+            great_candidate_timestamps,
+            timestamp_end_idx,
+            great_end_idx,
+            int(real_time_idx),
+            1 if bool(use_forced_great_timing) else 0,
+        )
+    )
+    return FgResponseFrontierResult(
+        first_frontier=tuple(_surface_from_numba_row(first_rows[idx]) for idx in range(int(first_rows.shape[0]))),
+        state_frontiers={},
+        states_evaluated=int(states_evaluated),
+        actions=int(action_count),
+        transitions_evaluated=0,
+        generated_surfaces=int(generated_surfaces),
+        retained_surfaces_total=int(retained_total),
+        max_state_frontier=int(max_state_frontier),
+        non_fever_base=int(non_fever_base),
+        seconds=0.0,
+    )
+
+
 def _append_edge_from_arrays(
     bucket: list[_PackedSurface],
     fever_masks: np.ndarray,
@@ -1698,7 +1516,7 @@ def _frontier_from_edge_arrays(
     first_great_masks: np.ndarray,
     first_body_counts: np.ndarray,
     seconds: float,
-    include_state_frontiers: bool = True,
+    materialize_state_frontiers: bool = True,
 ) -> FgResponseFrontierResult:
     reachable = np.zeros((n + 1,), dtype=np.bool_)
     reachable[n] = True
@@ -1784,7 +1602,7 @@ def _frontier_from_edge_arrays(
             int(state): tuple(_unpack_surface(surface) for surface in frontier)
             for state, frontier in state_frontiers.items()
         }
-        if bool(include_state_frontiers)
+        if bool(materialize_state_frontiers)
         else {},
         states_evaluated=int(np.count_nonzero(reachable[:n])),
         actions=int(action_count),
@@ -1797,120 +1615,87 @@ def _frontier_from_edge_arrays(
     )
 
 
-def build_force_greats_response_frontier_gpu(
-    *,
-    timestamps: Any,
-    great_candidate_timestamps: Any | None = None,
-    raw_fever_fill: float,
-    non_fever_base: int,
-    real_fever_time: float,
-    use_forced_great_timing: bool = True,
-    include_state_frontiers: bool = True,
-) -> FgResponseFrontierResult:
-    init_taichi()
-    started = time.perf_counter()
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
-    n = int(ts.shape[0])
-    if n <= 0:
-        return FgResponseFrontierResult((_EMPTY_SURFACE,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0)
-    if bool(np.any(ts[1:] < ts[:-1])):
-        raise ValueError("timestamps must be sorted in nondecreasing order")
-    if great_candidate_timestamps is None:
-        great_ts = ts
-    else:
-        great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
-        if int(great_ts.shape[0]) != n:
-            raise ValueError("great_candidate_timestamps length must match timestamps")
-
-    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
-        raw_fever_fill=float(raw_fever_fill),
-        non_fever_base=max(0, int(non_fever_base)),
-        use_forced_great_timing=bool(use_forced_great_timing),
-    )
-    action_count = int(len(actions))
-    later_valid = np.zeros((n, action_count), dtype=np.int8)
-    later_next = np.full((n, action_count), -1, dtype=np.int32)
-    later_fever_masks = np.zeros((n, action_count, 4), dtype=np.uint32)
-    later_great_masks = np.zeros((n, action_count, 4), dtype=np.uint32)
-    later_body_counts = np.zeros((n, action_count, 2), dtype=np.int32)
-    first_valid = np.zeros((1, action_count), dtype=np.int8)
-    first_next = np.full((1, action_count), -1, dtype=np.int32)
-    first_fever_masks = np.zeros((1, action_count, 4), dtype=np.uint32)
-    first_great_masks = np.zeros((1, action_count, 4), dtype=np.uint32)
-    first_body_counts = np.zeros((1, action_count, 2), dtype=np.int32)
-
-    _build_fg_response_edges_kernel(
-        int(n),
-        int(action_count),
-        np.float32(real_fever_time),
-        1 if bool(use_forced_great_timing) else 0,
-        ts,
-        great_ts,
-        np.asarray(later_fill, dtype=np.int32),
-        np.asarray(first_fill, dtype=np.int32),
-        np.asarray(later_forced, dtype=np.int32),
-        np.asarray(first_forced, dtype=np.int32),
-        later_valid,
-        later_next,
-        later_fever_masks,
-        later_great_masks,
-        later_body_counts,
-        first_valid,
-        first_next,
-        first_fever_masks,
-        first_great_masks,
-        first_body_counts,
-    )
-
-    return _frontier_from_edge_arrays(
-        n=int(n),
-        action_count=int(action_count),
-        non_fever_base=max(0, int(non_fever_base)),
-        later_valid=later_valid,
-        later_next=later_next,
-        later_fever_masks=later_fever_masks,
-        later_great_masks=later_great_masks,
-        later_body_counts=later_body_counts,
-        first_valid=first_valid,
-        first_next=first_next,
-        first_fever_masks=first_fever_masks,
-        first_great_masks=first_great_masks,
-        first_body_counts=first_body_counts,
-        seconds=float(time.perf_counter() - started),
-        include_state_frontiers=bool(include_state_frontiers),
-    )
-
-
 def _batch_chunk_size(*, n: int, action_count: int, geometry_count: int, bytes_per_edge: int = 64) -> int:
     denom = max(1, int(n) * max(1, int(action_count)) * bytes_per_edge)
     return max(1, min(int(geometry_count), int(_GPU_EDGE_BATCH_MAX_BYTES) // denom))
 
 
-def _first_only_padded_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tuple]]]:
-    out: list[tuple[int, list[tuple]]] = []
-    chunk: list[tuple] = []
-    max_action_count = 0
-    for item in sorted(items, key=lambda row: int(row[3].shape[0]), reverse=True):
-        action_count = int(item[3].shape[0])
-        next_max = max(int(max_action_count), int(action_count))
-        next_len = len(chunk) + 1
-        if chunk and int(next_len) * int(next_max) * int(n) * 4 > int(_GPU_EDGE_BATCH_MAX_BYTES):
-            out.append((int(max_action_count), chunk))
-            chunk = []
-            max_action_count = 0
-        chunk.append(item)
-        max_action_count = max(int(max_action_count), int(action_count))
-    if chunk:
-        out.append((int(max_action_count), chunk))
-    return out
+def _first_only_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tuple]]]:
+    del n
+    if not items:
+        return []
+    return [(0, list(items))]
 
 
-def _pad_action_rows(rows: list[np.ndarray], width: int) -> np.ndarray:
-    out = np.zeros((len(rows), int(width)), dtype=np.int32)
-    for idx, row in enumerate(rows):
-        count = int(row.shape[0])
-        out[idx, :count] = row
-    return out
+def _action_arrays_signature(item: tuple) -> tuple[bytes, bytes, bytes, bytes]:
+    return (
+        np.ascontiguousarray(item[3], dtype=np.int32).tobytes(),
+        np.ascontiguousarray(item[4], dtype=np.int32).tobytes(),
+        np.ascontiguousarray(item[5], dtype=np.int32).tobytes(),
+        np.ascontiguousarray(item[6], dtype=np.int32).tobytes(),
+    )
+
+
+def _canonicalize_first_only_prepared_items(
+    *,
+    prepared: list[tuple],
+    timestamps: np.ndarray,
+    great_candidate_timestamps: np.ndarray,
+) -> tuple[list[tuple], dict[int, tuple[int, ...]]]:
+    if len(prepared) <= 1:
+        return prepared, {int(item[0]): (int(item[0]),) for item in prepared}
+
+    real_times = np.asarray([item[2] for item in prepared], dtype=np.float32)
+    real_time_index, timestamp_end_idx, great_end_idx = _precompute_end_indices(
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+        real_times=real_times,
+    )
+    end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
+    end_class_by_signature: dict[tuple[bytes, bytes], int] = {}
+    for idx in range(int(timestamp_end_idx.shape[0])):
+        signature = (
+            np.ascontiguousarray(timestamp_end_idx[idx], dtype=np.int32).tobytes(),
+            np.ascontiguousarray(great_end_idx[idx], dtype=np.int32).tobytes(),
+        )
+        class_idx = end_class_by_signature.get(signature)
+        if class_idx is None:
+            class_idx = len(end_class_by_signature)
+            end_class_by_signature[signature] = int(class_idx)
+        end_class_by_index[idx] = int(class_idx)
+
+    canonical_items: list[tuple] = []
+    duplicate_sources_by_source: dict[int, list[int]] = {}
+    action_class_by_object: dict[tuple[int, int, int, int], int] = {}
+    action_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes], int] = {}
+    canonical_by_signature: dict[tuple[int, int], int] = {}
+    for local_idx, item in enumerate(prepared):
+        source_idx = int(item[0])
+        action_object_key = (id(item[3]), id(item[4]), id(item[5]), id(item[6]))
+        action_class = action_class_by_object.get(action_object_key)
+        if action_class is None:
+            action_signature = _action_arrays_signature(item)
+            action_class = action_class_by_signature.get(action_signature)
+            if action_class is None:
+                action_class = len(action_class_by_signature)
+                action_class_by_signature[action_signature] = int(action_class)
+            action_class_by_object[action_object_key] = int(action_class)
+        signature = (
+            int(action_class),
+            int(end_class_by_index[int(real_time_index[int(local_idx)])]),
+        )
+        canonical_source_idx = canonical_by_signature.get(signature)
+        if canonical_source_idx is None:
+            canonical_by_signature[signature] = int(source_idx)
+            canonical_items.append(item)
+            duplicate_sources_by_source[int(source_idx)] = [int(source_idx)]
+            continue
+        duplicate_sources_by_source[int(canonical_source_idx)].append(int(source_idx))
+
+    return canonical_items, {
+        int(source_idx): tuple(int(value) for value in source_indices)
+        for source_idx, source_indices in duplicate_sources_by_source.items()
+    }
 
 
 def _precompute_end_indices(
@@ -1941,97 +1726,56 @@ def _precompute_end_indices(
     )
 
 
-def _first_frontier_result_from_next_arrays(
+def _first_frontier_results_for_precomputed_range(
     *,
     n: int,
-    action_count: int,
-    non_fever_base: int,
-    later_next: np.ndarray,
-    later_fill: np.ndarray,
-    later_forced: np.ndarray,
-    first_next: np.ndarray,
-    first_fill: np.ndarray,
-    first_forced: np.ndarray,
-) -> FgResponseFrontierResult:
-    first_rows, states_evaluated, generated_surfaces, retained_total, max_state_frontier = (
-        _first_frontier_from_next_arrays_numba(
-            int(n),
-            int(action_count),
-            later_next,
-            later_fill,
-            later_forced,
-            first_next,
-            first_fill,
-            first_forced,
-        )
-    )
-    return FgResponseFrontierResult(
-        first_frontier=tuple(_surface_from_numba_row(first_rows[idx]) for idx in range(int(first_rows.shape[0]))),
-        state_frontiers={},
-        states_evaluated=int(states_evaluated),
-        actions=int(action_count),
-        transitions_evaluated=0,
-        generated_surfaces=int(generated_surfaces),
-        retained_surfaces_total=int(retained_total),
-        max_state_frontier=int(max_state_frontier),
-        non_fever_base=int(non_fever_base),
-        seconds=0.0,
-    )
-
-
-def _first_frontier_result_from_precomputed_body_tail(
-    *,
-    n: int,
-    action_count: int,
-    non_fever_base: int,
-    later_fill: np.ndarray,
-    later_forced: np.ndarray,
-    first_fill: np.ndarray,
-    first_forced: np.ndarray,
-    use_forced_great_timing: bool,
+    chunk: list[tuple],
+    start: int,
+    stop: int,
     timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     timestamp_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
-) -> FgResponseFrontierResult:
-    first_rows, states_evaluated, generated_surfaces, retained_total, max_state_frontier = (
-        _first_frontier_from_body_tail_precomputed_numba(
-            int(n),
-            int(action_count),
-            later_fill,
-            later_forced,
-            first_fill,
-            first_forced,
-            1 if bool(use_forced_great_timing) else 0,
-            timestamps,
-            great_candidate_timestamps,
-            timestamp_end_idx,
-            great_end_idx,
+    real_time_index: np.ndarray,
+    use_forced_great_timing: bool,
+) -> list[tuple[int, FgResponseFrontierResult]]:
+    results: list[tuple[int, FgResponseFrontierResult]] = []
+    for local_idx in range(int(start), int(stop)):
+        item = chunk[int(local_idx)]
+        source_idx = int(item[0])
+        results.append(
+            (
+                source_idx,
+                _first_frontier_result_from_precomputed_end_indices(
+                    n=int(n),
+                    action_count=int(item[3].shape[0]),
+                    non_fever_base=int(item[1]),
+                    later_fill=np.ascontiguousarray(item[3], dtype=np.int32),
+                    first_fill=np.ascontiguousarray(item[4], dtype=np.int32),
+                    later_forced=np.ascontiguousarray(item[5], dtype=np.int32),
+                    first_forced=np.ascontiguousarray(item[6], dtype=np.int32),
+                    timestamps=timestamps,
+                    great_candidate_timestamps=great_candidate_timestamps,
+                    timestamp_end_idx=timestamp_end_idx,
+                    great_end_idx=great_end_idx,
+                    real_time_idx=int(real_time_index[int(local_idx)]),
+                    use_forced_great_timing=bool(use_forced_great_timing),
+                ),
+            )
         )
-    )
-    return FgResponseFrontierResult(
-        first_frontier=tuple(_surface_from_numba_row(first_rows[idx]) for idx in range(int(first_rows.shape[0]))),
-        state_frontiers={},
-        states_evaluated=int(states_evaluated),
-        actions=int(action_count),
-        transitions_evaluated=0,
-        generated_surfaces=int(generated_surfaces),
-        retained_surfaces_total=int(retained_total),
-        max_state_frontier=int(max_state_frontier),
-        non_fever_base=int(non_fever_base),
-        seconds=0.0,
-    )
+    return results
 
 
-def build_force_greats_response_frontiers_gpu_batch(
+def _build_force_greats_response_frontiers_gpu_batch(
     *,
     timestamps: Any,
     great_candidate_timestamps: Any | None = None,
     geometries: Any,
     use_forced_great_timing: bool = True,
-    include_state_frontiers: bool = True,
+    materialize_state_frontiers: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
-    init_taichi()
+    if bool(materialize_state_frontiers):
+        init_taichi()
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
     geometry_rows = tuple(geometries or ())
@@ -2081,62 +1825,15 @@ def build_force_greats_response_frontiers_gpu_batch(
         )
 
     out: list[FgResponseFrontierResult | None] = [None] * len(geometry_rows)
-    if not bool(include_state_frontiers):
-        body_items = [item for item in prepared if int(item[4][0]) >= 100]
-        head_items = [item for item in prepared if int(item[4][0]) < 100]
-        if body_items:
-            body_real_times = np.asarray([item[2] for item in body_items], dtype=np.float32)
-            body_real_time_index, body_timestamp_end_idx, body_great_end_idx = _precompute_end_indices(
-                timestamps=ts,
-                great_candidate_timestamps=great_ts,
-                real_times=body_real_times,
-            )
-
-            def build_body_item(local_idx: int) -> tuple[int, FgResponseFrontierResult]:
-                item = body_items[local_idx]
-                rt_idx = int(body_real_time_index[local_idx])
-                return (
-                    int(item[0]),
-                    _first_frontier_result_from_precomputed_body_tail(
-                        n=int(n),
-                        action_count=int(item[3].shape[0]),
-                        non_fever_base=int(item[1]),
-                        later_fill=item[3],
-                        later_forced=item[5],
-                        first_fill=item[4],
-                        first_forced=item[6],
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        timestamps=ts,
-                        great_candidate_timestamps=great_ts,
-                        timestamp_end_idx=body_timestamp_end_idx[rt_idx],
-                        great_end_idx=body_great_end_idx[rt_idx],
-                    ),
-                )
-
-            reducer_workers = min(
-                int(_FIRST_FRONTIER_REDUCER_THREADS),
-                int(len(body_items)),
-            )
-            if reducer_workers <= 1:
-                for local_idx in range(len(body_items)):
-                    source_idx, frontier = build_body_item(local_idx)
-                    out[source_idx] = frontier
-            else:
-                def build_body_range(bounds: tuple[int, int]) -> list[tuple[int, FgResponseFrontierResult]]:
-                    start_idx, end_idx = bounds
-                    return [build_body_item(local_idx) for local_idx in range(start_idx, end_idx)]
-
-                block_size = max(1, (int(len(body_items)) + int(reducer_workers) - 1) // int(reducer_workers))
-                ranges = [
-                    (start_idx, min(int(len(body_items)), start_idx + block_size))
-                    for start_idx in range(0, int(len(body_items)), block_size)
-                ]
-                with ThreadPoolExecutor(max_workers=reducer_workers) as executor:
-                    for result_block in executor.map(build_body_range, ranges):
-                        for source_idx, frontier in result_block:
-                            out[int(source_idx)] = frontier
-        chunk_iter = _first_only_padded_chunks(n=int(n), items=head_items)
+    if not bool(materialize_state_frontiers):
+        prepared, duplicate_sources_by_source = _canonicalize_first_only_prepared_items(
+            prepared=prepared,
+            timestamps=ts,
+            great_candidate_timestamps=great_ts,
+        )
+        chunk_iter = _first_only_chunks(n=int(n), items=prepared)
     else:
+        duplicate_sources_by_source = {int(item[0]): (int(item[0]),) for item in prepared}
         groups: dict[int, list[tuple]] = {}
         for item in prepared:
             groups.setdefault(int(item[3].shape[0]), []).append(item)
@@ -2151,7 +1848,9 @@ def build_force_greats_response_frontiers_gpu_batch(
             for start in range(0, len(items), chunk_size):
                 chunk_iter.append((int(action_count), items[start : start + chunk_size]))
 
-    for action_count, chunk in chunk_iter:
+    first_only_executor: concurrent.futures.ThreadPoolExecutor | None = None
+    try:
+        for action_count, chunk in chunk_iter:
             geometry_count = len(chunk)
             action_counts = np.asarray([int(item[3].shape[0]) for item in chunk], dtype=np.int32)
             real_times = np.asarray([item[2] for item in chunk], dtype=np.float32)
@@ -2160,71 +1859,53 @@ def build_force_greats_response_frontiers_gpu_batch(
                 great_candidate_timestamps=great_ts,
                 real_times=real_times,
             )
-            if not bool(include_state_frontiers):
-                later_fill = _pad_action_rows([item[3] for item in chunk], int(action_count))
-                first_fill = _pad_action_rows([item[4] for item in chunk], int(action_count))
-                later_forced = _pad_action_rows([item[5] for item in chunk], int(action_count))
-                first_forced = _pad_action_rows([item[6] for item in chunk], int(action_count))
-                later_next = np.empty((geometry_count, n, action_count), dtype=np.int32)
-                first_next = np.empty((geometry_count, action_count), dtype=np.int32)
-                _build_fg_response_next_batch_kernel(
-                    int(n),
-                    int(geometry_count),
-                    int(action_count),
-                    1 if bool(use_forced_great_timing) else 0,
-                    ts,
-                    great_ts,
-                    real_time_index,
-                    timestamp_end_idx,
-                    great_end_idx,
-                    action_counts,
-                    later_fill,
-                    first_fill,
-                    later_forced,
-                    first_forced,
-                    later_next,
-                    first_next,
-                )
-                reducer_workers = min(
-                    int(_FIRST_FRONTIER_REDUCER_THREADS),
-                    int(geometry_count),
-                )
-
-                def build_local(local_idx: int) -> tuple[int, FgResponseFrontierResult]:
-                    item = chunk[local_idx]
-                    return (
-                        int(item[0]),
-                        _first_frontier_result_from_next_arrays(
+            if not bool(materialize_state_frontiers):
+                reducer_threads = _resolve_first_only_reducer_threads(int(geometry_count))
+                if int(reducer_threads) <= 1:
+                    range_results = (
+                        _first_frontier_results_for_precomputed_range(
                             n=int(n),
-                            action_count=int(item[3].shape[0]),
-                            non_fever_base=int(item[1]),
-                            later_next=later_next[local_idx],
-                            later_fill=later_fill[local_idx],
-                            later_forced=later_forced[local_idx],
-                            first_next=first_next[local_idx],
-                            first_fill=first_fill[local_idx],
-                            first_forced=first_forced[local_idx],
+                            chunk=chunk,
+                            start=0,
+                            stop=int(geometry_count),
+                            timestamps=ts,
+                            great_candidate_timestamps=great_ts,
+                            timestamp_end_idx=timestamp_end_idx,
+                            great_end_idx=great_end_idx,
+                            real_time_index=real_time_index,
+                            use_forced_great_timing=bool(use_forced_great_timing),
                         ),
                     )
-
-                if reducer_workers <= 1:
-                    for local_idx in range(geometry_count):
-                        source_idx, frontier = build_local(local_idx)
-                        out[source_idx] = frontier
                 else:
-                    def build_local_range(bounds: tuple[int, int]) -> list[tuple[int, FgResponseFrontierResult]]:
-                        start_idx, end_idx = bounds
-                        return [build_local(local_idx) for local_idx in range(start_idx, end_idx)]
-
-                    block_size = max(1, (int(geometry_count) + int(reducer_workers) - 1) // int(reducer_workers))
-                    ranges = [
-                        (start_idx, min(int(geometry_count), start_idx + block_size))
-                        for start_idx in range(0, int(geometry_count), block_size)
-                    ]
-                    with ThreadPoolExecutor(max_workers=reducer_workers) as executor:
-                        for result_block in executor.map(build_local_range, ranges):
-                            for source_idx, frontier in result_block:
-                                out[int(source_idx)] = frontier
+                    target_ranges = max(int(reducer_threads), int(reducer_threads) * 32)
+                    step = max(1, (int(geometry_count) + int(target_ranges) - 1) // int(target_ranges))
+                    ranges = tuple(
+                        (start, min(int(geometry_count), start + int(step)))
+                        for start in range(0, int(geometry_count), int(step))
+                    )
+                    if first_only_executor is None:
+                        first_only_executor = _first_frontier_reducer_executor(int(reducer_threads))
+                    futures = tuple(
+                        first_only_executor.submit(
+                            _first_frontier_results_for_precomputed_range,
+                            n=int(n),
+                            chunk=chunk,
+                            start=int(start),
+                            stop=int(stop),
+                            timestamps=ts,
+                            great_candidate_timestamps=great_ts,
+                            timestamp_end_idx=timestamp_end_idx,
+                            great_end_idx=great_end_idx,
+                            real_time_index=real_time_index,
+                            use_forced_great_timing=bool(use_forced_great_timing),
+                        )
+                        for start, stop in ranges
+                    )
+                    range_results = tuple(future.result() for future in futures)
+                for result_rows in range_results:
+                    for source_idx, frontier in result_rows:
+                        for duplicate_source_idx in duplicate_sources_by_source[int(source_idx)]:
+                            out[int(duplicate_source_idx)] = frontier
                 continue
 
             later_fill = np.vstack([item[3] for item in chunk]).astype(np.int32, copy=False)
@@ -2268,6 +1949,7 @@ def build_force_greats_response_frontiers_gpu_batch(
                 first_great_masks,
                 first_body_counts,
             )
+            ti.sync()
             for local_idx, item in enumerate(chunk):
                 source_idx = int(item[0])
                 out[source_idx] = _frontier_from_edge_arrays(
@@ -2285,8 +1967,11 @@ def build_force_greats_response_frontiers_gpu_batch(
                     first_great_masks=first_great_masks[local_idx : local_idx + 1],
                     first_body_counts=first_body_counts[local_idx : local_idx + 1],
                     seconds=0.0,
-                    include_state_frontiers=bool(include_state_frontiers),
+                    materialize_state_frontiers=bool(materialize_state_frontiers),
                 )
+    finally:
+        if first_only_executor is not None:
+            first_only_executor.shutdown(wait=True)
 
     missing = [idx for idx, frontier in enumerate(out) if frontier is None]
     if missing:
@@ -2294,4 +1979,40 @@ def build_force_greats_response_frontiers_gpu_batch(
     return tuple(frontier for frontier in out if frontier is not None)
 
 
-__all__ = ["build_force_greats_response_frontier_gpu", "build_force_greats_response_frontiers_gpu_batch"]
+def build_force_greats_response_frontiers_gpu_batch(
+    *,
+    timestamps: Any,
+    great_candidate_timestamps: Any | None = None,
+    geometries: Any,
+    use_forced_great_timing: bool = True,
+) -> tuple[FgResponseFrontierResult, ...]:
+    return _build_force_greats_response_frontiers_gpu_batch(
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+        geometries=geometries,
+        use_forced_great_timing=bool(use_forced_great_timing),
+        materialize_state_frontiers=True,
+    )
+
+
+def build_force_greats_response_first_frontiers_gpu_batch(
+    *,
+    timestamps: Any,
+    great_candidate_timestamps: Any | None = None,
+    geometries: Any,
+    use_forced_great_timing: bool = True,
+) -> tuple[FgResponseFrontierResult, ...]:
+    return _build_force_greats_response_frontiers_gpu_batch(
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+        geometries=geometries,
+        use_forced_great_timing=bool(use_forced_great_timing),
+        materialize_state_frontiers=False,
+    )
+
+
+__all__ = [
+    "build_force_greats_response_first_frontiers_gpu_batch",
+    "build_force_greats_response_frontiers_gpu_batch",
+    "warm_force_greats_response_first_frontier_reducer",
+]

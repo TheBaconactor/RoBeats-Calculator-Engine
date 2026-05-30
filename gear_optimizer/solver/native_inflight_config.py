@@ -761,6 +761,8 @@ class NativeSongFGState:
     fg_dynamic_prep_done: bool = False
     fg_prep_submit_t0: float | None = None
     fg_build_details: Any | None = None
+    fg_response_scoring_bundle: Any | None = None
+    fg_response_frontier_plan: Any | None = None
     loadout_entries: Optional[dict[str, JsonDict]] = None
     cpu_fg_prep_s: float = 0.0
     cpu_fg_run_s: float = 0.0

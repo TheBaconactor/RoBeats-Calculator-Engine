@@ -10,7 +10,6 @@ import logging
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import read_db_prefetch_workers, read_fg_static_prep_max_inflight
@@ -499,11 +498,12 @@ def run_fg_job_sync(
         build_fg_persist_entries,
         build_fg_update_payload,
     )
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        materialize_prepared_force_greats_response_frontier_batch_results,
+    )
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
-    active_fg_calc_song = resolve_active_fg_calc_song(song)
-    if not isinstance(active_fg_calc_song, dict):
-        active_fg_calc_song = getattr(song.gpu_inputs, "calc_song", {})
     try:
         emit_profile_event(
             component="inflight_fg_worker",
@@ -586,13 +586,27 @@ def run_fg_job_sync(
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     song.runtime.fg.fg_direct_ga_candidates = True
-    fg_variants = process_force_greats(
-        getattr(song.runtime.fg, "loadout_entries", None) or {},
-        active_fg_calc_song,
-        getattr(song.gpu_inputs, "ref_arrays", None),
-        getattr(song.gpu_inputs, "meta_primary_color", ""),
-        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
-        ga_registry=getattr(song.gpu_inputs, "registry", None),
+
+    def _score_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
+        handle = gpu_client.submit_force_greats_response_frontier_score_batch(
+            {
+                "batch": batch,
+                "include_forced_counts": bool(include_forced_counts),
+            }
+        )
+        inner_rows = handle.future.result()
+        return materialize_prepared_force_greats_response_frontier_batch_results(
+            batch,
+            inner_rows,
+            include_forced_counts=bool(include_forced_counts),
+        )
+
+    prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
+    if prepared_plan is None:
+        raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
+    fg_variants = response_frontier_adapter.execute_force_greats_response_frontier_plan(
+        prepared_plan,
+        score_prepared_batch=_score_prepared_fg_batch,
     )
     song.runtime.fg.fg_variants = list(fg_variants or [])
     try:
@@ -996,57 +1010,55 @@ def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Non
         logger.debug(f"native_inflight_pipeline:_prewarm_timeline_frontier_payload: {e}")
 
 
-def _prewarm_fg_response_support(calc_song: dict, ref_arrays: dict) -> None:
+def _prewarm_fg_response_support(calc_song: dict, ref_arrays: dict) -> Any | None:
     if not calc_song or not ref_arrays:
-        return
-    try:
-        from gear_optimizer.core.constants import TOTAL_ROWS
-        from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-            _fg_response_disk_cache_path,
-            build_or_load_response_frontier_scoring_bundle,
-            fg_response_frontier_bundle_cache_key,
-        )
+        return None
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import all_response_stat_keys
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        _fg_response_disk_cache_path,
+        fg_response_frontier_bundle_cache_key,
+        load_response_frontier_scoring_bundle,
+    )
 
-        bundle_path = _fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
-        if not bundle_path.exists():
-            return
-        stat_keys = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
-        build_or_load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=stat_keys)
-        metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-        primary = str(metadata.get("Primary Color", "") or "")
-        secondary = str(metadata.get("Secondary Color", "") or "")
-        stats = {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
+    bundle_path = _fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
+    if not bundle_path.exists():
+        raise RuntimeError(f"FG response frontier scoring requires a prebuilt bundle cache: {bundle_path}")
+    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=all_response_stat_keys())
+    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    primary = str(metadata.get("Primary Color", "") or "")
+    secondary = str(metadata.get("Secondary Color", "") or "")
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Time": 0,
+        "Fever Fill Rate": 0,
+    }
+    if primary:
+        stats[primary] = 0
+    if secondary:
+        stats[secondary] = 0
+    evaluate_stats_score(stats, calc_song, ref_arrays)
+    stats["Fever Time"] = 5
+    stats["Fever Fill Rate"] = 5
+    evaluate_stats_score(stats, calc_song, ref_arrays)
+    stats.update(
+        {
+            "Perfect Points": TOTAL_ROWS,
+            "Combo Multiplier": TOTAL_ROWS,
+            "Fever Multiplier": TOTAL_ROWS,
+            "Fever Time": TOTAL_ROWS,
+            "Fever Fill Rate": TOTAL_ROWS,
         }
-        if primary:
-            stats[primary] = 0
-        if secondary:
-            stats[secondary] = 0
-        evaluate_stats_score(stats, calc_song, ref_arrays)
-        stats["Fever Time"] = 5
-        stats["Fever Fill Rate"] = 5
-        evaluate_stats_score(stats, calc_song, ref_arrays)
-        stats.update(
-            {
-                "Perfect Points": TOTAL_ROWS,
-                "Combo Multiplier": TOTAL_ROWS,
-                "Fever Multiplier": TOTAL_ROWS,
-                "Fever Time": TOTAL_ROWS,
-                "Fever Fill Rate": TOTAL_ROWS,
-            }
-        )
-        if primary:
-            stats[primary] = TOTAL_ROWS
-        if secondary:
-            stats[secondary] = TOTAL_ROWS
-        evaluate_stats_score(stats, calc_song, ref_arrays)
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_prewarm_fg_response_support: {e}")
+    )
+    if primary:
+        stats[primary] = TOTAL_ROWS
+    if secondary:
+        stats[secondary] = TOTAL_ROWS
+    evaluate_stats_score(stats, calc_song, ref_arrays)
+    return scoring_bundle
 
 
 def run_cpu_prewarm_for_song(song: NativeSong) -> None:
@@ -1055,7 +1067,7 @@ def run_cpu_prewarm_for_song(song: NativeSong) -> None:
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
         return
     _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-    _prewarm_fg_response_support(calc_song, ref_arrays)
+    song.runtime.fg.fg_response_scoring_bundle = _prewarm_fg_response_support(calc_song, ref_arrays)
 def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -1175,6 +1187,9 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     config = getattr(song, 'config', song)
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
+    cpu_prewarm_future = getattr(getattr(song.runtime, "prep", None), "cpu_prewarm_future", None)
+    if cpu_prewarm_future is not None:
+        cpu_prewarm_future.result()
     cfg = getattr(config, "cfg", None)
     perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
@@ -1234,7 +1249,20 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     hydrate_stats_ms = (t_select - t_candidate_select) * 1000.0
     db_wait_ms = (t_db - t_select) * 1000.0
     build_ms = (t_build - t_db) * 1000.0
-    total_ms = (t_build - t0) * 1000.0
+    plan_t0 = time.perf_counter()
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+
+    runtime.fg.fg_response_frontier_plan = response_frontier_adapter.prepare_force_greats_response_frontier_plan(
+        getattr(song.runtime.fg, "loadout_entries", None) or {},
+        resolve_active_fg_calc_song(song),
+        getattr(song.gpu_inputs, "ref_arrays", None),
+        getattr(song.gpu_inputs, "meta_primary_color", ""),
+        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
+        ga_registry=getattr(song.gpu_inputs, "registry", None),
+        scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
+    )
+    plan_ms = (time.perf_counter() - plan_t0) * 1000.0
+    total_ms = (time.perf_counter() - t0) * 1000.0
     try:
         loadouts_n = len(runtime.fg.loadout_entries or {})
     except (TypeError, AttributeError):
@@ -1246,7 +1274,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             f"loadouts={loadouts_n} select={select_ms:.1f}ms "
             f"candidate_select={candidate_select_ms:.1f}ms hydrate={hydrate_stats_ms:.1f}ms "
             f"db_wait={db_wait_ms:.1f}ms "
-            f"build={build_ms:.1f}ms total={total_ms:.1f}ms"
+            f"build={build_ms:.1f}ms plan={plan_ms:.1f}ms total={total_ms:.1f}ms"
         )
     try:
         song.runtime.fg.cpu_fg_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
@@ -1264,6 +1292,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "hydrate_stats_ms": float(hydrate_stats_ms),
                 "db_wait_ms": float(db_wait_ms),
                 "build_ms": float(build_ms),
+                "plan_ms": float(plan_ms),
                 "total_ms": float(total_ms),
                 "preselect_ga_candidates": int(preselect_ga_candidates),
                 "ga_candidates": int(len(ga_candidates or [])),

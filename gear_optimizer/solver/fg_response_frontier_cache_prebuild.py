@@ -8,9 +8,14 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from functools import lru_cache
 from typing import Iterable
 
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.solver.fg_response_frontier_cache_manifest import (
+    apply_manifest_results,
+    build_manifest_plan,
+)
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_timeline_frontier_cache_paths
 
 logger = logging.getLogger(__name__)
@@ -48,7 +53,7 @@ class FgResponseFrontierCachePrebuildSettings:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
-_PREBUILD_WORKERS = max(1, min(3, int(os.cpu_count() or 1)))
+_PREBUILD_WORKERS = max(1, min(8, int(os.cpu_count() or 1)))
 
 
 def _init_prebuild_worker(
@@ -61,7 +66,7 @@ def _init_prebuild_worker(
     global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
     _PREBUILD_WORKER_STAT_KEYS = tuple(stat_keys or ())
-    response_build_gpu._FIRST_FRONTIER_REDUCER_THREADS = max(1, int(reducer_threads))
+    response_build_gpu.configure_force_greats_response_first_frontier_threads(max(1, int(reducer_threads)))
 
 
 def _build_fg_response_frontier_cache_for_path_shared(song_path_text: str) -> FgResponseFrontierCacheBuildResult:
@@ -214,27 +219,16 @@ class FgResponseFrontierCachePrebuilder:
         return self.summary
 
 
-def _full_budget_ftff_stat_keys() -> tuple[tuple[int, int], ...]:
-    from gear_optimizer.core.constants import TOTAL_GEM_BUDGET, TOTAL_ROWS
-    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+@lru_cache(maxsize=1)
+def all_response_stat_keys() -> tuple[tuple[int, int], ...]:
+    from gear_optimizer.core.constants import TOTAL_ROWS
 
-    out: set[tuple[int, int]] = set()
-    ft_values, ff_values, _remaining = ftff_combo_arrays(int(TOTAL_GEM_BUDGET))
-    for ft, ff in zip(ft_values, ff_values, strict=True):
-        stats = apply_gems_to_base_stats({}, "", int(ft), int(ff), 0, 0, 0, 0)
-        out.add(
-            (
-                max(0, min(int(TOTAL_ROWS), int(stats.get("Fever Time", 0) or 0))),
-                max(0, min(int(TOTAL_ROWS), int(stats.get("Fever Fill Rate", 0) or 0))),
-            )
-        )
-    return tuple(sorted(out))
+    return tuple((int(ft), int(ff)) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
 
 
 def read_fg_response_frontier_cache_prebuild_settings(_cfg) -> FgResponseFrontierCachePrebuildSettings:
     return FgResponseFrontierCachePrebuildSettings(
-        stat_keys=_full_budget_ftff_stat_keys(),
+        stat_keys=all_response_stat_keys(),
     )
 
 
@@ -293,7 +287,6 @@ def build_fg_response_frontier_cache_for_path(
         calc_song,
         ref_arrays,
         stat_keys=stat_keys,
-        include_state_frontiers=False,
     )
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
@@ -346,22 +339,65 @@ def run_fg_response_frontier_cache_prebuild(
         cleanup_fg_response_frontier_cache_temp_files,
     )
 
+    started = time.perf_counter()
     settings, paths = _fg_response_frontier_prebuild_paths(cfg=cfg, song_queue=song_queue, data_root=data_root)
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
     if not settings.stat_keys:
-        raise ValueError("FG response-frontier prebuild requires the full-budget FT/FF stat-key set")
+        raise ValueError("FG response-frontier prebuild requires the complete FT/FF stat-key grid")
+
+    manifest_plan = build_manifest_plan(paths, ref_arrays, stat_keys=settings.stat_keys)
+    missing_paths = list(manifest_plan.missing_paths)
+    manifest_hits = int(manifest_plan.hit_count)
+    if manifest_hits > 0:
+        logger.info(
+            "[FGResponseCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
+            manifest_hits,
+            int(manifest_plan.total_paths),
+        )
 
     removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
 
+    if not missing_paths:
+        elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+        emit_profile_event(
+            component="fg_response_cache",
+            event="prebuild_manifest_only",
+            metrics={
+                "completed": int(manifest_hits),
+                "total": int(manifest_plan.total_paths),
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return FgResponseFrontierCachePrebuildSummary(
+            total=int(manifest_plan.total_paths),
+            completed=int(manifest_hits),
+            failures=0,
+            built=0,
+            disk=int(manifest_hits),
+            memory=0,
+            elapsed_ms=elapsed_ms,
+        )
+
     prebuilder = FgResponseFrontierCachePrebuilder(
-        song_paths=paths,
+        song_paths=missing_paths,
         ref_arrays=ref_arrays,
         stat_keys=settings.stat_keys,
     )
-    return prebuilder.run_to_completion()
+    run_summary = prebuilder.run_to_completion()
+    apply_manifest_results(plan=manifest_plan, results=prebuilder.completed_results)
+    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+    return FgResponseFrontierCachePrebuildSummary(
+        total=int(manifest_plan.total_paths),
+        completed=int(manifest_hits + run_summary.completed),
+        failures=int(run_summary.failures),
+        built=int(run_summary.built),
+        disk=int(manifest_hits + run_summary.disk),
+        memory=int(run_summary.memory),
+        elapsed_ms=elapsed_ms,
+    )
 
 
 __all__ = [
@@ -369,6 +405,7 @@ __all__ = [
     "FgResponseFrontierCachePrebuildSettings",
     "FgResponseFrontierCachePrebuildSummary",
     "FgResponseFrontierCachePrebuilder",
+    "all_response_stat_keys",
     "build_fg_response_frontier_cache_for_path",
     "read_fg_response_frontier_cache_prebuild_settings",
     "run_fg_response_frontier_cache_prebuild",

@@ -459,12 +459,64 @@ def reconstruct_force_greats_response_counts(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
 
-    counts: list[int] = []
-    state = 0
-    target = target_surface
-    first = True
-    for _step in range(n):
-        found: tuple[int, int, FgResponseSurface] | None = None
+    target_words = (
+        int(target_surface.fever0),
+        int(target_surface.fever1),
+        int(target_surface.fever2),
+        int(target_surface.fever3),
+        int(target_surface.great0),
+        int(target_surface.great1),
+        int(target_surface.great2),
+        int(target_surface.great3),
+        int(target_surface.body_fever),
+        int(target_surface.body_great),
+    )
+
+    def _empty(words: tuple[int, ...]) -> bool:
+        return not any(int(value) for value in words)
+
+    def _edge_words(edge: FgResponseSurface) -> tuple[int, ...]:
+        return (
+            int(edge.fever0),
+            int(edge.fever1),
+            int(edge.fever2),
+            int(edge.fever3),
+            int(edge.great0),
+            int(edge.great1),
+            int(edge.great2),
+            int(edge.great3),
+            int(edge.body_fever),
+            int(edge.body_great),
+        )
+
+    def _subtract_edge(words: tuple[int, ...], edge: FgResponseSurface) -> tuple[int, ...] | None:
+        edge_values = _edge_words(edge)
+        for idx in range(8):
+            if int(edge_values[idx]) & ~int(words[idx]):
+                return None
+        if int(edge_values[8]) > int(words[8]) or int(edge_values[9]) > int(words[9]):
+            return None
+        return (
+            int(words[0]) & ~int(edge_values[0]),
+            int(words[1]) & ~int(edge_values[1]),
+            int(words[2]) & ~int(edge_values[2]),
+            int(words[3]) & ~int(edge_values[3]),
+            int(words[4]) & ~int(edge_values[4]),
+            int(words[5]) & ~int(edge_values[5]),
+            int(words[6]) & ~int(edge_values[6]),
+            int(words[7]) & ~int(edge_values[7]),
+            int(words[8]) - int(edge_values[8]),
+            int(words[9]) - int(edge_values[9]),
+        )
+
+    memo: set[tuple[int, bool, tuple[int, ...]]] = set()
+
+    def _search(state: int, first: bool, remaining: tuple[int, ...]) -> tuple[int, ...] | None:
+        if _empty(remaining):
+            return ()
+        key = (int(state), bool(first), remaining)
+        if key in memo:
+            return None
         for k, next_state, edge in _edge_surface_options(
             i=int(state),
             first=bool(first),
@@ -479,18 +531,20 @@ def reconstruct_force_greats_response_counts(
             timestamps=ts,
             great_candidate_timestamps=great_ts,
         ):
-            for tail in frontier.state_frontiers.get(int(next_state), ()):
-                if _combine(edge, tail) == target:
-                    found = (int(k), int(next_state), tail)
-                    break
-            if found is not None:
-                break
-        if found is None:
-            raise ValueError("could not reconstruct forced-count path for FG response surface")
-        k, next_state, target = found
-        counts.append(int(k))
-        if target == _EMPTY_SURFACE or int(next_state) >= int(n):
-            break
-        state = int(next_state)
-        first = False
-    return tuple(counts)
+            next_remaining = _subtract_edge(remaining, edge)
+            if next_remaining is None:
+                continue
+            if _empty(next_remaining):
+                return (int(k),)
+            if int(next_state) >= int(n):
+                continue
+            tail = _search(int(next_state), False, next_remaining)
+            if tail is not None:
+                return (int(k),) + tail
+        memo.add(key)
+        return None
+
+    counts = _search(0, True, target_words)
+    if counts is None:
+        raise ValueError("could not reconstruct forced-count path for FG response surface")
+    return tuple(int(value) for value in counts)

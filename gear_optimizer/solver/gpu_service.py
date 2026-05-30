@@ -268,6 +268,9 @@ class GpuServiceClient:
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
 
+    def submit_force_greats_response_frontier_score_batch(self, payload: dict[str, Any]) -> GpuJobHandle:
+        return self.submit(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, dict(payload or {}))
+
     def _rx_loop(self) -> None:
         while self._running:
             try:

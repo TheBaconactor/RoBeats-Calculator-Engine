@@ -25,14 +25,6 @@ class FrontierCachePrebuildSummary:
     elapsed_ms: float
 
 
-def _empty_timeline_summary() -> TimelineFrontierCachePrebuildSummary:
-    return TimelineFrontierCachePrebuildSummary(total=0)
-
-
-def _empty_fg_summary() -> FgResponseFrontierCachePrebuildSummary:
-    return FgResponseFrontierCachePrebuildSummary(total=0)
-
-
 def run_frontier_cache_prebuilds(
     *,
     cfg,
@@ -64,8 +56,8 @@ def run_frontier_cache_prebuilds(
             ref_arrays=ref_arrays,
             data_root=data_root,
         )
-        timeline_summary = timeline_future.result() if timeline_future is not None else _empty_timeline_summary()
-        fg_summary = fg_future.result() if fg_future is not None else _empty_fg_summary()
+        timeline_summary = timeline_future.result()
+        fg_summary = fg_future.result()
     elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     logger.info(
         "[FrontierCache] Prebuild phases ready: timeline built=%s disk=%s failures=%s; fg built=%s disk=%s failures=%s; elapsed=%.1fs",

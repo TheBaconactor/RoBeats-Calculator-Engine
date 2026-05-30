@@ -106,7 +106,10 @@ from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
 )
-from gear_optimizer.solver.gpu_executor_batching import execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request
+from gear_optimizer.solver.gpu_executor_batching import (
+    execute_force_greats_response_frontier_score_batch as _execute_force_greats_response_frontier_score_batch_request,
+    execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request,
+)
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     get_with_short_wait_spin as _get_with_short_wait_spin,
     load_short_wait_spin_settings as _load_short_wait_spin_settings,
@@ -267,6 +270,9 @@ class GpuExecutor:
         self._dispatch = {
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
+            GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH: (
+                self._execute_force_greats_response_frontier_score_batch
+            ),
         }
     def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
         self._pack_sec = _record_pack_stats(
@@ -1163,6 +1169,15 @@ class GpuExecutor:
     def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
         """Execute a full GPU-native GA run on the GPU-owner thread."""
         return _execute_gpu_native_ga_run_request(
+            request,
+            in_process_queues=bool(self._in_process_queues),
+            abort_requested=self.abort_requested,
+            raise_if_abort_requested=self._raise_if_abort_requested,
+        )
+
+    def _execute_force_greats_response_frontier_score_batch(self, request: GpuRequest) -> GpuResponse:
+        """Execute exact response-frontier FG scoring on the GPU-owner thread."""
+        return _execute_force_greats_response_frontier_score_batch_request(
             request,
             in_process_queues=bool(self._in_process_queues),
             abort_requested=self.abort_requested,

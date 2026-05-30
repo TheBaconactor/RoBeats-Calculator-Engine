@@ -31,7 +31,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
         np.testing.assert_array_equal(got, expected)
 
 
-def test_response_inner_group_scoring_keeps_small_groups_on_group_kernel_and_chunks_only_oversized_groups(monkeypatch):
+def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispatch_exceeds_caps(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner
 
     batch_calls: list[dict[str, int]] = []
@@ -66,22 +66,30 @@ def test_response_inner_group_scoring_keeps_small_groups_on_group_kernel_and_chu
         surface_words,
         surface_counts,
         surface_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
         row_meta,
         color_flags,
         ref_pp,
         ref_cm,
         ref_fm,
-        out_rows,
+        out_scores,
+        out_details,
         allow_pp_template,
     ):
         batch_calls.append(
             {
                 "row_count": int(row_count),
                 "allow_pp": bool(allow_pp_template),
+                "surface_pool_rows": int(surface_counts.shape[0]),
             }
         )
         for row_idx in range(int(row_count)):
-            out_rows[row_idx, 0] = int(surface_counts[row_idx, 0])
+            owner = int(logical_owners[row_idx])
+            local_surface = int(logical_surfaces[row_idx])
+            surface_row = int(group_offsets[owner]) + int(local_surface)
+            out_scores[row_idx] = int(surface_counts[surface_row, 0])
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
@@ -91,6 +99,13 @@ def test_response_inner_group_scoring_keeps_small_groups_on_group_kernel_and_chu
     monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 3)
     monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 3)
     monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK", 3)
+    monkeypatch.setattr(
+        response_inner.np,
+        "concatenate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("surface chunk path must use the canonical preallocated owner buffer")
+        ),
+    )
 
     group_meta = np.zeros((3, 8), dtype=np.int32)
     group_offsets = np.asarray([0, 4, 7], dtype=np.int32)
@@ -129,10 +144,11 @@ def test_response_inner_group_scoring_keeps_small_groups_on_group_kernel_and_chu
     )
 
     assert logical_surface_rows == 9
-    assert group_calls == [{"group_count": 2, "allow_pp": False}]
+    assert group_calls == []
     assert len(batch_calls) > 1
     assert all(call["row_count"] <= 3 for call in batch_calls)
     assert all(not call["allow_pp"] for call in batch_calls)
+    assert all(call["surface_pool_rows"] == 9 for call in batch_calls)
     assert rows[:, 0].tolist() == [7, 9, 8]
     assert rows[:, 1].tolist() == [1, 1, 0]
 
@@ -165,16 +181,20 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
         surface_words,
         surface_counts,
         surface_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
         row_meta,
         color_flags,
         ref_pp,
         ref_cm,
         ref_fm,
-        out_rows,
+        out_scores,
+        out_details,
         allow_pp_template,
     ):
         batch_calls.append(int(row_count))
-        out_rows[:, 0] = 1
+        out_scores[:] = 1
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
@@ -240,16 +260,20 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
         surface_words,
         surface_counts,
         surface_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
         row_meta,
         color_flags,
         ref_pp,
         ref_cm,
         ref_fm,
-        out_rows,
+        out_scores,
+        out_details,
         allow_pp_template,
     ):
         batch_calls.append(int(row_count))
-        out_rows[:, 0] = 1
+        out_scores[:] = 1
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
@@ -282,6 +306,67 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
     )
 
     assert group_calls == []
+    assert batch_calls == [surface_count]
+
+
+def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+
+    batch_calls: list[int] = []
+
+    def fake_batch_kernel(
+        row_count,
+        surface_words,
+        surface_counts,
+        surface_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_scores,
+        out_details,
+        allow_pp_template,
+    ):
+        batch_calls.append(int(row_count))
+        out_scores[:] = np.arange(int(row_count), dtype=np.int32)
+
+    monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_batch_kernel)
+    monkeypatch.setattr(
+        response_inner,
+        "_response_inner_combo_counts",
+        lambda *_args, **_kwargs: np.asarray([1_000_000_000], dtype=np.int64),
+    )
+
+    surface_count = 16
+    group_meta = np.zeros((1, 8), dtype=np.int32)
+    group_offsets = np.asarray([0], dtype=np.int32)
+    group_lengths = np.asarray([surface_count], dtype=np.int32)
+    surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
+    surface_counts = np.zeros((surface_count, 2), dtype=np.int32)
+    ref_arrays = {
+        "Perfect Points": np.ones(161, dtype=np.float32),
+        "Combo Multiplier": np.ones(161, dtype=np.float32),
+        "Fever Multiplier": np.ones(161, dtype=np.float32),
+    }
+
+    response_inner._score_response_group_meta_gpu(
+        group_meta=group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+        ref_arrays=ref_arrays,
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+    )
+
     assert batch_calls == [surface_count]
 
 

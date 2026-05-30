@@ -611,6 +611,61 @@ def execute_gpu_native_ga_run(
         result=runs_payload,
     )
 
+
+def execute_force_greats_response_frontier_score_batch(
+    request: GpuRequest,
+    *,
+    in_process_queues: bool,
+    abort_requested: Callable[[], bool],
+    raise_if_abort_requested: Callable[[], None],
+    run_payload_fn: Callable[..., Any] | None = None,
+) -> GpuResponse:
+    if not bool(in_process_queues):
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error="FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH requires in-process queues (avoid IPC pickling)",
+        )
+
+    try:
+        raise_if_abort_requested()
+    except Exception as e:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error=str(e),
+        )
+
+    payload = request.payload or {}
+    batch = payload.get("batch")
+    if batch is None:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error="Invalid payload for FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH (expected prepared batch)",
+        )
+    include_forced_counts = bool(payload.get("include_forced_counts", False))
+
+    try:
+        if run_payload_fn is None:
+            from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+                score_prepared_force_greats_response_frontier_batch_raw_gpu as run_payload_fn,
+            )
+
+        results = run_payload_fn(batch, include_forced_counts=bool(include_forced_counts))
+    except Exception as e:
+        return GpuResponse(
+            request_id=request.request_id,
+            success=False,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+    return GpuResponse(
+        request_id=request.request_id,
+        success=True,
+        result=results,
+    )
+
 # ---- merged from gpu_executor_native_ga_batch.py ----
 from dataclasses import dataclass
 
