@@ -9,9 +9,8 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_fg_should_start,
     continuous_ga_warm_queue_limit,
 )
-from gear_optimizer.solver.native_inflight_lifecycle import (
-    BubbleTracker,
-    GAQueueLimitController,
+from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker, GAQueueLimitController
+from gear_optimizer.solver.native_inflight_scheduler_policy import (
     closed_loop_bubble_kpi,
     count_active_song_lanes,
     default_prime_target,
@@ -615,9 +614,6 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
             fg_prep_inflight_count=0,
             fg_inflight_count=0,
             fg_worker_count=4,
-            target_song_lanes=2,
-            oldest_wait_s=0.0,
-            aging_trigger_s=0.75,
             blocked_on_slot=False,
         )
         is True
@@ -632,9 +628,6 @@ def test_continuous_ga_keeps_feeding_while_fg_prep_has_not_aged():
             fg_prep_inflight_count=4,
             fg_inflight_count=0,
             fg_worker_count=4,
-            target_song_lanes=2,
-            oldest_wait_s=0.2,
-            aging_trigger_s=0.75,
             blocked_on_slot=False,
         )
         is False
@@ -649,9 +642,6 @@ def test_continuous_ga_keeps_feeding_when_unready_fg_prep_debt_is_aged():
             fg_prep_inflight_count=4,
             fg_inflight_count=0,
             fg_worker_count=4,
-            target_song_lanes=2,
-            oldest_wait_s=3.0,
-            aging_trigger_s=0.75,
             blocked_on_slot=False,
         )
         is False
@@ -666,9 +656,6 @@ def test_continuous_ga_yields_to_aged_fg_debt_even_when_fg_workers_are_full():
             fg_prep_inflight_count=0,
             fg_inflight_count=8,
             fg_worker_count=8,
-            target_song_lanes=2,
-            oldest_wait_s=3.0,
-            aging_trigger_s=0.75,
             blocked_on_slot=False,
         )
         is True

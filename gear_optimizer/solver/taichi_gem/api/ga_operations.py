@@ -42,6 +42,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
         return SimpleNamespace()
 from ..ga_chunking import compute_ga_combo_chunk
 from gear_optimizer.core.parsing import env_get
+from .common_operations import compute_array_sig, probability_to_u32_fp, upload_island_elites
 logger = logging.getLogger(__name__)
 _GA_PLATEAU_PRUNE_ENABLED: int = 0
 if env_flag("GPU_NATIVE_GA_PLATEAU_PRUNE"):
@@ -122,23 +123,6 @@ from . import ga_warmup as _ga_warmup
 warmup_ga_kernels = _ga_warmup.warmup_ga_kernels
 warmup_ga_kernels_light = _ga_warmup.warmup_ga_kernels_light
 warmup_ga_live_request_kernels = _ga_warmup.warmup_ga_live_request_kernels
-import hashlib
-def _compute_array_sig(*arrays: np.ndarray) -> bytes:
-    """Compute stable hash signature for numpy arrays."""
-    h = hashlib.blake2b(digest_size=16)
-    for arr in arrays:
-        arr = np.ascontiguousarray(arr)
-        h.update(arr.dtype.str.encode("utf-8"))
-        h.update(np.array(arr.shape, dtype=np.int64).tobytes())
-        h.update(arr.tobytes())
-    return h.digest()
-def _probability_to_u32_fp(value: float) -> np.uint32:
-    rate = float(value)
-    if rate <= 0.0:
-        return np.uint32(0)
-    if rate >= 1.0:
-        return np.uint32(0xFFFFFFFF)
-    return np.uint32(int(rate * 4294967295.0))
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 _BASE_FIXED_STATS_CACHE: tuple | None = None
 _ISLAND_BOUNDARIES_CACHE: tuple | None = None
@@ -160,22 +144,13 @@ def reset_ga_upload_caches() -> None:
 def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
     """Upload manual elite indices into GPU-resident `island_elite_indices`."""
     global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
-    n_elites = int(n_elites)
-    if n_elites <= 0:
-        return
-    elite_arr = np.asarray(elite_indices[:n_elites], dtype=np.int32)
-    key = tuple(int(x) for x in elite_arr.tolist())
-    if _ISLAND_ELITES_CACHE == key:
-        return
-    buf = _ISLAND_ELITES_UPLOAD_BUFFER
-    if buf is None or int(buf.shape[0]) != int(fields.MAX_GENOMES):
-        buf = np.zeros((fields.MAX_GENOMES,), dtype=np.int32)
-        _ISLAND_ELITES_UPLOAD_BUFFER = buf
-    buf[:n_elites] = elite_arr
-    if n_elites < int(fields.MAX_GENOMES):
-        buf[n_elites:] = 0
-    fields.island_elite_indices.from_numpy(buf)
-    _ISLAND_ELITES_CACHE = key
+    _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER = upload_island_elites(
+        fields,
+        elite_indices,
+        n_elites,
+        _ISLAND_ELITES_CACHE,
+        _ISLAND_ELITES_UPLOAD_BUFFER,
+    )
 def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: int = 9) -> int:
     """
     Upload integer population to the GPU resident `fields.population_indices`.
@@ -322,7 +297,7 @@ def ga_generate_initial_populations(
         raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
     heuristic_prob = float(heuristic_prob)
     heuristic_prob = max(0.0, min(1.0, heuristic_prob))
-    heuristic_prob_fp = _probability_to_u32_fp(heuristic_prob)
+    heuristic_prob_fp = probability_to_u32_fp(heuristic_prob)
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
         heuristic_k = 0
@@ -391,7 +366,7 @@ def ga_upload_item_stats(
             return n_items
     except Exception as e:
         logger.debug(f"ga_operations:ga_upload_item_stats: {e}")
-    sig = _compute_array_sig(
+    sig = compute_array_sig(
         np.asarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32),
         np.asarray(slot_start_np, dtype=np.int32),
         np.asarray(slot_count_np, dtype=np.int32),
@@ -1177,7 +1152,7 @@ def ga_next_generation(
         elite_count = n_genomes
     if tournament_k < 1:
         tournament_k = 1
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
     n_elites = 0
     if elite_count > 0:
         if elite_indices is None:
@@ -1231,7 +1206,7 @@ def ga_next_generation_gpu_elites(
         n_elites = n_genomes
     if tournament_k < 1:
         tournament_k = 1
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
     kernels.ga_next_generation_full_kernel(
         int(n_genomes),
         int(n_slots),
@@ -1281,8 +1256,8 @@ def ga_next_generation_fused(
         elites_per_island = 0
     if tournament_k < 1:
         tournament_k = 1
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
     elites_per_island_eff = max(1, int(elites_per_island))
     n_elites = min(int(n_genomes), int(n_islands) * int(elites_per_island_eff))
     kernels.ga_find_island_elites_kernel(
@@ -1338,8 +1313,8 @@ def ga_next_generation_fused_runs(
     n_total = n_runs * n_genomes_per_run
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
     kernels.ga_next_generation_full_runs_kernel(
         n_runs,
         n_genomes_per_run,
@@ -1406,8 +1381,8 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     if tournament_k < 1:
         tournament_k = 1
     novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
     kernels.ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         int(run_idx_start),
         int(n_runs),

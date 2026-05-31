@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_gear_cpu_reference_keeps_identical_stats_in_different_ff_cells() -> None:
-    from gear_optimizer.solver.exact_skyline import _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference
+    from tests.parity.exact_skyline import _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference
 
     states = {
         (0, 0, 0, 0): [
@@ -21,7 +21,7 @@ def test_gear_cpu_reference_keeps_identical_stats_in_different_ff_cells() -> Non
 
 
 def test_gear_cpu_reference_prunes_only_inside_fixed_timing_cell() -> None:
-    from gear_optimizer.solver.exact_skyline import _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference
+    from tests.parity.exact_skyline import _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference
 
     states = {
         (0, 0, 0, 0): [

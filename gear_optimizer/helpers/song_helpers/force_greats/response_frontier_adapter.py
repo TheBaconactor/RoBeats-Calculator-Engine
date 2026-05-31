@@ -9,7 +9,7 @@ from ....solver.force_greats_common import extract_base_stats
 from ....solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
-from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict, evaluate_stats_score_nojit as evaluate_stats_score
+from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     prepare_force_greats_response_frontier_scoring_batch,
@@ -143,7 +143,6 @@ def prepare_force_greats_response_frontier_plan(
         raise ValueError("ForceGreats response frontier requires a song with at least one note")
 
     variants: list[dict[str, Any]] = []
-    result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
     pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]]] = []
     pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
     pending_keys: set[tuple[Any, ...]] = set()
@@ -246,7 +245,7 @@ def materialize_force_greats_response_frontier_plan_results(
         known_base_score = int(entry_base_score(entry))
         if int(result.best_score) <= int(known_base_score):
             continue
-        base_score = int(evaluate_stats_score(result.stats, calc_song, ref_arrays))
+        base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
         if int(result.best_score) <= int(base_score):
             continue
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)

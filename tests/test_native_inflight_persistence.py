@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gear_optimizer.solver.native_inflight_orchestrator import ensure_fg_build_details
+from gear_optimizer.solver.native_inflight_fg_payload import ensure_fg_build_details
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 

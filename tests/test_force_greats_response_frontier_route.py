@@ -554,7 +554,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
     monkeypatch.setattr(adapter, "LOADOUTS_PER_SONG_LIMIT", 1)
     monkeypatch.setattr(adapter, "eval_data_from_entry", lambda entry, primary: dict(entry["Data"]))
     monkeypatch.setattr(adapter, "expected_selected_element", lambda entry, primary: str(entry["Data"]["Selected Element"]))
-    monkeypatch.setattr(adapter, "evaluate_stats_score", lambda stats, calc_song, ref_arrays: 60)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda stats, calc_song, ref_arrays: 60)
     monkeypatch.setattr(
         adapter,
         "_base_stats_for_response_frontier",
@@ -806,7 +806,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
 
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
     monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
-    monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
     monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
     monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 150})
 
@@ -919,7 +919,7 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
 
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
     monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
-    monkeypatch.setattr(adapter, "evaluate_stats_score", lambda *_args, **_kwargs: 100)
+    monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
     monkeypatch.setattr(adapter, "score_stats_exact", lambda *_args, **_kwargs: 100)
     monkeypatch.setattr(
         adapter,

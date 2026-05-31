@@ -30,6 +30,7 @@ from ..fields import MAX_EVALS_PER_DISPATCH
 from ..skyline_chunking import compute_skyline_combo_chunk
 from ..kernel_loader import get_kernels
 
+from .common_operations import compute_array_sig, probability_to_u32_fp
 from .initialization import (
     ensure_ready,
     _ensure_ftff_combo_tables,
@@ -156,29 +157,6 @@ kernels = get_kernels()
 # Cache item_stats, slot_start, slot_count to avoid re-uploading ~2.6MB per song
 # Cache base_fixed_stats (tiny but frequently called)
 
-import hashlib
-
-
-def _compute_array_sig(*arrays: np.ndarray) -> bytes:
-    """Compute stable hash signature for numpy arrays."""
-    h = hashlib.blake2b(digest_size=16)
-    for arr in arrays:
-        arr = np.ascontiguousarray(arr)
-        h.update(arr.dtype.str.encode("utf-8"))
-        h.update(np.array(arr.shape, dtype=np.int64).tobytes())
-        h.update(arr.tobytes())
-    return h.digest()
-
-
-def _probability_to_u32_fp(value: float) -> np.uint32:
-    rate = float(value)
-    if rate <= 0.0:
-        return np.uint32(0)
-    if rate >= 1.0:
-        return np.uint32(0xFFFFFFFF)
-    return np.uint32(int(rate * 4294967295.0))
-
-
 # Cache state for item_stats + slot boundaries
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 
@@ -203,30 +181,6 @@ def reset_skyline_upload_caches() -> None:
     _SKYLINE_KERNELS_WARMED = False
     _SKYLINE_KERNELS_LIGHT_WARMED = False
     _SKYLINE_LIVE_REQUEST_WARMED = False
-
-
-def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
-    """Upload manual elite indices into GPU-resident `island_elite_indices`."""
-    global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
-
-    n_elites = int(n_elites)
-    if n_elites <= 0:
-        return
-    elite_arr = np.asarray(elite_indices[:n_elites], dtype=np.int32)
-    key = tuple(int(x) for x in elite_arr.tolist())
-    if _ISLAND_ELITES_CACHE == key:
-        return
-
-    buf = _ISLAND_ELITES_UPLOAD_BUFFER
-    if buf is None or int(buf.shape[0]) != int(fields.MAX_GENOMES):
-        buf = np.zeros((fields.MAX_GENOMES,), dtype=np.int32)
-        _ISLAND_ELITES_UPLOAD_BUFFER = buf
-
-    buf[:n_elites] = elite_arr
-    if n_elites < int(fields.MAX_GENOMES):
-        buf[n_elites:] = 0
-    fields.island_elite_indices.from_numpy(buf)
-    _ISLAND_ELITES_CACHE = key
 
 
 # ============================================================================
@@ -413,8 +367,8 @@ def skyline_generate_initial_populations(
     seed_prob = float(seed_prob)
     seed_prob = max(0.0, min(1.0, seed_prob))
 
-    heuristic_prob_fp = _probability_to_u32_fp(heuristic_prob)
-    seed_prob_fp = _probability_to_u32_fp(seed_prob)
+    heuristic_prob_fp = probability_to_u32_fp(heuristic_prob)
+    seed_prob_fp = probability_to_u32_fp(seed_prob)
 
     heuristic_k = int(heuristic_k)
     if heuristic_k < 0:
@@ -520,7 +474,7 @@ def skyline_upload_item_stats(
         logger.debug(f"skyline_operations:skyline_upload_item_stats: {e}")
 
     # Check cache - avoid redundant uploads (~2.6MB savings)
-    sig = _compute_array_sig(
+    sig = compute_array_sig(
         np.asarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32),
         np.asarray(slot_start_np, dtype=np.int32),
         np.asarray(slot_count_np, dtype=np.int32),
@@ -1260,8 +1214,8 @@ def skyline_next_generation_fused(
         tournament_k = 1
 
     # Convert probability to uint32 threshold.
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
 
     # Precompute island elites once, then run fused next-gen using GPU-resident elite indices.
     elites_per_island_eff = max(1, int(elites_per_island))
@@ -1326,8 +1280,8 @@ def skyline_next_generation_fused_runs(
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
 
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
 
     kernels.skyline_next_generation_full_runs_kernel(
         n_runs,
@@ -1400,8 +1354,8 @@ def skyline_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         tournament_k = 1
     novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
 
-    mr_fp = _probability_to_u32_fp(float(mutation_rate))
-    ir_fp = _probability_to_u32_fp(float(immigrant_rate))
+    mr_fp = probability_to_u32_fp(float(mutation_rate))
+    ir_fp = probability_to_u32_fp(float(immigrant_rate))
 
     kernels.skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         int(run_idx_start),

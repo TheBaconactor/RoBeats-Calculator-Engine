@@ -34,7 +34,7 @@ def _point_code_rows(points: np.ndarray, codes: np.ndarray) -> list[tuple[int, .
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_global_gear_skyline_gpu_matches_cpu_reference():
-    from gear_optimizer.solver.exact_skyline import (
+    from tests.parity.exact_skyline import (
         _global_gear_skyline_points_6d_lane_base_with_codes,
         _global_gear_skyline_points_6d_lane_base_with_codes_cpu_reference,
     )

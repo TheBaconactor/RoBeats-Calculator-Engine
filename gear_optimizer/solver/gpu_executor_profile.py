@@ -66,13 +66,6 @@ class IdleTransitionSummaryRow:
 
 
 @dataclass(frozen=True)
-class FgTaskBatchStats:
-    batches: int
-    total: int
-    max_tasks: int
-
-
-@dataclass(frozen=True)
 class WorkloadProfileSettings:
     enabled: bool = False
     window_size: int = 0
@@ -102,18 +95,6 @@ def profile_events_output_enabled(env_get_fn: Callable[..., Any]) -> bool:
     return False
 
 
-def record_fg_task_batch_stats(
-    task_count: int,
-    *,
-    batches: int,
-    total: int,
-    max_tasks: int,
-    batch_hist: Any,
-) -> FgTaskBatchStats:
-    _ = task_count, batch_hist
-    return FgTaskBatchStats(batches=int(batches), total=int(total), max_tasks=int(max_tasks))
-
-
 def record_pack_stats(
     request_type: GpuRequestType,
     dt_sec: float,
@@ -127,11 +108,6 @@ def executor_profile_log_message(**kwargs: Any) -> str:
     requests_processed = int(kwargs.get("requests_processed", 0) or 0)
     registered_workers = int(kwargs.get("registered_workers", 0) or 0)
     return f"[GpuExecutor] requests={requests_processed} registered_workers={registered_workers}"
-
-
-def fg_tasks_per_sec_log_message(**kwargs: Any) -> str | None:
-    _ = kwargs
-    return None
 
 
 def gpu_profiler_snapshot(**kwargs: Any) -> tuple[float, float, float]:
@@ -271,11 +247,6 @@ def payload_dict(req: GpuRequest) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def percentile95(values: Any) -> float:
-    _ = values
-    return 0.0
-
-
 def estimate_request_work_units(request: GpuRequest, *, size_hint_fn: Callable[[Any], int] = size_hint) -> float:
     payload = payload_dict(request)
     if getattr(request, "request_type", None) == GpuRequestType.GPU_NATIVE_GA_RUN:
@@ -322,15 +293,6 @@ def summarize_batch(
     }
 
 
-def should_emit_workload_batch_event(metrics: dict[str, Any]) -> bool:
-    _ = metrics
-    return False
-
-
-def workload_batch_event_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    return dict(metrics or {})
-
-
 def emit_workload_batch_profile(metrics: dict[str, Any], *, emit_profile_event_fn: Callable[..., None]) -> bool:
     _ = metrics, emit_profile_event_fn
     return False
@@ -348,16 +310,6 @@ def record_workload_batch_state(
     **kwargs: Any,
 ) -> str:
     _ = metrics, kwargs
-    return ""
-
-
-def workload_window_event_metrics(window: list[dict[str, Any]]) -> dict[str, Any]:
-    _ = window
-    return {}
-
-
-def workload_window_log_message(metrics: dict[str, Any]) -> str:
-    _ = metrics
     return ""
 
 
@@ -380,21 +332,6 @@ def maybe_emit_workload_window_profile(**kwargs: Any) -> WorkloadWindowEmitResul
         last_emit_ts=last_emit_ts,
         events_emitted=events,
     )
-
-
-def workload_stop_summary_metrics(**kwargs: Any) -> dict[str, Any]:
-    _ = kwargs
-    return {}
-
-
-def workload_stop_summary_log_message(metrics: dict[str, Any]) -> str:
-    _ = metrics
-    return ""
-
-
-def workload_stop_summary_event_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    _ = metrics
-    return {}
 
 
 def emit_workload_stop_summary(**kwargs: Any) -> bool:

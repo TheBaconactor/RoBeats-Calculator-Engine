@@ -114,25 +114,6 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     return max(0, min(4, int(attempts)))
 
 
-def _ftff_combo_pairs_array(
-    total_budget: int,
-    *,
-    max_ft_gems: int | None = None,
-    max_ff_gems: int | None = None,
-) -> np.ndarray:
-    budget = max(0, int(total_budget))
-    cap_ft = budget if max_ft_gems is None else max(0, min(budget, int(max_ft_gems)))
-    cap_ff = budget if max_ff_gems is None else max(0, min(budget, int(max_ff_gems)))
-    ft_tri, total = np.triu_indices(budget + 1)
-    ft = ft_tri.astype(np.int32, copy=False)
-    ff = (total - ft_tri).astype(np.int32, copy=False)
-    if cap_ft < budget or cap_ff < budget:
-        keep = (ft <= cap_ft) & (ff <= cap_ff)
-        ft = ft[keep]
-        ff = ff[keep]
-    return np.ascontiguousarray(np.column_stack((ft, ff)), dtype=np.int32)
-
-
 def _selected_color_stat_index(color: str) -> int:
     return int(COLOR_TO_STAT_INDEX.get(str(color or ""), -1))
 

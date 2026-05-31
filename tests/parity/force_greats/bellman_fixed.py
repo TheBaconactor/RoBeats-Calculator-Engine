@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
-from .. import api as gem_api
+from gear_optimizer.solver.taichi_gem import api as gem_api
 
 
 @dataclass(frozen=True)

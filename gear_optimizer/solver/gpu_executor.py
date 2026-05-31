@@ -153,9 +153,6 @@ def _warmup_fg_response_frontier_runtime() -> None:
     warmup_force_greats_response_frontier_runtime_imports()
 
 
-def _precompute_timeline_gpu(calc_song, ref_arrays, *, song_slot: int = 0):
-    from .taichi_gem.api.timeline import precompute_timeline_gpu as _precompute_timeline_gpu_fn
-    return _precompute_timeline_gpu_fn(calc_song, ref_arrays, song_slot=song_slot)
 def is_gpu_worker_mode() -> bool:
     """Check if running in worker mode (should use IPC for GPU)."""
     return bool(_worker_state.enabled)

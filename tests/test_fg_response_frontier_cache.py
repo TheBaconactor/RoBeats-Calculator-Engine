@@ -195,25 +195,10 @@ def test_fg_response_frontier_scoring_bundle_requires_prebuilt_cache(tmp_path: P
     assert list(tmp_path.glob("*.npz")) == []
 
 
-def test_fg_response_frontier_payload_load_requires_prebuilt_cache(tmp_path: Path, monkeypatch) -> None:
+def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    response_cache.reset_fg_response_frontier_payload_cache()
-
-    def _raise_build(*_args, **_kwargs):
-        raise AssertionError("production payload load must not build missing FG response cache")
-
-    monkeypatch.setattr(response_cache, "build_force_greats_response_first_frontiers_gpu_batch", _raise_build)
-
-    with pytest.raises(ValueError, match="prebuilt canonical bundle"):
-        response_cache.load_response_frontier_payload(
-            _calc_song(),
-            _varying_ref_arrays(),
-            stat_keys=((0, 0),),
-        )
-
-    assert list(tmp_path.glob("*.npz")) == []
+    assert not hasattr(response_cache, "load_response_frontier_payload")
 
 
 def test_response_frontier_job_prep_has_no_scoring_cache_prebuild_route() -> None:
@@ -239,15 +224,21 @@ def test_fg_response_frontier_selected_result_loads_exact_first_frontier_from_bu
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("full payload unpack should not run")),
     )
 
-    result = response_cache.load_response_frontier_result_for_stats(
+    scoring_bundle = response_cache.load_response_frontier_scoring_bundle(
         _calc_song(),
         _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+    result = response_cache.frontier_result_from_scoring_bundle_for_stats(
+        _calc_song(),
+        _varying_ref_arrays(),
+        scoring_bundle,
         ft_stat=1,
         ff_stat=0,
     )
 
     assert result.first_frontier
-    assert not result.state_frontiers
+    assert repr(result.state_frontiers) == "{}"
 
 
 def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bundle(tmp_path: Path, monkeypatch) -> None:

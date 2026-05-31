@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.gpu]
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_matches_cpu_reference_with_duplicates():
     from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
-    from gear_optimizer.solver.exact_skyline import (
+    from tests.parity.exact_skyline import (
         _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference,
     )
 

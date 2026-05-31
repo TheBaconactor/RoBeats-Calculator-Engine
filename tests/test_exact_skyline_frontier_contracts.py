@@ -5,7 +5,7 @@ import pytest
 
 
 def test_exact_skyline_pair_code_pack_unpack_roundtrip() -> None:
-    from gear_optimizer.solver.exact_skyline import _pack_pair_indices, _unpack_pair_codes
+    from tests.parity.exact_skyline import _pack_pair_indices, _unpack_pair_codes
 
     gear_idx = np.asarray([0, 1, 12_345], dtype=np.int32)
     mini_idx = np.asarray([5, 7, 99], dtype=np.int32)
@@ -141,7 +141,7 @@ def test_combined_skyline_keeps_fixed_stat_different_ff_timing_cells() -> None:
 
 
 def test_local_mini_pair_filter_removes_only_disallowed_gear_cell_pairs() -> None:
-    from gear_optimizer.solver.exact_skyline import _apply_local_mini_pair_filter
+    from tests.parity.exact_skyline import _apply_local_mini_pair_filter
 
     gear_idx, mini_idx, pruned = _apply_local_mini_pair_filter(
         pair_g_idx=np.asarray([0, 0, 1, 1], dtype=np.int32),

@@ -1,3 +1,5 @@
+"""Parity-only exact skyline reference implementation (not used by production)."""
+
 from __future__ import annotations
 
 import time

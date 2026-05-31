@@ -23,7 +23,7 @@ def _stats(perfect_points: int) -> dict:
 def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_consistency.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -133,7 +133,7 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
 def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_no_force.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -232,7 +232,7 @@ def test_native_inflight_deferred_fg_without_force_is_not_persisted(tmp_path, mo
 def test_native_inflight_deferred_fg_uses_eval_data_when_base_details_missing(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_eval_data.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -364,7 +364,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
 
     def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0) -> dict:
@@ -525,7 +525,7 @@ def test_native_inflight_deferred_fg_materializes_stats_from_eval_base_stats(tmp
 
 
 def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     base_stats = _stats(100)
     fg_stats = _stats(999)
@@ -572,7 +572,7 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
 
 def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     base_stats = _stats(100)
     expected_stats = apply_gems_to_base_fast(
@@ -620,7 +620,7 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
 
 
 def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     base_stats = _stats(100)
     force_payload = {
@@ -662,7 +662,7 @@ def test_native_inflight_fg_persist_entries_accepts_refactored_force_shape():
 
 def test_native_inflight_fg_persist_entries_preserves_paired_base_score_in_fg_table(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, get_loadout_hash, init_db, save_loadouts_batch
-    from gear_optimizer.solver.native_inflight_orchestrator import build_fg_persist_entries
+    from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_paired_base.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))

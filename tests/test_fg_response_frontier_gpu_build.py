@@ -56,33 +56,10 @@ def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority
     assert calls == [3]
 
 
-def test_fg_response_first_frontier_reducer_warmup_is_single_owner(monkeypatch) -> None:
+def test_fg_response_first_frontier_reducer_has_no_public_warmup_route() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
-        FgResponseFrontierResult,
-        FgResponseSurface,
-    )
 
-    surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    result = FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 0, 0.0)
-    calls: list[dict] = []
-    previous = response_build_gpu._FIRST_FRONTIER_REDUCER_WARMED
-
-    def _fake_build(**kwargs):
-        calls.append(dict(kwargs))
-        return (result,)
-
-    monkeypatch.setattr(response_build_gpu, "_FIRST_FRONTIER_REDUCER_WARMED", False)
-    monkeypatch.setattr(response_build_gpu, "build_force_greats_response_first_frontiers_gpu_batch", _fake_build)
-    try:
-        response_build_gpu.warm_force_greats_response_first_frontier_reducer()
-        response_build_gpu.warm_force_greats_response_first_frontier_reducer()
-    finally:
-        monkeypatch.setattr(response_build_gpu, "_FIRST_FRONTIER_REDUCER_WARMED", previous)
-
-    assert len(calls) == 1
-    assert calls[0]["geometries"] == ((1.0, 2, 0.2),)
-    assert calls[0]["use_forced_great_timing"] is True
+    assert not hasattr(response_build_gpu, "warm_force_greats_response_first_frontier_reducer")
 
 
 def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
@@ -119,7 +96,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
 
 @pytest.mark.gpu
 def test_fg_response_frontier_gpu_build_matches_cpu_reference_small_chart() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu import build_force_greats_response_frontiers_gpu_batch
+    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
     from tests.parity.fg_response_frontier_cpu import build_force_greats_response_frontier
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
@@ -181,7 +158,7 @@ def test_fg_response_frontier_gpu_build_matches_cpu_reference_small_chart() -> N
 
 @pytest.mark.gpu
 def test_fg_response_frontier_gpu_batch_materializes_state_frontiers() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu import build_force_greats_response_frontiers_gpu_batch
+    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
@@ -200,9 +177,7 @@ def test_fg_response_frontier_gpu_batch_materializes_state_frontiers() -> None:
 
 @pytest.mark.gpu
 def test_fg_response_frontier_gpu_sparse_body_materializes_state_frontiers() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu import (
-        build_force_greats_response_frontiers_gpu_batch,
-    )
+    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(140)], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(140)], dtype=np.float32)
@@ -225,22 +200,20 @@ def test_fg_response_frontier_gpu_sparse_body_materializes_state_frontiers() -> 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(140)], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(140)], dtype=np.float32)
     geometries = ((101.25, 108, 0.72),)
 
-    full = response_build_gpu.build_force_greats_response_frontiers_gpu_batch(
+    full = parity_response_build_gpu_batch.build_force_greats_response_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=geometries,
         use_forced_great_timing=True,
     )
-
-    def _reject_full_state_reducer(**_kwargs):
-        raise AssertionError("first-frontier cache route must not materialize full state frontiers")
-
-    monkeypatch.setattr(response_build_gpu, "_frontier_from_edge_arrays", _reject_full_state_reducer)
+    assert not hasattr(response_build_gpu, "_frontier_from_edge_arrays")
+    assert not hasattr(response_build_gpu, "build_force_greats_response_frontiers_gpu_batch")
     slim = response_build_gpu.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
@@ -255,12 +228,13 @@ def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(60)], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(60)], dtype=np.float32)
     geometries = ((2.25, 7, 0.55),)
 
-    full = response_build_gpu.build_force_greats_response_frontiers_gpu_batch(
+    full = parity_response_build_gpu_batch.build_force_greats_response_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=geometries,
@@ -287,13 +261,14 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         _edge_surface_options,
         reconstruct_force_greats_response_counts,
     )
+    from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
     raw_fever_fill = 2.25
     non_fever_base = 7
     real_fever_time = 0.55
-    full = response_build_gpu.build_force_greats_response_frontiers_gpu_batch(
+    full = parity_response_build_gpu_batch.build_force_greats_response_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),

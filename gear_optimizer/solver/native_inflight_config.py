@@ -22,38 +22,10 @@ from gear_optimizer.solver.inflight_utils import _truthy
 logger = logging.getLogger(__name__)
 
 
-def _inflight_lifecycle_module():
-    from gear_optimizer.solver import native_inflight_lifecycle as lifecycle
+def _scheduler_policy():
+    from gear_optimizer.solver import native_inflight_scheduler_policy as policy
 
-    return lifecycle
-
-
-def read_continuous_fg_adaptive_max_burst(cfg0: Any) -> int:
-    return _inflight_lifecycle_module().read_continuous_fg_adaptive_max_burst(cfg0)
-
-
-def read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> int:
-    return _inflight_lifecycle_module().read_continuous_ga_dispatch_burst(cfg0, default_burst=int(default_burst))
-
-
-def read_fg_ga_credit_budget(cfg0: Any, *, default_budget: int) -> tuple[int, bool]:
-    return _inflight_lifecycle_module().read_fg_ga_credit_budget(cfg0, default_budget=int(default_budget))
-
-
-def read_fg_scheduler_mode() -> str:
-    return _inflight_lifecycle_module().read_fg_scheduler_mode()
-
-
-def read_fg_slot_reserve(cfg0: Any, *, inflight_limit: int, song_slot_limit: int) -> int:
-    return _inflight_lifecycle_module().read_fg_slot_reserve(
-        cfg0,
-        inflight_limit=int(inflight_limit),
-        song_slot_limit=int(song_slot_limit),
-    )
-
-
-def read_inflight_target_song_lanes(cfg0: Any, *, inflight_limit: int) -> int:
-    return _inflight_lifecycle_module().read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
+    return policy
 
 
 def default_worker_threads(*, inflight_limit: int, kind: str) -> int:
@@ -390,7 +362,11 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         except (ValueError, TypeError):
             pass
 
-    target_song_lanes = read_inflight_target_song_lanes(cfg0, inflight_limit=int(inflight_limit))
+    scheduler_policy = _scheduler_policy()
+    target_song_lanes = scheduler_policy.read_inflight_target_song_lanes(
+        cfg0,
+        inflight_limit=int(inflight_limit),
+    )
 
     ga_queue_mult = 0
     if cfg0 is not None:
@@ -477,14 +453,17 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     if fg_aging_hard_s > 0.0 and fg_aging_hard_s < fg_aging_trigger_s:
         fg_aging_hard_s = float(fg_aging_trigger_s)
 
-    fg_scheduler_norm = read_fg_scheduler_mode()
+    fg_scheduler_norm = scheduler_policy.read_fg_scheduler_mode()
 
-    fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = read_fg_ga_credit_budget(
+    fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = scheduler_policy.read_fg_ga_credit_budget(
         cfg0,
         default_budget=max(1, int(inflight_limit)),
     )
-    continuous_ga_dispatch_burst = read_continuous_ga_dispatch_burst(cfg0, default_burst=2)
-    fg_adaptive_submit_max_burst = read_continuous_fg_adaptive_max_burst(cfg0)
+    continuous_ga_dispatch_burst = scheduler_policy.read_continuous_ga_dispatch_burst(
+        cfg0,
+        default_burst=2,
+    )
+    fg_adaptive_submit_max_burst = scheduler_policy.read_continuous_fg_adaptive_max_burst(cfg0)
 
     try:
         msg = f"[InFlight][FG] scheduler={fg_scheduler_norm}"
@@ -501,7 +480,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     except (ValueError, TypeError):
         pass
 
-    fg_slot_reserve = read_fg_slot_reserve(
+    fg_slot_reserve = scheduler_policy.read_fg_slot_reserve(
         cfg0,
         inflight_limit=int(inflight_limit),
         song_slot_limit=int(song_slot_limit),
