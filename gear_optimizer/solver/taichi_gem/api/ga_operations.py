@@ -1774,9 +1774,6 @@ def ga_download_fg_selected_payload(
     table_slot: int,
     n_runs: int,
     limit: int,
-    top_base_keep: int,
-    base_budget: int,
-    fg_budget_end: int,
 ) -> np.ndarray:
     """
     Download the GPU-selected GA->FG candidate payload for one song/table slot.
@@ -1789,9 +1786,6 @@ def ga_download_fg_selected_payload(
     table_slot = int(table_slot)
     n_runs = int(n_runs)
     limit = int(limit)
-    top_base_keep = int(top_base_keep)
-    base_budget = int(base_budget)
-    fg_budget_end = int(fg_budget_end)
     if n_runs < 0 or n_runs > int(fields.MAX_GA_RUNS):
         raise ValueError(f"n_runs out of range: {n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
     if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
@@ -1806,9 +1800,6 @@ def ga_download_fg_selected_payload(
         int(table_slot),
         int(n_runs),
         int(limit),
-        int(top_base_keep),
-        int(base_budget),
-        int(fg_budget_end),
     )
     if limit <= 256:
         out_field = fields.ga_fg_selected_payload_staging_256

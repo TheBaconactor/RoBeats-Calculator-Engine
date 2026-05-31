@@ -646,13 +646,6 @@ def _better_base(i: ti.i32, j: ti.i32) -> ti.i32:
         decided = ti.i32(1)
 
     if decided == 0:
-        pi = kernels_helpers.ga_fg_select_stub_fg_proxy[i]
-        pj = kernels_helpers.ga_fg_select_stub_fg_proxy[j]
-        if pi != pj:
-            better = ti.i32(1) if pi > pj else ti.i32(0)
-            decided = ti.i32(1)
-
-    if decided == 0:
         # Tie-break by canonical IDs (descending, left-to-right).
         for k in ti.static(range(9)):
             ai = kernels_helpers.ga_fg_select_stub_ids[i, k]
@@ -669,103 +662,13 @@ def _better_base(i: ti.i32, j: ti.i32) -> ti.i32:
 
 
 @ti.func
-def _better_fg(i: ti.i32, j: ti.i32) -> ti.i32:
-    better = ti.i32(0)
-    decided = ti.i32(0)
-
-    pi = kernels_helpers.ga_fg_select_stub_fg_proxy[i]
-    pj = kernels_helpers.ga_fg_select_stub_fg_proxy[j]
-    if pi != pj:
-        better = ti.i32(1) if pi > pj else ti.i32(0)
-        decided = ti.i32(1)
-
-    if decided == 0:
-        si = kernels_helpers.ga_fg_select_stub_score[i]
-        sj = kernels_helpers.ga_fg_select_stub_score[j]
-        if si != sj:
-            better = ti.i32(1) if si > sj else ti.i32(0)
-            decided = ti.i32(1)
-
-    if decided == 0:
-        for k in ti.static(range(9)):
-            ai = kernels_helpers.ga_fg_select_stub_ids[i, k]
-            aj = kernels_helpers.ga_fg_select_stub_ids[j, k]
-            if decided == 0 and ai != aj:
-                better = ti.i32(1) if ai > aj else ti.i32(0)
-                decided = ti.i32(1)
-
-    if decided == 0:
-        better = ti.i32(1) if i < j else ti.i32(0)
-
-    return better
-
-
-@ti.func
-def _center_used(candidate_ft: ti.i32, candidate_ff: ti.i32, selected_n: ti.i32) -> ti.i32:
-    used = ti.i32(0)
-    ti.loop_config(serialize=True)
-    for j in range(selected_n):
-        stub = kernels_helpers.ga_fg_selected_coords[j, 0]
-        if (
-            kernels_helpers.ga_fg_select_stub_center_ft[stub] == candidate_ft
-            and kernels_helpers.ga_fg_select_stub_center_ff[stub] == candidate_ff
-        ):
-            used = ti.i32(1)
-    return used
-
-
-@ti.func
-def _minis_used(m0: ti.i32, m1: ti.i32, m2: ti.i32, selected_n: ti.i32) -> ti.i32:
-    used = ti.i32(0)
-    ti.loop_config(serialize=True)
-    for j in range(selected_n):
-        stub = kernels_helpers.ga_fg_selected_coords[j, 0]
-        a0 = kernels_helpers.ga_fg_select_stub_ids[stub, 6]
-        a1 = kernels_helpers.ga_fg_select_stub_ids[stub, 7]
-        a2 = kernels_helpers.ga_fg_select_stub_ids[stub, 8]
-        if a0 == m0 and a1 == m1 and a2 == m2:
-            used = ti.i32(1)
-    return used
-
-
-@ti.func
-def _pick_best_base_stub(
-    n_stub: ti.i32, selected_n: ti.i32, require_new_center: ti.i32, require_new_mini: ti.i32
-) -> ti.i32:
+def _pick_best_base_stub(n_stub: ti.i32) -> ti.i32:
     best = ti.i32(-1)
     ti.loop_config(serialize=True)
     for i in range(n_stub):
         if kernels_helpers.ga_fg_select_selected_mask[i] != 0:
             continue
-        if require_new_center != 0:
-            ft = kernels_helpers.ga_fg_select_stub_center_ft[i]
-            ff = kernels_helpers.ga_fg_select_stub_center_ff[i]
-            if _center_used(ft, ff, selected_n) != 0:
-                continue
-        if require_new_mini != 0:
-            m0 = kernels_helpers.ga_fg_select_stub_ids[i, 6]
-            m1 = kernels_helpers.ga_fg_select_stub_ids[i, 7]
-            m2 = kernels_helpers.ga_fg_select_stub_ids[i, 8]
-            if _minis_used(m0, m1, m2, selected_n) != 0:
-                continue
         if best < 0 or _better_base(i, best) != 0:
-            best = i
-    return best
-
-
-@ti.func
-def _pick_best_fg_stub(n_stub: ti.i32, selected_n: ti.i32, require_new_center: ti.i32) -> ti.i32:
-    best = ti.i32(-1)
-    ti.loop_config(serialize=True)
-    for i in range(n_stub):
-        if kernels_helpers.ga_fg_select_selected_mask[i] != 0:
-            continue
-        if require_new_center != 0:
-            ft = kernels_helpers.ga_fg_select_stub_center_ft[i]
-            ff = kernels_helpers.ga_fg_select_stub_center_ff[i]
-            if _center_used(ft, ff, selected_n) != 0:
-                continue
-        if best < 0 or _better_fg(i, best) != 0:
             best = i
     return best
 
@@ -775,9 +678,6 @@ def ga_select_fg_candidates_coords_kernel(
     table_slot: ti.i32,
     n_runs: ti.i32,
     limit: ti.i32,
-    top_base_keep: ti.i32,
-    base_budget: ti.i32,
-    fg_budget_end: ti.i32,
 ):
     """
     Select a bounded GA->FG candidate funnel on the GPU and store selected stub indices.
@@ -787,16 +687,13 @@ def ga_select_fg_candidates_coords_kernel(
       - ga_fg_selected_coords[i,0] = stub_index (for i in [0,N))
 
     Notes:
-    - This kernel intentionally mirrors the CPU selection policy used for GPU-native GA decoding:
-      hard keep top-N by base score, then base fill, then FG-proxy fill with center diversity,
-      then mini diversity, then final base fill.
+    - This kernel keeps the highest base-score effective-unique rows at the
+      fixed staging boundary. It is not an FG pruning heuristic.
     - The scan includes row 0 (per-run best across generations) so non-final-population
       winners remain eligible for the downstream FG funnel.
     - Minis are canonicalized (sorted) for keys.
     """
     K = ti.static(_GA_FG_CANDIDATES_PER_RUN)
-    base_col0 = ti.static(1 + 9 + _GA_FG_RESULTS_COLS)
-    results_col0 = ti.static(1 + 9)
 
     # Clear hash table + counters.
     for i in range(kernels_helpers.ga_fg_select_hash_used.shape[0]):
@@ -816,7 +713,7 @@ def ga_select_fg_candidates_coords_kernel(
     # occurrences (we only update on strictly better score).
     #
     # Scan order: runs in order, within each run row 0 is the per-run tracked best,
-    # then rows 1..K are the mixed final-population archive.
+    # then rows 1..K are the per-run candidate archive.
     # ------------------------------------------------------------------
     ti.loop_config(serialize=True)
     for r in range(n_runs):
@@ -869,26 +766,6 @@ def ga_select_fg_candidates_coords_kernel(
                         kernels_helpers.ga_fg_select_stub_row[idx] = row_idx
                         kernels_helpers.ga_fg_select_stub_score[idx] = score
 
-                        # Center (FT/FF) from result row: [score, ft, ff, pp, cm, fm, ov]
-                        kernels_helpers.ga_fg_select_stub_center_ft[idx] = kernels_helpers.ga_fg_candidates_packed[
-                            table_slot, r, row_idx, results_col0 + 1
-                        ]
-                        kernels_helpers.ga_fg_select_stub_center_ff[idx] = kernels_helpers.ga_fg_candidates_packed[
-                            table_slot, r, row_idx, results_col0 + 2
-                        ]
-
-                        # Proxy from base_stats7: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
-                        pp = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 0]
-                        cm = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 1]
-                        fm = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 2]
-                        p_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 3]
-                        s_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 4]
-                        ft_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 5]
-                        ff_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 6]
-                        kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = kernels_helpers.fg_proxy_from_base_stats7(
-                            pp, cm, fm, p_val, s_val, ft_stat, ff_stat
-                        )
-
                         kernels_helpers.ga_fg_select_stub_ids[idx, 0] = g0
                         kernels_helpers.ga_fg_select_stub_ids[idx, 1] = g1
                         kernels_helpers.ga_fg_select_stub_ids[idx, 2] = g2
@@ -923,24 +800,6 @@ def ga_select_fg_candidates_coords_kernel(
                             kernels_helpers.ga_fg_select_stub_run[idx] = r
                             kernels_helpers.ga_fg_select_stub_row[idx] = row_idx
                             kernels_helpers.ga_fg_select_stub_score[idx] = score
-
-                            kernels_helpers.ga_fg_select_stub_center_ft[idx] = kernels_helpers.ga_fg_candidates_packed[
-                                table_slot, r, row_idx, results_col0 + 1
-                            ]
-                            kernels_helpers.ga_fg_select_stub_center_ff[idx] = kernels_helpers.ga_fg_candidates_packed[
-                                table_slot, r, row_idx, results_col0 + 2
-                            ]
-
-                            pp = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 0]
-                            cm = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 1]
-                            fm = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 2]
-                            p_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 3]
-                            s_val = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 4]
-                            ft_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 5]
-                            ff_stat = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, base_col0 + 6]
-                            kernels_helpers.ga_fg_select_stub_fg_proxy[idx] = kernels_helpers.fg_proxy_from_base_stats7(
-                                pp, cm, fm, p_val, s_val, ft_stat, ff_stat
-                            )
                     handled = 1  # Already present; treat as handled.
                     break
                 pos = (pos + 1) & mask
@@ -951,88 +810,21 @@ def ga_select_fg_candidates_coords_kernel(
 
     n_stub = kernels_helpers.ga_fg_select_stub_count[0]
 
-    # Clamp budgets to [0, limit]. Kernel arguments are immutable, so clamp into locals.
+    # Clamp staging limit.
     limit_v = limit
-    top_base_keep_v = top_base_keep
-    base_budget_v = base_budget
-    fg_budget_end_v = fg_budget_end
 
     if limit_v < 0:
         limit_v = 0
     if limit_v > kernels_helpers.ga_fg_selected_coords.shape[0]:
         limit_v = kernels_helpers.ga_fg_selected_coords.shape[0]
 
-    if top_base_keep_v < 0:
-        top_base_keep_v = 0
-    if top_base_keep_v > limit_v:
-        top_base_keep_v = limit_v
-
-    if base_budget_v < top_base_keep_v:
-        base_budget_v = top_base_keep_v
-    if base_budget_v > limit_v:
-        base_budget_v = limit_v
-
-    if fg_budget_end_v < base_budget_v:
-        fg_budget_end_v = base_budget_v
-    if fg_budget_end_v > limit_v:
-        fg_budget_end_v = limit_v
-
     # ------------------------------------------------------------------
-    # 2) Selection phases (store selected stub indices in ga_fg_selected_coords).
+    # 2) Select top base-score stubs into ga_fg_selected_coords.
     # ------------------------------------------------------------------
     selected_n = ti.i32(0)
 
-    # 1) Hard keep top-N by base score.
-    while selected_n < top_base_keep_v:
-        best = _pick_best_base_stub(n_stub, selected_n, ti.i32(0), ti.i32(0))
-        if best < 0:
-            break
-        kernels_helpers.ga_fg_select_selected_mask[best] = 1
-        kernels_helpers.ga_fg_selected_coords[selected_n, 0] = best
-        kernels_helpers.ga_fg_selected_coords[selected_n, 1] = 0
-        selected_n += 1
-
-    # 2) Base-score fill.
-    while selected_n < base_budget_v:
-        best = _pick_best_base_stub(n_stub, selected_n, ti.i32(0), ti.i32(0))
-        if best < 0:
-            break
-        kernels_helpers.ga_fg_select_selected_mask[best] = 1
-        kernels_helpers.ga_fg_selected_coords[selected_n, 0] = best
-        kernels_helpers.ga_fg_selected_coords[selected_n, 1] = 0
-        selected_n += 1
-
-    # 3) FG-proxy fill; prefer new centers first.
-    while selected_n < fg_budget_end_v:
-        best = _pick_best_fg_stub(n_stub, selected_n, ti.i32(1))
-        if best < 0:
-            break
-        kernels_helpers.ga_fg_select_selected_mask[best] = 1
-        kernels_helpers.ga_fg_selected_coords[selected_n, 0] = best
-        kernels_helpers.ga_fg_selected_coords[selected_n, 1] = 0
-        selected_n += 1
-    while selected_n < fg_budget_end_v:
-        best = _pick_best_fg_stub(n_stub, selected_n, ti.i32(0))
-        if best < 0:
-            break
-        kernels_helpers.ga_fg_select_selected_mask[best] = 1
-        kernels_helpers.ga_fg_selected_coords[selected_n, 0] = best
-        kernels_helpers.ga_fg_selected_coords[selected_n, 1] = 0
-        selected_n += 1
-
-    # 4) Mini-team diversity fill.
     while selected_n < limit_v:
-        best = _pick_best_base_stub(n_stub, selected_n, ti.i32(0), ti.i32(1))
-        if best < 0:
-            break
-        kernels_helpers.ga_fg_select_selected_mask[best] = 1
-        kernels_helpers.ga_fg_selected_coords[selected_n, 0] = best
-        kernels_helpers.ga_fg_selected_coords[selected_n, 1] = 0
-        selected_n += 1
-
-    # 5) Final base fill.
-    while selected_n < limit_v:
-        best = _pick_best_base_stub(n_stub, selected_n, ti.i32(0), ti.i32(0))
+        best = _pick_best_base_stub(n_stub)
         if best < 0:
             break
         kernels_helpers.ga_fg_select_selected_mask[best] = 1

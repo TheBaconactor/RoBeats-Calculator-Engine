@@ -768,16 +768,10 @@ def test_gpu_ga_fg_pack_dedupes_before_topk_cutoff() -> None:
         )
 
         limit = int(LOADOUTS_PER_SONG_LIMIT)
-        top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
-        base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
-        fg_budget_end = min(limit, base_budget + int(limit * 0.30))
         selected_payload = ga_download_fg_selected_payload(
             table_slot=song_slot,
             n_runs=1,
             limit=limit,
-            top_base_keep=top_base_keep,
-            base_budget=base_budget,
-            fg_budget_end=fg_budget_end,
         )
 
     expected_unique = min(limit, unique_count + 1)

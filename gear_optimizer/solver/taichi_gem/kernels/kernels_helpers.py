@@ -173,9 +173,6 @@ ga_fg_select_stub_count = None  # (1,) i32 - number of unique stubs
 ga_fg_select_stub_run = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_row = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_score = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_fg_proxy = None  # (STUBS_MAX,) i64
-ga_fg_select_stub_center_ft = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_center_ff = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_ids = None  # (STUBS_MAX, 9) i32
 ga_fg_select_selected_mask = None  # (STUBS_MAX,) i32
 ga_fg_selected_count = None  # (1,) i32
@@ -198,9 +195,6 @@ skyline_fg_select_stub_count = None
 skyline_fg_select_stub_run = None
 skyline_fg_select_stub_row = None
 skyline_fg_select_stub_score = None
-skyline_fg_select_stub_fg_proxy = None
-skyline_fg_select_stub_center_ft = None
-skyline_fg_select_stub_center_ff = None
 skyline_fg_select_stub_ids = None
 skyline_fg_select_selected_mask = None
 skyline_fg_selected_count = None
@@ -567,19 +561,3 @@ def calc_score_with_grid_bits(
     head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
     # Cast each component to i32 first, then add as integers for exact result
     return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
-
-
-@ti.func
-def fg_proxy_from_base_stats7(
-    pp: ti.i32, cm: ti.i32, fm: ti.i32, p_val: ti.i32, s_val: ti.i32, ft: ti.i32, ff: ti.i32
-) -> ti.i64:
-    # Match CPU proxy weights (constant base offsets do not affect ordering).
-    return (
-        ti.cast(fm, ti.i64) * 4
-        + ti.cast(ff, ti.i64) * 4
-        + ti.cast(ft, ti.i64) * 3
-        + ti.cast(cm, ti.i64) * 2
-        + ti.cast(pp, ti.i64)
-        + ti.cast(p_val, ti.i64) * 2
-        + ti.cast(s_val, ti.i64)
-    )

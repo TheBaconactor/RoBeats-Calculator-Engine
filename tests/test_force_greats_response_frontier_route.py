@@ -4,7 +4,7 @@ import pytest
 import numpy as np
 
 
-def _minimal_cert_calc_song(note_count: int = 4) -> dict:
+def _minimal_fg_calc_song(note_count: int = 4) -> dict:
     timestamps = np.linspace(0.0, 1.0, int(note_count), dtype=np.float32)
     return {
         "metadata": {
@@ -17,7 +17,7 @@ def _minimal_cert_calc_song(note_count: int = 4) -> dict:
     }
 
 
-def _minimal_cert_ref_arrays() -> dict[str, np.ndarray]:
+def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     return {
@@ -684,8 +684,8 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
 
     out = adapter.process_force_greats_response_frontier_gpu(
         entries,
-        calc_song=_minimal_cert_calc_song(),
-        ref_arrays=_minimal_cert_ref_arrays(),
+        calc_song=_minimal_fg_calc_song(),
+        ref_arrays=_minimal_fg_ref_arrays(),
         meta_primary_color="Rush",
         score_prepared_batch=lambda _batch, **_kwargs: [_result(100, 10, 20), _result(90, 30, 40)],
     )
@@ -897,8 +897,8 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},
-        _minimal_cert_calc_song(),
-        _minimal_cert_ref_arrays(),
+        _minimal_fg_calc_song(),
+        _minimal_fg_ref_arrays(),
         "Rush",
         ga_candidates=[
             {
@@ -1014,8 +1014,8 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},
-        _minimal_cert_calc_song(),
-        _minimal_cert_ref_arrays(),
+        _minimal_fg_calc_song(),
+        _minimal_fg_ref_arrays(),
         "Rush",
         ga_candidates=[
             {

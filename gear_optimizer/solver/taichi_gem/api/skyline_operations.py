@@ -1799,9 +1799,6 @@ def skyline_download_fg_selected_payload(
     table_slot: int,
     n_runs: int,
     limit: int,
-    top_base_keep: int,
-    base_budget: int,
-    fg_budget_end: int,
 ) -> np.ndarray:
     """
     Download the GPU-selected skyline->FG candidate payload for one song/table slot.
@@ -1815,9 +1812,6 @@ def skyline_download_fg_selected_payload(
     table_slot = int(table_slot)
     n_runs = int(n_runs)
     limit = int(limit)
-    top_base_keep = int(top_base_keep)
-    base_budget = int(base_budget)
-    fg_budget_end = int(fg_budget_end)
 
     if n_runs < 0 or n_runs > int(fields.MAX_SKYLINE_RUNS):
         raise ValueError(f"n_runs out of range: {n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
@@ -1837,9 +1831,6 @@ def skyline_download_fg_selected_payload(
         int(table_slot),
         int(n_runs),
         int(limit),
-        int(top_base_keep),
-        int(base_budget),
-        int(fg_budget_end),
     )
 
     if limit <= 256:
@@ -2168,9 +2159,6 @@ def warmup_skyline_live_request_kernels() -> None:
         table_slot=song_slot,
         n_runs=n_runs,
         limit=1,
-        top_base_keep=1,
-        base_budget=1,
-        fg_budget_end=1,
     )
     ti.sync()
     _SKYLINE_LIVE_REQUEST_WARMED = True
@@ -2292,9 +2280,6 @@ def warmup_skyline_kernels() -> None:
         table_slot=song_slot,
         n_runs=n_runs,
         limit=1,
-        top_base_keep=1,
-        base_budget=1,
-        fg_budget_end=1,
     )
 
     warmup_skyline_live_request_kernels()

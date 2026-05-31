@@ -215,7 +215,7 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     }
 
     # Reference path: construct full stub candidates and delegate selection to the
-    # existing select_fg_candidates() implementation (the previous behavior).
+    # canonical bounded compaction helper.
     best_stub_by_key: dict[tuple[int, ...], tuple[int, int, int]] = {}
     for r in range(n_runs):
         run_pack = runs_payload[r]
@@ -256,8 +256,6 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     expected = select_fg_candidates(
         stub_candidates,
         limit=int(fg_candidate_limit),
-        primary_color=str(cfg_data.get("primary_color", "") or ""),
-        secondary_color=str(cfg_data.get("secondary_color", "") or ""),
     )
 
     # Build the GPU-selected payload format expected by decode_gpu_native_ga_runs_payload.

@@ -147,9 +147,6 @@ def warmup_ga_live_request_kernels() -> None:
         table_slot=song_slot,
         n_runs=n_runs,
         limit=1,
-        top_base_keep=1,
-        base_budget=1,
-        fg_budget_end=1,
     )
     ti.sync()
     ga_ops._GA_LIVE_REQUEST_WARMED = True
@@ -290,9 +287,6 @@ def warmup_ga_kernels() -> None:
         table_slot=song_slot,
         n_runs=n_runs,
         limit=1,
-        top_base_keep=1,
-        base_budget=1,
-        fg_budget_end=1,
     )
 
     warmup_ga_live_request_kernels()

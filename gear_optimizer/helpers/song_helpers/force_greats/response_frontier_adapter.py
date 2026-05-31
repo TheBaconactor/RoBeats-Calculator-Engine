@@ -17,7 +17,6 @@ from ....solver.taichi_gem.force_greats import (
 )
 from ..ga_entry_utils import materialize_entry_names
 from . import cache_validation
-from .candidate_certificate import certified_fg_candidate_upper_bound
 from .entry_resolution import build_direct_ga_entry_items, entry_base_score
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from .result_application import materialize_stats_from_payload
@@ -37,11 +36,6 @@ class FgResponseFrontierPreparedPlan:
     variants: tuple[dict[str, Any], ...]
     pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
-    certificate_lower_bound: int
-    certified_pruned_jobs: int
-    certified_pruned_unique: int
-    certificate_max_pruned_upper_bound: int
-    certificate_max_kept_upper_bound: int
 
 
 def _base_stats_for_response_frontier(eval_data: dict[str, Any], *, selected: str) -> dict[str, Any]:
@@ -150,6 +144,8 @@ def prepare_force_greats_response_frontier_plan(
 
     variants: list[dict[str, Any]] = []
     pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]]] = []
+    pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
+    pending_keys: set[tuple[Any, ...]] = set()
     for _key, entry in entry_items:
         if not isinstance(entry, dict):
             continue
@@ -182,38 +178,9 @@ def prepare_force_greats_response_frontier_plan(
             tuple(sorted((str(key), safe_int(value, 0)) for key, value in base_stats.items())),
         )
         pending_jobs.append((entry, eval_data, selected, base_stats, cache_key))
-
-    lower_bound = 0
-    for variant in variants:
-        lower_bound = max(lower_bound, safe_int(variant.get("fg_score", 0), 0), safe_int(variant.get("score", 0), 0))
-    for entry, _eval_data, _selected, _base_stats, _cache_key in pending_jobs:
-        lower_bound = max(lower_bound, safe_int(entry_base_score(entry), 0))
-
-    upper_by_key: dict[tuple[Any, ...], int] = {}
-    base_stats_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
-    selected_by_key: dict[tuple[Any, ...], str] = {}
-    for _entry, _eval_data, selected, base_stats, cache_key in pending_jobs:
-        if cache_key in upper_by_key:
-            continue
-        upper = certified_fg_candidate_upper_bound(
-            base_stats,
-            calc_song,
-            ref_arrays,
-            selected_color=str(selected or ""),
-        )
-        upper_by_key[cache_key] = int(upper)
-        base_stats_by_key[cache_key] = base_stats
-        selected_by_key[cache_key] = str(selected or "")
-
-    pruned_keys = {key for key, upper in upper_by_key.items() if int(upper) <= int(lower_bound)}
-    kept_keys = [key for key in upper_by_key if key not in pruned_keys]
-    max_pruned_upper = max((int(upper_by_key[key]) for key in pruned_keys), default=0)
-    max_kept_upper = max((int(upper_by_key[key]) for key in kept_keys), default=0)
-    certified_pruned_jobs = int(sum(1 for job in pending_jobs if job[4] in pruned_keys))
-    pending_jobs = [job for job in pending_jobs if job[4] not in pruned_keys]
-    pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
-    for cache_key in kept_keys:
-        pending_by_selected.setdefault(selected_by_key[cache_key], []).append((cache_key, base_stats_by_key[cache_key]))
+        if cache_key not in pending_keys:
+            pending_keys.add(cache_key)
+            pending_by_selected.setdefault(str(selected or ""), []).append((cache_key, base_stats))
 
     prepared_batches: list[FgResponseFrontierPreparedBatch] = []
     for selected, rows in pending_by_selected.items():
@@ -238,11 +205,6 @@ def prepare_force_greats_response_frontier_plan(
         variants=tuple(variants),
         pending_jobs=tuple(pending_jobs),
         prepared_batches=tuple(prepared_batches),
-        certificate_lower_bound=int(lower_bound),
-        certified_pruned_jobs=int(certified_pruned_jobs),
-        certified_pruned_unique=int(len(pruned_keys)),
-        certificate_max_pruned_upper_bound=int(max_pruned_upper),
-        certificate_max_kept_upper_bound=int(max_kept_upper),
     )
 
 

@@ -868,14 +868,10 @@ def decode_gpu_native_ga_runs_payload(
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
     arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
 
-    # Deterministic FG candidate funnel selection.
-    #
-    # Keep this GPU-free: we operate in ID-space and only decode full genomes for the
-    # final bounded funnel. The selection logic mirrors `select_fg_candidates()`:
-    # - hard-keep top-N by base score (DB/leaderboard stability)
-    # - fill by base score (exploitation)
-    # - then by an FG-proxy score with FT/FF center diversity
-    # - then mini-team diversity
+    # Deterministic GA->FG payload compaction.
+    # This is a staging boundary, not an exact FG pruning certificate: retain the
+    # highest base-score effective-unique rows and let response-frontier FG score
+    # every staged candidate exactly.
     t_stub = time.perf_counter() if perf else 0.0
 
     scores_i64 = stub_scores.astype(np.int64, copy=False)
@@ -883,110 +879,15 @@ def decode_gpu_native_ga_runs_payload(
     minis_sorted = np.sort(stub_genome_ids[:, 6:9], axis=1)
     canon_ids_mat = np.concatenate([stub_genome_ids[:, :6], minis_sorted], axis=1).astype(np.int32, copy=False)
 
-    # Reuse the (score, ft, ff, pp, cm, fm, ov) result row for centers (FT/FF).
-    try:
-        row_stride = int(runs_payload.shape[1])
-        flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
-        flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
-        stub_results = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
-    except Exception as e:
-        logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
-        stub_results = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
-
-    centers_ft = stub_results[:, 1].astype(np.int32, copy=False)
-    centers_ff = stub_results[:, 2].astype(np.int32, copy=False)
-
-    # FG proxy matches `select_fg_candidates()` weights (on summed item stats).
-    stats_sum = (
-        item_stats[stub_genome_ids.astype(np.int32, copy=False)].sum(axis=1).astype(np.int64, copy=False)
-    )  # (n,10)
-    pp = stats_sum[:, 0]
-    cm = stats_sum[:, 1]
-    fm = stats_sum[:, 2]
-    ft_stat = stats_sum[:, 3]
-    ff_stat = stats_sum[:, 4]
-
-    primary_color = str(cfg_data.get("primary_color", "") or "")
-    secondary_color = str(cfg_data.get("secondary_color", "") or "")
-    p_idx = _selected_color_stat_index(primary_color)
-    s_idx = _selected_color_stat_index(secondary_color) if secondary_color and secondary_color != primary_color else -1
-    p_val = stats_sum[:, p_idx] if p_idx >= 0 else 0
-    s_val = stats_sum[:, s_idx] if s_idx >= 0 else 0
-
-    fg_proxy_i64 = fm * 4 + ff_stat * 4 + ft_stat * 3 + cm * 2 + pp + p_val * 2 + s_val
-
     # Lexsort tie-breakers need the key in reverse order (element0 has highest priority).
     key_cols_desc = [-(canon_ids_mat[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
 
-    base_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-fg_proxy_i64, -scores_i64])).tolist()]
-    fg_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-scores_i64, -fg_proxy_i64])).tolist()]
+    base_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-scores_i64])).tolist()]
 
     limit = int(fg_candidate_limit)
-    top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
-    base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
-    fg_budget_end = min(limit, base_budget + int(limit * 0.30))
-
-    selected_stub_indices: list[int] = []
-    selected_mask = np.zeros((n_stub,), dtype=bool)
-    seen_centers: set[tuple[int, int]] = set()
-    seen_minis: set[tuple[int, int, int]] = set()
-    centers_ft_list = centers_ft.tolist()
-    centers_ff_list = centers_ff.tolist()
-    mini_triplets = canon_ids_mat[:, 6:9].astype(np.int32, copy=False).tolist()
-
-    def _add(i: int) -> bool:
-        if selected_mask[i]:
-            return False
-        selected_mask[i] = True
-        selected_stub_indices.append(i)
-        seen_centers.add((int(centers_ft_list[i]), int(centers_ff_list[i])))
-        mi = mini_triplets[i]
-        seen_minis.add((int(mi[0]), int(mi[1]), int(mi[2])))
-        return True
-
-    # 1) Hard keep top-N by base score.
-    for i in base_order:
-        if len(selected_stub_indices) >= top_base_keep:
-            break
-        _add(i)
-
-    # 2) Base-score fill (exploitation).
-    for i in base_order:
-        if len(selected_stub_indices) >= base_budget:
-            break
-        _add(i)
-
-    # 3) FG-proxy fill; prefer new FT/FF centers first.
-    for i in fg_order:
-        if len(selected_stub_indices) >= fg_budget_end:
-            break
-        c = (int(centers_ft_list[i]), int(centers_ff_list[i]))
-        if c in seen_centers:
-            continue
-        _add(i)
-    for i in fg_order:
-        if len(selected_stub_indices) >= fg_budget_end:
-            break
-        _add(i)
-
-    # 4) Mini-team diversity fill.
-    for i in base_order:
-        if len(selected_stub_indices) >= limit:
-            break
-        mi = mini_triplets[i]
-        mk = (int(mi[0]), int(mi[1]), int(mi[2]))
-        if mk in seen_minis:
-            continue
-        _add(i)
-
-    # 5) Final fill by base score.
-    for i in base_order:
-        if len(selected_stub_indices) >= limit:
-            break
-        _add(i)
+    selected_stub_indices = base_order[: min(int(limit), len(base_order))]
 
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
-    proxy_ms = 0.0
 
     include_full_stats = _decode_requires_full_stats(cfg_data)
     include_base_stats = True
@@ -1119,7 +1020,7 @@ def decode_gpu_native_ga_runs_payload(
         )
         logger.info(
             "[PERF][GADecodeDetails] "
-            f"runs={n_runs} pop={n_genomes} uniq={n_stub} arrays={arrays_ms:.1f}ms proxy={proxy_ms:.1f}ms"
+            f"runs={n_runs} pop={n_genomes} uniq={n_stub} arrays={arrays_ms:.1f}ms"
         )
 
     best_data, best_gear, best_minis = _promote_best_candidate_over_header(
@@ -1386,15 +1287,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
     payload_candidate_limit = _resolve_ga_payload_candidate_limit(int(fg_candidate_limit))
     cfg_data["ga_payload_candidate_limit"] = int(payload_candidate_limit)
-    top_base_keep = min(int(payload_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-    base_budget = min(
-        int(payload_candidate_limit),
-        max(int(top_base_keep), int(int(payload_candidate_limit) * 0.55)),
-    )
-    fg_budget_end = min(
-        int(payload_candidate_limit),
-        int(base_budget) + int(int(payload_candidate_limit) * 0.30),
-    )
 
     # Island model (mirrors _run_gpu_native_ga)
     num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
@@ -1960,9 +1852,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             table_slot=int(song_slot),
             n_runs=int(seg_len),
             limit=int(payload_candidate_limit),
-            top_base_keep=int(top_base_keep),
-            base_budget=int(base_budget),
-            fg_budget_end=int(fg_budget_end),
         )
         payload_segments.append(selected_payload)
         run_start_global += seg_len

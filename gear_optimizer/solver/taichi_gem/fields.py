@@ -156,9 +156,6 @@ ga_fg_select_stub_count: ti.Field = None  # (1,) i32
 ga_fg_select_stub_run: ti.Field = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_row: ti.Field = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_score: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_fg_proxy: ti.Field = None  # (STUBS_MAX,) i64
-ga_fg_select_stub_center_ft: ti.Field = None  # (STUBS_MAX,) i32
-ga_fg_select_stub_center_ff: ti.Field = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_ids: ti.Field = None  # (STUBS_MAX, 9) i32
 ga_fg_select_selected_mask: ti.Field = None  # (STUBS_MAX,) i32
 ga_fg_selected_count: ti.Field = None  # (1,) i32
@@ -221,9 +218,6 @@ skyline_fg_select_stub_count: ti.Field = None
 skyline_fg_select_stub_run: ti.Field = None
 skyline_fg_select_stub_row: ti.Field = None
 skyline_fg_select_stub_score: ti.Field = None
-skyline_fg_select_stub_fg_proxy: ti.Field = None
-skyline_fg_select_stub_center_ft: ti.Field = None
-skyline_fg_select_stub_center_ff: ti.Field = None
 skyline_fg_select_stub_ids: ti.Field = None
 skyline_fg_select_selected_mask: ti.Field = None
 skyline_fg_selected_count: ti.Field = None
@@ -252,8 +246,7 @@ def _sync_skyline_aliases() -> None:
     global skyline_fg_candidates_packed, skyline_fg_candidates_download_staging
     global skyline_fg_select_hash_used, skyline_fg_select_hash_keys
     global skyline_fg_select_stub_count, skyline_fg_select_stub_run, skyline_fg_select_stub_row
-    global skyline_fg_select_stub_score, skyline_fg_select_stub_fg_proxy
-    global skyline_fg_select_stub_center_ft, skyline_fg_select_stub_center_ff, skyline_fg_select_stub_ids
+    global skyline_fg_select_stub_score, skyline_fg_select_stub_ids
     global skyline_fg_select_selected_mask, skyline_fg_selected_count, skyline_fg_selected_coords
     global skyline_fg_selected_payload_staging_256
     global skyline_fg_selected_payload_staging_1024
@@ -292,9 +285,6 @@ def _sync_skyline_aliases() -> None:
     skyline_fg_select_stub_run = ga_fg_select_stub_run
     skyline_fg_select_stub_row = ga_fg_select_stub_row
     skyline_fg_select_stub_score = ga_fg_select_stub_score
-    skyline_fg_select_stub_fg_proxy = ga_fg_select_stub_fg_proxy
-    skyline_fg_select_stub_center_ft = ga_fg_select_stub_center_ft
-    skyline_fg_select_stub_center_ff = ga_fg_select_stub_center_ff
     skyline_fg_select_stub_ids = ga_fg_select_stub_ids
     skyline_fg_select_selected_mask = ga_fg_select_selected_mask
     skyline_fg_selected_count = ga_fg_selected_count
@@ -363,7 +353,7 @@ def reset_fields_state() -> None:
     global ga_fg_candidates_packed, ga_fg_candidates_download_staging
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
     global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
-    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
+    global ga_fg_select_stub_ids
     global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
     global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
@@ -450,9 +440,6 @@ def reset_fields_state() -> None:
     ga_fg_select_stub_run = None
     ga_fg_select_stub_row = None
     ga_fg_select_stub_score = None
-    ga_fg_select_stub_fg_proxy = None
-    ga_fg_select_stub_center_ft = None
-    ga_fg_select_stub_center_ff = None
     ga_fg_select_stub_ids = None
     ga_fg_select_selected_mask = None
     ga_fg_selected_count = None
@@ -585,7 +572,7 @@ def allocate_fields():
     global ga_fg_candidates_packed, ga_fg_candidates_download_staging
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
     global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
-    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
+    global ga_fg_select_stub_ids
     global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
     global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
@@ -694,9 +681,6 @@ def allocate_fields():
     ga_fg_select_stub_run = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
     ga_fg_select_stub_row = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
     ga_fg_select_stub_score = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_fg_proxy = ti.field(dtype=ti.i64, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_center_ft = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
-    ga_fg_select_stub_center_ff = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
     ga_fg_select_stub_ids = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_STUBS_MAX), 9))
     ga_fg_select_selected_mask = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
     ga_fg_selected_count = ti.field(dtype=ti.i32, shape=1)
@@ -874,9 +858,6 @@ def bind_fields(kernels_module):
     target.ga_fg_select_stub_run = ga_fg_select_stub_run
     target.ga_fg_select_stub_row = ga_fg_select_stub_row
     target.ga_fg_select_stub_score = ga_fg_select_stub_score
-    target.ga_fg_select_stub_fg_proxy = ga_fg_select_stub_fg_proxy
-    target.ga_fg_select_stub_center_ft = ga_fg_select_stub_center_ft
-    target.ga_fg_select_stub_center_ff = ga_fg_select_stub_center_ff
     target.ga_fg_select_stub_ids = ga_fg_select_stub_ids
     target.ga_fg_select_selected_mask = ga_fg_select_selected_mask
     target.ga_fg_selected_count = ga_fg_selected_count
@@ -911,9 +892,6 @@ def bind_fields(kernels_module):
     target.skyline_fg_select_stub_run = skyline_fg_select_stub_run
     target.skyline_fg_select_stub_row = skyline_fg_select_stub_row
     target.skyline_fg_select_stub_score = skyline_fg_select_stub_score
-    target.skyline_fg_select_stub_fg_proxy = skyline_fg_select_stub_fg_proxy
-    target.skyline_fg_select_stub_center_ft = skyline_fg_select_stub_center_ft
-    target.skyline_fg_select_stub_center_ff = skyline_fg_select_stub_center_ff
     target.skyline_fg_select_stub_ids = skyline_fg_select_stub_ids
     target.skyline_fg_select_selected_mask = skyline_fg_select_selected_mask
     target.skyline_fg_selected_count = skyline_fg_selected_count
