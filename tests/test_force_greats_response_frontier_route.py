@@ -4,6 +4,29 @@ import pytest
 import numpy as np
 
 
+def _minimal_cert_calc_song(note_count: int = 4) -> dict:
+    timestamps = np.linspace(0.0, 1.0, int(note_count), dtype=np.float32)
+    return {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]) if int(timestamps.shape[0]) else 0.0,
+        },
+        "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps},
+    }
+
+
+def _minimal_cert_ref_arrays() -> dict[str, np.ndarray]:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+
+    return {
+        "Perfect Points": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Combo Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Fever Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+    }
+
+
 def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier_keys():
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
@@ -661,8 +684,8 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
 
     out = adapter.process_force_greats_response_frontier_gpu(
         entries,
-        calc_song={"metadata": {}, "song_data": {}},
-        ref_arrays={},
+        calc_song=_minimal_cert_calc_song(),
+        ref_arrays=_minimal_cert_ref_arrays(),
         meta_primary_color="Rush",
         score_prepared_batch=lambda _batch, **_kwargs: [_result(100, 10, 20), _result(90, 30, 40)],
     )
@@ -874,8 +897,8 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},
-        {"metadata": {}, "song_data": {}},
-        {},
+        _minimal_cert_calc_song(),
+        _minimal_cert_ref_arrays(),
         "Rush",
         ga_candidates=[
             {
@@ -991,8 +1014,8 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
 
     out = adapter.process_force_greats_response_frontier_gpu(
         {},
-        {"metadata": {}, "song_data": {}},
-        {},
+        _minimal_cert_calc_song(),
+        _minimal_cert_ref_arrays(),
         "Rush",
         ga_candidates=[
             {

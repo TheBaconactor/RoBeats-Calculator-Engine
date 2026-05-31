@@ -614,6 +614,26 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "prepared_bundle_ms": float(prepared_bundle_ms),
                 "prepared_compact_ms": float(prepared_compact_ms),
                 "prepared_head_coeff_ms": float(prepared_head_coeff_ms),
+                "certified_pruned_jobs": int(
+                    getattr(runtime.fg.fg_response_frontier_plan, "certified_pruned_jobs", 0) or 0
+                ),
+                "certified_pruned_unique": int(
+                    getattr(runtime.fg.fg_response_frontier_plan, "certified_pruned_unique", 0) or 0
+                ),
+                "certificate_lower_bound": int(
+                    getattr(runtime.fg.fg_response_frontier_plan, "certificate_lower_bound", 0) or 0
+                ),
+                "certificate_max_pruned_upper_bound": int(
+                    getattr(
+                        runtime.fg.fg_response_frontier_plan,
+                        "certificate_max_pruned_upper_bound",
+                        0,
+                    )
+                    or 0
+                ),
+                "certificate_max_kept_upper_bound": int(
+                    getattr(runtime.fg.fg_response_frontier_plan, "certificate_max_kept_upper_bound", 0) or 0
+                ),
             },
         )
     except Exception as e:
