@@ -243,15 +243,12 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_fg_score=100,
         db_baseline_valid=True,
         loadout_entries={},
-        fg_response_frontier_plan="prepared-plan",
+        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
     )
-    def _fake_execute_response_frontier(_plan, *, score_prepared_batch):
-        return score_prepared_batch("prepared-batch", include_forced_counts=False)
-
     monkeypatch.setattr(
         response_frontier_adapter,
-        "execute_force_greats_response_frontier_plan",
-        _fake_execute_response_frontier,
+        "materialize_force_greats_response_frontier_plan_results",
+        lambda _plan, prepared_results: prepared_results[0],
     )
     monkeypatch.setattr(
         response_frontier,

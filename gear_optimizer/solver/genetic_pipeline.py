@@ -53,7 +53,6 @@ from ..helpers.ga_helpers.redundancy_audit import (
     write_ga_redundancy_audit_record,
 )
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
-from .candidate_solver_cache import BaseCandidateCacheShard, base_context_digest, stats7_key
 from .item_registry import ItemRegistry
 from .convergence_trace import build_convergence_trace_writer
 from .gpu_tuning_policy import choose_ga_batch_runs
@@ -132,38 +131,6 @@ def _ftff_combo_pairs_array(
         ft = ft[keep]
         ff = ff[keep]
     return np.ascontiguousarray(np.column_stack((ft, ff)), dtype=np.int32)
-
-
-def _record_base_candidate_cache_delta_rows(
-    *,
-    cache: BaseCandidateCacheShard,
-    delta_rows: np.ndarray,
-    combo_pairs: np.ndarray,
-) -> int:
-    rows = np.asarray(delta_rows, dtype=np.int32)
-    if rows.size == 0:
-        return 0
-
-    if rows.ndim != 2 or int(rows.shape[1]) != 13:
-        raise ValueError(f"base candidate cache delta rows must be shaped (n, 13), got {rows.shape}")
-    pairs = np.asarray(combo_pairs, dtype=np.int32)
-    if pairs.ndim != 2 or int(pairs.shape[1]) < 2:
-        raise ValueError(f"base candidate cache combo pairs must be shaped (n, >=2), got {pairs.shape}")
-
-    combo_idx = rows[:, 8]
-    if combo_idx.size:
-        lo = int(combo_idx.min())
-        hi = int(combo_idx.max())
-        if lo < 0 or hi >= int(pairs.shape[0]):
-            raise ValueError(f"base candidate cache delta has combo index outside combo table: [{lo}, {hi}]")
-
-    result8 = np.empty((int(rows.shape[0]), 8), dtype=np.int32)
-    result8[:, 0] = rows[:, 7]
-    result8[:, 1] = combo_idx
-    result8[:, 2] = pairs[combo_idx, 0]
-    result8[:, 3] = pairs[combo_idx, 1]
-    result8[:, 4:8] = rows[:, 9:13]
-    return int(cache.put_result8_rows(rows[:, :7], result8))
 
 
 def _selected_color_stat_index(color: str) -> int:
@@ -1479,88 +1446,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         n_combos = 0
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
 
-    base_candidate_cache_enabled = bool(env_flag("GPU_NATIVE_GA_BASE_CANDIDATE_CACHE", "1"))
-    base_candidate_cache = (
-        BaseCandidateCacheShard.load(
-            base_context_digest(
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                primary_color=str(cfg_data.get("primary_color", "") or ""),
-                secondary_color=str(cfg_data.get("secondary_color", "") or ""),
-                selected_color=str(cfg_data.get("selected_color", "") or ""),
-                color_flags=color_flags,
-                total_budget=int(total_budget),
-                gem_scale_fever=int(gem_scale_fever),
-                max_ft_gems=int(max_ft_gems_global),
-                max_ff_gems=int(max_ff_gems_global),
-                use_exact_inner_solver=True,
-            )
-        )
-        if base_candidate_cache_enabled
-        else None
-    )
-    base_candidate_combo_pairs = (
-        _ftff_combo_pairs_array(
-            total_budget=int(total_budget),
-            max_ft_gems=int(max_ft_gems_global),
-            max_ff_gems=int(max_ff_gems_global),
-        )
-        if base_candidate_cache_enabled
-        else np.zeros((0, 2), dtype=np.int32)
-    )
-
-    base_cache_uploaded_stats: set[tuple[int, ...]] = set()
-
-    def _clear_base_candidate_cache() -> int:
-        base_cache_uploaded_stats.clear()
-        return int(
-            gpu_api.ga_upload_base_candidate_cache(
-                np.zeros((0,), dtype=np.uint32),
-                np.zeros((0, 7), dtype=np.int16),
-                np.zeros((0, 6), dtype=np.int32),
-                clear=True,
-            )
-        )
-
-    def _upload_relevant_base_candidate_cache(stats_rows: np.ndarray) -> int:
-        if not base_candidate_cache_enabled:
-            return 0
-        if base_candidate_cache is None:
-            raise RuntimeError("base candidate cache enabled but shard is not loaded")
-        if not base_candidate_cache.has_entries:
-            return 0
-        stats_arr = np.asarray(stats_rows)
-        if stats_arr.size == 0:
-            return 0
-        if stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
-            raise ValueError(f"base candidate cache current stats shape mismatch: {stats_arr.shape} != (n, 7)")
-        missing_rows = [row for row in stats_arr if stats7_key(row) not in base_cache_uploaded_stats]
-        if not missing_rows:
-            return 0
-        keys, stats, results = base_candidate_cache.gpu_rows_for_stats(np.asarray(missing_rows, dtype=np.int16))
-        if int(keys.shape[0]) == 0:
-            return 0
-        uploaded = int(gpu_api.ga_upload_base_candidate_cache(keys, stats, results, clear=False))
-        for row in stats:
-            base_cache_uploaded_stats.add(stats7_key(row))
-        return uploaded
-
-    def _drain_base_candidate_cache_delta() -> int:
-        if not base_candidate_cache_enabled:
-            return 0
-        if base_candidate_cache is None:
-            raise RuntimeError("base candidate cache enabled but shard is not loaded")
-        delta_rows = gpu_api.ga_download_base_candidate_cache_delta()
-        return _record_base_candidate_cache_delta_rows(
-            cache=base_candidate_cache,
-            delta_rows=delta_rows,
-            combo_pairs=base_candidate_combo_pairs,
-        )
-
-    t_phase = time.perf_counter()
-    base_cache_uploaded = _clear_base_candidate_cache()
-    _emit_ga_setup_phase(phase="clear_base_candidate_cache", start=t_phase, rows=int(base_cache_uploaded))
-
     batch_runs_default = choose_ga_batch_runs(
         n_genomes=int(n_genomes),
         n_combos=int(n_combos),
@@ -1691,7 +1576,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
                 gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
                 _restore_song_gpu_state()
-                _clear_base_candidate_cache()
                 _stage_segment_initial_populations(
                     run_start=int(run_start_global),
                     seg_runs=int(seg_len),
@@ -1755,30 +1639,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 is_p_ov=is_p_ov,
                                 is_s_ov=is_s_ov,
                             )
-                        should_seed_persistent_base_cache = (
-                            int(gen) == 0
-                            and base_candidate_cache_enabled
-                            and base_candidate_cache is not None
-                            and bool(base_candidate_cache.rows)
-                        )
-                        if should_seed_persistent_base_cache:
-                            t_cache = time.perf_counter() if phase_timing else 0.0
-                            download_population_base_stats_fn = getattr(gpu_api, "ga_download_population_base_stats", None)
-                            if callable(download_population_base_stats_fn):
-                                stats_rows = download_population_base_stats_fn(n_genomes=int(n_total))
-                                base_cache_hits = _upload_relevant_base_candidate_cache(stats_rows)
-                            else:
-                                base_cache_hits = 0
-                            if t_cache:
-                                _log_phase(
-                                    phase="upload_relevant_base_candidate_cache",
-                                    ms=(time.perf_counter() - t_cache) * 1000.0,
-                                    runs=int(batch_len),
-                                    pop=int(n_genomes),
-                                    gen=int(gen),
-                                    use_hints=0,
-                                    combos=int(base_cache_hits),
-                                )
                         eval_kwargs = dict(
                             n_genomes=n_total,
                             n_slots=int(n_slots),
@@ -1800,7 +1660,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             max_ft_gems_global=int(max_ft_gems_global),
                             max_ff_gems_global=int(max_ff_gems_global),
                             materialize_mode="none",
-                            use_base_candidate_cache=base_candidate_cache_enabled,
+                            use_base_candidate_cache=False,
                         )
                         evaluate_prepared_fn = getattr(gpu_api, "ga_evaluate_prepared_population", None)
                         if callable(evaluate_prepared_fn):
@@ -2100,7 +1960,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
                         _restore_song_gpu_state()
-                        _clear_base_candidate_cache()
                         _stage_segment_initial_populations(
                             run_start=int(run_start_global),
                             seg_runs=int(seg_len),
@@ -2134,18 +1993,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             base_budget=int(base_budget),
             fg_budget_end=int(fg_budget_end),
         )
-        t_cache = time.perf_counter() if phase_timing else 0.0
-        base_cache_writes = _drain_base_candidate_cache_delta()
-        if t_cache and base_cache_writes:
-            _log_phase(
-                phase="persist_base_candidate_cache_delta",
-                ms=(time.perf_counter() - t_cache) * 1000.0,
-                runs=int(seg_len),
-                pop=int(n_genomes),
-                gen=int(n_generations),
-                use_hints=0,
-                combos=int(base_cache_writes),
-            )
         payload_segments.append(selected_payload)
         run_start_global += seg_len
 

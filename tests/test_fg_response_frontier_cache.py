@@ -146,6 +146,34 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
     assert int(bundle.surface_words.shape[0]) > 0
 
 
+def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache.reset_fg_response_frontier_payload_cache()
+    keys = ((0, 0), (3, 0), (0, 3))
+
+    first = response_cache.build_or_load_response_frontier_payload(_calc_song(), _varying_ref_arrays(), stat_keys=keys)
+    assert first.cache_source == "built"
+    response_cache.reset_fg_response_frontier_payload_cache()
+    monkeypatch.setattr(
+        response_cache,
+        "_payload_disk_info_if_complete",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disk info probe should be skipped")),
+    )
+
+    bundle = response_cache.load_response_frontier_scoring_bundle(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+
+    assert set(bundle.frontier_idx_by_key) == set(keys)
+    assert int(bundle.surface_words.shape[0]) > 0
+
+
 def test_fg_response_frontier_scoring_bundle_requires_prebuilt_cache(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
@@ -882,6 +910,7 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
         frontier_lengths=np.asarray([1], dtype=np.int32),
         surface_words=np.zeros((1, 8), dtype=np.uint32),
         surface_counts=np.zeros((1, 2), dtype=np.int32),
+        surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
         real_time_by_ft=np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
     )
@@ -923,15 +952,7 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
     def _score_must_not_load_bundle(*_args, **_kwargs):
         raise AssertionError("prepared response-frontier scoring must not build or load cache on the GPU owner")
 
-    def _score_must_not_precompute_head_coeffs(*_args, **_kwargs):
-        raise AssertionError("prepared response-frontier scoring must not precompute head coefficients on the GPU owner")
-
     monkeypatch.setattr(response_frontier, "load_response_frontier_scoring_bundle", _score_must_not_load_bundle)
-    monkeypatch.setattr(
-        response_frontier,
-        "_precompute_surface_head_coeffs",
-        _score_must_not_precompute_head_coeffs,
-    )
 
     def _score_must_receive_prepared_surfaces(**kwargs):
         assert kwargs["group_offsets"].tolist() == [0]
@@ -996,24 +1017,21 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
         frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
         for ft_stat, ff_stat in tuple(stat_keys):
             frontier_idx_by_stat[int(ft_stat), int(ff_stat)] = 0
+        surface_words = np.zeros((1, 8), dtype=np.uint32)
         bundle = SimpleNamespace(
             frontier_idx_by_key={key: 0 for key in tuple(stat_keys)},
             frontier_idx_by_stat=frontier_idx_by_stat,
             frontier_offsets=np.asarray([0], dtype=np.int32),
             frontier_lengths=np.asarray([1], dtype=np.int32),
-            surface_words=np.zeros((1, 8), dtype=np.uint32),
+            surface_words=surface_words,
             surface_counts=np.zeros((1, 2), dtype=np.int32),
+            surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+            total_notes=1,
         )
         seen["bundle"] = bundle
         return bundle
 
     monkeypatch.setattr(response_frontier, "load_response_frontier_scoring_bundle", _fake_build_bundle)
-
-    def _fake_precompute_head_coeffs(surface_words, *, head_len):
-        seen["head_len"] = int(head_len)
-        return np.zeros((int(surface_words.shape[0]), 4), dtype=np.int32)
-
-    monkeypatch.setattr(response_frontier, "_precompute_surface_head_coeffs", _fake_precompute_head_coeffs)
 
     batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
@@ -1028,8 +1046,8 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
     assert seen["ref_arrays"] == {"ref": batch.ref_arrays["ref"]}
     assert seen["stat_keys"] == batch.kept_stat_keys
     assert batch.scoring_bundle_ms >= 0.0
-    assert seen["head_len"] == 1
     assert batch.scoring_surface_words.shape == (1, 8)
+    assert batch.scoring_surface_head_coeffs is seen["bundle"].surface_head_coeffs
     assert batch.scoring_surface_counts.shape == (1, 2)
     assert batch.scoring_surface_head_coeffs.shape == (1, 4)
     assert batch.scoring_group_offsets.shape == batch.group_ft.shape
@@ -1059,6 +1077,8 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         frontier_lengths=np.asarray([1], dtype=np.int32),
         surface_words=np.zeros((1, 8), dtype=np.uint32),
         surface_counts=np.zeros((1, 2), dtype=np.int32),
+        surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+        total_notes=1,
     )
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
@@ -1077,11 +1097,6 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         "load_response_frontier_scoring_bundle",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must use prewarmed bundle")),
     )
-    monkeypatch.setattr(
-        response_frontier,
-        "_precompute_surface_head_coeffs",
-        lambda surface_words, *, head_len: np.zeros((int(surface_words.shape[0]), 4), dtype=np.int32),
-    )
 
     batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
@@ -1094,6 +1109,65 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
 
     assert batch.scoring_bundle is prewarmed_bundle
     assert batch.kept_stat_keys == ((0, 0),)
+    assert batch.scoring_surface_head_coeffs is prewarmed_bundle.surface_head_coeffs
+
+
+def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repacking(monkeypatch) -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+
+    song_inputs = SimpleNamespace(
+        total_notes=3,
+        long_notes=0,
+        last_note_time=1.0,
+        use_forced_great_timing=True,
+        primary_color="Rush",
+        secondary_color="Flow",
+        timestamps=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+        great_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+    )
+    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat[0, 0] = 1
+    surface_words = np.arange(24, dtype=np.uint32).reshape(3, 8)
+    surface_counts = np.arange(6, dtype=np.int32).reshape(3, 2)
+    surface_head_coeffs = np.full((3, 4), 3, dtype=np.int32)
+    prewarmed_bundle = SimpleNamespace(
+        frontier_idx_by_key={(0, 0): 1},
+        frontier_idx_by_stat=frontier_idx_by_stat,
+        frontier_offsets=np.asarray([0, 2], dtype=np.int32),
+        frontier_lengths=np.asarray([2, 1], dtype=np.int32),
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+        surface_head_coeffs=surface_head_coeffs,
+        total_notes=3,
+    )
+
+    monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
+    monkeypatch.setattr(
+        response_frontier,
+        "_response_axes",
+        lambda _song, _refs: (
+            song_inputs,
+            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
+            np.ones((TOTAL_ROWS + 1,), dtype=np.int32),
+            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
+        ),
+    )
+
+    batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
+        base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
+        calc_song={"song_data": {}},
+        ref_arrays={"ref": object()},
+        selected_color="Rush",
+        total_budget=0,
+        scoring_bundle=prewarmed_bundle,
+    )
+
+    assert batch.scoring_surface_words is surface_words
+    assert batch.scoring_surface_counts is surface_counts
+    assert batch.scoring_group_offsets.tolist() == [2]
+    assert batch.scoring_group_lengths.tolist() == [1]
+    assert batch.scoring_surface_head_coeffs is surface_head_coeffs
 
 
 def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch, capsys) -> None:

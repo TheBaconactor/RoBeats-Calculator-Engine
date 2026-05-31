@@ -31,6 +31,36 @@ def test_response_surface_head_coeffs_match_bruteforce():
         np.testing.assert_array_equal(got, expected)
 
 
+def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+
+    surface_words = np.asarray(
+        [
+            [0xFFFFFFFF, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0],
+        ],
+        dtype=np.uint32,
+    )
+
+    def fail_unpackbits(*_args, **_kwargs):
+        raise AssertionError("head coeff precompute must use packed lookup tables")
+
+    monkeypatch.setattr(response_inner.np, "unpackbits", fail_unpackbits)
+
+    got = response_inner._precompute_surface_head_coeffs(surface_words, head_len=64)
+
+    np.testing.assert_array_equal(
+        got,
+        np.asarray(
+            [
+                [32, 32, 1552, 528],
+                [32, 32, 528, 1552],
+            ],
+            dtype=np.int32,
+        ),
+    )
+
+
 def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispatch_exceeds_caps(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner
 

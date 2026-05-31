@@ -36,6 +36,7 @@ from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
 from gear_optimizer.solver.native_inflight_lifecycle import (
     GAQueueLimitController,
     continuous_fg_allow_not_ready,
+    continuous_fg_prep_start_budget,
     continuous_ga_should_yield_to_fg,
     continuous_fg_should_fill_song_lanes,
     continuous_fg_should_start,
@@ -162,6 +163,8 @@ def run_native_inflight_song_pipeline(
     memory_release_signal = CachedRuntimeSignal(memory_release_requested, poll_interval_s=0.05)
     gpu_abort_requester = GpuAbortRequester(gpu_executor)
     lane_fill_hold_count = 0
+    def _active_ga_gpu_count() -> int:
+        return int(ga_pipeline.active_count())
     def _active_song_lane_count() -> int:
         return count_active_song_lanes(
             ga_inflight=ga_inflight,
@@ -415,9 +418,16 @@ def run_native_inflight_song_pipeline(
                 did_work = True
                 try:
                     if prep_completion.submit_t0 is not None:
+                        fg_prep_elapsed_s = time.perf_counter() - float(prep_completion.submit_t0)
+                        fg_prep_wall_s = float(getattr(song.runtime.fg, "fg_prep_wall_s", 0.0) or 0.0)
+                        if fg_prep_wall_s <= 0.0 or fg_prep_wall_s > fg_prep_elapsed_s:
+                            fg_prep_wall_s = float(fg_prep_elapsed_s)
+                        fg_prep_queue_s = max(0.0, float(fg_prep_elapsed_s) - float(fg_prep_wall_s))
+                        if fg_prep_queue_s > 0.0:
+                            stage_profiler.record("fg_prep_queue", fg_prep_queue_s, song=song.config.song_name)
                         stage_profiler.record(
                             "fg_prep",
-                            time.perf_counter() - float(prep_completion.submit_t0),
+                            fg_prep_wall_s,
                             cpu_seconds=prep_completion.cpu_seconds,
                             song=song.config.song_name,
                         )
@@ -438,9 +448,15 @@ def run_native_inflight_song_pipeline(
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {exc}")
             if pending_fg:
                 try:
+                    fg_prep_start_budget = continuous_fg_prep_start_budget(
+                        pending_fg_count=len(pending_fg),
+                        fg_prep_inflight_count=len(fg_prep_inflight),
+                        target_song_lanes=int(icfg.target_song_lanes),
+                    )
                     started_fg_prep = fg_pipeline.start_pending_prep(
                         prepare_fg_job_sync,
                         gpu_client=gpu_client,
+                        max_new=int(fg_prep_start_budget),
                         register_future=completion_tracker.register,
                     )
                 except Exception as e:
@@ -490,7 +506,7 @@ def run_native_inflight_song_pipeline(
                     blocked_on_slot=bool(blocked_on_slot_acquire),
                 ):
                     break
-                can_submit_ga = bool(prepared) and len(ga_inflight) < ga_queue_limit_effective
+                can_submit_ga = bool(prepared) and _active_ga_gpu_count() < ga_queue_limit_effective
                 if can_submit_ga:
                     song = prepared.popleft()
                     try:
@@ -780,9 +796,16 @@ def run_native_inflight_song_pipeline(
                     ga_pipeline.release_slot(fg_song, slot_pool)
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                fg_elapsed_s = time.perf_counter() - float(t_submit)
+                fg_run_wall_s = float(getattr(fg_song.runtime.fg, "fg_run_wall_s", 0.0) or 0.0)
+                if fg_run_wall_s <= 0.0 or fg_run_wall_s > fg_elapsed_s:
+                    fg_run_wall_s = float(fg_elapsed_s)
+                fg_worker_queue_s = max(0.0, float(fg_elapsed_s) - float(fg_run_wall_s))
+                if fg_worker_queue_s > 0.0:
+                    stage_profiler.record("fg_worker_queue", fg_worker_queue_s, song=fg_song.config.task_key)
                 stage_profiler.record(
                     "fg_run",
-                    time.perf_counter() - float(t_submit),
+                    fg_run_wall_s,
                     cpu_seconds=getattr(fg_song.runtime.fg, "cpu_fg_run_s", None),
                     song=fg_song.config.task_key,
                 )
@@ -819,7 +842,7 @@ def run_native_inflight_song_pipeline(
                 and (not decode_inflight)
             )
             ga_queue_limit_effective = _current_ga_queue_limit()
-            ready_ga_for_lane_fill = len(prepared) if len(ga_inflight) < int(ga_queue_limit_effective) else 0
+            ready_ga_for_lane_fill = len(prepared) if _active_ga_gpu_count() < int(ga_queue_limit_effective) else 0
             if continuous_fg_should_fill_song_lanes(
                 target_song_lanes=int(icfg.target_song_lanes),
                 active_song_lanes=int(_active_song_lane_count()),
@@ -981,9 +1004,10 @@ def run_native_inflight_song_pipeline(
                         logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         oldest_ga_s = None
                     try:
+                        heartbeat_idle_s = float(heartbeat_bubble.get("idle_sec", 0.0) or 0.0)
                         msg = (
                             "[InFlight][HB] "
-                            f"idle={time.monotonic() - last_progress:.1f}s "
+                            f"idle={heartbeat_idle_s:.1f}s "
                             f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
                             f"cpu_prewarm={len(cpu_prewarm_inflight)} "
                             f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
@@ -1008,7 +1032,7 @@ def run_native_inflight_song_pipeline(
                         component="inflight_orchestrator",
                         event="heartbeat",
                         metrics={
-                            "idle_sec": float(time.monotonic() - last_progress),
+                            "idle_sec": float(heartbeat_bubble.get("idle_sec", 0.0) or 0.0),
                             "pending_tasks": int(len(pending_tasks)),
                             "prepared": int(len(prepared)),
                             "prep_inflight": int(len(prep_inflight)),

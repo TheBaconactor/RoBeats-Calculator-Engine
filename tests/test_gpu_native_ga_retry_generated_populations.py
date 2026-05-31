@@ -248,6 +248,7 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 1, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
     monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
+    monkeypatch.setenv("GPU_NATIVE_GA_BASE_CANDIDATE_CACHE", "1")
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -281,6 +282,8 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
     assert fake_gpu.population_upload_calls == 0
+    assert fake_gpu.base_cache_upload_calls == 0
+    assert fake_gpu.last_evaluate_kwargs["use_base_candidate_cache"] is False
 
 
 def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):

@@ -47,7 +47,7 @@ def read_native_fg_pipeline_settings(
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
-    fg_workers_default = min(8, inflight_limit_i)
+    fg_workers_default = 1
     fg_workers = fg_workers_default
     if cfg0 is not None:
         try:
@@ -72,21 +72,11 @@ def read_native_fg_pipeline_settings(
     except (ValueError, TypeError):
         fg_batch_max = int(fg_workers)
     fg_batch_max = max(1, min(int(fg_batch_max), int(fg_workers), 8))
-    fg_prep_workers = 0
-    if cfg0 is not None:
-        try:
-            fg_prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_FGPrepWorkers", fallback="0"), 0)
-        except (ValueError, TypeError):
-            fg_prep_workers = 0
-    raw = env_get("INFLIGHT_FG_PREP_WORKERS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            fg_prep_workers = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if fg_prep_workers <= 0:
-        fg_prep_workers = default_worker_threads(inflight_limit=inflight_limit_i, kind="fg_prep")
-    fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
+    # Dynamic FG response-frontier prep is memory-bandwidth heavy exact packing.
+    # Parallel producers inflate wall time and starve the single GPU owner, so
+    # the canonical production path keeps one dynamic prep producer.
+    _ = default_worker_threads
+    fg_prep_workers = 1
     static_prep_max_inflight = read_fg_static_prep_max_inflight(
         cfg0,
         fg_prep_workers=int(fg_prep_workers),
@@ -147,6 +137,16 @@ class NativeFGPipeline:
             pass
     def requeue_front(self, song: NativeSong) -> None:
         self.pending.appendleft(song)
+    def _claim_pending_song(self, song: NativeSong) -> NativeSong:
+        try:
+            self.pending.remove(song)
+        except ValueError:
+            pass
+        try:
+            self.prep_inflight.remove(song)
+        except ValueError:
+            pass
+        return song
     def start_prep(
         self,
         song: NativeSong,
@@ -348,26 +348,13 @@ class NativeFGPipeline:
                 if not bool(getattr(candidate.runtime.fg, "fg_dynamic_prep_done", False)):
                     if not allow_not_ready:
                         continue
-                    try:
-                        self.pending.remove(candidate)
-                    except ValueError:
-                        pass
-                    return candidate
-                try:
-                    self.pending.remove(candidate)
-                except ValueError:
-                    pass
-                return candidate
+                    return self._claim_pending_song(candidate)
+                return self._claim_pending_song(candidate)
             if allow_not_ready:
-                try:
-                    self.pending.remove(candidate)
-                except ValueError:
-                    pass
-                return candidate
+                return self._claim_pending_song(candidate)
             try:
                 if fut.done():
-                    self.pending.remove(candidate)
-                    return candidate
+                    return self._claim_pending_song(candidate)
             except Exception as e:
                 logger.debug(f"native_inflight_pipeline:pop_next: {e}")
                 continue
@@ -521,12 +508,17 @@ def run_fg_job_sync(
         prep_wait_t0 = time.perf_counter()
         try:
             fg_prep_future.result()
+            if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
+                raise RuntimeError(
+                    "FG dynamic prep completed without the exact response frontier plan "
+                    f"for {song_key}"
+                )
             try:
                 song.runtime.fg.fg_dynamic_prep_done = True
             except AttributeError:
                 pass
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+        except Exception as exc:
+            raise RuntimeError(f"FG dynamic prep failed for {song_key}") from exc
         finally:
             try:
                 emit_profile_event(
@@ -587,13 +579,16 @@ def run_fg_job_sync(
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     song.runtime.fg.fg_direct_ga_candidates = True
 
-    def _score_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
+    def _submit_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
         handle = gpu_client.submit_force_greats_response_frontier_score_batch(
             {
                 "batch": batch,
                 "include_forced_counts": bool(include_forced_counts),
             }
         )
+        return handle
+
+    def _materialize_prepared_fg_batch(batch, handle, *, include_forced_counts: bool = False):
         inner_rows = handle.future.result()
         return materialize_prepared_force_greats_response_frontier_batch_results(
             batch,
@@ -604,10 +599,26 @@ def run_fg_job_sync(
     prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
-    fg_variants = response_frontier_adapter.execute_force_greats_response_frontier_plan(
+    run_wall_t0 = time.perf_counter()
+    prepared_handles = [
+        (
+            prepared.batch,
+            _submit_prepared_fg_batch(prepared.batch, include_forced_counts=False),
+        )
+        for prepared in prepared_plan.prepared_batches
+    ]
+    prepared_results = [
+        _materialize_prepared_fg_batch(batch, handle, include_forced_counts=False)
+        for batch, handle in prepared_handles
+    ]
+    fg_variants = response_frontier_adapter.materialize_force_greats_response_frontier_plan_results(
         prepared_plan,
-        score_prepared_batch=_score_prepared_fg_batch,
+        prepared_results,
     )
+    try:
+        song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
+    except AttributeError:
+        pass
     song.runtime.fg.fg_variants = list(fg_variants or [])
     try:
         song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
@@ -768,6 +779,20 @@ class InflightGAPipeline:
         self.mark_submitted(song, future)
         register_future(song.runtime.ga.ga_future)
         self.inflight.append(song)
+    def active_count(self) -> int:
+        active = 0
+        for song in self.inflight:
+            future = song.runtime.ga.ga_future
+            if future is None:
+                continue
+            try:
+                if future.done():
+                    continue
+            except Exception as e:
+                logger.debug(f"native_inflight_pipeline:active_count: {e}")
+                continue
+            active += 1
+        return int(active)
     def pop_completed_runs(self) -> list[GARunCompletion]:
         completions: list[GARunCompletion] = []
         for song in list(self.inflight):
@@ -1021,7 +1046,6 @@ def _prewarm_fg_response_support(calc_song: dict, ref_arrays: dict) -> Any | Non
         fg_response_frontier_bundle_cache_key,
         load_response_frontier_scoring_bundle,
     )
-
     bundle_path = _fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
     if not bundle_path.exists():
         raise RuntimeError(f"FG response frontier scoring requires a prebuilt bundle cache: {bundle_path}")
@@ -1066,8 +1090,9 @@ def run_cpu_prewarm_for_song(song: NativeSong) -> None:
     ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
         return
-    _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
+    # FG dynamic prep depends on the scoring bundle; timeline prewarm is GA-only lookahead.
     song.runtime.fg.fg_response_scoring_bundle = _prewarm_fg_response_support(calc_song, ref_arrays)
+    _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
 def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, 'gpu_inputs', song)
@@ -1187,9 +1212,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     config = getattr(song, 'config', song)
     runtime = getattr(song, 'runtime', song)
     gpu_inputs = getattr(song, 'gpu_inputs', song)
-    cpu_prewarm_future = getattr(getattr(song.runtime, "prep", None), "cpu_prewarm_future", None)
-    if cpu_prewarm_future is not None:
-        cpu_prewarm_future.result()
     cfg = getattr(config, "cfg", None)
     perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
@@ -1261,8 +1283,38 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         ga_registry=getattr(song.gpu_inputs, "registry", None),
         scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
     )
+    if runtime.fg.fg_response_frontier_plan is None:
+        raise RuntimeError(
+            "FG dynamic prep did not materialize the exact response frontier plan "
+            f"for {getattr(song.config, 'task_key', '') or getattr(song.config, 'song_name', '')}"
+        )
     plan_ms = (time.perf_counter() - plan_t0) * 1000.0
+    prepared_batches = tuple(getattr(runtime.fg.fg_response_frontier_plan, "prepared_batches", ()) or ())
+    prepared_group_rows = 0
+    prepared_surface_rows = 0
+    prepared_logical_surface_rows = 0
+    prepared_unique_frontiers = 0
+    prepared_compact_ms = 0.0
+    prepared_head_coeff_ms = 0.0
+    prepared_bundle_ms = 0.0
+    for prepared in prepared_batches:
+        batch = getattr(prepared, "batch", None)
+        if batch is None:
+            continue
+        prepared_group_rows += int(getattr(getattr(batch, "group_meta", None), "shape", (0,))[0])
+        prepared_surface_rows += int(getattr(getattr(batch, "scoring_surface_words", None), "shape", (0,))[0])
+        prepared_logical_surface_rows += int(
+            getattr(getattr(batch, "scoring_logical_owners", None), "shape", (0,))[0]
+        )
+        prepared_unique_frontiers += int(getattr(batch, "scoring_unique_frontiers", 0) or 0)
+        prepared_compact_ms += float(getattr(batch, "scoring_surface_compact_ms", 0.0) or 0.0)
+        prepared_head_coeff_ms += float(getattr(batch, "scoring_surface_head_coeff_ms", 0.0) or 0.0)
+        prepared_bundle_ms += float(getattr(batch, "scoring_bundle_ms", 0.0) or 0.0)
     total_ms = (time.perf_counter() - t0) * 1000.0
+    try:
+        song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
+    except AttributeError:
+        pass
     try:
         loadouts_n = len(runtime.fg.loadout_entries or {})
     except (TypeError, AttributeError):
@@ -1299,6 +1351,14 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
                 "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),
+                "prepared_batches": int(len(prepared_batches)),
+                "prepared_group_rows": int(prepared_group_rows),
+                "prepared_surface_rows": int(prepared_surface_rows),
+                "prepared_logical_surface_rows": int(prepared_logical_surface_rows),
+                "prepared_unique_frontiers": int(prepared_unique_frontiers),
+                "prepared_bundle_ms": float(prepared_bundle_ms),
+                "prepared_compact_ms": float(prepared_compact_ms),
+                "prepared_head_coeff_ms": float(prepared_head_coeff_ms),
             },
         )
     except Exception as e:

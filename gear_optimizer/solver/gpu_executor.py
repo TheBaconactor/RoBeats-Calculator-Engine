@@ -65,8 +65,10 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     ExecutorHeartbeatWriter,
     LiveReporter,
     pop_staged_request as _pop_staged_request,
+    prefetch_fg_continuation_requests as _prefetch_fg_continuation_requests,
     prefetch_ga_recovery_requests as _prefetch_ga_recovery_requests,
     stage_request as _stage_request,
+    staged_fg_continuation_index as _staged_fg_continuation_index,
     staged_ga_recovery_index as _staged_ga_recovery_index,
     stamp_request_dequeue as _stamp_request_dequeue,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
@@ -1032,9 +1034,20 @@ class GpuExecutor:
             is_ga_recovery_request=_is_ga_recovery_request,
             empty_exception=queue.Empty,
         )
+    def _prefetch_fg_continuation_requests(self, *, deadline: float, batch_max_size: int) -> None:
+        _prefetch_fg_continuation_requests(
+            in_process_queues=bool(self._in_process_queues),
+            staged_requests=self._staged_requests,
+            deadline=float(deadline),
+            batch_max_size=int(batch_max_size),
+            pop_queue_request=self._pop_queue_request,
+            perf_counter_fn=perf_counter,
+            empty_exception=queue.Empty,
+        )
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
             _stage_request(self._staged_requests, self._pop_queue_request(timeout))
+        self._prefetch_fg_continuation_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         if (
             self._in_process_queues
@@ -1048,6 +1061,10 @@ class GpuExecutor:
             )
             if recovery_idx is not None:
                 return _pop_staged_request(self._staged_requests, index=int(recovery_idx))
+        if self._in_process_queues and self._staged_requests:
+            fg_idx = _staged_fg_continuation_index(list(self._staged_requests))
+            if fg_idx is not None:
+                return _pop_staged_request(self._staged_requests, index=int(fg_idx))
         return _pop_staged_request(self._staged_requests, index=0)
     def _pop_followup_request(self, timeout: float) -> "GpuRequest":
         if self._staged_requests:

@@ -2,6 +2,7 @@ import configparser
 
 from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_fg_allow_not_ready,
+    continuous_fg_prep_start_budget,
     continuous_ga_should_yield_to_fg,
     continuous_fg_should_fill_song_lanes,
     continuous_fg_submit_budget,
@@ -9,6 +10,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_ga_warm_queue_limit,
 )
 from gear_optimizer.solver.native_inflight_lifecycle import (
+    BubbleTracker,
     GAQueueLimitController,
     closed_loop_bubble_kpi,
     count_active_song_lanes,
@@ -386,16 +388,16 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
     )
 
 
-def test_read_cpu_prewarm_workers_respects_lookahead_and_env(monkeypatch):
+def test_read_cpu_prewarm_workers_is_single_canonical_memory_producer(monkeypatch):
     monkeypatch.delenv("INFLIGHT_CPU_PREWARM_WORKERS", raising=False)
 
     assert read_cpu_prewarm_workers(_cfg_with_iteration_engine(), inflight_limit=8, cpu_prewarm_lookahead=0) == 0
 
     cfg = _cfg_with_iteration_engine(InFlight_CPUPrewarmWorkers="6")
-    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 3
+    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 1
 
     monkeypatch.setenv("INFLIGHT_CPU_PREWARM_WORKERS", "4")
-    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 4
+    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 1
 
 
 def test_read_db_prefetch_workers_defaults_from_fg_prep_and_honors_overrides(monkeypatch):
@@ -622,7 +624,24 @@ def test_continuous_ga_yields_to_ready_fg_before_more_ga():
     )
 
 
-def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
+def test_continuous_ga_keeps_feeding_while_fg_prep_has_not_aged():
+    assert (
+        continuous_ga_should_yield_to_fg(
+            pending_fg_count=2,
+            ready_fg_count=0,
+            fg_prep_inflight_count=4,
+            fg_inflight_count=0,
+            fg_worker_count=4,
+            target_song_lanes=2,
+            oldest_wait_s=0.2,
+            aging_trigger_s=0.75,
+            blocked_on_slot=False,
+        )
+        is False
+    )
+
+
+def test_continuous_ga_keeps_feeding_when_unready_fg_prep_debt_is_aged():
     assert (
         continuous_ga_should_yield_to_fg(
             pending_fg_count=4,
@@ -639,7 +658,7 @@ def test_continuous_ga_keeps_feeding_while_fg_prep_catches_up():
     )
 
 
-def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
+def test_continuous_ga_yields_to_aged_fg_debt_even_when_fg_workers_are_full():
     assert (
         continuous_ga_should_yield_to_fg(
             pending_fg_count=8,
@@ -652,11 +671,33 @@ def test_continuous_ga_does_not_yield_when_fg_workers_are_full():
             aging_trigger_s=0.75,
             blocked_on_slot=False,
         )
-        is False
+        is True
     )
 
 
-def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started():
+def test_continuous_fg_prep_start_budget_uses_song_lane_runway_not_worker_count():
+    assert (
+        continuous_fg_prep_start_budget(
+            pending_fg_count=6,
+            fg_prep_inflight_count=0,
+            target_song_lanes=2,
+        )
+        == 2
+    )
+
+
+def test_continuous_fg_prep_start_budget_stops_when_runway_is_full():
+    assert (
+        continuous_fg_prep_start_budget(
+            pending_fg_count=6,
+            fg_prep_inflight_count=2,
+            target_song_lanes=2,
+        )
+        == 0
+    )
+
+
+def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_when_fg_has_not_started():
     limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -673,7 +714,7 @@ def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_fg_has_not_started(
     assert limit == 2
 
 
-def testcontinuous_ga_warm_queue_limit_stays_shallow_during_decode_handoff_before_fg_owner_turn():
+def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_during_decode_handoff_before_fg_owner_turn():
     limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -687,10 +728,10 @@ def testcontinuous_ga_warm_queue_limit_stays_shallow_during_decode_handoff_befor
         active_song_lanes=2,
         dispatch_burst=2,
     )
-    assert limit == 4
+    assert limit == 2
 
 
-def testcontinuous_ga_warm_queue_limit_restores_full_limit_once_fg_owner_turn_is_active():
+def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_once_fg_owner_turn_is_active():
     limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -704,10 +745,10 @@ def testcontinuous_ga_warm_queue_limit_restores_full_limit_once_fg_owner_turn_is
         active_song_lanes=2,
         dispatch_burst=2,
     )
-    assert limit == 12
+    assert limit == 2
 
 
-def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_staging_is_below_conveyor():
+def testcontinuous_ga_warm_queue_limit_still_uses_tiny_runway_when_staging_is_below_conveyor():
     shallow_limit = continuous_ga_warm_queue_limit(
         ga_queue_limit=12,
         inflight_limit=4,
@@ -721,7 +762,7 @@ def testcontinuous_ga_warm_queue_limit_keeps_full_limit_when_staging_is_below_co
         active_song_lanes=0,
         dispatch_burst=2,
     )
-    assert shallow_limit == 12
+    assert shallow_limit == 2
 
 
 def testcontinuous_fg_submit_budget_fills_ready_worker_capacity():
@@ -946,3 +987,49 @@ def test_closed_loop_bubble_kpi_increases_with_ready_work_and_fg_wait():
 
     assert quiet > 0.0
     assert pressured > quiet
+
+
+def test_bubble_snapshot_reports_zero_idle_while_gpu_work_is_inflight():
+    snapshot = BubbleTracker().snapshot_from_pipeline_counts(
+        now_mono=12.5,
+        prepared_count=3,
+        ready_fg_count=1,
+        active_song_lanes=2,
+        pending_tasks_count=10,
+        prep_inflight_count=0,
+        cpu_prewarm_inflight_count=0,
+        decode_inflight_count=0,
+        pending_fg_count=2,
+        fg_prep_inflight_count=0,
+        ga_inflight_count=1,
+        fg_futures_count=1,
+        last_progress=10.0,
+        oldest_fg_wait_s=2.0,
+    )
+
+    assert snapshot["gpu_idle"] == 0
+    assert snapshot["idle_sec"] == 0.0
+    assert snapshot["bubble_kpi"] == 0.0
+
+
+def test_bubble_snapshot_reports_idle_only_when_gpu_owner_has_no_inflight_work():
+    snapshot = BubbleTracker().snapshot_from_pipeline_counts(
+        now_mono=12.5,
+        prepared_count=3,
+        ready_fg_count=1,
+        active_song_lanes=2,
+        pending_tasks_count=10,
+        prep_inflight_count=0,
+        cpu_prewarm_inflight_count=0,
+        decode_inflight_count=0,
+        pending_fg_count=2,
+        fg_prep_inflight_count=0,
+        ga_inflight_count=0,
+        fg_futures_count=0,
+        last_progress=10.0,
+        oldest_fg_wait_s=2.0,
+    )
+
+    assert snapshot["gpu_idle"] == 1
+    assert snapshot["idle_sec"] == 2.5
+    assert snapshot["bubble_kpi"] > 0.0

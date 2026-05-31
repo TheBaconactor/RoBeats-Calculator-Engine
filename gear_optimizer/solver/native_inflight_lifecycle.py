@@ -1594,34 +1594,25 @@ def continuous_ga_warm_queue_limit(
     dispatch_burst: int,
 ) -> int:
     """
-    Keep startup GA warmup bounded without starving the continuous conveyor.
-    The original continuous architecture worked best when GA could keep a healthy
-    runway of future songs behind the currently visible FG lanes. The important
-    protection is only at startup: before any decode/FG work exists, avoid
-    front-loading an arbitrarily deep GA tail that hides the first ready FG.
-    Once decode/FG work exists, return the full GA queue limit and rely on owner
-    turn discipline to surface ready FG promptly. Clamping GA to the visible lane
-    count once the conveyor is full underfeeds fast GPUs because downstream decode/FG prep
-    latency can exceed a two-lane runway.
+    Keep the single GPU owner fed without allowing GA to create hidden FG debt.
+    The owner needs a tiny runway, not a single-request cliff: one ready GA can
+    leave the GPU empty while host decode/FG prep stages the next request. Keep
+    the runway bounded by the song-lane/dispatch conveyor, and rely on the GPU
+    owner to pull a ready FG continuation ahead of staged GA at the boundary.
     """
     limit = max(1, int(ga_queue_limit))
     inflight_limit = max(1, int(inflight_limit))
     if inflight_limit <= 1:
         return limit
     target_lanes = max(1, min(int(target_song_lanes), int(inflight_limit)))
-    burst = max(1, int(dispatch_burst))
-    warm_limit = max(1, min(int(limit), max(int(target_lanes), min(int(inflight_limit), int(burst)))))
-    handoff_limit = max(
-        int(warm_limit),
-        min(int(limit), max(int(target_lanes) * 2, int(target_lanes) + int(burst))),
-    )
-    if max(0, int(fg_inflight_count)) > 0:
-        return int(limit)
+    burst_lanes = max(1, int(dispatch_burst))
+    warm_limit = max(1, min(int(limit), int(target_lanes), int(burst_lanes)))
     handoff_fg_work = (
         max(0, int(decode_inflight_count)) + max(0, int(pending_fg_count)) + max(0, int(fg_prep_inflight_count))
+        + max(0, int(fg_inflight_count))
     )
     if handoff_fg_work > 0:
-        return int(handoff_limit)
+        return int(warm_limit)
     staging_depth = max(0, int(prepared_count)) + max(0, int(prep_inflight_count))
     if staging_depth >= int(warm_limit):
         return int(warm_limit)
@@ -1676,9 +1667,10 @@ def continuous_ga_should_yield_to_fg(
     """
     Stop GA admission when FG has become the limiting queue.
     This is deliberately an admission rule, not a scoring shortcut. Existing GA
-    work may finish, but the submit loop yields to the FG scheduler before it
-    adds more GA jobs once FG is ready. Active-but-unready FG prep is not a
-    runnable GPU lane, so it must not stop GA admission by itself.
+    work may finish, but the submit loop yields to the FG scheduler only when
+    FG has runnable GPU work. Active-but-unready FG prep is CPU work, not a GPU
+    lane; letting it block ready GA creates visible owner starvation instead of
+    protecting exactness.
     """
     pending = max(0, int(pending_fg_count))
     ready = max(0, int(ready_fg_count))
@@ -1690,11 +1682,33 @@ def continuous_ga_should_yield_to_fg(
         return False
     if bool(blocked_on_slot):
         return True
-    if fg_inflight >= fg_workers:
-        return False
     if ready > 0:
         return True
+    if fg_inflight >= fg_workers:
+        return False
     return False
+
+def continuous_fg_prep_start_budget(
+    *,
+    pending_fg_count: int,
+    fg_prep_inflight_count: int,
+    target_song_lanes: int,
+) -> int:
+    """
+    Bound dynamic FG prep to the same song-lane runway that owns GA/FG overlap.
+
+    FG prep is exact CPU work for a pending FG lane. Letting it top up to the
+    raw worker count creates hidden active lanes during hard-chart clusters,
+    even after GA admission yields correctly. The target song-lane budget is
+    the owner invariant; worker count is only local execution capacity.
+    """
+    pending = max(0, int(pending_fg_count))
+    if pending <= 0:
+        return 0
+    target = max(1, int(target_song_lanes))
+    active_prep = max(0, int(fg_prep_inflight_count))
+    return max(0, min(int(pending), int(target) - int(active_prep)))
+
 def continuous_fg_should_start(
     *,
     pending_fg_count: int,

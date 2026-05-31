@@ -340,7 +340,7 @@ GA_RECOVERY_REQUEST_TYPES = frozenset()
 
 COALESCABLE_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
 
-NO_BATCH_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
+NO_BATCH_REQUEST_TYPES = frozenset()
 NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in NO_BATCH_REQUEST_TYPES})
 GA_RECOVERY_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in GA_RECOVERY_REQUEST_TYPES})
 
@@ -683,15 +683,15 @@ def load_native_ga_batch_limits(
     env_get_fn: Callable[[str, Any], Any] = env_get,
 ) -> NativeGaBatchLimits:
     try:
-        max_reqs = int(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "1") or "1")
+        max_reqs = int(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "2") or "2")
     except (ValueError, TypeError):
-        max_reqs = 1
+        max_reqs = 2
     max_reqs = max(1, min(int(max_reqs), 128))
 
     try:
-        max_work_units = float(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "720000") or "720000")
+        max_work_units = float(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "240000") or "240000")
     except (ValueError, TypeError):
-        max_work_units = 720000.0
+        max_work_units = 240000.0
     if max_work_units <= 0.0:
         max_work_units = float("inf")
 

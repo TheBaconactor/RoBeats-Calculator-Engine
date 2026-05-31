@@ -142,6 +142,40 @@ def test_frontier_disk_cache_persists_group_payload_and_reuses_it(tmp_path: Path
     assert np.array_equal(loaded["group_ends"], group_payload["group_ends"])
 
 
+def test_build_or_load_timeline_frontier_payload_disk_hit_skips_redundant_group_disk_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Warm Disk Timeline",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+    ref_arrays = _ref_arrays()
+
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    assert first.cache_source == "built"
+
+    timeline_api.reset_timeline_state()
+    monkeypatch.setattr(
+        timeline_api,
+        "_load_group_payload_from_frontier_disk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("group payload disk probe should be skipped")),
+    )
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    assert second.cache_source == "disk"
+    assert int(second.total_notes) == 4
+
+
 def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
     payload = _build_small_payload()
     key = ("unit", "replace-fail", 2)

@@ -32,7 +32,7 @@ def test_load_native_ga_batch_limits_clamps_request_count_and_disables_work_cap(
 def test_load_native_ga_batch_limits_uses_defaults_for_invalid_values():
     limits = load_native_ga_batch_limits(env_get_fn=lambda _key, _default: "not-a-number")
 
-    assert limits == NativeGaBatchLimits(max_reqs=1, max_work_units=720000.0)
+    assert limits == NativeGaBatchLimits(max_reqs=2, max_work_units=240000.0)
 
 
 def test_plan_native_ga_batch_chunks_splits_by_request_limit():

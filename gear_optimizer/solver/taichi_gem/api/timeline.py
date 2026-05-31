@@ -507,6 +507,28 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
         return None
 
 
+def _get_cached_frontier_payload_with_source(
+    song_key: tuple,
+    *,
+    ref_ft: np.ndarray,
+    ref_ff: np.ndarray,
+) -> tuple[TimelineFrontierGridPayload | None, str]:
+    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+    with _ceiling_payload_cache_lock:
+        cached = _ceiling_frontier_payload_cache.get(cache_key)
+        if isinstance(cached, TimelineFrontierGridPayload):
+            _ceiling_frontier_payload_cache.move_to_end(cache_key)
+            return cached, "memory"
+
+    cached = _load_frontier_payload_from_disk(cache_key)
+    if isinstance(cached, TimelineFrontierGridPayload):
+        with _ceiling_payload_cache_lock:
+            _ceiling_frontier_payload_cache[cache_key] = cached
+            _ceiling_frontier_payload_cache.move_to_end(cache_key)
+        return cached, "disk"
+    return None, "missing"
+
+
 def _save_frontier_payload_to_disk(
     cache_key: tuple,
     payload: TimelineFrontierGridPayload,
@@ -761,18 +783,13 @@ def _get_or_build_ceiling_frontier_payload_with_source(
     global _ceiling_frontier_payload_cache
 
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_frontier_payload_cache.get(cache_key)
-        if isinstance(cached, TimelineFrontierGridPayload):
-            _ceiling_frontier_payload_cache.move_to_end(cache_key)
-            return cached, "memory"
-
-    cached = _load_frontier_payload_from_disk(cache_key)
+    cached, cache_source = _get_cached_frontier_payload_with_source(
+        song_key,
+        ref_ft=np.asarray(ref_ft, dtype=np.float32),
+        ref_ff=np.asarray(ref_ff, dtype=np.float32),
+    )
     if isinstance(cached, TimelineFrontierGridPayload):
-        with _ceiling_payload_cache_lock:
-            _ceiling_frontier_payload_cache[cache_key] = cached
-            _ceiling_frontier_payload_cache.move_to_end(cache_key)
-        return cached, "disk"
+        return cached, cache_source
 
     payload = build_timeline_frontier_grid_payload(
         song_slot=0,
@@ -804,9 +821,7 @@ def _get_or_build_ceiling_frontier_payload_with_source(
     return payload, "built"
 
 
-
-
-def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: bytes | None = None) -> dict:
+def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_sig: bytes | None = None) -> dict:
     if not isinstance(calc_song, dict):
         raise TypeError("calc_song must be a dict")
     if not isinstance(ref_arrays, dict):
@@ -828,7 +843,31 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
 
     ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
-    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+    return {
+        "base_song_key": base_song_key,
+        "song_key": song_key,
+        "timestamps": timestamps,
+        "total_notes": int(total_notes),
+        "long_notes": int(calc_song["metadata"].get("Long Notes", 0)),
+        "last_note_time": float(calc_song["metadata"].get("Last Note Time", 0)),
+        "song_profile_key": _timeline_song_profile_key(calc_song),
+        "ref_ft": ref_ft,
+        "ref_ff": ref_ff,
+        "note_types": song_data.get("note_types", None),
+    }
+
+
+def _timeline_payload_context(
+    calc_song: dict,
+    ref_arrays: dict,
+    *,
+    ref_sig: bytes | None = None,
+    lookup_ctx: dict | None = None,
+) -> dict:
+    lookup = dict(lookup_ctx or _timeline_payload_lookup_context(calc_song, ref_arrays, ref_sig=ref_sig))
+    base_song_key = lookup["base_song_key"]
+    total_notes = int(lookup["total_notes"])
+    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
 
     group_payload = _group_cache_get(base_song_key[:-1], expected_n=int(total_notes))
     if group_payload is None:
@@ -839,8 +878,8 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
         else:
             group_payload = _get_or_build_ceiling_group_payload(
                 base_song_key[:-1],
-                timestamps=timestamps,
-                note_types=song_data.get("note_types", None),
+                timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
+                note_types=lookup.get("note_types", None),
             )
     payload_n = int(group_payload.get("n", 0) or 0)
     if int(payload_n) != int(total_notes):
@@ -848,18 +887,8 @@ def _timeline_payload_context(calc_song: dict, ref_arrays: dict, *, ref_sig: byt
     if total_notes > 0 and int(group_payload.get("group_count", 0) or 0) <= 0:
         raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
 
-    return {
-        "base_song_key": base_song_key,
-        "song_key": song_key,
-        "timestamps": timestamps,
-        "total_notes": int(total_notes),
-        "group_payload": group_payload,
-        "long_notes": int(calc_song["metadata"].get("Long Notes", 0)),
-        "last_note_time": float(calc_song["metadata"].get("Last Note Time", 0)),
-        "song_profile_key": _timeline_song_profile_key(calc_song),
-        "ref_ft": ref_ft,
-        "ref_ff": ref_ff,
-    }
+    lookup["group_payload"] = group_payload
+    return lookup
 
 
 def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> TimelineFrontierCacheInfo:
@@ -934,28 +963,35 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     disk-cache prebuilding, so cache signatures stay identical to runtime scoring.
     """
     t0 = time.perf_counter()
-    ctx = _timeline_payload_context(calc_song, ref_arrays)
-    cache_key = _frontier_payload_cache_key(ctx["song_key"], ctx["ref_ft"], ctx["ref_ff"])
-    payload, cache_source = _get_or_build_ceiling_frontier_payload_with_source(
-        ctx["song_key"],
-        song_slot=0,
-        total_notes=int(ctx["total_notes"]),
-        long_notes=int(ctx["long_notes"]),
-        last_note_time=float(ctx["last_note_time"]),
-        song_profile_key=ctx["song_profile_key"],
-        group_payload=ctx["group_payload"],
-        ref_ft=ctx["ref_ft"],
-        ref_ff=ctx["ref_ff"],
+    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
+    payload, cache_source = _get_cached_frontier_payload_with_source(
+        lookup["song_key"],
+        ref_ft=lookup["ref_ft"],
+        ref_ff=lookup["ref_ff"],
     )
+    if payload is None:
+        ctx = _timeline_payload_context(calc_song, ref_arrays, lookup_ctx=lookup)
+        payload, cache_source = _get_or_build_ceiling_frontier_payload_with_source(
+            ctx["song_key"],
+            song_slot=0,
+            total_notes=int(ctx["total_notes"]),
+            long_notes=int(ctx["long_notes"]),
+            last_note_time=float(ctx["last_note_time"]),
+            song_profile_key=ctx["song_profile_key"],
+            group_payload=ctx["group_payload"],
+            ref_ft=ctx["ref_ft"],
+            ref_ff=ctx["ref_ff"],
+        )
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
         disk_path=_frontier_disk_cache_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        song_profile_key=ctx["song_profile_key"],
-        total_notes=int(ctx["total_notes"]),
-        long_notes=int(ctx["long_notes"]),
+        song_profile_key=lookup["song_profile_key"],
+        total_notes=int(lookup["total_notes"]),
+        long_notes=int(lookup["long_notes"]),
     )
 
 
@@ -991,11 +1027,12 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     # Also reuse the ref signature so callers don't hash refs twice.
     ref_sig = ensure_ready(ref_arrays) if isinstance(ref_arrays, dict) else ensure_ready(None)
 
-    ctx = _timeline_payload_context(calc_song, ref_arrays, ref_sig=ref_sig)
+    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays, ref_sig=ref_sig)
     # Check if we already computed for this song+ref set.
-    song_key = ctx["song_key"]
+    song_key = lookup["song_key"]
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
+    ctx = _timeline_payload_context(calc_song, ref_arrays, ref_sig=ref_sig, lookup_ctx=lookup)
 
     # Upload chart timestamps and note-group metadata for the exact frontier path.
     timestamps = np.asarray(ctx["timestamps"], dtype=np.float32)

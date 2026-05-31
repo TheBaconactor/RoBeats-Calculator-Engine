@@ -147,6 +147,7 @@ class FgResponseFrontierScoringBundle:
     frontier_meta: np.ndarray
     surface_words: np.ndarray
     surface_counts: np.ndarray
+    surface_head_coeffs: np.ndarray
     frontier_offsets: np.ndarray
     frontier_lengths: np.ndarray
     total_notes: int
@@ -1252,6 +1253,13 @@ def _materialize_scoring_bundle_from_arrays(
     first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
     surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
+    total_notes = int(np.asarray(arrays["total_notes"]).item())
+    from .response_inner import _precompute_surface_head_coeffs
+
+    surface_head_coeffs = _precompute_surface_head_coeffs(
+        surface_words,
+        head_len=min(int(total_notes), 100),
+    )
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
@@ -1262,9 +1270,10 @@ def _materialize_scoring_bundle_from_arrays(
         frontier_meta=np.asarray(arrays["frontier_meta"], dtype=np.int32),
         surface_words=surface_words,
         surface_counts=surface_counts,
+        surface_head_coeffs=surface_head_coeffs,
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
         frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
-        total_notes=int(np.asarray(arrays["total_notes"]).item()),
+        total_notes=int(total_notes),
         long_notes=int(np.asarray(arrays["long_notes"]).item()),
         use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),
     )
@@ -1278,10 +1287,6 @@ def load_response_frontier_scoring_bundle(
 ) -> FgResponseFrontierScoringBundle:
     keys = normalize_fg_response_stat_keys(stat_keys)
     bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
-    if _payload_disk_info_if_complete(bundle_key, keys) is None:
-        raise ValueError(
-            "FG response frontier scoring requires a prebuilt canonical bundle cache for the requested stat keys"
-        )
     with _frontier_cache_lock:
         cached_scoring = _scoring_bundle_cache.get(bundle_key)
         if cached_scoring is not None:
@@ -1291,8 +1296,13 @@ def load_response_frontier_scoring_bundle(
                 _scoring_bundle_cache.move_to_end(bundle_key)
                 return cached_scoring
 
-    arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
-    scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
+    try:
+        arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+        scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
+    except ValueError as exc:
+        raise ValueError(
+            "FG response frontier scoring requires a prebuilt canonical bundle cache for the requested stat keys"
+        ) from exc
     with _frontier_cache_lock:
         _scoring_bundle_cache[bundle_key] = scoring_bundle
         _scoring_bundle_cache.move_to_end(bundle_key)

@@ -32,7 +32,6 @@ from .response_ftff_prune import (
     prune_dominated_ftff_response_positions,
 )
 from .response_inner import (
-    _precompute_surface_head_coeffs,
     _response_group_logical_surface_plan,
     _response_inner_combo_counts,
     _score_response_group_meta_gpu,
@@ -165,29 +164,17 @@ def _pack_scoring_surfaces_for_batch(
     if bool(np.any((kept_frontiers < 0) | (kept_frontiers >= frontier_count))):
         raise ValueError("FG response frontier stat key was not loaded for packed batch solve")
 
-    unique_frontiers = np.ascontiguousarray(np.unique(kept_frontiers), dtype=np.int32)
     frontier_lengths_all = np.asarray(scoring_bundle.frontier_lengths, dtype=np.int32)
     frontier_offsets_all = np.asarray(scoring_bundle.frontier_offsets, dtype=np.int32)
-    unique_lengths = np.ascontiguousarray(frontier_lengths_all[unique_frontiers], dtype=np.int32)
-    if bool(np.any(unique_lengths <= 0)):
+    if bool(np.any(frontier_lengths_all[kept_frontiers] <= 0)):
         raise ValueError("FG response frontier payload contains an empty first frontier")
 
-    local_offsets_by_frontier = np.full((frontier_count,), -1, dtype=np.int32)
-    surface_word_blocks: list[np.ndarray] = []
-    surface_count_blocks: list[np.ndarray] = []
-    cursor = 0
-    for local_idx, frontier_idx in enumerate(unique_frontiers.tolist()):
-        start = int(frontier_offsets_all[int(frontier_idx)])
-        length = int(unique_lengths[int(local_idx)])
-        stop = int(start) + int(length)
-        local_offsets_by_frontier[int(frontier_idx)] = int(cursor)
-        surface_word_blocks.append(scoring_bundle.surface_words[start:stop])
-        surface_count_blocks.append(scoring_bundle.surface_counts[start:stop])
-        cursor += int(length)
-
-    surface_words = np.ascontiguousarray(np.concatenate(surface_word_blocks, axis=0), dtype=np.uint32)
-    surface_counts = np.ascontiguousarray(np.concatenate(surface_count_blocks, axis=0), dtype=np.int32)
-    group_offsets = np.ascontiguousarray(local_offsets_by_frontier[kept_frontiers], dtype=np.int32)
+    # The canonical scoring bundle already owns the exact global frontier pool.
+    # Repacking a candidate-local surface pool here only recreates equivalent
+    # arrays and burns host time before every FG dispatch.
+    surface_words = scoring_bundle.surface_words
+    surface_counts = scoring_bundle.surface_counts
+    group_offsets = np.ascontiguousarray(frontier_offsets_all[kept_frontiers], dtype=np.int32)
     group_lengths = np.ascontiguousarray(frontier_lengths_all[kept_frontiers], dtype=np.int32)
     if bool(np.any(group_offsets < 0)) or bool(np.any(group_lengths <= 0)):
         raise ValueError("FG response frontier payload contains an empty first frontier")
@@ -201,9 +188,15 @@ def _pack_scoring_surfaces_for_batch(
         raise ValueError("response frontier GPU group metadata has inconsistent head length")
     compact_ms = float((time.perf_counter() - phase_t0) * 1000.0)
 
-    phase_t0 = time.perf_counter()
-    surface_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=int(head_lengths[0]))
-    head_coeff_ms = float((time.perf_counter() - phase_t0) * 1000.0)
+    surface_head_coeffs = np.ascontiguousarray(scoring_bundle.surface_head_coeffs, dtype=np.int32)
+    if (
+        int(surface_head_coeffs.ndim) != 2
+        or int(surface_head_coeffs.shape[0]) != int(surface_words.shape[0])
+        or int(surface_head_coeffs.shape[1]) != 4
+    ):
+        raise ValueError("FG response frontier scoring bundle has invalid surface head coefficients")
+    head_coeff_ms = 0.0
+    unique_frontiers = np.ascontiguousarray(np.unique(kept_frontiers), dtype=np.int32)
     return (
         surface_words,
         surface_counts,

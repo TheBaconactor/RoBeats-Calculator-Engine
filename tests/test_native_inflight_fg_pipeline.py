@@ -4,9 +4,16 @@ import threading
 import time
 from concurrent.futures import Future
 
+import numpy as np
+import pytest
+
 from gear_optimizer.solver.native_inflight_pipeline import (
+    InflightGAPipeline,
     NativeFGPipeline,
     NativeFGPipelineSettings,
+    _prewarm_fg_response_support,
+    run_cpu_prewarm_for_song,
+    run_fg_job_sync,
     read_native_fg_pipeline_settings,
 )
 from gear_optimizer.solver.native_inflight_config import make_native_song
@@ -17,19 +24,22 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_BATCH_MAX", raising=False)
     monkeypatch.delenv("INFLIGHT_FG_PREP_WORKERS", raising=False)
 
+    def obsolete_fg_prep_sizer(**_kwargs):
+        raise AssertionError("dynamic FG prep workers are canonical, not CPU-scaled")
+
     settings = read_native_fg_pipeline_settings(
         None,
         inflight_limit=8,
         ga_credit_budget_cfg=12,
-        default_worker_threads=lambda **_kwargs: 3,
+        default_worker_threads=obsolete_fg_prep_sizer,
     )
 
-    assert settings.workers == 8
-    assert settings.batch_max == 8
-    assert settings.prep_workers == 3
+    assert settings.workers == 1
+    assert settings.batch_max == 1
+    assert settings.prep_workers == 1
     assert settings.ga_credit_budget == 12
     assert settings.static_prep_max_inflight == 0
-    assert settings.db_prefetch_workers == 3
+    assert settings.db_prefetch_workers == 1
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "9")
     monkeypatch.setenv("INFLIGHT_FG_BATCH_MAX", "6")
@@ -38,14 +48,14 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
         None,
         inflight_limit=5,
         ga_credit_budget_cfg=2,
-        default_worker_threads=lambda **_kwargs: 1,
+        default_worker_threads=obsolete_fg_prep_sizer,
     )
 
     assert settings.workers == 5
     assert settings.batch_max == 5
-    assert settings.prep_workers == 5
+    assert settings.prep_workers == 1
     assert settings.ga_credit_budget == 2
-    assert settings.db_prefetch_workers == 4
+    assert settings.db_prefetch_workers == 1
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "12")
     monkeypatch.setenv("INFLIGHT_FG_BATCH_MAX", "12")
@@ -54,13 +64,13 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
         None,
         inflight_limit=16,
         ga_credit_budget_cfg=2,
-        default_worker_threads=lambda **_kwargs: 1,
+        default_worker_threads=obsolete_fg_prep_sizer,
     )
 
     assert settings.workers == 8
     assert settings.batch_max == 8
-    assert settings.prep_workers == 8
-    assert settings.db_prefetch_workers == 4
+    assert settings.prep_workers == 1
+    assert settings.db_prefetch_workers == 1
 
 
 def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(monkeypatch):
@@ -79,9 +89,28 @@ def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(m
         default_worker_threads=lambda **_kwargs: 3,
     )
 
-    assert settings.prep_workers == 3
-    assert settings.static_prep_max_inflight == 3
+    assert settings.prep_workers == 1
+    assert settings.static_prep_max_inflight == 1
     assert settings.db_prefetch_workers == 6
+
+
+def test_inflight_ga_pipeline_active_count_ignores_completed_futures():
+    pipeline = InflightGAPipeline()
+    active_song = make_native_song(task_key="ga-active", song_name="GA Active")
+    done_song = make_native_song(task_key="ga-done", song_name="GA Done")
+    active_future = Future()
+    done_future = Future()
+    done_future.set_result({"ok": True})
+
+    pipeline.track_submitted(active_song, active_future, register_future=lambda _future: None)
+    pipeline.track_submitted(done_song, done_future, register_future=lambda _future: None)
+
+    assert len(pipeline.inflight) == 2
+    assert pipeline.active_count() == 1
+
+    active_future.set_result({"ok": True})
+
+    assert pipeline.active_count() == 0
 
 
 def test_native_fg_pipeline_queue_pop_credit_and_submit():
@@ -138,6 +167,23 @@ def test_native_fg_pipeline_does_not_pop_unready_without_slot_pressure():
 
         pipeline.requeue_front(song)
         assert pipeline.pending[0] is song
+    finally:
+        pipeline.shutdown_fg(wait=True, cancel_futures=True)
+        pipeline.shutdown_prep(wait=True, cancel_futures=True)
+
+
+def test_native_fg_pipeline_pop_next_claims_prep_ownership():
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1, ga_credit_budget=1))
+    try:
+        prep_future = Future()
+        prep_future.set_result(None)
+        song = make_native_song(task_key="claim-prep", song_name="Claim Prep", fg_prep_future=prep_future)
+        pipeline.queue(song, now_s=20.0)
+        pipeline.prep_inflight.append(song)
+
+        assert pipeline.pop_next(allow_not_ready=False) is song
+        assert list(pipeline.pending) == []
+        assert list(pipeline.prep_inflight) == []
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
@@ -286,6 +332,116 @@ def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
+
+
+def test_run_fg_job_sync_fails_at_prep_future_error_not_missing_plan():
+    prep_future = Future()
+    prep_future.set_exception(RuntimeError("prep exploded"))
+    song = make_native_song(
+        task_key="prep-fail-song",
+        song_name="Prep Fail Song",
+        fg_prep_future=prep_future,
+    )
+
+    with pytest.raises(RuntimeError, match="FG dynamic prep failed for prep-fail-song") as excinfo:
+        run_fg_job_sync(song, gpu_client=object())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "prep exploded" in str(excinfo.value.__cause__)
+    assert song.runtime.fg.fg_prep_future is None
+
+
+def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
+    prep_future = Future()
+    prep_future.set_result(None)
+    song = make_native_song(
+        task_key="prep-no-plan",
+        song_name="Prep No Plan",
+        fg_prep_future=prep_future,
+        loadout_entries={},
+    )
+
+    with pytest.raises(RuntimeError, match="FG dynamic prep failed for prep-no-plan") as excinfo:
+        run_fg_job_sync(song, gpu_client=object())
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "completed without the exact response frontier plan" in str(excinfo.value.__cause__)
+    assert song.runtime.fg.fg_prep_future is None
+    assert song.runtime.fg.fg_dynamic_prep_done is False
+
+
+def test_prewarm_fg_response_support_uses_bundle_owned_head_coeffs(tmp_path, monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_inner
+
+    bundle_path = tmp_path / "bundle.npz"
+    bundle_path.write_bytes(b"bundle")
+    bundle = type(
+        "Bundle",
+        (),
+        {
+            "surface_words": np.zeros((4, 8), dtype=np.uint32),
+            "surface_head_coeffs": np.zeros((4, 4), dtype=np.int32),
+            "total_notes": 123,
+        },
+    )()
+
+    def _must_not_recompute_head_coeffs(*_args, **_kwargs):
+        raise AssertionError("FG prewarm must not recompute bundle head coefficients")
+
+    monkeypatch.setattr(response_cache, "_fg_response_disk_cache_path", lambda _key: bundle_path)
+    monkeypatch.setattr(response_cache, "fg_response_frontier_bundle_cache_key", lambda *_args, **_kwargs: ("bundle",))
+    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(response_inner, "_precompute_surface_head_coeffs", _must_not_recompute_head_coeffs)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.fg_response_frontier_cache_prebuild.all_response_stat_keys",
+        lambda: ((0, 0),),
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.scoring.stats_scoring.evaluate_stats_score",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    got = _prewarm_fg_response_support(
+        {
+            "metadata": {
+                "Primary Color": "Rush",
+                "Secondary Color": "Flow",
+            }
+        },
+        {"ref": object()},
+    )
+
+    assert got is bundle
+    assert bundle.surface_head_coeffs.shape == (4, 4)
+
+
+def test_run_cpu_prewarm_for_song_publishes_fg_support_before_timeline(monkeypatch):
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        stages,
+        "_prewarm_fg_response_support",
+        lambda *_args, **_kwargs: calls.append("fg") or "bundle",
+    )
+    monkeypatch.setattr(
+        stages,
+        "_prewarm_timeline_frontier_payload",
+        lambda *_args, **_kwargs: calls.append("timeline"),
+    )
+
+    song = make_native_song(
+        task_key="prewarm-order",
+        song_name="Prewarm Order",
+        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
+        ref_arrays={"Fever Time": np.asarray([0.0], dtype=np.float32)},
+    )
+
+    run_cpu_prewarm_for_song(song)
+
+    assert calls == ["fg", "timeline"]
+    assert song.runtime.fg.fg_response_scoring_bundle == "bundle"
 
 
 def test_native_fg_pipeline_static_prep_budget_reserves_dynamic_prep_workers():

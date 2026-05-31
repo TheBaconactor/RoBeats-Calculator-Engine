@@ -22,11 +22,18 @@ from gear_optimizer.solver.taichi_gem import api as gem_api
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
 
-_PACKED_FRONTIER_SURFACE_CACHE_MAX = 8
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
-_PACKED_FRONTIER_SURFACE_CACHE: OrderedDict[
-    tuple[int, tuple[int, ...]], tuple[tuple[Any, ...], np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-] = OrderedDict()
+_U16_HEAD_VALUES = np.arange(1 << 16, dtype=np.uint16)
+_U16_HEAD_BITS = np.unpackbits(_U16_HEAD_VALUES.view(np.uint8).reshape(-1, 2), axis=1, bitorder="little").astype(
+    np.int32,
+    copy=False,
+)
+_U16_HEAD_COUNT = np.ascontiguousarray(np.sum(_U16_HEAD_BITS, axis=1, dtype=np.int32), dtype=np.int32)
+_U16_HEAD_POS_SUM = np.ascontiguousarray(
+    np.sum(_U16_HEAD_BITS * np.arange(1, 17, dtype=np.int32).reshape(1, 16), axis=1, dtype=np.int32),
+    dtype=np.int32,
+)
+del _U16_HEAD_BITS
 _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
 _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
@@ -1589,61 +1596,6 @@ def _inner_stat_values_for_colors(
     )
 
 
-def _pack_response_frontier_surface_pool(
-    frontiers: tuple[Any, ...],
-    *,
-    total_notes: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    body_total = max(0, int(total_notes) - 100)
-    key = (int(body_total), tuple(id(frontier) for frontier in frontiers))
-    cached = _PACKED_FRONTIER_SURFACE_CACHE.get(key)
-    if cached is not None and cached[0] == frontiers:
-        _PACKED_FRONTIER_SURFACE_CACHE.move_to_end(key)
-        return cached[1], cached[2], cached[3], cached[4]
-
-    offsets = np.zeros(len(frontiers), dtype=np.int32)
-    lengths = np.zeros(len(frontiers), dtype=np.int32)
-    word_blocks: list[np.ndarray] = []
-    count_blocks: list[np.ndarray] = []
-    row_offset = 0
-    for frontier_idx, frontier in enumerate(frontiers):
-        surfaces = tuple(getattr(frontier, "first_frontier"))
-        offsets[frontier_idx] = int(row_offset)
-        lengths[frontier_idx] = int(len(surfaces))
-        if not surfaces:
-            continue
-        words = np.empty((len(surfaces), 8), dtype=np.uint32)
-        counts = np.empty((len(surfaces), 2), dtype=np.int32)
-        for surface_idx, surface in enumerate(surfaces):
-            _validate_surface(surface, body_total=int(body_total))
-            words[surface_idx, 0] = int(surface.fever0)
-            words[surface_idx, 1] = int(surface.fever1)
-            words[surface_idx, 2] = int(surface.fever2)
-            words[surface_idx, 3] = int(surface.fever3)
-            words[surface_idx, 4] = int(surface.great0)
-            words[surface_idx, 5] = int(surface.great1)
-            words[surface_idx, 6] = int(surface.great2)
-            words[surface_idx, 7] = int(surface.great3)
-            counts[surface_idx, 0] = int(surface.body_fever)
-            counts[surface_idx, 1] = int(surface.body_great)
-        word_blocks.append(words)
-        count_blocks.append(counts)
-        row_offset += int(len(surfaces))
-
-    if row_offset > 0:
-        surface_words = np.ascontiguousarray(np.concatenate(word_blocks, axis=0))
-        surface_counts = np.ascontiguousarray(np.concatenate(count_blocks, axis=0))
-    else:
-        surface_words = np.zeros((0, 8), dtype=np.uint32)
-        surface_counts = np.zeros((0, 2), dtype=np.int32)
-    packed = (tuple(frontiers), surface_words, surface_counts, offsets, lengths)
-    _PACKED_FRONTIER_SURFACE_CACHE[key] = packed
-    _PACKED_FRONTIER_SURFACE_CACHE.move_to_end(key)
-    while len(_PACKED_FRONTIER_SURFACE_CACHE) > _PACKED_FRONTIER_SURFACE_CACHE_MAX:
-        _PACKED_FRONTIER_SURFACE_CACHE.popitem(last=False)
-    return surface_words, surface_counts, offsets, lengths
-
-
 def _precompute_surface_head_coeffs(
     surface_words: np.ndarray,
     *,
@@ -1672,16 +1624,28 @@ def _precompute_surface_head_coeffs(
             take = min(32, int(head) - int(start))
             if take <= 0:
                 continue
-            block_words = np.ascontiguousarray(words[:, block], dtype=np.uint32)
-            block_bytes = np.ascontiguousarray(block_words.view(np.uint8).reshape(row_count, 4), dtype=np.uint8)
-            block_bits = np.unpackbits(block_bytes, axis=1, bitorder="little")[:, : int(take)].astype(np.int32, copy=False)
-            fever_count = np.sum(block_bits, axis=1, dtype=np.int32)
+            block_words = np.asarray(words[:, block], dtype=np.uint32)
+            low_take = min(16, int(take))
+            low_mask = (1 << int(low_take)) - 1
+            low = np.asarray(block_words & np.uint32(low_mask), dtype=np.uint16)
+            fever_count = np.asarray(_U16_HEAD_COUNT[low], dtype=np.int32)
+            local_sigma_hf = np.asarray(_U16_HEAD_POS_SUM[low], dtype=np.int32)
+            if int(take) > 16:
+                high_take = int(take) - 16
+                high_mask = (1 << int(high_take)) - 1
+                high = np.asarray((block_words >> np.uint32(16)) & np.uint32(high_mask), dtype=np.uint16)
+                high_count = np.asarray(_U16_HEAD_COUNT[high], dtype=np.int32)
+                fever_count = np.asarray(fever_count + high_count, dtype=np.int32)
+                local_sigma_hf = np.asarray(
+                    local_sigma_hf + _U16_HEAD_POS_SUM[high] + (16 * high_count),
+                    dtype=np.int32,
+                )
             coeffs[:, 1] += fever_count
             coeffs[:, 0] += int(take) - fever_count
-            positions = np.arange(int(start) + 1, int(start) + int(take) + 1, dtype=np.int32)
-            sigma_hf = np.sum(block_bits * positions.reshape(1, -1), axis=1, dtype=np.int32)
+            sigma_hf = np.asarray(local_sigma_hf + (int(start) * fever_count), dtype=np.int32)
             coeffs[:, 3] += sigma_hf
-            coeffs[:, 2] += int(np.sum(positions, dtype=np.int32)) - sigma_hf
+            sigma_total = int(take) * ((2 * int(start)) + int(take) + 1) // 2
+            coeffs[:, 2] += int(sigma_total) - sigma_hf
     coeffs = np.ascontiguousarray(coeffs, dtype=np.int32)
     if cacheable:
         with _SURFACE_HEAD_COEFF_CACHE_LOCK:
@@ -1857,97 +1821,6 @@ def _score_response_group_meta_gpu(
         )
         chunk_start = int(chunk_stop)
     return out_rows, int(logical_surface_rows)
-
-
-def _optimize_response_groups_gpu(
-    groups: list[tuple[int, dict[str, Any] | tuple[int, ...], int]],
-    *,
-    total_notes: int,
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-    ref_arrays: dict[str, Any],
-    surface_words: np.ndarray,
-    surface_counts: np.ndarray,
-    frontier_offsets: np.ndarray,
-    frontier_lengths: np.ndarray,
-) -> tuple[list[tuple[int, int, int, int, int, int, int, int, int, int, int]], int]:
-    head_len = min(int(total_notes), 100)
-    body_total = max(0, int(total_notes) - 100)
-    group_meta = np.zeros((len(groups), 8), dtype=np.int32)
-    group_offsets = np.zeros(len(groups), dtype=np.int32)
-    group_lengths = np.zeros(len(groups), dtype=np.int32)
-    logical_surface_rows = 0
-
-    for group_idx, (residual_budget, stats_after_ftff, frontier_idx) in enumerate(groups):
-        idx = int(frontier_idx)
-        if idx < 0 or idx >= int(frontier_offsets.shape[0]):
-            raise ValueError(f"response frontier group references unknown packed frontier index: {idx}")
-        length = int(frontier_lengths[idx])
-        if length <= 0:
-            continue
-        if isinstance(stats_after_ftff, tuple):
-            cur_pp = int(stats_after_ftff[0])
-            cur_cm = int(stats_after_ftff[1])
-            cur_fm = int(stats_after_ftff[2])
-            cur_primary = int(stats_after_ftff[3])
-            cur_secondary = int(stats_after_ftff[4])
-        else:
-            cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary = _inner_stat_values_for_colors(
-                stats_after_ftff,
-                primary_color=primary_color,
-                secondary_color=secondary_color,
-            )
-        logical_surface_rows += int(length)
-        group_offsets[group_idx] = int(frontier_offsets[idx])
-        group_lengths[group_idx] = int(length)
-        residual = int(residual_budget)
-        if residual < 0:
-            residual = 0
-        group_meta[group_idx] = (
-            int(residual),
-            int(cur_pp),
-            int(cur_cm),
-            int(cur_fm),
-            int(cur_primary),
-            int(cur_secondary),
-            int(head_len),
-            int(body_total),
-        )
-    if logical_surface_rows <= 0:
-        return [], 0
-
-    out_rows, _surface_rows = _score_response_group_meta_gpu(
-        group_meta=group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        selected_color=selected_color,
-        ref_arrays=ref_arrays,
-        surface_words=surface_words,
-        surface_counts=surface_counts,
-    )
-
-    best_by_group: list[tuple[int, int, int, int, int, int, int, int, int, int, int] | None] = [None] * len(groups)
-    for group_idx in range(len(groups)):
-        if int(group_lengths[group_idx]) <= 0:
-            continue
-        raw = out_rows[group_idx]
-        best_by_group[int(group_idx)] = (
-            int(raw[0]),
-            int(raw[1]),
-            int(raw[2]),
-            int(raw[3]),
-            int(raw[4]),
-            int(raw[5]),
-            int(raw[6]),
-            int(raw[7]),
-            int(raw[8]),
-            int(raw[9]),
-            int(raw[10]),
-        )
-    return [row for row in best_by_group if row is not None], int(_surface_rows)
 
 
 def _optimize_response_surfaces_gpu(

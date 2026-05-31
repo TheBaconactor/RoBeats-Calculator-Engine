@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
+import threading
+import time
 from typing import Any, Callable
 
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
@@ -212,18 +216,42 @@ def build_executor_stats(**kwargs: Any) -> dict[str, Any]:
 
 
 class ExecutorTraceWriter:
+    def __init__(self) -> None:
+        self._fh = None
+        self._path: Path | None = None
+        self._lock = threading.Lock()
+
     @property
     def has_file(self) -> bool:
-        return False
+        return self._fh is not None
 
     def open(self, trace_path: str | None) -> None:
-        _ = trace_path
+        path_raw = str(trace_path or "").strip()
+        if not path_raw:
+            return
+        path = Path(path_raw)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = path.open("a", encoding="utf-8", buffering=1)
+        self._path = path
 
     def close(self) -> None:
-        return None
+        with self._lock:
+            if self._fh is None:
+                return
+            fh = self._fh
+            self._fh = None
+            fh.close()
 
     def write(self, event: str, **kwargs: Any) -> None:
-        _ = event, kwargs
+        self.write_event(event=event, **kwargs)
+
+    def write_event(self, event: str, **kwargs: Any) -> None:
+        with self._lock:
+            if self._fh is None:
+                return
+            payload = {"event": str(event), "ts_wall": time.time()}
+            payload.update(kwargs)
+            self._fh.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
 
 
 def load_workload_profile_settings(**kwargs: Any) -> WorkloadProfileSettings:
@@ -250,6 +278,21 @@ def percentile95(values: Any) -> float:
 
 def estimate_request_work_units(request: GpuRequest, *, size_hint_fn: Callable[[Any], int] = size_hint) -> float:
     payload = payload_dict(request)
+    if getattr(request, "request_type", None) == GpuRequestType.GPU_NATIVE_GA_RUN:
+        try:
+            num_runs = int(payload.get("num_runs", 0) or 0)
+        except (TypeError, ValueError):
+            num_runs = 0
+        try:
+            n_genomes = int(payload.get("n_genomes", 0) or 0)
+        except (TypeError, ValueError):
+            n_genomes = 0
+        try:
+            n_generations = int(payload.get("n_generations", 0) or 0)
+        except (TypeError, ValueError):
+            n_generations = 0
+        if num_runs > 0 and n_genomes > 0:
+            return float(max(1, num_runs) * max(1, n_genomes) * max(1, n_generations))
     for key in ("tasks", "payloads", "genomes", "population"):
         if key in payload:
             return float(size_hint_fn(payload.get(key)))
@@ -294,7 +337,10 @@ def emit_workload_batch_profile(metrics: dict[str, Any], *, emit_profile_event_f
 
 
 def batch_trace_context(metrics: dict[str, Any]) -> dict[str, Any]:
-    return dict(metrics or {})
+    context = dict(metrics or {})
+    context.pop("batch_size", None)
+    context.pop("types", None)
+    return context
 
 
 def record_workload_batch_state(

@@ -214,14 +214,25 @@ def execute_force_greats_response_frontier_plan(
     *,
     score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
 ) -> list[dict[str, Any]]:
+    prepared_results = []
+    for prepared in plan.prepared_batches:
+        results = score_prepared_batch(prepared.batch, include_forced_counts=False)
+        prepared_results.append(results)
+    return materialize_force_greats_response_frontier_plan_results(plan, prepared_results)
+
+
+def materialize_force_greats_response_frontier_plan_results(
+    plan: FgResponseFrontierPreparedPlan,
+    prepared_results: list[list[FgResponseFrontierSolveResult]],
+) -> list[dict[str, Any]]:
     calc_song = plan.calc_song
     ref_arrays = plan.ref_arrays
     variants = list(plan.variants)
     result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
-    for prepared in plan.prepared_batches:
+    if len(prepared_results) != len(plan.prepared_batches):
+        raise ValueError("ForceGreats response frontier plan received the wrong number of prepared result batches")
+    for prepared, results in zip(plan.prepared_batches, prepared_results, strict=True):
         rows = list(prepared.rows)
-        batch = prepared.batch
-        results = score_prepared_batch(batch, include_forced_counts=False)
         if len(results) != len(rows):
             raise ValueError("ForceGreats response frontier batch returned the wrong number of results")
         for (cache_key, _base_stats), result in zip(rows, results, strict=True):

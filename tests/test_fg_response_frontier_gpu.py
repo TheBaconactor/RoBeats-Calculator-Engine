@@ -13,6 +13,26 @@ def _ref_arrays():
     }
 
 
+def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_budget: int) -> None:
+    from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
+    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        build_or_load_response_frontier_payload,
+        reset_fg_response_frontier_payload_cache,
+    )
+
+    reset_fg_response_frontier_payload_cache()
+    ft_values, ff_values, _remaining = ftff_combo_arrays(int(total_budget))
+    keys = set()
+    for base_stats in base_stats_list:
+        base_ft = int(base_stats.get("Fever Time", 0) or 0)
+        base_ff = int(base_stats.get("Fever Fill Rate", 0) or 0)
+        ft_stats = np.clip(base_ft + (ft_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
+        ff_stats = np.clip(base_ff + (ff_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
+        keys.update((int(ft), int(ff)) for ft, ff in zip(ft_stats.tolist(), ff_stats.tolist(), strict=True))
+    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=tuple(sorted(keys)))
+
+
 def test_ftff_projection_matches_canonical_stats_for_consumed_fields():
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import _stats_after_ftff_for_inner
@@ -275,7 +295,7 @@ def _strip_trailing_zero_counts(counts):
     return out
 
 
-def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap():
+def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(tmp_path, monkeypatch):
     from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         solve_force_greats_response_frontier_batch_gpu,
@@ -325,6 +345,8 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
     assert baseline["non_fever_base"] == 20
     assert natural_best > legacy_cap_best
 
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=0)
     result = solve_force_greats_response_frontier_batch_gpu(
         base_stats=base_stats,
         calc_song=calc_song,
@@ -337,7 +359,7 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
     assert _strip_trailing_zero_counts(result.forced_counts) == (17,)
 
 
-def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference():
+def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(tmp_path, monkeypatch):
     import itertools
 
     from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
@@ -402,6 +424,8 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference()
                                 best_gems = (ft, ff, pp, cm, fm, ov)
                                 best_counts = counts
 
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=budget)
     result = solve_force_greats_response_frontier_batch_gpu(
         base_stats=base_stats,
         calc_song=calc_song,
@@ -416,7 +440,7 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference()
     assert _strip_trailing_zero_counts(result.forced_counts) == _strip_trailing_zero_counts(best_counts)
 
 
-def test_response_frontier_best_score_matches_exact_replay_final_score():
+def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path, monkeypatch):
     from gear_optimizer.solver.scoring.exact_rescore import (
         evaluate_force_greats_exact,
         score_force_greats_surface_base_exact,
@@ -456,6 +480,8 @@ def test_response_frontier_best_score_matches_exact_replay_final_score():
         "Vibe": 0,
     }
 
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=3)
     result = solve_force_greats_response_frontier_batch_gpu(
         base_stats=base_stats,
         calc_song=calc_song,
@@ -470,7 +496,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score():
     assert int(exact["base_score"]) == int(base_score)
 
 
-def test_response_frontier_many_matches_individual_exact_solves():
+def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         solve_force_greats_response_frontier_batch_gpu,
         solve_force_greats_response_frontier_many_gpu,
@@ -508,6 +534,8 @@ def test_response_frontier_many_matches_individual_exact_solves():
     }
     base_b = {**base_a, "Rush": 25, "Flow": 10, "Combo Multiplier": 3}
 
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    _prebuild_response_bundle(calc_song, ref_arrays, [base_a, base_b], total_budget=3)
     many = solve_force_greats_response_frontier_many_gpu(
         base_stats_list=[base_a, base_b],
         calc_song=calc_song,
@@ -535,7 +563,7 @@ def test_response_frontier_many_matches_individual_exact_solves():
     ]
 
 
-def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_ft_element_overlap():
+def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_ft_element_overlap(tmp_path, monkeypatch):
     import itertools
 
     from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
@@ -596,6 +624,8 @@ def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_f
                                     best = score
         return int(best)
 
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    _prebuild_response_bundle(calc_song, ref_arrays, [base_a, base_b], total_budget=budget)
     results = solve_force_greats_response_frontier_many_gpu(
         base_stats_list=[base_a, base_b],
         calc_song=calc_song,

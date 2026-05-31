@@ -251,20 +251,21 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
-def test_prepare_fg_job_sync_waits_for_cpu_prewarm_before_dynamic_prep(monkeypatch):
+def test_prepare_fg_job_sync_does_not_wait_for_cpu_prewarm_before_dynamic_prep(monkeypatch):
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
 
-    seen: dict[str, bool] = {"waited": False, "built_after_wait": False}
+    seen: dict[str, bool] = {"waited": False, "built": False}
 
     class _PrewarmFuture:
         def result(self):
             seen["waited"] = True
+            raise AssertionError("FG dynamic prep must not block on broad CPU prewarm")
 
     def _fake_build_loadout_entries(*_args, **_kwargs):
-        seen["built_after_wait"] = bool(seen["waited"])
+        seen["built"] = True
         return {}
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
@@ -298,7 +299,45 @@ def test_prepare_fg_job_sync_waits_for_cpu_prewarm_before_dynamic_prep(monkeypat
 
     stages.prepare_fg_job_sync(song, gpu_client=None)
 
-    assert seen == {"waited": True, "built_after_wait": True}
+    assert seen == {"waited": False, "built": True}
+    assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
+
+
+def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkeypatch):
+    import configparser
+
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+
+    monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
+    monkeypatch.setattr(stages, "build_loadout_entries", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        response_frontier_adapter,
+        "prepare_force_greats_response_frontier_plan",
+        lambda *_args, **_kwargs: None,
+    )
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+    song = make_native_song(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
+        cfg_dict={},
+        ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_key="song-db-key",
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        registry=None,
+        fixed_stats={},
+        cfg_data={},
+        ref_arrays={},
+    )
+
+    with pytest.raises(RuntimeError, match="did not materialize the exact response frontier plan"):
+        stages.prepare_fg_job_sync(song, gpu_client=None)
 
 
 def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier(monkeypatch):
@@ -593,13 +632,28 @@ def test_response_frontier_cache_validation_rejects_legacy_modes():
     assert is_cached_force_valid_for_response_frontier(payload, "Rush") is True
 
 
+def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_residual():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import prune_best_positions_by_frontier
+
+    positions = np.asarray([0, 1, 2, 3], dtype=np.int32)
+    frontier_ids = np.asarray([5, 5, 7, 5], dtype=np.int32)
+    residuals = np.asarray([1, 3, 2, 2], dtype=np.int32)
+
+    kept_positions = prune_best_positions_by_frontier(
+        positions=positions,
+        frontier_ids=frontier_ids,
+        residuals=residuals,
+    )
+
+    np.testing.assert_array_equal(kept_positions, np.asarray([1, 2], dtype=np.int32))
+
+
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
         FgResponseSurface,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
-        prune_best_positions_by_frontier,
         prune_dominated_ftff_response_pairs,
     )
 
@@ -634,18 +688,6 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
     assert any(pair is dominator_same_pack for pair in kept)
     assert any(pair is same_stats_other_pack for pair in kept)
     assert not any(pair is dominated_same_pack for pair in kept)
-
-    positions = np.asarray([0, 1, 2, 3], dtype=np.int32)
-    frontier_ids = np.asarray([5, 5, 7, 5], dtype=np.int32)
-    residuals = np.asarray([1, 3, 2, 2], dtype=np.int32)
-
-    kept_positions = prune_best_positions_by_frontier(
-        positions=positions,
-        frontier_ids=frontier_ids,
-        residuals=residuals,
-    )
-
-    np.testing.assert_array_equal(kept_positions, np.asarray([1, 2], dtype=np.int32))
 
 
 def test_response_frontier_ftff_antichain_matches_naive_dominance():

@@ -192,23 +192,13 @@ def read_cpu_prewarm_workers(
     inflight_limit: int,
     cpu_prewarm_lookahead: int,
 ) -> int:
+    _ = cfg0, inflight_limit
     if int(cpu_prewarm_lookahead) <= 0:
         return 0
-    workers = 0
-    if cfg0 is not None:
-        try:
-            workers = safe_int(cfg0.get("IterationEngine", "InFlight_CPUPrewarmWorkers", fallback="0"), 0)
-        except (configparser.Error, ValueError, TypeError):
-            workers = 0
-    raw = env_get("INFLIGHT_CPU_PREWARM_WORKERS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            workers = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if workers <= 0:
-        workers = min(2, max(1, default_worker_threads(inflight_limit=int(inflight_limit), kind="prep")))
-    return max(1, min(int(workers), int(cpu_prewarm_lookahead), 4))
+    # Timeline/FG bundle prewarm is memory-bandwidth heavy. A single producer
+    # keeps the GPU owner fed instead of letting parallel cache reads inflate
+    # FG dynamic prep wall time.
+    return 1
 
 
 def read_db_prefetch_workers(
@@ -765,7 +755,9 @@ class NativeSongFGState:
     fg_response_frontier_plan: Any | None = None
     loadout_entries: Optional[dict[str, JsonDict]] = None
     cpu_fg_prep_s: float = 0.0
+    fg_prep_wall_s: float = 0.0
     cpu_fg_run_s: float = 0.0
+    fg_run_wall_s: float = 0.0
 
 
 @dataclass
