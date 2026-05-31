@@ -730,6 +730,29 @@ def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_resi
     np.testing.assert_array_equal(kept_positions, np.asarray([1, 2], dtype=np.int32))
 
 
+def test_response_frontier_best_position_prune_matches_sort_reference_randomized():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import prune_best_positions_by_frontier
+
+    rng = np.random.default_rng(20260531)
+    for row_count in (1, 2, 8, 64, 512):
+        for _case in range(20):
+            positions = np.arange(row_count, dtype=np.int32)
+            frontier_ids = rng.integers(0, max(1, row_count // 2), size=row_count, dtype=np.int32)
+            residuals = rng.integers(0, 100, size=row_count, dtype=np.int32)
+            got = prune_best_positions_by_frontier(
+                positions=positions,
+                frontier_ids=frontier_ids,
+                residuals=residuals,
+            )
+
+            expected: list[int] = []
+            for frontier in dict.fromkeys(int(v) for v in frontier_ids.tolist()):
+                bucket = [idx for idx, value in enumerate(frontier_ids.tolist()) if int(value) == int(frontier)]
+                best = max(bucket, key=lambda idx: (int(residuals[idx]), -int(positions[idx])))
+                expected.append(int(positions[best]))
+            np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.int32))
+
+
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,

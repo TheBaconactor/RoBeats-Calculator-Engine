@@ -6,9 +6,11 @@ from typing import Any, Callable
 import numpy as np
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_STAT_TO_ELEMENT_SCALE, TOTAL_ROWS
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
 _ResponsePair = tuple[int, int, int, dict[str, Any] | tuple[int, ...], Any, float, float]
+_FTFF_PRUNE_WARMED = False
 
 
 @lru_cache(maxsize=4096)
@@ -52,6 +54,52 @@ def score_elements(stats: dict[str, Any] | tuple[int, ...], primary_color: str, 
     )
 
 
+@jit(nopython=True, cache=True)
+def _prune_best_positions_by_frontier_linear(
+    positions: np.ndarray,
+    frontier_ids: np.ndarray,
+    residuals: np.ndarray,
+) -> np.ndarray:
+    row_count = int(positions.shape[0])
+    max_frontier = -1
+    for row in range(row_count):
+        fid = int(frontier_ids[row])
+        if fid > max_frontier:
+            max_frontier = fid
+    if max_frontier < 0:
+        return np.empty((0,), dtype=np.int32)
+
+    first_order = np.full((max_frontier + 1,), -1, dtype=np.int32)
+    best_local = np.full((max_frontier + 1,), -1, dtype=np.int32)
+    best_residual = np.full((max_frontier + 1,), -2147483648, dtype=np.int32)
+    ordered_frontiers = np.empty((row_count,), dtype=np.int32)
+    ordered_count = 0
+    for local_idx in range(row_count):
+        fid = int(frontier_ids[local_idx])
+        if fid < 0:
+            continue
+        if first_order[fid] < 0:
+            first_order[fid] = ordered_count
+            ordered_frontiers[ordered_count] = fid
+            ordered_count += 1
+            best_local[fid] = local_idx
+            best_residual[fid] = int(residuals[local_idx])
+            continue
+        residual = int(residuals[local_idx])
+        current_best_local = int(best_local[fid])
+        if residual > int(best_residual[fid]) or (
+            residual == int(best_residual[fid]) and int(positions[local_idx]) < int(positions[current_best_local])
+        ):
+            best_local[fid] = local_idx
+            best_residual[fid] = residual
+
+    out = np.empty((ordered_count,), dtype=np.int32)
+    for order_idx in range(ordered_count):
+        fid = int(ordered_frontiers[order_idx])
+        out[order_idx] = int(positions[int(best_local[fid])])
+    return out
+
+
 def prune_best_positions_by_frontier(
     *,
     positions: np.ndarray,
@@ -62,21 +110,33 @@ def prune_best_positions_by_frontier(
         raise ValueError("FG response frontier best-position prune received inconsistent arrays")
     if int(positions.shape[0]) <= 1:
         return np.ascontiguousarray(positions, dtype=np.int32)
+    if bool(np.any(np.asarray(frontier_ids, dtype=np.int32) < 0)):
+        raise ValueError("FG response frontier best-position prune received a negative frontier id")
+    return np.ascontiguousarray(
+        _prune_best_positions_by_frontier_linear(
+            np.ascontiguousarray(positions, dtype=np.int32),
+            np.ascontiguousarray(frontier_ids, dtype=np.int32),
+            np.ascontiguousarray(residuals, dtype=np.int32),
+        ),
+        dtype=np.int32,
+    )
 
-    unique_frontiers, first_positions = np.unique(frontier_ids, return_index=True)
-    if int(unique_frontiers.shape[0]) == int(frontier_ids.shape[0]):
-        return np.ascontiguousarray(positions, dtype=np.int32)
 
-    sort_order = np.lexsort((positions, -residuals, frontier_ids))
-    sorted_frontiers = frontier_ids[sort_order]
-    first_sorted = np.empty(int(sorted_frontiers.shape[0]), dtype=np.bool_)
-    first_sorted[0] = True
-    first_sorted[1:] = sorted_frontiers[1:] != sorted_frontiers[:-1]
-    best_local_positions = sort_order[first_sorted]
-    if int(unique_frontiers.shape[0]) != int(best_local_positions.shape[0]):
-        raise ValueError("FG response frontier packed prune found inconsistent frontier groups")
-    kept_local = best_local_positions[np.argsort(first_positions, kind="stable")]
-    return np.ascontiguousarray(positions[kept_local], dtype=np.int32)
+def warmup_response_ftff_prune() -> None:
+    global _FTFF_PRUNE_WARMED
+    if bool(_FTFF_PRUNE_WARMED):
+        return
+    positions = np.asarray([0, 1, 2, 3], dtype=np.int32)
+    frontier_ids = np.asarray([0, 0, 1, 0], dtype=np.int32)
+    residuals = np.asarray([1, 3, 2, 2], dtype=np.int32)
+    got = prune_best_positions_by_frontier(
+        positions=positions,
+        frontier_ids=frontier_ids,
+        residuals=residuals,
+    )
+    if got.tolist() != [1, 2]:
+        raise RuntimeError("FG response FT/FF prune warmup produced an invalid result")
+    _FTFF_PRUNE_WARMED = True
 
 
 def prune_dominated_ftff_response_positions(
