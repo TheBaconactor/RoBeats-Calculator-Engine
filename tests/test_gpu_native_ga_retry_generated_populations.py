@@ -193,11 +193,15 @@ def _ref_arrays() -> dict[str, np.ndarray]:
     }
 
 
-def _install_fake_taichi_modules(monkeypatch) -> None:
+def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     fake_api_module = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
     fake_api_module.load_ref_arrays = lambda _ref_arrays: None
     fake_api_module.ensure_ready = lambda _ref_arrays=None, **_kwargs: b""
     fake_api_module.precompute_timeline_gpu = lambda _calc_song, _ref_arrays, song_slot=0: int(song_slot)
+    if gpu_api is not None:
+        for name in dir(gpu_api):
+            if not name.startswith("_") or name == "_ensure_ftff_combo_tables":
+                setattr(fake_api_module, name, getattr(gpu_api, name))
 
     fake_fields_module = types.ModuleType("gear_optimizer.solver.taichi_gem.fields")
     fake_fields_module.MAX_WORK_ITEMS = 1_000_000
@@ -242,12 +246,11 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=True)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 1, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
     monkeypatch.setenv("GPU_NATIVE_GA_BASE_CANDIDATE_CACHE", "1")
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -290,12 +293,11 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -338,13 +340,12 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
     monkeypatch.setattr(genetic, "GPU_GA_GENS_PER_MIGRATION", 9999, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -376,12 +377,11 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -414,12 +414,11 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -456,7 +455,6 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
 
     evaluate_kwargs: list[dict] = []
     original_evaluate = fake_gpu.ga_evaluate_population
@@ -466,11 +464,11 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
         return original_evaluate(*args, **kwargs)
 
     fake_gpu.ga_evaluate_population = _capture_evaluate
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -509,7 +507,7 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
     _install_fake_taichi_sync(monkeypatch)
 
     events: list[dict] = []
@@ -519,7 +517,6 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
     monkeypatch.setattr(genetic, "emit_profile_event", lambda **kwargs: events.append(dict(kwargs)), raising=True)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -560,7 +557,7 @@ def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
     from gear_optimizer.solver import genetic_pipeline as genetic
 
     fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     audit_calls: list[dict] = []
     written_paths: list[str] = []
@@ -569,7 +566,6 @@ def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
     monkeypatch.setattr(
         genetic,
         "analyze_ga_redundancy_from_runs_payload",

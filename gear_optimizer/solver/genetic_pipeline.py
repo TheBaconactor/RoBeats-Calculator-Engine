@@ -174,8 +174,6 @@ _PERF_TIMING = env_flag("PERF_TIMING", "0")
 _GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
 _GPU_NATIVE_GA_VULKAN_RETRIES = env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
 _GPU_NATIVE_GA_BATCH_RUNS = env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
-# Prune FT/FF combo tables to globally feasible caps derived from base-stat ceilings.
-_GPU_NATIVE_GA_GLOBAL_FTFF_CAPS = env_flag("GPU_NATIVE_GA_GLOBAL_FTFF_CAPS", "1")
 
 
 if _GPU_NATIVE_AVAILABLE:
@@ -767,19 +765,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
-    if _GPU_NATIVE_GA_GLOBAL_FTFF_CAPS:
-        max_ft_gems_global, max_ff_gems_global = _compute_global_ftff_combo_caps(
-            item_stats=item_stats,
-            slot_start=slot_start,
-            slot_count=slot_count,
-            base_fixed_stats_arr=base_fixed_stats_arr,
-            total_budget=int(total_budget),
-            gem_scale_fever=int(gem_scale_fever),
-            n_slots=int(n_slots),
-        )
-    else:
-        max_ft_gems_global = int(total_budget)
-        max_ff_gems_global = int(total_budget)
+    max_ft_gems_global, max_ff_gems_global = _compute_global_ftff_combo_caps(
+        item_stats=item_stats,
+        slot_start=slot_start,
+        slot_count=slot_count,
+        base_fixed_stats_arr=base_fixed_stats_arr,
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        n_slots=int(n_slots),
+    )
     novelty_repair_attempts = _resolve_ga_novelty_repair_attempts(cfg_data)
 
     fg_candidate_limit = _canonical_fg_candidate_limit(
