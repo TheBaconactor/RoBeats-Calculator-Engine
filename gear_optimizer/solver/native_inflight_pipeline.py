@@ -327,9 +327,11 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     config = getattr(song, "config", song)
     runtime = getattr(song, "runtime", song)
     gpu_inputs = getattr(song, "gpu_inputs", song)
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
 
     warmup_response_ftff_prune()
+    warmup_response_frontier_group_builder()
     cfg = getattr(config, "cfg", None)
     fg_candidate_limit = read_fg_candidate_limit(
         cfg,

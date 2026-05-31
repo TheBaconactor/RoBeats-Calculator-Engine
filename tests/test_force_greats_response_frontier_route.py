@@ -801,6 +801,123 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
             np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.int32))
 
 
+def test_response_frontier_compiled_group_builder_matches_prune_reference():
+    from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_STAT_TO_ELEMENT_SCALE, TOTAL_ROWS
+    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+        best_response_positions_for_base_ftff,
+        prune_best_positions_by_frontier,
+        prune_dominated_ftff_response_positions,
+    )
+
+    total_budget = 3
+    ft_values, ff_values, residual_values = ftff_combo_arrays(total_budget)
+    base_components = np.asarray(
+        [
+            [1, 2, 3, 10, 20, 0, 0],
+            [4, 5, 6, 13, 17, 2, 1],
+            [7, 8, 9, 11, 23, 4, 3],
+        ],
+        dtype=np.int32,
+    )
+    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    for base in base_components:
+        for ft, ff in zip(ft_values, ff_values, strict=True):
+            ft_stat = int(np.clip(int(base[5]) + int(ft) * GEM_SCALE_FEVER, 0, TOTAL_ROWS))
+            ff_stat = int(np.clip(int(base[6]) + int(ff) * GEM_SCALE_FEVER, 0, TOTAL_ROWS))
+            frontier_idx_by_stat[ft_stat, ff_stat] = int((ft_stat // GEM_SCALE_FEVER + ff_stat // GEM_SCALE_FEVER) % 3)
+
+    def reference(*, primary_delta: np.ndarray, secondary_delta: np.ndarray, constant: bool):
+        meta_blocks = []
+        ft_blocks = []
+        ff_blocks = []
+        ft_stat_blocks = []
+        ff_stat_blocks = []
+        slices = []
+        start = 0
+        positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
+        for base in base_components:
+            base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = (int(v) for v in base)
+            ft_stat_seq = np.clip(base_ft + ft_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
+            ff_stat_seq = np.clip(base_ff + ff_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
+            frontier_ids = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
+            if constant:
+                best_positions, _ft, _ff = best_response_positions_for_base_ftff(
+                    total_budget=total_budget,
+                    base_ft=base_ft,
+                    base_ff=base_ff,
+                )
+                best_positions = prune_best_positions_by_frontier(
+                    positions=best_positions,
+                    frontier_ids=np.ascontiguousarray(frontier_ids[best_positions], dtype=np.int32),
+                    residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
+                )
+                primary_values = np.full((int(best_positions.shape[0]),), base_primary, dtype=np.int32)
+                secondary_values = np.full((int(best_positions.shape[0]),), base_secondary, dtype=np.int32)
+            else:
+                primary_seq = np.asarray(base_primary + primary_delta, dtype=np.int32)
+                secondary_seq = np.asarray(base_secondary + secondary_delta, dtype=np.int32)
+                best_positions = prune_dominated_ftff_response_positions(
+                    positions=positions,
+                    frontier_ids=frontier_ids,
+                    residuals=residual_values,
+                    primary_values=primary_seq,
+                    secondary_values=secondary_seq,
+                )
+                primary_values = np.ascontiguousarray(primary_seq[best_positions], dtype=np.int32)
+                secondary_values = np.ascontiguousarray(secondary_seq[best_positions], dtype=np.int32)
+            meta = np.empty((int(best_positions.shape[0]), 8), dtype=np.int32)
+            meta[:, 0] = residual_values[best_positions]
+            meta[:, 1] = base_pp
+            meta[:, 2] = base_cm
+            meta[:, 3] = base_fm
+            meta[:, 4] = primary_values
+            meta[:, 5] = secondary_values
+            meta[:, 6] = 4
+            meta[:, 7] = 9
+            meta_blocks.append(meta)
+            ft_blocks.append(np.ascontiguousarray(ft_values[best_positions], dtype=np.int32))
+            ff_blocks.append(np.ascontiguousarray(ff_values[best_positions], dtype=np.int32))
+            ft_stat_blocks.append(np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32))
+            ff_stat_blocks.append(np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32))
+            slices.append((start, int(best_positions.shape[0])))
+            start += int(best_positions.shape[0])
+        return (
+            np.concatenate(meta_blocks, axis=0),
+            np.concatenate(ft_blocks),
+            np.concatenate(ff_blocks),
+            np.concatenate(ft_stat_blocks),
+            np.concatenate(ff_stat_blocks),
+            np.asarray(slices, dtype=np.int32),
+        )
+
+    cases = (
+        (np.zeros_like(ft_values, dtype=np.int32), np.zeros_like(ff_values, dtype=np.int32), True),
+        (
+            np.asarray(ft_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32),
+            np.asarray(ff_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32),
+            False,
+        ),
+    )
+    for primary_delta, secondary_delta, constant in cases:
+        got = response_frontier._build_response_group_rows_numba(
+            base_components,
+            np.ascontiguousarray(ft_values, dtype=np.int32),
+            np.ascontiguousarray(ff_values, dtype=np.int32),
+            np.ascontiguousarray(residual_values, dtype=np.int32),
+            np.ascontiguousarray(frontier_idx_by_stat, dtype=np.int32),
+            np.ascontiguousarray(primary_delta, dtype=np.int32),
+            np.ascontiguousarray(secondary_delta, dtype=np.int32),
+            constant,
+            4,
+            9,
+        )
+        expected = reference(primary_delta=primary_delta, secondary_delta=secondary_delta, constant=constant)
+        for got_arr, expected_arr in zip(got, expected, strict=True):
+            np.testing.assert_array_equal(got_arr, expected_arr)
+
+
 def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
