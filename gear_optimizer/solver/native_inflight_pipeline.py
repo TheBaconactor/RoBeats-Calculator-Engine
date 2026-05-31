@@ -466,6 +466,10 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     prepared_compact_ms = 0.0
     prepared_head_coeff_ms = 0.0
     prepared_bundle_ms = 0.0
+    prepared_setup_ms = 0.0
+    prepared_geometry_ms = 0.0
+    prepared_group_build_ms = 0.0
+    prepared_concat_ms = 0.0
     for prepared in prepared_batches:
         batch = getattr(prepared, "batch", None)
         if batch is None:
@@ -477,6 +481,10 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         prepared_compact_ms += float(getattr(batch, "scoring_surface_compact_ms", 0.0) or 0.0)
         prepared_head_coeff_ms += float(getattr(batch, "scoring_surface_head_coeff_ms", 0.0) or 0.0)
         prepared_bundle_ms += float(getattr(batch, "scoring_bundle_ms", 0.0) or 0.0)
+        prepared_setup_ms += float(getattr(batch, "scoring_setup_ms", 0.0) or 0.0)
+        prepared_geometry_ms += float(getattr(batch, "scoring_geometry_ms", 0.0) or 0.0)
+        prepared_group_build_ms += float(getattr(batch, "scoring_group_build_ms", 0.0) or 0.0)
+        prepared_concat_ms += float(getattr(batch, "scoring_concat_ms", 0.0) or 0.0)
     total_ms = (time.perf_counter() - t0) * 1000.0
     try:
         song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
@@ -526,6 +534,10 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "prepared_bundle_ms": float(prepared_bundle_ms),
                 "prepared_compact_ms": float(prepared_compact_ms),
                 "prepared_head_coeff_ms": float(prepared_head_coeff_ms),
+                "prepared_setup_ms": float(prepared_setup_ms),
+                "prepared_geometry_ms": float(prepared_geometry_ms),
+                "prepared_group_build_ms": float(prepared_group_build_ms),
+                "prepared_concat_ms": float(prepared_concat_ms),
             },
         )
     except Exception as e:

@@ -21,7 +21,6 @@ from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 from .response_builder import reconstruct_force_greats_response_counts
 from .response_cache import (
     FgResponseFrontierScoringBundle,
-    _response_axes,
     frontier_result_from_scoring_bundle_for_stats,
     load_response_frontier_scoring_bundle,
 )
@@ -86,6 +85,10 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_unique_frontiers: int
     scoring_surface_compact_ms: float
     scoring_surface_head_coeff_ms: float
+    scoring_setup_ms: float = 0.0
+    scoring_geometry_ms: float = 0.0
+    scoring_group_build_ms: float = 0.0
+    scoring_concat_ms: float = 0.0
 
 
 def _ftff_stat_key(stats_after_ftff: dict[str, Any]) -> tuple[int, int]:
@@ -290,6 +293,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
+    setup_t0 = time.perf_counter()
     stats_inputs = tuple(dict(stats) for stats in (base_stats_list or []))
     if not stats_inputs:
         raise ValueError("response frontier exact scoring batch requires at least one candidate")
@@ -312,6 +316,15 @@ def prepare_force_greats_response_frontier_scoring_batch(
         and secondary_ft_delta == 0
         and secondary_ff_delta == 0
     )
+    bundle_t0 = time.perf_counter()
+    if scoring_bundle is None:
+        full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
+        scoring_bundle = load_response_frontier_scoring_bundle(
+            calc_song,
+            ref_arrays,
+            stat_keys=full_stat_grid,
+        )
+    scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
     base_components_by_candidate: list[tuple[int, int, int, int, int, int, int]] = []
     stat_key_seq_by_candidate: list[tuple[np.ndarray, np.ndarray]] = []
     for base_stats in stats_inputs:
@@ -332,31 +345,16 @@ def prepare_force_greats_response_frontier_scoring_batch(
     head_len = min(int(song_inputs.total_notes), 100)
     body_total = max(0, int(song_inputs.total_notes) - 100)
     pair_positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
-    _axes_song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
-    if int(_axes_song_inputs.total_notes) != int(song_inputs.total_notes):
-        raise ValueError("FG response frontier axes do not match song inputs")
-    geometry_class_by_key: dict[tuple[float, int, float, bool], int] = {}
-
-    def geometry_classes_for_stats(ft_stat_seq: np.ndarray, ff_stat_seq: np.ndarray) -> np.ndarray:
-        out = np.empty((int(ft_stat_seq.shape[0]),), dtype=np.int32)
-        forced_timing = bool(song_inputs.use_forced_great_timing)
-        for idx, (ft_stat, ff_stat) in enumerate(zip(ft_stat_seq.tolist(), ff_stat_seq.tolist(), strict=True)):
-            key = (
-                float(raw_fill_by_ff[int(ff_stat)]),
-                int(non_fever_base_by_ff[int(ff_stat)]),
-                float(real_time_by_ft[int(ft_stat)]),
-                forced_timing,
-            )
-            class_idx = geometry_class_by_key.get(key)
-            if class_idx is None:
-                class_idx = len(geometry_class_by_key)
-                geometry_class_by_key[key] = int(class_idx)
-            out[int(idx)] = int(class_idx)
-        return np.ascontiguousarray(out, dtype=np.int32)
-
+    setup_ms = float((time.perf_counter() - setup_t0) * 1000.0)
+    geometry_t0 = time.perf_counter()
+    frontier_idx_by_stat = np.asarray(scoring_bundle.frontier_idx_by_stat, dtype=np.int32)
     geometry_idx_seq_by_candidate: list[np.ndarray] = []
     for ft_stat_seq, ff_stat_seq in stat_key_seq_by_candidate:
-        geometry_idx_seq_by_candidate.append(geometry_classes_for_stats(ft_stat_seq, ff_stat_seq))
+        frontier_ids = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
+        if bool(np.any(frontier_ids < 0)):
+            raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+        geometry_idx_seq_by_candidate.append(frontier_ids)
+    geometry_ms = float((time.perf_counter() - geometry_t0) * 1000.0)
     primary_ftff_delta_values = np.asarray(
         (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
         dtype=np.int32,
@@ -365,6 +363,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
         (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
         dtype=np.int32,
     )
+    group_build_t0 = time.perf_counter()
     group_meta_blocks: list[np.ndarray] = []
     group_ft_blocks: list[np.ndarray] = []
     group_ff_blocks: list[np.ndarray] = []
@@ -427,22 +426,17 @@ def prepare_force_greats_response_frontier_scoring_batch(
         candidate_slices.append((int(group_start), int(kept_count)))
         group_start += int(kept_count)
 
+    group_build_ms = float((time.perf_counter() - group_build_t0) * 1000.0)
+    concat_t0 = time.perf_counter()
     group_meta = np.ascontiguousarray(np.concatenate(group_meta_blocks, axis=0), dtype=np.int32)
     group_ft = np.ascontiguousarray(np.concatenate(group_ft_blocks, axis=0), dtype=np.int32)
     group_ff = np.ascontiguousarray(np.concatenate(group_ff_blocks, axis=0), dtype=np.int32)
     group_ft_stat = np.ascontiguousarray(np.concatenate(group_ft_stat_blocks, axis=0), dtype=np.int32)
     group_ff_stat = np.ascontiguousarray(np.concatenate(group_ff_stat_blocks, axis=0), dtype=np.int32)
     kept_stat_keys_tuple = tuple(sorted(kept_stat_keys))
-    bundle_t0 = time.perf_counter()
-    if scoring_bundle is None:
-        scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song,
-            ref_arrays,
-            stat_keys=kept_stat_keys_tuple,
-        )
-    elif not all(key in scoring_bundle.frontier_idx_by_key for key in kept_stat_keys_tuple):
+    concat_ms = float((time.perf_counter() - concat_t0) * 1000.0)
+    if not all(key in scoring_bundle.frontier_idx_by_key for key in kept_stat_keys_tuple):
         raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-    scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
     (
         scoring_surface_words,
         scoring_surface_counts,
@@ -491,6 +485,10 @@ def prepare_force_greats_response_frontier_scoring_batch(
         scoring_unique_frontiers=scoring_unique_frontiers,
         scoring_surface_compact_ms=scoring_surface_compact_ms,
         scoring_surface_head_coeff_ms=scoring_surface_head_coeff_ms,
+        scoring_setup_ms=setup_ms,
+        scoring_geometry_ms=geometry_ms,
+        scoring_group_build_ms=group_build_ms,
+        scoring_concat_ms=concat_ms,
     )
 
 

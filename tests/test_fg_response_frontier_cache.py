@@ -725,16 +725,6 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
-    monkeypatch.setattr(
-        response_frontier,
-        "_response_axes",
-        lambda _song, _refs: (
-            song_inputs,
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.int32),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-        ),
-    )
 
     def _fake_build_bundle(calc_song, ref_arrays, *, stat_keys):
         seen["calc_song"] = calc_song
@@ -770,7 +760,8 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
     assert batch.scoring_bundle is seen["bundle"]
     assert seen["calc_song"] == {"song_data": {}}
     assert seen["ref_arrays"] == {"ref": batch.ref_arrays["ref"]}
-    assert seen["stat_keys"] == batch.kept_stat_keys
+    assert len(seen["stat_keys"]) == (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
+    assert set(batch.kept_stat_keys).issubset(set(seen["stat_keys"]))
     assert batch.scoring_bundle_ms >= 0.0
     assert batch.scoring_surface_words.shape == (1, 8)
     assert batch.scoring_surface_head_coeffs is seen["bundle"].surface_head_coeffs
@@ -808,16 +799,6 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
     )
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
-    monkeypatch.setattr(
-        response_frontier,
-        "_response_axes",
-        lambda _song, _refs: (
-            song_inputs,
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.int32),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-        ),
-    )
     monkeypatch.setattr(
         response_frontier,
         "load_response_frontier_scoring_bundle",
@@ -869,16 +850,6 @@ def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repac
     )
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
-    monkeypatch.setattr(
-        response_frontier,
-        "_response_axes",
-        lambda _song, _refs: (
-            song_inputs,
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.int32),
-            np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
-        ),
-    )
 
     batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
