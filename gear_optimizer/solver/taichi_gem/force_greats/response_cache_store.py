@@ -79,6 +79,7 @@ def reset_fg_response_frontier_payload_cache() -> None:
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     from .response_cache_serde import _pack_frontiers
+    from .response_inner_host import _precompute_surface_head_coeffs
 
     path = _fg_response_disk_cache_path(cache_key)
     tmp: Path | None = None
@@ -88,6 +89,9 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         frontiers = payload.frontiers
         frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
         sorted_items = sorted(payload.frontier_by_key.items())
+        packed_frontiers = _pack_frontiers(frontiers)
+        first_surface_pool = np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
+        first_surface_head_len = min(int(payload.total_notes), 100)
         np.savez_compressed(
             tmp,
             version=np.asarray(_fg_response_cache_version()),
@@ -102,7 +106,12 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
             total_notes=np.asarray(int(payload.total_notes), dtype=np.int32),
             long_notes=np.asarray(int(payload.long_notes), dtype=np.int32),
             use_forced_great_timing=np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
-            **_pack_frontiers(frontiers),
+            first_surface_head_len=np.asarray(int(first_surface_head_len), dtype=np.int32),
+            first_surface_head_coeffs=_precompute_surface_head_coeffs(
+                first_surface_pool,
+                head_len=int(first_surface_head_len),
+            ),
+            **packed_frontiers,
         )
         tmp.replace(path)
     except Exception:
@@ -243,6 +252,38 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
             _bundle_array_cache.popitem(last=False)
         _bundle_array_cache.move_to_end(cache_key)
         return {name: cached[name] for name in requested}
+
+
+def _load_bundle_array_members_if_present(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
+    requested = tuple(dict.fromkeys(str(name) for name in names))
+    if not requested:
+        return {}
+    with _frontier_cache_lock:
+        cached = _bundle_array_cache.get(cache_key)
+        if cached is not None and all(name in cached for name in requested):
+            _bundle_array_cache.move_to_end(cache_key)
+            return {name: cached[name] for name in requested}
+    path = _fg_response_disk_cache_path(cache_key)
+    if not path.exists():
+        return {}
+    with np.load(path, allow_pickle=False) as data:
+        version = str(data["version"].item())
+        if version != _fg_response_cache_version():
+            return {}
+        present = [name for name in requested if name in data.files]
+        loaded = {name: np.asarray(data[name]) for name in present}
+    if not loaded:
+        return {}
+    with _frontier_cache_lock:
+        cached = _bundle_array_cache.get(cache_key)
+        if cached is None:
+            cached = {}
+            _bundle_array_cache[cache_key] = cached
+        cached.update(loaded)
+        while len(_bundle_array_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
+            _bundle_array_cache.popitem(last=False)
+        _bundle_array_cache.move_to_end(cache_key)
+        return {name: cached[name] for name in present}
 
 
 def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:

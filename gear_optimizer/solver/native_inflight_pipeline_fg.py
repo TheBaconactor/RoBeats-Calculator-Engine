@@ -320,8 +320,24 @@ class NativeFGPipeline:
         external_song_groups: Iterable[Iterable[NativeSong]] = (),
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
     ) -> bool:
-        _ = song, prep_fn, external_song_groups, register_future
-        return False
+        if int(self.settings.static_prep_max_inflight) <= 0:
+            return False
+        runtime = getattr(song, "runtime", song)
+        if bool(getattr(runtime.fg, "fg_static_prep_done", False)):
+            return False
+        existing = getattr(runtime.fg, "fg_static_prep_future", None)
+        if existing is not None:
+            return False
+        active = self.active_static_prep_count(*external_song_groups)
+        if active >= int(self.settings.static_prep_max_inflight):
+            return False
+        dynamic_fg_prep = max(0, int(self.active_prep_count()))
+        if dynamic_fg_prep >= int(self.prep_workers):
+            return False
+        runtime.fg.fg_static_prep_future = self.prep_executor.submit(prep_fn, song)
+        if register_future is not None:
+            register_future(runtime.fg.fg_static_prep_future)
+        return True
 
     def start_pending_prep(
         self,

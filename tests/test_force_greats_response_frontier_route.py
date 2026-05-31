@@ -171,11 +171,13 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
         return {}
 
     monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
-    monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan",
-        lambda *_args, **_kwargs: "prepared-plan",
-    )
+    seen_bundle = object()
+
+    def _fake_prepare_plan(*_args, **kwargs):
+        seen["scoring_bundle"] = kwargs.get("scoring_bundle")
+        return "prepared-plan"
+
+    monkeypatch.setattr(response_frontier_adapter, "prepare_force_greats_response_frontier_plan", _fake_prepare_plan)
 
     cfg = configparser.ConfigParser()
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
@@ -204,10 +206,12 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
         ref_arrays={},
         song_slot=1,
     )
+    song.runtime.fg.fg_response_scoring_bundle = seen_bundle
 
     stages.prepare_fg_job_sync(song, gpu_client=None)
 
     assert seen["ga_n"] == 0
+    assert seen["scoring_bundle"] is seen_bundle
     assert song.runtime.fg.fg_direct_ga_candidates is True
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
     assert len(song.runtime.decode.ga_candidates or []) == 1
@@ -372,6 +376,50 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
 
     with pytest.raises(RuntimeError, match="did not materialize the exact response frontier plan"):
         stages.prepare_fg_job_sync(song, gpu_client=None)
+
+
+def test_prepare_fg_static_sync_prewarms_full_song_scoring_bundle(monkeypatch):
+    import configparser
+
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.core.constants import TOTAL_ROWS
+
+    seen: dict[str, object] = {}
+    bundle = object()
+
+    monkeypatch.setattr(stages, "build_loadout_entries", lambda *args, **kwargs: {"base": {}})
+
+    def _fake_load_bundle(calc_song, ref_arrays, *, stat_keys):
+        seen["calc_song"] = calc_song
+        seen["ref_arrays"] = ref_arrays
+        seen["stat_keys"] = tuple(stat_keys)
+        return bundle
+
+    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
+
+    cfg = configparser.ConfigParser()
+    song = make_native_song(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
+        cfg_dict={},
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_key="song-db-key",
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        registry=None,
+        ref_arrays={"Fever Time": object(), "Fever Fill Rate": object()},
+    )
+
+    stages.prepare_fg_static_sync(song)
+
+    assert song.runtime.fg.fg_response_scoring_bundle is bundle
+    assert song.runtime.fg.fg_static_prep_done is True
+    assert len(seen["stat_keys"]) == (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
+    assert (0, 0) in seen["stat_keys"]
+    assert (TOTAL_ROWS, TOTAL_ROWS) in seen["stat_keys"]
 
 
 def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier(monkeypatch):

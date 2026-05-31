@@ -29,7 +29,7 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongGPUInputs,
     NativeSongRuntimeState,
 )
-from gear_optimizer.solver.native_inflight_pipeline import thread_cpu_time_s
+from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_static_sync, thread_cpu_time_s
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
 
 logger = logging.getLogger(__name__)
@@ -360,5 +360,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             ),
         ),
     )
+    prepare_fg_static_sync(song)
     song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song

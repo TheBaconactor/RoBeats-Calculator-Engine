@@ -398,17 +398,19 @@ def test_native_fg_pipeline_start_static_prep_counts_external_and_owned_lanes():
             batch_max=2,
             prep_workers=2,
             ga_credit_budget=1,
-            static_prep_max_inflight=2,
+            static_prep_max_inflight=1,
         )
     )
     release = threading.Event()
     external = None
     try:
         disabled = make_native_song(task_key="disabled", song_name="Disabled")
+        disabled.runtime.fg.fg_static_prep_done = True
         assert pipeline.start_static_prep(disabled, lambda _song: None) is False
         assert disabled.runtime.fg.fg_static_prep_future is None
 
         external = make_native_song(task_key="external", song_name="External")
+        external.runtime.fg.fg_static_prep_future = Future()
         song = make_native_song(task_key="static-a", song_name="Static A")
         registered: list[Future] = []
 
@@ -426,9 +428,26 @@ def test_native_fg_pipeline_start_static_prep_counts_external_and_owned_lanes():
         )
         assert registered == []
         assert song.runtime.fg.fg_static_prep_future is None
+
+        external.runtime.fg.fg_static_prep_future.set_result(None)
+        assert (
+            pipeline.start_static_prep(
+                song,
+                _static_prep,
+                external_song_groups=([external],),
+                register_future=registered.append,
+            )
+            is True
+        )
+        assert len(registered) == 1
+        assert song.runtime.fg.fg_static_prep_future is registered[0]
     finally:
         release.set()
-        if external is not None and isinstance(external.runtime.fg.fg_static_prep_future, Future):
+        if (
+            external is not None
+            and isinstance(external.runtime.fg.fg_static_prep_future, Future)
+            and not external.runtime.fg.fg_static_prep_future.done()
+        ):
             external.runtime.fg.fg_static_prep_future.set_result(None)
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)

@@ -146,6 +146,38 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
     assert int(bundle.surface_words.shape[0]) > 0
 
 
+def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache.reset_fg_response_frontier_payload_cache()
+    keys = ((0, 0), (3, 0), (0, 3))
+
+    first = response_cache.build_or_load_response_frontier_payload(_calc_song(), _varying_ref_arrays(), stat_keys=keys)
+    assert first.cache_source == "built"
+    with np.load(first.disk_path, allow_pickle=False) as data:
+        assert "first_surface_head_len" in data.files
+        assert "first_surface_head_coeffs" in data.files
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+
+    def _raise_recompute(*_args, **_kwargs):
+        raise AssertionError("persisted song-only head coeffs should be reused")
+
+    monkeypatch.setattr(response_inner_host, "_precompute_surface_head_coeffs", _raise_recompute)
+    bundle = response_cache.load_response_frontier_scoring_bundle(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+
+    assert set(bundle.frontier_idx_by_key) == set(keys)
+    assert bundle.surface_head_coeffs.shape == (bundle.surface_words.shape[0], 4)
+
+
 def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_probe(
     tmp_path: Path, monkeypatch
 ) -> None:

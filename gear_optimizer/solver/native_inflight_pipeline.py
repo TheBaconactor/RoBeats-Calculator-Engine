@@ -9,7 +9,7 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.core.config import read_fg_candidate_limit
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
@@ -340,23 +340,29 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
         gpu_inputs.meta_secondary_color,
         config.effective_difficulty,
     )
-    resolve_active_fg_calc_song(song)
-    if getattr(song.runtime.fg, "loadout_entries", None) is not None:
-        try:
-            song.runtime.fg.fg_static_prep_done = True
-        except AttributeError:
-            pass
-        return
-    runtime.fg.loadout_entries = build_loadout_entries(
-        config.db_key,
-        [],
-        gpu_inputs.gears_by_name,
-        gpu_inputs.minis_by_name,
-        song.runtime.fg.fg_build_details,
-        team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-        materialize_ga_details=False,
-        ga_registry=gpu_inputs.registry,
-    )
+    calc_song = resolve_active_fg_calc_song(song)
+    if getattr(song.runtime.fg, "loadout_entries", None) is None:
+        runtime.fg.loadout_entries = build_loadout_entries(
+            config.db_key,
+            [],
+            gpu_inputs.gears_by_name,
+            gpu_inputs.minis_by_name,
+            song.runtime.fg.fg_build_details,
+            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
+            materialize_ga_details=False,
+            ga_registry=gpu_inputs.registry,
+        )
+    if getattr(song.runtime.fg, "fg_response_scoring_bundle", None) is None:
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+            load_response_frontier_scoring_bundle,
+        )
+
+        full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
+        runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
+            calc_song,
+            getattr(song.gpu_inputs, "ref_arrays", None),
+            stat_keys=full_stat_grid,
+        )
     try:
         song.runtime.fg.fg_static_prep_done = True
     except AttributeError:
@@ -374,21 +380,14 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
     static_future = getattr(song.runtime.fg, "fg_static_prep_future", None)
     if static_future is not None:
-        static_done = False
         try:
-            static_done = bool(static_future.done())
+            static_future.result()
         except Exception as e:
             logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
-            static_done = True
-        if static_done:
-            try:
-                static_future.result()
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
-            try:
-                song.runtime.fg.fg_static_prep_future = None
-            except AttributeError:
-                pass
+        try:
+            song.runtime.fg.fg_static_prep_future = None
+        except AttributeError:
+            pass
     config = getattr(song, "config", song)
     runtime = getattr(song, "runtime", song)
     gpu_inputs = getattr(song, "gpu_inputs", song)
@@ -461,6 +460,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         getattr(song.gpu_inputs, "meta_primary_color", ""),
         ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
         ga_registry=getattr(song.gpu_inputs, "registry", None),
+        scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
     )
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(

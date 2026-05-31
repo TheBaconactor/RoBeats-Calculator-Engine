@@ -27,6 +27,7 @@ from .response_cache_serde import (
 from .response_cache_store import (
     _frontier_is_complete,
     _invalidate_bundle_array_views,
+    _load_bundle_array_members_if_present,
     _load_bundle_array_members,
     _load_payload,
     _memory_get,  # noqa: F401
@@ -303,12 +304,26 @@ def _materialize_scoring_bundle_from_arrays(
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
     surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
     total_notes = int(np.asarray(arrays["total_notes"]).item())
-    from .response_inner_host import _precompute_surface_head_coeffs
+    expected_head_len = min(int(total_notes), 100)
+    surface_head_coeffs = None
+    persisted_head_len = arrays.get("first_surface_head_len")
+    persisted_coeffs = arrays.get("first_surface_head_coeffs")
+    if persisted_head_len is not None and persisted_coeffs is not None:
+        candidate_coeffs = np.asarray(persisted_coeffs, dtype=np.int32)
+        if (
+            int(np.asarray(persisted_head_len).item()) == int(expected_head_len)
+            and int(candidate_coeffs.ndim) == 2
+            and int(candidate_coeffs.shape[0]) == int(surface_words.shape[0])
+            and int(candidate_coeffs.shape[1]) == 4
+        ):
+            surface_head_coeffs = np.ascontiguousarray(candidate_coeffs, dtype=np.int32)
+    if surface_head_coeffs is None:
+        from .response_inner_host import _precompute_surface_head_coeffs
 
-    surface_head_coeffs = _precompute_surface_head_coeffs(
-        surface_words,
-        head_len=min(int(total_notes), 100),
-    )
+        surface_head_coeffs = _precompute_surface_head_coeffs(
+            surface_words,
+            head_len=int(expected_head_len),
+        )
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
@@ -348,6 +363,12 @@ def load_response_frontier_scoring_bundle(
     except ValueError:
         build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
         arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+    arrays.update(
+        _load_bundle_array_members_if_present(
+            bundle_key,
+            names=("first_surface_head_len", "first_surface_head_coeffs"),
+        )
+    )
     scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
     _scoring_bundle_memory_put(bundle_key, scoring_bundle)
     return scoring_bundle
