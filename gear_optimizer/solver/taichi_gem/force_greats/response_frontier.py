@@ -31,11 +31,7 @@ from .response_ftff_prune import (
     prune_best_positions_by_frontier,
     prune_dominated_ftff_response_positions,
 )
-from .response_inner_host import (
-    _response_group_logical_surface_plan,
-    _response_inner_combo_counts,
-    _score_response_group_meta_gpu,
-)
+from .response_inner_host import _score_response_group_meta_gpu
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -84,9 +80,9 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_surface_head_coeffs: np.ndarray
     scoring_group_offsets: np.ndarray
     scoring_group_lengths: np.ndarray
-    scoring_logical_owners: np.ndarray
-    scoring_logical_surfaces: np.ndarray
-    scoring_logical_work_cumsum: np.ndarray
+    scoring_logical_owners: np.ndarray | None
+    scoring_logical_surfaces: np.ndarray | None
+    scoring_logical_work_cumsum: np.ndarray | None
     scoring_unique_frontiers: int
     scoring_surface_compact_ms: float
     scoring_surface_head_coeff_ms: float
@@ -154,7 +150,19 @@ def _pack_scoring_surfaces_for_batch(
     group_ft_stat: np.ndarray,
     group_ff_stat: np.ndarray,
     allow_pp: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, float, float]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+    int,
+    float,
+    float,
+]:
     phase_t0 = time.perf_counter()
     kept_frontiers = np.ascontiguousarray(
         scoring_bundle.frontier_idx_by_stat[group_ft_stat, group_ff_stat],
@@ -178,11 +186,6 @@ def _pack_scoring_surfaces_for_batch(
     group_lengths = np.ascontiguousarray(frontier_lengths_all[kept_frontiers], dtype=np.int32)
     if bool(np.any(group_offsets < 0)) or bool(np.any(group_lengths <= 0)):
         raise ValueError("FG response frontier payload contains an empty first frontier")
-    combo_counts = _response_inner_combo_counts(group_meta, allow_pp=bool(allow_pp))
-    logical_owners, logical_surfaces, logical_work_cumsum = _response_group_logical_surface_plan(
-        group_lengths,
-        combo_counts,
-    )
     head_lengths = np.unique(np.ascontiguousarray(group_meta[:, 6], dtype=np.int32))
     if int(head_lengths.shape[0]) != 1:
         raise ValueError("response frontier GPU group metadata has inconsistent head length")
@@ -203,9 +206,9 @@ def _pack_scoring_surfaces_for_batch(
         surface_head_coeffs,
         group_offsets,
         group_lengths,
-        logical_owners,
-        logical_surfaces,
-        logical_work_cumsum,
+        None,
+        None,
+        None,
         int(unique_frontiers.shape[0]),
         compact_ms,
         head_coeff_ms,
@@ -509,12 +512,15 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
         batch.group_meta.shape[0]
     ):
         raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if int(logical_owners.shape[0]) != int(np.sum(group_lengths, dtype=np.int64)) or int(
-        logical_surfaces.shape[0]
-    ) != int(logical_owners.shape[0]):
-        raise ValueError("response frontier prepared logical surface arrays have inconsistent lengths")
-    if int(logical_work_cumsum.shape[0]) != int(logical_owners.shape[0]) + 1:
-        raise ValueError("response frontier prepared logical work array has inconsistent length")
+    if logical_owners is not None or logical_surfaces is not None or logical_work_cumsum is not None:
+        if logical_owners is None or logical_surfaces is None or logical_work_cumsum is None:
+            raise ValueError("response frontier prepared logical surface arrays must be provided together")
+        if int(logical_owners.shape[0]) != int(np.sum(group_lengths, dtype=np.int64)) or int(
+            logical_surfaces.shape[0]
+        ) != int(logical_owners.shape[0]):
+            raise ValueError("response frontier prepared logical surface arrays have inconsistent lengths")
+        if int(logical_work_cumsum.shape[0]) != int(logical_owners.shape[0]) + 1:
+            raise ValueError("response frontier prepared logical work array has inconsistent length")
     if (
         int(surface_words.ndim) != 2
         or int(surface_words.shape[1]) != 8

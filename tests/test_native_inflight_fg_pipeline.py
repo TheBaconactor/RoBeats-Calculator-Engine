@@ -36,7 +36,6 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     assert settings.batch_max == 1
     assert settings.prep_workers == 1
     assert settings.ga_credit_budget == 12
-    assert settings.static_prep_max_inflight == 1
     assert settings.db_prefetch_workers == 1
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "9")
@@ -71,7 +70,7 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     assert settings.db_prefetch_workers == 1
 
 
-def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(monkeypatch):
+def test_read_native_fg_pipeline_settings_includes_db_prefetch(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_WORKERS", raising=False)
     monkeypatch.delenv("INFLIGHT_FG_BATCH_MAX", raising=False)
     monkeypatch.delenv("INFLIGHT_FG_PREP_WORKERS", raising=False)
@@ -87,7 +86,6 @@ def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(m
     )
 
     assert settings.prep_workers == 1
-    assert settings.static_prep_max_inflight == 1
     assert settings.db_prefetch_workers == 6
 
 
@@ -365,89 +363,3 @@ def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
     assert "completed without the exact response frontier plan" in str(excinfo.value.__cause__)
     assert song.runtime.fg.fg_prep_future is None
     assert song.runtime.fg.fg_dynamic_prep_done is False
-
-
-def test_native_fg_pipeline_static_prep_budget_reserves_dynamic_prep_workers():
-    pipeline = NativeFGPipeline(
-        NativeFGPipelineSettings(
-            workers=2,
-            batch_max=2,
-            prep_workers=3,
-            ga_credit_budget=1,
-            static_prep_max_inflight=3,
-        )
-    )
-    try:
-        assert pipeline.static_prep_budget() == 3
-
-        pipeline.prep_inflight.append(make_native_song(task_key="dynamic-a", song_name="Dynamic A"))
-        assert pipeline.static_prep_budget() == 2
-
-        pipeline.prep_inflight.append(make_native_song(task_key="dynamic-b", song_name="Dynamic B"))
-        pipeline.prep_inflight.append(make_native_song(task_key="dynamic-c", song_name="Dynamic C"))
-        assert pipeline.static_prep_budget() == 0
-    finally:
-        pipeline.shutdown_fg(wait=True, cancel_futures=True)
-        pipeline.shutdown_prep(wait=True, cancel_futures=True)
-
-
-def test_native_fg_pipeline_start_static_prep_counts_external_and_owned_lanes():
-    pipeline = NativeFGPipeline(
-        NativeFGPipelineSettings(
-            workers=2,
-            batch_max=2,
-            prep_workers=2,
-            ga_credit_budget=1,
-            static_prep_max_inflight=1,
-        )
-    )
-    release = threading.Event()
-    external = None
-    try:
-        disabled = make_native_song(task_key="disabled", song_name="Disabled")
-        disabled.runtime.fg.fg_static_prep_done = True
-        assert pipeline.start_static_prep(disabled, lambda _song: None) is False
-        assert disabled.runtime.fg.fg_static_prep_future is None
-
-        external = make_native_song(task_key="external", song_name="External")
-        external.runtime.fg.fg_static_prep_future = Future()
-        song = make_native_song(task_key="static-a", song_name="Static A")
-        registered: list[Future] = []
-
-        def _static_prep(_song):
-            release.wait(timeout=2)
-
-        assert (
-            pipeline.start_static_prep(
-                song,
-                _static_prep,
-                external_song_groups=([external],),
-                register_future=registered.append,
-            )
-            is False
-        )
-        assert registered == []
-        assert song.runtime.fg.fg_static_prep_future is None
-
-        external.runtime.fg.fg_static_prep_future.set_result(None)
-        assert (
-            pipeline.start_static_prep(
-                song,
-                _static_prep,
-                external_song_groups=([external],),
-                register_future=registered.append,
-            )
-            is True
-        )
-        assert len(registered) == 1
-        assert song.runtime.fg.fg_static_prep_future is registered[0]
-    finally:
-        release.set()
-        if (
-            external is not None
-            and isinstance(external.runtime.fg.fg_static_prep_future, Future)
-            and not external.runtime.fg.fg_static_prep_future.done()
-        ):
-            external.runtime.fg.fg_static_prep_future.set_result(None)
-        pipeline.shutdown_fg(wait=True, cancel_futures=True)
-        pipeline.shutdown_prep(wait=True, cancel_futures=True)

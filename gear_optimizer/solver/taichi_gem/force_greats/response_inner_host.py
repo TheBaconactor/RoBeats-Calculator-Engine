@@ -433,6 +433,38 @@ def _score_response_group_meta_gpu(
         ti.sync()
         return out_rows, int(logical_surface_rows)
 
+    if max_group_work <= max_thread_work:
+        chunk_start = 0
+        while chunk_start < int(group_count):
+            chunk_stop = int(chunk_start)
+            chunk_work = 0
+            while chunk_stop < int(group_count) and (int(chunk_stop) - int(chunk_start)) < int(max_dispatch_groups):
+                next_work = int(chunk_work) + int(work_by_group[int(chunk_stop)])
+                if chunk_stop > chunk_start and next_work > int(max_dispatch_work):
+                    break
+                chunk_work = int(next_work)
+                chunk_stop += 1
+            if chunk_stop <= chunk_start:
+                chunk_stop = int(chunk_start) + 1
+            _fg_response_inner_group_kernel(
+                int(chunk_stop) - int(chunk_start),
+                surface_words_all,
+                surface_counts_all,
+                surface_head_coeffs_all,
+                group_offsets_all[int(chunk_start) : int(chunk_stop)],
+                group_lengths_all[int(chunk_start) : int(chunk_stop)],
+                group_meta_all[int(chunk_start) : int(chunk_stop)],
+                flags,
+                ref_pp,
+                ref_cm,
+                ref_fm,
+                out_rows[int(chunk_start) : int(chunk_stop)],
+                bool(allow_pp),
+            )
+            ti.sync()
+            chunk_start = int(chunk_stop)
+        return out_rows, int(logical_surface_rows)
+
     valid_group_indices = np.flatnonzero(np.asarray(group_lengths_all > 0, dtype=np.bool_)).astype(
         np.int32,
         copy=False,

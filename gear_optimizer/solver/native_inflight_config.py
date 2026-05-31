@@ -616,7 +616,6 @@ class NativeSongFGState:
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None
     fg_direct_ga_candidates: bool = False
-    fg_static_prep_future: Optional[concurrent.futures.Future] = None
     fg_static_prep_done: bool = False
     fg_dynamic_prep_done: bool = False
     fg_prep_submit_t0: float | None = None

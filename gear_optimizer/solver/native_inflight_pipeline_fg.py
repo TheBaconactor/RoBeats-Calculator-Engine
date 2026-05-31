@@ -5,7 +5,6 @@ import logging
 import time
 import traceback
 from collections import deque
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -27,7 +26,6 @@ class NativeFGPipelineSettings:
     batch_max: int
     prep_workers: int
     ga_credit_budget: int
-    static_prep_max_inflight: int = 0
     db_prefetch_workers: int = 1
 
 
@@ -86,14 +84,12 @@ def read_native_fg_pipeline_settings(
     # the canonical production path keeps one dynamic prep producer.
     _ = default_worker_threads
     fg_prep_workers = 1
-    static_prep_max_inflight = max(0, min(int(fg_prep_workers), int(inflight_limit_i), 1))
     db_prefetch_workers = read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
     return NativeFGPipelineSettings(
         workers=int(fg_workers),
         batch_max=int(fg_batch_max),
         prep_workers=int(fg_prep_workers),
         ga_credit_budget=max(1, int(ga_credit_budget_cfg)),
-        static_prep_max_inflight=int(static_prep_max_inflight),
         db_prefetch_workers=int(db_prefetch_workers),
     )
 
@@ -268,76 +264,6 @@ class NativeFGPipeline:
                 )
             )
         return completions
-
-    def active_static_prep_count(self, *external_song_groups: Iterable[NativeSong]) -> int:
-        active = 0
-        seen_ids: set[int] = set()
-
-        def _track(song: NativeSong) -> None:
-            nonlocal active
-            try:
-                song_id = int(id(song))
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:active_static_prep_count: {e}")
-                return
-            if song_id in seen_ids:
-                return
-            seen_ids.add(song_id)
-            fut = getattr(song.runtime.fg, "fg_static_prep_future", None)
-            if fut is None:
-                return
-            try:
-                if fut.done():
-                    return
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:active_static_prep_count: {e}")
-                return
-            active += 1
-
-        for group in external_song_groups:
-            for song in group:
-                _track(song)
-        for song in self.pending:
-            _track(song)
-        for song in self.prep_inflight:
-            _track(song)
-        for song, _future, _t_submit in self.futures:
-            _track(song)
-        return int(active)
-
-    def static_prep_budget(self) -> int:
-        if int(self.settings.static_prep_max_inflight) <= 0:
-            return 0
-        dynamic_fg_prep = max(0, int(len(self.prep_inflight)))
-        spare_workers = max(0, int(self.prep_workers) - int(dynamic_fg_prep))
-        return max(0, min(int(self.settings.static_prep_max_inflight), int(spare_workers)))
-
-    def start_static_prep(
-        self,
-        song: NativeSong,
-        prep_fn: Callable[..., Any],
-        *,
-        external_song_groups: Iterable[Iterable[NativeSong]] = (),
-        register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
-    ) -> bool:
-        if int(self.settings.static_prep_max_inflight) <= 0:
-            return False
-        runtime = getattr(song, "runtime", song)
-        if bool(getattr(runtime.fg, "fg_static_prep_done", False)):
-            return False
-        existing = getattr(runtime.fg, "fg_static_prep_future", None)
-        if existing is not None:
-            return False
-        active = self.active_static_prep_count(*external_song_groups)
-        if active >= int(self.settings.static_prep_max_inflight):
-            return False
-        dynamic_fg_prep = max(0, int(self.active_prep_count()))
-        if dynamic_fg_prep >= int(self.prep_workers):
-            return False
-        runtime.fg.fg_static_prep_future = self.prep_executor.submit(prep_fn, song)
-        if register_future is not None:
-            register_future(runtime.fg.fg_static_prep_future)
-        return True
 
     def start_pending_prep(
         self,

@@ -68,7 +68,6 @@ from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline import (
     InFlightStageProfiler,
     decode_ga_payload_sync,
-    prepare_fg_static_sync,
     prepare_fg_job_sync,
 )
 logger = logging.getLogger(__name__)
@@ -164,13 +163,6 @@ def run_native_inflight_song_pipeline(
             ga_inflight=ga_inflight,
             decode_inflight=decode_inflight,
             fg_active_keys=fg_pipeline.active_song_keys(),
-        )
-    def _submit_fg_static_prewarm(song: NativeSong) -> bool:
-        return fg_pipeline.start_static_prep(
-            song,
-            prepare_fg_static_sync,
-            external_song_groups=(ga_inflight, prepared, decode_inflight),
-            register_future=completion_tracker.register,
         )
     def _current_ga_queue_limit() -> int:
         return int(
@@ -510,8 +502,6 @@ def run_native_inflight_song_pipeline(
                     )
                     did_work = True
                     fg_pipeline.note_ga_submit()
-                    if _submit_fg_static_prewarm(song):
-                        did_work = True
                     continue
                 if stopping:
                     break

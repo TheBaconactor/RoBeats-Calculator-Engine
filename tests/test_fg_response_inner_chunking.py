@@ -61,7 +61,7 @@ def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch
     )
 
 
-def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispatch_exceeds_caps(monkeypatch):
+def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     batch_calls: list[dict[str, int]] = []
@@ -125,15 +125,15 @@ def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispa
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
     monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
     monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_kernel)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK", 10)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 3)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK", 5)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 4)
     monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 3)
     monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK", 3)
     monkeypatch.setattr(
-        response_inner.np,
-        "concatenate",
+        response_inner,
+        "_response_group_logical_surface_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("surface chunk path must use the canonical preallocated owner buffer")
+            AssertionError("group chunks must not materialize logical surface owner rows")
         ),
     )
 
@@ -174,11 +174,9 @@ def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispa
     )
 
     assert logical_surface_rows == 9
-    assert group_calls == []
-    assert len(batch_calls) > 1
-    assert all(call["row_count"] <= 3 for call in batch_calls)
-    assert all(not call["allow_pp"] for call in batch_calls)
-    assert all(call["surface_pool_rows"] == 9 for call in batch_calls)
+    assert [call["group_count"] for call in group_calls] == [1, 2]
+    assert all(not call["allow_pp"] for call in group_calls)
+    assert batch_calls == []
     assert rows[:, 0].tolist() == [7, 9, 8]
     assert rows[:, 1].tolist() == [1, 1, 0]
 

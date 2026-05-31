@@ -378,16 +378,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     queue_wait_ms = 0.0
     if isinstance(prep_submit_t0, (int, float)):
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
-    static_future = getattr(song.runtime.fg, "fg_static_prep_future", None)
-    if static_future is not None:
-        try:
-            static_future.result()
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
-        try:
-            song.runtime.fg.fg_static_prep_future = None
-        except AttributeError:
-            pass
     config = getattr(song, "config", song)
     runtime = getattr(song, "runtime", song)
     gpu_inputs = getattr(song, "gpu_inputs", song)
@@ -482,9 +472,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             continue
         prepared_group_rows += int(getattr(getattr(batch, "group_meta", None), "shape", (0,))[0])
         prepared_surface_rows += int(getattr(getattr(batch, "scoring_surface_words", None), "shape", (0,))[0])
-        prepared_logical_surface_rows += int(
-            getattr(getattr(batch, "scoring_logical_owners", None), "shape", (0,))[0]
-        )
+        prepared_logical_surface_rows += int(np.sum(getattr(batch, "scoring_group_lengths", ()), dtype=np.int64))
         prepared_unique_frontiers += int(getattr(batch, "scoring_unique_frontiers", 0) or 0)
         prepared_compact_ms += float(getattr(batch, "scoring_surface_compact_ms", 0.0) or 0.0)
         prepared_head_coeff_ms += float(getattr(batch, "scoring_surface_head_coeff_ms", 0.0) or 0.0)
