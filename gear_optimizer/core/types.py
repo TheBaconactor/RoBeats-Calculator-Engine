@@ -82,7 +82,7 @@ class StageTiming(TypedDict, total=False):
 
 
 class GpuTiming(TypedDict, total=False):
-    """Per-song GPU timing summary (from gpu_profiler)."""
+    """Per-song GPU timing summary."""
 
     kernel_sec: float
     upload_sec: float
@@ -134,7 +134,6 @@ class SongResultPayload(TypedDict, total=False):
 # ----------------------------- GPU IPC payloads -----------------------------
 
 BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
-
 
 
 

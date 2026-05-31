@@ -6,7 +6,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries, build_db_payload
+from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload
 from gear_optimizer.data.database import (
     _insert_missing_piece_names,
     _load_piece_name_encoding_maps,

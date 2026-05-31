@@ -5,33 +5,33 @@ import pytest
 
 
 def test_fg_response_first_frontier_reducer_uses_one_canonical_chunk() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_precompute
 
     action_row = np.asarray([1, 2, 3, 4], dtype=np.int32)
     items = [(idx, 0, 1.0, action_row, action_row, action_row, action_row) for idx in range(5)]
 
-    chunks = response_build_gpu._first_only_chunks(n=10, items=items)
+    chunks = response_build_gpu_precompute._first_only_chunks(n=10, items=items)
 
     assert chunks == [(0, items)]
-    assert not hasattr(response_build_gpu, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
+    assert not hasattr(response_build_gpu_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
 
 
 def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
-    previous = response_build_gpu.configure_force_greats_response_first_frontier_threads(9999)
+    previous = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(9999)
     try:
-        assert 1 <= response_build_gpu._resolve_first_only_reducer_threads(9999) <= 8
-        response_build_gpu.configure_force_greats_response_first_frontier_threads(0)
-        assert response_build_gpu._resolve_first_only_reducer_threads(9999) == 1
-        response_build_gpu.configure_force_greats_response_first_frontier_threads(4)
-        assert response_build_gpu._resolve_first_only_reducer_threads(2) == 2
+        assert 1 <= response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) <= 8
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(0)
+        assert response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) == 1
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(4)
+        assert response_build_gpu_reducer._resolve_first_only_reducer_threads(2) == 2
     finally:
-        response_build_gpu.configure_force_greats_response_first_frontier_threads(previous)
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
     calls: list[int] = []
 
@@ -48,22 +48,22 @@ def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(response_build_gpu.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(response_build_gpu_reducer.concurrent.futures, "ThreadPoolExecutor", FakeExecutor)
 
-    with response_build_gpu._first_frontier_reducer_executor(3):
+    with response_build_gpu_reducer._first_frontier_reducer_executor(3):
         pass
 
     assert calls == [3]
 
 
 def test_fg_response_first_frontier_reducer_has_no_public_warmup_route() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
-    assert not hasattr(response_build_gpu, "warm_force_greats_response_first_frontier_reducer")
+    assert not hasattr(response_build_gpu_reducer, "warm_force_greats_response_first_frontier_reducer")
 
 
 def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch, response_build_gpu_reducer
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseSurface,
@@ -72,88 +72,30 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
     surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
     calls: list[dict] = []
-    previous_threads = response_build_gpu.configure_force_greats_response_first_frontier_threads(1)
+    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
 
     def _fake_first_frontier(**kwargs):
         calls.append(dict(kwargs))
         return result
 
-    monkeypatch.setattr(response_build_gpu, "_first_frontier_result_from_precomputed_end_indices", _fake_first_frontier)
+    monkeypatch.setattr(
+        response_build_gpu_reducer,
+        "_first_frontier_result_from_precomputed_end_indices",
+        _fake_first_frontier,
+    )
     try:
-        frontiers = response_build_gpu.build_force_greats_response_first_frontiers_gpu_batch(
+        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
             use_forced_great_timing=True,
         )
     finally:
-        response_build_gpu.configure_force_greats_response_first_frontier_threads(previous_threads)
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert len(calls) == 1
     assert len(frontiers) == 2
     assert frontiers[0] is frontiers[1]
-
-
-@pytest.mark.gpu
-def test_fg_response_frontier_gpu_build_matches_cpu_reference_small_chart() -> None:
-    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
-    from tests.parity.fg_response_frontier_cpu import build_force_greats_response_frontier
-
-    timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
-    great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
-    kwargs = dict(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        raw_fever_fill=2.25,
-        non_fever_base=7,
-        real_fever_time=0.55,
-        use_forced_great_timing=True,
-    )
-    geometry = (2.25, 7, 0.55)
-
-    reference = build_force_greats_response_frontier(**kwargs)
-    gpu = build_force_greats_response_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        geometries=(geometry,),
-        use_forced_great_timing=True,
-    )[0]
-
-    assert gpu.first_frontier == reference.first_frontier
-    assert gpu.state_frontiers == reference.state_frontiers
-    assert gpu.states_evaluated == reference.states_evaluated
-    assert gpu.actions == reference.actions
-    assert gpu.transitions_evaluated == reference.transitions_evaluated
-
-    geometries = (
-        (2.25, 7, 0.55),
-        (2.25, 7, 0.8),
-        (1.4, 5, 0.55),
-    )
-    references = tuple(
-        build_force_greats_response_frontier(
-            timestamps=timestamps,
-            great_candidate_timestamps=great_candidates,
-            raw_fever_fill=raw_fill,
-            non_fever_base=non_fever_base,
-            real_fever_time=real_fever_time,
-            use_forced_great_timing=True,
-        )
-        for raw_fill, non_fever_base, real_fever_time in geometries
-    )
-    batch = build_force_greats_response_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        geometries=geometries,
-        use_forced_great_timing=True,
-    )
-
-    assert tuple(frontier.first_frontier for frontier in batch) == tuple(
-        frontier.first_frontier for frontier in references
-    )
-    assert tuple(frontier.state_frontiers for frontier in batch) == tuple(
-        frontier.state_frontiers for frontier in references
-    )
 
 
 @pytest.mark.gpu
@@ -199,7 +141,7 @@ def test_fg_response_frontier_gpu_sparse_body_materializes_state_frontiers() -> 
 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
     from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(140)], dtype=np.float32)
@@ -212,9 +154,9 @@ def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> 
         geometries=geometries,
         use_forced_great_timing=True,
     )
-    assert not hasattr(response_build_gpu, "_frontier_from_edge_arrays")
-    assert not hasattr(response_build_gpu, "build_force_greats_response_frontiers_gpu_batch")
-    slim = response_build_gpu.build_force_greats_response_first_frontiers_gpu_batch(
+    assert not hasattr(response_build_gpu_batch, "_frontier_from_edge_arrays")
+    assert not hasattr(response_build_gpu_batch, "build_force_greats_response_frontiers_gpu_batch")
+    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=geometries,
@@ -227,7 +169,7 @@ def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> 
 
 @pytest.mark.gpu
 def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
     from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
 
     timestamps = np.asarray([float(idx) * 0.11 for idx in range(60)], dtype=np.float32)
@@ -240,7 +182,7 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
         geometries=geometries,
         use_forced_great_timing=True,
     )
-    slim = response_build_gpu.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=geometries,
@@ -253,15 +195,29 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
 
 @pytest.mark.gpu
 def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _EMPTY_SURFACE,
         _action_table,
-        _combine,
         _edge_surface_options,
         reconstruct_force_greats_response_counts,
     )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
     from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
+
+    def _combine_surface(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
+        return FgResponseSurface(
+            int(edge.fever0 | tail.fever0),
+            int(edge.fever1 | tail.fever1),
+            int(edge.fever2 | tail.fever2),
+            int(edge.fever3 | tail.fever3),
+            int(edge.great0 | tail.great0),
+            int(edge.great1 | tail.great1),
+            int(edge.great2 | tail.great2),
+            int(edge.great3 | tail.great3),
+            int(edge.body_fever + tail.body_fever),
+            int(edge.body_great + tail.body_great),
+        )
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
     great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
@@ -274,7 +230,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=True,
     )[0]
-    slim = response_build_gpu.build_force_greats_response_first_frontiers_gpu_batch(
+    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
@@ -321,7 +277,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
                 break
         assert edge_match is not None
         state, edge = edge_match
-        surface = _combine(surface, edge)
+        surface = _combine_surface(surface, edge)
         first = False
 
     assert surface == target

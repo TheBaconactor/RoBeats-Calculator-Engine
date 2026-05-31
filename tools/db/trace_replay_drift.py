@@ -126,10 +126,9 @@ for r in cur.execute(
     print(f"  Buff: {buff}")
     print(f"  Stored PP already includes buff={pp_raw >= buff.get('Perfect Points',25)}")
 
-    # Check if the score matches when we use the actual optimizer pipeline scoring
-    # The key question: does the optimizer pipeline score Stats directly,
-    # or does it first compute Stats from base+gems+buff?
-    # Pre-refactor: look at the actual scoring call chain in solve_coevolution_genetic
+    # Check if the score matches when using the native decode/persistence path.
+    # The key question: does persistence score Stats directly, or reconstruct
+    # Stats from base+gems+buff first?
 
     # Check fg_score column for this row — was FG involved?
     fg_persisted = int(r["fg_score"] or 0)

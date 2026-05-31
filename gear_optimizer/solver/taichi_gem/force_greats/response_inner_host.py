@@ -12,10 +12,16 @@ from gear_optimizer.core.constants import (
 )
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.solver.taichi_gem import api as gem_api
+from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
-from .response_inner_reference import _color_flags, _validate_surface
+from .response_inner_kernels import _fg_response_inner_batch_kernel, _fg_response_inner_group_kernel
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
+_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK = 100_000
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 262_144
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 16_000_000_000
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
 _U16_HEAD_VALUES = np.arange(1 << 16, dtype=np.uint16)
 _U16_HEAD_BITS = np.unpackbits(_U16_HEAD_VALUES.view(np.uint8).reshape(-1, 2), axis=1, bitorder="little").astype(
@@ -32,10 +38,28 @@ _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[in
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
 
 
-def _response_inner_public():
-    from . import response_inner
+def _color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
+    primary = str(primary_color or "")
+    secondary = str(secondary_color or "")
+    selected = str(selected_color or "")
+    return (
+        int(primary == "Chill"),
+        int(secondary == "Chill"),
+        int(primary == "Flow"),
+        int(secondary == "Flow"),
+        int(primary == "Rush"),
+        int(secondary == "Rush"),
+        int(primary == selected and bool(selected)),
+        int(secondary == selected and bool(selected)),
+        int(is_single_color_song(primary, secondary)),
+    )
 
-    return response_inner
+
+def _validate_surface(surface: FgResponseSurface, *, body_total: int) -> None:
+    if int(surface.body_fever) < 0 or int(surface.body_great) < 0:
+        raise ValueError("FG response surface body counts must be nonnegative")
+    if int(surface.body_fever) > int(body_total) or int(surface.body_great) > int(body_total):
+        raise ValueError("FG response surface body count exceeds song body note count")
 
 
 def _response_inner_combo_count(
@@ -122,10 +146,9 @@ def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> n
         return np.zeros((0,), dtype=np.int64)
     combo_inputs = np.ascontiguousarray(group_meta_arr[:, :4], dtype=np.int32)
     unique_inputs, inverse = np.unique(combo_inputs, axis=0, return_inverse=True)
-    combo_count = _response_inner_public()._response_inner_combo_count
     unique_counts = np.asarray(
         [
-            combo_count(
+            _response_inner_combo_count(
                 residual_budget=int(row[0]),
                 cur_pp=int(row[1]),
                 cur_cm=int(row[2]),
@@ -377,23 +400,22 @@ def _score_response_group_meta_gpu(
 
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
-    public = _response_inner_public()
-    combo_counts = public._response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
+    combo_counts = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
     work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts
     total_work = int(np.sum(work_by_group, dtype=np.int64))
     max_group_work = int(np.max(work_by_group)) if group_count > 0 else 0
-    max_dispatch_work = max(1, int(public._FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
-    max_thread_work = max(1, int(public._FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK))
-    max_dispatch_groups = max(1, int(public._FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS))
-    max_surface_dispatch_rows = max(1, int(public._FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
-    max_surface_dispatch_work = max(1, int(public._FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
+    max_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
+    max_thread_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK))
+    max_dispatch_groups = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS))
+    max_surface_dispatch_rows = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
+    max_surface_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
     out_rows = np.zeros((group_count, 11), dtype=np.int32)
     if (
         group_count <= max_dispatch_groups
         and total_work <= max_dispatch_work
         and max_group_work <= max_thread_work
     ):
-        public._fg_response_inner_group_kernel(
+        _fg_response_inner_group_kernel(
             int(group_count),
             surface_words_all,
             surface_counts_all,
@@ -458,7 +480,7 @@ def _score_response_group_meta_gpu(
             raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
         scores_view = chunk_scores[:row_count]
         details_view = chunk_details[:row_count]
-        public._fg_response_inner_batch_kernel(
+        _fg_response_inner_batch_kernel(
             int(row_count),
             surface_words_all,
             surface_counts_all,
@@ -576,7 +598,7 @@ def _optimize_response_surfaces_gpu(
     ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
     ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
-    _response_inner_public()._fg_response_inner_group_kernel(
+    _fg_response_inner_group_kernel(
         int(len(groups)),
         surface_words,
         surface_counts,

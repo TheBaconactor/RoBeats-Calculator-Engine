@@ -10,6 +10,7 @@ search score.
 from __future__ import annotations
 
 from math import floor
+import threading
 from typing import Any, Mapping
 
 import numpy as np
@@ -17,7 +18,7 @@ import numpy as np
 from ...core.constants import TOTAL_ROWS
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
-from ..fever_timeline import calculate_fever_timeline_indices
+from ..fever_timeline import calculate_fever_timeline_indices, calculate_force_greats_timeline_indices
 from ..scoring_core import lookup_reference_py
 from .fg_policy import (
     accumulate_fg_penalties,
@@ -28,6 +29,127 @@ from .fg_policy import (
     is_single_color_song,
     resolve_stat_factors,
 )
+
+
+_FG_TIMELINE_TLS = threading.local()
+
+
+def _get_fg_timeline_buffers(total_notes: int):
+    n = max(0, int(total_notes))
+    section_cap = n + 1
+
+    buf = getattr(_FG_TIMELINE_TLS, "buf", None)
+    if buf is None:
+        buf = {}
+        _FG_TIMELINE_TLS.buf = buf
+
+    fever_mask = buf.get("fever_mask")
+    if fever_mask is None or int(getattr(fever_mask, "shape", (0,))[0]) != n:
+        fever_mask = np.zeros(n, dtype=np.bool_)
+        buf["fever_mask"] = fever_mask
+    else:
+        fever_mask[:] = False
+
+    section_start = buf.get("section_start")
+    if section_start is None or int(getattr(section_start, "shape", (0,))[0]) != section_cap:
+        section_start = np.zeros(section_cap, dtype=np.int32)
+        buf["section_start"] = section_start
+    else:
+        section_start[:] = 0
+
+    section_forced = buf.get("section_forced")
+    if section_forced is None or int(getattr(section_forced, "shape", (0,))[0]) != section_cap:
+        section_forced = np.zeros(section_cap, dtype=np.int32)
+        buf["section_forced"] = section_forced
+    else:
+        section_forced[:] = 0
+
+    section_fill_penalty = buf.get("section_fill_penalty")
+    if section_fill_penalty is None or int(getattr(section_fill_penalty, "shape", (0,))[0]) != section_cap:
+        section_fill_penalty = np.zeros(section_cap, dtype=np.int32)
+        buf["section_fill_penalty"] = section_fill_penalty
+    else:
+        section_fill_penalty[:] = 0
+
+    section_skip_wasted = buf.get("section_skip_wasted")
+    if section_skip_wasted is None or int(getattr(section_skip_wasted, "shape", (0,))[0]) != section_cap:
+        section_skip_wasted = np.zeros(section_cap, dtype=np.bool_)
+        buf["section_skip_wasted"] = section_skip_wasted
+    else:
+        section_skip_wasted[:] = False
+
+    return fever_mask, section_start, section_forced, section_fill_penalty, section_skip_wasted
+
+
+def _compute_force_greats_timeline(
+    timestamps,
+    great_candidate_timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes,
+    last_note_time,
+    force_counts,
+    *,
+    clamp_base_notes_nonnegative,
+    clamp_forced_to_section_notes,
+    use_forced_great_timing,
+):
+    forced_arr = np.asarray(force_counts, dtype=np.int32) if force_counts else np.zeros(0, dtype=np.int32)
+    fever_mask_buffer, section_start, section_forced, section_fill_penalty, section_skip_wasted = (
+        _get_fg_timeline_buffers(int(total_notes))
+    )
+
+    (
+        fever_mask_head_view,
+        count_body_fever,
+        count_body_normal,
+        non_fever_base,
+        section_count,
+    ) = calculate_force_greats_timeline_indices(
+        timestamps,
+        great_candidate_timestamps,
+        total_notes,
+        fever_fill_rate,
+        fever_time_stat,
+        long_notes,
+        last_note_time,
+        forced_arr,
+        int(forced_arr.shape[0]),
+        bool(clamp_base_notes_nonnegative),
+        bool(clamp_forced_to_section_notes),
+        bool(use_forced_great_timing),
+        fever_mask_buffer,
+        section_start,
+        section_forced,
+        section_fill_penalty,
+        section_skip_wasted,
+    )
+
+    section_details = []
+    for i in range(int(section_count)):
+        base_notes = int(non_fever_base) - 1 if i == 0 else int(non_fever_base)
+        if clamp_base_notes_nonnegative:
+            base_notes = max(0, int(base_notes))
+        notes_to_fill = int(base_notes) + int(section_fill_penalty[i])
+
+        section_details.append(
+            {
+                "start_idx": int(section_start[i]),
+                "forced": int(section_forced[i]),
+                "fill_penalty_notes": int(section_fill_penalty[i]),
+                "skip_wasted": bool(section_skip_wasted[i]),
+                "notes": int(notes_to_fill),
+            }
+        )
+
+    return (
+        fever_mask_head_view.copy(),
+        int(count_body_fever),
+        int(count_body_normal),
+        int(non_fever_base),
+        section_details,
+    )
 
 
 def calculate_score_exact(
@@ -240,8 +362,6 @@ def evaluate_force_greats_exact(
     if not stats or not calc_song:
         return None
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-
-    from .force_greats import _compute_force_greats_timeline
 
     song_inputs = extract_fg_song_inputs(calc_song)
     if song_inputs.total_notes <= 0:

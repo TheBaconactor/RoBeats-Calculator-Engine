@@ -297,9 +297,15 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
 
 
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
-    from .stats_gateway import ensure_stats_include_base_effect as _gateway
-
-    return _gateway(stats, base_effect)
+    if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
+        return stats if isinstance(stats, dict) else {}
+    base_pp = _safe_int(base_effect.get("Perfect Points", 0), 0)
+    if base_pp <= 0:
+        return dict(stats)
+    pp0 = _safe_int(stats.get("Perfect Points", 0), 0)
+    if pp0 < base_pp:
+        return _apply_stat_delta(stats, base_effect)
+    return dict(stats)
 
 
 def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:

@@ -17,7 +17,6 @@ from .persistence_entry_selection import (
 )
 from .persistence_authority import canonicalize_authoritative_fg_entries
 from .persistence_payload import normalize_force_payload
-from .stats_gateway import details_have_stats, ensure_stats
 from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
@@ -38,7 +37,11 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
-_details_have_stats = details_have_stats
+def _details_have_stats(details_obj: Any) -> bool:
+    if not isinstance(details_obj, dict) or not details_obj:
+        return False
+    stats_obj = details_obj.get("Stats")
+    return isinstance(stats_obj, dict) and bool(stats_obj)
 
 
 def _normalize_entry_shape(
@@ -157,20 +160,17 @@ def _ensure_stats_or_fail(
         merged = dict(entry)
         details_obj = merged.get("details")
         eval_data_obj = merged.get("eval_data")
-        try:
-            result = ensure_stats(
-                details_obj,
-                build_details_fn=build_details_fn,
-                eval_data=eval_data_obj if isinstance(eval_data_obj, dict) and eval_data_obj else None,
-                force_fail=True,
-            )
-        except ValueError:
+        result = details_obj if _details_have_stats(details_obj) else None
+        if result is None and isinstance(eval_data_obj, dict) and eval_data_obj:
+            rebuilt = build_details_fn(eval_data_obj)
+            if _details_have_stats(rebuilt):
+                result = rebuilt
+        if result is None:
             raise ValueError(
                 "Persistence canonicalization received an entry without replayable Stats "
                 f"(hash={merged.get('loadout_hash', '')}, gear={merged.get('gear', [])}, minis={merged.get('minis', [])})."
             )
-        if isinstance(result, dict):
-            merged["details"] = result
+        merged["details"] = result
         out.append(merged)
     return out
 
@@ -327,6 +327,33 @@ def canonicalize_and_assemble(
         ref_arrays=replay_ctx.ref_arrays,
     )
     return _dedupe_entries(authoritative_entries)
+
+
+def build_persistence_entries(
+    db_payload,
+    ga_candidates,
+    loadout_entries,
+    build_details_fn,
+    *,
+    calc_song: dict | None = None,
+    ref_arrays: dict | None = None,
+    cfg_dict: dict | None = None,
+):
+    if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
+        raise ValueError("build_persistence_entries requires calc_song and ref_arrays for authoritative replay.")
+
+    replay_ctx = ReplayContext(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=dict(cfg_dict) if isinstance(cfg_dict, dict) else {},
+    )
+    return canonicalize_and_assemble(
+        db_payload=db_payload if isinstance(db_payload, dict) else {},
+        ga_candidates=ga_candidates,
+        loadout_entries=loadout_entries,
+        build_details_fn=build_details_fn,
+        replay_ctx=replay_ctx,
+    )
 
 
 def assemble_without_replay(

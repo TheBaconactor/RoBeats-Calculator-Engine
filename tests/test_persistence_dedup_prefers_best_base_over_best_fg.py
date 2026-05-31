@@ -1,4 +1,4 @@
-from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
 
 

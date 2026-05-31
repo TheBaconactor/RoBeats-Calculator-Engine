@@ -282,7 +282,7 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
 
 
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+    from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 

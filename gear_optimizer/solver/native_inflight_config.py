@@ -55,81 +55,6 @@ def default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     return max(1, min(inflight_limit, int(base)))
 
 
-def read_fg_static_prep_max_inflight(
-    cfg0: Any,
-    *,
-    fg_prep_workers: int,
-    inflight_limit: int,
-    cpu_prewarm_lookahead: int | None = None,
-) -> int:
-    """
-    Budget for speculative FG static prep.
-
-    The unified CPU prewarm lookahead owns the default. The legacy explicit
-    FG static setting is still honored as a narrower override when present.
-    """
-    if cpu_prewarm_lookahead is None:
-        limit = 0
-    else:
-        try:
-            limit = int(cpu_prewarm_lookahead)
-        except (ValueError, TypeError):
-            limit = 0
-    if cfg0 is not None:
-        try:
-            raw_cfg = cfg0.get("IterationEngine", "InFlight_FGStaticPrepMaxInflight", fallback="")
-        except (configparser.Error, ValueError, TypeError):
-            raw_cfg = ""
-        if str(raw_cfg).strip() != "":
-            try:
-                limit = int(raw_cfg)
-            except (ValueError, TypeError):
-                limit = 0
-    raw_env = env_get("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT")
-    if raw_env is not None and str(raw_env).strip() != "":
-        try:
-            limit = int(raw_env)
-        except (ValueError, TypeError):
-            limit = 0
-    if limit <= 0:
-        return 0
-    return max(0, min(int(limit), int(fg_prep_workers), int(inflight_limit), 8))
-
-
-def read_cpu_prewarm_lookahead(
-    cfg0: Any,
-    *,
-    prep_limit: int,
-    default: int = 5,
-) -> int:
-    """
-    Unified lookahead for CPU-only prework on prepared future songs.
-
-    This controls host-side timeline frontier payload prewarm, FG baseline
-    point prewarm, and speculative FG static prep admission. It intentionally
-    does not change the prep buffer size; it only decides how many prepared
-    songs get expensive extra work ahead of GPU dispatch.
-    """
-    lookahead = int(default)
-    if cfg0 is not None:
-        try:
-            raw_cfg = cfg0.get("IterationEngine", "InFlight_CPUPrewarmLookahead", fallback="")
-        except (configparser.Error, ValueError, TypeError):
-            raw_cfg = ""
-        if str(raw_cfg).strip() != "":
-            try:
-                lookahead = int(raw_cfg)
-            except (ValueError, TypeError):
-                lookahead = int(default)
-    raw_env = env_get("INFLIGHT_CPU_PREWARM_LOOKAHEAD")
-    if raw_env is not None and str(raw_env).strip() != "":
-        try:
-            lookahead = int(raw_env)
-        except (ValueError, TypeError):
-            pass
-    return max(0, min(int(lookahead), int(prep_limit), 32))
-
-
 def read_inflight_worker_count(
     cfg0: Any,
     *,
@@ -156,21 +81,6 @@ def read_inflight_worker_count(
             return 1
         workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
     return max(1, int(workers))
-
-
-def read_cpu_prewarm_workers(
-    cfg0: Any,
-    *,
-    inflight_limit: int,
-    cpu_prewarm_lookahead: int,
-) -> int:
-    _ = cfg0, inflight_limit
-    if int(cpu_prewarm_lookahead) <= 0:
-        return 0
-    # Timeline/FG bundle prewarm is memory-bandwidth heavy. A single producer
-    # keeps the GPU owner fed instead of letting parallel cache reads inflate
-    # FG dynamic prep wall time.
-    return 1
 
 
 def read_db_prefetch_workers(
@@ -218,8 +128,6 @@ class InflightConfig:
     prep_buffer_mult: int
     prep_limit: int
     prep_workers: int
-    cpu_prewarm_lookahead: int
-    cpu_prewarm_workers: int
     decode_workers: int
     fg_aging_trigger_s: float
     fg_aging_hard_s: float
@@ -282,7 +190,6 @@ def first_task_config(tasks: list[tuple]) -> Any | None:
 class InflightLoopObserverSettings:
     heartbeat_sec: float
     throughput_sec: float
-    stage_profile_emit_sec: float
     profile_max_songs: int
 
 
@@ -299,10 +206,6 @@ def read_inflight_loop_observer_settings(
     except (ValueError, TypeError):
         throughput_sec = 0.0
     try:
-        stage_profile_emit_sec = float(env_get_fn("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
-    except (ValueError, TypeError):
-        stage_profile_emit_sec = 0.0
-    try:
         profile_max_songs = int(env_get_fn("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
     except (ValueError, TypeError):
         profile_max_songs = 0
@@ -310,7 +213,6 @@ def read_inflight_loop_observer_settings(
     return InflightLoopObserverSettings(
         heartbeat_sec=float(heartbeat_sec),
         throughput_sec=float(throughput_sec),
-        stage_profile_emit_sec=float(stage_profile_emit_sec),
         profile_max_songs=max(0, int(profile_max_songs)),
     )
 
@@ -402,7 +304,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         prep_buffer_mult = 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
-    cpu_prewarm_lookahead = read_cpu_prewarm_lookahead(cfg0, prep_limit=int(prep_limit), default=5)
     ga_seed = str(env_get("GA_SEED") or "").strip()
     prep_workers = read_inflight_worker_count(
         cfg0,
@@ -411,11 +312,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         inflight_limit=int(inflight_limit),
         kind="prep",
         ga_seed=ga_seed,
-    )
-    cpu_prewarm_workers = read_cpu_prewarm_workers(
-        cfg0,
-        inflight_limit=int(inflight_limit),
-        cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
     )
     decode_workers = read_inflight_worker_count(
         cfg0,
@@ -472,7 +368,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
             f"FG_AdaptiveMaxBurst={int(fg_adaptive_submit_max_burst)}, "
             f"TargetSongLanes={int(target_song_lanes)}, "
-            f"CPUPrewarmLookahead={int(cpu_prewarm_lookahead)}, "
             f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
             f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
         )
@@ -607,8 +502,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         prep_buffer_mult=prep_buffer_mult,
         prep_limit=prep_limit,
         prep_workers=prep_workers,
-        cpu_prewarm_lookahead=cpu_prewarm_lookahead,
-        cpu_prewarm_workers=cpu_prewarm_workers,
         decode_workers=decode_workers,
         fg_aging_trigger_s=fg_aging_trigger_s,
         fg_aging_hard_s=fg_aging_hard_s,
@@ -693,9 +586,7 @@ class NativeSongGPUInputs:
 
 @dataclass
 class NativeSongPrepState:
-    cpu_prewarm_future: Optional[concurrent.futures.Future] = None
     cpu_prep_s: float = 0.0
-    fg_chart_scorer_prewarmed: bool = False
 
 
 @dataclass
@@ -730,7 +621,6 @@ class NativeSongFGState:
     fg_dynamic_prep_done: bool = False
     fg_prep_submit_t0: float | None = None
     fg_build_details: Any | None = None
-    fg_response_scoring_bundle: Any | None = None
     fg_response_frontier_plan: Any | None = None
     loadout_entries: Optional[dict[str, JsonDict]] = None
     cpu_fg_prep_s: float = 0.0

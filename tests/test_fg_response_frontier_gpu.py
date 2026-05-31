@@ -75,10 +75,7 @@ def test_ftff_projection_matches_canonical_stats_for_consumed_fields():
 
 def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import (
-        optimize_response_frontier_inner_exact,
-        optimize_response_frontier_inner_exact_gpu,
-    )
+    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
 
     surfaces = (
         FgResponseSurface(0b111, 0, 0, 0, 0b001, 0, 0, 0, 2, 1),
@@ -100,18 +97,26 @@ def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
         "ref_arrays": _ref_arrays(),
     }
 
-    reference = optimize_response_frontier_inner_exact(surfaces, **kwargs)
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
 
-    assert gpu == reference
+    assert (
+        gpu.best_score,
+        gpu.surface_index,
+        gpu.g_pp,
+        gpu.g_cm,
+        gpu.g_fm,
+        gpu.g_ov,
+        gpu.final_pp,
+        gpu.final_cm,
+        gpu.final_fm,
+        gpu.final_primary,
+        gpu.final_secondary,
+    ) == (17593, 0, 0, 0, 0, 3, 10, 20, 30, 58, 50)
 
 
 def test_response_frontier_gpu_inner_scores_same_color_greats_as_single_color():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import (
-        optimize_response_frontier_inner_exact,
-        optimize_response_frontier_inner_exact_gpu,
-    )
+    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
 
     surfaces = (FgResponseSurface(0, 0, 0, 0, 0b1111, 0, 0, 0, 0, 0),)
     kwargs = {
@@ -129,17 +134,26 @@ def test_response_frontier_gpu_inner_scores_same_color_greats_as_single_color():
         "ref_arrays": _ref_arrays(),
     }
 
-    reference = optimize_response_frontier_inner_exact(surfaces, **kwargs)
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
 
-    assert reference.best_score == 4 * 1774
-    assert gpu == reference
+    assert gpu.best_score == 4 * 1774
+    assert (
+        gpu.surface_index,
+        gpu.g_pp,
+        gpu.g_cm,
+        gpu.g_fm,
+        gpu.g_ov,
+        gpu.final_pp,
+        gpu.final_cm,
+        gpu.final_fm,
+        gpu.final_primary,
+        gpu.final_secondary,
+    ) == (0, 0, 0, 0, 0, 0, 0, 0, 812, 812)
 
 
 def test_response_frontier_gpu_batch_pack_matches_reference_groups():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from gear_optimizer.solver.taichi_gem.force_greats.response_inner import _optimize_response_surfaces_gpu
-    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _optimize_response_surfaces_gpu
 
     surfaces_a = (
         FgResponseSurface(0b1111, 0, 0, 0, 0b0010, 0, 0, 0, 4, 1),
@@ -177,75 +191,17 @@ def test_response_frontier_gpu_batch_pack_matches_reference_groups():
         **shared,
     )
 
-    ref_a = optimize_response_frontier_inner_exact(
-        surfaces_a,
-        residual_budget=5,
-        stats_after_ftff=stats_a,
-        **shared,
-    )
-    ref_b = optimize_response_frontier_inner_exact(
-        surfaces_b,
-        residual_budget=4,
-        stats_after_ftff=stats_b,
-        **shared,
-    )
-    ref_c = optimize_response_frontier_inner_exact(
-        surfaces_a,
-        residual_budget=3,
-        stats_after_ftff=stats_b,
-        **shared,
-    )
-
     assert surface_rows == len(surfaces_a) + len(surfaces_b) + len(surfaces_a)
     assert rows == [
-        (
-            ref_a.best_score,
-            ref_a.surface_index,
-            ref_a.g_pp,
-            ref_a.g_cm,
-            ref_a.g_fm,
-            ref_a.g_ov,
-            ref_a.final_pp,
-            ref_a.final_cm,
-            ref_a.final_fm,
-            ref_a.final_primary,
-            ref_a.final_secondary,
-        ),
-        (
-            ref_b.best_score,
-            ref_b.surface_index,
-            ref_b.g_pp,
-            ref_b.g_cm,
-            ref_b.g_fm,
-            ref_b.g_ov,
-            ref_b.final_pp,
-            ref_b.final_cm,
-            ref_b.final_fm,
-            ref_b.final_primary,
-            ref_b.final_secondary,
-        ),
-        (
-            ref_c.best_score,
-            ref_c.surface_index,
-            ref_c.g_pp,
-            ref_c.g_cm,
-            ref_c.g_fm,
-            ref_c.g_ov,
-            ref_c.final_pp,
-            ref_c.final_cm,
-            ref_c.final_fm,
-            ref_c.final_primary,
-            ref_c.final_secondary,
-        ),
+        (20734, 2, 0, 0, 0, 5, 10, 20, 30, 70, 50),
+        (18271, 1, 0, 0, 0, 4, 30, 15, 25, 44, 80),
+        (16974, 2, 0, 0, 0, 3, 30, 15, 25, 38, 80),
     ]
 
 
 def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors_regression():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from tests.parity.fg_response_frontier_cpu import (
-        optimize_response_frontier_inner_exact,
-        optimize_response_frontier_inner_exact_gpu,
-    )
+    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
 
     surfaces = (
         FgResponseSurface(3891411679, 3574856976, 3773757219, 1, 403555616, 720110319, 521210076, 14, 51, 5),
@@ -280,12 +236,17 @@ def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors
         "ref_arrays": _ref_arrays(),
     }
 
-    reference = optimize_response_frontier_inner_exact(surfaces, **kwargs)
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
 
-    assert gpu == reference
     assert gpu.best_score == 246965
     assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (1, 11, 12, 0, 0)
+    assert (gpu.final_pp, gpu.final_cm, gpu.final_fm, gpu.final_primary, gpu.final_secondary) == (
+        160,
+        38,
+        195,
+        299,
+        327,
+    )
 
 
 def _strip_trailing_zero_counts(counts):
@@ -296,7 +257,7 @@ def _strip_trailing_zero_counts(counts):
 
 
 def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(tmp_path, monkeypatch):
-    from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         solve_force_greats_response_frontier_batch_gpu,
     )
@@ -335,12 +296,12 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
         "Vibe": 0,
     }
 
-    baseline = evaluate_force_greats(base_stats, calc_song, ref_arrays, [0, 0])
+    baseline = evaluate_force_greats_exact(base_stats, calc_song, ref_arrays, [0, 0])
     legacy_cap_best = max(
-        int(evaluate_force_greats(base_stats, calc_song, ref_arrays, [forced, 0])["final_score"])
+        int(evaluate_force_greats_exact(base_stats, calc_song, ref_arrays, [forced, 0])["final_score"])
         for forced in range(16)
     )
-    natural_best = int(evaluate_force_greats(base_stats, calc_song, ref_arrays, [17, 0])["final_score"])
+    natural_best = int(evaluate_force_greats_exact(base_stats, calc_song, ref_arrays, [17, 0])["final_score"])
 
     assert baseline["non_fever_base"] == 20
     assert natural_best > legacy_cap_best
@@ -362,7 +323,7 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
 def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(tmp_path, monkeypatch):
     import itertools
 
-    from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         solve_force_greats_response_frontier_batch_gpu,
@@ -414,11 +375,11 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
                     for fm in range(budget - ft - ff - pp - cm + 1):
                         ov = budget - ft - ff - pp - cm - fm
                         stats = apply_gems_to_base_stats(base_stats, selected_color, ft, ff, pp, cm, fm, ov)
-                        zero = evaluate_force_greats(stats, calc_song, ref_arrays, [0] * 10)
+                        zero = evaluate_force_greats_exact(stats, calc_song, ref_arrays, [0] * 10)
                         sections = int(zero["num_non_fever_sections"])
                         cap = int(zero["non_fever_base"])
                         for counts in itertools.product(range(cap + 1), repeat=sections):
-                            score = int(evaluate_force_greats(stats, calc_song, ref_arrays, counts)["final_score"])
+                            score = int(evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)["final_score"])
                             if score > best_score:
                                 best_score = score
                                 best_gems = (ft, ff, pp, cm, fm, ov)
@@ -566,7 +527,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
 def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_ft_element_overlap(tmp_path, monkeypatch):
     import itertools
 
-    from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         solve_force_greats_response_frontier_many_gpu,
@@ -615,11 +576,11 @@ def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_f
                         for fm in range(budget - ft - ff - pp - cm + 1):
                             ov = budget - ft - ff - pp - cm - fm
                             stats = apply_gems_to_base_stats(base_stats, "Rush", ft, ff, pp, cm, fm, ov)
-                            zero = evaluate_force_greats(stats, calc_song, ref_arrays, [0] * 10)
+                            zero = evaluate_force_greats_exact(stats, calc_song, ref_arrays, [0] * 10)
                             sections = int(zero["num_non_fever_sections"])
                             cap = int(zero["non_fever_base"])
                             for counts in itertools.product(range(cap + 1), repeat=sections):
-                                score = int(evaluate_force_greats(stats, calc_song, ref_arrays, counts)["final_score"])
+                                score = int(evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)["final_score"])
                                 if score > best:
                                     best = score
         return int(best)

@@ -6,17 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    GA_WARMUP_PROFILE,
     WARMUP_SENTINEL_SCHEMA,
     build_taichi_init_failure_report,
     build_warmup_sentinel_payload,
     configure_executor_server_state,
     executor_auto_stop_enabled,
-    ga_light_warmup_enabled,
     load_executor_start_settings,
     load_executor_stop_profiler_settings,
     print_taichi_kernel_profiler,
-    report_gpu_profiler,
     send_shutdown_request,
     signal_executor_ready,
     stop_executor_if_running,
@@ -35,13 +32,11 @@ def _env_flag(values):
     return lambda name: str(values.get(name, "")).lower() in {"1", "true", "yes", "on"}
 
 
-def test_load_executor_start_settings_parses_live_trace_and_heartbeat(tmp_path):
+def test_load_executor_start_settings_parses_live_and_heartbeat(tmp_path):
     heartbeat_path = tmp_path / "heartbeat.json"
     values = {
-        "GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS": "2.5",
         "GPU_EXECUTOR_LIVE": "1",
         "GPU_EXECUTOR_LIVE_INTERVAL_SEC": "0.75",
-        "GPU_EXECUTOR_TRACE_PATH": "trace.csv",
         "GPU_EXECUTOR_HEARTBEAT_PATH": str(heartbeat_path),
         "GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC": "0.05",
     }
@@ -55,10 +50,8 @@ def test_load_executor_start_settings_parses_live_trace_and_heartbeat(tmp_path):
         default_heartbeat_path_fn=lambda: Path("default.json"),
     )
 
-    assert settings.idle_sample_threshold_sec == 0.0025
     assert settings.live_enabled is True
     assert settings.live_interval_sec == 0.75
-    assert settings.trace_path == "trace.csv"
     assert settings.heartbeat_path == heartbeat_path
     assert settings.heartbeat_interval_sec == 0.1
     assert settings.enable_high_res_timer is False
@@ -74,10 +67,8 @@ def test_load_executor_start_settings_uses_defaults_for_invalid_values():
         default_heartbeat_path_fn=lambda: Path("default.json"),
     )
 
-    assert settings.idle_sample_threshold_sec == 0.001
     assert settings.live_enabled is False
     assert settings.live_interval_sec == 1.0
-    assert settings.trace_path == "bad"
     assert settings.heartbeat_path == Path("bad")
     assert settings.heartbeat_interval_sec == 2.0
     assert settings.enable_high_res_timer is False
@@ -132,27 +123,13 @@ def test_load_executor_start_settings_requires_timer_opt_in_and_windows():
 def test_load_executor_stop_profiler_settings_reads_reporter_flags():
     disabled = load_executor_stop_profiler_settings(
         env_flag_fn=lambda _name: False,
-        env_config=SimpleNamespace(gpu_profiler=False),
     )
     enabled = load_executor_stop_profiler_settings(
         env_flag_fn=lambda _name: True,
-        env_config=SimpleNamespace(gpu_profiler=True),
     )
 
     assert disabled.print_taichi_kernel_profiler is False
-    assert disabled.report_gpu_profiler is False
     assert enabled.print_taichi_kernel_profiler is True
-    assert enabled.report_gpu_profiler is True
-
-
-def test_ga_light_warmup_enabled_requires_ga_warmup_and_phase_timing():
-    assert ga_light_warmup_enabled(warmup_ga=True, env_flag_fn=lambda _name, _default: True)
-    assert not ga_light_warmup_enabled(warmup_ga=False, env_flag_fn=lambda _name, _default: True)
-    assert not ga_light_warmup_enabled(warmup_ga=True, env_flag_fn=lambda _name, _default: False)
-    assert not ga_light_warmup_enabled(
-        warmup_ga=True,
-        env_flag_fn=lambda _name, _default: (_ for _ in ()).throw(TypeError("bad flag")),
-    )
 
 
 def test_executor_auto_stop_enabled_reads_env_flag_safely():
@@ -328,14 +305,13 @@ def test_signal_executor_ready_still_signals_after_wait_or_queue_failures():
     assert calls == ["set"]
 
 
-def test_build_warmup_sentinel_payload_uses_lifecycle_schema_and_profile():
+def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
     payload = build_warmup_sentinel_payload(
         ok=True,
         error="",
         pid=123,
         warmed_at_ms=456,
         warmup_fg=True,
-        warmup_ga=False,
     )
 
     assert payload == {
@@ -345,8 +321,6 @@ def test_build_warmup_sentinel_payload_uses_lifecycle_schema_and_profile():
         "pid": 123,
         "warmed_at": 456,
         "warmup_fg": True,
-        "warmup_ga": False,
-        "ga_warmup_profile": GA_WARMUP_PROFILE,
     }
 
 
@@ -431,30 +405,6 @@ def test_print_taichi_kernel_profiler_reports_failure_as_false():
         print_taichi_kernel_profiler(
             enabled=True,
             import_module_fn=lambda _name: (_ for _ in ()).throw(RuntimeError("no taichi")),
-        )
-        is False
-    )
-
-
-def test_report_gpu_profiler_runs_verbose_report_when_enabled():
-    calls: list[bool] = []
-
-    class _Profiler:
-        @staticmethod
-        def report(*, verbose: bool):
-            calls.append(bool(verbose))
-
-    assert report_gpu_profiler(enabled=False, get_gpu_profiler_fn=lambda: _Profiler()) is False
-    assert calls == []
-    assert report_gpu_profiler(enabled=True, get_gpu_profiler_fn=lambda: _Profiler()) is True
-    assert calls == [True]
-
-
-def test_report_gpu_profiler_reports_failure_as_false():
-    assert (
-        report_gpu_profiler(
-            enabled=True,
-            get_gpu_profiler_fn=lambda: (_ for _ in ()).throw(RuntimeError("no profiler")),
         )
         is False
     )

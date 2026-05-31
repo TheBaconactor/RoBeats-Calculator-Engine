@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-import sys
 
 import numpy as np
 
@@ -11,11 +10,6 @@ from .response_build_gpu_surfaces import _surface_from_numba_row
 from .response_types import FgResponseFrontierResult
 
 _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(os.cpu_count() or 1), 8))
-_RESPONSE_BUILD_GPU_MODULE = "gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu"
-
-
-def _response_build_gpu_shim():
-    return sys.modules[_RESPONSE_BUILD_GPU_MODULE]
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
@@ -95,7 +89,6 @@ def _first_frontier_results_for_precomputed_range(
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
-    first_frontier_result = _response_build_gpu_shim()._first_frontier_result_from_precomputed_end_indices
     results: list[tuple[int, FgResponseFrontierResult]] = []
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
@@ -103,7 +96,7 @@ def _first_frontier_results_for_precomputed_range(
         results.append(
             (
                 source_idx,
-                first_frontier_result(
+                _first_frontier_result_from_precomputed_end_indices(
                     n=int(n),
                     action_count=int(item[3].shape[0]),
                     non_fever_base=int(item[1]),

@@ -4,7 +4,7 @@ import pytest
 
 import gear_optimizer.data.database as db
 import gear_optimizer.helpers.song_helpers.database_context as database_context
-from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
+from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
 
 
 def _clear_db_tls() -> None:

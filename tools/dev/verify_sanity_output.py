@@ -42,8 +42,6 @@ STRICT_SANITY_NODEIDS = [
     "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_top_rows",
     "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows",
     "tests/test_team_buff_tier_postprocess.py::test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color",
-    "tests/test_db_manager.py::test_db_manager_get_leaderboard_entry_keeps_derived_tier_fg_row_visible",
-    "tests/test_db_manager.py::test_db_manager_get_leaderboard_entry_strict_sanity_output_preserves_source_scores",
 ]
 
 

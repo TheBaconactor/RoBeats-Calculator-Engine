@@ -15,129 +15,8 @@ def _make_entry(*, gear: list[str], minis: list[str], score: int, fg_score: int 
     }
 
 
-def test_canonicalize_baseline_persist_entries_merges_replayed_rows_and_keeps_unmatched_rows(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
-
-    requested: dict[str, object] = {"limits": []}
-
-    def fake_build_team_buff_tier_db_batches(
-        *,
-        entries,
-        calc_song,
-        ref_arrays,
-        cfg_dict,
-        limit,
-        tiers,
-        **_kwargs,
-    ):
-        requested["limit"] = int(limit)
-        requested["limits"].append(int(limit))
-        requested["tiers"] = tuple(tiers)
-        requested["calc_song"] = calc_song
-        requested["ref_arrays"] = ref_arrays
-        requested["cfg_dict"] = cfg_dict
-        entries_list = list(entries or [])
-        if len(entries_list) == 1 and list(entries_list[0].get("gear") or []) == ["Other"]:
-            return {"T10": []}
-        return {
-            "T5": [
-                {
-                    "gear": ["G1", "G2"],
-                    "minis": ["M1"],
-                    "score": 99,
-                    "fg_score": 123,
-                    "fg_base_score": 77,
-                    "details": {"tag": "canonical"},
-                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
-                }
-            ]
-        }
-
-    monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.build_team_buff_tier_db_batches",
-        fake_build_team_buff_tier_db_batches,
-    )
-
-    entries = [
-        _make_entry(gear=["G1", "G2"], minis=["M1"], score=10, fg_score=4, tag="stale"),
-        _make_entry(gear=["Other"], minis=["Else"], score=20, tag="keep"),
-    ]
-    out = canonicalize_baseline_persist_entries(
-        entries,
-        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
-        ref_arrays={"Perfect Points": [0]},
-        cfg_dict={
-            "IterationEngine": {},
-            "TeamContributionBuffConstant": {"TeamBuff": "T10"},
-        },
-    )
-
-    assert requested["limits"][0] == 2
-    assert requested["tiers"] == ("T5",)
-    assert out[0]["score"] == 99
-    assert out[0]["fg_score"] == 123
-    assert out[0]["fg_base_score"] == 77
-    assert out[0]["details"]["tag"] == "canonical"
-    assert out[0]["force"]["ForceGreats"]["config"]["NonFever1"] == 1
-    assert out[1]["score"] == 20
-    assert out[1]["details"]["tag"] == "keep"
-    assert entries[0]["score"] == 10
-
-
-def test_canonicalize_baseline_persist_entries_does_not_attach_fg_score_without_force(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
-
-    def fake_build_team_buff_tier_db_batches(
-        *,
-        entries,
-        calc_song,
-        ref_arrays,
-        cfg_dict,
-        limit,
-        tiers,
-        **_kwargs,
-    ):
-        return {
-            "T5": [
-                {
-                    "gear": ["G1", "G2"],
-                    "minis": ["M1"],
-                    "score": 99,
-                    "fg_score": 123,
-                    "fg_base_score": 77,
-                    "details": {"tag": "canonical"},
-                    "force": None,
-                }
-            ]
-        }
-
-    monkeypatch.setattr(
-        "gear_optimizer.helpers.song_helpers.baseline_replay.build_team_buff_tier_db_batches",
-        fake_build_team_buff_tier_db_batches,
-    )
-
-    entries = [
-        _make_entry(gear=["G1", "G2"], minis=["M1"], score=10, fg_score=0, tag="stale"),
-    ]
-    out = canonicalize_baseline_persist_entries(
-        entries,
-        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
-        ref_arrays={"Perfect Points": [0]},
-        cfg_dict={
-            "IterationEngine": {},
-            "TeamContributionBuffConstant": {"TeamBuff": "T10"},
-        },
-    )
-
-    assert out[0]["score"] == 99
-    assert out[0]["fg_score"] == 0
-    assert out[0].get("fg_base_score") is None
-    assert out[0]["details"]["tag"] == "canonical"
-    assert out[0]["force"] is None
-
-
 def test_build_persistence_entries_routes_retained_surface_through_shared_canonicalizer(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+    from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 
     captured: dict[str, object] = {}
 
@@ -312,15 +191,6 @@ def test_team_buff_replay_keeps_force_origin_when_base_duplicate_follows(monkeyp
     assert int(row["fg_score"]) == 120
     assert row["force"]["ForceGreats"]["config"] == {"NonFever1": 1}
     assert int(row["force"]["Score"]) == 120
-
-
-def test_canonicalize_baseline_persist_entries_is_noop_without_replay_context():
-    from gear_optimizer.helpers.song_helpers.baseline_replay import canonicalize_baseline_persist_entries
-
-    entries = [_make_entry(gear=["G1"], minis=["M1"], score=42, tag="noop")]
-    out = canonicalize_baseline_persist_entries(entries, calc_song=None, ref_arrays=None, cfg_dict=None)
-
-    assert out is entries
 
 
 def _stale_00_hard_fg_force_payload() -> dict:

@@ -25,7 +25,6 @@ from gear_optimizer.pipeline.post_processor_fg_updates import (
     build_fg_update_state,
     canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
 )
-from gear_optimizer.pipeline.post_processor_profile import PostCpuProfiler
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries
 
 from gear_optimizer.core.parsing import env_get
@@ -73,10 +72,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     except Exception as e:
         logger.warning(f"post_processor:run_post_processor: {e}")
         timing_threshold_ms = 50.0
-
-    cpu_profile = env_flag("POST_CPU_PROFILE")
-    cpu_profile_path = str(env_get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
-    profiler = PostCpuProfiler(enabled=cpu_profile, out_path=cpu_profile_path)
 
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
         if not timing:
@@ -126,7 +121,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             db_best_fg_floor = best_fg
 
         try:
-            cpu_t0 = time.process_time()
             _t_print0 = time.perf_counter()
             print_results(
                 payload.get("song", song),
@@ -145,7 +139,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 prev_record=payload.get("prev_record"),
             )
             _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
-            profiler.record("print_results_pending_final", time.process_time() - cpu_t0)
         except Exception as e:
             logger.warning(f"post_processor:_print_pending_final: {e}")
 
@@ -197,7 +190,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             len(valid_entries),
                             song_name,
                         )
-                    cpu_t0 = time.process_time()
                     _t_db0 = time.perf_counter()
 
                     # Offload SQLite work + counter updates so the post-process loop
@@ -212,17 +204,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         },
                     )
                     _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
-                    profiler.record("fg_save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
                 else:
                     if persisted:
                         logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
 
                 try:
                     _t_del0 = time.perf_counter()
-                    cpu_t0 = time.process_time()
                     async_db.delete_pending_fg_job(db_key)
                     _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
-                    profiler.record("fg_delete_pending_job_enqueue", time.process_time() - cpu_t0)
                 except Exception as e:
                     logger.warning(f"post_processor:_print_pending_final: {e}")
 
@@ -287,7 +276,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         try:
             _t_item0 = time.perf_counter()
-            cpu_item_t0 = time.process_time()
             res = item
             if isinstance(item, dict) and item.get("_deferred_post"):
                 _t_build0 = time.perf_counter()
@@ -295,20 +283,16 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
 
                 _t_dbpayload0 = time.perf_counter()
-                cpu_t0 = time.process_time()
                 db_payload = build_deferred_post_db_payload(post_context)
                 _log_timing("build_db_payload", time.perf_counter() - _t_dbpayload0, song=item.get("song"))
-                profiler.record("build_db_payload", time.process_time() - cpu_t0)
 
                 _t_persist0 = time.perf_counter()
-                cpu_t0 = time.process_time()
                 persist_entries = build_deferred_post_persist_entries(
                     item,
                     db_payload=db_payload,
                     context=post_context,
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
-                profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
 
                 # Durable deferred FG is opt-in. The normal in-flight queue is already
                 # drained by FG workers; persisting it here bloats the main DB with
@@ -316,7 +300,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 if should_persist_pending_fg_job(item):
                     try:
                         _t_upsert0 = time.perf_counter()
-                        cpu_t0 = time.process_time()
                         async_db.submit_pending_fg_job(
                             item.get("db_key", item.get("song", "Unknown")),
                             item.get("ga_candidates") or [],
@@ -326,7 +309,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             time.perf_counter() - _t_upsert0,
                             song=item.get("song"),
                         )
-                        profiler.record("upsert_pending_fg_job_enqueue", time.process_time() - cpu_t0)
                     except Exception as e:
                         logger.warning(f"post_processor:_print_pending_final: {e}")
 
@@ -346,7 +328,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         _print_pending_final(song_name_for_print)
                 else:
                     try:
-                        cpu_t0 = time.process_time()
                         _t_print0 = time.perf_counter()
                         print_results(
                             item.get("song", "Unknown"),
@@ -365,7 +346,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             prev_record=post_context.prev_record,
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
-                        profiler.record("print_results", time.process_time() - cpu_t0)
                     except Exception as e:
                         logger.warning(f"post_processor:_emit: {e}")
 
@@ -384,7 +364,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 if persisted:
                     valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
                     if valid_entries:
-                        cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
                         # Offload SQLite work + counter updates so this post-process loop
                         # keeps draining `result_queue` (prevents GPU starvation via backpressure).
@@ -398,7 +377,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             },
                         )
                         _log_timing("save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
-                        profiler.record("save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
                         # Still count this as a processed run for per-song attempt counters.
@@ -416,7 +394,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             logger.warning(f"post_processor:_emit: {e}")
 
             _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
-            profiler.record("post_item_total", time.process_time() - cpu_item_t0)
 
         except Exception as exc:
             failed += 1
@@ -439,10 +416,5 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         if failed > 0:
             print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")
-    except Exception as e:
-        logger.warning(f"post_processor:_emit: {e}")
-
-    try:
-        profiler.emit()
     except Exception as e:
         logger.warning(f"post_processor:_emit: {e}")

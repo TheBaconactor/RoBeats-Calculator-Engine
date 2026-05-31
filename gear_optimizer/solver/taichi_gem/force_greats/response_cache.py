@@ -11,7 +11,7 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
-from .response_build_gpu import build_force_greats_response_first_frontiers_gpu_batch
+from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
     _fg_response_disk_cache_path,
@@ -303,7 +303,7 @@ def _materialize_scoring_bundle_from_arrays(
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
     surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
     total_notes = int(np.asarray(arrays["total_notes"]).item())
-    from .response_inner import _precompute_surface_head_coeffs
+    from .response_inner_host import _precompute_surface_head_coeffs
 
     surface_head_coeffs = _precompute_surface_head_coeffs(
         surface_words,
@@ -345,11 +345,10 @@ def load_response_frontier_scoring_bundle(
 
     try:
         arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
-        scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
-    except ValueError as exc:
-        raise ValueError(
-            "FG response frontier scoring requires a prebuilt canonical bundle cache for the requested stat keys"
-        ) from exc
+    except ValueError:
+        build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
+        arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+    scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
     _scoring_bundle_memory_put(bundle_key, scoring_bundle)
     return scoring_bundle
 

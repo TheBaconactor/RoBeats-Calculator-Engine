@@ -27,8 +27,6 @@ from gear_optimizer.solver.native_inflight_lifecycle_progress import (
 )
 from gear_optimizer.solver.native_inflight_lifecycle_queues import (
     BubbleTracker,
-    CpuPrewarmCompletion,
-    CpuPrewarmQueue,
     InflightBundleTracker,
     PostSender,
     SongPrepCompletion,
@@ -287,7 +285,6 @@ def shutdown_native_inflight_resources(
     fg_pipeline,
     decode_queue,
     db_persistence=None,
-    cpu_prewarm_queue,
     prep_queue,
     post_sender,
     gpu_client,
@@ -317,11 +314,6 @@ def shutdown_native_inflight_resources(
         shutdown_debug=shutdown_debug,
     )
     _shutdown_step(
-        "cpu_prewarm_executor.shutdown",
-        lambda: cpu_prewarm_queue.shutdown(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
-    _shutdown_step(
         "prep_executor.shutdown",
         lambda: prep_queue.shutdown(wait=True, cancel_futures=True),
         shutdown_debug=shutdown_debug,
@@ -341,8 +333,6 @@ __all__ = [
     "ActiveRuntimeProgressReporter",
     "BubbleTracker",
     "CachedRuntimeSignal",
-    "CpuPrewarmCompletion",
-    "CpuPrewarmQueue",
     "GAQueueLimitController",
     "GpuAbortRequester",
     "InflightBundleTracker",

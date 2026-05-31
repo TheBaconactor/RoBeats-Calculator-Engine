@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.scoring.force_greats import evaluate_force_greats
+from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
 
 
 def test_force_greats_body_penalty_matches_full_combo_flooring_regression() -> None:
@@ -52,7 +52,7 @@ def test_force_greats_body_penalty_matches_full_combo_flooring_regression() -> N
 
     # Only section 2 has forced greats; with section2 start >100 this uses the full-combo body penalty.
     forced_counts = [0, 19]
-    res = evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts)
+    res = evaluate_force_greats_exact(stats, calc_song, ref_arrays, forced_counts)
     assert res is not None
 
     # Expected body penalty for this setup: 2 points lower per forced great than the buggy computation.

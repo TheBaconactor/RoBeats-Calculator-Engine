@@ -18,10 +18,21 @@ def _has_taichi() -> bool:
 pytestmark = pytest.mark.gpu
 
 
+def _stage_population(population: np.ndarray, *, n_slots: int = 9) -> None:
+    from gear_optimizer.solver.taichi_gem import fields
+    from gear_optimizer.solver.taichi_gem.api import ensure_ready
+
+    ensure_ready()
+    src = np.asarray(population, dtype=np.int32)
+    buf = np.zeros((int(fields.MAX_GENOMES), int(fields.MAX_SLOTS)), dtype=np.int32)
+    buf[: int(src.shape[0]), : int(n_slots)] = src[:, : int(n_slots)]
+    fields.population_indices.from_numpy(buf)
+
+
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ga_exact_eval_reuse_map_collapses_duplicate_genomes():
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready, ga_upload_population_indices
+    from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
 
     ensure_ready()
@@ -36,7 +47,7 @@ def test_ga_exact_eval_reuse_map_collapses_duplicate_genomes():
         ],
         dtype=np.int32,
     )
-    ga_upload_population_indices(pop, n_slots=9)
+    _stage_population(pop, n_slots=9)
 
     kernels.ga_build_exact_eval_reuse_map_kernel(4, 9)
     rep = np.asarray(fields.ga_exact_eval_rep_idx.to_numpy()[:4], dtype=np.int32)
@@ -48,7 +59,7 @@ def test_ga_exact_eval_reuse_map_collapses_duplicate_genomes():
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ga_exact_eval_reuse_map_distinguishes_different_genomes():
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready, ga_upload_population_indices
+    from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
 
     ensure_ready()
@@ -63,7 +74,7 @@ def test_ga_exact_eval_reuse_map_distinguishes_different_genomes():
         ],
         dtype=np.int32,
     )
-    ga_upload_population_indices(pop, n_slots=9)
+    _stage_population(pop, n_slots=9)
 
     kernels.ga_build_exact_eval_reuse_map_kernel(4, 9)
     rep = np.asarray(fields.ga_exact_eval_rep_idx.to_numpy()[:4], dtype=np.int32)
@@ -236,13 +247,13 @@ def test_ga_exact_eval_reuse_propagates_chunk_best_outputs():
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ga_aggregate_and_init_best_kernel_ignores_stale_representatives_when_reuse_disabled():
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api import ensure_ready, ga_upload_population_indices
+    from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernel_loader import get_kernels
 
     ensure_ready()
     kernels = get_kernels()
 
-    ga_upload_population_indices(np.asarray([[1], [2]], dtype=np.int32), n_slots=1)
+    _stage_population(np.asarray([[1], [2]], dtype=np.int32), n_slots=1)
 
     base_fixed = np.zeros((10,), dtype=np.int32)
     fields.base_fixed_stats.from_numpy(base_fixed)

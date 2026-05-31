@@ -1,7 +1,11 @@
 # Codebase Optimization Analysis
 
 **Date:** December 7, 2025
-**Status:** Comprehensive Review
+**Status:** Historical Review
+
+This review predates the native in-flight GA consolidation and is retained as
+context. References below name the current owners where old direct-GA surfaces
+have already been removed.
 
 ## Executive Summary
 
@@ -39,7 +43,7 @@ The codebase is **production-ready** with strong architecture and excellent perf
 
 | Function | Module | Lines | Status |
 |----------|--------|-------|--------|
-| `solve_coevolution_genetic()` | genetic.py | 377 | Still large despite helpers |
+| Native GPU GA payload/decode stages | genetic_pipeline.py + native_inflight_* | broad | Split across current owners |
 | `run_native_inflight_song_pipeline()` | native_inflight_orchestrator.py | large | Production orchestration remains broad |
 | `solve_best_fever_combination()` | scoring.py | 323 | Complex algorithm, hard to split |
 
@@ -104,7 +108,7 @@ Functions by size:
 
 ### Priority 1: Further Refactor Main Orchestration Functions
 
-**Target:** Reduce native in-flight orchestration surfaces and `solve_coevolution_genetic()` to smaller owned stages.
+**Target:** Reduce native in-flight orchestration surfaces and broad GA payload/decode stages to smaller owned stages.
 
 #### Native In-Flight Orchestration
 
@@ -124,7 +128,7 @@ Functions by size:
 
 **Expected result:** Native engine entrypoints stay orchestration-only, with prep, scheduling, FG, and finalization owned by smaller modules.
 
-#### solve_coevolution_genetic() (377 lines → target 180 lines)
+#### Native GA Payload/Decode Stages
 
 **Additional helpers to extract:**
 
@@ -227,7 +231,7 @@ None - codebase is already well-optimized
 
 ### Should Do (Medium Impact, Medium Effort)
 1. Continue splitting native in-flight orchestration into smaller owned stages
-2. Extract additional helpers from `solve_coevolution_genetic()` (reduce to ~180 lines)
+2. Continue extracting smaller owners from broad native GA payload/decode stages
 
 ### Nice to Have (Low Impact, High Effort)
 1. Split large helpers (`build_db_payload`, `create_genome_functions`)

@@ -12,7 +12,7 @@ from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
-from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
 from gear_optimizer.solver.native_inflight_config import NativeSong
 

@@ -26,10 +26,7 @@ from gear_optimizer.solver.native_inflight_config import (
     first_task_config,
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
-    read_cpu_prewarm_lookahead,
-    read_cpu_prewarm_workers,
     read_db_prefetch_workers,
-    read_fg_static_prep_max_inflight,
     read_ga_multi_start,
     read_inflight_worker_count,
     read_inflight_loop_observer_settings,
@@ -323,20 +320,6 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
     assert reserve == 0
 
 
-def test_read_cpu_prewarm_lookahead_defaults_to_five_and_honors_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", raising=False)
-
-    cfg = _cfg_with_iteration_engine()
-    assert read_cpu_prewarm_lookahead(cfg, prep_limit=12) == 5
-    assert read_cpu_prewarm_lookahead(cfg, prep_limit=3) == 3
-
-    cfg_explicit = _cfg_with_iteration_engine(InFlight_CPUPrewarmLookahead="7")
-    assert read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 7
-
-    monkeypatch.setenv("INFLIGHT_CPU_PREWARM_LOOKAHEAD", "2")
-    assert read_cpu_prewarm_lookahead(cfg_explicit, prep_limit=12) == 2
-
-
 def test_first_task_config_extracts_legacy_task_config():
     task = (None, "Song", "Hard", {"IterationEngine": {"InFlight_PrimeTarget": "6"}})
     cfg = first_task_config([task])
@@ -387,18 +370,6 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
     )
 
 
-def test_read_cpu_prewarm_workers_is_single_canonical_memory_producer(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_CPU_PREWARM_WORKERS", raising=False)
-
-    assert read_cpu_prewarm_workers(_cfg_with_iteration_engine(), inflight_limit=8, cpu_prewarm_lookahead=0) == 0
-
-    cfg = _cfg_with_iteration_engine(InFlight_CPUPrewarmWorkers="6")
-    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=3) == 1
-
-    monkeypatch.setenv("INFLIGHT_CPU_PREWARM_WORKERS", "4")
-    assert read_cpu_prewarm_workers(cfg, inflight_limit=8, cpu_prewarm_lookahead=8) == 1
-
-
 def test_read_db_prefetch_workers_defaults_from_fg_prep_and_honors_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_DB_PREFETCH_WORKERS", raising=False)
 
@@ -416,7 +387,6 @@ def test_read_inflight_loop_observer_settings_reads_env_values():
     values = {
         "INFLIGHT_HEARTBEAT_SEC": "1.5",
         "INFLIGHT_THROUGHPUT_SEC": "2.5",
-        "INFLIGHT_STAGE_PROFILE_EMIT_SEC": "3.5",
         "INFLIGHT_PROFILE_MAX_SONGS": "4",
     }
 
@@ -424,7 +394,6 @@ def test_read_inflight_loop_observer_settings_reads_env_values():
 
     assert settings.heartbeat_sec == 1.5
     assert settings.throughput_sec == 2.5
-    assert settings.stage_profile_emit_sec == 3.5
     assert settings.profile_max_songs == 4
 
 
@@ -459,59 +428,12 @@ def test_read_inflight_loop_observer_settings_uses_safe_defaults_for_invalid_val
 
     assert settings.heartbeat_sec == 0.0
     assert settings.throughput_sec == 0.0
-    assert settings.stage_profile_emit_sec == 0.0
     assert settings.profile_max_songs == 0
 
     negative = read_inflight_loop_observer_settings(
         env_get_fn=lambda name, default=None: "-1" if name == "INFLIGHT_PROFILE_MAX_SONGS" else default,
     )
     assert negative.profile_max_songs == 0
-
-
-def test_read_fg_static_prep_max_inflight_uses_unified_cpu_lookahead_and_honors_explicit_override(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", raising=False)
-
-    cfg = _cfg_with_iteration_engine()
-    assert (
-        read_fg_static_prep_max_inflight(
-            cfg,
-            fg_prep_workers=4,
-            inflight_limit=16,
-            cpu_prewarm_lookahead=5,
-        )
-        == 4
-    )
-    assert (
-        read_fg_static_prep_max_inflight(
-            cfg,
-            fg_prep_workers=4,
-            inflight_limit=16,
-            cpu_prewarm_lookahead=0,
-        )
-        == 0
-    )
-
-    cfg_explicit = _cfg_with_iteration_engine(InFlight_FGStaticPrepMaxInflight="3")
-    assert (
-        read_fg_static_prep_max_inflight(
-            cfg_explicit,
-            fg_prep_workers=4,
-            inflight_limit=16,
-            cpu_prewarm_lookahead=5,
-        )
-        == 3
-    )
-
-    monkeypatch.setenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", "2")
-    assert (
-        read_fg_static_prep_max_inflight(
-            cfg_explicit,
-            fg_prep_workers=4,
-            inflight_limit=16,
-            cpu_prewarm_lookahead=5,
-        )
-        == 2
-    )
 
 
 def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):
@@ -984,7 +906,6 @@ def test_bubble_snapshot_reports_zero_idle_while_gpu_work_is_inflight():
         active_song_lanes=2,
         pending_tasks_count=10,
         prep_inflight_count=0,
-        cpu_prewarm_inflight_count=0,
         decode_inflight_count=0,
         pending_fg_count=2,
         fg_prep_inflight_count=0,
@@ -1007,7 +928,6 @@ def test_bubble_snapshot_reports_idle_only_when_gpu_owner_has_no_inflight_work()
         active_song_lanes=2,
         pending_tasks_count=10,
         prep_inflight_count=0,
-        cpu_prewarm_inflight_count=0,
         decode_inflight_count=0,
         pending_fg_count=2,
         fg_prep_inflight_count=0,

@@ -15,10 +15,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "setup_song_config": ("song_config", "setup_song_config"),
     "build_loadout_entries": ("loadout_builder", "build_loadout_entries"),
     "process_force_greats": ("force_greats", "process_force_greats"),
-    "build_db_payload": ("persistence", "build_db_payload"),
-    "build_persistence_entries": ("persistence", "build_persistence_entries"),
-    "canonicalize_and_assemble": ("persistence", "canonicalize_and_assemble"),
-    "ReplayContext": ("persistence", "ReplayContext"),
+    "build_db_payload": ("persistence_payload", "build_db_payload"),
+    "build_persistence_entries": ("persistence_canon", "build_persistence_entries"),
+    "canonicalize_and_assemble": ("persistence_canon", "canonicalize_and_assemble"),
+    "ReplayContext": ("persistence_canon", "ReplayContext"),
     "print_results": ("results_printer", "print_results"),
 }
 

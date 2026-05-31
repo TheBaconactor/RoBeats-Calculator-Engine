@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 
-from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
+from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from ....core.utils import get_selected_element
 
 

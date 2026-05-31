@@ -45,8 +45,6 @@ def _apply_debug_profile_env(cfg_path: str) -> None:
         "PERF_TIMING",
         "GPU_SYNC_FOR_TIMING",
         "GPU_FORCE_SYNC",
-        "GPU_EXECUTOR_PROFILE",
-        "GPU_PROFILER",
         "GPU_SERVICE_PROFILE",
         "GPU_SERVICE_PROFILE_PRINT",
         "INFLIGHT_STAGE_PROFILE",

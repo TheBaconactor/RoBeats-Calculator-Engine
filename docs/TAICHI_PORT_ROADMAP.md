@@ -2,7 +2,7 @@
 
 ## Current State (what’s already on GPU)
 - **Gem optimization** is on Taichi (Metal/Vulkan) via `solve_genomes_from_registry()` in [`gear_optimizer/solver/taichi_gem/api/parallel_solvers.py`](../gear_optimizer/solver/taichi_gem/api/parallel_solvers.py).
-- The GA evaluation path (`batch_evaluate_genomes`) calls it from [`gear_optimizer/solver/scoring/genome_evaluation.py`](../gear_optimizer/solver/scoring/genome_evaluation.py).
+- The live GA path builds packed GPU-native payloads in [`gear_optimizer/solver/genetic_pipeline.py`](../gear_optimizer/solver/genetic_pipeline.py) and dispatches Taichi GA operations through [`gear_optimizer/solver/taichi_gem/api/ga_operations.py`](../gear_optimizer/solver/taichi_gem/api/ga_operations.py).
 - The V3 path:
   - Uses a **precomputed (FT,FF) combo table** on GPU.
   - Computes best (score, FT, FF) per genome using **on-GPU atomic reduction**.
@@ -51,8 +51,8 @@ Add a Taichi kernel that:
 - Outputs: registry/base-stat arrays compatible with `solve_genomes_from_registry()`
 
 Integration option:
-- Add an opt-in flag (e.g. `cfg_data["gpu_aggregate_stats"]=True`) in `batch_evaluate_genomes`.
-- Keep the existing Python aggregation as the fallback / reference.
+- Integrate through the native GA payload builder instead of reviving the removed `batch_evaluate_genomes` surface.
+- Keep CPU parity checks in tests, not as a production fallback route.
 
 ### Stage B — Keep population resident on GPU across generations
 Persist GPU fields across generations:
@@ -83,8 +83,8 @@ At each stage, add a CPU vs GPU equivalence harness:
 - Start from the same `population_indices` and `item_stats`.
 - Compare aggregated stats and fitness distributions.
 - Keep existing correctness tests for scoring parity:
-  - `tests/test_gpu_integration.py`
-  - `scripts/regression/gpu_stats_regression.py`
+  - `tests/test_ga_evaluate_population_fusion.py`
+  - `tests/test_gpu_ga_exact_eval_reuse.py`
 
 ## Notes specific to RX 7900 XTX (Vulkan)
 - Use `TAICHI_BLOCK_DIM` / `GA_FTFF_REDUCE_BLOCK_DIM` tuning from measured throughput and profiler data; current repo defaults are `256`, not `128`.

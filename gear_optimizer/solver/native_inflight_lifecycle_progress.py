@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
+from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
 from gear_optimizer.solver.native_inflight_config import native_song_label
 
 logger = logging.getLogger(__name__)

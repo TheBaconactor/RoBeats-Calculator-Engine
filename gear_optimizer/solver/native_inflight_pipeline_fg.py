@@ -13,7 +13,7 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers, read_fg_static_prep_max_inflight
+from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
 
 if TYPE_CHECKING:
     from gear_optimizer.solver.native_inflight_lifecycle import PostSender, ProgressTracker
@@ -53,7 +53,6 @@ def read_native_fg_pipeline_settings(
     *,
     inflight_limit: int,
     ga_credit_budget_cfg: int,
-    cpu_prewarm_lookahead: int = 0,
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
@@ -87,12 +86,7 @@ def read_native_fg_pipeline_settings(
     # the canonical production path keeps one dynamic prep producer.
     _ = default_worker_threads
     fg_prep_workers = 1
-    static_prep_max_inflight = read_fg_static_prep_max_inflight(
-        cfg0,
-        fg_prep_workers=int(fg_prep_workers),
-        inflight_limit=int(inflight_limit_i),
-        cpu_prewarm_lookahead=int(cpu_prewarm_lookahead),
-    )
+    static_prep_max_inflight = max(0, min(int(fg_prep_workers), int(inflight_limit_i), 1))
     db_prefetch_workers = read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
     return NativeFGPipelineSettings(
         workers=int(fg_workers),

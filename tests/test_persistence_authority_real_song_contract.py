@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn, normalize_force_payload
 from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact

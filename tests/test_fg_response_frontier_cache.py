@@ -174,25 +174,21 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     assert int(bundle.surface_words.shape[0]) > 0
 
 
-def test_fg_response_frontier_scoring_bundle_requires_prebuilt_cache(tmp_path: Path, monkeypatch) -> None:
+def test_fg_response_frontier_scoring_bundle_builds_missing_canonical_cache(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
 
-    def _raise_build(*_args, **_kwargs):
-        raise AssertionError("production scoring-bundle load must not build missing FG response cache")
+    bundle = response_cache.load_response_frontier_scoring_bundle(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=((0, 0),),
+    )
 
-    monkeypatch.setattr(response_cache, "build_force_greats_response_first_frontiers_gpu_batch", _raise_build)
-
-    with pytest.raises(ValueError, match="prebuilt canonical bundle"):
-        response_cache.load_response_frontier_scoring_bundle(
-            _calc_song(),
-            _varying_ref_arrays(),
-            stat_keys=((0, 0),),
-        )
-
-    assert list(tmp_path.glob("*.npz")) == []
+    assert set(bundle.frontier_idx_by_key) == {(0, 0)}
+    assert int(bundle.surface_words.shape[0]) > 0
+    assert len(list(tmp_path.glob("*.npz"))) == 1
 
 
 def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
@@ -486,8 +482,6 @@ def test_fg_response_frontier_cache_rejects_incomplete_frontiers(tmp_path: Path,
     keys = ((0, 0), (1, 0))
     ref_arrays = _varying_ref_arrays()
 
-    import pytest
-
     with pytest.raises(ValueError, match="requires first-frontier surfaces"):
         response_cache.build_or_load_response_frontier_payload(_calc_song(), ref_arrays, stat_keys=keys)
     assert calls == [2]
@@ -580,7 +574,6 @@ def test_fg_response_frontier_prebuild_has_no_public_flags() -> None:
 
 def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     allowed = {
-        Path("gear_optimizer/solver/fg_response_frontier_cache_prebuild.py"),
         Path("gear_optimizer/solver/taichi_gem/force_greats/response_cache.py"),
     }
     offenders: list[str] = []
@@ -592,296 +585,6 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
             offenders.append(str(path))
 
     assert offenders == []
-
-
-def test_fg_response_frontier_prebuild_defaults_to_complete_response_stat_grid() -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        all_response_stat_keys,
-        read_fg_response_frontier_cache_prebuild_settings,
-    )
-
-    settings = read_fg_response_frontier_cache_prebuild_settings(None)
-
-    assert settings.stat_keys == all_response_stat_keys()
-    assert settings.stat_keys[0] == (0, 0)
-    assert len(settings.stat_keys) == (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
-    assert (TOTAL_ROWS, 0) in settings.stat_keys
-    assert (0, TOTAL_ROWS) in settings.stat_keys
-    assert (1, 1) in settings.stat_keys
-
-
-def test_fg_response_prebuild_manifest_skips_worker_build_on_warm_cache(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        FgResponseFrontierCachePrebuildSettings,
-        run_fg_response_frontier_cache_prebuild,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        reset_fg_response_frontier_payload_cache,
-    )
-
-    cache_dir = tmp_path / "fg_response_cache"
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
-    reset_fg_response_frontier_payload_cache()
-    song_path = tmp_path / "unit_song.txt"
-    _write_song(song_path)
-    monkeypatch.setattr(
-        prebuild,
-        "read_fg_response_frontier_cache_prebuild_settings",
-        lambda _cfg: FgResponseFrontierCachePrebuildSettings(stat_keys=((0, 0),)),
-    )
-
-    queue = [(str(song_path), "FG Cache Unit", "Easy")]
-    first = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-    assert int(first.total) == 1
-    assert int(first.completed) == 1
-
-    def _raise_build(*args, **kwargs):
-        raise AssertionError("FG worker build path should be skipped by manifest on warm cache")
-
-    monkeypatch.setattr(prebuild, "build_fg_response_frontier_cache_for_path", _raise_build)
-    second = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-
-    assert int(second.total) == 1
-    assert int(second.completed) == 1
-    assert int(second.disk) == 1
-    assert int(second.built) == 0
-
-
-def test_fg_response_prebuild_manifest_invalidates_when_song_changes(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        FgResponseFrontierCacheBuildResult,
-        FgResponseFrontierCachePrebuildSettings,
-        run_fg_response_frontier_cache_prebuild,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        reset_fg_response_frontier_payload_cache,
-    )
-
-    cache_dir = tmp_path / "fg_response_cache"
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
-    reset_fg_response_frontier_payload_cache()
-    song_path = tmp_path / "unit_song.txt"
-    _write_song(song_path)
-    monkeypatch.setattr(
-        prebuild,
-        "read_fg_response_frontier_cache_prebuild_settings",
-        lambda _cfg: FgResponseFrontierCachePrebuildSettings(stat_keys=((0, 0),)),
-    )
-    queue = [(str(song_path), "FG Cache Unit", "Easy")]
-    first = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-    assert int(first.completed) == 1
-
-    existing = list(cache_dir.glob("*.npz"))
-    assert existing
-    _write_song(song_path, extra_tail="#mtime-bump")
-
-    calls: list[tuple[str, ...]] = []
-
-    class _FakePrebuilder:
-        def __init__(self, *, song_paths, ref_arrays, stat_keys):
-            calls.append(tuple(str(path) for path in song_paths))
-            self.completed_results = [
-                FgResponseFrontierCacheBuildResult(
-                    path=str(song_paths[0]),
-                    song="FG Cache Unit",
-                    source="disk",
-                    ms=0.1,
-                    frontier_ms=0.0,
-                    notes=3,
-                    long_notes=0,
-                    frontier_count=1,
-                    cache_file=str(existing[0]),
-                    skipped=True,
-                )
-            ]
-
-        def run_to_completion(self):
-            return prebuild.FgResponseFrontierCachePrebuildSummary(
-                total=1,
-                completed=1,
-                failures=0,
-                built=0,
-                disk=1,
-                memory=0,
-                elapsed_ms=0.1,
-            )
-
-    monkeypatch.setattr(prebuild, "FgResponseFrontierCachePrebuilder", _FakePrebuilder)
-    second = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-
-    assert int(second.total) == 1
-    assert int(second.completed) == 1
-    assert calls == [(str(song_path),)]
-
-
-def test_fg_response_manifest_ignores_wrong_stat_grid(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        FgResponseFrontierCacheBuildResult,
-        FgResponseFrontierCachePrebuildSettings,
-        run_fg_response_frontier_cache_prebuild,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        reset_fg_response_frontier_payload_cache,
-    )
-
-    cache_dir = tmp_path / "fg_response_cache"
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
-    reset_fg_response_frontier_payload_cache()
-    song_path = tmp_path / "unit_song.txt"
-    _write_song(song_path)
-    queue = [(str(song_path), "FG Cache Unit", "Easy")]
-    monkeypatch.setattr(
-        prebuild,
-        "read_fg_response_frontier_cache_prebuild_settings",
-        lambda _cfg: FgResponseFrontierCachePrebuildSettings(stat_keys=((0, 0),)),
-    )
-    first = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-    assert int(first.completed) == 1
-    existing = list(cache_dir.glob("*.npz"))
-    assert existing
-
-    calls: list[tuple[str, ...]] = []
-
-    class _FakePrebuilder:
-        def __init__(self, *, song_paths, ref_arrays, stat_keys):
-            calls.append(tuple(str(path) for path in song_paths))
-            self.completed_results = [
-                FgResponseFrontierCacheBuildResult(
-                    path=str(song_paths[0]),
-                    song="FG Cache Unit",
-                    source="disk",
-                    ms=0.1,
-                    frontier_ms=0.0,
-                    notes=3,
-                    long_notes=0,
-                    frontier_count=1,
-                    cache_file=str(existing[0]),
-                    skipped=True,
-                )
-            ]
-
-        def run_to_completion(self):
-            return prebuild.FgResponseFrontierCachePrebuildSummary(
-                total=1,
-                completed=1,
-                failures=0,
-                built=0,
-                disk=1,
-                memory=0,
-                elapsed_ms=0.1,
-            )
-
-    monkeypatch.setattr(
-        prebuild,
-        "read_fg_response_frontier_cache_prebuild_settings",
-        lambda _cfg: FgResponseFrontierCachePrebuildSettings(stat_keys=((0, 0), (1, 0))),
-    )
-    monkeypatch.setattr(prebuild, "FgResponseFrontierCachePrebuilder", _FakePrebuilder)
-    second = run_fg_response_frontier_cache_prebuild(
-        cfg=None,
-        song_queue=queue,
-        ref_arrays=_ref_arrays(),
-        data_root=tmp_path,
-    )
-
-    assert int(second.total) == 1
-    assert int(second.completed) == 1
-    assert calls == [(str(song_path),)]
-
-
-def test_frontier_cache_prebuild_passes_same_queue_to_timeline_and_fg(monkeypatch) -> None:
-    from gear_optimizer.solver import frontier_cache_prebuild
-    from gear_optimizer.solver.frontier_cache_prebuild import run_frontier_cache_prebuilds
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    seen: list[tuple[str, list[tuple[str, str, str]]]] = []
-
-    def _fake_timeline(*, cfg, song_queue, ref_arrays, data_root):
-        seen.append(("timeline", list(song_queue)))
-        return TimelineFrontierCachePrebuildSummary(total=1, completed=1)
-
-    def _fake_fg(*, cfg, song_queue, ref_arrays, data_root):
-        seen.append(("fg", list(song_queue)))
-        return FgResponseFrontierCachePrebuildSummary(total=1, completed=1)
-
-    monkeypatch.setattr(frontier_cache_prebuild, "run_timeline_frontier_cache_prebuild", _fake_timeline)
-    monkeypatch.setattr(frontier_cache_prebuild, "run_fg_response_frontier_cache_prebuild", _fake_fg)
-
-    queue = ((str(idx), "Song", "Easy") for idx in range(1))
-    summary = run_frontier_cache_prebuilds(cfg=None, song_queue=queue, ref_arrays={}, data_root=None)
-
-    assert sorted(seen) == [
-        ("fg", [("0", "Song", "Easy")]),
-        ("timeline", [("0", "Song", "Easy")]),
-    ]
-    assert summary.timeline.total == 1
-    assert summary.fg_response.total == 1
-
-
-def test_frontier_cache_prebuild_runs_timeline_and_fg_async(monkeypatch) -> None:
-    import threading
-
-    from gear_optimizer.solver import frontier_cache_prebuild
-    from gear_optimizer.solver.frontier_cache_prebuild import run_frontier_cache_prebuilds
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    timeline_started = threading.Event()
-    fg_started = threading.Event()
-
-    def _fake_timeline(*, cfg, song_queue, ref_arrays, data_root):
-        timeline_started.set()
-        assert fg_started.wait(timeout=1.0)
-        return TimelineFrontierCachePrebuildSummary(total=1, completed=1)
-
-    def _fake_fg(*, cfg, song_queue, ref_arrays, data_root):
-        fg_started.set()
-        assert timeline_started.wait(timeout=1.0)
-        return FgResponseFrontierCachePrebuildSummary(total=1, completed=1)
-
-    monkeypatch.setattr(frontier_cache_prebuild, "run_timeline_frontier_cache_prebuild", _fake_timeline)
-    monkeypatch.setattr(frontier_cache_prebuild, "run_fg_response_frontier_cache_prebuild", _fake_fg)
-
-    run_frontier_cache_prebuilds(cfg=None, song_queue=(), ref_arrays={}, data_root=None)
 
 
 def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(monkeypatch) -> None:
@@ -1159,94 +862,3 @@ def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repac
     assert batch.scoring_group_offsets.tolist() == [2]
     assert batch.scoring_group_lengths.tolist() == [1]
     assert batch.scoring_surface_head_coeffs is surface_head_coeffs
-
-
-def test_cpu_work_manager_delegates_frontier_prebuild(monkeypatch, capsys) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
-    from gear_optimizer.solver.frontier_cache_prebuild import FrontierCachePrebuildSummary
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    seen: list[list[tuple[str, str, str]]] = []
-
-    def _fake_frontiers(*, cfg, song_queue, ref_arrays, data_root):
-        seen.append(list(song_queue))
-        return FrontierCachePrebuildSummary(
-            timeline=TimelineFrontierCachePrebuildSummary(total=1, completed=1),
-            fg_response=FgResponseFrontierCachePrebuildSummary(total=1, completed=1),
-            elapsed_ms=1.0,
-        )
-
-    monkeypatch.setattr(cpu_work_manager, "run_frontier_cache_prebuilds", _fake_frontiers)
-
-    queue = ((str(idx), "Song", "Easy") for idx in range(1))
-    CpuWorkManager().run_startup(cfg=None, song_queue=queue, ref_arrays={}, data_root=None)
-
-    assert seen == [[("0", "Song", "Easy")]]
-    captured = capsys.readouterr()
-    assert "Building and caching exact timeline + FG response frontiers before scoring" in captured.out
-
-
-def test_cpu_work_manager_announces_to_explicit_visible_stream(monkeypatch) -> None:
-    import io
-
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
-    from gear_optimizer.solver.frontier_cache_prebuild import FrontierCachePrebuildSummary
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    def _fake_frontiers(*, cfg, song_queue, ref_arrays, data_root):
-        return FrontierCachePrebuildSummary(
-            timeline=TimelineFrontierCachePrebuildSummary(total=1, completed=1),
-            fg_response=FgResponseFrontierCachePrebuildSummary(total=1, completed=1),
-            elapsed_ms=1.0,
-        )
-
-    visible = io.StringIO()
-    monkeypatch.setattr(cpu_work_manager, "run_frontier_cache_prebuilds", _fake_frontiers)
-
-    CpuWorkManager().run_startup(
-        cfg=None,
-        song_queue=(),
-        ref_arrays={},
-        data_root=None,
-        announce_stream=visible,
-    )
-
-    assert "Building and caching exact timeline + FG response frontiers before scoring" in visible.getvalue()
-
-
-def test_cpu_work_manager_fails_before_scoring_when_fg_prebuild_fails(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
-    from gear_optimizer.solver.frontier_cache_prebuild import FrontierCachePrebuildSummary
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    def _fake_frontiers(*, cfg, song_queue, ref_arrays, data_root):
-        return FrontierCachePrebuildSummary(
-            timeline=TimelineFrontierCachePrebuildSummary(total=1, completed=1),
-            fg_response=FgResponseFrontierCachePrebuildSummary(total=1, completed=0, failures=1),
-            elapsed_ms=1.0,
-        )
-
-    monkeypatch.setattr(cpu_work_manager, "run_frontier_cache_prebuilds", _fake_frontiers)
-
-    with pytest.raises(RuntimeError, match="fg_response_failures=1"):
-        CpuWorkManager().run_startup(cfg=None, song_queue=(), ref_arrays={}, data_root=None)
-
-
-def test_fg_response_prebuild_worker_configures_active_reducer_thread_limit() -> None:
-    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu
-
-    previous = response_build_gpu.configure_force_greats_response_first_frontier_threads(8)
-    try:
-        prebuild._init_prebuild_worker({}, (), reducer_threads=2)
-
-        assert response_build_gpu._resolve_first_only_reducer_threads(99) == 2
-        assert not hasattr(response_build_gpu, "_FIRST_FRONTIER_REDUCER_THREADS")
-    finally:
-        response_build_gpu.configure_force_greats_response_first_frontier_threads(previous)

@@ -137,8 +137,6 @@ def ga_find_best_combo_warmstart_kernel(
         for i in ti.static(range(4)):
             kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, i] = 0
         skip_row = ti.i32(0)
-        if kernels_helpers.ga_base_candidate_cache_hit[genome_idx] != 0:
-            skip_row = ti.i32(1)
         if ti.static(reuse_exact_eval_results):
             if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
                 skip_row = ti.i32(1)

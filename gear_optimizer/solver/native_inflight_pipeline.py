@@ -18,7 +18,7 @@ from gear_optimizer.helpers.song_helpers.database_context import resolve_databas
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
-from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.inflight_utils import _truthy
@@ -52,15 +52,12 @@ __all__ = [
     "NativeFGPipeline",
     "NativeFGPipelineSettings",
     "NativeFGPrepCompletion",
-    "_prewarm_fg_response_support",
-    "_prewarm_timeline_frontier_payload",
     "_sync_fg_runtime_calc_song_keys",
     "decode_ga_payload_sync",
     "prepare_fg_job_sync",
     "prepare_fg_static_sync",
     "read_native_fg_pipeline_settings",
     "resolve_active_fg_calc_song",
-    "run_cpu_prewarm_for_song",
     "run_fg_job_sync",
     "thread_cpu_time_s",
 ]
@@ -272,78 +269,6 @@ class InFlightStageProfiler:
             pass
 
 
-def _prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
-    if not calc_song or not ref_arrays:
-        return
-    try:
-        from gear_optimizer.solver.taichi_gem.api.timeline import prewarm_timeline_frontier_payload
-
-        prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:_prewarm_timeline_frontier_payload: {e}")
-
-
-def _prewarm_fg_response_support(calc_song: dict, ref_arrays: dict) -> Any | None:
-    if not calc_song or not ref_arrays:
-        return None
-    from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import all_response_stat_keys
-    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        _fg_response_disk_cache_path,
-        fg_response_frontier_bundle_cache_key,
-        load_response_frontier_scoring_bundle,
-    )
-
-    bundle_path = _fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
-    if not bundle_path.exists():
-        raise RuntimeError(f"FG response frontier scoring requires a prebuilt bundle cache: {bundle_path}")
-    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=all_response_stat_keys())
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-    primary = str(metadata.get("Primary Color", "") or "")
-    secondary = str(metadata.get("Secondary Color", "") or "")
-    stats = {
-        "Perfect Points": 0,
-        "Combo Multiplier": 0,
-        "Fever Multiplier": 0,
-        "Fever Time": 0,
-        "Fever Fill Rate": 0,
-    }
-    if primary:
-        stats[primary] = 0
-    if secondary:
-        stats[secondary] = 0
-    evaluate_stats_score(stats, calc_song, ref_arrays)
-    stats["Fever Time"] = 5
-    stats["Fever Fill Rate"] = 5
-    evaluate_stats_score(stats, calc_song, ref_arrays)
-    stats.update(
-        {
-            "Perfect Points": TOTAL_ROWS,
-            "Combo Multiplier": TOTAL_ROWS,
-            "Fever Multiplier": TOTAL_ROWS,
-            "Fever Time": TOTAL_ROWS,
-            "Fever Fill Rate": TOTAL_ROWS,
-        }
-    )
-    if primary:
-        stats[primary] = TOTAL_ROWS
-    if secondary:
-        stats[secondary] = TOTAL_ROWS
-    evaluate_stats_score(stats, calc_song, ref_arrays)
-    return scoring_bundle
-
-
-def run_cpu_prewarm_for_song(song: NativeSong) -> None:
-    calc_song = resolve_active_fg_calc_song(song) or getattr(song.gpu_inputs, "calc_song", None)
-    ref_arrays = getattr(song.gpu_inputs, "ref_arrays", None)
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict) or not ref_arrays:
-        return
-    # FG dynamic prep depends on the scoring bundle; timeline prewarm is GA-only lookahead.
-    song.runtime.fg.fg_response_scoring_bundle = _prewarm_fg_response_support(calc_song, ref_arrays)
-    _prewarm_timeline_frontier_payload(calc_song, ref_arrays)
-
-
 def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, "gpu_inputs", song)
@@ -536,7 +461,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         getattr(song.gpu_inputs, "meta_primary_color", ""),
         ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
         ga_registry=getattr(song.gpu_inputs, "registry", None),
-        scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
     )
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(

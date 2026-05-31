@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import numpy as np
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows, read_table
-from gear_optimizer.solver.scoring import solve_best_fever_combination
+from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
 from gear_optimizer.core.utils import empty_stats
 from gear_optimizer.data.song_io import read_song_file
 import configparser

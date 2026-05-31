@@ -17,7 +17,7 @@ from gear_optimizer.core.array_signature import arrays_sig16
 from gear_optimizer.core.env_config import ENV
 from ..runtime import init_taichi, is_initialized
 from .. import fields
-from ..ftff_combos import ftff_combo_arrays
+from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
     GRID_SIZE,

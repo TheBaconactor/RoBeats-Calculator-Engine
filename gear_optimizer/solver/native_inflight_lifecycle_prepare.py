@@ -244,10 +244,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         "user_fm": int(user_gems.fever_multiplier),
         "static_elem_input": int(user_gems.static_element),
     }
-    cfg_data["ga_convergence_trace_enabled"] = bool(ga_runtime_settings.convergence_trace)
-    cfg_data["ga_convergence_trace_every"] = int(ga_runtime_settings.convergence_trace_every)
-    cfg_data["ga_convergence_trace_out_dir"] = str(ga_runtime_settings.convergence_trace_out_dir)
-    cfg_data["ga_convergence_trace_song_filter"] = str(ga_runtime_settings.convergence_trace_song_filter)
     cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
     cfg_data["fg_require_stats"] = True
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)

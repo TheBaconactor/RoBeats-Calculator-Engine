@@ -32,7 +32,6 @@ def test_profiling_mode_disabled_without_flags(monkeypatch):
     monkeypatch.delenv("DEBUG_PROFILE", raising=False)
     monkeypatch.delenv("METAFINDER_DEBUG_PROFILE", raising=False)
     monkeypatch.delenv("PERF_TIMING", raising=False)
-    monkeypatch.delenv("GPU_EXECUTOR_TRACE_PATH", raising=False)
     cfg = configparser.ConfigParser()
     cfg.read_dict({"CalculateSong": {"LoopForever": "true"}})
     assert app._profiling_mode_enabled(cfg) is False

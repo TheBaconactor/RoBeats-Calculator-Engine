@@ -337,58 +337,6 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
-def test_prepare_fg_job_sync_does_not_wait_for_cpu_prewarm_before_dynamic_prep(monkeypatch):
-    import configparser
-
-    import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
-
-    seen: dict[str, bool] = {"waited": False, "built": False}
-
-    class _PrewarmFuture:
-        def result(self):
-            seen["waited"] = True
-            raise AssertionError("FG dynamic prep must not block on broad CPU prewarm")
-
-    def _fake_build_loadout_entries(*_args, **_kwargs):
-        seen["built"] = True
-        return {}
-
-    monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
-    monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
-    monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan",
-        lambda *_args, **_kwargs: "prepared-plan",
-    )
-
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
-
-    song = make_native_song(
-        cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {}},
-        cfg_dict={},
-        ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
-        meta_primary_color="Rush",
-        meta_secondary_color="Flow",
-        db_key="song-db-key",
-        gears_by_name={},
-        minis_by_name={},
-        effective_difficulty="Hard",
-        registry=None,
-        fixed_stats={},
-        cfg_data={},
-        ref_arrays={},
-        cpu_prewarm_future=_PrewarmFuture(),
-    )
-
-    stages.prepare_fg_job_sync(song, gpu_client=None)
-
-    assert seen == {"waited": False, "built": True}
-    assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
-
-
 def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkeypatch):
     import configparser
 

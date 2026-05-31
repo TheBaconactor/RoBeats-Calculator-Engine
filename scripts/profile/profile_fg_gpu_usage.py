@@ -38,7 +38,7 @@ def main() -> int:
     gpu_client = GpuServiceClient()
     gpu_client.start(start_executor=True, in_process_queues=True)
 
-    from gear_optimizer.solver.scoring import solve_best_fever_combination
+    from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
     from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
     from gear_optimizer.core.constants import TOTAL_ROWS
 

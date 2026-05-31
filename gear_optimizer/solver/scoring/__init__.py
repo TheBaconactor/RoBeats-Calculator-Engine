@@ -1,8 +1,4 @@
-"""Scoring package public API surface.
-
-The live package exposes runtime state, stat helpers, and Force Greats
-evaluation for tooling/rescoring. Production FG uses the response-frontier GPU path.
-"""
+"""Scoring package public API surface."""
 
 from .runtime_state import (
     _GPU_LOCK,
@@ -16,10 +12,6 @@ from .stats_scoring import (
     _force_greats_counts_to_dict,
     _song_cache_key,
 )
-from .force_greats import (
-    _compute_force_greats_timeline,
-    evaluate_force_greats,
-)
 
 __all__ = [
     "_GPU_LOCK",
@@ -30,6 +22,4 @@ __all__ = [
     "fg_baseline_params",
     "_force_greats_counts_to_dict",
     "_song_cache_key",
-    "_compute_force_greats_timeline",
-    "evaluate_force_greats",
 ]

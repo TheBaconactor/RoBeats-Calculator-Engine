@@ -84,6 +84,73 @@ def test_no_removed_gpu_symbols_present() -> None:
     assert not offenders, "Removed GPU symbols were reintroduced:\n" + "\n".join(offenders)
 
 
+def test_non_skyline_compatibility_shims_stay_deleted() -> None:
+    forbidden = [
+        "gear_optimizer/core/cfg_window_decode.py",
+        "gear_optimizer/helpers/song_helpers/stats_gateway.py",
+        "gear_optimizer/helpers/song_helpers/persistence.py",
+        "gear_optimizer/solver/scoring/force_greats.py",
+        "gear_optimizer/solver/candidate_solver_cache.py",
+        "gear_optimizer/solver/gpu_executor_profile.py",
+        "gear_optimizer/solver/gpu_profiler.py",
+        "gear_optimizer/solver/item_pools.py",
+        "gear_optimizer/solver/taichi_gem/ftff_combos.py",
+        "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
+        "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
+        "gear_optimizer/solver/taichi_gem/force_greats/response_inner.py",
+        "scripts/profile/profile_ga_gpu.py",
+        "scripts/profile/profile_main_hot.py",
+        "scripts/regression/ga_gpu_integration.py",
+        "scripts/regression/gpu_stats_regression.py",
+        "scripts/regression/regression_baseline.py",
+        "scripts/regression/regression_ga.py",
+        "tests/test_ga_evaluate_population_fusion.py",
+        "tests/test_ga_population_upload_kernel.py",
+        "tests/test_ga_run_payload_packed.py",
+        "tests/test_gpu_elites_regression.py",
+        "tests/test_gpu_ga_cold_eval_determinism.py",
+        "tests/test_gpu_ga_eval_race_free.py",
+        "tests/test_gpu_ga_global_best_consistency.py",
+        "tests/test_gpu_ga_ops.py",
+        "tests/test_gpu_native_ga_plateau_prune_regression.py",
+        "tools/bench/bench_gpu_native_ga_eval.py",
+        "tools/profile/tests/profile_ga.py",
+    ]
+
+    present = [rel for rel in forbidden if (_REPO_ROOT / rel).exists()]
+
+    assert not present, "Non-Skyline compatibility shims were reintroduced:\n" + "\n".join(present)
+
+
+def test_taichi_api_package_imports_fail_loudly() -> None:
+    api_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "except ImportError" not in api_init
+
+
+def test_scoring_package_does_not_reexport_old_fever_solver_surface() -> None:
+    scoring_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "scoring" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "solve_best_fever_combination" not in scoring_init
+    assert "batch_evaluate_genomes" not in scoring_init
+
+
+def test_legacy_ftff_solver_api_stays_deleted() -> None:
+    parallel_solvers = (
+        _REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "parallel_solvers.py"
+    ).read_text(encoding="utf-8")
+    api_init = (_REPO_ROOT / "gear_optimizer" / "solver" / "taichi_gem" / "api" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def solve_genomes_with_ftff(" not in parallel_solvers
+    assert '"solve_genomes_with_ftff"' not in api_init
+
+
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
     allowed = {
         "gear_optimizer.solver.taichi_gem.api",

@@ -28,10 +28,6 @@ def _build_config() -> configparser.ConfigParser:
                 "GPU_GA_ImmigrantRate": "-1",
                 "GPU_GA_EliteCount": "-2",
                 "GPU_GA_NoveltyRepairAttempts": "9",
-                "GAConvergenceTrace": "true",
-                "GAConvergenceTraceEvery": "0",
-                "GAConvergenceTraceOutDir": "",
-                "GAConvergenceTraceSongFilter": "pytest",
                 "GA_SearchDepth": "0",
                 "GA_MultiStart": "0",
                 "InFlightSongs": "-3",
@@ -74,10 +70,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ga.immigrant_rate == 0.0
     assert ga.elite_count == 0
     assert ga.novelty_repair_attempts == 4
-    assert ga.convergence_trace is True
-    assert ga.convergence_trace_every == 1
-    assert ga.convergence_trace_out_dir == "artifacts/ga_trace"
-    assert ga.convergence_trace_song_filter == "pytest"
     assert ga.search_depth == 1
     assert ga.multi_start == 1
 

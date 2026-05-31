@@ -20,7 +20,6 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
 
     from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem import fields
-    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import _score_fixed_batch
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import optimize_core_device_exact_bound
 
@@ -126,28 +125,9 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
             fields.grid_frontier_count[0, 0, 0] = ti.cast(0, ti.i32)
             fields.grid_frontier_offset[0, 0, 0] = ti.cast(0, ti.i32)
 
-        @ti.kernel
-        def _enable_frontier():
-            fields.grid_frontier_count[0, 0, 0] = ti.cast(5, ti.i32)
-            fields.grid_frontier_offset[0, 0, 0] = ti.cast(3, ti.i32)
-
-        base_value = np.array([10_000.0], dtype=np.float32)
-        combo_mul = np.array([2.0], dtype=np.float32)
-        fever_mul = np.array([5.0], dtype=np.float32)
-        ft_idx = np.array([0], dtype=np.int32)
-        ff_idx = np.array([0], dtype=np.int32)
-        fixed_scores = np.zeros((1,), dtype=np.int32)
-
         _disable_frontier()
-        _score_fixed_batch(base_value, combo_mul, fever_mul, ft_idx, ff_idx, fixed_scores, 1, 0)
-        fixed_primary = int(fixed_scores[0])
-
-        _enable_frontier()
-        _score_fixed_batch(base_value, combo_mul, fever_mul, ft_idx, ff_idx, fixed_scores, 1, 0)
-        fixed_frontier = int(fixed_scores[0])
 
         expected_frontier = int((4 * 100_000) + (6 * 20_000))
 
     assert int(got[1]) > int(got[0])
-    assert fixed_frontier > fixed_primary
-    assert fixed_frontier == expected_frontier
+    assert int(got[1]) == expected_frontier

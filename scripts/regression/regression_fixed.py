@@ -6,7 +6,7 @@ import logging
 # Ensure we can import gear_optimizer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from gear_optimizer.solver.scoring import solve_best_fever_combination
+from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
 from gear_optimizer.core.constants import TOTAL_ROWS
 
 

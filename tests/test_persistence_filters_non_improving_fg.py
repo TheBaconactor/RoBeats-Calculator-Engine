@@ -4,7 +4,7 @@ import configparser
 
 
 def test_build_db_payload_drops_fg_variants_worse_than_base():
-    from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, make_build_details_fn
+    from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload, make_build_details_fn
 
     cfg = configparser.ConfigParser()
     cfg.add_section("IterationEngine")
@@ -53,7 +53,7 @@ def test_build_db_payload_drops_fg_variants_worse_than_base():
 
 
 def test_build_db_payload_drops_fg_variants_with_empty_normalized_force_payload(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, make_build_details_fn
+    from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload, make_build_details_fn
 
     build_details = make_build_details_fn("Chill", "Flow", "Hard")
 

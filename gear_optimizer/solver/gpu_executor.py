@@ -21,13 +21,12 @@ import os
 import atexit
 import traceback
 import time
+from collections import deque
 from contextlib import nullcontext
-from collections import defaultdict, deque
 from time import perf_counter
-from typing import Any, Optional, Dict
+from typing import Optional, Dict
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import env_flag
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
     is_ga_recovery_request as _is_ga_recovery_request,
@@ -40,16 +39,6 @@ from gear_optimizer.solver.gpu_executor_types import (
     GpuRequest,
     GpuRequestType,
     GpuResponse,
-)
-from gear_optimizer.solver.gpu_executor_profile import (
-    batch_trace_context as _batch_trace_context,
-    estimate_request_work_units,
-    load_workload_profile_settings as _load_workload_profile_settings,
-    record_workload_batch_state as _record_workload_batch_state,
-    emit_workload_batch_profile as _emit_workload_batch_profile,
-    emit_workload_stop_summary as _emit_workload_stop_summary,
-    maybe_emit_workload_window_profile as _maybe_emit_workload_window_profile,
-    summarize_batch,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     extend_inprocess_after_first_deadline as _extend_inprocess_after_first_deadline,
@@ -75,11 +64,9 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     build_warmup_sentinel_payload as _build_warmup_sentinel_payload,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
     executor_auto_stop_enabled as _executor_auto_stop_enabled,
-    ga_light_warmup_enabled as _ga_light_warmup_enabled,
     load_executor_start_settings as _load_executor_start_settings,
     load_executor_stop_profiler_settings as _load_executor_stop_profiler_settings,
     print_taichi_kernel_profiler as _print_taichi_kernel_profiler,
-    report_gpu_profiler as _report_gpu_profiler,
     send_shutdown_request as _send_shutdown_request,
     stop_executor_if_running as _stop_executor_if_running,
     warmup_sentinel_path as _warmup_sentinel_path,
@@ -103,7 +90,6 @@ from gear_optimizer.solver.gpu_executor_refs import (
     execute_load_refs as _execute_load_refs,
     ref_arrays_sig as _ref_arrays_sig,
 )
-from gear_optimizer.solver.gpu_executor_profile import ExecutorTraceWriter
 from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
@@ -118,29 +104,30 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     poll_inprocess_followup_nowait as _poll_inprocess_followup_nowait,
     safe_qsize as _safe_qsize,
 )
-from gear_optimizer.solver.gpu_executor_profile import (
-    build_exec_breakdown_summary as _build_exec_breakdown_summary,
-    build_executor_idle_summary as _build_executor_idle_summary,
-    build_executor_profile_stats as _build_executor_profile_stats,
-    build_executor_stats as _build_executor_stats,
-    build_idle_transition_summary as _build_idle_transition_summary,
-    build_request_latency_summary as _build_request_latency_summary,
-    compute_exec_breakdown as _compute_exec_breakdown,
-    compute_request_latency_window as _compute_request_latency_window,
-    exec_breakdown_enabled as _exec_breakdown_enabled,
-    executor_profile_log_message as _executor_profile_log_message,
-    exec_breakdown_summary_log_message as _exec_breakdown_summary_log_message,
-    gpu_profiler_snapshot as _gpu_profiler_snapshot,
-    idle_transition_summary_log_message as _idle_transition_summary_log_message,
-    profile_events_output_enabled as _profile_events_output_enabled,
-    record_exec_breakdown_stats as _record_exec_breakdown_stats,
-    record_pack_stats as _record_pack_stats,
-    record_request_latency_stats as _record_request_latency_stats,
-    request_latency_summary_log_message as _request_latency_summary_log_message,
-)
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
+
+
+def _request_work_units(request: GpuRequest) -> float:
+    payload = request.payload if isinstance(request.payload, dict) else {}
+    if request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+        try:
+            num_runs = int(payload.get("num_runs", 0) or 0)
+            n_genomes = int(payload.get("n_genomes", 0) or 0)
+            n_generations = int(payload.get("n_generations", 0) or 0)
+        except (TypeError, ValueError):
+            return 1.0
+        if num_runs > 0 and n_genomes > 0:
+            return float(max(1, num_runs) * max(1, n_genomes) * max(1, n_generations))
+    for key in ("tasks", "payloads", "genomes", "population"):
+        value = payload.get(key)
+        if value is not None:
+            try:
+                return float(len(value))
+            except TypeError:
+                return 1.0
+    return 1.0
 
 
 def _warmup_fg_response_frontier_runtime() -> None:
@@ -199,69 +186,8 @@ class GpuExecutor:
         self._last_ref_arrays_sig: bytes | None = None
         self._requests_processed = 0
         self._response_delivery = ResponseDeliveryTracker()
-        from gear_optimizer.core.env_config import ENV
-        self._profile_enabled = ENV.gpu_executor_profile
-        self._wait_sec = 0.0
-        self._exec_sec = 0.0
-        self._req_type_counts = defaultdict(int)
-        self._req_type_exec_sec = defaultdict(float)
-        self._req_type_pack_sec = defaultdict(float)
-        self._req_type_host_sec = defaultdict(float)
-        self._req_type_gpu_kernel_sec = defaultdict(float)
-        self._req_type_gpu_upload_sec = defaultdict(float)
-        self._req_type_gpu_download_sec = defaultdict(float)
-        self._exec_breakdown_enabled = _exec_breakdown_enabled(
-            profile_enabled=bool(self._profile_enabled),
-            gpu_profiler_enabled=bool(ENV.gpu_profiler),
-            env_flag_fn=env_flag,
-        )
-        self._pack_sec = 0.0
-        self._batch_size_counts = defaultdict(int)
-        self._batches_observed = 0
-        self._batch_size_sum = 0
-        self._idle_gaps: list[float] = []
-        self._idle_sample_threshold_sec = 0.001
-        self._profile_loop_start_ts: Optional[float] = None
-        self._profile_first_work_ts: Optional[float] = None
-        self._profile_last_work_end_ts: Optional[float] = None
         self._last_work_end_ts: Optional[float] = None
-        self._profile_shutdown_ts: Optional[float] = None
-        self._idle_transitions_sec = defaultdict(float)
-        self._idle_transitions_count = defaultdict(int)
-        self._last_work_req_type: Optional[GpuRequestType] = None
-        self._lat_sample_cap = 5000
-        self._lat_counts = defaultdict(int)
-        self._lat_total_sec = defaultdict(float)
-        self._lat_max_sec = defaultdict(float)
-        self._lat_samples = defaultdict(list)
-        self._lat_queue_total_sec = defaultdict(float)
-        self._lat_queue_max_sec = defaultdict(float)
-        self._lat_queue_samples = defaultdict(list)
-        self._lat_in_exec_total_sec = defaultdict(float)
-        self._lat_in_exec_max_sec = defaultdict(float)
-        self._lat_in_exec_samples = defaultdict(list)
-        self._trace = ExecutorTraceWriter()
         self._live = LiveReporter()
-        self._last_batch_plan_mode = "balanced"
-        workload_profile_settings = _load_workload_profile_settings(
-            profile_enabled=bool(self._profile_enabled),
-            env_flag_fn=env_flag,
-            env_get_fn=_ENV_GET,
-        )
-        self._workload_profile_enabled = workload_profile_settings.enabled
-        self._workload_profile_interval_sec = workload_profile_settings.interval_sec
-        self._workload_profile_last_emit_ts: Optional[float] = None
-        self._workload_events_emitted = 0
-        self._workload_batch_seq = 0
-        self._workload_recent_batches: deque[dict[str, Any]] = deque(maxlen=256)
-        self._workload_mode_counts = defaultdict(int)
-        self._workload_mode_wait_sec = defaultdict(float)
-        self._workload_mode_exec_sec = defaultdict(float)
-        self._workload_queue_depth_samples: deque[float] = deque(maxlen=4096)
-        self._workload_age_ms_samples: deque[float] = deque(maxlen=4096)
-        self._workload_units_samples: deque[float] = deque(maxlen=4096)
-        self._workload_diversity_samples: deque[float] = deque(maxlen=4096)
-        self._workload_pressure_samples: deque[float] = deque(maxlen=4096)
         self._high_res_timer_enabled = False
         short_wait_settings = _load_short_wait_spin_settings(env_get_fn=_ENV_GET)
         self._short_wait_spin_sec = short_wait_settings.short_wait_spin_sec
@@ -273,113 +199,6 @@ class GpuExecutor:
                 self._execute_force_greats_response_frontier_score_batch
             ),
         }
-    def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
-        self._pack_sec = _record_pack_stats(
-            request_type,
-            dt_sec,
-            pack_sec=self._pack_sec,
-            req_type_pack_sec=self._req_type_pack_sec,
-        )
-    def _gpu_prof_snapshot(self) -> tuple[float, float, float]:
-        """
-        Best-effort snapshot of cumulative in-process GPU profiler totals.
-        Returns:
-            (kernel_sec, upload_sec, download_sec)
-        """
-        return _gpu_profiler_snapshot(enabled=bool(self._exec_breakdown_enabled))
-    def _record_exec_breakdown(
-        self,
-        request_type: GpuRequestType,
-        *,
-        exec_wall_sec: float,
-        prof_before: tuple[float, float, float] | None,
-    ) -> None:
-        """
-        Attribute one executor exec window to host-vs-GPU buckets.
-        `exec_wall_sec` is the full owner-thread wall time for the request/coalesced batch.
-        GPU deltas are read from `gpu_profiler`; the residual is attributed to host work.
-        """
-        prof_after = self._gpu_prof_snapshot() if prof_before is not None else None
-        breakdown = _compute_exec_breakdown(
-            exec_wall_sec=float(exec_wall_sec),
-            prof_before=prof_before,
-            prof_after=prof_after,
-        )
-        if breakdown is None:
-            return
-        _record_exec_breakdown_stats(
-            request_type,
-            breakdown,
-            req_type_host_sec=self._req_type_host_sec,
-            req_type_gpu_kernel_sec=self._req_type_gpu_kernel_sec,
-            req_type_gpu_upload_sec=self._req_type_gpu_upload_sec,
-            req_type_gpu_download_sec=self._req_type_gpu_download_sec,
-        )
-    def _record_latency(
-        self,
-        request: "GpuRequest",
-        *,
-        exec_start_ns: int,
-        exec_end_ns: int,
-    ) -> None:
-        if not self._profile_enabled:
-            return
-        latency = _compute_request_latency_window(
-            request,
-            exec_start_ns=exec_start_ns,
-            exec_end_ns=exec_end_ns,
-        )
-        if latency is None:
-            return
-        _record_request_latency_stats(
-            latency,
-            lat_counts=self._lat_counts,
-            lat_total_sec=self._lat_total_sec,
-            lat_max_sec=self._lat_max_sec,
-            lat_samples=self._lat_samples,
-            lat_queue_total_sec=self._lat_queue_total_sec,
-            lat_queue_max_sec=self._lat_queue_max_sec,
-            lat_queue_samples=self._lat_queue_samples,
-            lat_in_exec_total_sec=self._lat_in_exec_total_sec,
-            lat_in_exec_max_sec=self._lat_in_exec_max_sec,
-            lat_in_exec_samples=self._lat_in_exec_samples,
-            sample_cap=int(self._lat_sample_cap),
-        )
-    def _record_workload_batch(self, metrics: dict[str, Any]) -> None:
-        if not metrics:
-            return
-        self._last_batch_plan_mode = _record_workload_batch_state(
-            metrics,
-            recent_batches=self._workload_recent_batches,
-            mode_counts=self._workload_mode_counts,
-            mode_wait_sec=self._workload_mode_wait_sec,
-            mode_exec_sec=self._workload_mode_exec_sec,
-            queue_depth_samples=self._workload_queue_depth_samples,
-            age_ms_samples=self._workload_age_ms_samples,
-            units_samples=self._workload_units_samples,
-            diversity_samples=self._workload_diversity_samples,
-            pressure_samples=self._workload_pressure_samples,
-            last_batch_plan_mode=self._last_batch_plan_mode,
-        )
-        if self._workload_profile_enabled:
-            if _emit_workload_batch_profile(metrics, emit_profile_event_fn=emit_profile_event):
-                self._workload_events_emitted += 1
-            self._maybe_emit_workload_profile()
-    def _maybe_emit_workload_profile(self, *, force: bool = False) -> None:
-        result = _maybe_emit_workload_window_profile(
-            enabled=bool(self._workload_profile_enabled),
-            force=bool(force),
-            now=perf_counter(),
-            last_emit_ts=self._workload_profile_last_emit_ts,
-            interval_sec=float(self._workload_profile_interval_sec),
-            recent_batches=self._workload_recent_batches,
-            events_emitted=int(self._workload_events_emitted),
-            log_enabled=bool(self._profile_enabled),
-            log_debug=logger.debug,
-            emit_profile_event_fn=emit_profile_event,
-        )
-        self._workload_profile_last_emit_ts = result.last_emit_ts
-        self._workload_events_emitted = int(result.events_emitted)
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
         return _execute_request_from_dispatch(request, dispatch=self._dispatch)
@@ -396,21 +215,6 @@ class GpuExecutor:
                 return
         self._requests_processed = 0
         self._response_delivery.reset()
-        self._wait_sec = 0.0
-        self._exec_sec = 0.0
-        try:
-            self._req_type_counts.clear()
-            self._req_type_exec_sec.clear()
-            self._req_type_host_sec.clear()
-            self._req_type_gpu_kernel_sec.clear()
-            self._req_type_gpu_upload_sec.clear()
-            self._req_type_gpu_download_sec.clear()
-            self._batch_size_counts.clear()
-        except Exception as e:
-            logger.debug(f"gpu_executor:start: {e}")
-        self._batches_observed = 0
-        self._batch_size_sum = 0
-        self._idle_gaps = []
         start_settings = _load_executor_start_settings(
             in_process=bool(in_process),
             env_get_fn=env_get,
@@ -420,28 +224,7 @@ class GpuExecutor:
             system_timer_override_allowed_fn=_system_timer_override_allowed,
             default_heartbeat_path_fn=_default_executor_heartbeat_path,
         )
-        self._idle_sample_threshold_sec = float(start_settings.idle_sample_threshold_sec)
-        self._profile_loop_start_ts = None
-        self._profile_first_work_ts = None
-        self._profile_last_work_end_ts = None
         self._last_work_end_ts = None
-        self._profile_shutdown_ts = None
-        self._idle_transitions_sec = defaultdict(float)
-        self._idle_transitions_count = defaultdict(int)
-        self._last_work_req_type = None
-        try:
-            self._lat_counts.clear()
-            self._lat_total_sec.clear()
-            self._lat_max_sec.clear()
-            self._lat_samples.clear()
-            self._lat_queue_total_sec.clear()
-            self._lat_queue_max_sec.clear()
-            self._lat_queue_samples.clear()
-            self._lat_in_exec_total_sec.clear()
-            self._lat_in_exec_max_sec.clear()
-            self._lat_in_exec_samples.clear()
-        except Exception as e:
-            logger.debug(f"gpu_executor:start: {e}")
         self._response_queues = {}
         self._next_worker_id = 0
         self._taichi_ready = False
@@ -455,7 +238,6 @@ class GpuExecutor:
             enabled=bool(start_settings.live_enabled),
             interval_sec=float(start_settings.live_interval_sec),
         )
-        self._trace.open(str(start_settings.trace_path or "").strip())
         self._in_process_queues = bool(in_process)
         self._high_res_timer_enabled = False
         self._heartbeat = ExecutorHeartbeatWriter(
@@ -491,100 +273,8 @@ class GpuExecutor:
         if self._high_res_timer_enabled:
             _release_windows_timer_period_1ms()
             self._high_res_timer_enabled = False
-        self._trace.close()
-        if self._profile_enabled:
-            idle_summary = _build_executor_idle_summary(
-                idle_gaps=self._idle_gaps,
-                loop_start_ts=self._profile_loop_start_ts,
-                first_work_ts=self._profile_first_work_ts,
-                shutdown_ts=self._profile_shutdown_ts,
-                last_work_end_ts=self._profile_last_work_end_ts,
-            )
-            logger.debug(
-                _executor_profile_log_message(
-                    wait_sec=self._wait_sec,
-                    exec_sec=self._exec_sec,
-                    requests_processed=int(self._requests_processed),
-                    batch_size_sum=int(self._batch_size_sum),
-                    batches_observed=int(self._batches_observed),
-                    pack_sec=self._pack_sec,
-                    req_type_exec_sec=self._req_type_exec_sec,
-                    req_type_counts=self._req_type_counts,
-                    req_type_pack_sec=self._req_type_pack_sec,
-                    batch_size_counts=self._batch_size_counts,
-                    idle_gaps_count=len(self._idle_gaps),
-                    idle_summary=idle_summary,
-                )
-            )
-            try:
-                if self._lat_counts:
-                    rows = _build_request_latency_summary(
-                        lat_counts=self._lat_counts,
-                        lat_total_sec=self._lat_total_sec,
-                        lat_samples=self._lat_samples,
-                        lat_queue_total_sec=self._lat_queue_total_sec,
-                        lat_queue_samples=self._lat_queue_samples,
-                        lat_in_exec_total_sec=self._lat_in_exec_total_sec,
-                        lat_in_exec_samples=self._lat_in_exec_samples,
-                    )
-                    msg = _request_latency_summary_log_message(rows)
-                    if msg:
-                        logger.debug(msg)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_p95: {e}")
-            try:
-                if self._req_type_exec_sec:
-                    breakdown_rows = _build_exec_breakdown_summary(
-                        req_type_exec_sec=self._req_type_exec_sec,
-                        req_type_host_sec=self._req_type_host_sec,
-                        req_type_gpu_kernel_sec=self._req_type_gpu_kernel_sec,
-                        req_type_gpu_upload_sec=self._req_type_gpu_upload_sec,
-                        req_type_gpu_download_sec=self._req_type_gpu_download_sec,
-                    )
-                    msg = _exec_breakdown_summary_log_message(breakdown_rows)
-                    if msg:
-                        logger.debug(msg)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_p95: {e}")
-            try:
-                transition_rows = _build_idle_transition_summary(
-                    idle_transitions_sec=self._idle_transitions_sec,
-                    idle_transitions_count=self._idle_transitions_count,
-                )
-                msg = _idle_transition_summary_log_message(transition_rows)
-                if msg:
-                    logger.debug(msg)
-            except (ValueError, TypeError, KeyError):
-                pass
-            try:
-                self._maybe_emit_workload_profile(force=True)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_p95: {e}")
-            try:
-                if self._workload_recent_batches:
-                    window = list(self._workload_recent_batches)
-                    _emit_workload_stop_summary(
-                        window,
-                        age_ms_samples=self._workload_age_ms_samples,
-                        units_samples=self._workload_units_samples,
-                        diversity_samples=self._workload_diversity_samples,
-                        queue_depth_samples=self._workload_queue_depth_samples,
-                        mode_counts=self._workload_mode_counts,
-                        events_emitted=int(self._workload_events_emitted),
-                        last_mode=str(self._last_batch_plan_mode),
-                        log_debug=logger.debug,
-                        emit_profile_event_fn=emit_profile_event,
-                    )
-            except (ValueError, TypeError, KeyError, AttributeError):
-                pass
-        if self._workload_profile_enabled and (not self._profile_enabled):
-            try:
-                self._maybe_emit_workload_profile(force=True)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_p95: {e}")
         stop_profiler_settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
         _print_taichi_kernel_profiler(enabled=bool(stop_profiler_settings.print_taichi_kernel_profiler))
-        _report_gpu_profiler(enabled=bool(stop_profiler_settings.report_gpu_profiler))
         logger.debug("[GpuExecutor] Stopped. Processed %s requests.", self._requests_processed)
     def register_worker(self) -> tuple:
         """
@@ -600,39 +290,6 @@ class GpuExecutor:
         )
         self._next_worker_id = int(registered.next_worker_id)
         return registered.as_tuple()
-    def _trace_event(
-        self,
-        *,
-        event: str,
-        wait_sec: float = 0.0,
-        exec_sec: float = 0.0,
-        batch_size: int = 0,
-        types: str = "",
-        planner_mode: str = "",
-        queue_depth_hint: int = -1,
-        pressure_hint: float = 0.0,
-        work_units: float = 0.0,
-        dominant_type: str = "",
-        dominant_share_pct: float = 0.0,
-        diversity_pct: float = 0.0,
-        avg_submit_age_ms: float = 0.0,
-    ) -> None:
-        self._trace.write_event(
-            event=event,
-            in_process=bool(self._in_process_queues),
-            wait_sec=wait_sec,
-            exec_sec=exec_sec,
-            batch_size=batch_size,
-            types=types,
-            planner_mode=planner_mode,
-            queue_depth_hint=queue_depth_hint,
-            pressure_hint=pressure_hint,
-            work_units=work_units,
-            dominant_type=dominant_type,
-            dominant_share_pct=dominant_share_pct,
-            diversity_pct=diversity_pct,
-            avg_submit_age_ms=avg_submit_age_ms,
-        )
     def _maybe_live_report(self) -> None:
         self._live.maybe_report()
     def unregister_worker(self, worker_id: int):
@@ -673,8 +330,7 @@ class GpuExecutor:
             return
         self._write_heartbeat(phase="init_ok", force=True)
         warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
-        warmup_ga = bool(getattr(ENV, "gpu_executor_warmup_ga", False))
-        if warmup_fg or warmup_ga:
+        if warmup_fg:
             try:
                 from .taichi_gem import runtime as ti_runtime
                 lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
@@ -691,19 +347,13 @@ class GpuExecutor:
                         and _warmup_sentinel_is_fresh(
                             sentinel_path=sentinel_path,
                             warmup_fg=bool(warmup_fg),
-                            warmup_ga=bool(warmup_ga),
                         )
                     )
                     if warmup_cached:
                         self._write_heartbeat(phase="warmup_cached", force=True)
                         try:
-                            if warmup_fg:
-                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
-                                _warmup_fg_response_frontier_runtime()
-                            if warmup_ga:
-                                self._write_heartbeat(phase="warmup_ga_live_cached", force=True)
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_live_request_kernels()
+                            self._write_heartbeat(phase="warmup_fg_cached", force=True)
+                            _warmup_fg_response_frontier_runtime()
                         except Exception as e:
                             try:
                                 logger.debug("[GpuExecutor] Cached warmup refresh failed: %s: %s", type(e).__name__, e)
@@ -712,27 +362,15 @@ class GpuExecutor:
                     else:
                         sentinel_error = ""
                         try:
-                            if warmup_fg:
-                                try:
-                                    self._write_heartbeat(phase="warmup_fg", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                _warmup_fg_response_frontier_runtime()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
-                            if warmup_ga:
-                                try:
-                                    self._write_heartbeat(phase="warmup_ga", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_kernels()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
+                            try:
+                                self._write_heartbeat(phase="warmup_fg", force=True)
+                            except Exception as e:
+                                logger.debug(f"gpu_executor:_executor_loop: {e}")
+                            t0 = perf_counter()
+                            _warmup_fg_response_frontier_runtime()
+                            dt_ms = (perf_counter() - t0) * 1000.0
+                            if ENV.perf_timing:
+                                logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
                         except Exception as e:
                             sentinel_error = f"{type(e).__name__}: {e}"
                             try:
@@ -747,26 +385,14 @@ class GpuExecutor:
                                     pid=int(os.getpid()),
                                     warmed_at_ms=int(time.time() * 1000.0),
                                     warmup_fg=bool(warmup_fg),
-                                    warmup_ga=bool(warmup_ga),
                                 )
                                 _write_warmup_sentinel_payload(sentinel_path=sentinel_path, payload=payload)
             except Exception as e:
                 logger.debug(f"gpu_executor:_executor_loop: {e}")
                 try:
-                    if warmup_fg:
-                        _warmup_fg_response_frontier_runtime()
-                    if warmup_ga:
-                        from .taichi_gem.api import ga_operations as ga_ops
-                        ga_ops.warmup_ga_kernels()
+                    _warmup_fg_response_frontier_runtime()
                 except Exception as e:
                     logger.debug(f"gpu_executor:_executor_loop: {e}")
-        warmup_ga_light = _ga_light_warmup_enabled(warmup_ga=bool(warmup_ga), env_flag_fn=env_flag)
-        if warmup_ga_light:
-            try:
-                from .taichi_gem.api import ga_operations as ga_ops
-                ga_ops.warmup_ga_kernels_light()
-            except Exception as e:
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
         self._taichi_ready = True
         self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)
@@ -774,15 +400,10 @@ class GpuExecutor:
             return self._response_delivery.try_put(self._response_queues, req, resp)
         env_refresh_counter = 0
         cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
-        profile_events_enabled = _profile_events_output_enabled(env_get_fn=env_get)
-        trace_enabled = bool(self._trace.has_file or profile_events_enabled)
-        need_batch_summary = bool(self._workload_profile_enabled or trace_enabled)
         live_enabled = bool(self._live.enabled)
         while self._running:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
-            batch_metrics: dict[str, Any] = {}
-            trace_shared_kwargs: dict[str, Any] = {}
             try:
                 if env_refresh_counter == 0:
                     cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
@@ -795,74 +416,20 @@ class GpuExecutor:
                 )
                 batch_wait_ms = int(batch_plan.wait_ms)
                 batch_max = int(batch_plan.max_batch)
-                if self._profile_enabled and self._profile_loop_start_ts is None:
-                    self._profile_loop_start_ts = perf_counter()
                 t_wait0 = perf_counter()
                 batch = self._gather_batch(max_wait_ms=batch_wait_ms, max_batch_size=batch_max)
                 dt_wait = perf_counter() - t_wait0
-                self._wait_sec += dt_wait
                 if live_enabled:
                     self._live.record_wait(float(dt_wait))
-                if need_batch_summary:
-                    self._workload_batch_seq += 1
-                    batch_metrics = summarize_batch(
-                        batch,
-                        plan=batch_plan,
-                        wait_sec=float(dt_wait),
-                        batch_id=int(self._workload_batch_seq),
-                        estimate_work_units_fn=estimate_request_work_units,
-                        coalescable_request_types=COALESCABLE_REQUEST_TYPES,
-                    )
-                    if trace_enabled:
-                        trace_shared_kwargs = _batch_trace_context(batch_metrics)
-                if trace_enabled:
-                    self._trace_event(
-                        event="wait",
-                        wait_sec=float(dt_wait),
-                        batch_size=len(batch or []),
-                        types=str(batch_metrics.get("types", "")),
-                        **trace_shared_kwargs,
-                    )
                 if live_enabled:
                     self._maybe_live_report()
-                if self._profile_enabled:
-                    if float(dt_wait) >= float(self._idle_sample_threshold_sec):
-                        self._idle_gaps.append(float(dt_wait))
-                        next_type = None
-                        for r in batch or []:
-                            if r.request_type == GpuRequestType.SHUTDOWN:
-                                continue
-                            next_type = r.request_type
-                            break
-                        self._idle_transitions_sec[(self._last_work_req_type, next_type)] += float(dt_wait)
-                        self._idle_transitions_count[(self._last_work_req_type, next_type)] += 1
-                    if (
-                        self._profile_first_work_ts is None
-                        and batch
-                        and not any(r.request_type == GpuRequestType.SHUTDOWN for r in batch)
-                    ):
-                        self._profile_first_work_ts = perf_counter()
-                if self._profile_enabled and batch:
-                    bs = len(batch)
-                    self._batch_size_counts[bs] += 1
-                    self._batches_observed += 1
-                    self._batch_size_sum += bs
                 if not batch:
                     self._write_heartbeat(phase="idle")
-                    batch_metrics["exec_sec"] = 0.0
-                    if self._workload_profile_enabled:
-                        self._record_workload_batch(batch_metrics)
                     continue
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
-                    if self._profile_enabled:
-                        self._profile_shutdown_ts = perf_counter()
                     self._write_heartbeat(phase="stopping", batch=batch, force=True)
-                    batch_metrics["exec_sec"] = 0.0
-                    if self._workload_profile_enabled:
-                        self._record_workload_batch(batch_metrics)
                     self._running = False
                     break
-                batch_exec_t0 = perf_counter()
                 self._write_heartbeat(phase="running", batch=batch)
                 grouped_handlers = {
                     GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
@@ -872,22 +439,9 @@ class GpuExecutor:
                 ) -> None:
                     if not requests:
                         return
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
+                    exec_started = perf_counter()
                     responses = list(handler(requests) or [])
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        request_type,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    per_req = dt_exec / max(1, len(requests))
-                    for _ in requests:
-                        self._req_type_counts[request_type] += 1
-                        self._req_type_exec_sec[request_type] += per_req
-                        self._last_work_req_type = request_type
+                    dt_exec = perf_counter() - exec_started
                     response_count = int(len(responses))
                     for idx, req in enumerate(requests):
                         resp = responses[idx] if idx < response_count else None
@@ -897,18 +451,9 @@ class GpuExecutor:
                                 success=False,
                                 error=f"GpuExecutor {request_type.value} batch returned no response (internal error)",
                             )
-                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(requests),
-                            types=f"{request_type.value}:{len(requests)}",
-                            **trace_shared_kwargs,
-                        )
                     if live_enabled:
                         self._live.record_exec(request_type, exec_sec=float(dt_exec), count=len(requests))
                         self._maybe_live_report()
@@ -930,49 +475,24 @@ class GpuExecutor:
                         )
                         continue
                     req = unit.requests[0]
-                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                    exec_start_ns = time.perf_counter_ns()
+                    exec_started = perf_counter()
                     response = self._execute_request(req)
-                    exec_end_ns = time.perf_counter_ns()
-                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                    self._record_exec_breakdown(
-                        req.request_type,
-                        exec_wall_sec=float(dt_exec),
-                        prof_before=prof_before,
-                    )
-                    self._exec_sec += dt_exec
-                    self._req_type_counts[req.request_type] += 1
-                    self._req_type_exec_sec[req.request_type] += dt_exec
-                    self._last_work_req_type = req.request_type
+                    dt_exec = perf_counter() - exec_started
                     if response is None:
                         response = GpuResponse(
                             request_id=req.request_id,
                             success=False,
                             error="GpuExecutor returned no response (internal error)",
                         )
-                    self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                     if _try_put_response(req, response):
                         responded_ids.add(int(req.request_id))
                     self._requests_processed += 1
-                    if trace_enabled:
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=1,
-                            types=f"{req.request_type.value}:1",
-                            **trace_shared_kwargs,
-                        )
                     if live_enabled:
                         self._live.record_exec(req.request_type, exec_sec=float(dt_exec), count=1)
                         self._maybe_live_report()
                     self._ga_owner_turn_streak = 0
                 work_end_ts = perf_counter()
                 self._last_work_end_ts = float(work_end_ts)
-                if self._profile_enabled:
-                    self._profile_last_work_end_ts = float(work_end_ts)
-                batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
-                if self._workload_profile_enabled:
-                    self._record_workload_batch(batch_metrics)
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
                 for req in batch or []:
@@ -993,17 +513,6 @@ class GpuExecutor:
                     traceback.print_exc()
                 except Exception as e:
                     logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
-                try:
-                    if (
-                        self._workload_profile_enabled
-                        and batch_metrics
-                        and float(batch_metrics.get("exec_sec", 0.0) or 0.0) <= 0.0
-                    ):
-                        batch_metrics["exec_sec"] = 0.0
-                        batch_metrics["error"] = str(err)
-                        self._record_workload_batch(batch_metrics)
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    pass
                 self._write_heartbeat(phase="error", batch=batch, note=str(err), force=True)
         self._write_heartbeat(phase="stopped", note=self._last_init_error or "", force=True)
     def _queue_get(self, timeout: float):
@@ -1169,7 +678,7 @@ class GpuExecutor:
             execute_single=self._execute_gpu_native_ga_run,
             execute_chunk=self._execute_gpu_native_ga_run_chunk,
             env_get_fn=env_get,
-            estimate_work_units_fn=estimate_request_work_units,
+            estimate_work_units_fn=_request_work_units,
         )
 
     def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
@@ -1232,28 +741,10 @@ class GpuExecutor:
         return bool(self._taichi_ready)
     @property
     def stats(self) -> dict:
-        profile_stats = None
-        if self._profile_enabled:
-            profile_stats = _build_executor_profile_stats(
-                wait_sec=self._wait_sec,
-                exec_sec=self._exec_sec,
-                batches_observed=self._batches_observed,
-                batch_size_sum=self._batch_size_sum,
-                workload_events_emitted=self._workload_events_emitted,
-                last_batch_plan_mode=self._last_batch_plan_mode,
-                workload_units_samples=self._workload_units_samples,
-                workload_age_ms_samples=self._workload_age_ms_samples,
-                req_type_counts=self._req_type_counts,
-                req_type_host_sec=self._req_type_host_sec,
-                req_type_gpu_kernel_sec=self._req_type_gpu_kernel_sec,
-                req_type_gpu_upload_sec=self._req_type_gpu_upload_sec,
-                req_type_gpu_download_sec=self._req_type_gpu_download_sec,
-            )
-        return _build_executor_stats(
-            requests_processed=self._requests_processed,
-            registered_workers=len(self._response_queues),
-            profile=profile_stats,
-        )
+        return {
+            "requests_processed": int(self._requests_processed),
+            "registered_workers": int(len(self._response_queues)),
+        }
 _executor: Optional[GpuExecutor] = None
 def get_gpu_executor() -> GpuExecutor:
     """Get the global GPU executor instance."""

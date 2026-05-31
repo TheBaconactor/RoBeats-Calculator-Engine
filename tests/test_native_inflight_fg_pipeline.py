@@ -11,8 +11,6 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     InflightGAPipeline,
     NativeFGPipeline,
     NativeFGPipelineSettings,
-    _prewarm_fg_response_support,
-    run_cpu_prewarm_for_song,
     run_fg_job_sync,
     read_native_fg_pipeline_settings,
 )
@@ -38,7 +36,7 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     assert settings.batch_max == 1
     assert settings.prep_workers == 1
     assert settings.ga_credit_budget == 12
-    assert settings.static_prep_max_inflight == 0
+    assert settings.static_prep_max_inflight == 1
     assert settings.db_prefetch_workers == 1
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "9")
@@ -85,7 +83,6 @@ def test_read_native_fg_pipeline_settings_includes_static_prep_and_db_prefetch(m
         None,
         inflight_limit=8,
         ga_credit_budget_cfg=2,
-        cpu_prewarm_lookahead=5,
         default_worker_threads=lambda **_kwargs: 3,
     )
 
@@ -368,80 +365,6 @@ def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
     assert "completed without the exact response frontier plan" in str(excinfo.value.__cause__)
     assert song.runtime.fg.fg_prep_future is None
     assert song.runtime.fg.fg_dynamic_prep_done is False
-
-
-def test_prewarm_fg_response_support_uses_bundle_owned_head_coeffs(tmp_path, monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_inner
-
-    bundle_path = tmp_path / "bundle.npz"
-    bundle_path.write_bytes(b"bundle")
-    bundle = type(
-        "Bundle",
-        (),
-        {
-            "surface_words": np.zeros((4, 8), dtype=np.uint32),
-            "surface_head_coeffs": np.zeros((4, 4), dtype=np.int32),
-            "total_notes": 123,
-        },
-    )()
-
-    def _must_not_recompute_head_coeffs(*_args, **_kwargs):
-        raise AssertionError("FG prewarm must not recompute bundle head coefficients")
-
-    monkeypatch.setattr(response_cache, "_fg_response_disk_cache_path", lambda _key: bundle_path)
-    monkeypatch.setattr(response_cache, "fg_response_frontier_bundle_cache_key", lambda *_args, **_kwargs: ("bundle",))
-    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", lambda *_args, **_kwargs: bundle)
-    monkeypatch.setattr(response_inner, "_precompute_surface_head_coeffs", _must_not_recompute_head_coeffs)
-    monkeypatch.setattr(
-        "gear_optimizer.solver.fg_response_frontier_cache_prebuild.all_response_stat_keys",
-        lambda: ((0, 0),),
-    )
-    monkeypatch.setattr(
-        "gear_optimizer.solver.scoring.stats_scoring.evaluate_stats_score",
-        lambda *_args, **_kwargs: 0,
-    )
-
-    got = _prewarm_fg_response_support(
-        {
-            "metadata": {
-                "Primary Color": "Rush",
-                "Secondary Color": "Flow",
-            }
-        },
-        {"ref": object()},
-    )
-
-    assert got is bundle
-    assert bundle.surface_head_coeffs.shape == (4, 4)
-
-
-def test_run_cpu_prewarm_for_song_publishes_fg_support_before_timeline(monkeypatch):
-    import gear_optimizer.solver.native_inflight_pipeline as stages
-
-    calls: list[str] = []
-
-    monkeypatch.setattr(
-        stages,
-        "_prewarm_fg_response_support",
-        lambda *_args, **_kwargs: calls.append("fg") or "bundle",
-    )
-    monkeypatch.setattr(
-        stages,
-        "_prewarm_timeline_frontier_payload",
-        lambda *_args, **_kwargs: calls.append("timeline"),
-    )
-
-    song = make_native_song(
-        task_key="prewarm-order",
-        song_name="Prewarm Order",
-        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
-        ref_arrays={"Fever Time": np.asarray([0.0], dtype=np.float32)},
-    )
-
-    run_cpu_prewarm_for_song(song)
-
-    assert calls == ["fg", "timeline"]
-    assert song.runtime.fg.fg_response_scoring_bundle == "bundle"
 
 
 def test_native_fg_pipeline_static_prep_budget_reserves_dynamic_prep_workers():

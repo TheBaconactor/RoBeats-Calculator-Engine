@@ -72,7 +72,6 @@ def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shap
         active_song_lanes=4,
         pending_tasks_count=5,
         prep_inflight_count=6,
-        cpu_prewarm_inflight_count=7,
         decode_inflight_count=8,
         pending_fg_count=9,
         fg_prep_inflight_count=10,
@@ -87,7 +86,7 @@ def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shap
     assert snapshot["ready_ga_count"] == 2
     assert snapshot["ready_fg_count"] == 3
     assert snapshot["active_song_lanes"] == 4
-    assert snapshot["backlog_count"] == 47
+    assert snapshot["backlog_count"] == 40
     assert snapshot["gpu_idle"] == 1
     assert snapshot["idle_sec"] == 3.0
     assert snapshot["lane_fill_hold_count"] == 11

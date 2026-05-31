@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from gear_optimizer.helpers.song_helpers.persistence import RECORD_UPDATE_SCORE_EPSILON
+from gear_optimizer.helpers.song_helpers.persistence_records import RECORD_UPDATE_SCORE_EPSILON
 from gear_optimizer.ui.progress import ProgressUI as _ProgressUI
 
 logger = logging.getLogger(__name__)

@@ -53,7 +53,6 @@ from gear_optimizer.solver.native_inflight_pipeline import GADecodeQueue, Inflig
 from gear_optimizer.solver.native_inflight_lifecycle import (
     BubbleTracker,
     CachedRuntimeSignal,
-    CpuPrewarmQueue,
     GpuAbortRequester,
     InflightBundleTracker,
     PostSender,
@@ -71,7 +70,6 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     decode_ga_payload_sync,
     prepare_fg_static_sync,
     prepare_fg_job_sync,
-    run_cpu_prewarm_for_song,
 )
 logger = logging.getLogger(__name__)
 def run_native_inflight_song_pipeline(
@@ -128,19 +126,12 @@ def run_native_inflight_song_pipeline(
     ga_inflight = ga_pipeline.inflight
     prep_queue = SongPrepQueue(max_workers=int(icfg.prep_workers), prep_fn=prepare_native_song)
     prep_inflight = prep_queue.inflight
-    cpu_prewarm_queue = CpuPrewarmQueue(
-        max_workers=int(icfg.cpu_prewarm_workers),
-        lookahead=int(icfg.cpu_prewarm_lookahead),
-        prewarm_fn=run_cpu_prewarm_for_song,
-    )
-    cpu_prewarm_inflight = cpu_prewarm_queue.inflight
     decode_queue = GADecodeQueue(max_workers=int(icfg.decode_workers))
     decode_inflight = decode_queue.inflight
     fg_pipeline_settings = native_fg_pipeline.read_native_fg_pipeline_settings(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
         ga_credit_budget_cfg=int(icfg.fg_ga_credit_budget_cfg),
-        cpu_prewarm_lookahead=int(icfg.cpu_prewarm_lookahead),
         default_worker_threads=default_worker_threads,
     )
     fg_pipeline = native_fg_pipeline.NativeFGPipeline(fg_pipeline_settings)
@@ -181,26 +172,6 @@ def run_native_inflight_song_pipeline(
             external_song_groups=(ga_inflight, prepared, decode_inflight),
             register_future=completion_tracker.register,
         )
-    def _submit_cpu_prewarm_backlog() -> int:
-        return cpu_prewarm_queue.submit_prepared_backlog(
-            prepared,
-            register_future=completion_tracker.register,
-            extra_submit=_submit_fg_static_prewarm,
-        )
-    def _finish_cpu_prewarm_jobs() -> int:
-        finished = 0
-        for completion in cpu_prewarm_queue.finish_completed():
-            finished += 1
-            if completion.error is not None:
-                logger.debug(f"native_inflight_orchestrator:_finish_cpu_prewarm_jobs: {completion.error}")
-                continue
-            stage_profiler.record(
-                "cpu_prewarm",
-                time.perf_counter() - float(completion.submit_t0),
-                cpu_seconds=None,
-                song=completion.label,
-            )
-        return int(finished)
     def _current_ga_queue_limit() -> int:
         return int(
             continuous_ga_warm_queue_limit(
@@ -236,7 +207,6 @@ def run_native_inflight_song_pipeline(
         stage_profiler=stage_profiler,
         memory_resume_tracker=memory_resume_tracker,
     )
-    _submit_cpu_prewarm_backlog()
     def _emit_deferred_post_payload(song: NativeSong) -> None:
         emit_deferred_post_payload(
             song,
@@ -254,10 +224,8 @@ def run_native_inflight_song_pipeline(
         last_stall_report = last_progress
         last_heartbeat = last_progress
         last_throughput = last_progress
-        last_stage_emit = last_progress
         heartbeat_sec = float(icfg.loop_observer.heartbeat_sec)
         throughput_sec = float(icfg.loop_observer.throughput_sec)
-        stage_emit_sec = float(icfg.loop_observer.stage_profile_emit_sec)
         event_wait_timeout_s = float(read_inflight_event_wait_timeout_s())
         event_wait_gpu_cap_s = float(read_inflight_event_wait_gpu_cap_s())
         event_wait_short_spin_s = float(read_inflight_event_wait_short_spin_s())
@@ -272,7 +240,6 @@ def run_native_inflight_song_pipeline(
                 active_song_lanes=_active_song_lane_count(),
                 pending_tasks_count=len(pending_tasks),
                 prep_inflight_count=len(prep_inflight),
-                cpu_prewarm_inflight_count=len(cpu_prewarm_inflight),
                 decode_inflight_count=len(decode_inflight),
                 pending_fg_count=len(pending_fg),
                 fg_prep_inflight_count=len(fg_prep_inflight),
@@ -356,16 +323,8 @@ def run_native_inflight_song_pipeline(
                             "eta_sec": float(eta_s),
                         },
                     )
-            if stage_emit_sec > 0 and stage_profiler.enabled and (now - last_stage_emit) >= float(stage_emit_sec):
-                last_stage_emit = now
-                try:
-                    stage_profiler.emit()
-                except Exception as e:
-                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
             did_work = False
             blocked_on_slot_acquire = False
-            if _finish_cpu_prewarm_jobs() > 0:
-                did_work = True
             for prep_completion in prep_queue.pop_completed():
                 task = prep_completion.task
                 logical_task = prep_completion.logical_task
@@ -394,7 +353,6 @@ def run_native_inflight_song_pipeline(
                         best_fg=int(getattr(prepared_song.runtime.db, "db_best_fg_score", 0) or 0),
                         baseline_valid=bool(getattr(prepared_song.runtime.db, "db_baseline_valid", True)),
                     )
-                    _submit_cpu_prewarm_backlog()
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
                         continue
@@ -552,8 +510,6 @@ def run_native_inflight_song_pipeline(
                     )
                     did_work = True
                     fg_pipeline.note_ga_submit()
-                    if _submit_cpu_prewarm_backlog() > 0:
-                        did_work = True
                     if _submit_fg_static_prewarm(song):
                         did_work = True
                     continue
@@ -1021,7 +977,6 @@ def run_native_inflight_song_pipeline(
                             "[InFlight][HB] "
                             f"idle={heartbeat_idle_s:.1f}s "
                             f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
-                            f"cpu_prewarm={len(cpu_prewarm_inflight)} "
                             f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
                             f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} fg_futures={len(fg_futures)} "
                             f"lanes={int(heartbeat_bubble.get('active_song_lanes', 0) or 0)}/{int(icfg.target_song_lanes)} "
@@ -1048,7 +1003,6 @@ def run_native_inflight_song_pipeline(
                             "pending_tasks": int(len(pending_tasks)),
                             "prepared": int(len(prepared)),
                             "prep_inflight": int(len(prep_inflight)),
-                            "cpu_prewarm_inflight": int(len(cpu_prewarm_inflight)),
                             "ga_inflight": int(len(ga_inflight)),
                             "decode_inflight": int(len(decode_inflight)),
                             "pending_fg": int(len(pending_fg)),
@@ -1070,7 +1024,6 @@ def run_native_inflight_song_pipeline(
                     (not ga_inflight)
                     and (not decode_inflight)
                     and (not prep_inflight)
-                    and (not cpu_prewarm_inflight)
                     and (not fg_prep_inflight)
                     and (not fg_futures)
                 )
@@ -1090,12 +1043,11 @@ def run_native_inflight_song_pipeline(
                         fg_inflight = None
                     logger.debug(
                         "[InFlight][STALL] pending=%s prepared=%s prep_inflight=%s ga_inflight=%s "
-                        "cpu_prewarm=%s decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s fg_done=%s",
+                        "decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s fg_done=%s",
                         len(pending_tasks),
                         len(prepared),
                         len(prep_inflight),
                         len(ga_inflight),
-                        len(cpu_prewarm_inflight),
                         len(decode_inflight),
                         len(pending_fg),
                         len(fg_prep_inflight),
@@ -1109,7 +1061,6 @@ def run_native_inflight_song_pipeline(
                             "pending_tasks": int(len(pending_tasks)),
                             "prepared": int(len(prepared)),
                             "prep_inflight": int(len(prep_inflight)),
-                            "cpu_prewarm_inflight": int(len(cpu_prewarm_inflight)),
                             "ga_inflight": int(len(ga_inflight)),
                             "decode_inflight": int(len(decode_inflight)),
                             "pending_fg": int(len(pending_fg)),
@@ -1129,7 +1080,6 @@ def run_native_inflight_song_pipeline(
                 if has_waitable_work(
                     ga_inflight,
                     prep_inflight,
-                    cpu_prewarm_inflight,
                     decode_inflight,
                     fg_prep_inflight,
                     fg_futures,
@@ -1139,7 +1089,6 @@ def run_native_inflight_song_pipeline(
                     has_gpu = bool(ga_inflight) or bool(fg_futures)
                     has_cpu = (
                         bool(prep_inflight)
-                        or bool(cpu_prewarm_inflight)
                         or bool(decode_inflight)
                         or bool(fg_prep_inflight)
                     )
@@ -1201,7 +1150,6 @@ def run_native_inflight_song_pipeline(
         shutdown_native_inflight_resources(
             fg_pipeline=fg_pipeline,
             decode_queue=decode_queue,
-            cpu_prewarm_queue=cpu_prewarm_queue,
             prep_queue=prep_queue,
             post_sender=post_sender,
             gpu_client=gpu_client,

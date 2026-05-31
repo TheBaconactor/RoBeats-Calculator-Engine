@@ -1,4 +1,5 @@
-from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, build_persistence_entries, make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload, make_build_details_fn
 
 
 def test_build_db_payload_accepts_string_items():

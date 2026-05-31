@@ -49,7 +49,6 @@ from gear_optimizer.data.csv_parser import (
 )
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FG_CACHE
-from gear_optimizer.solver.cpu_work_manager import CpuWorkManager
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.song_queue import (
@@ -122,7 +121,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
-        self._cpu_work_manager = CpuWorkManager()
         self._runtime_settings: AppRuntimeSettings | None = None
     def setup_logging(self) -> None:
         try:
@@ -269,8 +267,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             "DEBUG_PROFILE",
             "METAFINDER_DEBUG_PROFILE",
             "PERF_TIMING",
-            "GPU_EXECUTOR_PROFILE",
-            "GPU_PROFILER",
             "GPU_SERVICE_PROFILE",
             "GPU_SERVICE_PROFILE_PRINT",
             "GPU_SYNC_FOR_TIMING",
@@ -286,7 +282,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             if env_flag(key):
                 return True
         path_keys = (
-            "GPU_EXECUTOR_TRACE_PATH",
             "INFLIGHT_STAGE_PROFILE_PATH",
             "METAFINDER_PROFILE_EVENTS_PATH",
             "PROFILE_EVENTS_PATH",
@@ -406,13 +401,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 component="app",
                 event="queue_built",
                 metrics={"queued_songs": int(queued_songs)},
-            )
-            self._cpu_work_manager.run_startup(
-                cfg=cfg,
-                song_queue=song_queue,
-                ref_arrays=ref_arrays,
-                data_root=PATHS.data_dir,
-                announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
             )
             self._configure_execution_and_prewarm(cfg)
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)

@@ -26,15 +26,12 @@ from gear_optimizer.solver.windows_timer import (
 
 logger = logging.getLogger(__name__)
 WARMUP_SENTINEL_SCHEMA = 3
-GA_WARMUP_PROFILE = "v4_live_request_setup_refresh"
 
 
 @dataclass(frozen=True)
 class ExecutorStartSettings:
-    idle_sample_threshold_sec: float
     live_enabled: bool
     live_interval_sec: float
-    trace_path: str
     heartbeat_path: Path
     heartbeat_interval_sec: float
     enable_high_res_timer: bool
@@ -43,7 +40,6 @@ class ExecutorStartSettings:
 @dataclass(frozen=True)
 class ExecutorStopProfilerSettings:
     print_taichi_kernel_profiler: bool
-    report_gpu_profiler: bool
 
 
 @dataclass(frozen=True)
@@ -67,11 +63,6 @@ def load_executor_start_settings(
     system_timer_override_allowed_fn: Callable[[], bool] | None = None,
     default_heartbeat_path_fn: Callable[[], Path] = default_executor_heartbeat_path,
 ) -> ExecutorStartSettings:
-    try:
-        idle_ms = float(env_get_fn("GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS", "1.0"))
-    except (ValueError, TypeError):
-        idle_ms = 1.0
-
     try:
         live_interval_sec = float(env_get_fn("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
     except (ValueError, TypeError):
@@ -106,10 +97,8 @@ def load_executor_start_settings(
         enable_high_res_timer = (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4)
 
     return ExecutorStartSettings(
-        idle_sample_threshold_sec=max(0.0, float(idle_ms) / 1000.0),
         live_enabled=bool(env_flag_fn("GPU_EXECUTOR_LIVE")),
         live_interval_sec=float(live_interval_sec),
-        trace_path=str(env_get_fn("GPU_EXECUTOR_TRACE_PATH", "") or "").strip(),
         heartbeat_path=Path(heartbeat_raw) if heartbeat_raw else default_heartbeat_path_fn(),
         heartbeat_interval_sec=float(heartbeat_interval_sec),
         enable_high_res_timer=bool(enable_high_res_timer),
@@ -123,19 +112,7 @@ def load_executor_stop_profiler_settings(
 ) -> ExecutorStopProfilerSettings:
     return ExecutorStopProfilerSettings(
         print_taichi_kernel_profiler=bool(env_flag_fn("TAICHI_KERNEL_PROFILER_PRINT")),
-        report_gpu_profiler=bool(getattr(env_config, "gpu_profiler", False)),
     )
-
-
-def ga_light_warmup_enabled(
-    *,
-    warmup_ga: bool,
-    env_flag_fn: Callable[..., bool] = env_flag,
-) -> bool:
-    try:
-        return bool(warmup_ga) and bool(env_flag_fn("GPU_NATIVE_GA_PHASE_TIMING", "0"))
-    except (ValueError, TypeError):
-        return False
 
 
 def executor_auto_stop_enabled(env_flag_fn: Callable[..., bool] = env_flag) -> bool:
@@ -255,7 +232,6 @@ def build_warmup_sentinel_payload(
     pid: int,
     warmed_at_ms: int,
     warmup_fg: bool,
-    warmup_ga: bool,
 ) -> dict[str, Any]:
     return {
         "schema": int(WARMUP_SENTINEL_SCHEMA),
@@ -264,8 +240,6 @@ def build_warmup_sentinel_payload(
         "pid": int(pid),
         "warmed_at": int(warmed_at_ms),
         "warmup_fg": bool(warmup_fg),
-        "warmup_ga": bool(warmup_ga),
-        "ga_warmup_profile": str(GA_WARMUP_PROFILE),
     }
 
 
@@ -299,7 +273,6 @@ def warmup_sentinel_is_fresh(
     *,
     sentinel_path: Path,
     warmup_fg: bool,
-    warmup_ga: bool,
 ) -> bool:
     try:
         payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
@@ -319,10 +292,6 @@ def warmup_sentinel_is_fresh(
         return False
     if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
         return False
-    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
-        return False
-    if str(payload.get("ga_warmup_profile", "") or "") != GA_WARMUP_PROFILE:
-        return False
     return True
 
 
@@ -340,25 +309,6 @@ def print_taichi_kernel_profiler(
         return True
     except Exception as e:
         logger.debug(f"gpu_executor_lifecycle:print_taichi_kernel_profiler: {e}")
-        return False
-
-
-def report_gpu_profiler(
-    *,
-    enabled: bool,
-    get_gpu_profiler_fn: Callable[[], Any] | None = None,
-) -> bool:
-    if not bool(enabled):
-        return False
-    try:
-        if get_gpu_profiler_fn is None:
-            from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
-
-            get_gpu_profiler_fn = get_gpu_profiler
-        get_gpu_profiler_fn().report(verbose=True)
-        return True
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:report_gpu_profiler: {e}")
         return False
 
 

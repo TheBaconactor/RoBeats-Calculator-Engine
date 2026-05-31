@@ -17,7 +17,7 @@ from gear_optimizer.data.database import (
 )
 from gear_optimizer.data.migrations import _table_exists
 from gear_optimizer.helpers.song_helpers.fg_config import extract_fg_config, has_valid_fg_config
-from gear_optimizer.helpers.song_helpers.force_greats.entry_resolution import entry_base_score, entry_fg_score
+from gear_optimizer.helpers.song_helpers.force_greats.entry_resolution import entry_base_score
 
 
 CATEGORY_A_MISSING_FG = [

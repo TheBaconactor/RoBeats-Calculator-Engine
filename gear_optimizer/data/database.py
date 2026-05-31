@@ -436,12 +436,11 @@ def _ensure_stats_in_details(
     Defers to the unified stats gateway first; falls back to heavy reconstruction
     from gear/mini names only when the gateway returns without Stats.
     """
-    from ..helpers.song_helpers.stats_gateway import ensure_stats
-    gateway_result = ensure_stats(details)
-    if isinstance(gateway_result, dict) and gateway_result.get("Stats"):
-        return gateway_result
     if not isinstance(details, dict):
         details = {}
+    stats_obj = details.get("Stats")
+    if isinstance(stats_obj, dict) and stats_obj:
+        return details
     warn_fallback(
         "db.ensure_stats",
         "details missing Stats, reconstructing stats for persistence",

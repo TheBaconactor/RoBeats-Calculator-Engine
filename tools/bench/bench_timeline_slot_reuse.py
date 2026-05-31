@@ -65,17 +65,9 @@ def _make_calc_song(song_id: str, *, n_notes: int) -> dict:
 
 def _run_case(case: _Case, *, songs: dict[str, dict], ref_arrays: dict, iters: int) -> tuple[float, int]:
     import taichi as ti
-    from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu, reset_timeline_state
 
-    prof = get_gpu_profiler()
-    prof.enable()
-
     reset_timeline_state()
-    try:
-        start_upload = int(getattr(prof, "_total_upload_bytes", 0) or 0)
-    except Exception:
-        start_upload = 0
 
     t0 = time.perf_counter()
     for _ in range(int(iters)):
@@ -84,12 +76,7 @@ def _run_case(case: _Case, *, songs: dict[str, dict], ref_arrays: dict, iters: i
     ti.sync()
     t1 = time.perf_counter()
 
-    try:
-        end_upload = int(getattr(prof, "_total_upload_bytes", 0) or 0)
-    except Exception:
-        end_upload = start_upload
-
-    return float(t1 - t0), int(max(0, end_upload - start_upload))
+    return float(t1 - t0), 0
 
 
 def main() -> int:

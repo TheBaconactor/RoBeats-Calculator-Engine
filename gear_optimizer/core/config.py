@@ -270,10 +270,6 @@ class GASettings:
     immigrant_rate: float = 0.0
     elite_count: int = GA_ELITISM
     novelty_repair_attempts: int = 2
-    convergence_trace: bool = False
-    convergence_trace_every: int = 1
-    convergence_trace_out_dir: str = "artifacts/ga_trace"
-    convergence_trace_song_filter: str = ""
     search_depth: int = 125
     multi_start: int = GA_MULTI_RUNS_DEFAULT
     @classmethod
@@ -306,16 +302,6 @@ class GASettings:
             clamp_min=0,
             clamp_max=4,
         )
-        convergence_trace = cfg_get_bool(cfg, "IterationEngine", "GAConvergenceTrace", False)
-        convergence_trace_every = cfg_get_int(cfg, "IterationEngine", "GAConvergenceTraceEvery", 1, clamp_min=1)
-        convergence_trace_out_dir = cfg_get(
-            cfg,
-            "IterationEngine",
-            "GAConvergenceTraceOutDir",
-            str,
-            "artifacts/ga_trace",
-        )
-        convergence_trace_song_filter = cfg_get(cfg, "IterationEngine", "GAConvergenceTraceSongFilter", str, "")
         search_depth = cfg_get_int(
             cfg,
             "IterationEngine",
@@ -336,10 +322,6 @@ class GASettings:
             immigrant_rate=float(immigrant_rate),
             elite_count=int(elite_count),
             novelty_repair_attempts=int(novelty_repair_attempts),
-            convergence_trace=bool(convergence_trace),
-            convergence_trace_every=int(convergence_trace_every),
-            convergence_trace_out_dir=str(convergence_trace_out_dir),
-            convergence_trace_song_filter=str(convergence_trace_song_filter),
             search_depth=int(search_depth),
             multi_start=int(multi_start),
         )

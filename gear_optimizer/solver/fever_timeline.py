@@ -288,8 +288,8 @@ def calculate_force_greats_timeline_indices(
     - count_body_fever / count_body_normal
     - per-section start index + forced greats + fill-penalty notes + skip_wasted
 
-    Behavior is controlled by flags to preserve existing semantics for
-    evaluate_force_greats*() clamping of base/forced note counts.
+    Behavior is controlled by flags to preserve exact FG replay clamping of
+    base/forced note counts.
     """
     # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
     non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE

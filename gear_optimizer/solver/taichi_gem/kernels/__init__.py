@@ -70,28 +70,17 @@ from .kernels_helpers import (
 
 # Import GA kernels
 from .kernels_ga import (
-    ga_seed_rng_kernel,
     ga_seed_rng_runs_kernel,
-    ga_load_initial_population_kernel,
     ga_load_initial_populations_batch_kernel,
     ga_generate_initial_populations_kernel,
     ga_upload_item_stats_and_slots_kernel,
-    ga_copy_population_indices_from_ndarray_kernel,
     ga_build_exact_eval_reuse_map_kernel,
     ga_build_exact_eval_reuse_map_from_base_stats_kernel,
-    ga_insert_base_candidate_cache_upload_rows_kernel,
-    ga_apply_base_candidate_cache_kernel,
-    ga_insert_base_candidate_cache_results_kernel,
     ga_propagate_exact_eval_reuse_base_stats_kernel,
     ga_propagate_exact_eval_reuse_chunk_best_kernel,
-    ga_swap_populations_kernel,
-    ga_copy_elites_kernel,
-    ga_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
     ga_aggregate_genome_stats_kernel,
-    ga_copy_scores_kernel,
     # FUSED kernels
     ga_aggregate_and_init_best_kernel,
-    ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
     ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
     ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
     ga_swap_population_kernel,  # FUSED: swap
@@ -110,34 +99,18 @@ from .kernels_solvers_batch import (
 # Import GA evaluation & reduction kernels
 from .ga_eval import (
     ga_refresh_scores_and_update_runs_best_kernel,
-    ga_write_best_results_from_key_kernel,
-    ga_write_best_results_and_update_runs_best_kernel,
-    # GPU-side global best tracking
-    ga_init_global_best_kernel,
-    ga_pack_global_best_kernel,
-    ga_update_global_best_kernel,
-    ga_pack_and_store_run_payload_kernel,
     ga_pack_and_store_run_payload_segmented_kernel,
     ga_pack_fg_candidates_table_segmented_kernel,
-    ga_pack_run_payload_kernel,
-    ga_copy_run_payload_to_download_staging_kernel,
-    ga_copy_runs_payload_to_download_staging_kernel,
     ga_copy_fg_candidates_table_to_download_staging_kernel,
     ga_select_top_base_fg_candidate_coords_kernel,
     ga_copy_fg_selected_payload_to_download_staging_kernel,
     ga_init_runs_best_kernel,
     ga_update_runs_best_kernel,
-    ga_store_runs_payload_snapshot_segmented_kernel,
-    # GPU-side island elitism
-    ga_find_island_elites_kernel,
     # GPU-side island migration
-    ga_island_migration_kernel,
     ga_island_migration_runs_kernel,
     # Exact GA evaluation
     ga_finalize_warmstart_lane_best_kernel,
     ga_find_best_combo_warmstart_kernel,
-    # FUSED kernels
-    ga_write_best_and_update_global_kernel,
 )
 
 # Import timeline kernel
@@ -191,32 +164,20 @@ __all__ = [
     "lookup_ref_ff",
     "_xorshift32",
     # GA kernels
-    "ga_seed_rng_kernel",
     "ga_seed_rng_runs_kernel",
-    "ga_load_initial_population_kernel",
     "ga_load_initial_populations_batch_kernel",
     "ga_generate_initial_populations_kernel",
     "ga_upload_item_stats_and_slots_kernel",
-    "ga_copy_population_indices_from_ndarray_kernel",
     "ga_build_exact_eval_reuse_map_kernel",
     "ga_build_exact_eval_reuse_map_from_base_stats_kernel",
-    "ga_insert_base_candidate_cache_upload_rows_kernel",
-    "ga_apply_base_candidate_cache_kernel",
-    "ga_insert_base_candidate_cache_results_kernel",
     "ga_propagate_exact_eval_reuse_base_stats_kernel",
     "ga_propagate_exact_eval_reuse_chunk_best_kernel",
-    "ga_swap_populations_kernel",
-    "ga_copy_elites_kernel",
-    "ga_copy_island_elites_kernel",
     "ga_aggregate_genome_stats_kernel",
-    "ga_copy_scores_kernel",
     # FUSED GA kernels
     "ga_aggregate_and_init_best_kernel",
-    "ga_next_generation_full_kernel",
     "ga_next_generation_full_runs_kernel",
     "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     "ga_swap_population_kernel",
-    "ga_write_best_and_update_global_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
@@ -227,29 +188,15 @@ __all__ = [
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "ga_refresh_scores_and_update_runs_best_kernel",
-    "ga_write_best_results_from_key_kernel",
-    "ga_write_best_results_and_update_runs_best_kernel",
-    # GPU-side global best tracking
-    "ga_init_global_best_kernel",
-    "ga_pack_global_best_kernel",
-    "ga_update_global_best_kernel",
-    "ga_pack_and_store_run_payload_kernel",
     "ga_pack_and_store_run_payload_segmented_kernel",
     "ga_pack_fg_candidates_table_segmented_kernel",
-    "ga_pack_run_payload_kernel",
-    "ga_copy_run_payload_to_download_staging_kernel",
-    "ga_copy_runs_payload_to_download_staging_kernel",
     "ga_copy_fg_candidates_table_to_download_staging_kernel",
     "ga_select_top_base_fg_candidate_coords_kernel",
     "ga_copy_fg_selected_payload_to_download_staging_kernel",
     "ga_init_runs_best_kernel",
     "ga_update_runs_best_kernel",
-    "ga_store_runs_payload_snapshot_segmented_kernel",
     # GPU-side island migration
-    "ga_island_migration_kernel",
     "ga_island_migration_runs_kernel",
-    # GPU-side island elitism
-    "ga_find_island_elites_kernel",
     # Exact GA evaluation
     "ga_find_best_combo_warmstart_kernel",
     "ga_finalize_warmstart_lane_best_kernel",

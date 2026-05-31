@@ -19,7 +19,6 @@ from gear_optimizer.core.env_config import env_flag
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
-from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
     build_timeline_frontier_grid_payload,
@@ -35,7 +34,6 @@ from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_
 from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
-_profiler = get_gpu_profiler()
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
@@ -1039,12 +1037,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     total_notes = int(ctx["total_notes"])
 
     # Upload only the used prefix (avoid padding to MAX_SONG_NOTES).
-    if _profiler.enabled:
-        _t_ts = time.perf_counter()
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
-        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
-    else:
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
+    _upload_song_timestamps_kernel(int(total_notes), timestamps)
 
     group_count = 0
     note_group_idx = None
@@ -1066,33 +1059,14 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if total_notes > 0 and group_count <= 0:
         raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
 
-    if _profiler.enabled:
-        _t_groups = time.perf_counter()
-        _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
-        _upload_song_groups_kernel(
-            int(group_count),
-            group_starts,
-            group_base_t_ms,
-            group_low_ms,
-            group_high_ms,
-        )
-        upload_bytes = int(
-            note_group_idx.nbytes
-            + group_starts.nbytes
-            + group_base_t_ms.nbytes
-            + group_low_ms.nbytes
-            + group_high_ms.nbytes
-        )
-        _profiler.record_upload(time.perf_counter() - _t_groups, bytes_count=upload_bytes)
-    else:
-        _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
-        _upload_song_groups_kernel(
-            int(group_count),
-            group_starts,
-            group_base_t_ms,
-            group_low_ms,
-            group_high_ms,
-        )
+    _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
+    _upload_song_groups_kernel(
+        int(group_count),
+        group_starts,
+        group_base_t_ms,
+        group_low_ms,
+        group_high_ms,
+    )
 
     # Extract song metadata
     long_notes = int(ctx["long_notes"])
@@ -1141,8 +1115,6 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         song_slot_i,
         source_slot_i=payload_slot_i,
     )
-    if _profiler.enabled:
-        _profiler.record_upload(time.perf_counter() - t_merge, bytes_count=int(upload_bytes))
     _emit_timeline_phase(
         phase="frontier_field_upload",
         start=t_merge,

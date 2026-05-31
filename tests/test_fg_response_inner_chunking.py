@@ -4,7 +4,7 @@ import numpy as np
 
 
 def test_response_surface_head_coeffs_match_bruteforce():
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     surface_words = np.asarray(
         [
@@ -32,7 +32,7 @@ def test_response_surface_head_coeffs_match_bruteforce():
 
 
 def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     surface_words = np.asarray(
         [
@@ -62,7 +62,7 @@ def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch
 
 
 def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispatch_exceeds_caps(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     batch_calls: list[dict[str, int]] = []
     group_calls: list[dict[str, int]] = []
@@ -184,7 +184,7 @@ def test_response_inner_group_scoring_uses_surface_chunks_when_whole_group_dispa
 
 
 def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     group_calls: list[int] = []
     batch_calls: list[int] = []
@@ -263,7 +263,7 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
 
 
 def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     group_calls: list[int] = []
     batch_calls: list[int] = []
@@ -340,7 +340,7 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
 
 
 def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     batch_calls: list[int] = []
 
@@ -401,7 +401,7 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
 
 
 def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     seen_allow_pp: list[bool] = []
 
@@ -456,7 +456,7 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
 
 
 def test_response_inner_combo_estimator_reuses_duplicate_group_meta(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     seen_inputs: list[tuple[int, int, int, int, bool]] = []
 
@@ -486,7 +486,7 @@ def test_response_inner_combo_estimator_reuses_duplicate_group_meta(monkeypatch)
 
 def test_response_inner_combo_count_matches_bruteforce():
     from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_SCALE_NORMAL, MAX_STAT_INDEX
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     def brute_combo_count(*, residual_budget: int, cur_pp: int, cur_cm: int, cur_fm: int, allow_pp: bool) -> int:
         residual = max(0, int(residual_budget))

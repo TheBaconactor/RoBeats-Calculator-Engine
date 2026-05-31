@@ -54,7 +54,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 
     song = make_native_song(
         fg_prep_future=None,
-        fg_response_scoring_bundle="prewarmed-scoring-bundle",
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
         loadout_entries={},
         meta_primary_color="Rush",

@@ -17,7 +17,7 @@ Usage:
 
 from dataclasses import dataclass
 
-from .parsing import env_flag, env_float, env_get, env_int, env_str
+from .parsing import env_flag, env_float, env_int, env_str
 
 
 @dataclass(frozen=True)
@@ -30,37 +30,21 @@ class EnvConfig:
     easy to see all available environment variables in one place.
     """
 
-    # Master debug/profiling gate
-    debug_profile: bool  # DEBUG_PROFILE / METAFINDER_DEBUG_PROFILE: enable profiling/instrumentation knobs
-
     # GPU Performance & Timing
     gpu_sync_for_timing: bool  # GPU_SYNC_FOR_TIMING: Force GPU sync for accurate timing
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
-    gpu_executor_profile: bool  # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
     gpu_executor_warmup_fg: bool  # GPU_EXECUTOR_WARMUP_FG: Pre-warm FG Taichi kernels at executor startup
-    gpu_executor_warmup_ga: bool  # GPU_EXECUTOR_WARMUP_GA: Pre-warm GA Taichi kernels at executor startup
-    gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
     gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
     gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
-    gpu_strict: bool  # GPU_STRICT: Fail fast on any CPU fallback
 
     # General Performance
     perf_timing: bool  # PERF_TIMING (gated): Enable performance timing globally
     perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by perf print sites
 
-    # Genetic Algorithm
-    ga_seed: str | None  # GA_SEED: Seed for genetic algorithm RNG
-
-    # ForceGreats
-    fg_search_radius: int  # FG search radius policy: hard-coded full-window (-1)
-
     # JIT / profiling / memory helpers
     numba_cache_dir: str | None  # NUMBA_CACHE_DIR
     memory_guard_write_every_n: int  # MEMORY_GUARD_WRITE_EVERY_N
     memory_guard_write_every_sec: float  # MEMORY_GUARD_WRITE_EVERY_SEC
-    profile_events_enabled: bool  # METAFINDER_PROFILE_EVENTS
-    profile_events_path: str  # METAFINDER_PROFILE_EVENTS_PATH / PROFILE_EVENTS_PATH
-    profile_run_id: str  # METAFINDER_PROFILE_RUN_ID / PROFILE_RUN_ID
 
     # Console output / progress
     output_enabled: bool  # METAFINDER_OUTPUT / METAFINDER_VERBOSE: enable verbose console output
@@ -89,35 +73,22 @@ class EnvConfig:
         progress_interval_sec = env_float("METAFINDER_PROGRESS_INTERVAL", 0.2)
         progress_bar_width = env_int("METAFINDER_PROGRESS_WIDTH", 24)
         return cls(
-            debug_profile=debug_profile,
             # GPU Performance & Timing
             gpu_sync_for_timing=debug_profile and env_flag("GPU_SYNC_FOR_TIMING"),
             gpu_force_sync=debug_profile and env_flag("GPU_FORCE_SYNC"),
-            gpu_executor_profile=debug_profile and env_flag("GPU_EXECUTOR_PROFILE"),
             gpu_executor_warmup_fg=env_flag("GPU_EXECUTOR_WARMUP_FG", "1"),
-            gpu_executor_warmup_ga=env_flag("GPU_EXECUTOR_WARMUP_GA", "1"),
-            gpu_profiler=debug_profile and env_flag("GPU_PROFILER"),
             gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
             gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
-            gpu_strict=env_flag("GPU_STRICT", "1"),
             # General Performance
             perf_timing=debug_profile and perf_timing_unconditional,
             perf_timing_unconditional=perf_timing_unconditional,
-            # Genetic Algorithm
-            ga_seed=env_get("GA_SEED"),
-            # ForceGreats
-            fg_search_radius=-1,
             # JIT / profiling / memory helpers
             numba_cache_dir=env_str("NUMBA_CACHE_DIR") or None,
             memory_guard_write_every_n=max(1, env_int("MEMORY_GUARD_WRITE_EVERY_N", 1)),
             memory_guard_write_every_sec=max(0.0, env_float("MEMORY_GUARD_WRITE_EVERY_SEC", 0.0)),
-            profile_events_path=env_str("METAFINDER_PROFILE_EVENTS_PATH") or env_str("PROFILE_EVENTS_PATH"),
-            profile_events_enabled=env_flag("METAFINDER_PROFILE_EVENTS")
-            or bool(env_str("METAFINDER_PROFILE_EVENTS_PATH") or env_str("PROFILE_EVENTS_PATH")),
-            profile_run_id=env_str("METAFINDER_PROFILE_RUN_ID") or env_str("PROFILE_RUN_ID") or None,
-        # Console output / progress
-        output_enabled=output_enabled,
-        progress_enabled=progress_enabled,
+            # Console output / progress
+            output_enabled=output_enabled,
+            progress_enabled=progress_enabled,
             progress_interval_sec=max(0.05, float(progress_interval_sec)),
             progress_bar_width=max(10, int(progress_bar_width)),
             # GPU Executor batching/IPC

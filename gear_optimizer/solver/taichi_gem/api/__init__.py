@@ -9,111 +9,44 @@ This package splits the monolithic api.py (1,754 lines) into focused modules:
 This __init__.py defines the public Taichi gem solver API surface.
 """
 
-# Import from initialization
-try:
-    from .initialization import (
-        ensure_ready,
-        load_ref_arrays,
-        hard_reset_taichi,
-        _ensure_ftff_combo_tables,
-        _maybe_sync,
-    )
-except ImportError:
-    pass
-
-# Import from timeline
-try:
-    from .timeline import (
-        precompute_timeline_gpu,
-    )
-except ImportError:
-    pass
-
-# Import from parallel_solvers
-try:
-    from .parallel_solvers import (
-        solve_genomes_with_ftff,
-        solve_genomes_from_registry,
-    )
-except ImportError:
-    pass
-
-# Import from fixed_scoring
-try:
-    from .fixed_scoring import score_fixed_stats_gpu
-except ImportError:
-    pass
-
-# Import from skyline_operations
-try:
-    from .skyline_operations import (
-        skyline_upload_population_indices,
-        skyline_upload_item_stats,
-        skyline_upload_base_fixed_stats,
-        skyline_aggregate_stats,
-        skyline_evaluate_population,
-        skyline_download_scores,
-        skyline_download_results,
-    )
-except ImportError:
-    pass
-
-# Import from ga_operations
-try:
-    from .ga_operations import (
-        ga_upload_population_indices,
-        ga_upload_initial_populations,
-        ga_upload_init_heuristic_topk,
-        ga_load_initial_population,
-        ga_load_initial_populations_batch,
-        ga_generate_initial_populations,
-        ga_seed_rng,
-        ga_seed_rng_runs,
-        ga_upload_item_stats,
-        ga_upload_base_fixed_stats,
-        ga_upload_base_candidate_cache,
-        ga_download_base_candidate_cache_delta,
-        ga_prepare_population_base_stats,
-        ga_download_population_base_stats,
-        ga_evaluate_prepared_population,
-        ga_evaluate_population,
-        ga_write_best_results_from_key,
-        ga_refresh_scores_and_update_runs_best,
-        ga_set_scores,
-        ga_next_generation,
-        ga_next_generation_gpu_elites,  # GPU-resident elitism (avoids CPU download)
-        ga_next_generation_fused,  # FULLY FUSED (2 kernels instead of 4)
-        ga_next_generation_fused_runs,  # FULLY FUSED multi-run batching
-        ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
-        ga_download_population_indices,
-        ga_download_scores,
-        ga_download_results,
-        ga_download_run_payload,
-        ga_store_run_payload,
-        ga_init_runs_best,
-        ga_update_runs_best,
-        ga_store_runs_payload_snapshot_segmented,
-        ga_store_run_payload_segmented,
-        ga_download_runs_payload,
-        ga_pack_fg_candidates_table_segmented,
-        ga_download_fg_selected_payload,
-        # GPU-side global best tracking
-        ga_init_global_best,
-        ga_update_global_best,
-        ga_download_global_best,
-        # GPU-side island elitism
-        ga_upload_island_boundaries,
-        ga_find_island_elites,
-        ga_download_island_elite_indices,
-        # GPU-side island migration
-        ga_island_migration,
-        ga_island_migration_runs,
-        warmup_ga_live_request_kernels,
-        # FUSED kernel APIs
-        ga_write_best_and_update_global,
-    )
-except ImportError:
-    pass
+from .initialization import (
+    ensure_ready,
+    load_ref_arrays,
+    hard_reset_taichi,
+    _ensure_ftff_combo_tables,
+    _maybe_sync,
+)
+from .timeline import precompute_timeline_gpu
+from .parallel_solvers import solve_genomes_from_registry
+from .skyline_operations import (
+    skyline_upload_population_indices,
+    skyline_upload_item_stats,
+    skyline_upload_base_fixed_stats,
+    skyline_aggregate_stats,
+    skyline_evaluate_population,
+    skyline_download_scores,
+    skyline_download_results,
+)
+from .ga_operations import (
+    ga_upload_initial_populations,
+    ga_upload_init_heuristic_topk,
+    ga_load_initial_populations_batch,
+    ga_generate_initial_populations,
+    ga_seed_rng_runs,
+    ga_upload_item_stats,
+    ga_upload_base_fixed_stats,
+    ga_prepare_population_base_stats,
+    ga_evaluate_prepared_population,
+    ga_refresh_scores_and_update_runs_best,
+    ga_next_generation_fused_runs,
+    ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
+    ga_init_runs_best,
+    ga_update_runs_best,
+    ga_store_run_payload_segmented,
+    ga_pack_fg_candidates_table_segmented,
+    ga_download_fg_selected_payload,
+    ga_island_migration_runs,
+)
 
 # Public API
 __all__ = [
@@ -126,10 +59,7 @@ __all__ = [
     # Timeline
     "precompute_timeline_gpu",
     # Parallel solvers
-    "solve_genomes_with_ftff",
     "solve_genomes_from_registry",
-    # Fixed score
-    "score_fixed_stats_gpu",
     # Skyline operations
     "skyline_upload_population_indices",
     "skyline_upload_item_stats",
@@ -139,54 +69,23 @@ __all__ = [
     "skyline_download_scores",
     "skyline_download_results",
     # GA operations
-    "ga_upload_population_indices",
     "ga_upload_initial_populations",
     "ga_upload_init_heuristic_topk",
-    "ga_load_initial_population",
     "ga_load_initial_populations_batch",
     "ga_generate_initial_populations",
-    "ga_seed_rng",
     "ga_seed_rng_runs",
     "ga_upload_item_stats",
     "ga_upload_base_fixed_stats",
-    "ga_upload_base_candidate_cache",
-    "ga_download_base_candidate_cache_delta",
     "ga_prepare_population_base_stats",
-    "ga_download_population_base_stats",
     "ga_evaluate_prepared_population",
-    "ga_evaluate_population",
-    "ga_write_best_results_from_key",
     "ga_refresh_scores_and_update_runs_best",
-    "ga_set_scores",
-    "ga_next_generation",
-    "ga_next_generation_gpu_elites",
-    "ga_next_generation_fused",
     "ga_next_generation_fused_runs",
     "ga_refresh_scores_update_runs_best_and_next_generation_fused_runs",
-    "ga_download_population_indices",
-    "ga_download_scores",
-    "ga_download_results",
-    "ga_download_run_payload",
-    "ga_store_run_payload",
     "ga_init_runs_best",
     "ga_update_runs_best",
-    "ga_store_runs_payload_snapshot_segmented",
     "ga_store_run_payload_segmented",
-    "ga_download_runs_payload",
     "ga_pack_fg_candidates_table_segmented",
     "ga_download_fg_selected_payload",
-    # GPU-side global best tracking
-    "ga_init_global_best",
-    "ga_update_global_best",
-    "ga_download_global_best",
-    # GPU-side island elitism
-    "ga_upload_island_boundaries",
-    "ga_find_island_elites",
-    "ga_download_island_elite_indices",
     # GPU-side island migration
-    "ga_island_migration",
     "ga_island_migration_runs",
-    "warmup_ga_live_request_kernels",
-    # FUSED kernel APIs
-    "ga_write_best_and_update_global",
 ]

@@ -9,23 +9,11 @@ class _FakeGpuApi:
     def __init__(self, *, fail_once: bool = True) -> None:
         self.generate_calls = 0
         self.upload_calls = 0
-        self.population_upload_calls = 0
         self.reset_calls = 0
-        self.snapshot_calls = 0
-        self.download_runs_calls = 0
-        self.store_payload_calls = 0
-        self.download_run_payload_calls = 0
-        self.global_best_init_calls = 0
-        self.global_best_update_calls = 0
-        self.global_best_download_calls = 0
         self.evaluate_calls = 0
         self.next_generation_calls = 0
         self.fused_refresh_next_generation_calls = 0
-        self.write_best_results_and_update_runs_best_calls = 0
         self.refresh_scores_and_update_runs_best_calls = 0
-        self.write_best_results_from_key_calls = 0
-        self.base_cache_upload_calls = 0
-        self.population_upload_history: list[np.ndarray] = []
         self._fail_once = bool(fail_once)
         self._current_population = np.zeros((8, 9), dtype=np.int32)
         self._staged_population = np.zeros((1, 8, 9), dtype=np.int32)
@@ -47,19 +35,8 @@ class _FakeGpuApi:
     def ga_upload_base_fixed_stats(self, *_args, **_kwargs):
         return None
 
-    def ga_upload_base_candidate_cache(self, keys_np, *_args, **_kwargs):
-        self.base_cache_upload_calls += 1
-        return int(np.asarray(keys_np).shape[0])
-
     def ga_upload_init_heuristic_topk(self, *_args, **_kwargs):
         return None
-
-    def ga_upload_population_indices(self, population_indices_np, *, n_slots=9):
-        self.population_upload_calls += 1
-        arr = np.asarray(population_indices_np, dtype=np.int32)
-        self._current_population = arr[:, : int(n_slots)].copy()
-        self.population_upload_history.append(self._current_population.copy())
-        return int(arr.shape[0])
 
     def ga_upload_initial_populations(self, *_args, **_kwargs):
         self.upload_calls += 1
@@ -69,10 +46,6 @@ class _FakeGpuApi:
         self._staged_population = np.zeros((int(n_runs), int(n_genomes), int(n_slots)), dtype=np.int32)
         for run_idx in range(int(n_runs)):
             self._staged_population[run_idx] = self._make_population(int(n_genomes), int(n_slots)) + run_idx
-
-    def ga_load_initial_population(self, *, run_idx, n_genomes, n_slots=9):
-        self._current_population = self._staged_population[int(run_idx), : int(n_genomes), : int(n_slots)].copy()
-        return None
 
     def ga_init_runs_best(self, *_args, **_kwargs):
         return None
@@ -84,15 +57,23 @@ class _FakeGpuApi:
         if self._fail_once:
             self._fail_once = False
             raise RuntimeError("failed to create semaphore")
-        return None
-
-    def ga_seed_rng(self, *_args, **_kwargs):
-        return None
+        run_idx_start = int(_kwargs.get("run_idx_start", 0))
+        n_runs = int(_kwargs.get("n_runs", 1))
+        n_genomes_per_run = int(_kwargs.get("n_genomes_per_run", 8))
+        n_slots = int(_kwargs.get("n_slots", 9))
+        end_run = run_idx_start + n_runs
+        self._current_population = self._staged_population[
+            run_idx_start:end_run, :n_genomes_per_run, :n_slots
+        ].reshape(n_runs * n_genomes_per_run, n_slots)
+        return int(n_runs * n_genomes_per_run)
 
     def ga_seed_rng_runs(self, *_args, **_kwargs):
         return None
 
-    def ga_evaluate_population(self, *_args, **_kwargs):
+    def ga_prepare_population_base_stats(self, *_args, **_kwargs):
+        return None
+
+    def ga_evaluate_prepared_population(self, *_args, **_kwargs):
         self.evaluate_calls += 1
         self.last_evaluate_kwargs = dict(_kwargs)
         if self._fail_once:
@@ -103,40 +84,11 @@ class _FakeGpuApi:
     def ga_update_runs_best(self, *_args, **_kwargs):
         return None
 
-    def ga_write_best_results_and_update_runs_best(self, *_args, **_kwargs):
-        self.write_best_results_and_update_runs_best_calls += 1
-        return None
-
     def ga_refresh_scores_and_update_runs_best(self, *_args, **_kwargs):
         self.refresh_scores_and_update_runs_best_calls += 1
         return None
 
-    def ga_write_best_results_from_key(self, *_args, **_kwargs):
-        self.write_best_results_from_key_calls += 1
-        return None
-
-    def ga_init_global_best(self, *_args, **_kwargs):
-        self.global_best_init_calls += 1
-        return None
-
-    def ga_update_global_best(self, *_args, **_kwargs):
-        self.global_best_update_calls += 1
-        return None
-
-    def ga_download_global_best(self, *_args, **_kwargs):
-        self.global_best_download_calls += 1
-        return 123, np.zeros((9,), dtype=np.int32), np.array([123, 1, 2, 3, 4, 5, 6], dtype=np.int32)
-
-    def ga_upload_island_boundaries(self, *_args, **_kwargs):
-        return None
-
-    def ga_island_migration(self, *_args, **_kwargs):
-        return None
-
     def ga_island_migration_runs(self, *_args, **_kwargs):
-        return None
-
-    def ga_next_generation_fused(self, *_args, **_kwargs):
         return None
 
     def ga_next_generation_fused_runs(self, *_args, **_kwargs):
@@ -147,40 +99,11 @@ class _FakeGpuApi:
         self.fused_refresh_next_generation_calls += 1
         return None
 
-    def ga_store_run_payload(self, *_args, **_kwargs):
-        self.store_payload_calls += 1
-        return None
-
-    def ga_download_run_payload(self, *, n_genomes, n_slots=9):
-        self.download_run_payload_calls += 1
-        pop = self._current_population[: int(n_genomes), : int(n_slots)].copy()
-        results = np.zeros((int(n_genomes), 7), dtype=np.int32)
-        scores = np.arange(int(n_genomes), 0, -1, dtype=np.int32) * 100
-        best_ids = pop[0].copy() if int(n_genomes) > 0 else np.zeros((int(n_slots),), dtype=np.int32)
-        best_result = np.asarray([int(scores[0]) if int(n_genomes) > 0 else 0, 0, 0, 0, 0, 0, 0], dtype=np.int32)
-        best_score = int(scores[0]) if int(n_genomes) > 0 else 0
-        return best_score, best_ids, best_result, pop, results, scores
-
-    def ga_download_population_indices(self, *, n_genomes, n_slots=9):
-        return self._current_population[: int(n_genomes), : int(n_slots)].copy()
-
     def ga_pack_fg_candidates_table_segmented(self, *_args, **_kwargs):
         return None
 
-    def ga_store_runs_payload_snapshot_segmented(self, *_args, **_kwargs):
-        self.snapshot_calls += 1
-        return None
-
-    def ga_download_runs_payload(self, *, n_runs, n_genomes, n_slots=9):
-        self.download_runs_calls += 1
-        width = 1 + int(n_slots) + 7
-        return np.zeros((int(n_runs), int(n_genomes) + 1, width), dtype=np.int32)
-
     def ga_download_fg_selected_payload(self, *_args, **_kwargs):
         return np.zeros((1, 26), dtype=np.int32)
-
-    def ga_download_base_candidate_cache_delta(self):
-        return np.zeros((0, 13), dtype=np.int32)
 
 
 def _ref_arrays() -> dict[str, np.ndarray]:
@@ -251,7 +174,6 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 1, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setenv("GPU_NATIVE_GA_BASE_CANDIDATE_CACHE", "1")
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -280,60 +202,9 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     assert isinstance(out, np.ndarray)
     assert fake_gpu.reset_calls >= 1
     assert fake_gpu.generate_calls == 2
-    assert fake_gpu.download_run_payload_calls == 0
-    assert fake_gpu.store_payload_calls == 0
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
-    assert fake_gpu.population_upload_calls == 0
-    assert fake_gpu.base_cache_upload_calls == 0
-    assert fake_gpu.last_evaluate_kwargs["use_base_candidate_cache"] is False
-
-
-def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
-    from gear_optimizer.solver import genetic_pipeline as genetic
-
-    fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch, fake_gpu)
-
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-
-    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "trace-smoke", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
-        ref_arrays=_ref_arrays(),
-        song_slot=0,
-        item_stats=np.zeros((1, 10), dtype=np.int32),
-        slot_start=np.zeros((9,), dtype=np.int32),
-        slot_count=np.zeros((9,), dtype=np.int32),
-        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
-        n_generations=2,
-        initial_populations=None,
-        num_runs=1,
-        n_genomes=8,
-        color_flags={},
-        cfg_data={
-            "TotalBudget": 90,
-            "GemScaleFever": 3,
-            "fg_candidate_limit": 51,
-            "ga_convergence_trace_enabled": True,
-            "ga_convergence_trace_every": 1,
-            "ga_convergence_trace_out_dir": str(tmp_path / "ga_trace"),
-            "ga_convergence_trace_song_filter": "trace",
-        },
-        ga_seed=123,
-    )
-
-    assert isinstance(out, np.ndarray)
-    assert fake_gpu.global_best_init_calls >= 1
-    assert fake_gpu.global_best_update_calls >= 1
-    assert fake_gpu.global_best_download_calls >= 1
-    assert fake_gpu.write_best_results_and_update_runs_best_calls >= 1
-    assert fake_gpu.refresh_scores_and_update_runs_best_calls == 0
-    assert fake_gpu.fused_refresh_next_generation_calls == 0
+    assert "use_base_candidate_cache" not in fake_gpu.last_evaluate_kwargs
 
 
 def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
@@ -403,11 +274,10 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
             cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
             ga_seed=123,
             abort_requested=lambda: fake_gpu.evaluate_calls >= 1,
-        )
+    )
 
     assert fake_gpu.evaluate_calls == 1
     assert fake_gpu.next_generation_calls == 0
-    assert fake_gpu.global_best_update_calls == 0
 
 
 def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypatch):
@@ -447,8 +317,6 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
         )
 
     assert fake_gpu.evaluate_calls == 1
-    assert fake_gpu.store_payload_calls == 0
-    assert fake_gpu.download_run_payload_calls == 0
 
 
 def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch):
@@ -457,13 +325,13 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     fake_gpu = _FakeGpuApi(fail_once=False)
 
     evaluate_kwargs: list[dict] = []
-    original_evaluate = fake_gpu.ga_evaluate_population
+    original_evaluate = fake_gpu.ga_evaluate_prepared_population
 
     def _capture_evaluate(*args, **kwargs):
         evaluate_kwargs.append(dict(kwargs))
         return original_evaluate(*args, **kwargs)
 
-    fake_gpu.ga_evaluate_population = _capture_evaluate
+    fake_gpu.ga_evaluate_prepared_population = _capture_evaluate
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
@@ -498,8 +366,7 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     assert evaluate_kwargs
     assert all("max_ft_gems_global" in kwargs for kwargs in evaluate_kwargs)
     assert all("max_ff_gems_global" in kwargs for kwargs in evaluate_kwargs)
-    assert all(kwargs.get("materialize_mode") == "none" for kwargs in evaluate_kwargs)
-    assert fake_gpu.store_payload_calls == 0
+    assert all("materialize_mode" not in kwargs for kwargs in evaluate_kwargs)
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 
 
@@ -551,63 +418,3 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
     phases = {event.get("metrics", {}).get("phase") for event in phase_events}
     assert {"evaluate", "update_runs_best", "pack_fg_candidates"}.issubset(phases)
     assert all(int(event.get("metrics", {}).get("batch_runs", 0)) == 3 for event in phase_events)
-
-
-def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
-    from gear_optimizer.solver import genetic_pipeline as genetic
-
-    fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch, fake_gpu)
-
-    audit_calls: list[dict] = []
-    written_paths: list[str] = []
-
-    monkeypatch.setenv("GA_REDUNDANCY_AUDIT", "1")
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(
-        genetic,
-        "analyze_ga_redundancy_from_runs_payload",
-        lambda **kwargs: audit_calls.append(kwargs) or {"song_name": "audit", "rows": 16},
-        raising=True,
-    )
-    monkeypatch.setattr(
-        genetic,
-        "summarize_ga_redundancy_record",
-        lambda record: f"audit rows={record['rows']}",
-        raising=True,
-    )
-    monkeypatch.setattr(
-        genetic,
-        "write_ga_redundancy_audit_record",
-        lambda record: written_paths.append(str(record.get("song_name", ""))) or "audit.jsonl",
-        raising=True,
-    )
-
-    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "audit-smoke", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
-        ref_arrays=_ref_arrays(),
-        song_slot=0,
-        item_stats=np.zeros((16, 10), dtype=np.int32),
-        slot_start=np.zeros((9,), dtype=np.int32),
-        slot_count=np.zeros((9,), dtype=np.int32),
-        base_fixed_stats_arr=np.zeros((10,), dtype=np.int32),
-        n_generations=1,
-        initial_populations=None,
-        num_runs=3,
-        n_genomes=8,
-        color_flags={},
-        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51, "selected_color": "Rush"},
-        ga_seed=7,
-    )
-
-    assert isinstance(out, np.ndarray)
-    assert fake_gpu.snapshot_calls == 1
-    assert fake_gpu.download_runs_calls == 1
-    assert fake_gpu.store_payload_calls == 0
-    assert len(audit_calls) == 1
-    assert len(written_paths) == 1

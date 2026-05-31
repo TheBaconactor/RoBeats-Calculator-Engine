@@ -1,5 +1,5 @@
 from gear_optimizer.data.database import get_loadout_hash
-from gear_optimizer.helpers.song_helpers.persistence import build_persistence_entries
+from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_entry_selection import build_retained_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
@@ -174,7 +174,7 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
 
 
 def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload():
-    from gear_optimizer.helpers.song_helpers.persistence import build_db_payload
+    from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload
 
     build_details = make_build_details_fn("Rush", "Flow", "Hard")
     best_data = {

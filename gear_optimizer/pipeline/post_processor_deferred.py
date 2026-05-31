@@ -6,10 +6,12 @@ from typing import Any, Callable
 
 from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.helpers.song_helpers.persistence import (
+from gear_optimizer.helpers.song_helpers.persistence_canon import (
     ReplayContext,
-    build_db_payload,
     canonicalize_and_assemble,
+)
+from gear_optimizer.helpers.song_helpers.persistence_payload import (
+    build_db_payload,
     make_build_details_fn,
 )
 from gear_optimizer.domain.results import PersistenceBatch

@@ -944,12 +944,8 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     Tier postprocess now uses CPU exact replay as the retained-row authority.
     """
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-    from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-    from gear_optimizer.solver.scoring_core import lookup_reference_py
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
-    from gear_optimizer.solver.taichi_gem.api.fixed_scoring import score_fixed_stats_gpu
 
     # Enable the ceiling kernel (tests default it off for most of the suite).
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
@@ -977,7 +973,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     )
     calc_song = {
         "metadata": {
-            "Song Name": "pytest_gpu_fixed_scoring_regression",
+            "Song Name": "pytest_exact_rescore_regression",
             "Difficulty": "Hard",
             "Primary Color": "Vibe",
             "Secondary Color": "Flow",
@@ -1001,34 +997,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         "Chill": 49,
     }
 
-    cpu = int(evaluate_stats_score(stats, calc_song, ref_arrays))
     exact = int(score_stats_exact(stats, calc_song, ref_arrays))
-
-    primary = calc_song["metadata"]["Primary Color"]
-    secondary = calc_song["metadata"]["Secondary Color"]
-    pp_factor = lookup_reference_py(int(stats["Perfect Points"]), ref_arrays["Perfect Points"], TOTAL_ROWS)
-    base_value = (int(stats.get(primary, 0)) * 2) + int(stats.get(secondary, 0)) + float(pp_factor)
-    combo_mul = float(lookup_reference_py(int(stats["Combo Multiplier"]), ref_arrays["Combo Multiplier"], TOTAL_ROWS))
-    fever_mul = float(lookup_reference_py(int(stats["Fever Multiplier"]), ref_arrays["Fever Multiplier"], TOTAL_ROWS))
-    ft_idx = int(stats["Fever Time"])
-    ff_idx = int(stats["Fever Fill Rate"])
-    gpu = int(
-        score_fixed_stats_gpu(
-            [
-                {
-                    "base_value": float(base_value),
-                    "combo_mul": float(combo_mul),
-                    "fever_mul": float(fever_mul),
-                    "ft_idx": int(ft_idx),
-                    "ff_idx": int(ff_idx),
-                }
-            ],
-            calc_song,
-            ref_arrays=ref_arrays,
-        )[0]
-    )
-
-    assert cpu != gpu
 
     entry = {
         "score": 0,
@@ -1054,5 +1023,3 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
 
     scored = int(out["tiers"]["T5"]["base_top51"][0]["score"])
     assert scored == exact
-    assert gpu != exact
-    assert cpu != gpu

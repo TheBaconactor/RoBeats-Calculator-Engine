@@ -2,8 +2,6 @@
 Taichi Kernels - Pack GA snapshots for CPU download.
 
 Includes:
-- ga_pack_run_payload_kernel
-- ga_pack_and_store_run_payload_kernel
 - ga_pack_fg_candidates_table_segmented_kernel
 - ga_copy_fg_candidates_table_to_download_staging_kernel
 """
@@ -133,93 +131,6 @@ def _bubble_fg_candidate_up(
 
 
 @ti.kernel
-def ga_pack_run_payload_kernel(n_genomes: ti.i32, n_slots: ti.i32):
-    """
-    Pack a GA snapshot into `ga_run_payload_packed` for a single CPU download.
-
-    Layout (int32):
-      - Row 0: [best_score, best_genome_ids (n_slots), best_results (7)]
-      - Row g+1: [score, genome_ids (n_slots), genome_result_stats (7)]
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-
-    # Row 0: global best (single thread)
-    for _ in range(1):
-        kernels_helpers.ga_run_payload_packed[0, 0] = kernels_helpers.ga_global_best_score[0]
-        for s in range(n_slots):
-            kernels_helpers.ga_run_payload_packed[0, 1 + s] = kernels_helpers.ga_global_best_genome[s]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_run_payload_packed[0, 1 + n_slots + r] = kernels_helpers.ga_global_best_results[r]
-
-    # Rows 1..n_genomes: per-genome snapshot
-    for g in range(n_genomes):
-        out_row = g + 1
-        kernels_helpers.ga_run_payload_packed[out_row, 0] = kernels_helpers.ga_scores[g]
-        for s in range(n_slots):
-            kernels_helpers.ga_run_payload_packed[out_row, 1 + s] = kernels_helpers.population_indices[g, s]
-        res = kernels_helpers.genome_result_stats[g]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_run_payload_packed[out_row, 1 + n_slots + r] = res[r]
-
-
-@ti.kernel
-def ga_copy_run_payload_to_download_staging_kernel(
-    out_payload: ti.template(),
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Copy the populated slice of `ga_run_payload_packed` into a smaller staging field.
-
-    Vulkan `to_numpy()` transfers the full field shape, so downloading the padded
-    `(MAX_GENOMES+1, 17)` buffer can dominate throughput when the active population
-    is small (e.g., a compact GA run). This kernel enables a bounded staging
-    download.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    cols = 1 + n_slots + 7
-    rows = n_genomes + 1
-    for row in range(rows):
-        for c in ti.static(range(17)):
-            if c < cols:
-                out_payload[row, c] = kernels_helpers.ga_run_payload_packed[row, c]
-            else:
-                out_payload[row, c] = 0
-
-
-@ti.kernel
-def ga_pack_and_store_run_payload_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_slots: ti.i32):
-    """
-    Pack a GA snapshot directly into the multi-run buffer `ga_runs_payload_packed`.
-
-    Layout (int32):
-      - [run_idx, 0]: [best_score, best_genome_ids (n_slots), best_results (7)]
-      - [run_idx, g+1]: [score, genome_ids (n_slots), genome_result_stats (7)]
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-
-    # Row 0: global best (single thread)
-    for _ in range(1):
-        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = kernels_helpers.ga_global_best_score[0]
-        for s in range(n_slots):
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.ga_global_best_genome[s]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + r] = (
-                kernels_helpers.ga_global_best_results[r]
-            )
-
-    # Rows 1..n_genomes: per-genome snapshot
-    for g in range(n_genomes):
-        out_row = g + 1
-        kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 0] = kernels_helpers.ga_scores[g]
-        for s in range(n_slots):
-            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + s] = kernels_helpers.population_indices[g, s]
-        res = kernels_helpers.genome_result_stats[g]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + r] = res[r]
-
-
-@ti.kernel
 def ga_pack_and_store_run_payload_segmented_kernel(
     run_idx: ti.i32,
     start_offset: ti.i32,
@@ -319,62 +230,6 @@ def ga_update_runs_best_kernel(run_idx_start: ti.i32, n_runs: ti.i32, n_genomes_
 
 
 @ti.kernel
-def ga_store_runs_payload_snapshot_segmented_kernel(
-    run_idx_start: ti.i32,
-    n_runs: ti.i32,
-    n_genomes_per_run: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Store per-genome snapshot rows (1..n_genomes_per_run) into `ga_runs_payload_packed`
-    for packed multi-run execution.
-
-    Row 0 (per-run best) is intentionally left untouched.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    if n_runs > 0 and n_genomes_per_run > 0:
-        n_total = n_runs * n_genomes_per_run
-        for g in range(n_total):
-            run = g // n_genomes_per_run
-            local_g = g - run * n_genomes_per_run
-            run_idx = run_idx_start + run
-            out_row = local_g + 1
-
-            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 0] = kernels_helpers.ga_scores[g]
-            for s in range(n_slots):
-                kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + s] = kernels_helpers.population_indices[
-                    g, s
-                ]
-            res = kernels_helpers.genome_result_stats[g]
-            for j in ti.static(range(7)):
-                kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + j] = res[j]
-
-
-@ti.kernel
-def ga_copy_runs_payload_to_download_staging_kernel(
-    out_payload: ti.template(),
-    n_runs: ti.i32,
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Copy the populated slice of `ga_runs_payload_packed` into a smaller staging field.
-
-    Vulkan `to_numpy()` transfers the full field shape, so downloading the padded
-    `(MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17)` buffer can dominate throughput when
-    `MAX_GA_RUN_GENOMES` is large (e.g., 1024) but the active population is small
-    (e.g., 250). This kernel enables a bounded staging download.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    cols = 1 + n_slots + 7
-    rows = n_genomes + 1
-    for r, row in ti.ndrange(n_runs, rows):
-        for c in ti.static(range(17)):
-            if c < cols:
-                out_payload[r, row, c] = kernels_helpers.ga_runs_payload_packed[r, row, c]
-
-
-@ti.kernel
 def ga_pack_fg_candidates_table_segmented_kernel(
     table_slot: ti.i32,
     run_idx_start: ti.i32,
@@ -407,7 +262,7 @@ def ga_pack_fg_candidates_table_segmented_kernel(
     - Row 0: per-run best genome tracked across generations (copied from ga_runs_payload_packed row 0).
     - Rows 1..K: top-score genomes from the *final* population for the run (K is env-configured).
 
-    This is intended to replace large `ga_download_runs_payload()` transfers.
+    This is the canonical compact GA->FG handoff; full population downloads are not part of the production route.
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
@@ -860,12 +715,28 @@ def ga_copy_fg_selected_payload_to_download_staging_kernel(
 
     best_score = ti.i32(-1)
     best_run = ti.i32(0)
-    # Deterministic scan across per-run best (row 0).
-    for r in range(n_runs):
-        s = kernels_helpers.ga_fg_candidates_packed[table_slot, r, 0, 0]
-        if s > best_score:
-            best_score = s
-            best_run = r
+    best_row = ti.i32(0)
+    if selected_n > 0:
+        # The selected payload owns the FG funnel. Its header must describe the
+        # highest base-score row from that same selected surface, not stale row-0
+        # per-run state.
+        for i in range(selected_n):
+            stub = kernels_helpers.ga_fg_selected_coords[i, 0]
+            run_idx = kernels_helpers.ga_fg_select_stub_run[stub]
+            row_idx = kernels_helpers.ga_fg_select_stub_row[stub]
+            s = kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, 0]
+            if s > best_score:
+                best_score = s
+                best_run = run_idx
+                best_row = row_idx
+    else:
+        # Deterministic fallback for empty selected payloads.
+        for r in range(n_runs):
+            s = kernels_helpers.ga_fg_candidates_packed[table_slot, r, 0, 0]
+            if s > best_score:
+                best_score = s
+                best_run = r
+                best_row = 0
 
     # Clear header row (avoid stale data when caller changes staging size).
     for c in range(out_payload.shape[1]):
@@ -873,11 +744,13 @@ def ga_copy_fg_selected_payload_to_download_staging_kernel(
 
     out_payload[0, 0] = selected_n
     out_payload[0, 1] = best_score
-    # Best IDs + results from best run row0.
+    # Best IDs + results from the selected/header owner row.
     for s in ti.static(range(9)):
-        out_payload[0, 2 + s] = kernels_helpers.ga_fg_candidates_packed[table_slot, best_run, 0, 1 + s]
+        out_payload[0, 2 + s] = kernels_helpers.ga_fg_candidates_packed[table_slot, best_run, best_row, 1 + s]
     for t in ti.static(range(_GA_FG_RESULTS_COLS)):
-        out_payload[0, 2 + 9 + t] = kernels_helpers.ga_fg_candidates_packed[table_slot, best_run, 0, results_col0 + t]
+        out_payload[0, 2 + 9 + t] = kernels_helpers.ga_fg_candidates_packed[
+            table_slot, best_run, best_row, results_col0 + t
+        ]
     out_payload[0, 2 + 9 + _GA_FG_RESULTS_COLS] = best_run
 
     # Candidate rows.

@@ -31,7 +31,7 @@ from .response_ftff_prune import (
     prune_best_positions_by_frontier,
     prune_dominated_ftff_response_positions,
 )
-from .response_inner import (
+from .response_inner_host import (
     _response_group_logical_surface_plan,
     _response_inner_combo_counts,
     _score_response_group_meta_gpu,
