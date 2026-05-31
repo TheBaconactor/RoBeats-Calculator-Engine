@@ -136,7 +136,118 @@ def warmup_response_ftff_prune() -> None:
     )
     if got.tolist() != [1, 2]:
         raise RuntimeError("FG response FT/FF prune warmup produced an invalid result")
+    dominance_got = prune_dominated_ftff_response_positions(
+        positions=positions,
+        frontier_ids=frontier_ids,
+        residuals=residuals,
+        primary_values=np.asarray([5, 4, 7, 4], dtype=np.int32),
+        secondary_values=np.asarray([2, 4, 1, 3], dtype=np.int32),
+    )
+    if dominance_got.tolist() != [0, 1, 2]:
+        raise RuntimeError("FG response FT/FF dominance prune warmup produced an invalid result")
     _FTFF_PRUNE_WARMED = True
+
+
+@jit(nopython=True, cache=True)
+def _prune_dominated_ftff_response_positions_numba(
+    positions: np.ndarray,
+    frontier_ids: np.ndarray,
+    residuals: np.ndarray,
+    primary_values: np.ndarray,
+    secondary_values: np.ndarray,
+) -> np.ndarray:
+    row_count = int(positions.shape[0])
+    max_frontier = -1
+    for row in range(row_count):
+        fid = int(frontier_ids[row])
+        if fid > max_frontier:
+            max_frontier = fid
+    if max_frontier < 0:
+        return np.empty((0,), dtype=np.int32)
+
+    head = np.full((max_frontier + 1,), -1, dtype=np.int32)
+    tail = np.full((max_frontier + 1,), -1, dtype=np.int32)
+    next_idx = np.full((row_count,), -1, dtype=np.int32)
+    ordered_frontiers = np.empty((row_count,), dtype=np.int32)
+    ordered_count = 0
+    for row in range(row_count):
+        fid = int(frontier_ids[row])
+        if fid < 0:
+            continue
+        if head[fid] < 0:
+            head[fid] = row
+            tail[fid] = row
+            ordered_frontiers[ordered_count] = fid
+            ordered_count += 1
+        else:
+            next_idx[tail[fid]] = row
+            tail[fid] = row
+
+    kept_mask = np.zeros((row_count,), dtype=np.bool_)
+    kept_count = 0
+    for order_idx in range(ordered_count):
+        fid = int(ordered_frontiers[order_idx])
+        first = int(head[fid])
+        if first < 0:
+            continue
+        first_primary = int(primary_values[first])
+        first_secondary = int(secondary_values[first])
+        same_score_elements = True
+        best_idx = first
+        best_residual = int(residuals[first])
+        row = int(next_idx[first])
+        while row >= 0:
+            primary = int(primary_values[row])
+            secondary = int(secondary_values[row])
+            if primary != first_primary or secondary != first_secondary:
+                same_score_elements = False
+                break
+            residual = int(residuals[row])
+            if residual > best_residual:
+                best_idx = row
+                best_residual = residual
+            row = int(next_idx[row])
+        if same_score_elements:
+            kept_mask[best_idx] = True
+            kept_count += 1
+            continue
+
+        row = first
+        while row >= 0:
+            dominated = False
+            other = first
+            while other >= 0:
+                if other != row:
+                    residual_ok = int(residuals[other]) >= int(residuals[row])
+                    primary_ok = int(primary_values[other]) >= int(primary_values[row])
+                    secondary_ok = int(secondary_values[other]) >= int(secondary_values[row])
+                    if residual_ok and primary_ok and secondary_ok:
+                        strictly_better = (
+                            int(residuals[other]) > int(residuals[row])
+                            or int(primary_values[other]) > int(primary_values[row])
+                            or int(secondary_values[other]) > int(secondary_values[row])
+                            or int(other) < int(row)
+                        )
+                        if strictly_better:
+                            dominated = True
+                            break
+                other = int(next_idx[other])
+            if not dominated:
+                kept_mask[row] = True
+                kept_count += 1
+            row = int(next_idx[row])
+
+    out = np.empty((kept_count,), dtype=np.int32)
+    write = 0
+    for order_idx in range(ordered_count):
+        fid = int(ordered_frontiers[order_idx])
+        row = int(head[fid])
+        while row >= 0:
+            if kept_mask[row]:
+                out[write] = int(positions[row])
+                write += 1
+            row = int(next_idx[row])
+    return out
 
 
 def prune_dominated_ftff_response_positions(
@@ -157,80 +268,18 @@ def prune_dominated_ftff_response_positions(
         raise ValueError("FG response frontier dominance prune received inconsistent arrays")
     if row_count <= 1:
         return np.ascontiguousarray(positions, dtype=np.int32)
-
-    buckets: dict[int, list[int]] = {}
-    frontier_seq = np.asarray(frontier_ids, dtype=np.int32)
-    for local_idx, frontier_id in enumerate(frontier_seq.tolist()):
-        buckets.setdefault(int(frontier_id), []).append(int(local_idx))
-
-    residual_seq = np.asarray(residuals, dtype=np.int32)
-    primary_seq = np.asarray(primary_values, dtype=np.int32)
-    secondary_seq = np.asarray(secondary_values, dtype=np.int32)
-    kept_local_indices: list[int] = []
-    for bucket_indices in buckets.values():
-        if len(bucket_indices) <= 1:
-            kept_local_indices.extend(bucket_indices)
-            continue
-
-        first_idx = int(bucket_indices[0])
-        first_primary = int(primary_seq[first_idx])
-        first_secondary = int(secondary_seq[first_idx])
-        same_score_elements = True
-        best_idx = first_idx
-        best_residual = int(residual_seq[first_idx])
-        for local_idx in bucket_indices[1:]:
-            idx = int(local_idx)
-            primary = int(primary_seq[idx])
-            secondary = int(secondary_seq[idx])
-            if primary != first_primary or secondary != first_secondary:
-                same_score_elements = False
-                break
-            residual = int(residual_seq[idx])
-            if residual > best_residual:
-                best_idx = idx
-                best_residual = residual
-        if same_score_elements:
-            kept_local_indices.append(int(best_idx))
-            continue
-
-        order = sorted(
-            range(len(bucket_indices)),
-            key=lambda idx: (
-                -int(residual_seq[int(bucket_indices[idx])]),
-                -int(primary_seq[int(bucket_indices[idx])]),
-                -int(secondary_seq[int(bucket_indices[idx])]),
-                int(idx),
-            ),
-        )
-        skyline: list[tuple[int, int]] = []
-        kept_bucket_offsets: set[int] = set()
-        for bucket_offset in order:
-            local_idx = int(bucket_indices[int(bucket_offset)])
-            primary = int(primary_seq[local_idx])
-            secondary = int(secondary_seq[local_idx])
-            dominated = False
-            for kept_primary, kept_secondary in skyline:
-                if int(kept_primary) >= primary and int(kept_secondary) >= secondary:
-                    dominated = True
-                    break
-            if dominated:
-                continue
-
-            write = 0
-            for kept_primary, kept_secondary in skyline:
-                if primary >= int(kept_primary) and secondary >= int(kept_secondary):
-                    continue
-                skyline[write] = (int(kept_primary), int(kept_secondary))
-                write += 1
-            del skyline[write:]
-            skyline.append((primary, secondary))
-            kept_bucket_offsets.add(int(bucket_offset))
-        kept_local_indices.extend(
-            int(bucket_indices[idx]) for idx in range(len(bucket_indices)) if int(idx) in kept_bucket_offsets
-        )
-
-    return np.ascontiguousarray(positions[np.asarray(kept_local_indices, dtype=np.intp)], dtype=np.int32)
-
+    if bool(np.any(np.asarray(frontier_ids, dtype=np.int32) < 0)):
+        raise ValueError("FG response frontier dominance prune received a negative frontier id")
+    return np.ascontiguousarray(
+        _prune_dominated_ftff_response_positions_numba(
+            np.ascontiguousarray(positions, dtype=np.int32),
+            np.ascontiguousarray(frontier_ids, dtype=np.int32),
+            np.ascontiguousarray(residuals, dtype=np.int32),
+            np.ascontiguousarray(primary_values, dtype=np.int32),
+            np.ascontiguousarray(secondary_values, dtype=np.int32),
+        ),
+        dtype=np.int32,
+    )
 
 def element_ftff_delta(color: str, ft: int, ff: int) -> int:
     if str(color or "") == "Beat":

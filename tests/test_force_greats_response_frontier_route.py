@@ -78,6 +78,54 @@ def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier
     assert got.tolist() == [int(pair[0]) for pair in expected]
 
 
+def test_ftff_response_position_prune_matches_bruteforce_randomized():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+        prune_dominated_ftff_response_positions,
+    )
+
+    rng = np.random.default_rng(20260531)
+    for row_count in (1, 2, 8, 32, 96):
+        for _case in range(20):
+            positions = np.arange(row_count, dtype=np.int32)
+            frontier_ids = rng.integers(0, max(1, row_count // 3), size=row_count, dtype=np.int32)
+            residuals = rng.integers(0, 12, size=row_count, dtype=np.int32)
+            primary_values = rng.integers(0, 16, size=row_count, dtype=np.int32)
+            secondary_values = rng.integers(0, 16, size=row_count, dtype=np.int32)
+            got = prune_dominated_ftff_response_positions(
+                positions=positions,
+                frontier_ids=frontier_ids,
+                residuals=residuals,
+                primary_values=primary_values,
+                secondary_values=secondary_values,
+            )
+
+            expected: list[int] = []
+            for frontier in dict.fromkeys(int(v) for v in frontier_ids.tolist()):
+                bucket = [idx for idx, value in enumerate(frontier_ids.tolist()) if int(value) == int(frontier)]
+                for idx in bucket:
+                    dominated = False
+                    for other in bucket:
+                        if other == idx:
+                            continue
+                        if (
+                            int(residuals[other]) >= int(residuals[idx])
+                            and int(primary_values[other]) >= int(primary_values[idx])
+                            and int(secondary_values[other]) >= int(secondary_values[idx])
+                            and (
+                                int(residuals[other]) > int(residuals[idx])
+                                or int(primary_values[other]) > int(primary_values[idx])
+                                or int(secondary_values[other]) > int(secondary_values[idx])
+                                or int(other) < int(idx)
+                            )
+                        ):
+                            dominated = True
+                            break
+                    if not dominated:
+                        expected.append(int(idx))
+
+            assert got.tolist() == expected
+
+
 def test_nojit_fixed_stats_score_matches_jit_score():
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score, evaluate_stats_score_nojit
 
