@@ -25,7 +25,7 @@ from gear_optimizer.solver.windows_timer import (
 
 
 logger = logging.getLogger(__name__)
-WARMUP_SENTINEL_SCHEMA = 3
+WARMUP_SENTINEL_SCHEMA = 4
 
 
 @dataclass(frozen=True)
@@ -232,6 +232,7 @@ def build_warmup_sentinel_payload(
     pid: int,
     warmed_at_ms: int,
     warmup_fg: bool,
+    warmup_ga: bool,
 ) -> dict[str, Any]:
     return {
         "schema": int(WARMUP_SENTINEL_SCHEMA),
@@ -240,6 +241,7 @@ def build_warmup_sentinel_payload(
         "pid": int(pid),
         "warmed_at": int(warmed_at_ms),
         "warmup_fg": bool(warmup_fg),
+        "warmup_ga": bool(warmup_ga),
     }
 
 
@@ -273,6 +275,7 @@ def warmup_sentinel_is_fresh(
     *,
     sentinel_path: Path,
     warmup_fg: bool,
+    warmup_ga: bool,
 ) -> bool:
     try:
         payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
@@ -291,6 +294,8 @@ def warmup_sentinel_is_fresh(
     if not bool(payload.get("ok", False)):
         return False
     if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
+        return False
+    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
         return False
     return True
 

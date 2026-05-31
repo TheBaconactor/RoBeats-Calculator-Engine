@@ -18,6 +18,7 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     signal_executor_ready,
     stop_executor_if_running,
     try_send_shutdown_request,
+    warmup_sentinel_is_fresh,
     warmup_sentinel_path,
     write_warmup_sentinel_payload,
 )
@@ -312,6 +313,7 @@ def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
         pid=123,
         warmed_at_ms=456,
         warmup_fg=True,
+        warmup_ga=True,
     )
 
     assert payload == {
@@ -321,6 +323,7 @@ def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
         "pid": 123,
         "warmed_at": 456,
         "warmup_fg": True,
+        "warmup_ga": True,
     }
 
 
@@ -352,6 +355,30 @@ def test_write_warmup_sentinel_payload_reports_invalid_payload_as_false(tmp_path
     assert not write_warmup_sentinel_payload(
         sentinel_path=tmp_path / "metafinder_warmup_done.json",
         payload={"bad": object()},
+    )
+
+
+def test_warmup_sentinel_requires_ga_warmup_match(tmp_path):
+    sentinel = tmp_path / "metafinder_warmup_done.json"
+    sentinel.write_text(
+        json.dumps(
+            {
+                "schema": WARMUP_SENTINEL_SCHEMA,
+                "ok": True,
+                "error": "",
+                "pid": 123,
+                "warmed_at": 456,
+                "warmup_fg": True,
+                "warmup_ga": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert not warmup_sentinel_is_fresh(
+        sentinel_path=sentinel,
+        warmup_fg=True,
+        warmup_ga=True,
     )
 
 

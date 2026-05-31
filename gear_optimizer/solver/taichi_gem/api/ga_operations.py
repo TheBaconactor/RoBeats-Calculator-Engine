@@ -55,6 +55,118 @@ _GA_EXACT_EVAL_RESULTS_REUSE_RAW: str | None = None
 _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED: int = 0
 _GA_EXACT_STATS_REUSE_RAW: str | None = None
 _GA_EXACT_STATS_REUSE_ENABLED: int = 0
+_GA_KERNELS_LIGHT_WARMED: bool = False
+
+
+def _warmup_ref_arrays() -> dict[str, np.ndarray]:
+    x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
+    return {
+        "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
+        "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
+        "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
+        "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
+        "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
+    }
+
+
+def _warmup_calc_song() -> dict:
+    timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
+    note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
+    return {
+        "metadata": {
+            "Song Name": "__ga_live_request_warmup__",
+            "Difficulty": "Warmup",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
+        },
+        "song_data": {
+            "timestamps": timestamps,
+            "chart_timestamps": timestamps,
+            "note_types": note_types,
+        },
+    }
+
+
+def warmup_ga_kernels_light() -> None:
+    """Warm the production-shaped GPU-native GA request path before real songs run."""
+    global _GA_KERNELS_LIGHT_WARMED
+    if _GA_KERNELS_LIGHT_WARMED:
+        return
+
+    import taichi as ti
+
+    from .timeline import precompute_timeline_gpu
+
+    n_slots = 9
+    n_runs = min(3, int(fields.MAX_GA_RUNS))
+    n_genomes = min(705, int(fields.MAX_GA_RUN_GENOMES), int(fields.MAX_GENOMES))
+    n_genomes = max(1, int(n_genomes))
+    n_runs = max(1, min(int(n_runs), max(1, int(fields.MAX_GENOMES) // int(n_genomes))))
+    total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
+    gem_scale_fever = 3
+    song_slot = 0
+
+    ref_arrays = _warmup_ref_arrays()
+    ensure_ready(ref_arrays)
+    precompute_timeline_gpu(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
+
+    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
+    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
+    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
+    ga_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
+    ga_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    ga_upload_initial_populations(
+        np.zeros((int(n_runs), int(n_genomes), int(n_slots)), dtype=np.int32),
+        n_runs=int(n_runs),
+        n_genomes=int(n_genomes),
+        n_slots=int(n_slots),
+    )
+    ga_load_initial_populations_batch(
+        run_idx_start=0,
+        n_runs=int(n_runs),
+        n_genomes_per_run=int(n_genomes),
+        n_slots=int(n_slots),
+    )
+    ga_seed_rng_runs(n_runs=int(n_runs), n_genomes_per_run=int(n_genomes), seed=12345)
+    ga_init_runs_best(run_idx_start=0, n_runs=int(n_runs), n_slots=int(n_slots))
+    ga_prepare_population_base_stats(
+        n_genomes=int(n_runs) * int(n_genomes),
+        n_slots=n_slots,
+    )
+    ga_evaluate_prepared_population(
+        int(n_runs) * int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
+        run_idx_start=0,
+        n_runs=int(n_runs),
+        n_genomes_per_run=int(n_genomes),
+        n_slots=int(n_slots),
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=1,
+        n_islands=1,
+        elites_per_island=1,
+    )
+    ga_pack_fg_candidates_table_segmented(
+        table_slot=song_slot,
+        run_idx_start=0,
+        n_runs=int(n_runs),
+        n_genomes_per_run=int(n_genomes),
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+    )
+    _ = ga_download_fg_selected_payload(table_slot=song_slot, n_runs=int(n_runs), limit=1)
+    ti.sync()
+    _GA_KERNELS_LIGHT_WARMED = True
 def _ga_eval_budget() -> int:
     global _GA_EVAL_BUDGET_RAW, _GA_EVAL_BUDGET
     raw = env_get("GPU_NATIVE_GA_EVAL_BUDGET", None)
