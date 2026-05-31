@@ -226,3 +226,14 @@ def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_ze
 
     assert "raise RuntimeError(f\"FG worker failed for {fg_song.config.task_key}\") from exc" in src
     assert "post_sender.send(build_failed_fg_update_payload(fg_song))" not in src
+
+
+def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    queue_idx = src.index("fg_pipeline.queue(song")
+    prep_idx = src.index("started_fg_prep = fg_pipeline.start_pending_prep", queue_idx)
+    submit_idx = src.index("fg_pipeline.submit_job", queue_idx)
+
+    assert queue_idx < prep_idx < submit_idx
+    assert "max_new=1" in src[prep_idx:submit_idx]

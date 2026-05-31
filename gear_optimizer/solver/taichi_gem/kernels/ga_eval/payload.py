@@ -687,8 +687,7 @@ def ga_select_fg_candidates_coords_kernel(
       - ga_fg_selected_coords[i,0] = stub_index (for i in [0,N))
 
     Notes:
-    - This kernel keeps the highest base-score effective-unique rows at the
-      fixed staging boundary. It is not an FG pruning heuristic.
+    - This kernel keeps the configured top base-score effective-unique rows.
     - The scan includes row 0 (per-run best across generations) so non-final-population
       winners remain eligible for the downstream FG funnel.
     - Minis are canonicalized (sorted) for keys.

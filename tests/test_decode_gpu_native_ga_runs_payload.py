@@ -40,14 +40,13 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
-def test_ga_payload_candidate_limit_is_canonical_full_staging_bound(monkeypatch):
-    monkeypatch.setenv("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", "1")
-    monkeypatch.setenv("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", "51")
+def test_fg_candidate_limit_is_configured_top_base_limit():
+    assert genetic._canonical_fg_candidate_limit(51) == 51
+    assert genetic._canonical_fg_candidate_limit(1) == int(LOADOUTS_PER_SONG_LIMIT)
+    assert genetic._canonical_fg_candidate_limit(6000) == 5000
 
-    assert genetic._resolve_ga_payload_candidate_limit(51) == 5000
 
-
-def test_decode_gpu_native_ga_runs_payload_keeps_overselected_persistence_frontier():
+def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     base_stats = {
         "Perfect Points": 1,
@@ -114,13 +113,12 @@ def test_decode_gpu_native_ga_runs_payload_keeps_overselected_persistence_fronti
             "primary_color": "Rush",
             "secondary_color": "Flow",
             "fg_candidate_limit": int(fg_limit),
-            "ga_payload_candidate_limit": int(payload_limit),
         },
         base_stats_fixed={},
         fg_candidate_limit=int(fg_limit),
     )
 
-    assert len(decoded) == payload_limit
+    assert len(decoded) == fg_limit
 
 
 def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():

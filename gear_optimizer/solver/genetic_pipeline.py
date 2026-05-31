@@ -81,14 +81,16 @@ def _require_gpu_fields():
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
 
 
-def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
+def _canonical_fg_candidate_limit(fg_candidate_limit: int) -> int:
     """
-    Canonical GA->FG staging bound.
-
-    Exact FG owns candidate reduction. GA may order generated candidates for the
-    fixed staging buffer, but must not apply a smaller heuristic funnel first.
+    Canonical FG candidate set size: the configured top base-score loadouts.
     """
-    return 5000
+    try:
+        limit = int(fg_candidate_limit)
+    except Exception as e:
+        logger.debug(f"genetic:_canonical_fg_candidate_limit: {e}")
+        limit = int(FG_CANDIDATE_LIMIT)
+    return max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(limit)))
 
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
@@ -438,13 +440,7 @@ def decode_gpu_native_ga_runs_payload(
         if int(runs_payload.shape[1]) < header_cols_min:
             raise ValueError(f"runs_payload has too few columns: {runs_payload.shape[1]} < {header_cols_min}")
 
-        payload_limit_raw = cfg_data.get("ga_payload_candidate_limit")
-        if payload_limit_raw is None:
-            payload_limit_raw = max(int(fg_candidate_limit), int(runs_payload.shape[0]) - 1)
-        eff_limit = int(payload_limit_raw or fg_candidate_limit)
-        if eff_limit <= 0:
-            eff_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
-        eff_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(eff_limit)))
+        eff_limit = _canonical_fg_candidate_limit(int(fg_candidate_limit))
 
         perf = _PERF_TIMING
         t_total = time.perf_counter() if perf else 0.0
@@ -868,10 +864,9 @@ def decode_gpu_native_ga_runs_payload(
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
     arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
 
-    # Deterministic GA->FG payload compaction.
-    # This is a staging boundary, not an exact FG pruning certificate: retain the
-    # highest base-score effective-unique rows and let response-frontier FG score
-    # every staged candidate exactly.
+    # Deterministic GA->FG payload compaction: retain the configured top
+    # base-score effective-unique rows and let response-frontier FG score that
+    # canonical bounded set.
     t_stub = time.perf_counter() if perf else 0.0
 
     scores_i64 = stub_scores.astype(np.int64, copy=False)
@@ -1281,12 +1276,10 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         max_ff_gems_global = int(total_budget)
     novelty_repair_attempts = _resolve_ga_novelty_repair_attempts(cfg_data)
 
-    fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
-    if fg_candidate_limit <= 0:
-        fg_candidate_limit = FG_CANDIDATE_LIMIT
-    fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
-    payload_candidate_limit = _resolve_ga_payload_candidate_limit(int(fg_candidate_limit))
-    cfg_data["ga_payload_candidate_limit"] = int(payload_candidate_limit)
+    fg_candidate_limit = _canonical_fg_candidate_limit(
+        int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
+    )
+    cfg_data["fg_candidate_limit"] = int(fg_candidate_limit)
 
     # Island model (mirrors _run_gpu_native_ga)
     num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
@@ -1851,7 +1844,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         selected_payload = gpu_api.ga_download_fg_selected_payload(
             table_slot=int(song_slot),
             n_runs=int(seg_len),
-            limit=int(payload_candidate_limit),
+            limit=int(fg_candidate_limit),
         )
         payload_segments.append(selected_payload)
         run_start_global += seg_len

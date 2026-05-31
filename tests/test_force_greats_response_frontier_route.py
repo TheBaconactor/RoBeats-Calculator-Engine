@@ -274,7 +274,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
-def test_prepare_fg_job_sync_does_not_prune_exact_fg_prep_by_fg_candidate_limit(monkeypatch):
+def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monkeypatch):
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
@@ -282,14 +282,14 @@ def test_prepare_fg_job_sync_does_not_prune_exact_fg_prep_by_fg_candidate_limit(
 
     seen: dict[str, int] = {}
 
-    def _assert_lossless_selector(candidates, *, limit, **_kwargs):
+    def _top_base_selector(candidates, *, limit, **_kwargs):
         seen["candidate_count"] = len(candidates or [])
         seen["limit"] = int(limit)
-        if int(limit) < len(candidates or []):
-            raise AssertionError("exact FG prep may not use FG_CandidateLimit as a pruning cap")
-        return list(candidates or [])
+        rows = list(candidates or [])
+        rows.sort(key=lambda cand: int(cand.get("BaseScore", cand.get("Score", 0)) or 0), reverse=True)
+        return rows[: int(limit)]
 
-    monkeypatch.setattr(stages, "select_effective_unique_ga_candidates", _assert_lossless_selector)
+    monkeypatch.setattr(stages, "select_effective_unique_ga_candidates", _top_base_selector)
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(stages, "build_loadout_entries", lambda *args, **kwargs: {})
     monkeypatch.setattr(
@@ -331,8 +331,9 @@ def test_prepare_fg_job_sync_does_not_prune_exact_fg_prep_by_fg_candidate_limit(
 
     stages.prepare_fg_job_sync(song, gpu_client=None)
 
-    assert seen == {"candidate_count": 77, "limit": 77}
-    assert len(song.runtime.decode.ga_candidates or []) == 77
+    assert seen == {"candidate_count": 77, "limit": 51}
+    assert len(song.runtime.decode.ga_candidates or []) == 51
+    assert [int(cand["BaseScore"]) for cand in song.runtime.decode.ga_candidates or []] == list(range(1000, 949, -1))
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 

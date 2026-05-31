@@ -752,6 +752,18 @@ def run_native_inflight_song_pipeline(
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                 song.runtime.post.deferred_post_emitted = False
                 fg_pipeline.queue(song, now_s=time.monotonic())
+                try:
+                    started_fg_prep = fg_pipeline.start_pending_prep(
+                        prepare_fg_job_sync,
+                        gpu_client=gpu_client,
+                        max_new=1,
+                        register_future=completion_tracker.register,
+                    )
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                    started_fg_prep = 0
+                if int(started_fg_prep) > 0:
+                    did_work = True
                 did_work = True
             for fg_completion in fg_pipeline.pop_completed_jobs():
                 fg_song = fg_completion.song

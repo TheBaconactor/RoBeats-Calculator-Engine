@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates, select_fg_candidates
 
 
 def _candidate(name: str, score: int, *, ft: int = 0, ff: int = 0) -> dict:
@@ -33,3 +33,12 @@ def test_select_fg_candidates_dedupes_concrete_loadout_by_best_base_score() -> N
     selected = select_fg_candidates([lower, higher], limit=10)
 
     assert selected == [higher]
+
+
+def test_select_effective_unique_ga_candidates_caps_to_top_base_limit() -> None:
+    candidates = [_candidate(str(i), i) for i in range(80)]
+
+    selected = select_effective_unique_ga_candidates(candidates, limit=51)
+
+    assert len(selected) == 51
+    assert [int(c["BaseScore"]) for c in selected] == list(range(79, 28, -1))

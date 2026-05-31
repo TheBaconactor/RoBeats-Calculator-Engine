@@ -48,10 +48,7 @@ def select_effective_unique_ga_candidates(
     selected_color: str = "",
 ) -> list[dict]:
     """
-    Keep one best-base candidate per persisted loadout hash.
-
-    Exact FG prep passes a lossless limit equal to the full incoming candidate
-    count. Smaller limits are output/persistence compaction only.
+    Keep the configured top base-score candidates after effective-loadout dedupe.
     """
     if not candidates:
         return []
@@ -95,10 +92,7 @@ def select_fg_candidates(
     limit: int,
 ) -> list[dict]:
     """
-    Deterministically compact candidates for persistence/output payloads.
-
-    This is not an exact FG pruning policy. It only deduplicates by concrete
-    loadout and retains the highest base-score rows for bounded result payloads.
+    Deterministically retain the configured top base-score concrete loadouts.
     """
     if not candidates:
         return []
