@@ -11,10 +11,7 @@ from typing import Any, Callable, Iterable
 from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
 from gear_optimizer.solver.native_inflight_config import NativeSong
-from gear_optimizer.solver.native_inflight_fg_payload import (
-    build_deferred_post_payload,
-    fg_pending_for_post,
-)
+from gear_optimizer.solver.native_inflight_fg_payload import build_deferred_post_payload
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +113,7 @@ def emit_deferred_post_payload(
     post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
     song.runtime.post.deferred_post_emitted = True
     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-    needs_fg_stage = bool(fg_pending_for_post(song))
+    needs_fg_stage = getattr(song.runtime.fg, "fg_variants", None) is None
     if bundle_parent is not None and needs_fg_stage:
         song.runtime.bundle.bundle_wait_for_fg = True
     elif bundle_parent is not None:

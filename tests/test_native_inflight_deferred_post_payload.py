@@ -104,7 +104,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
     monkeypatch.setattr(
         result_events,
-        "select_effective_unique_ga_candidates",
+        "select_top_base_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
@@ -168,7 +168,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
     monkeypatch.setattr(
         result_events,
-        "select_effective_unique_ga_candidates",
+        "select_top_base_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(
@@ -316,7 +316,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
 
     monkeypatch.setattr(
         result_events,
-        "select_effective_unique_ga_candidates",
+        "select_top_base_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(

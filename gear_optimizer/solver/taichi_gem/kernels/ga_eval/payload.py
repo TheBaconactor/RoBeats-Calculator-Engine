@@ -674,7 +674,7 @@ def _pick_best_base_stub(n_stub: ti.i32) -> ti.i32:
 
 
 @ti.kernel
-def ga_select_fg_candidates_coords_kernel(
+def ga_select_top_base_fg_candidate_coords_kernel(
     table_slot: ti.i32,
     n_runs: ti.i32,
     limit: ti.i32,

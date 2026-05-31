@@ -8,7 +8,7 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
@@ -17,57 +17,6 @@ from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_r
 from gear_optimizer.solver.native_inflight_config import NativeSong
 
 logger = logging.getLogger(__name__)
-
-def build_ga_candidates_for_post(
-    candidates: list[dict] | None,
-    *,
-    registry: Any,
-    minis_by_name: dict | None,
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-    limit: int = LOADOUTS_PER_SONG_LIMIT,
-    selector: Callable[..., list[dict]] = select_effective_unique_ga_candidates,
-    materializer: Callable[..., tuple[list[str], list[str]]] = materialize_candidate_names,
-) -> list[dict[str, Any]]:
-    selected = selector(
-        list(candidates or []),
-        limit=int(limit),
-        registry=registry,
-        minis_by_name=minis_by_name,
-        primary_color=str(primary_color or ""),
-        secondary_color=str(secondary_color or ""),
-        selected_color=str(selected_color or ""),
-    )
-    out: list[dict[str, Any]] = []
-    for cand in selected or []:
-        if not isinstance(cand, dict):
-            continue
-        data0 = cand.get("Data") or {}
-        candidate_for_post = dict(cand)
-        candidate_for_post["Data"] = dict(data0) if isinstance(data0, dict) else {}
-        gear_names, mini_names = materializer(
-            candidate_for_post,
-            registry=registry,
-            mutate=False,
-        )
-        out.append(
-            {
-                "Score": candidate_for_post.get("Score", 0),
-                "BaseScore": candidate_for_post.get("BaseScore", candidate_for_post.get("Score", 0)),
-                "Gear": list(gear_names),
-                "Minis": list(mini_names),
-                "Data": candidate_for_post.get("Data") or {},
-                "_fg_priority": candidate_for_post.get("_fg_priority", 0),
-                "loadout_hash": candidate_for_post.get("loadout_hash"),
-            }
-        )
-    return out
-def fg_scored_for_song(song: NativeSong) -> bool:
-    return getattr(song.runtime.fg, "fg_variants", None) is not None
-def fg_pending_for_post(song: NativeSong) -> bool:
-    return bool(not fg_scored_for_song(song))
-
 
 def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
     return {
@@ -81,10 +30,10 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
 def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
-    pending_fg_job = fg_pending_for_post(song)
+    pending_fg_job = getattr(song.runtime.fg, "fg_variants", None) is None
     fg_variants_post = (
         compact_fg_variants(list(getattr(song.runtime.fg, "fg_variants", None) or []))
-        if fg_scored_for_song(song)
+        if not pending_fg_job
         else []
     )
     candidates_for_post = (
@@ -93,16 +42,37 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         and getattr(song.runtime.decode, "ga_persistence_candidates", None)
         else song.runtime.decode.ga_candidates
     )
-    ga_candidates_post = build_ga_candidates_for_post(
+    selected_candidates = select_top_base_ga_candidates(
         list(candidates_for_post or []),
+        limit=int(LOADOUTS_PER_SONG_LIMIT),
         registry=song.gpu_inputs.registry,
         minis_by_name=song.gpu_inputs.minis_by_name,
         primary_color=str(song.gpu_inputs.meta_primary_color or ""),
         secondary_color=str(song.gpu_inputs.meta_secondary_color or ""),
         selected_color=str((song.gpu_inputs.cfg_data or {}).get("selected_color", "") or ""),
-        selector=select_effective_unique_ga_candidates,
-        materializer=materialize_candidate_names,
     )
+    ga_candidates_post: list[dict[str, Any]] = []
+    for cand in selected_candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        data_obj = cand.get("Data") or {}
+        data_post = dict(data_obj) if isinstance(data_obj, dict) else {}
+        gear_names, mini_names = materialize_candidate_names(
+            cand,
+            registry=song.gpu_inputs.registry,
+            mutate=False,
+        )
+        ga_candidates_post.append(
+            {
+                "Score": cand.get("Score", 0),
+                "BaseScore": cand.get("BaseScore", cand.get("Score", 0)),
+                "Gear": list(gear_names),
+                "Minis": list(mini_names),
+                "Data": data_post,
+                "_fg_priority": cand.get("_fg_priority", 0),
+                "loadout_hash": cand.get("loadout_hash"),
+            }
+        )
     return {
         "_deferred_post": True,
         "_pending_fg_job": bool(pending_fg_job),

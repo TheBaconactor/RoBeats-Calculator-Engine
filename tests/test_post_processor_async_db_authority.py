@@ -9,7 +9,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
     from gear_optimizer.pipeline import post_processor
-    from gear_optimizer.solver import native_inflight_orchestrator as result_events
+    from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_exact_authority.db"
@@ -46,7 +46,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
     monkeypatch.setattr(
         result_events,
-        "select_effective_unique_ga_candidates",
+        "select_top_base_ga_candidates",
         lambda candidates, **_kwargs: list(candidates),
     )
     monkeypatch.setattr(

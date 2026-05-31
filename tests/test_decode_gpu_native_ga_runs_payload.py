@@ -5,7 +5,7 @@ import pytest
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import stats_signature
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.solver import genetic_pipeline as genetic
 from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -119,6 +119,21 @@ def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
     )
 
     assert len(decoded) == fg_limit
+
+
+def test_decode_gpu_native_ga_runs_payload_rejects_legacy_raw_runs_payload():
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    registry = ItemRegistry({slot: [_item(f"{slot}0")] for slot in slots}, [_item(f"M{i}") for i in range(3)], slots)
+    legacy_payload = np.zeros((1, 2, 24), dtype=np.int32)
+
+    with pytest.raises(ValueError, match="2D selected payload"):
+        decode_gpu_native_ga_runs_payload(
+            runs_payload=legacy_payload,
+            registry=registry,
+            cfg_data={"selected_color": "Rush"},
+            base_stats_fixed={},
+            fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        )
 
 
 def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
@@ -251,9 +266,13 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
             }
         )
 
-    expected = select_fg_candidates(
+    expected = select_top_base_ga_candidates(
         stub_candidates,
         limit=int(fg_candidate_limit),
+        registry=registry,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
     )
 
     # Build the GPU-selected payload format expected by decode_gpu_native_ga_runs_payload.
@@ -288,12 +307,7 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     assert [_candidate_key(c, registry) for c in decoded] == [_candidate_key(c, registry) for c in expected]
 
 
-def test_decode_gpu_native_ga_runs_payload_prefers_max_candidate_over_header():
-    """
-    Regression test:
-    If the GPU-selected payload header best score is out-of-sync with the candidate
-    rows, decoding must still return the true best score/loadout.
-    """
+def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_best():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(4)] for slot in slots}
     mini_pool = [_item(f"M{i}") for i in range(6)]
@@ -334,18 +348,14 @@ def test_decode_gpu_native_ga_runs_payload_prefers_max_candidate_over_header():
     selected_payload[1, 1] = 1  # row_idx
     selected_payload[1, 2 : 2 + width] = packed
 
-    best_data, best_gear, best_minis, decoded = decode_gpu_native_ga_runs_payload(
-        runs_payload=selected_payload,
-        registry=registry,
-        cfg_data=cfg_data,
-        base_stats_fixed={},
-        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
-    )
-
-    assert int(best_data.get("Score", 0)) == 100
-    assert best_gear and best_minis
-    assert int(decoded[0].get("Score", 0)) == 100
-    assert decoded[0].get("GenomeIDs")
+    with pytest.raises(RuntimeError, match="candidate score exceeds header best score"):
+        decode_gpu_native_ga_runs_payload(
+            runs_payload=selected_payload,
+            registry=registry,
+            cfg_data=cfg_data,
+            base_stats_fixed={},
+            fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        )
 
 
 def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
@@ -397,9 +407,9 @@ def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     unique_ids[0] = registry.slot_start[0] + 1
 
     selected_payload[0, 0] = 3
-    selected_payload[0, 1] = 110
-    selected_payload[0, 2 : 2 + n_slots] = dup_ids_a
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([110, 1, 2, 0, 0, 0, 0], dtype=np.int32)
+    selected_payload[0, 1] = 150
+    selected_payload[0, 2 : 2 + n_slots] = dup_ids_better
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([150, 3, 4, 1, 1, 1, 1], dtype=np.int32)
     selected_payload[0, 2 + n_slots + 7] = 0
 
     packed1 = np.zeros((width,), dtype=np.int32)

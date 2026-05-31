@@ -15,7 +15,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_effective_unique_ga_candidates
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
@@ -480,7 +480,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     ga_candidates = runtime.decode.ga_candidates if isinstance(runtime.decode.ga_candidates, list) else list(runtime.decode.ga_candidates or [])
     preselect_ga_candidates = len(ga_candidates)
     t_candidate_select0 = time.perf_counter()
-    ga_candidates = select_effective_unique_ga_candidates(
+    ga_candidates = select_top_base_ga_candidates(
         ga_candidates,
         limit=int(fg_candidate_limit),
         registry=getattr(gpu_inputs, "registry", None),

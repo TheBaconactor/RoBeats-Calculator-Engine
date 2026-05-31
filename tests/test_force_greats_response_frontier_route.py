@@ -289,7 +289,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         rows.sort(key=lambda cand: int(cand.get("BaseScore", cand.get("Score", 0)) or 0), reverse=True)
         return rows[: int(limit)]
 
-    monkeypatch.setattr(stages, "select_effective_unique_ga_candidates", _top_base_selector)
+    monkeypatch.setattr(stages, "select_top_base_ga_candidates", _top_base_selector)
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(stages, "build_loadout_entries", lambda *args, **kwargs: {})
     monkeypatch.setattr(

@@ -1796,7 +1796,7 @@ def ga_download_fg_selected_payload(
         limit = int(fields.GA_FG_SELECTED_MAX)
     perf = env_flag("PERF_TIMING")
     t_total = time.perf_counter() if perf else 0.0
-    kernels.ga_select_fg_candidates_coords_kernel(
+    kernels.ga_select_top_base_fg_candidate_coords_kernel(
         int(table_slot),
         int(n_runs),
         int(limit),
