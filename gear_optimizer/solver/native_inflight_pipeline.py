@@ -482,7 +482,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     t_candidate_select0 = time.perf_counter()
     ga_candidates = select_effective_unique_ga_candidates(
         ga_candidates,
-        limit=fg_candidate_limit,
+        limit=max(int(fg_candidate_limit), int(preselect_ga_candidates)),
         registry=getattr(gpu_inputs, "registry", None),
         minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
         primary_color=str(gpu_inputs.meta_primary_color or ""),
