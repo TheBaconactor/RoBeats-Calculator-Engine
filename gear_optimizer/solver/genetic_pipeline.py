@@ -83,22 +83,12 @@ def _require_gpu_fields():
 
 def _resolve_ga_payload_candidate_limit(fg_candidate_limit: int) -> int:
     """
-    Internal GA->persistence overselect bound.
+    Canonical GA->FG staging bound.
 
-    FG still consumes `fg_candidate_limit`; this wider payload gives downstream DB
-    effective-hash dedupe enough candidates to retain a full frontier.
+    Exact FG owns candidate reduction. GA may order generated candidates for the
+    fixed staging buffer, but must not apply a smaller heuristic funnel first.
     """
-    try:
-        fg_limit = int(fg_candidate_limit)
-    except Exception as e:
-        logger.debug(f"genetic:_resolve_ga_payload_candidate_limit: {e}")
-        fg_limit = int(FG_CANDIDATE_LIMIT)
-    fg_limit = max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(fg_limit or FG_CANDIDATE_LIMIT)))
-
-    factor = max(1, env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", 4))
-    cap = max(fg_limit, env_int("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", 256))
-    target = max(fg_limit, fg_limit * int(factor))
-    return max(int(LOADOUTS_PER_SONG_LIMIT), min(5000, int(cap), int(target)))
+    return 5000
 
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:

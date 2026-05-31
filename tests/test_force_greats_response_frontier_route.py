@@ -251,6 +251,68 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
 
 
+def test_prepare_fg_job_sync_does_not_prune_exact_fg_prep_by_fg_candidate_limit(monkeypatch):
+    import configparser
+
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+
+    seen: dict[str, int] = {}
+
+    def _assert_lossless_selector(candidates, *, limit, **_kwargs):
+        seen["candidate_count"] = len(candidates or [])
+        seen["limit"] = int(limit)
+        if int(limit) < len(candidates or []):
+            raise AssertionError("exact FG prep may not use FG_CandidateLimit as a pruning cap")
+        return list(candidates or [])
+
+    monkeypatch.setattr(stages, "select_effective_unique_ga_candidates", _assert_lossless_selector)
+    monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
+    monkeypatch.setattr(stages, "build_loadout_entries", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        response_frontier_adapter,
+        "prepare_force_greats_response_frontier_plan",
+        lambda *_args, **_kwargs: "prepared-plan",
+    )
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+    ga_candidates = [
+        {
+            "Score": 1000 - i,
+            "BaseScore": 1000 - i,
+            "Gear": [f"G{i}_{slot}" for slot in range(6)],
+            "Minis": [f"M{i}_{slot}" for slot in range(3)],
+            "Data": {"_ga_gpu_run_idx": 0, "_ga_gpu_row_idx": i, "Selected Element": "Rush"},
+        }
+        for i in range(77)
+    ]
+
+    song = make_native_song(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {}},
+        cfg_dict={},
+        ga_candidates=ga_candidates,
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_key="song-db-key",
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        registry=None,
+        fixed_stats={},
+        cfg_data={"selected_color": "Rush"},
+        ref_arrays={},
+        song_slot=1,
+    )
+
+    stages.prepare_fg_job_sync(song, gpu_client=None)
+
+    assert seen == {"candidate_count": 77, "limit": 77}
+    assert len(song.runtime.decode.ga_candidates or []) == 77
+    assert song.runtime.fg.fg_response_frontier_plan == "prepared-plan"
+
+
 def test_prepare_fg_job_sync_does_not_wait_for_cpu_prewarm_before_dynamic_prep(monkeypatch):
     import configparser
 

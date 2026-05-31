@@ -40,6 +40,13 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
+def test_ga_payload_candidate_limit_is_canonical_full_staging_bound(monkeypatch):
+    monkeypatch.setenv("GPU_GA_FG_PAYLOAD_OVERSELECT_FACTOR", "1")
+    monkeypatch.setenv("GPU_GA_FG_PAYLOAD_OVERSELECT_MAX", "51")
+
+    assert genetic._resolve_ga_payload_candidate_limit(51) == 5000
+
+
 def test_decode_gpu_native_ga_runs_payload_keeps_overselected_persistence_frontier():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     base_stats = {
@@ -725,7 +732,7 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
     assert meta["ga_row_idx"] == 1
     assert meta["signature"] == stats_signature(base_stats, calc_song, "Rush")
     n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
-    assert meta["group_key"] == ("Rush", int(n_sections), min(int(non_fever_base), 15))
+    assert meta["group_key"] == ("Rush", int(n_sections), int(non_fever_base))
 
 
 def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeypatch):
