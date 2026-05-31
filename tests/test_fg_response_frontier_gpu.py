@@ -14,23 +14,16 @@ def _ref_arrays():
 
 
 def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_budget: int) -> None:
-    from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
-    from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
+    from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         reset_fg_response_frontier_payload_cache,
     )
 
+    _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
-    ft_values, ff_values, _remaining = ftff_combo_arrays(int(total_budget))
-    keys = set()
-    for base_stats in base_stats_list:
-        base_ft = int(base_stats.get("Fever Time", 0) or 0)
-        base_ff = int(base_stats.get("Fever Fill Rate", 0) or 0)
-        ft_stats = np.clip(base_ft + (ft_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-        ff_stats = np.clip(base_ff + (ff_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-        keys.update((int(ft), int(ff)) for ft, ff in zip(ft_stats.tolist(), ff_stats.tolist(), strict=True))
-    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=tuple(sorted(keys)))
+    full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
+    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=full_stat_grid)
 
 
 def test_ftff_projection_matches_canonical_stats_for_consumed_fields():
