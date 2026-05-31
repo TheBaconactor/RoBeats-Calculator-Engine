@@ -4,7 +4,7 @@ Taichi Kernels Package - Public Kernel Entry Points.
 This package splits the monolithic kernels.py (1,757 lines) into 6 focused modules:
 1. kernels_helpers.py - Field placeholders & lookup functions
 2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
-3. kernels_scoring.py - Score calculation & optimize_core_device
+3. kernels_scoring.py - Score calculation & exact-bound gem optimizer
 4. kernels_solvers_batch.py - Result staging kernels
 5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
@@ -99,7 +99,6 @@ from .kernels_ga import (
 
 # Import scoring functions
 from .kernels_scoring import (
-    _calc_head_score_grid,
     calc_score_cached_device,
 )
 
@@ -221,11 +220,9 @@ __all__ = [
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
-    "_calc_head_score_grid",
     "_calc_head_score_bits",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
-    "optimize_core_device",
     # Batch solver kernels
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
