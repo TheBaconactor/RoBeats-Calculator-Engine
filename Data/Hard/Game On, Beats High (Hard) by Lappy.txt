@@ -1,5 +1,5 @@
 Song Name	Game On, Beats High (Hard) by Lappy
-Difficulty	30
+Difficulty	29
 Primary Color	Beat
 Secondary Color	Vibe
 Last Note Time	120.066
