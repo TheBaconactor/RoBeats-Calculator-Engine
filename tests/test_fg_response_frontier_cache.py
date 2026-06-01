@@ -607,6 +607,7 @@ def test_fg_response_frontier_prebuild_has_no_public_flags() -> None:
 def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     allowed = {
         Path("gear_optimizer/solver/taichi_gem/force_greats/response_cache.py"),
+        Path("gear_optimizer/solver/fg_response_frontier_cache_prebuild.py"),
     }
     offenders: list[str] = []
     for path in Path("gear_optimizer").rglob("*.py"):
