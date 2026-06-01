@@ -1,5 +1,5 @@
 Song Name	World Eclipse (Easy) by Lappy
-Difficulty	7
+Difficulty	8
 Primary Color	Flow
 Secondary Color	Rush
 Last Note Time	125.806

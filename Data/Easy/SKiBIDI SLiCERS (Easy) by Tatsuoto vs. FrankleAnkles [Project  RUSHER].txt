@@ -1,5 +1,5 @@
 Song Name	SKiBIDI SLiCERS (Easy) by Tatsuoto vs. FrankleAnkles [Project : RUSHER]
-Difficulty	8
+Difficulty	10
 Primary Color	Chill
 Secondary Color	Chill
 Last Note Time	129.641
