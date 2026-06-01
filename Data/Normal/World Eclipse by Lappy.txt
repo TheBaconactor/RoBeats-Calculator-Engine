@@ -1,5 +1,5 @@
 Song Name	World Eclipse by Lappy
-Difficulty	16
+Difficulty	18
 Primary Color	Flow
 Secondary Color	Rush
 Last Note Time	125.806
@@ -8,7 +8,7 @@ Fever Fill	261
 Fever Time	18.870900
 Long Notes	138
 BPM	140
-Song Length	0.000000000
+Song Length	131.444580499
 
 Timing Points
 2.378	428.571429

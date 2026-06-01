@@ -1,5 +1,5 @@
 Song Name	SKiBIDI SLiCERS (OMEGA SiGMA+++++++++++ VIP) by Tatsuoto vs. FrankleAnkles (feat. Golden Freddy) [Project : RUSHER]
-Difficulty	21
+Difficulty	23
 Primary Color	Beat
 Secondary Color	Beat
 Last Note Time	163.652

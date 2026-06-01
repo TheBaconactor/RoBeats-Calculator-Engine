@@ -1,5 +1,5 @@
 Song Name	SKiBIDI SLiCERS by Tatsuoto vs. FrankleAnkles [Project : RUSHER]
-Difficulty	17
+Difficulty	19
 Primary Color	Chill
 Secondary Color	Chill
 Last Note Time	136.907
@@ -8,7 +8,7 @@ Fever Fill	332
 Fever Time	20.536050
 Long Notes	245
 BPM	256
-Song Length	0.000000000
+Song Length	138.109387755
 
 Timing Points
 1.907	234.375000

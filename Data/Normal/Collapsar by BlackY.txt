@@ -8,7 +8,7 @@ Fever Fill	370
 Fever Time	21.063600
 Long Notes	38
 BPM	188
-Song Length	0.000000000
+Song Length	149.400000000
 
 Timing Points
 3.829	319.148936

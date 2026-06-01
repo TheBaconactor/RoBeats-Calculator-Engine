@@ -1,5 +1,5 @@
 Song Name	WORLD RESET by RISK [Project : RUSHER]
-Difficulty	16
+Difficulty	18
 Primary Color	Vibe
 Secondary Color	Vibe
 Last Note Time	139.200
