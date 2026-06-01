@@ -645,15 +645,28 @@ def execute_force_greats_response_frontier_score_batch(
             error="Invalid payload for FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH (expected prepared batch)",
         )
     include_forced_counts = bool(payload.get("include_forced_counts", False))
+    timing = payload.get("timing")
+    if not isinstance(timing, dict):
+        timing = None
 
+    exec_t0 = time.perf_counter()
     try:
         if run_payload_fn is None:
             from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
                 score_prepared_force_greats_response_frontier_batch_raw_gpu as run_payload_fn,
             )
 
+        if timing is not None:
+            timing["owner_queue_s"] = max(
+                0.0,
+                (time.perf_counter_ns() - int(getattr(request, "submit_perf_ns", 0) or 0)) / 1_000_000_000.0,
+            )
         results = run_payload_fn(batch, include_forced_counts=bool(include_forced_counts))
+        if timing is not None:
+            timing["owner_exec_s"] = max(0.0, time.perf_counter() - float(exec_t0))
     except Exception as e:
+        if timing is not None:
+            timing["owner_exec_s"] = max(0.0, time.perf_counter() - float(exec_t0))
         return GpuResponse(
             request_id=request.request_id,
             success=False,

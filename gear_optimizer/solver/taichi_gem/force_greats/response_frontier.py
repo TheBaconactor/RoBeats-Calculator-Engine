@@ -75,9 +75,6 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_surface_head_coeffs: np.ndarray
     scoring_group_offsets: np.ndarray
     scoring_group_lengths: np.ndarray
-    scoring_logical_owners: np.ndarray | None
-    scoring_logical_surfaces: np.ndarray | None
-    scoring_logical_work_cumsum: np.ndarray | None
     scoring_unique_frontiers: int
     scoring_surface_compact_ms: float
     scoring_surface_head_coeff_ms: float
@@ -155,9 +152,6 @@ def _pack_scoring_surfaces_for_batch(
     np.ndarray,
     np.ndarray,
     np.ndarray,
-    np.ndarray | None,
-    np.ndarray | None,
-    np.ndarray | None,
     int,
     float,
     float,
@@ -205,9 +199,6 @@ def _pack_scoring_surfaces_for_batch(
         surface_head_coeffs,
         group_offsets,
         group_lengths,
-        None,
-        None,
-        None,
         int(unique_frontiers.shape[0]),
         compact_ms,
         head_coeff_ms,
@@ -690,9 +681,6 @@ def prepare_force_greats_response_frontier_scoring_batch(
         scoring_surface_head_coeffs,
         scoring_group_offsets,
         scoring_group_lengths,
-        scoring_logical_owners,
-        scoring_logical_surfaces,
-        scoring_logical_work_cumsum,
         scoring_unique_frontiers,
         scoring_surface_compact_ms,
         scoring_surface_head_coeff_ms,
@@ -726,9 +714,6 @@ def prepare_force_greats_response_frontier_scoring_batch(
         scoring_surface_head_coeffs=scoring_surface_head_coeffs,
         scoring_group_offsets=scoring_group_offsets,
         scoring_group_lengths=scoring_group_lengths,
-        scoring_logical_owners=scoring_logical_owners,
-        scoring_logical_surfaces=scoring_logical_surfaces,
-        scoring_logical_work_cumsum=scoring_logical_work_cumsum,
         scoring_unique_frontiers=scoring_unique_frontiers,
         scoring_surface_compact_ms=scoring_surface_compact_ms,
         scoring_surface_head_coeff_ms=scoring_surface_head_coeff_ms,
@@ -750,22 +735,10 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
     surface_head_coeffs = batch.scoring_surface_head_coeffs
     group_offsets = batch.scoring_group_offsets
     group_lengths = batch.scoring_group_lengths
-    logical_owners = batch.scoring_logical_owners
-    logical_surfaces = batch.scoring_logical_surfaces
-    logical_work_cumsum = batch.scoring_logical_work_cumsum
     if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
         batch.group_meta.shape[0]
     ):
         raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if logical_owners is not None or logical_surfaces is not None or logical_work_cumsum is not None:
-        if logical_owners is None or logical_surfaces is None or logical_work_cumsum is None:
-            raise ValueError("response frontier prepared logical surface arrays must be provided together")
-        if int(logical_owners.shape[0]) != int(np.sum(group_lengths, dtype=np.int64)) or int(
-            logical_surfaces.shape[0]
-        ) != int(logical_owners.shape[0]):
-            raise ValueError("response frontier prepared logical surface arrays have inconsistent lengths")
-        if int(logical_work_cumsum.shape[0]) != int(logical_owners.shape[0]) + 1:
-            raise ValueError("response frontier prepared logical work array has inconsistent length")
     if (
         int(surface_words.ndim) != 2
         or int(surface_words.shape[1]) != 8
@@ -786,9 +759,6 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
         surface_words=surface_words,
         surface_counts=surface_counts,
         surface_head_coeffs=surface_head_coeffs,
-        logical_owners=logical_owners,
-        logical_surfaces=logical_surfaces,
-        logical_work_cumsum=logical_work_cumsum,
     )
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
         raise ValueError("response frontier exact GPU batch returned the wrong number of group results")

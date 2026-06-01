@@ -66,6 +66,27 @@ def test_execute_force_greats_response_frontier_score_batch_forwards_payload_to_
     assert calls == [(batch, True)]
 
 
+def test_execute_force_greats_response_frontier_score_batch_records_owner_timing():
+    timing: dict[str, float] = {}
+
+    response = execute_force_greats_response_frontier_score_batch(
+        _request(
+            {
+                "batch": object(),
+                "timing": timing,
+            }
+        ),
+        in_process_queues=True,
+        abort_requested=lambda: False,
+        raise_if_abort_requested=lambda: None,
+        run_payload_fn=lambda *_args, **_kwargs: [],
+    )
+
+    assert response.success is True
+    assert timing["owner_exec_s"] >= 0.0
+    assert timing["owner_queue_s"] >= 0.0
+
+
 def test_execute_force_greats_response_frontier_score_batch_surfaces_runner_exception():
     response = execute_force_greats_response_frontier_score_batch(
         _request({"batch": object()}),

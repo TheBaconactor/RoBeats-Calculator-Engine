@@ -475,14 +475,12 @@ class GpuExecutor:
                 grouped_handlers = {
                     GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
                 }
-                def _execute_grouped_requests(
-                    request_type: GpuRequestType, requests: list[GpuRequest], handler
+                def _deliver_group_responses(
+                    request_type: GpuRequestType,
+                    requests: list[GpuRequest],
+                    responses: list[GpuResponse],
+                    dt_exec: float,
                 ) -> None:
-                    if not requests:
-                        return
-                    exec_started = perf_counter()
-                    responses = list(handler(requests) or [])
-                    dt_exec = perf_counter() - exec_started
                     response_count = int(len(responses))
                     for idx, req in enumerate(requests):
                         resp = responses[idx] if idx < response_count else None
@@ -502,20 +500,7 @@ class GpuExecutor:
                         self._ga_owner_turn_streak = min(1024, int(self._ga_owner_turn_streak) + 1)
                     else:
                         self._ga_owner_turn_streak = 0
-                execution_units = _plan_execution_units(
-                    batch,
-                    grouped_request_types=set(grouped_handlers),
-                )
-                for unit in execution_units:
-                    request_type = unit.request_type
-                    if unit.grouped:
-                        _execute_grouped_requests(
-                            request_type,
-                            list(unit.requests),
-                            handler=grouped_handlers[request_type],
-                        )
-                        continue
-                    req = unit.requests[0]
+                def _execute_single_request(req: GpuRequest) -> None:
                     exec_started = perf_counter()
                     response = self._execute_request(req)
                     dt_exec = perf_counter() - exec_started
@@ -532,6 +517,41 @@ class GpuExecutor:
                         self._live.record_exec(req.request_type, exec_sec=float(dt_exec), count=1)
                         self._maybe_live_report()
                     self._ga_owner_turn_streak = 0
+                def _execute_grouped_requests(
+                    request_type: GpuRequestType, requests: list[GpuRequest], handler
+                ) -> None:
+                    if not requests:
+                        return
+                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN and len(requests) > 1:
+                        for req in requests:
+                            exec_started = perf_counter()
+                            responses = list(handler([req]) or [])
+                            _deliver_group_responses(request_type, [req], responses, perf_counter() - exec_started)
+                            while True:
+                                fg_req = self._pop_ready_fg_continuation_nowait(batch_max_size=batch_max)
+                                if fg_req is None:
+                                    break
+                                batch.append(fg_req)
+                                _execute_single_request(fg_req)
+                        return
+                    exec_started = perf_counter()
+                    responses = list(handler(requests) or [])
+                    _deliver_group_responses(request_type, requests, responses, perf_counter() - exec_started)
+                execution_units = _plan_execution_units(
+                    batch,
+                    grouped_request_types=set(grouped_handlers),
+                )
+                for unit in execution_units:
+                    request_type = unit.request_type
+                    if unit.grouped:
+                        _execute_grouped_requests(
+                            request_type,
+                            list(unit.requests),
+                            handler=grouped_handlers[request_type],
+                        )
+                        continue
+                    req = unit.requests[0]
+                    _execute_single_request(req)
                 work_end_ts = perf_counter()
                 self._last_work_end_ts = float(work_end_ts)
             except Exception as e:
@@ -591,6 +611,30 @@ class GpuExecutor:
             perf_counter_fn=perf_counter,
             empty_exception=queue.Empty,
         )
+    def _pop_ready_fg_continuation_nowait(self, *, batch_max_size: int) -> GpuRequest | None:
+        if not self._in_process_queues:
+            return None
+        target = max(2, int(batch_max_size))
+        while len(self._staged_requests) < target:
+            if self._staged_requests:
+                first_type = self._staged_requests[0].request_type
+                if first_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH:
+                    return _pop_staged_request(self._staged_requests, index=0)
+                fg_idx = _staged_fg_continuation_index(list(self._staged_requests))
+                if fg_idx is not None:
+                    return _pop_staged_request(self._staged_requests, index=int(fg_idx))
+                if first_type != GpuRequestType.GPU_NATIVE_GA_RUN:
+                    return None
+                if any(
+                    req.request_type in (GpuRequestType.SHUTDOWN, GpuRequestType.LOAD_REF_ARRAYS)
+                    for req in list(self._staged_requests)[1:]
+                ):
+                    return None
+            try:
+                _stage_request(self._staged_requests, self._pop_queue_request(0.0))
+            except queue.Empty:
+                return None
+        return None
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
             _stage_request(self._staged_requests, self._pop_queue_request(timeout))

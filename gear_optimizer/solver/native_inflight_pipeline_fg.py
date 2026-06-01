@@ -562,21 +562,26 @@ def run_fg_job_sync(
     song.runtime.fg.fg_direct_ga_candidates = True
 
     def _submit_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
+        timing: dict[str, float] = {}
         handle = gpu_client.submit_force_greats_response_frontier_score_batch(
             {
                 "batch": batch,
                 "include_forced_counts": bool(include_forced_counts),
+                "timing": timing,
             }
         )
-        return handle
+        return handle, timing
 
-    def _materialize_prepared_fg_batch(batch, handle, *, include_forced_counts: bool = False):
+    def _materialize_prepared_fg_batch(batch, handle, timing, *, include_forced_counts: bool = False):
         inner_rows = handle.future.result()
-        return materialize_prepared_force_greats_response_frontier_batch_results(
+        materialize_t0 = time.perf_counter()
+        results = materialize_prepared_force_greats_response_frontier_batch_results(
             batch,
             inner_rows,
             include_forced_counts=bool(include_forced_counts),
         )
+        timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
+        return results
 
     prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
     if prepared_plan is None:
@@ -585,20 +590,27 @@ def run_fg_job_sync(
     prepared_handles = [
         (
             prepared.batch,
-            _submit_prepared_fg_batch(prepared.batch, include_forced_counts=False),
+            *_submit_prepared_fg_batch(prepared.batch, include_forced_counts=False),
         )
         for prepared in prepared_plan.prepared_batches
     ]
     prepared_results = [
-        _materialize_prepared_fg_batch(batch, handle, include_forced_counts=False)
-        for batch, handle in prepared_handles
+        _materialize_prepared_fg_batch(batch, handle, timing, include_forced_counts=False)
+        for batch, handle, timing in prepared_handles
     ]
     fg_variants = response_frontier_adapter.materialize_force_greats_response_frontier_plan_results(
         prepared_plan,
         prepared_results,
     )
     try:
-        song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
+        owner_run_s = sum(
+            max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0))
+            + max(0.0, float(timing.get("materialize_s", 0.0) or 0.0))
+            for _batch, _handle, timing in prepared_handles
+        )
+        song.runtime.fg.fg_run_wall_s = (
+            float(owner_run_s) if float(owner_run_s) > 0.0 else max(0.0, time.perf_counter() - float(run_wall_t0))
+        )
     except AttributeError:
         pass
     song.runtime.fg.fg_variants = list(fg_variants or [])
@@ -613,6 +625,14 @@ def run_fg_job_sync(
             song_key=song_key,
             metrics={
                 "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
+                "owner_exec_ms": sum(
+                    max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0)) * 1000.0
+                    for _batch, _handle, timing in prepared_handles
+                ),
+                "owner_queue_ms": sum(
+                    max(0.0, float(timing.get("owner_queue_s", 0.0) or 0.0)) * 1000.0
+                    for _batch, _handle, timing in prepared_handles
+                ),
             },
         )
     except Exception as e:

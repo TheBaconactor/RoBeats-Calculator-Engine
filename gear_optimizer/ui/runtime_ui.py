@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 
 from gear_optimizer.helpers.song_helpers.persistence_records import RECORD_UPDATE_SCORE_EPSILON
 from gear_optimizer.ui.progress import ProgressUI as _ProgressUI
@@ -155,7 +157,42 @@ class RuntimeUiMixin:
             logger.info(str(msg))
 
     def _start_hotkeys(self) -> None:
-        return None
+        if getattr(self, "_tui_progress", None) is not None:
+            return
+        if not bool(getattr(self, "_hotkeys_enabled", True)):
+            return
+        existing = getattr(self, "_hotkey_thread", None)
+        if isinstance(existing, threading.Thread) and existing.is_alive():
+            return
+        try:
+            import msvcrt
+        except Exception as e:
+            logger.debug(f"runtime_ui:_start_hotkeys: {e}")
+            return
+
+        def _runner() -> None:
+            while True:
+                if self._stop_requested_now():
+                    return
+                try:
+                    if not msvcrt.kbhit():
+                        time.sleep(0.05)
+                        continue
+                    ch = msvcrt.getwch()
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_start_hotkeys_runner: {e}")
+                    time.sleep(0.05)
+                    continue
+                if str(ch or "").strip().lower() != "q":
+                    continue
+                try:
+                    self.request_stop("hotkey stop")
+                except Exception as e:
+                    logger.debug(f"runtime_ui:_start_hotkeys_runner: {e}")
+                return
+
+        self._hotkey_thread = threading.Thread(target=_runner, name="Hotkeys", daemon=True)
+        self._hotkey_thread.start()
 
     def _stop_hotkeys(self) -> None:
         self._hotkey_thread = None

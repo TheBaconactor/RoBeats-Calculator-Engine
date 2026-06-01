@@ -71,3 +71,36 @@ def test_gather_batch_keeps_adjacent_ga_requests_in_one_owner_turn():
 
     assert [request.request_id for request in batch] == [1, 2]
     GpuExecutor._instance = None
+
+
+def test_ready_fg_continuation_can_cut_a_staged_ga_burst():
+    GpuExecutor._instance = None
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    executor._request_queue = Queue()
+    executor._staged_requests = deque([_request(GpuRequestType.GPU_NATIVE_GA_RUN, 1)])
+    executor._request_queue.put(_request(GpuRequestType.GPU_NATIVE_GA_RUN, 2))
+    executor._request_queue.put(_request(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, 3))
+
+    selected = executor._pop_ready_fg_continuation_nowait(batch_max_size=8)
+
+    assert selected.request_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH
+    assert selected.request_id == 3
+    assert [request.request_id for request in executor._staged_requests] == [1, 2]
+    GpuExecutor._instance = None
+
+
+def test_ready_fg_continuation_does_not_cross_ref_load_boundary():
+    GpuExecutor._instance = None
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    executor._request_queue = Queue()
+    executor._staged_requests = deque([_request(GpuRequestType.GPU_NATIVE_GA_RUN, 1)])
+    executor._request_queue.put(_request(GpuRequestType.LOAD_REF_ARRAYS, 2))
+    executor._request_queue.put(_request(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, 3))
+
+    selected = executor._pop_ready_fg_continuation_nowait(batch_max_size=8)
+
+    assert selected is None
+    assert [request.request_id for request in executor._staged_requests] == [1, 2]
+    GpuExecutor._instance = None

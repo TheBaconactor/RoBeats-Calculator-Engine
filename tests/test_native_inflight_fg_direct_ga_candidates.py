@@ -178,6 +178,58 @@ def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch
     assert [int(variant["fg_score"]) for variant in song.runtime.fg.fg_variants] == [121, 122]
 
 
+def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+
+    class _TimedGpuClient:
+        def submit_force_greats_response_frontier_score_batch(self, payload):
+            payload["timing"]["owner_queue_s"] = 12.0
+            payload["timing"]["owner_exec_s"] = 0.25
+            future = Future()
+            future.set_result([{"fg_score": 150, "data": {"ForceGreats": {"config": {"NonFever1": 1}}}}])
+            return SimpleNamespace(future=future)
+
+    monkeypatch.setattr(
+        response_frontier,
+        "materialize_prepared_force_greats_response_frontier_batch_results",
+        lambda _batch, inner_rows, **_kwargs: inner_rows,
+    )
+    monkeypatch.setattr(
+        response_frontier_adapter,
+        "materialize_force_greats_response_frontier_plan_results",
+        lambda _plan, prepared_results: prepared_results[0],
+    )
+
+    song = make_native_song(
+        fg_prep_future=None,
+        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
+        loadout_entries={},
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        ga_candidates=[],
+        registry=None,
+        fixed_stats={},
+        cfg_data={"selected_color": "Rush"},
+        ref_arrays={"Perfect Points": []},
+        calc_song={"metadata": {}, "song_data": {}},
+        fg_candidate_limit=51,
+        prev_record=None,
+        db_best_fg_score=0,
+        song_name="Timed FG (Hard) by pytest",
+        db_key="timed-fg-hard",
+        fp="Data/Hard/Timed FG (Hard) by pytest.txt",
+        cfg_dict={},
+        fg_variants=[],
+    )
+
+    fg_pipeline.run_fg_job_sync(song, gpu_client=_TimedGpuClient())
+
+    assert 0.25 <= song.runtime.fg.fg_run_wall_s < 1.0
+
+
 def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter

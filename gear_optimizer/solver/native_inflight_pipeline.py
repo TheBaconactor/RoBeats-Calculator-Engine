@@ -374,6 +374,44 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
         pass
 
 
+def prepare_ga_candidate_surface_for_fg(
+    song: NativeSong,
+    *,
+    fg_candidate_limit: int,
+    post_candidate_limit: int = LOADOUTS_PER_SONG_LIMIT,
+) -> tuple[list[dict], list[dict], int, bool]:
+    runtime = getattr(song, "runtime", song)
+    gpu_inputs = getattr(song, "gpu_inputs", song)
+    source_candidates = (
+        runtime.decode.ga_persistence_candidates
+        if isinstance(getattr(runtime.decode, "ga_persistence_candidates", None), list)
+        and getattr(runtime.decode, "ga_persistence_candidates", None)
+        else runtime.decode.ga_candidates
+    )
+    preselect_count = len(source_candidates or [])
+    selected = select_top_base_ga_candidates(
+        list(source_candidates or []),
+        limit=int(fg_candidate_limit),
+        registry=getattr(gpu_inputs, "registry", None),
+        minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
+        primary_color=str(gpu_inputs.meta_primary_color or ""),
+        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
+        selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
+    )
+    hydrated = False
+    if selected:
+        hydrated = True
+        hydrate_fg_candidate_stats(
+            selected,
+            base_stats_fixed=gpu_inputs.fixed_stats,
+            selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
+            cfg_data=getattr(gpu_inputs, "cfg_data", None),
+        )
+    runtime.decode.ga_candidates = selected
+    runtime.decode.ga_post_candidates = list(selected[: max(0, int(post_candidate_limit))])
+    return selected, runtime.decode.ga_post_candidates, int(preselect_count), bool(hydrated)
+
+
 def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, "runtime", song)
@@ -396,29 +434,13 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
     resolve_active_fg_calc_song(song)
-    ga_candidates = runtime.decode.ga_candidates if isinstance(runtime.decode.ga_candidates, list) else list(runtime.decode.ga_candidates or [])
-    preselect_ga_candidates = len(ga_candidates)
     t_candidate_select0 = time.perf_counter()
-    ga_candidates = select_top_base_ga_candidates(
-        ga_candidates,
-        limit=int(fg_candidate_limit),
-        registry=getattr(gpu_inputs, "registry", None),
-        minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
-        primary_color=str(gpu_inputs.meta_primary_color or ""),
-        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
-        selected_color=str((getattr(song.gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
+    ga_candidates, _post_candidates, preselect_ga_candidates, hydrated_fg_stats = prepare_ga_candidate_surface_for_fg(
+        song,
+        fg_candidate_limit=int(fg_candidate_limit),
+        post_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
     t_candidate_select = time.perf_counter()
-    runtime.decode.ga_candidates = ga_candidates
-    hydrated_fg_stats = False
-    if ga_candidates:
-        hydrated_fg_stats = True
-        hydrate_fg_candidate_stats(
-            ga_candidates,
-            base_stats_fixed=gpu_inputs.fixed_stats,
-            selected_color=str((getattr(song.gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-            cfg_data=getattr(song.gpu_inputs, "cfg_data", None),
-        )
     t_select = time.perf_counter()
     t_db = time.perf_counter()
     build_details = song.runtime.fg.fg_build_details

@@ -260,6 +260,19 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
     assert batch_calls == [4]
 
 
+def test_response_inner_logical_surface_plan_matches_group_work_order():
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
+
+    owners, local_surfaces, work_cumsum = response_inner._response_group_logical_surface_plan(
+        np.asarray([2, 0, 3], dtype=np.int32),
+        np.asarray([5, 7, 11], dtype=np.int64),
+    )
+
+    np.testing.assert_array_equal(owners, np.asarray([0, 0, 2, 2, 2], dtype=np.int32))
+    np.testing.assert_array_equal(local_surfaces, np.asarray([0, 1, 0, 1, 2], dtype=np.int32))
+    np.testing.assert_array_equal(work_cumsum, np.asarray([0, 5, 10, 21, 32, 43], dtype=np.int64))
+
+
 def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
@@ -453,16 +466,8 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
     assert seen_allow_pp == [True]
 
 
-def test_response_inner_combo_estimator_reuses_duplicate_group_meta(monkeypatch):
+def test_response_inner_combo_estimator_matches_duplicate_group_meta_rows():
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
-
-    seen_inputs: list[tuple[int, int, int, int, bool]] = []
-
-    def fake_combo_count(*, residual_budget, cur_pp, cur_cm, cur_fm, allow_pp):
-        seen_inputs.append((int(residual_budget), int(cur_pp), int(cur_cm), int(cur_fm), bool(allow_pp)))
-        return 1
-
-    monkeypatch.setattr(response_inner, "_response_inner_combo_count", fake_combo_count)
 
     group_meta = np.asarray(
         [
@@ -474,12 +479,34 @@ def test_response_inner_combo_estimator_reuses_duplicate_group_meta(monkeypatch)
     )
 
     combo_counts = response_inner._response_inner_combo_counts(group_meta, allow_pp=True)
+    expected = np.asarray(
+        [
+            response_inner._response_inner_combo_count(
+                residual_budget=5,
+                cur_pp=10,
+                cur_cm=20,
+                cur_fm=30,
+                allow_pp=True,
+            ),
+            response_inner._response_inner_combo_count(
+                residual_budget=5,
+                cur_pp=10,
+                cur_cm=20,
+                cur_fm=30,
+                allow_pp=True,
+            ),
+            response_inner._response_inner_combo_count(
+                residual_budget=6,
+                cur_pp=10,
+                cur_cm=20,
+                cur_fm=30,
+                allow_pp=True,
+            ),
+        ],
+        dtype=np.int64,
+    )
 
-    np.testing.assert_array_equal(combo_counts, np.asarray([1, 1, 1], dtype=np.int64))
-    assert seen_inputs == [
-        (5, 10, 20, 30, True),
-        (6, 10, 20, 30, True),
-    ]
+    np.testing.assert_array_equal(combo_counts, expected)
 
 
 def test_response_inner_combo_count_matches_bruteforce():

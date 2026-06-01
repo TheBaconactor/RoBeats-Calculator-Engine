@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,6 +41,62 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
     )
 
     assert set(calls) == {"timeline", "fg"}
+
+
+def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:
+    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_timeline_frontier_cache_prebuild",
+        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_fg_response_frontier_cache_prebuild",
+        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+    )
+
+    stream = io.StringIO()
+    cpu_work_manager.run_startup_cpu_work(
+        cfg=object(),
+        song_queue=[("Data/Easy/Fake.txt",)],
+        ref_arrays={},
+        data_root="Data",
+        announce_stream=stream,
+    )
+
+    assert "[Startup][Cache]" not in stream.getvalue()
+
+
+def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
+    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_timeline_frontier_cache_prebuild",
+        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1, disk=0, memory=0),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_fg_response_frontier_cache_prebuild",
+        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
+    )
+
+    stream = io.StringIO()
+    cpu_work_manager.run_startup_cpu_work(
+        cfg=object(),
+        song_queue=[("Data/Easy/Fake.txt",)],
+        ref_arrays={},
+        data_root="Data",
+        announce_stream=stream,
+    )
+
+    assert stream.getvalue().count("[Startup][Cache]") == 1
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:

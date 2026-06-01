@@ -8,13 +8,13 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
 from gear_optimizer.solver.native_inflight_config import NativeSong
+from gear_optimizer.solver.native_inflight_pipeline import prepare_ga_candidate_surface_for_fg
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +36,13 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         if not pending_fg_job
         else []
     )
-    candidates_for_post = (
-        song.runtime.decode.ga_persistence_candidates
-        if isinstance(getattr(song.runtime.decode, "ga_persistence_candidates", None), list)
-        and getattr(song.runtime.decode, "ga_persistence_candidates", None)
-        else song.runtime.decode.ga_candidates
-    )
-    selected_candidates = select_top_base_ga_candidates(
-        list(candidates_for_post or []),
-        limit=int(LOADOUTS_PER_SONG_LIMIT),
-        registry=song.gpu_inputs.registry,
-        minis_by_name=song.gpu_inputs.minis_by_name,
-        primary_color=str(song.gpu_inputs.meta_primary_color or ""),
-        secondary_color=str(song.gpu_inputs.meta_secondary_color or ""),
-        selected_color=str((song.gpu_inputs.cfg_data or {}).get("selected_color", "") or ""),
-    )
+    selected_candidates = getattr(song.runtime.decode, "ga_post_candidates", None)
+    if not isinstance(selected_candidates, list):
+        _fg_candidates, selected_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
+            song,
+            fg_candidate_limit=int(getattr(song.runtime.fg, "fg_candidate_limit", 0) or LOADOUTS_PER_SONG_LIMIT),
+            post_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        )
     ga_candidates_post: list[dict[str, Any]] = []
     for cand in selected_candidates or []:
         if not isinstance(cand, dict):

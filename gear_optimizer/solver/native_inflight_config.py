@@ -602,6 +602,7 @@ class NativeSongDecodeState:
     decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
     ga_persistence_candidates: Optional[list[JsonDict]] = None
+    ga_post_candidates: Optional[list[JsonDict]] = None
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
     best_minis: Optional[list[Any]] = None

@@ -668,9 +668,6 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
         scoring_surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         scoring_group_offsets=np.asarray([0], dtype=np.int32),
         scoring_group_lengths=np.asarray([1], dtype=np.int32),
-        scoring_logical_owners=np.asarray([0], dtype=np.int32),
-        scoring_logical_surfaces=np.asarray([0], dtype=np.int32),
-        scoring_logical_work_cumsum=np.asarray([0, 1], dtype=np.int64),
         scoring_unique_frontiers=1,
         scoring_surface_compact_ms=0.0,
         scoring_surface_head_coeff_ms=0.0,
@@ -684,6 +681,9 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
     def _score_must_receive_prepared_surfaces(**kwargs):
         assert kwargs["group_offsets"].tolist() == [0]
         assert kwargs["group_lengths"].tolist() == [1]
+        assert "logical_owners" not in kwargs
+        assert "logical_surfaces" not in kwargs
+        assert "logical_work_cumsum" not in kwargs
         assert kwargs["surface_words"].shape == (1, 8)
         assert kwargs["surface_counts"].shape == (1, 2)
         assert kwargs["surface_head_coeffs"].shape == (1, 4)
@@ -866,3 +866,6 @@ def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repac
     assert batch.scoring_group_offsets.tolist() == [2]
     assert batch.scoring_group_lengths.tolist() == [1]
     assert batch.scoring_surface_head_coeffs is surface_head_coeffs
+    assert not hasattr(batch, "scoring_logical_owners")
+    assert not hasattr(batch, "scoring_logical_surfaces")
+    assert not hasattr(batch, "scoring_logical_work_cumsum")

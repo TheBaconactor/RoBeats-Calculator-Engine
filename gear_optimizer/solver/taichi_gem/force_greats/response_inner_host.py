@@ -62,6 +62,71 @@ def _validate_surface(surface: FgResponseSurface, *, body_total: int) -> None:
         raise ValueError("FG response surface body count exceeds song body note count")
 
 
+@jit(nopython=True, cache=True)
+def _response_inner_combo_count_jit(residual_budget, cur_pp, cur_cm, cur_fm, allow_pp):
+    residual = int(residual_budget)
+    if residual < 0:
+        residual = 0
+    max_pp_gems = 0
+    if bool(allow_pp) and cur_pp < MAX_STAT_INDEX:
+        rem_pp = MAX_STAT_INDEX - cur_pp
+        max_pp_gems = rem_pp // GEM_SCALE_NORMAL
+        if rem_pp % GEM_SCALE_NORMAL != 0:
+            max_pp_gems += 1
+
+    max_cm_gems = 0
+    if cur_cm < MAX_STAT_INDEX:
+        rem_cm = MAX_STAT_INDEX - cur_cm
+        max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+        if rem_cm % GEM_SCALE_NORMAL != 0:
+            max_cm_gems += 1
+
+    max_fm_gems = 0
+    if cur_fm < MAX_STAT_INDEX:
+        rem_fm = MAX_STAT_INDEX - cur_fm
+        max_fm_gems = rem_fm // GEM_SCALE_FEVER
+        if rem_fm % GEM_SCALE_FEVER != 0:
+            max_fm_gems += 1
+
+    if max_pp_gems > residual:
+        max_pp_gems = residual
+    if max_cm_gems > residual:
+        max_cm_gems = residual
+    if max_fm_gems > residual:
+        max_fm_gems = residual
+
+    count = 0
+    cm_limit = max_cm_gems
+    pp_cap = max_pp_gems
+    fm_cap = max_fm_gems
+    for g_cm in range(cm_limit + 1):
+        leftover_after_cm = residual - g_cm
+        if leftover_after_cm < 0:
+            break
+        fm_limit = fm_cap
+        if fm_limit > leftover_after_cm:
+            fm_limit = leftover_after_cm
+        if fm_limit < 0:
+            continue
+        term_count = fm_limit + 1
+        if pp_cap >= leftover_after_cm:
+            count += term_count * (leftover_after_cm + 1) - (fm_limit * (fm_limit + 1) // 2)
+            continue
+
+        split = leftover_after_cm - pp_cap
+        if split < 0:
+            split = 0
+        if split > term_count:
+            split = term_count
+        count += split * (pp_cap + 1)
+        tail_terms = term_count - split
+        if tail_terms > 0:
+            count += tail_terms * (leftover_after_cm + 1) - ((split + fm_limit) * tail_terms // 2)
+    if count < 1:
+        count = 1
+    return int(count)
+
+
 def _response_inner_combo_count(
     *,
     residual_budget: int,
@@ -70,71 +135,34 @@ def _response_inner_combo_count(
     cur_fm: int,
     allow_pp: bool,
 ) -> int:
-    residual = max(0, int(residual_budget))
-    max_pp_gems = 0
-    if bool(allow_pp) and int(cur_pp) < MAX_STAT_INDEX:
-        rem_pp = MAX_STAT_INDEX - int(cur_pp)
-        max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-        if rem_pp % GEM_SCALE_NORMAL != 0:
-            max_pp_gems += 1
-
-    max_cm_gems = 0
-    if int(cur_cm) < MAX_STAT_INDEX:
-        rem_cm = MAX_STAT_INDEX - int(cur_cm)
-        max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-        if rem_cm % GEM_SCALE_NORMAL != 0:
-            max_cm_gems += 1
-
-    max_fm_gems = 0
-    if int(cur_fm) < MAX_STAT_INDEX:
-        rem_fm = MAX_STAT_INDEX - int(cur_fm)
-        max_fm_gems = rem_fm // GEM_SCALE_FEVER
-        if rem_fm % GEM_SCALE_FEVER != 0:
-            max_fm_gems += 1
-
-    max_pp_gems = min(int(max_pp_gems), int(residual))
-    max_cm_gems = min(int(max_cm_gems), int(residual))
-    max_fm_gems = min(int(max_fm_gems), int(residual))
-
     # Exact count of feasible (g_cm, g_fm, g_pp) tuples under:
-    # g_cm + g_fm + g_pp <= residual
-    # g_cm <= max_cm_gems, g_fm <= max_fm_gems, g_pp <= max_pp_gems
-    #
-    # We keep a single loop over g_cm and use a closed-form arithmetic sum for
-    # the g_fm dimension so planner overhead stays low on large warm batches.
-    count = 0
-    cm_limit = min(int(max_cm_gems), int(residual))
-    pp_cap = int(max_pp_gems)
-    fm_cap = int(max_fm_gems)
-    for g_cm in range(int(cm_limit) + 1):
-        leftover_after_cm = int(residual) - int(g_cm)
-        if leftover_after_cm < 0:
-            break
-        fm_limit = min(int(fm_cap), int(leftover_after_cm))
-        if fm_limit < 0:
-            continue
-        term_count = int(fm_limit) + 1
-        if pp_cap >= int(leftover_after_cm):
-            # sum_{g_fm=0..fm_limit} (leftover_after_cm - g_fm + 1)
-            count += int(term_count) * (int(leftover_after_cm) + 1) - (
-                int(fm_limit) * (int(fm_limit) + 1) // 2
-            )
-            continue
+    # g_cm + g_fm + g_pp <= residual and each gem stat cap.
+    return int(
+        _response_inner_combo_count_jit(
+            int(residual_budget),
+            int(cur_pp),
+            int(cur_cm),
+            int(cur_fm),
+            bool(allow_pp),
+        )
+    )
 
-        # g_fm in [0, split-1] saturates at pp_cap, remainder is arithmetic.
-        split = int(leftover_after_cm) - int(pp_cap)
-        if split < 0:
-            split = 0
-        if split > int(term_count):
-            split = int(term_count)
-        count += int(split) * (int(pp_cap) + 1)
-        tail_terms = int(term_count) - int(split)
-        if tail_terms > 0:
-            # sum_{g_fm=split..fm_limit} (leftover_after_cm - g_fm + 1)
-            count += int(tail_terms) * (int(leftover_after_cm) + 1) - (
-                (int(split) + int(fm_limit)) * int(tail_terms) // 2
+
+@jit(nopython=True, cache=True)
+def _response_inner_combo_counts_jit(group_meta_arr, allow_pp):
+    row_count = int(group_meta_arr.shape[0])
+    out = np.empty((row_count,), dtype=np.int64)
+    for idx in range(row_count):
+        out[idx] = int(
+            _response_inner_combo_count_jit(
+                int(group_meta_arr[idx, 0]),
+                int(group_meta_arr[idx, 1]),
+                int(group_meta_arr[idx, 2]),
+                int(group_meta_arr[idx, 3]),
+                bool(allow_pp),
             )
-    return max(1, int(count))
+        )
+    return out
 
 
 def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> np.ndarray:
@@ -144,22 +172,29 @@ def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> n
     row_count = int(group_meta_arr.shape[0])
     if row_count <= 0:
         return np.zeros((0,), dtype=np.int64)
-    combo_inputs = np.ascontiguousarray(group_meta_arr[:, :4], dtype=np.int32)
-    unique_inputs, inverse = np.unique(combo_inputs, axis=0, return_inverse=True)
-    unique_counts = np.asarray(
-        [
-            _response_inner_combo_count(
-                residual_budget=int(row[0]),
-                cur_pp=int(row[1]),
-                cur_cm=int(row[2]),
-                cur_fm=int(row[3]),
-                allow_pp=allow_pp,
-            )
-            for row in unique_inputs
-        ],
+    return np.ascontiguousarray(
+        _response_inner_combo_counts_jit(group_meta_arr[:, :4], bool(allow_pp)),
         dtype=np.int64,
     )
-    return np.ascontiguousarray(unique_counts[np.asarray(inverse, dtype=np.intp)], dtype=np.int64)
+
+
+@jit(nopython=True, cache=True)
+def _response_group_logical_surface_plan_jit(group_lengths, combo_counts, logical_surface_rows):
+    owners = np.empty((int(logical_surface_rows),), dtype=np.int32)
+    local_surfaces = np.empty((int(logical_surface_rows),), dtype=np.int32)
+    work_cumsum = np.empty((int(logical_surface_rows) + 1,), dtype=np.int64)
+    work_cumsum[0] = 0
+    row = 0
+    work = 0
+    for owner in range(int(group_lengths.shape[0])):
+        count = int(combo_counts[owner])
+        for local_surface in range(int(group_lengths[owner])):
+            owners[row] = int(owner)
+            local_surfaces[row] = int(local_surface)
+            work += count
+            work_cumsum[row + 1] = int(work)
+            row += 1
+    return owners, local_surfaces, work_cumsum
 
 
 def _response_group_logical_surface_plan(
@@ -178,24 +213,13 @@ def _response_group_logical_surface_plan(
     if logical_surface_rows <= 0:
         empty_i32 = np.zeros((0,), dtype=np.int32)
         return empty_i32, empty_i32, np.zeros((1,), dtype=np.int64)
+    return _response_group_logical_surface_plan_jit(
+        group_lengths_arr,
+        combo_counts_arr,
+        int(logical_surface_rows),
+    )
 
-    owners = np.ascontiguousarray(
-        np.repeat(np.arange(int(group_lengths_arr.shape[0]), dtype=np.int32), group_lengths_arr),
-        dtype=np.int32,
-    )
-    group_starts = np.empty((int(group_lengths_arr.shape[0]),), dtype=np.int64)
-    group_starts[0] = 0
-    if int(group_lengths_arr.shape[0]) > 1:
-        group_starts[1:] = np.cumsum(group_lengths_arr[:-1], dtype=np.int64)
-    local_surfaces = np.ascontiguousarray(
-        np.arange(logical_surface_rows, dtype=np.int64) - group_starts[owners],
-        dtype=np.int32,
-    )
-    logical_work = np.ascontiguousarray(combo_counts_arr[owners], dtype=np.int64)
-    work_cumsum = np.empty((logical_surface_rows + 1,), dtype=np.int64)
-    work_cumsum[0] = 0
-    np.cumsum(logical_work, dtype=np.int64, out=work_cumsum[1:])
-    return owners, local_surfaces, np.ascontiguousarray(work_cumsum, dtype=np.int64)
+
 @jit(nopython=True, cache=True)
 def _reduce_response_inner_chunk_jit(
     row_count,
@@ -224,6 +248,8 @@ def _reduce_response_inner_chunk_jit(
             out_rows[owner, 1] = int(chunk_local_surfaces[best_row])
             for col in range(9):
                 out_rows[owner, col + 2] = int(chunk_details[best_row, col])
+
+
 def optimize_response_frontier_inner_exact_gpu(
     surfaces: tuple[FgResponseSurface, ...] | list[FgResponseSurface],
     *,
@@ -356,9 +382,6 @@ def _score_response_group_meta_gpu(
     surface_words: np.ndarray,
     surface_counts: np.ndarray,
     surface_head_coeffs: np.ndarray | None = None,
-    logical_owners: np.ndarray | None = None,
-    logical_surfaces: np.ndarray | None = None,
-    logical_work_cumsum: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
@@ -400,8 +423,8 @@ def _score_response_group_meta_gpu(
 
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
-    combo_counts = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
-    work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts
+    combo_counts_all = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
+    work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts_all
     total_work = int(np.sum(work_by_group, dtype=np.int64))
     max_group_work = int(np.max(work_by_group)) if group_count > 0 else 0
     max_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
@@ -473,15 +496,10 @@ def _score_response_group_meta_gpu(
         return out_rows, int(logical_surface_rows)
 
     best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
-    if logical_owners is None or logical_surfaces is None or logical_work_cumsum is None:
-        logical_owners_all, logical_surfaces_all, logical_work_cumsum_all = _response_group_logical_surface_plan(
-            group_lengths_all,
-            combo_counts,
-        )
-    else:
-        logical_owners_all = np.ascontiguousarray(np.asarray(logical_owners, dtype=np.int32))
-        logical_surfaces_all = np.ascontiguousarray(np.asarray(logical_surfaces, dtype=np.int32))
-        logical_work_cumsum_all = np.ascontiguousarray(np.asarray(logical_work_cumsum, dtype=np.int64))
+    logical_owners_all, logical_surfaces_all, logical_work_cumsum_all = _response_group_logical_surface_plan(
+        group_lengths_all,
+        combo_counts_all,
+    )
     if int(logical_owners_all.shape[0]) != int(logical_surface_rows) or int(logical_surfaces_all.shape[0]) != int(
         logical_surface_rows
     ):

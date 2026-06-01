@@ -104,11 +104,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
     monkeypatch.setattr(
         result_events,
-        "select_top_base_ga_candidates",
-        lambda candidates, **_kwargs: list(candidates),
-    )
-    monkeypatch.setattr(
-        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),
@@ -163,14 +158,47 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     ]
 
 
+def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
+    from gear_optimizer.solver import native_inflight_fg_payload as result_events
+    from gear_optimizer.solver import native_inflight_pipeline as stages
+
+    song = make_native_song(
+        song_name="pytest_native_deferred_post_reuse",
+        task_key="pytest_native_deferred_post_reuse",
+        ga_candidates=[
+            {
+                "Score": 200,
+                "BaseScore": 200,
+                "Gear": ["G1"],
+                "Minis": ["M1"],
+                "Data": {"Stats": {"Perfect Points": 2}, "Selected Element": "Rush"},
+                "loadout_hash": "hash-1",
+            }
+        ],
+        best_data={"Score": 200, "BaseScore": 200},
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        cfg_data={"selected_color": "Rush"},
+        fixed_stats={},
+        fg_candidate_limit=51,
+    )
+
+    stages.prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=51, post_candidate_limit=1)
+    monkeypatch.setattr(
+        stages,
+        "select_top_base_ga_candidates",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("selected twice")),
+    )
+
+    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
+
+    assert payload["ga_candidates"][0]["Score"] == 200
+    assert payload["ga_candidates"][0]["Data"]["Stats"]["Perfect Points"] == 2
+
+
 def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
 
-    monkeypatch.setattr(
-        result_events,
-        "select_top_base_ga_candidates",
-        lambda candidates, **_kwargs: list(candidates),
-    )
     monkeypatch.setattr(
         result_events,
         "materialize_candidate_names",
@@ -314,11 +342,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
 
-    monkeypatch.setattr(
-        result_events,
-        "select_top_base_ga_candidates",
-        lambda candidates, **_kwargs: list(candidates),
-    )
     monkeypatch.setattr(
         result_events,
         "materialize_candidate_names",
