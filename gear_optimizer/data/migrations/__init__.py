@@ -128,6 +128,10 @@ def _user_tables(conn: sqlite3.Connection) -> set[str]:
     return {str(row[0] or "") for row in rows or [] if row and row[0]}
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return str(table) in _user_tables(conn)
+
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return {str(row[1] or "") for row in rows or [] if row and row[1]}
