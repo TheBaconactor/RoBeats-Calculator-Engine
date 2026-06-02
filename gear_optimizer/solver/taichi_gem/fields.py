@@ -124,7 +124,7 @@ ga_fg_candidates_download_staging: ti.Field = (
     None  # (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
 )
 GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed candidate row (24)
-GA_FG_SELECTED_MAX = 5000  # Must cover clamp in `read_fg_candidate_limit` (<=5000).
+GA_FG_SELECTED_MAX = 5000  # GPU GA->FG selection buffer capacity (safety bound; production funnel is LOADOUTS_PER_SONG_LIMIT).
 GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
 GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
 SKYLINE_FTFF_REDUCE_BLOCK_DIM = GA_FTFF_REDUCE_BLOCK_DIM

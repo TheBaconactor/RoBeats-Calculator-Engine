@@ -35,12 +35,15 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         if not pending_fg_job
         else []
     )
-    selected_candidates = getattr(song.runtime.decode, "ga_post_candidates", None)
+    selected_candidates = (
+        getattr(song.runtime.decode, "ga_candidates", None)
+        if getattr(song.runtime.decode, "fg_surface_prepared", False)
+        else None
+    )
     if not isinstance(selected_candidates, list):
-        _fg_candidates, selected_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
+        selected_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
             song,
-            fg_candidate_limit=int(getattr(song.runtime.fg, "fg_candidate_limit", 0) or LOADOUTS_PER_SONG_LIMIT),
-            post_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+            fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
         )
     ga_candidates_post: list[dict[str, Any]] = []
     for cand in selected_candidates or []:

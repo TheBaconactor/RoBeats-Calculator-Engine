@@ -10,11 +10,7 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.config import (
-    GASettings as GARuntimeSettings,
-    read_fg_candidate_limit,
-)
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict
@@ -225,18 +221,12 @@ def prepare_native_song(task: tuple) -> NativeSong:
         _cache_stats_inc("registry_hit")
         registry, gpu_data = cached_registry
     _cache_stats_maybe_emit()
-    fg_candidate_limit = read_fg_candidate_limit(
-        cfg,
-        default=FG_CANDIDATE_LIMIT,
-        min_limit=LOADOUTS_PER_SONG_LIMIT,
-    )
     ga_runtime_settings = GARuntimeSettings.from_config(cfg)
     user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
     cfg_data = {
         "selected_color": selected_color,
         "primary_color": str(p_color or ""),
         "secondary_color": str(s_color or ""),
-        "fg_candidate_limit": int(fg_candidate_limit),
         "user_ft": int(user_gems.fever_time),
         "user_ff": int(user_gems.fever_fill),
         "user_pp": int(user_gems.perfect_points),

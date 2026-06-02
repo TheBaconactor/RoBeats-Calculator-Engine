@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.force_greats_common import extract_base_stats
-from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
@@ -115,12 +115,15 @@ def _materialize_force_payload(
     selected_color: str,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    paired_base_score: int,
 ) -> dict[str, Any]:
     forced_counts = tuple(int(v) for v in fg_result.forced_counts)
     if not forced_counts:
         raise ValueError("skyline response frontier requires forced_counts on the solve result")
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    base_score = int(score_stats_exact(fg_result.stats, calc_song, ref_arrays))
+    base_score = int(paired_base_score)
+    if base_score <= 0:
+        raise ValueError("skyline response frontier requires a positive source paired base score.")
     exact_fg = evaluate_force_greats_exact(fg_result.stats, calc_song, ref_arrays, list(forced_counts))
     if not isinstance(exact_fg, dict):
         raise ValueError("skyline response frontier exact replay failed")
@@ -286,6 +289,7 @@ def score_retained_skyline_force_greats(
                 selected_color=selected_color,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
+                paired_base_score=base_score,
             )
             fg_score = int(force_payload["Score"])
             fg_base_score = int(force_payload["BaseScore"])

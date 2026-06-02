@@ -180,10 +180,9 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
         meta_secondary_color="Flow",
         cfg_data={"selected_color": "Rush"},
         fixed_stats={},
-        fg_candidate_limit=51,
     )
 
-    stages.prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=51, post_candidate_limit=1)
+    stages.prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=51)
     monkeypatch.setattr(
         stages,
         "select_top_base_ga_candidates",

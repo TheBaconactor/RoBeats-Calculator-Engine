@@ -144,6 +144,11 @@ def assert_authoritative_fg_entry(
             "FG persistence base score is not paired-source authoritative "
             f"(entry={actual_base}, force={force_base})."
         )
+    if expected_fg <= actual_base:
+        raise AssertionError(
+            "FG persistence entry does not beat its paired base "
+            f"(fg={expected_fg}, base={actual_base})."
+        )
     if actual_fg != expected_fg or force_score != expected_fg or meta_final != expected_fg:
         raise AssertionError(
             "FG persistence final score is not authoritative "

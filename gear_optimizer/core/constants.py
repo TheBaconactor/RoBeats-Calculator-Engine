@@ -56,8 +56,7 @@ GPU_GA_MIGRATE_COUNT = 2  # Elites to migrate per island (ring topology)
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
-LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score
-FG_CANDIDATE_LIMIT = 51  # Default FG funnel size (retention cap minimum)
+LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score (single FG funnel + leaderboard size)
 
 # --- SHARED ENUMS / TOKENS ---
 DIFFICULTIES = ("Easy", "Normal", "Hard")

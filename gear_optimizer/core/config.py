@@ -441,27 +441,6 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     return IterationEngineSettings(
         force_greats_debug=bool(force_greats_debug),
     )
-def read_fg_candidate_limit(
-    cfg: Any,
-    *,
-    default: int,
-    min_limit: int,
-    max_limit: int = 5000,
-) -> int:
-    """
-    Read and clamp `[IterationEngine].FG_CandidateLimit`.
-    This is used across multiple CPU/GPU pipelines; centralizing it prevents drift in
-    clamping semantics and limits "accidental" extreme values that could cause huge
-    DB reads or GPU batches.
-    """
-    return cfg_get_int(
-        cfg,
-        "IterationEngine",
-        "FG_CandidateLimit",
-        default,
-        clamp_min=int(min_limit),
-        clamp_max=int(max_limit),
-    )
 def find_and_cache_paths():
     """
     Automatically discover data file paths and cache them.

@@ -40,12 +40,6 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
-def test_fg_candidate_limit_is_configured_top_base_limit():
-    assert genetic._canonical_fg_candidate_limit(51) == 51
-    assert genetic._canonical_fg_candidate_limit(1) == int(LOADOUTS_PER_SONG_LIMIT)
-    assert genetic._canonical_fg_candidate_limit(6000) == 5000
-
-
 def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     base_stats = {

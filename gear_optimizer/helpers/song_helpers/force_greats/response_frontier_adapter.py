@@ -6,7 +6,7 @@ from typing import Any, Callable
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
-from ....solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from ....solver.scoring.exact_rescore import evaluate_force_greats_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
@@ -112,7 +112,7 @@ def _force_payload_from_response_frontier(
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
-    paired_base_score: int | None = None,
+    paired_base_score: int,
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
@@ -133,9 +133,9 @@ def _force_payload_from_response_frontier(
             )
         )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    replay_base_score = safe_int(paired_base_score, 0)
-    if replay_base_score <= 0:
-        replay_base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
+    paired_base = safe_int(paired_base_score, 0)
+    if paired_base <= 0:
+        raise ValueError("ForceGreats response frontier requires a positive source paired base score.")
     exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
     if not isinstance(exact_fg, dict):
         raise ValueError("ForceGreats response frontier exact replay failed")
@@ -144,7 +144,7 @@ def _force_payload_from_response_frontier(
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
     payload["Stats"] = dict(result.stats)
-    payload["BaseScore"] = int(replay_base_score)
+    payload["BaseScore"] = int(paired_base)
     payload["Score"] = int(final_score)
     payload["Selected Element"] = str(selected_element or payload.get("Selected Element", "") or "")
     payload["GemCounts"] = dict(result.gem_counts)
@@ -161,14 +161,6 @@ def _force_payload_from_response_frontier(
         "non_fever_base": int(frontier.non_fever_base),
     }
     return payload
-
-
-def _entry_paired_base_score(entry: dict[str, Any]) -> int:
-    for key in ("fg_base_score", "base_score", "BaseScore", "score", "Score"):
-        score = safe_int(entry.get(key), 0)
-        if score > 0:
-            return int(score)
-    return 0
 
 
 def _prepare_force_greats_response_frontier_plan_from_items(
@@ -298,7 +290,7 @@ def materialize_force_greats_response_frontier_plan_results(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            paired_base_score=_entry_paired_base_score(item["entry"]),
+            paired_base_score=safe_int(item["entry"].get("base_score"), 0),
         )
 
         entry = item["entry"]
@@ -306,18 +298,18 @@ def materialize_force_greats_response_frontier_plan_results(
         exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
         if exact_fg_score <= exact_base_score:
             continue
-        if int(exact_fg_score) > safe_int(entry.get("fg_score", 0), 0):
+        if exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
             entry["force"] = payload
-            entry["fg_score"] = int(exact_fg_score)
-            entry["fg_base_score"] = int(exact_base_score)
+            entry["fg_score"] = exact_fg_score
+            entry["fg_base_score"] = exact_base_score
         variants.append(
             {
                 "data": payload,
                 "gear": item["gear"],
                 "minis": item["minis"],
-                "score": int(exact_base_score),
-                "base_score": int(exact_base_score),
-                "fg_score": int(exact_fg_score),
+                "score": exact_base_score,
+                "base_score": exact_base_score,
+                "fg_score": exact_fg_score,
                 "_entry_ref": entry,
                 "_is_ga": bool(item["_is_ga"]),
             }
