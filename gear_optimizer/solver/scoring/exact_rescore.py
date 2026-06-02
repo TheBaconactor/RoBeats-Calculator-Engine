@@ -268,6 +268,7 @@ def score_stats_exact(
             raise ValueError(f"{axis} axis must include stat rows 0..{TOTAL_ROWS}")
         frontier_refs[axis] = axis_values[: TOTAL_ROWS + 1]
 
+    # Timeline frontier is the default authoritative base-scoring behavior.
     payload = build_or_load_timeline_frontier_payload(song_dict, frontier_refs).payload
     ft_idx = max(0, min(int(ft_idx), TOTAL_ROWS))
     ff_idx = max(0, min(int(ff_idx), TOTAL_ROWS))
