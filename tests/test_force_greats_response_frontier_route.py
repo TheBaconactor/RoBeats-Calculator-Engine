@@ -1070,8 +1070,8 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     assert calls[0][1] == "Rush"
     assert len(out) == 1
     assert out[0]["fg_score"] == 150
-    assert out[0]["base_score"] == 120
-    assert out[0]["data"]["BaseScore"] == 120
+    assert out[0]["base_score"] == 100
+    assert out[0]["data"]["BaseScore"] == 100
     assert out[0]["data"]["FT"] == 6
     assert out[0]["data"]["FF"] == 7
     assert out[0]["data"]["GemCounts"]["Element"] == 4
@@ -1087,6 +1087,41 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     assert out[0]["data"]["ForceGreats"]["config"] == {"NonFever1": 5, "NonFever2": 0}
     assert out[0]["gear"] == ["G1"]
     assert out[0]["minis"] == ["M1"]
+
+
+def test_process_force_greats_uses_source_paired_base_for_emit_gate(monkeypatch):
+    from types import SimpleNamespace
+
+    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+
+    monkeypatch.setattr(
+        adapter,
+        "_force_payload_from_response_frontier",
+        lambda **kwargs: {
+            "BaseScore": kwargs["paired_base_score"],
+            "RawBaseScore": kwargs["result"].raw_base,
+            "Score": kwargs["result"].exact_fg,
+        },
+    )
+    keep = {"base_score": 100, "gear": ["RawBaseInflated"], "minis": ["M1"], "fg_score": 0, "_source": "ga"}
+    drop = {"base_score": 160, "gear": ["BelowSourcePair"], "minis": ["M2"], "fg_score": 0, "_source": "ga"}
+    plan = SimpleNamespace(
+        calc_song={},
+        ref_arrays={},
+        variants=(),
+        pending_jobs=((keep, {}, "Rush", {}, "keep"), (drop, {}, "Rush", {}, "drop")),
+        prepared_batches=(SimpleNamespace(rows=(("keep", {}), ("drop", {}))),),
+    )
+    results = [
+        SimpleNamespace(best_score=150, raw_base=200, exact_fg=150),
+        SimpleNamespace(best_score=150, raw_base=90, exact_fg=150),
+    ]
+
+    out = adapter.materialize_force_greats_response_frontier_plan_results(plan, [results])
+
+    assert [(row["gear"], row["base_score"], row["fg_score"]) for row in out] == [(["RawBaseInflated"], 100, 150)]
+    assert keep["fg_base_score"] == 100
+    assert out[0]["data"]["BaseScore"] == 100
 
 
 def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):

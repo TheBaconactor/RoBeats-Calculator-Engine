@@ -112,6 +112,7 @@ def _force_payload_from_response_frontier(
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    paired_base_score: int | None = None,
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
@@ -132,7 +133,9 @@ def _force_payload_from_response_frontier(
             )
         )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    replay_base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
+    replay_base_score = safe_int(paired_base_score, 0)
+    if replay_base_score <= 0:
+        replay_base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
     exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
     if not isinstance(exact_fg, dict):
         raise ValueError("ForceGreats response frontier exact replay failed")
@@ -158,6 +161,14 @@ def _force_payload_from_response_frontier(
         "non_fever_base": int(frontier.non_fever_base),
     }
     return payload
+
+
+def _entry_paired_base_score(entry: dict[str, Any]) -> int:
+    for key in ("fg_base_score", "base_score", "BaseScore", "score", "Score"):
+        score = safe_int(entry.get(key), 0)
+        if score > 0:
+            return int(score)
+    return 0
 
 
 def _prepare_force_greats_response_frontier_plan_from_items(
@@ -260,9 +271,6 @@ def materialize_force_greats_response_frontier_plan_results(
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
-        known_base_score = int(entry["base_score"])
-        if int(result.best_score) <= int(known_base_score):
-            continue
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         pending_variants.append(
             {
@@ -271,7 +279,6 @@ def materialize_force_greats_response_frontier_plan_results(
                 "selected": selected,
                 "base_stats": base_stats,
                 "result": result,
-                "base_score": int(known_base_score),
                 "gear": gear_names,
                 "minis": mini_names,
                 "fg_score": int(result.best_score),
@@ -291,20 +298,25 @@ def materialize_force_greats_response_frontier_plan_results(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
+            paired_base_score=_entry_paired_base_score(item["entry"]),
         )
 
         entry = item["entry"]
         exact_fg_score = safe_int(payload.get("Score", 0), 0)
+        exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
+        if exact_fg_score <= exact_base_score:
+            continue
         if int(exact_fg_score) > safe_int(entry.get("fg_score", 0), 0):
             entry["force"] = payload
             entry["fg_score"] = int(exact_fg_score)
+            entry["fg_base_score"] = int(exact_base_score)
         variants.append(
             {
                 "data": payload,
                 "gear": item["gear"],
                 "minis": item["minis"],
-                "score": int(payload["BaseScore"]),
-                "base_score": int(payload["BaseScore"]),
+                "score": int(exact_base_score),
+                "base_score": int(exact_base_score),
                 "fg_score": int(exact_fg_score),
                 "_entry_ref": entry,
                 "_is_ga": bool(item["_is_ga"]),

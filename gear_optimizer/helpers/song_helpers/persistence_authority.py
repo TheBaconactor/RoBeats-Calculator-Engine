@@ -94,6 +94,16 @@ def _canonical_force_payload(
     return out
 
 
+def _source_fg_base_score(entry: Mapping[str, Any], force_obj: Mapping[str, Any]) -> int:
+    for source, field in ((entry, "fg_base_score"), (force_obj, "BaseScore"), (entry, "score")):
+        if field not in source:
+            continue
+        value = _to_int(source.get(field), field=field)
+        if value > 0:
+            return int(value)
+    raise ValueError("Authoritative FG persistence requires a positive source paired base score.")
+
+
 def assert_authoritative_fg_entry(
     entry: Mapping[str, Any],
     *,
@@ -115,7 +125,6 @@ def assert_authoritative_fg_entry(
         return
 
     stats = _force_stats(force_obj)
-    expected_replay_base = int(score_stats_exact(stats, calc_song, ref_arrays))
     config = extract_fg_config(force_obj)
     counts = _config_counts(config)
     fg_eval = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
@@ -130,10 +139,10 @@ def assert_authoritative_fg_entry(
     fg_meta = force_obj.get("ForceGreats")
     meta_final = _to_int((fg_meta or {}).get("final_score"), field="force.ForceGreats.final_score")
 
-    if actual_base != expected_replay_base or force_base != expected_replay_base:
+    if actual_base <= 0 or force_base != actual_base:
         raise AssertionError(
-            "FG persistence base score is not authoritative "
-            f"(expected={expected_replay_base}, entry={actual_base}, force={force_base})."
+            "FG persistence base score is not paired-source authoritative "
+            f"(entry={actual_base}, force={force_base})."
         )
     if actual_fg != expected_fg or force_score != expected_fg or meta_final != expected_fg:
         raise AssertionError(
@@ -161,8 +170,7 @@ def canonicalize_authoritative_fg_entry(
 
     force_normalized = normalize_force_payload(force_obj)
     stats = _force_stats(force_normalized)
-    replay_base_score = int(score_stats_exact(stats, calc_song, ref_arrays))
-    fg_base_score = int(replay_base_score)
+    fg_base_score = _source_fg_base_score(out, force_normalized)
     config = extract_fg_config(force_normalized)
     counts = _config_counts(config)
     if not counts or sum(int(value) for value in counts) <= 0:
