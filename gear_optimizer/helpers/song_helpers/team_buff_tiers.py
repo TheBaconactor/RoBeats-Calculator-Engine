@@ -4,7 +4,6 @@ from heapq import nsmallest
 import re
 import logging
 
-from ...core.constants import TOTAL_ROWS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     normalize_team_buff_sequence,
@@ -14,7 +13,6 @@ from ...core.team_buff import (
 )
 from ...core.utils import safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
-from ...solver.scoring_core import lookup_reference_py
 from .fg_config import has_valid_fg_config
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
@@ -457,15 +455,10 @@ def compute_team_buff_tier_leaderboards(
             gear = _flat_item_names(entry.get("gear") or [])
             minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
-            # Base multipliers/indices for GPU fixed scoring (tier changes do not affect CM/FM/FT/FF).
             ft_idx = _safe_int(stats_base.get("Fever Time", 0), 0)
             ff_idx = _safe_int(stats_base.get("Fever Fill Rate", 0), 0)
-            cm_factor = lookup_reference_py(
-                _safe_int(stats_base.get("Combo Multiplier", 0), 0), ref_arrays["Combo Multiplier"], TOTAL_ROWS
-            )
-            fm_factor = lookup_reference_py(
-                _safe_int(stats_base.get("Fever Multiplier", 0), 0), ref_arrays["Fever Multiplier"], TOTAL_ROWS
-            )
+            cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
+            fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
 
             base_pp_stat = _safe_int(stats_base.get("Perfect Points", 0), 0)
             base_primary_val = _safe_int(stats_base.get(primary_color, 0), 0) if primary_color else 0
@@ -507,8 +500,8 @@ def compute_team_buff_tier_leaderboards(
                     "source_fg_base_score": _safe_int(entry.get("fg_base_score"), _safe_int(entry.get("score"), 0)),
                     "source_fg_score": _safe_int(entry.get("fg_score"), 0),
                     "base": {
-                        "cm": float(cm_factor),
-                        "fm": float(fm_factor),
+                        "cm_stat": int(cm_stat),
+                        "fm_stat": int(fm_stat),
                         "ft_idx": int(ft_idx),
                         "ff_idx": int(ff_idx),
                         "pp": int(base_pp_stat),
@@ -536,9 +529,9 @@ def compute_team_buff_tier_leaderboards(
             )
 
     # Compute tiered scores for all retained entries.
-    from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_fixed_value_exact
+    from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 
-    # Group by calc_song object so we can batch GPU fixed scoring per song context.
+    # Group by calc_song object so repeated exact replays share the same frontier cache.
     per_entry_by_song_id: dict[int, list[dict]] = {}
     song_by_id: dict[int, dict] = {}
     for e in per_entry:
@@ -621,21 +614,18 @@ def compute_team_buff_tier_leaderboards(
                 pp_stat = int(b.get("pp", 0) or 0) + int(delta_pp)
                 p_val = int(b.get("p_val", 0) or 0) + int(delta_primary)
                 s_val = int(b.get("s_val", 0) or 0) + int(delta_secondary)
-                pp_factor = lookup_reference_py(pp_stat, ref_arrays["Perfect Points"], TOTAL_ROWS)
-                base_value = (p_val * 2) + s_val + float(pp_factor)
-                base_scores.append(
-                    int(
-                        score_fixed_value_exact(
-                            base_value=float(base_value),
-                            combo_mul=float(b.get("cm", 1.0) or 1.0),
-                            fever_mul=float(b.get("fm", 1.0) or 1.0),
-                            ft_idx=int(b.get("ft_idx", 0) or 0),
-                            ff_idx=int(b.get("ff_idx", 0) or 0),
-                            calc_song=group_song,
-                            ref_arrays=ref_arrays,
-                        )
-                    )
-                )
+                stats = {
+                    "Perfect Points": int(pp_stat),
+                    "Combo Multiplier": int(b.get("cm_stat", 0) or 0),
+                    "Fever Multiplier": int(b.get("fm_stat", 0) or 0),
+                    "Fever Time": int(b.get("ft_idx", 0) or 0),
+                    "Fever Fill Rate": int(b.get("ff_idx", 0) or 0),
+                }
+                if primary_color:
+                    stats[primary_color] = int(p_val)
+                if secondary_color:
+                    stats[secondary_color] = int(s_val)
+                base_scores.append(int(score_stats_exact(stats, group_song, ref_arrays)))
 
             fg_scores_for_tier = (fg_scores_by_sid.get(sid) or {}).get(str(tier)) if have_fg else None
 

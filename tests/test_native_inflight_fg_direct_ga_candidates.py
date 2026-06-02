@@ -55,7 +55,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     song = make_native_song(
         fg_prep_future=None,
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
-        loadout_entries={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
@@ -71,7 +70,6 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         ref_arrays={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
-        fg_direct_ga_candidates=True,
         prev_record=None,
         db_best_fg_score=0,
         song_name="AfterLife (Hard) by KepoWorld",
@@ -149,7 +147,6 @@ def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch
                 SimpleNamespace(batch="prepared-batch-b"),
             ]
         ),
-        loadout_entries={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
@@ -205,7 +202,6 @@ def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypa
     song = make_native_song(
         fg_prep_future=None,
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
-        loadout_entries={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
@@ -267,7 +263,6 @@ def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypat
 
     song = make_native_song(
         fg_prep_future=None,
-        loadout_entries={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
@@ -278,7 +273,6 @@ def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypat
         ref_arrays={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {}},
         fg_candidate_limit=51,
-        fg_direct_ga_candidates=False,
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
         prev_record=None,
         db_best_fg_score=0,

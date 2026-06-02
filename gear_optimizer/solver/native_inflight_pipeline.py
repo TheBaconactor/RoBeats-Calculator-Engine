@@ -14,11 +14,8 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.song_io import clone_calc_song
-from gear_optimizer.helpers.song_helpers.database_context import resolve_database_baseline_team_buff
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
-from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
-from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.inflight_utils import _truthy
@@ -326,7 +323,6 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     """
     config = getattr(song, "config", song)
     runtime = getattr(song, "runtime", song)
-    gpu_inputs = getattr(song, "gpu_inputs", song)
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
 
@@ -339,24 +335,7 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
         min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
     runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
-    runtime.fg.fg_direct_ga_candidates = True
-    song.runtime.fg.fg_build_details = make_build_details_fn(
-        gpu_inputs.meta_primary_color,
-        gpu_inputs.meta_secondary_color,
-        config.effective_difficulty,
-    )
     calc_song = resolve_active_fg_calc_song(song)
-    if getattr(song.runtime.fg, "loadout_entries", None) is None:
-        runtime.fg.loadout_entries = build_loadout_entries(
-            config.db_key,
-            [],
-            gpu_inputs.gears_by_name,
-            gpu_inputs.minis_by_name,
-            song.runtime.fg.fg_build_details,
-            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-            materialize_ga_details=False,
-            ga_registry=gpu_inputs.registry,
-        )
     if getattr(song.runtime.fg, "fg_response_scoring_bundle", None) is None:
         from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
             load_response_frontier_scoring_bundle,
@@ -406,6 +385,8 @@ def prepare_ga_candidate_surface_for_fg(
             base_stats_fixed=gpu_inputs.fixed_stats,
             selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
             cfg_data=getattr(gpu_inputs, "cfg_data", None),
+            calc_song=resolve_active_fg_calc_song(song),
+            ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
         )
     runtime.decode.ga_candidates = selected
     runtime.decode.ga_post_candidates = list(selected[: max(0, int(post_candidate_limit))])
@@ -415,7 +396,6 @@ def prepare_ga_candidate_surface_for_fg(
 def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = thread_cpu_time_s()
     runtime = getattr(song, "runtime", song)
-    gpu_inputs = getattr(song, "gpu_inputs", song)
     wall_t0 = time.perf_counter()
     prep_submit_t0 = song.runtime.fg.fg_prep_submit_t0
     queue_wait_ms = 0.0
@@ -423,7 +403,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
     config = getattr(song, "config", song)
     runtime = getattr(song, "runtime", song)
-    gpu_inputs = getattr(song, "gpu_inputs", song)
     cfg = getattr(config, "cfg", None)
     perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
@@ -442,42 +421,21 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     )
     t_candidate_select = time.perf_counter()
     t_select = time.perf_counter()
-    t_db = time.perf_counter()
-    build_details = song.runtime.fg.fg_build_details
-    if not callable(build_details):
-        build_details = make_build_details_fn(
-            gpu_inputs.meta_primary_color, gpu_inputs.meta_secondary_color, config.effective_difficulty
-        )
-        song.runtime.fg.fg_build_details = build_details
-    runtime.fg.fg_direct_ga_candidates = True
-    if getattr(song.runtime.fg, "loadout_entries", None) is None:
-        runtime.fg.loadout_entries = build_loadout_entries(
-            config.db_key,
-            [],
-            gpu_inputs.gears_by_name,
-            gpu_inputs.minis_by_name,
-            build_details,
-            team_buff=resolve_database_baseline_team_buff(cfg_dict=config.cfg_dict),
-            materialize_ga_details=False,
-            ga_registry=gpu_inputs.registry,
-        )
-    t_build = time.perf_counter()
     select_ms = (t_select - t0) * 1000.0
     candidate_select_ms = (t_candidate_select - t_candidate_select0) * 1000.0
     hydrate_stats_ms = (t_select - t_candidate_select) * 1000.0
-    db_wait_ms = (t_db - t_select) * 1000.0
-    build_ms = (t_build - t_db) * 1000.0
     plan_t0 = time.perf_counter()
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
 
-    runtime.fg.fg_response_frontier_plan = response_frontier_adapter.prepare_force_greats_response_frontier_plan(
-        getattr(song.runtime.fg, "loadout_entries", None) or {},
-        resolve_active_fg_calc_song(song),
-        getattr(song.gpu_inputs, "ref_arrays", None),
-        getattr(song.gpu_inputs, "meta_primary_color", ""),
-        ga_candidates=getattr(song.runtime.decode, "ga_candidates", None),
-        ga_registry=getattr(song.gpu_inputs, "registry", None),
-        scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
+    runtime.fg.fg_response_frontier_plan = (
+        response_frontier_adapter.prepare_force_greats_response_frontier_plan_for_ga_candidates(
+            ga_candidates,
+            resolve_active_fg_calc_song(song),
+            getattr(song.gpu_inputs, "ref_arrays", None),
+            getattr(song.gpu_inputs, "meta_primary_color", ""),
+            ga_registry=getattr(song.gpu_inputs, "registry", None),
+            scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
+        )
     )
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(
@@ -517,18 +475,13 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
     except AttributeError:
         pass
-    try:
-        loadouts_n = len(runtime.fg.loadout_entries or {})
-    except (TypeError, AttributeError):
-        loadouts_n = 0
     if perf:
         logger.debug(
             "[PERF][FGPrep] "
             f"limit={fg_candidate_limit} ga_in={preselect_ga_candidates} ga={len(ga_candidates)} "
-            f"loadouts={loadouts_n} select={select_ms:.1f}ms "
+            f"select={select_ms:.1f}ms "
             f"candidate_select={candidate_select_ms:.1f}ms hydrate={hydrate_stats_ms:.1f}ms "
-            f"db_wait={db_wait_ms:.1f}ms "
-            f"build={build_ms:.1f}ms plan={plan_ms:.1f}ms total={total_ms:.1f}ms"
+            f"plan={plan_ms:.1f}ms total={total_ms:.1f}ms"
         )
     try:
         song.runtime.fg.cpu_fg_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
@@ -544,15 +497,11 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "select_ms": float(select_ms),
                 "candidate_select_ms": float(candidate_select_ms),
                 "hydrate_stats_ms": float(hydrate_stats_ms),
-                "db_wait_ms": float(db_wait_ms),
-                "build_ms": float(build_ms),
                 "plan_ms": float(plan_ms),
                 "total_ms": float(total_ms),
                 "preselect_ga_candidates": int(preselect_ga_candidates),
                 "ga_candidates": int(len(ga_candidates or [])),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
-                "loadouts": int(len(getattr(song.runtime.fg, "loadout_entries", {}) or {})),
-                "direct_ga_candidates": int(bool(getattr(song.runtime.fg, "fg_direct_ga_candidates", False))),
                 "prepared_batches": int(len(prepared_batches)),
                 "prepared_group_rows": int(prepared_group_rows),
                 "prepared_surface_rows": int(prepared_surface_rows),

@@ -1,3 +1,5 @@
+import numpy as np
+
 from gear_optimizer.core.constants import GEM_SCALE_NORMAL
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 
@@ -81,3 +83,113 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
     stats = cand["Data"]["Stats"]
     assert cand["Data"]["BaseStats"]["Perfect Points"] == 10
     assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL
+
+
+def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_search_score():
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": 0.0,
+        },
+        "song_data": {"timestamps": [0.0]},
+    }
+    ref_arrays = {
+        "Perfect Points": [1.0] * 161,
+        "Combo Multiplier": [1.0] * 161,
+        "Fever Multiplier": [1.0] * 161,
+        "Fever Fill Rate": [1.0] * 161,
+        "Fever Time": [1.0] * 161,
+    }
+    cand = {
+        "Score": 999,
+        "BaseScore": 999,
+        "Data": {
+            "BaseStats": {
+                "Perfect Points": 0,
+                "Combo Multiplier": 0,
+                "Fever Multiplier": 0,
+                "Fever Time": 0,
+                "Fever Fill Rate": 0,
+                "Beat": 0,
+                "Vibe": 0,
+                "Rush": 10,
+                "Flow": 5,
+                "Chill": 0,
+            },
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+            "Selected Element": "Rush",
+        },
+    }
+
+    hydrate_fg_candidate_stats(
+        [cand],
+        base_stats_fixed={},
+        selected_color="Rush",
+        cfg_data={"selected_color": "Rush"},
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+    )
+
+    assert cand["SearchScore"] == 999
+    assert cand["Data"]["SearchScore"] == 999
+    assert cand["BaseScore"] == 26
+    assert cand["Score"] == 26
+    assert cand["Data"]["BaseScore"] == 26
+
+
+def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
+    timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+        },
+        "song_data": {"timestamps": timestamps},
+    }
+    ref_arrays = {
+        "Perfect Points": [1.0] * 161,
+        "Combo Multiplier": [2.0] * 161,
+        "Fever Multiplier": [4.0] * 161,
+        "Fever Fill Rate": [1.0] * 161,
+        "Fever Time": [1.0] * 161,
+    }
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 100,
+        "Flow": 50,
+    }
+    cand = {
+        "Score": 999,
+        "BaseScore": 999,
+        "Data": {
+            "Stats": dict(stats),
+            "BaseStats": dict(stats),
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+            "Selected Element": "Rush",
+        },
+    }
+
+    hydrate_fg_candidate_stats(
+        [cand],
+        base_stats_fixed={},
+        selected_color="Rush",
+        cfg_data={"selected_color": "Rush"},
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+    )
+
+    assert cand["SearchScore"] == 999
+    assert cand["BaseScore"] == 80336
+    assert cand["Data"]["BaseScore"] == 80336

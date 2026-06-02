@@ -59,11 +59,15 @@ def extract_base_stats(
             "Vibe": int(ff_gems) * int(GEM_STAT_TO_ELEMENT_SCALE),
         }
         if selected_color:
-            deltas[str(selected_color)] = g_ov * int(ELEMENTAL_GEM_SCALE)
+            selected = str(selected_color)
+            deltas[selected] = deltas.get(selected, 0) + g_ov * int(ELEMENTAL_GEM_SCALE)
 
         for key, delta in deltas.items():
             if int(delta) > 0 and int(gs(key, 0)) - int(delta) < -50:
-                return base
+                raise ValueError(
+                    "Cannot losslessly extract base stats: "
+                    f"{key!r} stat {int(gs(key, 0))} is smaller than applied gem delta {int(delta)}."
+                )
     except (TypeError, ValueError) as exc:
         logger.debug("force_greats_common:extract_base_stats: %s", exc)
         raise

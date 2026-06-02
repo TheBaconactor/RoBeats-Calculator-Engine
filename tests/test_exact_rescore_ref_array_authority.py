@@ -62,6 +62,53 @@ def test_score_stats_exact_uses_exact_replay_ref_arrays_for_float32_callers(monk
     assert int(er.score_stats_exact(stats, calc_song, caller_refs)) == expected
 
 
+def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.scoring.exact_rescore import score_fixed_value_exact, score_stats_exact
+
+    timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Song Name": "pytest_timing_frontier_authority",
+            "Difficulty": "Hard",
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+            "Total Notes": int(timestamps.shape[0]),
+        },
+        "song_data": {"timestamps": timestamps},
+    }
+    ref_arrays = {
+        "Perfect Points": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+        "Combo Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 2.0,
+        "Fever Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 4.0,
+        "Fever Fill Rate": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+        "Fever Time": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+    }
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 100,
+        "Flow": 50,
+    }
+
+    fixed_chart = score_fixed_value_exact(
+        base_value=251.0,
+        combo_mul=2.0,
+        fever_mul=4.0,
+        ft_idx=0,
+        ff_idx=0,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+    )
+    assert int(fixed_chart) == 79568
+    assert int(score_stats_exact(stats, calc_song, ref_arrays)) == 80336
+
+
 def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers import ref_array_builder as rab

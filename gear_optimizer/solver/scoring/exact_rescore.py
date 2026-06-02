@@ -238,9 +238,73 @@ def score_stats_exact(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
-    *,
-    fever_mask_buffer=None,
 ) -> int:
+    (
+        ref_arrays,
+        primary_val,
+        secondary_val,
+        pp_factor,
+        combo_mul,
+        fever_mul,
+        ft_idx,
+        ff_idx,
+    ) = _score_stat_inputs(stats, calc_song, ref_arrays)
+
+    song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
+    song_data = song_dict.get("song_data", {}) or {}
+    timestamps = song_data.get("chart_timestamps")
+    if timestamps is None:
+        timestamps = song_data.get("timestamps", ())
+    total_notes = int(len(timestamps))
+    if total_notes <= 0:
+        return 0
+
+    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
+    frontier_refs = dict(ref_arrays)
+    for axis in ("Fever Time", "Fever Fill Rate"):
+        axis_values = np.asarray(frontier_refs.get(axis, ())).reshape(-1)
+        if int(axis_values.shape[0]) < TOTAL_ROWS + 1:
+            raise ValueError(f"{axis} axis must include stat rows 0..{TOTAL_ROWS}")
+        frontier_refs[axis] = axis_values[: TOTAL_ROWS + 1]
+
+    payload = build_or_load_timeline_frontier_payload(song_dict, frontier_refs).payload
+    ft_idx = max(0, min(int(ft_idx), TOTAL_ROWS))
+    ff_idx = max(0, min(int(ff_idx), TOTAL_ROWS))
+    frontier_count = int(payload.grid_frontier_count[0, ft_idx, ff_idx])
+    if frontier_count <= 0:
+        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
+    frontier_offset = int(payload.grid_frontier_offset[0, ft_idx, ff_idx])
+    frontier_limit = int(frontier_offset + frontier_count)
+    if frontier_offset < 0 or frontier_limit > int(payload.frontier_pool_used):
+        raise ValueError("Timing frontier payload contains an invalid surface range")
+
+    best_score: int | None = None
+    for surface_idx in range(frontier_offset, frontier_limit):
+        score = _score_surface_counts_exact(
+            total_notes=total_notes,
+            primary_val=int(primary_val),
+            secondary_val=int(secondary_val),
+            pp_factor=float(pp_factor),
+            combo_mul=float(combo_mul),
+            fever_mul=float(fever_mul),
+            body_fever=safe_int(payload.grid_frontier_body_fever_pool[0, surface_idx], 0),
+            body_normal=safe_int(payload.grid_frontier_body_normal_pool[0, surface_idx], 0),
+            fever_words=payload.grid_frontier_masks_bits_pool[0, surface_idx],
+        )
+        if best_score is None or int(score) > int(best_score):
+            best_score = int(score)
+
+    if best_score is None:
+        raise ValueError("Timing frontier replay did not produce a score")
+    return int(best_score)
+
+
+def _score_stat_inputs(
+    stats: Mapping[str, Any],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], int, int, float, float, float, int, int]:
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     song_meta = extract_song_meta(calc_song)
     primary = song_meta.primary_color
@@ -257,18 +321,59 @@ def score_stats_exact(
         ref_arrays["Fever Multiplier"],
         TOTAL_ROWS,
     )
-    base_value = (safe_int(stats.get(primary, 0), 0) * 2) + safe_int(stats.get(secondary, 0), 0) + float(pp_factor)
+    primary_val = safe_int(stats.get(primary, 0), 0)
+    secondary_val = safe_int(stats.get(secondary, 0), 0)
 
-    return score_fixed_value_exact(
-        base_value=float(base_value),
-        combo_mul=float(combo_mul),
-        fever_mul=float(fever_mul),
-        ft_idx=safe_int(stats.get("Fever Time", 0), 0),
-        ff_idx=safe_int(stats.get("Fever Fill Rate", 0), 0),
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        fever_mask_buffer=fever_mask_buffer,
+    return (
+        ref_arrays,
+        int(primary_val),
+        int(secondary_val),
+        float(pp_factor),
+        float(combo_mul),
+        float(fever_mul),
+        safe_int(stats.get("Fever Time", 0), 0),
+        safe_int(stats.get("Fever Fill Rate", 0), 0),
     )
+
+
+def _score_surface_counts_exact(
+    *,
+    total_notes: int,
+    primary_val: int,
+    secondary_val: int,
+    pp_factor: float,
+    combo_mul: float,
+    fever_mul: float,
+    body_fever: int,
+    body_normal: int,
+    fever_words,
+) -> int:
+    head_len = min(max(0, int(total_notes)), 100)
+    body_total = max(0, int(total_notes) - 100)
+    body_fever = safe_int(body_fever, 0)
+    body_normal = safe_int(body_normal, 0)
+    if body_fever < 0 or body_normal < 0 or int(body_fever + body_normal) != int(body_total):
+        raise ValueError("Timing surface body counts do not match song body note count")
+
+    words = tuple(safe_int(value, 0) for value in tuple(fever_words)[:4])
+    if len(words) < 4:
+        words = words + (0,) * (4 - len(words))
+
+    base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
+    combo_f = float(combo_mul)
+    fever_f = float(fever_mul)
+    combo_val = floor(base_value * combo_f)
+    fever_val = floor(base_value * combo_f * fever_f)
+    score = (int(body_fever) * int(fever_val)) + (int(body_normal) * int(combo_val))
+
+    factor = (combo_f - 1.0) * base_value / 100.0
+    for i in range(head_len):
+        word_idx = i // 32
+        bit_idx = i % 32
+        ramp_val = base_value + (float(i + 1) * factor)
+        is_fever = ((int(words[word_idx]) >> int(bit_idx)) & 1) != 0
+        score += floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
+    return int(score)
 
 
 def score_response_surface_base_exact(
@@ -281,34 +386,27 @@ def score_response_surface_base_exact(
     combo_mul: float,
     fever_mul: float,
 ) -> int:
-    head_len = min(max(0, int(total_notes)), 100)
     body_total = max(0, int(total_notes) - 100)
     body_fever = safe_int(getattr(surface, "body_fever", 0), 0)
     if body_fever < 0 or body_fever > body_total:
         raise ValueError("FG response surface body fever count exceeds song body note count")
 
-    base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
-    combo_f = float(combo_mul)
-    fever_f = float(fever_mul)
-    combo_val = floor(base_value * combo_f)
-    fever_val = floor(base_value * combo_f * fever_f)
-    body_normal = body_total - body_fever
-    score = (int(body_fever) * int(fever_val)) + (int(body_normal) * int(combo_val))
-
-    factor = (combo_f - 1.0) * base_value / 100.0
-    fever_words = (
-        safe_int(getattr(surface, "fever0", 0), 0),
-        safe_int(getattr(surface, "fever1", 0), 0),
-        safe_int(getattr(surface, "fever2", 0), 0),
-        safe_int(getattr(surface, "fever3", 0), 0),
+    return _score_surface_counts_exact(
+        total_notes=int(total_notes),
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
+        pp_factor=float(pp_factor),
+        combo_mul=float(combo_mul),
+        fever_mul=float(fever_mul),
+        body_fever=int(body_fever),
+        body_normal=int(body_total - body_fever),
+        fever_words=(
+            safe_int(getattr(surface, "fever0", 0), 0),
+            safe_int(getattr(surface, "fever1", 0), 0),
+            safe_int(getattr(surface, "fever2", 0), 0),
+            safe_int(getattr(surface, "fever3", 0), 0),
+        ),
     )
-    for i in range(head_len):
-        word_idx = i // 32
-        bit_idx = i % 32
-        ramp_val = base_value + (float(i + 1) * factor)
-        is_fever = ((int(fever_words[word_idx]) >> int(bit_idx)) & 1) != 0
-        score += floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
-    return int(score)
 
 
 def score_force_greats_surface_base_exact(

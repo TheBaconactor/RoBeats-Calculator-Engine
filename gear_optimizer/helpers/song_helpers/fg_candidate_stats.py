@@ -8,6 +8,7 @@ import numpy as np
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.utils import get_selected_element
 from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
+from ...solver.scoring.exact_rescore import score_stats_exact
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
@@ -62,6 +63,8 @@ def hydrate_fg_candidate_stats(
     base_stats_fixed: dict,
     selected_color: str,
     cfg_data: Optional[dict] = None,
+    calc_song: Optional[dict] = None,
+    ref_arrays: Optional[dict] = None,
 ) -> None:
     """
     Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
@@ -99,10 +102,6 @@ def hydrate_fg_candidate_stats(
         if not isinstance(data, dict):
             data = {}
 
-        stats_existing = data.get("Stats")
-        if isinstance(stats_existing, dict) and stats_existing:
-            continue
-
         ft = data.get("FT", cand.get("FT", 0) or 0) or 0
         ff = data.get("FF", cand.get("FF", 0) or 0) or 0
         try:
@@ -126,54 +125,70 @@ def hydrate_fg_candidate_stats(
         g_ov = _int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
 
         sel = get_selected_element(data, "") or get_selected_element(cand, "") or str(selected_color or "")
-        base_stats = data.get("BaseStats")
-        if not (isinstance(base_stats, dict) and base_stats):
-            base_stats = cand.get("BaseStats")
-
-        if isinstance(base_stats, dict) and base_stats:
-            data["BaseStats"] = dict(base_stats)
-            stats = apply_gems_to_base_stats(
-                base_stats,
-                str(sel),
-                int(ft),
-                int(ff),
-                int(g_pp),
-                int(g_cm),
-                int(g_fm),
-                int(g_ov),
-                add_missing_element_key=False,
-            )
+        stats_existing = data.get("Stats")
+        if isinstance(stats_existing, dict) and stats_existing:
+            stats = dict(stats_existing)
+            base_stats = data.get("BaseStats")
+            if not (isinstance(base_stats, dict) and base_stats):
+                base_stats = cand.get("BaseStats")
+            if isinstance(base_stats, dict) and base_stats:
+                data["BaseStats"] = dict(base_stats)
         else:
-            genome = _candidate_genome(cand)
-            stats = dict(_base_fixed_stats())
-            if not sel:
-                sel = selected_color
-            for item in genome[:9]:
-                if not isinstance(item, dict) or not item:
-                    continue
-                for k, v in item.items():
-                    if k in SKIP_ITEM_KEYS:
-                        continue
-                    try:
-                        stats[k] = stats.get(k, 0) + v
-                    except Exception as e:
-                        logger.debug(f"fg_candidate_stats:hydrate_fg_candidate_stats: {e}")
-                        continue
+            base_stats = data.get("BaseStats")
+            if not (isinstance(base_stats, dict) and base_stats):
+                base_stats = cand.get("BaseStats")
 
-            data["BaseStats"] = dict(stats)
-            stats = apply_gems_to_base_stats(
-                stats,
-                str(sel),
-                int(ft),
-                int(ff),
-                int(g_pp),
-                int(g_cm),
-                int(g_fm),
-                int(g_ov),
-                add_missing_element_key=False,
-            )
+            if isinstance(base_stats, dict) and base_stats:
+                data["BaseStats"] = dict(base_stats)
+                stats = apply_gems_to_base_stats(
+                    base_stats,
+                    str(sel),
+                    int(ft),
+                    int(ff),
+                    int(g_pp),
+                    int(g_cm),
+                    int(g_fm),
+                    int(g_ov),
+                    add_missing_element_key=False,
+                )
+            else:
+                genome = _candidate_genome(cand)
+                stats = dict(_base_fixed_stats())
+                if not sel:
+                    sel = selected_color
+                for item in genome[:9]:
+                    if not isinstance(item, dict) or not item:
+                        continue
+                    for k, v in item.items():
+                        if k in SKIP_ITEM_KEYS:
+                            continue
+                        try:
+                            stats[k] = stats.get(k, 0) + v
+                        except Exception as e:
+                            logger.debug(f"fg_candidate_stats:hydrate_fg_candidate_stats: {e}")
+                            continue
 
-        base_score = _int(cand.get("BaseScore", cand.get("Score", 0) or 0), 0)
+                data["BaseStats"] = dict(stats)
+                stats = apply_gems_to_base_stats(
+                    stats,
+                    str(sel),
+                    int(ft),
+                    int(ff),
+                    int(g_pp),
+                    int(g_cm),
+                    int(g_fm),
+                    int(g_ov),
+                    add_missing_element_key=False,
+                )
+
+        search_score = _int(cand.get("SearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)), 0)
+        if (calc_song is None) != (ref_arrays is None):
+            raise ValueError("calc_song and ref_arrays must be provided together for canonical FG candidate scores")
+        base_score = int(score_stats_exact(stats, calc_song, ref_arrays)) if calc_song is not None else search_score
+        cand["SearchScore"] = int(search_score)
+        cand["Score"] = int(base_score)
+        cand["BaseScore"] = int(base_score)
+        data["SearchScore"] = int(search_score)
         data["Score"] = int(base_score)
         data["BaseScore"] = int(base_score)
         data["FT"] = int(ft)

@@ -46,11 +46,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
     monkeypatch.setattr(
         result_events,
-        "select_top_base_ga_candidates",
-        lambda candidates, **_kwargs: list(candidates),
-    )
-    monkeypatch.setattr(
-        result_events,
         "materialize_candidate_names",
         lambda candidate, *, registry=None, mutate=False: (
             list(candidate.get("Gear") or []),

@@ -14,12 +14,11 @@ import sys
 import time
 from typing import Dict, List, Tuple
 
-from gear_optimizer.core.parsing import env_get
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from gear_optimizer.core.config import load_config, read_fg_candidate_limit, read_fg_search_radius, read_iteration_engine_settings
+from gear_optimizer.core.config import load_config
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.csv_parser import read_table
@@ -33,7 +32,6 @@ from gear_optimizer.data.database import (
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 from gear_optimizer.helpers.song_helpers import (
     ReplayContext,
-    build_loadout_entries,
     canonicalize_and_assemble,
     process_force_greats,
 )
@@ -118,10 +116,6 @@ def _best_fg_improving(persist_entries: List[dict]) -> int:
     return int(best)
 
 
-def _truthy(val: str) -> bool:
-    return str(val or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Drain pending FG jobs using GPU-only ForceGreats.")
     parser.add_argument("--limit", type=int, default=0, help="Max pending jobs to process (0 = all)")
@@ -144,10 +138,6 @@ def main() -> int:
 
     cfg = load_config()
     cfg_dict = cfg_to_dict(cfg)
-    ie = read_iteration_engine_settings(cfg)
-
-    fg_candidate_limit = read_fg_candidate_limit(cfg, default=100, min_limit=51)
-    fg_search_radius = read_fg_search_radius(cfg)
 
     data_root = PATHS.data_dir
     song_map = _build_song_map(data_root)
@@ -230,17 +220,6 @@ def main() -> int:
         attempt_lifetime = 0
         attempts_first = 0
 
-        # Build union entries (DB + GA candidates) for FG evaluation.
-        loadout_entries = build_loadout_entries(
-            song_name,
-            True,
-            ga_candidates,
-            fg_candidate_limit,
-            gears_by_name,
-            minis_by_name,
-            build_details_fn,
-        )
-
         try:
             # ForceGreats emits a lot of diagnostic output. For bulk draining, keep stdout readable
             # and write per-song details to a log file unless --verbose is requested.
@@ -249,29 +228,17 @@ def main() -> int:
                     logf.write(f"\n=== {song_name} ===\n")
                     with contextlib.redirect_stdout(logf), contextlib.redirect_stderr(logf):
                         fg_variants = process_force_greats(
-                            loadout_entries,
-                            ie.manual_force_greats,
-                            ie.force_greats_config,
+                            ga_candidates,
                             calc_song,
                             ref_arrays,
                             meta_primary,
-                            build_details_fn,
-                            use_gpu=True,
-                            fg_search_radius=fg_search_radius,
-                            perf_timing=_truthy(env_get("PERF_TIMING", "0")),
                         )
             else:
                 fg_variants = process_force_greats(
-                    loadout_entries,
-                    ie.manual_force_greats,
-                    ie.force_greats_config,
+                    ga_candidates,
                     calc_song,
                     ref_arrays,
                     meta_primary,
-                    build_details_fn,
-                    use_gpu=True,
-                    fg_search_radius=fg_search_radius,
-                    perf_timing=_truthy(env_get("PERF_TIMING", "0")),
                 )
         except Exception as exc:
             msg = f"[DrainFG][ERROR] {song_name}: {type(exc).__name__}: {exc}"
@@ -303,7 +270,7 @@ def main() -> int:
         persist_entries = canonicalize_and_assemble(
             db_payload=db_payload,
             ga_candidates=ga_candidates,
-            loadout_entries=loadout_entries,
+            loadout_entries=None,
             build_details_fn=build_details_fn,
             replay_ctx=ReplayContext(
                 calc_song=calc_song,

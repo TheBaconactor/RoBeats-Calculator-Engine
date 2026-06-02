@@ -11,11 +11,11 @@ __all__ = ["process_force_greats"]
 
 
 def process_force_greats(
-    loadout_entries,
+    ga_candidates,
     calc_song,
     ref_arrays,
     meta_primary_color,
-    ga_candidates=None,
+    *,
     ga_registry=None,
 ):
     from .response_frontier_adapter import process_force_greats_response_frontier_gpu
@@ -23,15 +23,14 @@ def process_force_greats(
         score_prepared_force_greats_response_frontier_batch_gpu,
     )
 
-    total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
+    total_entries = int(len(ga_candidates or ()))
     logger = logging.getLogger(__name__)
-    logger.debug("[ForceGreats] Processing %s candidate loadouts (DB + GA)...", total_entries)
+    logger.debug("[ForceGreats] Processing %s GA candidates...", total_entries)
     return process_force_greats_response_frontier_gpu(
-        loadout_entries,
+        ga_candidates,
         calc_song,
         ref_arrays,
         meta_primary_color,
-        ga_candidates=ga_candidates,
         ga_registry=ga_registry,
         score_prepared_batch=score_prepared_force_greats_response_frontier_batch_gpu,
     )

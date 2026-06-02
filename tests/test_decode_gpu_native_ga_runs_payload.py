@@ -121,6 +121,97 @@ def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
     assert len(decoded) == fg_limit
 
 
+def test_decode_gpu_native_ga_runs_payload_includes_header_best_candidate():
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {slot: [_item(f"{slot}{i}") for i in range(3)] for slot in slots}
+    mini_pool = [_item(f"M{i}") for i in range(5)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    n_slots = 9
+    packed_width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((3, 2 + packed_width), dtype=np.int32)
+    selected_payload[0, 0] = 2
+
+    slot_start = np.asarray(registry.slot_start, dtype=np.int32)
+    header_ids = np.asarray(
+        [slot_start[i] + 2 for i in range(6)] + [slot_start[6] + 0, slot_start[6] + 1, slot_start[6] + 2],
+        dtype=np.int32,
+    )
+    header_res = np.asarray([1000, 3, 4, 1, 2, 3, 4], dtype=np.int32)
+    selected_payload[0, 1] = 1000
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_res
+
+    for row, score in ((1, 900), (2, 800)):
+        ids = np.asarray(
+            [slot_start[i] for i in range(6)]
+            + [slot_start[6] + row, slot_start[6] + row + 1, slot_start[6] + row + 2],
+            dtype=np.int32,
+        )
+        res = np.asarray([score, row, row, 0, 0, 0, 0], dtype=np.int32)
+        packed = np.zeros((packed_width,), dtype=np.int32)
+        packed[0] = score
+        packed[1 : 1 + n_slots] = ids
+        packed[1 + n_slots : 1 + n_slots + 7] = res
+        selected_payload[row, 0] = 0
+        selected_payload[row, 1] = row
+        selected_payload[row, 2 : 2 + packed_width] = packed
+
+    best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data={"selected_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+    )
+
+    assert int(best_data["BaseScore"]) == 1000
+    assert _candidate_key(decoded[0], registry) == _canon_ids_key(header_ids)
+    assert int(decoded[0]["BaseScore"]) == 1000
+
+
+def test_decode_gpu_native_ga_runs_payload_prefers_header_best_shape_on_tie():
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {slot: [_item(f"{slot}{i}") for i in range(3)] for slot in slots}
+    mini_pool = [_item(f"M{i}") for i in range(5)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    n_slots = 9
+    packed_width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((2, 2 + packed_width), dtype=np.int32)
+    selected_payload[0, 0] = 1
+
+    slot_start = np.asarray(registry.slot_start, dtype=np.int32)
+    header_ids = np.asarray(
+        [slot_start[i] + 2 for i in range(6)] + [slot_start[6] + 0, slot_start[6] + 1, slot_start[6] + 2],
+        dtype=np.int32,
+    )
+    header_res = np.asarray([1000, 3, 4, 1, 2, 3, 4], dtype=np.int32)
+    selected_payload[0, 1] = 1000
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_res
+
+    packed = np.zeros((packed_width,), dtype=np.int32)
+    packed[0] = 1000
+    packed[1 : 1 + n_slots] = header_ids
+    packed[1 + n_slots : 1 + n_slots + 7] = header_res
+    selected_payload[1, 0] = 0
+    selected_payload[1, 1] = 0
+    selected_payload[1, 2 : 2 + packed_width] = packed
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data={"selected_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+    )
+
+    assert _candidate_key(decoded[0], registry) == _canon_ids_key(header_ids)
+    assert "Stats" in decoded[0]["Data"]
+    assert "BaseStats" not in decoded[0]["Data"]
+
+
 def test_decode_gpu_native_ga_runs_payload_rejects_legacy_raw_runs_payload():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     registry = ItemRegistry({slot: [_item(f"{slot}0")] for slot in slots}, [_item(f"M{i}") for i in range(3)], slots)
@@ -361,7 +452,7 @@ def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_
 def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(2 if slot == "Hat" else 1)] for slot in slots}
-    mini_pool = [_item(f"M{i}") for i in range(3)]
+    mini_pool = [_item(f"M{i}") for i in range(4)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     cfg_data = {
@@ -406,10 +497,13 @@ def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     unique_ids = dup_ids_a.copy()
     unique_ids[0] = registry.slot_start[0] + 1
 
+    header_ids = dup_ids_a.copy()
+    header_ids[8] = registry.slot_start[6] + 3
+
     selected_payload[0, 0] = 3
-    selected_payload[0, 1] = 150
-    selected_payload[0, 2 : 2 + n_slots] = dup_ids_better
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([150, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+    selected_payload[0, 1] = 160
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([160, 3, 4, 1, 1, 1, 1], dtype=np.int32)
     selected_payload[0, 2 + n_slots + 7] = 0
 
     packed1 = np.zeros((width,), dtype=np.int32)
@@ -444,10 +538,10 @@ def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
 
-    assert len(decoded) == 2
-    assert [int(cand.get("Score", 0)) for cand in decoded] == [150, 120]
-    assert int(decoded[0]["Data"]["_ga_gpu_row_idx"]) == 2
-    assert int(best_data.get("Score", 0)) == 150
+    assert len(decoded) == 3
+    assert [int(cand.get("Score", 0)) for cand in decoded] == [160, 150, 120]
+    assert int(decoded[1]["Data"]["_ga_gpu_row_idx"]) == 2
+    assert int(best_data.get("Score", 0)) == 160
 
 
 def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(monkeypatch):
@@ -518,9 +612,12 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
     res = np.asarray([100, 3, 4, 1, 1, 1, 1], dtype=np.int32)
 
     selected_payload[0, 0] = 1
-    selected_payload[0, 1] = 100
-    selected_payload[0, 2 : 2 + n_slots] = genome_ids
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = res
+    header_ids = genome_ids.copy()
+    header_ids[8] = registry.slot_start[6] + 3
+    header_res = np.asarray([101, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+    selected_payload[0, 1] = 101
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_res
     selected_payload[0, 2 + n_slots + 7] = 0
 
     packed = np.zeros((width,), dtype=np.int32)
@@ -541,13 +638,13 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
 
     assert isinstance(best_data.get("Stats"), dict)
     assert decoded
-    data = decoded[0]["Data"]
+    data = decoded[1]["Data"]
     assert isinstance(data.get("BaseStats"), dict)
     assert data["BaseStats"]["Perfect Points"] > 0
     assert "Stats" not in data
-    assert decoded[0].get("GenomeIDs")
-    assert not decoded[0].get("Gear")
-    assert not decoded[0].get("Minis")
+    assert decoded[1].get("GenomeIDs")
+    assert not decoded[1].get("Gear")
+    assert not decoded[1].get("Minis")
 
 
 def test_decode_gpu_native_selected_payload_emits_full_stats_when_ga_requires_it(monkeypatch):
@@ -618,9 +715,12 @@ def test_decode_gpu_native_selected_payload_emits_full_stats_when_ga_requires_it
     res = np.asarray([100, 3, 4, 1, 1, 1, 1], dtype=np.int32)
 
     selected_payload[0, 0] = 1
-    selected_payload[0, 1] = 100
-    selected_payload[0, 2 : 2 + n_slots] = genome_ids
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = res
+    header_ids = genome_ids.copy()
+    header_ids[8] = registry.slot_start[6] + 3
+    header_res = np.asarray([101, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+    selected_payload[0, 1] = 101
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_res
     selected_payload[0, 2 + n_slots + 7] = 0
 
     packed = np.zeros((width,), dtype=np.int32)
@@ -640,7 +740,7 @@ def test_decode_gpu_native_selected_payload_emits_full_stats_when_ga_requires_it
     )
 
     assert decoded
-    data = decoded[0]["Data"]
+    data = decoded[1]["Data"]
     assert isinstance(data.get("BaseStats"), dict)
     assert isinstance(data.get("Stats"), dict)
     assert data["Stats"]["Perfect Points"] >= data["BaseStats"]["Perfect Points"]
@@ -703,9 +803,10 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
     result_row = np.asarray([1234, 5, 7, 1, 2, 3, 0], dtype=np.int32)
 
     selected_payload[0, 0] = 1
-    selected_payload[0, 1] = 1234
-    selected_payload[0, 2 : 2 + n_slots] = genome_ids
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = result_row
+    header_row = np.asarray([1235, 5, 7, 1, 2, 3, 0], dtype=np.int32)
+    selected_payload[0, 1] = 1235
+    selected_payload[0, 2 : 2 + n_slots] = genome_ids_b
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_row
     selected_payload[0, 2 + n_slots + 7] = 0
 
     packed = np.zeros((width,), dtype=np.int32)
@@ -726,8 +827,8 @@ def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_contex
         ref_arrays=ref_arrays,
     )
 
-    assert len(decoded) == 1
-    data = decoded[0]["Data"]
+    assert len(decoded) == 2
+    data = decoded[1]["Data"]
     base_stats = data["BaseStats"]
     meta = data.get("_fg_group_meta")
     assert isinstance(meta, dict)
@@ -760,7 +861,7 @@ def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeyp
         ]
         for slot in slots
     }
-    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(3)]
+    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(4)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     cfg_data = {
@@ -804,6 +905,7 @@ def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeyp
     selected_payload = np.zeros((3, 26), dtype=np.int32)
     genome_ids = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M2"]), dtype=np.int32)
     genome_ids_b = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M1", "M3"]), dtype=np.int32)
+    header_ids = np.asarray(registry.encode_genome([f"{slot}0" for slot in slots] + ["M0", "M2", "M3"]), dtype=np.int32)
 
     packed_a = np.zeros((width,), dtype=np.int32)
     packed_a[0] = 1234
@@ -816,9 +918,9 @@ def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeyp
     packed_b[1 + n_slots : 1 + n_slots + 7] = np.asarray([1200, 6, 8, 2, 3, 4, 0], dtype=np.int32)
 
     selected_payload[0, 0] = 2
-    selected_payload[0, 1] = 1234
-    selected_payload[0, 2 : 2 + n_slots] = genome_ids
-    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = packed_a[1 + n_slots : 1 + n_slots + 7]
+    selected_payload[0, 1] = 1300
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = np.asarray([1300, 5, 7, 1, 2, 3, 0], dtype=np.int32)
     selected_payload[0, 2 + n_slots + 7] = 0
     selected_payload[1, 0] = 0
     selected_payload[1, 1] = 1
@@ -838,7 +940,7 @@ def test_decode_gpu_native_ga_runs_payload_limits_fg_group_meta_stamping(monkeyp
         fg_group_meta_limit=1,
     )
 
-    assert len(decoded) == 2
-    assert decoded[0]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
-    assert "_fg_group_meta" not in decoded[1]["Data"]
+    assert len(decoded) == 3
+    assert decoded[1]["Data"]["_fg_group_meta"]["signature"] == "sig-1"
+    assert "_fg_group_meta" not in decoded[2]["Data"]
     assert calls["count"] == 1

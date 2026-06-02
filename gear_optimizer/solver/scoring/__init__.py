@@ -3,7 +3,6 @@
 from .runtime_state import (
     _GPU_LOCK,
     FG_CACHE,
-    FORCE_GREATS_ALGO_VERSION,
 )
 from .stats_scoring import (
     evaluate_stats_score,
@@ -16,7 +15,6 @@ from .stats_scoring import (
 __all__ = [
     "_GPU_LOCK",
     "FG_CACHE",
-    "FORCE_GREATS_ALGO_VERSION",
     "evaluate_stats_score",
     "build_great_penalty_table",
     "fg_baseline_params",

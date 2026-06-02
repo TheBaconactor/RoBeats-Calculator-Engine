@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from ...core.utils import safe_int
-from .force_greats.entry_resolution import entry_base_score
 from .fg_config import has_valid_fg_config
 
 
 RECORD_UPDATE_SCORE_EPSILON = 2
+
+
+def entry_base_score(entry: dict) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    return safe_int(entry.get("base_score") or entry.get("score", 0), 0)
 
 
 def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=None) -> dict:

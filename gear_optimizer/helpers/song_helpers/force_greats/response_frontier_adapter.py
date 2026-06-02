@@ -8,16 +8,13 @@ from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
 from ....solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
-from ....solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
 )
-from ..ga_entry_utils import materialize_entry_names
-from . import cache_validation
-from .entry_resolution import build_direct_ga_entry_items, entry_base_score
+from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from .result_application import materialize_stats_from_payload
 
@@ -36,6 +33,51 @@ class FgResponseFrontierPreparedPlan:
     variants: tuple[dict[str, Any], ...]
     pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
+
+
+def _entry_items_from_ga_candidates(ga_candidates, *, ga_registry=None) -> list[tuple[str, dict[str, Any]]]:
+    items: list[tuple[str, dict[str, Any]]] = []
+    for idx, candidate in enumerate(ga_candidates or []):
+        if not isinstance(candidate, dict):
+            raise ValueError(f"ForceGreats GA candidate {idx} is not a dict.")
+        eval_data = candidate.get("Data")
+        if not isinstance(eval_data, dict) or not eval_data:
+            raise ValueError(f"ForceGreats GA candidate {idx} is missing Data.")
+        genome_ids = candidate_genome_ids(candidate)
+        registry_obj = ga_registry if ga_registry is not None else candidate.get("_ga_registry")
+        score = int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0)
+        if score <= 0:
+            raise ValueError(f"ForceGreats GA candidate {idx} is missing a positive BaseScore.")
+        entry = {
+            "gear": list(candidate.get("Gear") or []),
+            "minis": list(candidate.get("Minis") or []),
+            "score": int(score),
+            "base_score": int(score),
+            "details": {},
+            "fg_score": int(candidate.get("fg_score", 0) or 0),
+            "force": candidate.get("force"),
+            "eval_data": eval_data,
+            "_source": "ga",
+            "_candidate_ref": candidate,
+        }
+        selected = str(eval_data.get("Selected Element", "") or "")
+        if selected:
+            entry["selected_element"] = selected
+        if genome_ids is not None:
+            entry["ga_genome_ids"] = list(genome_ids)
+        if registry_obj is not None:
+            entry["_ga_registry"] = registry_obj
+
+        key = str(candidate.get("loadout_hash") or "").strip()
+        if not key and (entry.get("gear") or entry.get("minis")):
+            key = str(entry_loadout_hash(entry) or "")
+        if not key and genome_ids is not None:
+            key = ga_candidate_key(genome_ids)
+        if not key:
+            key = f"ga-candidate:{int(idx)}"
+        entry["loadout_hash"] = str(key)
+        items.append((str(key), entry))
+    return items
 
 
 def _base_stats_for_response_frontier(eval_data: dict[str, Any], *, selected: str) -> dict[str, Any]:
@@ -90,7 +132,7 @@ def _force_payload_from_response_frontier(
             )
         )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
+    replay_base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
     exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
     if not isinstance(exact_fg, dict):
         raise ValueError("ForceGreats response frontier exact replay failed")
@@ -99,7 +141,7 @@ def _force_payload_from_response_frontier(
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
     payload["Stats"] = dict(result.stats)
-    payload["BaseScore"] = int(base_score)
+    payload["BaseScore"] = int(replay_base_score)
     payload["Score"] = int(final_score)
     payload["Selected Element"] = str(selected_element or payload.get("Selected Element", "") or "")
     payload["GemCounts"] = dict(result.gem_counts)
@@ -107,9 +149,6 @@ def _force_payload_from_response_frontier(
     payload["FF"] = int(result.ff)
     payload["forced_counts"] = list(forced_counts)
     payload["ForceGreats"] = {
-        "enabled": True,
-        "mode": "response_frontier",
-        "algo_version": int(FORCE_GREATS_ALGO_VERSION),
         "config": config,
         "final_score": int(final_score),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),
@@ -121,22 +160,14 @@ def _force_payload_from_response_frontier(
     return payload
 
 
-def prepare_force_greats_response_frontier_plan(
-    loadout_entries,
+def _prepare_force_greats_response_frontier_plan_from_items(
+    entry_items,
     calc_song,
     ref_arrays,
     meta_primary_color,
     *,
-    ga_candidates=None,
-    ga_registry=None,
     scoring_bundle=None,
 ) -> FgResponseFrontierPreparedPlan:
-    direct_ga_items = build_direct_ga_entry_items(ga_candidates, ga_registry=ga_registry)
-    base_items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
-    if direct_ga_items:
-        base_items = [(k, v) for k, v in base_items if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))]
-    entry_items = list(base_items) + list(direct_ga_items)
-
     # Fail before GPU launch if the song payload cannot support FG at all.
     song_inputs = extract_fg_song_inputs(calc_song)
     if int(song_inputs.total_notes) <= 0:
@@ -148,30 +179,11 @@ def prepare_force_greats_response_frontier_plan(
     pending_keys: set[tuple[Any, ...]] = set()
     for _key, entry in entry_items:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError("ForceGreats response frontier received a non-dict entry.")
         eval_data = eval_data_from_entry(entry, str(meta_primary_color or ""))
         if not isinstance(eval_data, dict) or not eval_data:
-            continue
+            raise ValueError("ForceGreats response frontier entry is missing eval data.")
         selected = expected_selected_element(entry, str(meta_primary_color or ""))
-        cached_force = entry.get("force")
-        if cached_force and cache_validation.is_cached_force_valid_for_response_frontier(cached_force, selected):
-            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-            fg_score = int(entry.get("fg_score", 0) or cached_force.get("Score", 0) or 0)
-            base_score = int(cached_force.get("BaseScore", 0) or entry_base_score(entry))
-            variants.append(
-                {
-                    "data": cached_force,
-                    "gear": gear_names,
-                    "minis": mini_names,
-                    "score": int(base_score),
-                    "base_score": int(base_score),
-                    "fg_score": int(fg_score),
-                    "_entry_ref": entry,
-                    "_is_ga": str(entry.get("_source") or "") == "ga",
-                }
-            )
-            continue
-
         base_stats = _base_stats_for_response_frontier(eval_data, selected=selected)
         cache_key = (
             str(selected or ""),
@@ -208,16 +220,22 @@ def prepare_force_greats_response_frontier_plan(
     )
 
 
-def execute_force_greats_response_frontier_plan(
-    plan: FgResponseFrontierPreparedPlan,
+def prepare_force_greats_response_frontier_plan_for_ga_candidates(
+    ga_candidates,
+    calc_song,
+    ref_arrays,
+    meta_primary_color,
     *,
-    score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
-) -> list[dict[str, Any]]:
-    prepared_results = []
-    for prepared in plan.prepared_batches:
-        results = score_prepared_batch(prepared.batch, include_forced_counts=False)
-        prepared_results.append(results)
-    return materialize_force_greats_response_frontier_plan_results(plan, prepared_results)
+    ga_registry=None,
+    scoring_bundle=None,
+) -> FgResponseFrontierPreparedPlan:
+    return _prepare_force_greats_response_frontier_plan_from_items(
+        _entry_items_from_ga_candidates(ga_candidates, ga_registry=ga_registry),
+        calc_song,
+        ref_arrays,
+        meta_primary_color,
+        scoring_bundle=scoring_bundle,
+    )
 
 
 def materialize_force_greats_response_frontier_plan_results(
@@ -242,11 +260,8 @@ def materialize_force_greats_response_frontier_plan_results(
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
-        known_base_score = int(entry_base_score(entry))
+        known_base_score = int(entry["base_score"])
         if int(result.best_score) <= int(known_base_score):
-            continue
-        base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
-        if int(result.best_score) <= int(base_score):
             continue
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         pending_variants.append(
@@ -256,7 +271,7 @@ def materialize_force_greats_response_frontier_plan_results(
                 "selected": selected,
                 "base_stats": base_stats,
                 "result": result,
-                "base_score": int(base_score),
+                "base_score": int(known_base_score),
                 "gear": gear_names,
                 "minis": mini_names,
                 "fg_score": int(result.best_score),
@@ -301,23 +316,24 @@ def materialize_force_greats_response_frontier_plan_results(
 
 
 def process_force_greats_response_frontier_gpu(
-    loadout_entries,
+    ga_candidates,
     calc_song,
     ref_arrays,
     meta_primary_color,
     *,
-    ga_candidates=None,
     ga_registry=None,
     score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
     scoring_bundle=None,
 ):
-    plan = prepare_force_greats_response_frontier_plan(
-        loadout_entries,
+    plan = prepare_force_greats_response_frontier_plan_for_ga_candidates(
+        ga_candidates,
         calc_song,
         ref_arrays,
         meta_primary_color,
-        ga_candidates=ga_candidates,
         ga_registry=ga_registry,
         scoring_bundle=scoring_bundle,
     )
-    return execute_force_greats_response_frontier_plan(plan, score_prepared_batch=score_prepared_batch)
+    prepared_results = [
+        score_prepared_batch(prepared.batch, include_forced_counts=False) for prepared in plan.prepared_batches
+    ]
+    return materialize_force_greats_response_frontier_plan_results(plan, prepared_results)

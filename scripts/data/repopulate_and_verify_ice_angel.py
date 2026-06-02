@@ -28,8 +28,6 @@ print(f"Database: {db_path}")
 # 2. Mock Data representing a result with Force Greats
 # This simulates what comes out of the solver after my changes
 mock_fg_info = {
-    "enabled": True,
-    "algo_version": 3,
     "config": {"NonFever1": 15},
     "final_score": 900000,  # Penalized
     "score_penalty": 100000,

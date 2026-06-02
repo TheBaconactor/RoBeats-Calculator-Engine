@@ -115,7 +115,7 @@ def assert_authoritative_fg_entry(
         return
 
     stats = _force_stats(force_obj)
-    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
+    expected_replay_base = int(score_stats_exact(stats, calc_song, ref_arrays))
     config = extract_fg_config(force_obj)
     counts = _config_counts(config)
     fg_eval = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
@@ -130,10 +130,10 @@ def assert_authoritative_fg_entry(
     fg_meta = force_obj.get("ForceGreats")
     meta_final = _to_int((fg_meta or {}).get("final_score"), field="force.ForceGreats.final_score")
 
-    if actual_base != expected_base or force_base != expected_base:
+    if actual_base != expected_replay_base or force_base != expected_replay_base:
         raise AssertionError(
             "FG persistence base score is not authoritative "
-            f"(expected={expected_base}, entry={actual_base}, force={force_base})."
+            f"(expected={expected_replay_base}, entry={actual_base}, force={force_base})."
         )
     if actual_fg != expected_fg or force_score != expected_fg or meta_final != expected_fg:
         raise AssertionError(
@@ -161,7 +161,8 @@ def canonicalize_authoritative_fg_entry(
 
     force_normalized = normalize_force_payload(force_obj)
     stats = _force_stats(force_normalized)
-    fg_base_score = int(score_stats_exact(stats, calc_song, ref_arrays))
+    replay_base_score = int(score_stats_exact(stats, calc_song, ref_arrays))
+    fg_base_score = int(replay_base_score)
     config = extract_fg_config(force_normalized)
     counts = _config_counts(config)
     if not counts or sum(int(value) for value in counts) <= 0:

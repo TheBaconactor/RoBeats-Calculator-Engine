@@ -353,7 +353,6 @@ def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
         task_key="prep-no-plan",
         song_name="Prep No Plan",
         fg_prep_future=prep_future,
-        loadout_entries={},
     )
 
     with pytest.raises(RuntimeError, match="FG dynamic prep failed for prep-no-plan") as excinfo:

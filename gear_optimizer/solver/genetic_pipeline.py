@@ -41,6 +41,7 @@ from .base_stats import (
 )
 from .scoring.stats_ops import apply_gems_to_base_stats
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
+from ..helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .gpu_tuning_policy import choose_ga_batch_runs
 
@@ -349,9 +350,19 @@ def decode_gpu_native_ga_runs_payload(
             "Selected Element": str(selected_color or ""),
             "Details": build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
         }
+        best_genome_ids = [int(x) for x in np.asarray(best_ids, dtype=np.int32).tolist()]
+        best_candidate = {
+            "Score": int(best_global_score),
+            "BaseScore": int(best_global_score),
+            "Gear": list(best_gear or []),
+            "Minis": list(best_minis or []),
+            "GenomeIDs": list(best_genome_ids),
+            "_ga_registry": registry,
+            "Data": {**best_data, "GenomeIDs": list(best_genome_ids)},
+        }
 
         if selected_n <= 0:
-            return best_data, list(best_gear), list(best_minis), []
+            return best_data, list(best_gear), list(best_minis), [best_candidate]
 
         cand_rows = runs_payload[1 : 1 + selected_n]
         packed_cols = 1 + n_slots + 7 + 7
@@ -432,7 +443,7 @@ def decode_gpu_native_ga_runs_payload(
 
             final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
-        unique_evaluated: list[dict] = []
+        unique_evaluated: list[dict] = [best_candidate]
         n_cand = int(genome_ids_mat.shape[0])
         g_ft = results_mat[:, 1]
         g_ff = results_mat[:, 2]
@@ -502,6 +513,15 @@ def decode_gpu_native_ga_runs_payload(
                 "Data": data_obj,
             }
             unique_evaluated.append(cand_data)
+
+        unique_evaluated = select_top_base_ga_candidates(
+            unique_evaluated,
+            limit=int(eff_limit),
+            registry=registry,
+            primary_color=str(cfg_data.get("primary_color", "") or ""),
+            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+            selected_color=str(sel_color or ""),
+        )
 
         max_candidate_score = max((int(c.get("BaseScore") or c.get("Score") or 0) for c in unique_evaluated), default=0)
         if int(max_candidate_score) > int(best_global_score):

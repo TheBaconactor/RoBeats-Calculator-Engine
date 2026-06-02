@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.force_greats_common import extract_base_stats
-from gear_optimizer.solver.scoring.runtime_state import FORCE_GREATS_ALGO_VERSION
 from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from gear_optimizer.solver.taichi_gem.force_greats import (
@@ -138,9 +137,6 @@ def _materialize_force_payload(
     force_payload["Selected Element"] = str(selected_color or force_payload.get("Selected Element", "") or "")
     force_payload["forced_counts"] = list(forced_counts)
     force_payload["ForceGreats"] = {
-        "enabled": True,
-        "mode": "response_frontier",
-        "algo_version": int(FORCE_GREATS_ALGO_VERSION),
         "config": config,
         "final_score": int(final_score),
         "response_surface": _surface_payload(fg_result.surface),
@@ -373,7 +369,6 @@ def score_retained_skyline_force_greats(
     outside_best_row = max(outside_rows, key=lambda row: int(row["fg_score"]), default=None)
 
     summary = {
-        "mode": "response_frontier_ftff_batch_gpu",
         "candidate_count": int(len(candidate_records)),
         "exact_calls": int(len(prepared)),
         "response_frontier_calls": int(len(prepared)),

@@ -145,17 +145,17 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     assert payload["calc_song"] is calc_song
     assert payload["ref_arrays"] is ref_arrays
     assert payload["best_data"]["BaseScore"] == 111
-    assert payload["ga_candidates"] == [
-        {
-            "Score": 111,
-            "BaseScore": 111,
-            "Gear": ["G1"],
-            "Minis": ["M1"],
-            "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"},
-            "_fg_priority": 7,
-            "loadout_hash": "hash-1",
-        }
-    ]
+    assert len(payload["ga_candidates"]) == 1
+    candidate = payload["ga_candidates"][0]
+    assert candidate["Gear"] == ["G1"]
+    assert candidate["Minis"] == ["M1"]
+    assert candidate["_fg_priority"] == 7
+    assert candidate["loadout_hash"] == "hash-1"
+    assert candidate["Data"]["Stats"] == {"Perfect Points": 1}
+    assert candidate["Data"]["Selected Element"] == "Rush"
+    assert candidate["Data"]["SearchScore"] == 111
+    assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
+    assert candidate["Data"]["Score"] == candidate["Data"]["BaseScore"]
 
 
 def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
@@ -192,8 +192,10 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
 
     payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
 
-    assert payload["ga_candidates"][0]["Score"] == 200
-    assert payload["ga_candidates"][0]["Data"]["Stats"]["Perfect Points"] == 2
+    candidate = payload["ga_candidates"][0]
+    assert candidate["Data"]["SearchScore"] == 200
+    assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
+    assert candidate["Data"]["Stats"]["Perfect Points"] == 2
 
 
 def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monkeypatch):
@@ -270,7 +272,6 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_score=100,
         db_best_fg_score=100,
         db_baseline_valid=True,
-        loadout_entries={},
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
     )
     monkeypatch.setattr(

@@ -6,9 +6,9 @@ from typing import Any
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
 from ...data.database import get_loadout_hash
-from .force_greats.entry_resolution import entry_base_score
 from .fg_config import has_valid_fg_config
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
+from .persistence_records import entry_base_score
 from .retention import select_retained_hashes
 
 AppendEntryFn = Callable[..., None]

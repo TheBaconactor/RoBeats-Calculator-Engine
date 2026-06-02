@@ -398,7 +398,7 @@ def _calc_body_score(
     fever_mul: ti.f32,
     count_fever: ti.i32,
     count_normal: ti.i32,
-) -> ti.f32:
+) -> ti.i32:
     """
     Calculate score for body notes (notes past the head).
 
@@ -413,13 +413,12 @@ def _calc_body_score(
         count_normal: Number of normal notes in body
 
     Returns:
-        Body score as float
+        Body score as int
     """
     # All values are non-negative; truncation toward zero matches floor and is faster.
     combo_val = ti.cast(base_value * combo_mul, ti.i32)
     fever_val = ti.cast(base_value * combo_mul * fever_mul, ti.i32)
-    # Use integer multiplication to avoid f32 precision loss with large counts
-    return ti.cast((count_fever * fever_val) + (count_normal * combo_val), ti.f32)
+    return (count_fever * fever_val) + (count_normal * combo_val)
 
 
 @ti.func
@@ -450,7 +449,7 @@ def _calc_head_score_bits(
     m2: ti.u32,
     m3: ti.u32,
     head_len: ti.i32,
-) -> ti.f32:
+) -> ti.i32:
     """
     Calculate head score using bitpacked fever masks.
 
@@ -468,7 +467,7 @@ def _calc_head_score_bits(
         head_len: Number of notes in head
 
     Returns:
-        Head score as float
+        Head score as int
     """
     head_score = ti.i32(0)
     fever_delta = fever_mul - 1.0
@@ -511,7 +510,7 @@ def _calc_head_score_bits(
             mul = 1.0 + fever_delta * ti.cast(is_fever, ti.f32)
             head_score += ti.cast(ramp_val * mul, ti.i32)
             t += 1.0
-    return ti.cast(head_score, ti.f32)
+    return head_score
 
 
 @ti.func
@@ -549,5 +548,4 @@ def calc_score_with_grid_bits(
     body_score = _calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
     factor = _calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
-    # Cast each component to i32 first, then add as integers for exact result
-    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
+    return body_score + head_score

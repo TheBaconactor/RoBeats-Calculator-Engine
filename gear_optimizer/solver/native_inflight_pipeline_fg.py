@@ -514,7 +514,7 @@ def run_fg_job_sync(
             except Exception as e:
                 logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
             song.runtime.fg.fg_prep_future = None
-    if getattr(song.runtime.fg, "loadout_entries", None) is None:
+    if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
         try:
             song.runtime.fg.fg_dynamic_prep_done = True
@@ -526,9 +526,6 @@ def run_fg_job_sync(
             event="prep_ready",
             song_key=song_key,
             metrics={
-                "loadout_entries": int(len(getattr(song.runtime.fg, "loadout_entries", None) or {}))
-                if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
-                else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
             },
         )
@@ -540,9 +537,6 @@ def run_fg_job_sync(
             event="pre_dispatch",
             song_key=song_key,
             metrics={
-                "loadout_entries": int(len(getattr(song.runtime.fg, "loadout_entries", None) or {}))
-                if isinstance(getattr(song.runtime.fg, "loadout_entries", None), dict)
-                else 0,
                 "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
             },
         )
@@ -559,8 +553,6 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
-    song.runtime.fg.fg_direct_ga_candidates = True
-
     def _submit_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
         timing: dict[str, float] = {}
         handle = gpu_client.submit_force_greats_response_frontier_score_batch(
