@@ -153,7 +153,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     assert candidate["loadout_hash"] == "hash-1"
     assert candidate["Data"]["Stats"] == {"Perfect Points": 1}
     assert candidate["Data"]["Selected Element"] == "Rush"
-    assert candidate["Data"]["SearchScore"] == 111
+    assert candidate["Data"]["RawGASearchScore"] == 111
     assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
     assert candidate["Data"]["Score"] == candidate["Data"]["BaseScore"]
 
@@ -193,7 +193,7 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
     payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
 
     candidate = payload["ga_candidates"][0]
-    assert candidate["Data"]["SearchScore"] == 200
+    assert candidate["Data"]["RawGASearchScore"] == 200
     assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
     assert candidate["Data"]["Stats"]["Perfect Points"] == 2
 

@@ -181,14 +181,19 @@ def hydrate_fg_candidate_stats(
                     add_missing_element_key=False,
                 )
 
-        search_score = _int(cand.get("SearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)), 0)
+        raw_ga_search_score = _int(
+            cand.get("RawGASearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
+            0,
+        )
         if (calc_song is None) != (ref_arrays is None):
             raise ValueError("calc_song and ref_arrays must be provided together for canonical FG candidate scores")
-        base_score = int(score_stats_exact(stats, calc_song, ref_arrays)) if calc_song is not None else search_score
-        cand["SearchScore"] = int(search_score)
+        base_score = (
+            int(score_stats_exact(stats, calc_song, ref_arrays)) if calc_song is not None else raw_ga_search_score
+        )
+        cand["RawGASearchScore"] = int(raw_ga_search_score)
         cand["Score"] = int(base_score)
         cand["BaseScore"] = int(base_score)
-        data["SearchScore"] = int(search_score)
+        data["RawGASearchScore"] = int(raw_ga_search_score)
         data["Score"] = int(base_score)
         data["BaseScore"] = int(base_score)
         data["FT"] = int(ft)

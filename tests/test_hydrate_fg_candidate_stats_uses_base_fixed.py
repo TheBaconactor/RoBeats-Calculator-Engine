@@ -85,7 +85,7 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
     assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL
 
 
-def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_search_score():
+def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score():
     calc_song = {
         "metadata": {
             "Primary Color": "Rush",
@@ -134,8 +134,8 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_searc
         ref_arrays=ref_arrays,
     )
 
-    assert cand["SearchScore"] == 999
-    assert cand["Data"]["SearchScore"] == 999
+    assert cand["RawGASearchScore"] == 999
+    assert cand["Data"]["RawGASearchScore"] == 999
     assert cand["BaseScore"] == 26
     assert cand["Score"] == 26
     assert cand["Data"]["BaseScore"] == 26
@@ -190,6 +190,6 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
         ref_arrays=ref_arrays,
     )
 
-    assert cand["SearchScore"] == 999
+    assert cand["RawGASearchScore"] == 999
     assert cand["BaseScore"] == 80336
     assert cand["Data"]["BaseScore"] == 80336
