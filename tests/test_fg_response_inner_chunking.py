@@ -138,20 +138,21 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
     )
 
     group_meta = np.zeros((3, 8), dtype=np.int32)
+    group_meta[:, 7] = 10
     group_offsets = np.asarray([0, 4, 7], dtype=np.int32)
     group_lengths = np.asarray([4, 3, 2], dtype=np.int32)
     surface_words = np.zeros((9, 8), dtype=np.uint32)
     surface_counts = np.asarray(
         [
-            [1, 0],
-            [7, 0],
-            [7, 0],
-            [6, 0],
-            [3, 0],
-            [9, 0],
-            [9, 0],
-            [8, 0],
-            [8, 0],
+            [1, 0, 0],
+            [7, 0, 0],
+            [7, 0, 0],
+            [6, 0, 0],
+            [3, 0, 0],
+            [9, 0, 0],
+            [9, 0, 0],
+            [8, 0, 0],
+            [8, 0, 0],
         ],
         dtype=np.int32,
     )
@@ -237,7 +238,7 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
     group_offsets = np.asarray([0], dtype=np.int32)
     group_lengths = np.asarray([4], dtype=np.int32)
     surface_words = np.zeros((4, 8), dtype=np.uint32)
-    surface_counts = np.zeros((4, 2), dtype=np.int32)
+    surface_counts = np.zeros((4, 3), dtype=np.int32)
     ref_arrays = {
         "Perfect Points": np.ones(4, dtype=np.float32),
         "Combo Multiplier": np.ones(4, dtype=np.float32),
@@ -327,7 +328,7 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
     group_offsets = np.asarray([0], dtype=np.int32)
     group_lengths = np.asarray([surface_count], dtype=np.int32)
     surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
-    surface_counts = np.zeros((surface_count, 2), dtype=np.int32)
+    surface_counts = np.zeros((surface_count, 3), dtype=np.int32)
     ref_arrays = {
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
@@ -389,7 +390,7 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
     group_offsets = np.asarray([0], dtype=np.int32)
     group_lengths = np.asarray([surface_count], dtype=np.int32)
     surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
-    surface_counts = np.zeros((surface_count, 2), dtype=np.int32)
+    surface_counts = np.zeros((surface_count, 3), dtype=np.int32)
     ref_arrays = {
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
@@ -442,7 +443,7 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
     group_offsets = np.asarray([0], dtype=np.int32)
     group_lengths = np.asarray([1], dtype=np.int32)
     surface_words = np.zeros((1, 8), dtype=np.uint32)
-    surface_counts = np.zeros((1, 2), dtype=np.int32)
+    surface_counts = np.zeros((1, 3), dtype=np.int32)
     ref_arrays = {
         "Perfect Points": np.ones(4, dtype=np.float32),
         "Combo Multiplier": np.ones(4, dtype=np.float32),

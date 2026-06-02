@@ -6,13 +6,14 @@ from typing import Any, Callable
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
-from ....solver.scoring.exact_rescore import evaluate_force_greats_exact
+from ....solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
+    reconstruct_force_greats_response_trace,
 )
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from .entry_utils import eval_data_from_entry, expected_selected_element
@@ -132,14 +133,24 @@ def _force_payload_from_response_frontier(
                 use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
             )
         )
+    song_inputs = extract_fg_song_inputs(calc_song)
+    frontier_trace = reconstruct_force_greats_response_trace(
+        frontier=frontier,
+        target_surface=result.surface,
+        timestamps=song_inputs.timestamps,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        raw_fever_fill=float(result.raw_fever_fill),
+        real_fever_time=float(result.real_fever_time),
+        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    )
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
         raise ValueError("ForceGreats response frontier requires a positive source paired base score.")
-    exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
-    if not isinstance(exact_fg, dict):
-        raise ValueError("ForceGreats response frontier exact replay failed")
-    final_score = int(exact_fg["final_score"])
+    final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
+    if final_score_obj is None:
+        raise ValueError("ForceGreats response frontier exact surface replay failed")
+    final_score = int(final_score_obj)
 
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
@@ -151,9 +162,23 @@ def _force_payload_from_response_frontier(
     payload["FT"] = int(result.ft)
     payload["FF"] = int(result.ff)
     payload["forced_counts"] = list(forced_counts)
+    payload["response_surface"] = [
+        int(result.surface.fever0),
+        int(result.surface.fever1),
+        int(result.surface.fever2),
+        int(result.surface.fever3),
+        int(result.surface.great0),
+        int(result.surface.great1),
+        int(result.surface.great2),
+        int(result.surface.great3),
+        int(result.surface.body_fever),
+        int(result.surface.body_great),
+        int(result.surface.body_fever_great),
+    ]
     payload["ForceGreats"] = {
         "config": config,
         "final_score": int(final_score),
+        "frontier_trace": list(frontier_trace),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),
         "frontier_states": int(frontier.states_evaluated),
         "frontier_max_state": int(frontier.max_state_frontier),

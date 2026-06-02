@@ -10,6 +10,7 @@ from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items,
     _first_only_chunks,
     _precompute_end_indices,
+    _precompute_great_range_argmax,
 )
 from .response_build_gpu_reducer import (
     _first_frontier_results_for_precomputed_range,
@@ -41,6 +42,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
         if int(great_ts.shape[0]) != n:
             raise ValueError("great_candidate_timestamps length must match timestamps")
+    great_range_argmax, great_range_log2 = _precompute_great_range_argmax(great_ts)
 
     prepared = []
     action_table_cache: dict[tuple[float, int, bool], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -49,24 +51,26 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         action_key = (float(raw_fever_fill), max(0, int(non_fever_base)), bool(use_forced_great_timing))
         action_arrays = action_table_cache.get(action_key)
         if action_arrays is None:
-            _actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+            actions, later_fill, first_fill, later_forced, first_forced = _action_table(
                 raw_fever_fill=float(raw_fever_fill),
                 non_fever_base=max(0, int(non_fever_base)),
                 use_forced_great_timing=bool(use_forced_great_timing),
             )
             action_arrays = (
+                np.asarray(actions, dtype=np.int32),
                 np.asarray(later_fill, dtype=np.int32),
                 np.asarray(first_fill, dtype=np.int32),
                 np.asarray(later_forced, dtype=np.int32),
                 np.asarray(first_forced, dtype=np.int32),
             )
             action_table_cache[action_key] = action_arrays
-        later_fill_arr, first_fill_arr, later_forced_arr, first_forced_arr = action_arrays
+        actions_arr, later_fill_arr, first_fill_arr, later_forced_arr, first_forced_arr = action_arrays
         prepared.append(
             (
                 idx,
                 max(0, int(non_fever_base)),
                 float(real_fever_time),
+                actions_arr,
                 later_fill_arr,
                 first_fill_arr,
                 later_forced_arr,
@@ -104,6 +108,8 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         great_candidate_timestamps=great_ts,
                         timestamp_end_idx=timestamp_end_idx,
                         great_end_idx=great_end_idx,
+                        great_range_argmax=great_range_argmax,
+                        great_range_log2=great_range_log2,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     ),
@@ -128,6 +134,8 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         great_candidate_timestamps=great_ts,
                         timestamp_end_idx=timestamp_end_idx,
                         great_end_idx=great_end_idx,
+                        great_range_argmax=great_range_argmax,
+                        great_range_log2=great_range_log2,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     )

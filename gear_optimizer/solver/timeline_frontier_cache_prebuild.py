@@ -88,6 +88,8 @@ def ordered_frontier_cache_song_paths(
 
     for path in queue_paths:
         add(path)
+    if ordered:
+        return ordered
     for path in iter_timeline_frontier_cache_song_paths(data_root=data_root):
         add(path)
     return ordered

@@ -38,6 +38,7 @@ def _fg_response_score_device(
     great3: ti.u32,
     body_fever: ti.i32,
     body_great: ti.i32,
+    body_fever_great: ti.i32,
     head_len: ti.i32,
     body_total: ti.i32,
     primary_val: ti.i32,
@@ -106,10 +107,17 @@ def _fg_response_score_device(
                 + ti.f32(150.0)
             )
         if body_great > 0:
-            body_penalty: ti.i32 = combo_val - ti.cast(ti.floor(great_raw * combo_mul), ti.i32)
-            if body_penalty < 0:
-                body_penalty = 0
-            score -= body_great * body_penalty
+            body_normal_great: ti.i32 = body_great - body_fever_great
+            if body_normal_great < 0:
+                body_normal_great = 0
+            body_normal_penalty: ti.i32 = combo_val - ti.cast(ti.floor(great_raw * combo_mul), ti.i32)
+            if body_normal_penalty < 0:
+                body_normal_penalty = 0
+            body_fever_penalty: ti.i32 = fever_val - ti.cast(ti.floor(great_raw * combo_mul * fever_mul), ti.i32)
+            if body_fever_penalty < 0:
+                body_fever_penalty = 0
+            score -= body_normal_great * body_normal_penalty
+            score -= body_fever_great * body_fever_penalty
 
         if great_bits != ti.u32(0):
             combo_span: ti.f32 = combo_mul - ti.f32(1.0)
@@ -118,6 +126,9 @@ def _fg_response_score_device(
                     scaling: ti.f32 = ti.f32(1.0) + combo_span * ti.cast(i + 1, ti.f32) / ti.f32(100.0)
                     perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
                     great_val: ti.i32 = ti.cast(ti.floor(ti.cast(great_head_base, ti.f32) * scaling), ti.i32)
+                    if _fg_response_bit(fever0, i) != 0:
+                        perfect_val = ti.cast(ti.floor(base_value * scaling * fever_mul), ti.i32)
+                        great_val = ti.cast(ti.floor(ti.cast(great_head_base, ti.f32) * scaling * fever_mul), ti.i32)
                     penalty: ti.i32 = perfect_val - great_val
                     if penalty > 0:
                         score -= penalty
@@ -127,6 +138,12 @@ def _fg_response_score_device(
                         scaling: ti.f32 = ti.f32(1.0) + combo_span * ti.cast(i + 1, ti.f32) / ti.f32(100.0)
                         perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
                         great_val: ti.i32 = ti.cast(ti.floor(ti.cast(great_head_base, ti.f32) * scaling), ti.i32)
+                        if _fg_response_bit(fever1, i - 32) != 0:
+                            perfect_val = ti.cast(ti.floor(base_value * scaling * fever_mul), ti.i32)
+                            great_val = ti.cast(
+                                ti.floor(ti.cast(great_head_base, ti.f32) * scaling * fever_mul),
+                                ti.i32,
+                            )
                         penalty: ti.i32 = perfect_val - great_val
                         if penalty > 0:
                             score -= penalty
@@ -136,6 +153,12 @@ def _fg_response_score_device(
                         scaling: ti.f32 = ti.f32(1.0) + combo_span * ti.cast(i + 1, ti.f32) / ti.f32(100.0)
                         perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
                         great_val: ti.i32 = ti.cast(ti.floor(ti.cast(great_head_base, ti.f32) * scaling), ti.i32)
+                        if _fg_response_bit(fever2, i - 64) != 0:
+                            perfect_val = ti.cast(ti.floor(base_value * scaling * fever_mul), ti.i32)
+                            great_val = ti.cast(
+                                ti.floor(ti.cast(great_head_base, ti.f32) * scaling * fever_mul),
+                                ti.i32,
+                            )
                         penalty: ti.i32 = perfect_val - great_val
                         if penalty > 0:
                             score -= penalty
@@ -145,6 +168,12 @@ def _fg_response_score_device(
                         scaling: ti.f32 = ti.f32(1.0) + combo_span * ti.cast(i + 1, ti.f32) / ti.f32(100.0)
                         perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
                         great_val: ti.i32 = ti.cast(ti.floor(ti.cast(great_head_base, ti.f32) * scaling), ti.i32)
+                        if _fg_response_bit(fever3, i - 96) != 0:
+                            perfect_val = ti.cast(ti.floor(base_value * scaling * fever_mul), ti.i32)
+                            great_val = ti.cast(
+                                ti.floor(ti.cast(great_head_base, ti.f32) * scaling * fever_mul),
+                                ti.i32,
+                            )
                         penalty: ti.i32 = perfect_val - great_val
                         if penalty > 0:
                             score -= penalty
@@ -335,6 +364,7 @@ def _fg_response_inner_batch_kernel(
         great3: ti.u32 = surface_words[surface_row, 7]
         body_fever: ti.i32 = surface_counts[surface_row, 0]
         body_great: ti.i32 = surface_counts[surface_row, 1]
+        body_fever_great: ti.i32 = surface_counts[surface_row, 2]
 
         best_score: ti.i32 = -1
         best_pp: ti.i32 = 0
@@ -410,6 +440,7 @@ def _fg_response_inner_batch_kernel(
                                 great3,
                                 body_fever,
                                 body_great,
+                                body_fever_great,
                                 head_len,
                                 body_total,
                                 primary_base,
@@ -473,6 +504,7 @@ def _fg_response_inner_batch_kernel(
                                         great3,
                                         body_fever,
                                         body_great,
+                                        body_fever_great,
                                         head_len,
                                         body_total,
                                         primary_val,
@@ -515,6 +547,7 @@ def _fg_response_inner_batch_kernel(
                             great3,
                             body_fever,
                             body_great,
+                            body_fever_great,
                             head_len,
                             body_total,
                             primary_base,
@@ -690,6 +723,7 @@ def _fg_response_inner_group_kernel(
             great3: ti.u32 = surface_words[surface_row, 7]
             body_fever: ti.i32 = surface_counts[surface_row, 0]
             body_great: ti.i32 = surface_counts[surface_row, 1]
+            body_fever_great: ti.i32 = surface_counts[surface_row, 2]
 
             best_score: ti.i32 = group_best_score
             best_pp: ti.i32 = group_best_pp
@@ -765,6 +799,7 @@ def _fg_response_inner_group_kernel(
                                     great3,
                                     body_fever,
                                     body_great,
+                                    body_fever_great,
                                     head_len,
                                     body_total,
                                     primary_base,
@@ -828,6 +863,7 @@ def _fg_response_inner_group_kernel(
                                             great3,
                                             body_fever,
                                             body_great,
+                                            body_fever_great,
                                             head_len,
                                             body_total,
                                             primary_val,
@@ -870,6 +906,7 @@ def _fg_response_inner_group_kernel(
                                 great3,
                                 body_fever,
                                 body_great,
+                                body_fever_great,
                                 head_len,
                                 body_total,
                                 primary_base,

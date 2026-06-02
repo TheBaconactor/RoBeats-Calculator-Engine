@@ -19,4 +19,5 @@ def _surface_from_numba_row(row: np.ndarray) -> FgResponseSurface:
         (great_hi >> 32) & 0xFFFFFFFF,
         int(row[4]),
         int(row[5]),
+        int(row[6]),
     )

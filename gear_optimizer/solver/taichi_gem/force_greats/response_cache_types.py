@@ -11,7 +11,7 @@ from gear_optimizer.core.parsing import env_get
 
 from .response_types import FgResponseFrontierResult
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v3"
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-prefix-carry-v5"
 _MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
 _PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
 _BUNDLE_ARRAY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_BUNDLE_ARRAY_CACHE_MAX", "2") or "2"))

@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from ...solver.scoring.exact_rescore import (
+    evaluate_force_greats_exact,
+    score_force_greats_response_surface_exact,
+    score_stats_exact,
+)
+from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from .fg_config import extract_fg_config, has_valid_fg_config
 from .persistence_payload import normalize_force_payload
 
@@ -45,6 +50,33 @@ def _force_stats(force_obj: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(stats, dict) or not stats:
         raise ValueError("Authoritative FG persistence requires replayable force Stats.")
     return {str(key): int(value) for key, value in stats.items()}
+
+
+def _response_surface(force_obj: Mapping[str, Any]) -> FgResponseSurface | None:
+    surface_obj = force_obj.get("response_surface")
+    if surface_obj is None and isinstance(force_obj.get("ForceGreats"), Mapping):
+        surface_obj = (force_obj.get("ForceGreats") or {}).get("response_surface")
+    if surface_obj is None:
+        return None
+    if isinstance(surface_obj, Mapping):
+        values = [
+            int(surface_obj.get("fever0", 0) or 0),
+            int(surface_obj.get("fever1", 0) or 0),
+            int(surface_obj.get("fever2", 0) or 0),
+            int(surface_obj.get("fever3", 0) or 0),
+            int(surface_obj.get("great0", 0) or 0),
+            int(surface_obj.get("great1", 0) or 0),
+            int(surface_obj.get("great2", 0) or 0),
+            int(surface_obj.get("great3", 0) or 0),
+            int(surface_obj.get("body_fever", 0) or 0),
+            int(surface_obj.get("body_great", 0) or 0),
+            int(surface_obj.get("body_fever_great", 0) or 0),
+        ]
+    else:
+        values = [int(value) for value in list(surface_obj)]
+    if len(values) != 11:
+        raise ValueError("Authoritative FG response_surface must contain 11 values.")
+    return FgResponseSurface(*values)
 
 
 def _details_stats(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -94,6 +126,30 @@ def _canonical_force_payload(
     return out
 
 
+def _replay_force_payload(
+    force_obj: Mapping[str, Any],
+    *,
+    stats: Mapping[str, Any],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    counts: list[int],
+) -> dict[str, Any]:
+    surface = _response_surface(force_obj)
+    if surface is not None:
+        final_score = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
+        if final_score is None:
+            raise ValueError("Authoritative FG response surface replay failed.")
+        return {
+            "final_score": int(final_score),
+            "config_counts": [int(value) for value in counts],
+            "config_dict": extract_fg_config(force_obj),
+        }
+    fg_eval = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
+    if not isinstance(fg_eval, dict):
+        raise ValueError("Authoritative FG persistence could not replay ForceGreats.")
+    return fg_eval
+
+
 def _source_fg_base_score(entry: Mapping[str, Any], force_obj: Mapping[str, Any]) -> int:
     for source, field in ((entry, "fg_base_score"), (force_obj, "BaseScore"), (entry, "score")):
         if field not in source:
@@ -127,9 +183,7 @@ def assert_authoritative_fg_entry(
     stats = _force_stats(force_obj)
     config = extract_fg_config(force_obj)
     counts = _config_counts(config)
-    fg_eval = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
-    if not isinstance(fg_eval, dict):
-        raise AssertionError("Authoritative FG assertion could not replay ForceGreats.")
+    fg_eval = _replay_force_payload(force_obj, stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, counts=counts)
     expected_fg = int(fg_eval.get("final_score", 0) or 0)
 
     actual_base = _to_int(entry.get("fg_base_score"), field="fg_base_score")
@@ -185,9 +239,13 @@ def canonicalize_authoritative_fg_entry(
         assert_authoritative_fg_entry(out, calc_song=calc_song, ref_arrays=ref_arrays)
         return out
 
-    fg_eval = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
-    if not isinstance(fg_eval, dict):
-        raise ValueError("Authoritative FG persistence could not replay ForceGreats.")
+    fg_eval = _replay_force_payload(
+        force_normalized,
+        stats=stats,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        counts=counts,
+    )
     fg_score = int(fg_eval.get("final_score", 0) or 0)
     if fg_score <= fg_base_score:
         out["force"] = None

@@ -15,6 +15,7 @@ class FgResponseSurface(NamedTuple):
     great3: int
     body_fever: int
     body_great: int
+    body_fever_great: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,4 +63,4 @@ class FgResponseFrontierSolveResult:
     real_fever_time: float = 0.0
 
 
-_EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+_EMPTY_SURFACE = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)

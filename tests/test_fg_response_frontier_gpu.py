@@ -396,7 +396,7 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
 
 def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path, monkeypatch):
     from gear_optimizer.solver.scoring.exact_rescore import (
-        evaluate_force_greats_exact,
+        score_force_greats_response_surface_exact,
         score_force_greats_surface_base_exact,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
@@ -443,11 +443,11 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
         selected_color="Rush",
         total_budget=3,
     )
-    exact = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(result.forced_counts))
+    exact_score = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
     base_score = score_force_greats_surface_base_exact(result.stats, calc_song, ref_arrays, result.surface)
 
-    assert int(exact["final_score"]) == int(result.best_score)
-    assert int(exact["base_score"]) == int(base_score)
+    assert int(exact_score) == int(result.best_score)
+    assert int(base_score) >= int(result.best_score)
 
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):

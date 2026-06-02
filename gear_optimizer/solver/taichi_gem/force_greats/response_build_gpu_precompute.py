@@ -17,12 +17,13 @@ def _first_only_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tu
     return [(0, list(items))]
 
 
-def _action_arrays_signature(item: tuple) -> tuple[bytes, bytes, bytes, bytes]:
+def _action_arrays_signature(item: tuple) -> tuple[bytes, bytes, bytes, bytes, bytes]:
     return (
         np.ascontiguousarray(item[3], dtype=np.int32).tobytes(),
         np.ascontiguousarray(item[4], dtype=np.int32).tobytes(),
         np.ascontiguousarray(item[5], dtype=np.int32).tobytes(),
         np.ascontiguousarray(item[6], dtype=np.int32).tobytes(),
+        np.ascontiguousarray(item[7], dtype=np.int32).tobytes(),
     )
 
 
@@ -57,12 +58,12 @@ def _canonicalize_first_only_prepared_items(
 
     canonical_items: list[tuple] = []
     duplicate_sources_by_source: dict[int, list[int]] = {}
-    action_class_by_object: dict[tuple[int, int, int, int], int] = {}
-    action_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes], int] = {}
+    action_class_by_object: dict[tuple[int, int, int, int, int], int] = {}
+    action_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes, bytes], int] = {}
     canonical_by_signature: dict[tuple[int, int], int] = {}
     for local_idx, item in enumerate(prepared):
         source_idx = int(item[0])
-        action_object_key = (id(item[3]), id(item[4]), id(item[5]), id(item[6]))
+        action_object_key = (id(item[3]), id(item[4]), id(item[5]), id(item[6]), id(item[7]))
         action_class = action_class_by_object.get(action_object_key)
         if action_class is None:
             action_signature = _action_arrays_signature(item)
@@ -117,3 +118,30 @@ def _precompute_end_indices(
         np.ascontiguousarray(great_end_idx),
     )
 
+
+def _precompute_great_range_argmax(great_candidate_timestamps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
+    n = int(great_ts.shape[0])
+    log2 = np.zeros(n + 1, dtype=np.int16)
+    for idx in range(2, n + 1):
+        log2[idx] = np.int16(int(log2[idx >> 1]) + 1)
+    levels = int(log2[n]) + 1 if n > 0 else 1
+    argmax = np.zeros((levels, max(1, n)), dtype=np.int32)
+    if n <= 0:
+        return np.ascontiguousarray(argmax), np.ascontiguousarray(log2)
+
+    argmax[0, :n] = np.arange(n, dtype=np.int32)
+    for level in range(1, levels):
+        span = 1 << int(level)
+        half = span >> 1
+        limit = n - span + 1
+        if limit <= 0:
+            argmax[level, :n] = argmax[level - 1, :n]
+            continue
+        left = argmax[level - 1, :limit]
+        right = argmax[level - 1, half : half + limit]
+        choose_right = great_ts[right] >= great_ts[left]
+        argmax[level, :limit] = np.where(choose_right, right, left).astype(np.int32, copy=False)
+        if limit < n:
+            argmax[level, limit:n] = argmax[level - 1, limit:n]
+    return np.ascontiguousarray(argmax), np.ascontiguousarray(log2)

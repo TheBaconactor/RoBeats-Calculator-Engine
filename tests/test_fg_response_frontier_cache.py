@@ -236,6 +236,23 @@ def test_response_frontier_job_prep_has_no_scoring_cache_prebuild_route() -> Non
     assert not hasattr(response_frontier_adapter, "prebuild_force_greats_response_frontier_candidate_cache")
 
 
+def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> None:
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import _dedupe_paths_by_response_bundle_key
+
+    first_path = tmp_path / "first.txt"
+    second_path = tmp_path / "second.txt"
+    _write_song(first_path)
+    _write_song(second_path)
+
+    representatives, duplicates = _dedupe_paths_by_response_bundle_key(
+        (str(first_path), str(second_path)),
+        _ref_arrays(),
+    )
+
+    assert representatives == [str(first_path)]
+    assert duplicates == {str(first_path): (str(second_path),)}
+
+
 def test_fg_response_frontier_selected_result_loads_exact_first_frontier_from_bundle(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -620,6 +637,30 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
+def test_fg_response_prebuild_balances_workers_and_reducer_width(monkeypatch) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    seen: dict[str, object] = {}
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(prebuild.os, "cpu_count", lambda: 32)
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", FakeExecutor)
+
+    worker_count = prebuild._resolve_prebuild_worker_count()
+    prebuild._build_prebuild_executor(
+        worker_count=worker_count,
+        ref_arrays={},
+        stat_keys=((0, 0),),
+    )
+
+    assert worker_count == 4
+    assert seen["max_workers"] == 4
+    assert seen["initargs"][2] == 8
+
+
 def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(monkeypatch) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
@@ -636,7 +677,7 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
         frontier_offsets=np.asarray([0], dtype=np.int32),
         frontier_lengths=np.asarray([1], dtype=np.int32),
         surface_words=np.zeros((1, 8), dtype=np.uint32),
-        surface_counts=np.zeros((1, 2), dtype=np.int32),
+        surface_counts=np.zeros((1, 3), dtype=np.int32),
         surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
         real_time_by_ft=np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
@@ -664,7 +705,7 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
         group_ff_stat=np.asarray([0], dtype=np.int32),
         candidate_slices=((0, 1),),
         scoring_surface_words=np.zeros((1, 8), dtype=np.uint32),
-        scoring_surface_counts=np.zeros((1, 2), dtype=np.int32),
+        scoring_surface_counts=np.zeros((1, 3), dtype=np.int32),
         scoring_surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         scoring_group_offsets=np.asarray([0], dtype=np.int32),
         scoring_group_lengths=np.asarray([1], dtype=np.int32),
@@ -685,7 +726,7 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
         assert "logical_surfaces" not in kwargs
         assert "logical_work_cumsum" not in kwargs
         assert kwargs["surface_words"].shape == (1, 8)
-        assert kwargs["surface_counts"].shape == (1, 2)
+        assert kwargs["surface_counts"].shape == (1, 3)
         assert kwargs["surface_head_coeffs"].shape == (1, 4)
         return np.asarray([[123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int32), 1
 
@@ -709,8 +750,8 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
     assert result[0].forced_counts == ()
 
 
-def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+def test_packed_scoring_batch_loads_reachable_bundle_keys_during_prepare(monkeypatch) -> None:
+    from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     song_inputs = SimpleNamespace(
@@ -728,20 +769,21 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
 
     def _fake_build_bundle(calc_song, ref_arrays, *, stat_keys):
+        keys = tuple(stat_keys)
         seen["calc_song"] = calc_song
         seen["ref_arrays"] = ref_arrays
-        seen["stat_keys"] = tuple(stat_keys)
+        seen["stat_keys"] = keys
         frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
-        for ft_stat, ff_stat in tuple(stat_keys):
+        for ft_stat, ff_stat in keys:
             frontier_idx_by_stat[int(ft_stat), int(ff_stat)] = 0
         surface_words = np.zeros((1, 8), dtype=np.uint32)
         bundle = SimpleNamespace(
-            frontier_idx_by_key={key: 0 for key in tuple(stat_keys)},
+            frontier_idx_by_key={key: 0 for key in keys},
             frontier_idx_by_stat=frontier_idx_by_stat,
             frontier_offsets=np.asarray([0], dtype=np.int32),
             frontier_lengths=np.asarray([1], dtype=np.int32),
             surface_words=surface_words,
-            surface_counts=np.zeros((1, 2), dtype=np.int32),
+            surface_counts=np.zeros((1, 3), dtype=np.int32),
             surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
             total_notes=1,
         )
@@ -761,12 +803,16 @@ def test_packed_scoring_batch_loads_prebuilt_bundle_during_prepare(monkeypatch) 
     assert batch.scoring_bundle is seen["bundle"]
     assert seen["calc_song"] == {"song_data": {}}
     assert seen["ref_arrays"] == {"ref": batch.ref_arrays["ref"]}
-    assert len(seen["stat_keys"]) == (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)
+    assert set(seen["stat_keys"]) == {
+        (0, 0),
+        (0, GEM_SCALE_FEVER),
+        (GEM_SCALE_FEVER, 0),
+    }
     assert set(batch.kept_stat_keys).issubset(set(seen["stat_keys"]))
     assert batch.scoring_bundle_ms >= 0.0
     assert batch.scoring_surface_words.shape == (1, 8)
     assert batch.scoring_surface_head_coeffs is seen["bundle"].surface_head_coeffs
-    assert batch.scoring_surface_counts.shape == (1, 2)
+    assert batch.scoring_surface_counts.shape == (1, 3)
     assert batch.scoring_surface_head_coeffs.shape == (1, 4)
     assert batch.scoring_group_offsets.shape == batch.group_ft.shape
     assert batch.scoring_group_lengths.shape == batch.group_ft.shape
@@ -794,7 +840,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         frontier_offsets=np.asarray([0], dtype=np.int32),
         frontier_lengths=np.asarray([1], dtype=np.int32),
         surface_words=np.zeros((1, 8), dtype=np.uint32),
-        surface_counts=np.zeros((1, 2), dtype=np.int32),
+        surface_counts=np.zeros((1, 3), dtype=np.int32),
         surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         total_notes=1,
     )
@@ -837,7 +883,7 @@ def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repac
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 1
     surface_words = np.arange(24, dtype=np.uint32).reshape(3, 8)
-    surface_counts = np.arange(6, dtype=np.int32).reshape(3, 2)
+    surface_counts = np.arange(9, dtype=np.int32).reshape(3, 3)
     surface_head_coeffs = np.full((3, 4), 3, dtype=np.int32)
     prewarmed_bundle = SimpleNamespace(
         frontier_idx_by_key={(0, 0): 1},

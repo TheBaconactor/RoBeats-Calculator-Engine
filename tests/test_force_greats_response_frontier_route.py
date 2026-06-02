@@ -557,7 +557,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         return (1, 0, 1)
 
     monkeypatch.setattr(adapter, "reconstruct_force_greats_response_counts", _fake_reconstruct)
-    monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 1230})
+    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -616,7 +616,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         ),
     )
     monkeypatch.setattr(adapter, "reconstruct_force_greats_response_counts", lambda **_kwargs: (1, 0, 1))
-    monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 1230})
+    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -1033,7 +1033,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
 
     monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda _song: SimpleNamespace(total_notes=2))
     monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
-    monkeypatch.setattr(adapter, "evaluate_force_greats_exact", lambda *_args, **_kwargs: {"final_score": 150})
+    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
 
     out = adapter.process_force_greats_response_frontier_gpu(
         [
@@ -1189,8 +1189,8 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
     monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
         adapter,
-        "evaluate_force_greats_exact",
-        lambda stats, *_args, **_kwargs: {"final_score": int(stats["Rush"]) + 189},
+        "score_force_greats_response_surface_exact",
+        lambda stats, *_args, **_kwargs: int(stats["Rush"]) + 189,
     )
 
     out = adapter.process_force_greats_response_frontier_gpu(

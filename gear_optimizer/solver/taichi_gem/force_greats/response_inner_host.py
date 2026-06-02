@@ -56,10 +56,14 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
 
 
 def _validate_surface(surface: FgResponseSurface, *, body_total: int) -> None:
-    if int(surface.body_fever) < 0 or int(surface.body_great) < 0:
+    if int(surface.body_fever) < 0 or int(surface.body_great) < 0 or int(surface.body_fever_great) < 0:
         raise ValueError("FG response surface body counts must be nonnegative")
     if int(surface.body_fever) > int(body_total) or int(surface.body_great) > int(body_total):
         raise ValueError("FG response surface body count exceeds song body note count")
+    if int(surface.body_fever_great) > int(surface.body_fever) or int(surface.body_fever_great) > int(surface.body_great):
+        raise ValueError("FG response surface body Fever-Great count exceeds its parent counts")
+    if int(surface.body_fever) + int(surface.body_great) - int(surface.body_fever_great) > int(body_total):
+        raise ValueError("FG response surface body categories exceed song body note count")
 
 
 @jit(nopython=True, cache=True)
@@ -403,8 +407,20 @@ def _score_response_group_meta_gpu(
 
     if int(surface_words_all.shape[0]) != int(surface_counts_all.shape[0]):
         raise ValueError("response frontier GPU surface arrays have inconsistent lengths")
-    if int(surface_words_all.shape[1]) != 8 or int(surface_counts_all.shape[1]) != 2:
+    if int(surface_words_all.shape[1]) != 8 or int(surface_counts_all.shape[1]) != 3:
         raise ValueError("response frontier GPU surface arrays have invalid shape")
+    if bool(np.any(surface_counts_all < 0)):
+        raise ValueError("response frontier GPU surface counts must be nonnegative")
+    body_fever_all = surface_counts_all[:, 0]
+    body_great_all = surface_counts_all[:, 1]
+    body_fever_great_all = surface_counts_all[:, 2]
+    body_total_max = int(np.max(group_meta_all[:, 7])) if int(group_meta_all.shape[0]) else 0
+    if bool(np.any(body_fever_all > body_total_max)) or bool(np.any(body_great_all > body_total_max)):
+        raise ValueError("response frontier GPU surface body count exceeds song body note count")
+    if bool(np.any(body_fever_great_all > body_fever_all)) or bool(np.any(body_fever_great_all > body_great_all)):
+        raise ValueError("response frontier GPU surface body Fever-Great count exceeds parent counts")
+    if bool(np.any(body_fever_all + body_great_all - body_fever_great_all > body_total_max)):
+        raise ValueError("response frontier GPU surface body categories exceed song body note count")
     if int(group_meta_all.shape[1]) < 8:
         raise ValueError("response frontier GPU group metadata requires head/body columns")
     head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
@@ -588,7 +604,7 @@ def _optimize_response_surfaces_gpu(
         if cached is not None:
             return cached
         words = np.empty((len(surfaces), 8), dtype=np.uint32)
-        counts = np.empty((len(surfaces), 2), dtype=np.int32)
+        counts = np.empty((len(surfaces), 3), dtype=np.int32)
         for idx, surface in enumerate(surfaces):
             _validate_surface(surface, body_total=int(body_total))
             words[idx, 0] = int(surface.fever0)
@@ -601,6 +617,7 @@ def _optimize_response_surfaces_gpu(
             words[idx, 7] = int(surface.great3)
             counts[idx, 0] = int(surface.body_fever)
             counts[idx, 1] = int(surface.body_great)
+            counts[idx, 2] = int(surface.body_fever_great)
         cached = (int(unique_surface_rows), int(words.shape[0]))
         surface_cache[key] = cached
         surface_word_blocks.append(words)

@@ -302,7 +302,7 @@ def _materialize_scoring_bundle_from_arrays(
         frontier_idx_by_stat[int(key[0]), int(key[1])] = int(frontier_idx)
     first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
-    surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
+    surface_counts = np.ascontiguousarray(first_pool[:, 8:11], dtype=np.int32)
     total_notes = int(np.asarray(arrays["total_notes"]).item())
     expected_head_len = min(int(total_notes), 100)
     surface_head_coeffs = None

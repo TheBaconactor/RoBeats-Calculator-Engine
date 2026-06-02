@@ -9,6 +9,7 @@ from .response_frontier import (
     FgResponseSurface,
     prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
+    reconstruct_force_greats_response_trace,
     solve_force_greats_response_frontier_batch_gpu,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "FgResponseSurface",
     "prepare_force_greats_response_frontier_scoring_batch",
     "reconstruct_force_greats_response_counts",
+    "reconstruct_force_greats_response_trace",
     "solve_force_greats_response_frontier_batch_gpu",
 ]
