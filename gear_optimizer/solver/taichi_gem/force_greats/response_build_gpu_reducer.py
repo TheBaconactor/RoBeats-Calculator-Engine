@@ -6,16 +6,16 @@ import os
 import numpy as np
 
 from .response_build_gpu_numba import _first_frontier_from_precomputed_end_indices_numba
-from .response_build_gpu_surfaces import _surface_from_numba_row
+from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier
 from .response_types import FgResponseFrontierResult
 
-_FIRST_ONLY_REDUCER_THREADS = max(1, min(int(os.cpu_count() or 1), 8))
+_FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
     global _FIRST_ONLY_REDUCER_THREADS
     previous = int(_FIRST_ONLY_REDUCER_THREADS)
-    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1), 8))
+    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1)))
     return previous
 
 
@@ -39,6 +39,8 @@ def _first_frontier_result_from_precomputed_end_indices(
     first_fill: np.ndarray,
     later_forced: np.ndarray,
     first_forced: np.ndarray,
+    later_activation_forced: np.ndarray,
+    first_activation_forced: np.ndarray,
     timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     timestamp_end_idx: np.ndarray,
@@ -54,6 +56,8 @@ def _first_frontier_result_from_precomputed_end_indices(
             first_fill,
             later_forced,
             first_forced,
+            later_activation_forced,
+            first_activation_forced,
             timestamps,
             great_candidate_timestamps,
             timestamp_end_idx,
@@ -63,7 +67,7 @@ def _first_frontier_result_from_precomputed_end_indices(
         )
     )
     return FgResponseFrontierResult(
-        first_frontier=tuple(_surface_from_numba_row(first_rows[idx]) for idx in range(int(first_rows.shape[0]))),
+        first_frontier=SurfaceRowsFirstFrontier(first_rows),
         state_frontiers={},
         states_evaluated=int(states_evaluated),
         actions=int(action_count),
@@ -104,6 +108,8 @@ def _first_frontier_results_for_precomputed_range(
                     first_fill=np.ascontiguousarray(item[4], dtype=np.int32),
                     later_forced=np.ascontiguousarray(item[5], dtype=np.int32),
                     first_forced=np.ascontiguousarray(item[6], dtype=np.int32),
+                    later_activation_forced=np.ascontiguousarray(item[7], dtype=np.int32),
+                    first_activation_forced=np.ascontiguousarray(item[8], dtype=np.int32),
                     timestamps=timestamps,
                     great_candidate_timestamps=great_candidate_timestamps,
                     timestamp_end_idx=timestamp_end_idx,

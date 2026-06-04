@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 
@@ -29,6 +31,7 @@ _scoring_bundle_cache: OrderedDict[tuple, FgResponseFrontierScoringBundle] = Ord
 _frontier_cache_lock = threading.RLock()
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
+_NPZ_FAST_COMPRESS_LEVEL = 1
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
@@ -92,26 +95,28 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         packed_frontiers = _pack_frontiers(frontiers)
         first_surface_pool = np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
         first_surface_head_len = min(int(payload.total_notes), 100)
-        np.savez_compressed(
+        _save_npz_fast_compressed(
             tmp,
-            version=np.asarray(_fg_response_cache_version()),
-            stat_keys=np.asarray([key for key, _frontier in sorted_items], dtype=np.int32),
-            frontier_ids=np.asarray(
-                [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
-                dtype=np.int32,
-            ),
-            raw_fill_by_ff=np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
-            non_fever_base_by_ff=np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
-            real_time_by_ft=np.asarray(payload.real_time_by_ft, dtype=np.float64),
-            total_notes=np.asarray(int(payload.total_notes), dtype=np.int32),
-            long_notes=np.asarray(int(payload.long_notes), dtype=np.int32),
-            use_forced_great_timing=np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
-            first_surface_head_len=np.asarray(int(first_surface_head_len), dtype=np.int32),
-            first_surface_head_coeffs=_precompute_surface_head_coeffs(
-                first_surface_pool,
-                head_len=int(first_surface_head_len),
-            ),
-            **packed_frontiers,
+            {
+                "version": np.asarray(_fg_response_cache_version()),
+                "stat_keys": np.asarray([key for key, _frontier in sorted_items], dtype=np.int32),
+                "frontier_ids": np.asarray(
+                    [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
+                    dtype=np.int32,
+                ),
+                "raw_fill_by_ff": np.asarray(payload.raw_fill_by_ff, dtype=np.float64),
+                "non_fever_base_by_ff": np.asarray(payload.non_fever_base_by_ff, dtype=np.int32),
+                "real_time_by_ft": np.asarray(payload.real_time_by_ft, dtype=np.float64),
+                "total_notes": np.asarray(int(payload.total_notes), dtype=np.int32),
+                "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
+                "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
+                "first_surface_head_len": np.asarray(int(first_surface_head_len), dtype=np.int32),
+                "first_surface_head_coeffs": _precompute_surface_head_coeffs(
+                    first_surface_pool,
+                    head_len=int(first_surface_head_len),
+                ),
+                **packed_frontiers,
+            },
         )
         tmp.replace(path)
     except Exception:
@@ -121,6 +126,19 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
             except Exception:
                 pass
         raise
+
+
+def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    with zipfile.ZipFile(
+        path,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=int(_NPZ_FAST_COMPRESS_LEVEL),
+        allowZip64=True,
+    ) as archive:
+        for name, array in arrays.items():
+            with archive.open(f"{name}.npy", mode="w", force_zip64=True) as handle:
+                np_format.write_array(handle, np.asanyarray(array), allow_pickle=False)
 
 
 def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
@@ -180,12 +198,6 @@ def _payload_disk_info_if_complete(
         "first_offsets",
         "first_counts",
         "first_surface_pool",
-        "state_offsets",
-        "state_counts",
-        "state_keys",
-        "state_surface_offsets",
-        "state_surface_counts",
-        "state_surface_pool",
         "total_notes",
         "long_notes",
     }
@@ -284,32 +296,6 @@ def _load_bundle_array_members_if_present(cache_key: tuple, *, names: Iterable[s
             _bundle_array_cache.popitem(last=False)
         _bundle_array_cache.move_to_end(cache_key)
         return {name: cached[name] for name in present}
-
-
-def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:
-    return _load_bundle_array_members(
-        cache_key,
-        names=(
-            "stat_keys",
-            "frontier_ids",
-            "raw_fill_by_ff",
-            "non_fever_base_by_ff",
-            "real_time_by_ft",
-            "total_notes",
-            "long_notes",
-            "use_forced_great_timing",
-            "frontier_meta",
-            "first_offsets",
-            "first_counts",
-            "first_surface_pool",
-            "state_offsets",
-            "state_counts",
-            "state_keys",
-            "state_surface_offsets",
-            "state_surface_counts",
-            "state_surface_pool",
-        ),
-    )
 
 
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:

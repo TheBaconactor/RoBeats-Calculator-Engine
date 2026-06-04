@@ -259,7 +259,7 @@ def score_stats_exact(
     if total_notes <= 0:
         return 0
 
-    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from ..taichi_gem.api.timeline import load_timeline_frontier_payload
 
     frontier_refs = dict(ref_arrays)
     for axis in ("Fever Time", "Fever Fill Rate"):
@@ -268,7 +268,8 @@ def score_stats_exact(
             raise ValueError(f"{axis} axis must include stat rows 0..{TOTAL_ROWS}")
         frontier_refs[axis] = axis_values[: TOTAL_ROWS + 1]
 
-    payload = build_or_load_timeline_frontier_payload(song_dict, frontier_refs).payload
+    # Timeline frontier is the default authoritative base-scoring behavior.
+    payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
     ft_idx = max(0, min(int(ft_idx), TOTAL_ROWS))
     ff_idx = max(0, min(int(ff_idx), TOTAL_ROWS))
     frontier_count = int(payload.grid_frontier_count[0, ft_idx, ff_idx])
@@ -443,6 +444,106 @@ def score_force_greats_surface_base_exact(
             fever_mul=float(factors.fever_mul),
         )
     )
+
+
+def score_force_greats_response_surface_exact(
+    stats: Mapping[str, Any],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    surface: Any,
+) -> int | None:
+    """
+    Exact f64 replay for a solved FG response surface.
+
+    The response surface is the canonical representation for timeline-frontier
+    FG because it can encode Fever+Great overlap; forced-count configs cannot.
+    """
+    if not stats or not calc_song:
+        return None
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
+    song_inputs = extract_fg_song_inputs(calc_song)
+    total_notes = int(song_inputs.total_notes)
+    if total_notes <= 0:
+        return None
+
+    head_len = min(total_notes, 100)
+    body_total = max(0, total_notes - 100)
+    body_fever = safe_int(getattr(surface, "body_fever", 0), 0)
+    body_great = safe_int(getattr(surface, "body_great", 0), 0)
+    body_fever_great = safe_int(getattr(surface, "body_fever_great", 0), 0)
+    if (
+        body_fever < 0
+        or body_great < 0
+        or body_fever_great < 0
+        or body_fever > body_total
+        or body_great > body_total
+        or body_fever_great > body_fever
+        or body_fever_great > body_great
+        or body_fever + body_great - body_fever_great > body_total
+    ):
+        raise ValueError("FG response surface body categories do not match song body note count")
+
+    primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
+    secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
+    factors = resolve_stat_factors(stats, ref_arrays)
+    single_color = is_single_color_song(song_inputs.primary_color, song_inputs.secondary_color)
+    base_value = float((primary_val * 2) + secondary_val) + float(factors.pp_factor)
+    combo_f = float(factors.combo_mul)
+    fever_f = float(factors.fever_mul)
+    combo_val = floor(base_value * combo_f)
+    fever_val = floor(base_value * combo_f * fever_f)
+
+    if bool(single_color):
+        great_head_base = (int(primary_val) * 2) + 150
+        great_raw = float(great_head_base)
+    else:
+        great_head_base = (
+            floor(float(primary_val) * (4.0 / 3.0))
+            + floor(float(secondary_val) * (2.0 / 3.0))
+            + 150
+        )
+        great_raw = (float(primary_val) * (4.0 / 3.0)) + (float(secondary_val) * (2.0 / 3.0)) + 150.0
+
+    body_normal_great = int(body_great - body_fever_great)
+    body_normal = int(body_total - body_fever)
+    if body_normal - body_normal_great < 0:
+        raise ValueError("FG response surface body normal category is negative")
+
+    score = 0
+    score += int(body_fever) * int(fever_val)
+    score += int(body_normal) * int(combo_val)
+    body_normal_penalty = max(0, int(combo_val) - int(floor(great_raw * combo_f)))
+    body_fever_penalty = max(0, int(fever_val) - int(floor(great_raw * combo_f * fever_f)))
+    score -= int(body_normal_great) * int(body_normal_penalty)
+    score -= int(body_fever_great) * int(body_fever_penalty)
+
+    fever_words = (
+        safe_int(getattr(surface, "fever0", 0), 0),
+        safe_int(getattr(surface, "fever1", 0), 0),
+        safe_int(getattr(surface, "fever2", 0), 0),
+        safe_int(getattr(surface, "fever3", 0), 0),
+    )
+    great_words = (
+        safe_int(getattr(surface, "great0", 0), 0),
+        safe_int(getattr(surface, "great1", 0), 0),
+        safe_int(getattr(surface, "great2", 0), 0),
+        safe_int(getattr(surface, "great3", 0), 0),
+    )
+    factor = (combo_f - 1.0) * base_value / 100.0
+    for i in range(head_len):
+        word_idx = i // 32
+        bit_idx = i % 32
+        is_fever = ((int(fever_words[word_idx]) >> int(bit_idx)) & 1) != 0
+        is_great = ((int(great_words[word_idx]) >> int(bit_idx)) & 1) != 0
+        scaling = 1.0 + ((combo_f - 1.0) * float(i + 1) / 100.0)
+        ramp_val = base_value + (float(i + 1) * factor)
+        perfect_score = floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
+        if is_great:
+            great_score = float(great_head_base) * scaling
+            great_score = floor(great_score * fever_f) if is_fever else floor(great_score)
+            perfect_score -= max(0, int(perfect_score) - int(great_score))
+        score += int(perfect_score)
+    return int(score)
 
 
 def evaluate_force_greats_exact(

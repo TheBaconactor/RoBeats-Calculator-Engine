@@ -5,11 +5,13 @@ from typing import Any, Callable
 
 from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.force_greats_common import extract_base_stats
-from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     FgResponseSurface,
+    reconstruct_force_greats_response_trace,
     solve_force_greats_response_frontier_batch_gpu,
 )
 
@@ -104,6 +106,7 @@ def _surface_payload(surface: FgResponseSurface) -> dict[str, int]:
         "great3": int(surface.great3),
         "body_fever": int(surface.body_fever),
         "body_great": int(surface.body_great),
+        "body_fever_great": int(surface.body_fever_great),
     }
 
 
@@ -115,16 +118,29 @@ def _materialize_force_payload(
     selected_color: str,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    paired_base_score: int,
 ) -> dict[str, Any]:
     forced_counts = tuple(int(v) for v in fg_result.forced_counts)
     if not forced_counts:
         raise ValueError("skyline response frontier requires forced_counts on the solve result")
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    base_score = int(score_stats_exact(fg_result.stats, calc_song, ref_arrays))
-    exact_fg = evaluate_force_greats_exact(fg_result.stats, calc_song, ref_arrays, list(forced_counts))
-    if not isinstance(exact_fg, dict):
-        raise ValueError("skyline response frontier exact replay failed")
-    final_score = int(exact_fg["final_score"])
+    base_score = int(paired_base_score)
+    if base_score <= 0:
+        raise ValueError("skyline response frontier requires a positive source paired base score.")
+    final_score_obj = score_force_greats_response_surface_exact(fg_result.stats, calc_song, ref_arrays, fg_result.surface)
+    if final_score_obj is None:
+        raise ValueError("skyline response frontier exact surface replay failed")
+    final_score = int(final_score_obj)
+    song_inputs = extract_fg_song_inputs(calc_song)
+    frontier_trace = reconstruct_force_greats_response_trace(
+        frontier=fg_result.frontier,
+        target_surface=fg_result.surface,
+        timestamps=song_inputs.timestamps,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        raw_fever_fill=float(fg_result.raw_fever_fill),
+        real_fever_time=float(fg_result.real_fever_time),
+        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    )
 
     force_payload = dict(base_data)
     force_payload["BaseScore"] = int(base_score)
@@ -140,6 +156,7 @@ def _materialize_force_payload(
         "config": config,
         "final_score": int(final_score),
         "response_surface": _surface_payload(fg_result.surface),
+        "frontier_trace": list(frontier_trace),
         "frontier_first_surfaces": int(len(fg_result.frontier.first_frontier)),
         "frontier_states": int(fg_result.frontier.states_evaluated),
         "frontier_max_state": int(fg_result.frontier.max_state_frontier),
@@ -286,6 +303,7 @@ def score_retained_skyline_force_greats(
                 selected_color=selected_color,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
+                paired_base_score=base_score,
             )
             fg_score = int(force_payload["Score"])
             fg_base_score = int(force_payload["BaseScore"])

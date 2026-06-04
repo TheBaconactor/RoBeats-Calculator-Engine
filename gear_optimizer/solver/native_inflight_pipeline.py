@@ -8,11 +8,9 @@ from typing import Any, Optional
 
 import numpy as np
 
-from gear_optimizer.core.config import read_fg_candidate_limit
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.core.utils import safe_int
 from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
@@ -285,10 +283,7 @@ def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[
         registry=gpu_inputs.registry,
         cfg_data=decode_cfg_data,
         base_stats_fixed=gpu_inputs.fixed_stats,
-        fg_candidate_limit=safe_int(
-            decode_cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
-            FG_CANDIDATE_LIMIT,
-        ),
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
         calc_song=None,
         ref_arrays=None,
         fg_group_meta_limit=0,
@@ -321,32 +316,26 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     Response-frontier FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
-    config = getattr(song, "config", song)
-    runtime = getattr(song, "runtime", song)
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        all_response_stat_keys,
+        load_response_frontier_scoring_bundle,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
 
     warmup_response_ftff_prune()
     warmup_response_frontier_group_builder()
-    cfg = getattr(config, "cfg", None)
-    fg_candidate_limit = read_fg_candidate_limit(
-        cfg,
-        default=FG_CANDIDATE_LIMIT,
-        min_limit=LOADOUTS_PER_SONG_LIMIT,
+    fg_calc_song = resolve_active_fg_calc_song(song)
+    if not isinstance(fg_calc_song, dict):
+        raise RuntimeError("FG static prep requires a resolved calc song")
+    ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
+    if not isinstance(ref_arrays, dict):
+        raise RuntimeError("FG static prep requires reference arrays")
+    song.runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
+        fg_calc_song,
+        ref_arrays,
+        stat_keys=all_response_stat_keys(),
     )
-    runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
-    calc_song = resolve_active_fg_calc_song(song)
-    if getattr(song.runtime.fg, "fg_response_scoring_bundle", None) is None:
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-            load_response_frontier_scoring_bundle,
-        )
-
-        full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
-        runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song,
-            getattr(song.gpu_inputs, "ref_arrays", None),
-            stat_keys=full_stat_grid,
-        )
     try:
         song.runtime.fg.fg_static_prep_done = True
     except AttributeError:
@@ -357,8 +346,7 @@ def prepare_ga_candidate_surface_for_fg(
     song: NativeSong,
     *,
     fg_candidate_limit: int,
-    post_candidate_limit: int = LOADOUTS_PER_SONG_LIMIT,
-) -> tuple[list[dict], list[dict], int, bool]:
+) -> tuple[list[dict], int, bool]:
     runtime = getattr(song, "runtime", song)
     gpu_inputs = getattr(song, "gpu_inputs", song)
     source_candidates = (
@@ -389,8 +377,8 @@ def prepare_ga_candidate_surface_for_fg(
             ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
         )
     runtime.decode.ga_candidates = selected
-    runtime.decode.ga_post_candidates = list(selected[: max(0, int(post_candidate_limit))])
-    return selected, runtime.decode.ga_post_candidates, int(preselect_count), bool(hydrated)
+    runtime.decode.fg_surface_prepared = True
+    return selected, int(preselect_count), bool(hydrated)
 
 
 def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
@@ -401,23 +389,14 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     queue_wait_ms = 0.0
     if isinstance(prep_submit_t0, (int, float)):
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
-    config = getattr(song, "config", song)
-    runtime = getattr(song, "runtime", song)
-    cfg = getattr(config, "cfg", None)
     perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
-    fg_candidate_limit = read_fg_candidate_limit(
-        cfg,
-        default=FG_CANDIDATE_LIMIT,
-        min_limit=LOADOUTS_PER_SONG_LIMIT,
-    )
-    runtime.fg.fg_candidate_limit = int(fg_candidate_limit)
+    fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
     resolve_active_fg_calc_song(song)
     t_candidate_select0 = time.perf_counter()
-    ga_candidates, _post_candidates, preselect_ga_candidates, hydrated_fg_stats = prepare_ga_candidate_surface_for_fg(
+    ga_candidates, preselect_ga_candidates, hydrated_fg_stats = prepare_ga_candidate_surface_for_fg(
         song,
         fg_candidate_limit=int(fg_candidate_limit),
-        post_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
     t_candidate_select = time.perf_counter()
     t_select = time.perf_counter()

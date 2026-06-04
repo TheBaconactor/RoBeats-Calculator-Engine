@@ -273,14 +273,14 @@ def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directl
     row = out[0]
     force = row["force"]
     assert row["score"] == 32367815
-    assert row["fg_base_score"] == 32367815
+    assert row["fg_base_score"] == 32518595
     assert row["fg_score"] == 32521173
-    assert force["BaseScore"] == 32367815
+    assert force["BaseScore"] == 32518595
     assert force["Score"] == 32521173
     assert force["ForceGreats"]["final_score"] == 32521173
 
 
-def test_db_equal_fg_upsert_repairs_stale_00_hard_paired_base_score(tmp_path, monkeypatch):
+def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path, monkeypatch):
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.data.song_io import get_base_calc_song
@@ -308,10 +308,10 @@ def test_db_equal_fg_upsert_repairs_stale_00_hard_paired_base_score(tmp_path, mo
         ).fetchone()
 
     assert row is not None
-    assert int(row["score"]) == 32367815
+    assert int(row["score"]) == 32518595
     assert int(row["fg_score"]) == 32521173
     details = json.loads(row["details_json"])
     force = json.loads(row["force_details_json"])
-    assert int(details["BaseScore"]) == 32367815
-    assert int(force["BaseScore"]) == 32367815
+    assert int(details["BaseScore"]) == 32518595
+    assert int(force["BaseScore"]) == 32518595
     assert int(force["Score"]) == 32521173

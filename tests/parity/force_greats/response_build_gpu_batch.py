@@ -11,7 +11,7 @@ from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
     _batch_chunk_size,
-    _canonicalize_first_only_prepared_items,
+    _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_chunks,
     _precompute_end_indices,
 )
@@ -84,11 +84,13 @@ def _build_force_greats_response_frontiers_gpu_batch(
 
     out: list[FgResponseFrontierResult | None] = [None] * len(geometry_rows)
     if not bool(materialize_state_frontiers):
-        prepared, duplicate_sources_by_source = _canonicalize_first_only_prepared_items(
+        _canonical = _canonicalize_first_only_prepared_items_with_end_indices(
             prepared=prepared,
             timestamps=ts,
             great_candidate_timestamps=great_ts,
         )
+        prepared = _canonical.prepared
+        duplicate_sources_by_source = _canonical.duplicate_sources_by_source
         chunk_iter = _first_only_chunks(n=int(n), items=prepared)
     else:
         duplicate_sources_by_source = {int(item[0]): (int(item[0]),) for item in prepared}

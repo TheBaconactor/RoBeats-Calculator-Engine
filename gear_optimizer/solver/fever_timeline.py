@@ -349,9 +349,13 @@ def calculate_force_greats_timeline_indices(
             # Great offsets are applied to fill-contributing notes.
             # Sections 2+: the transition note (no fill) is the first note in section.
             forced_start = section_start if non_fever_section == 1 else (section_start + 1)
-            forced_end = forced_start + forced_applied - 1
-            if forced_end >= forced_start and forced_end < end_normal and forced_end < total_notes:
-                cand_t = great_candidate_timestamps[forced_end]
+            forced_stop = forced_start + forced_applied
+            if forced_stop > end_normal:
+                forced_stop = end_normal
+            if forced_stop > total_notes:
+                forced_stop = total_notes
+            for forced_idx in range(forced_start, forced_stop):
+                cand_t = great_candidate_timestamps[forced_idx]
                 if cand_t > carry_time:
                     carry_time = cand_t
 

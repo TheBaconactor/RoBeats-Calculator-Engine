@@ -224,8 +224,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
     assert row is not None
     stored_details = json.loads(str(row["details_json"] or "{}"))
     stored_force = json.loads(str(row["force_details_json"] or "{}"))
-    assert int(row["score"]) == 32367815
+    assert int(row["score"]) == 32518595
     assert int(row["fg_score"]) == 32521173
-    assert int(stored_details["BaseScore"]) == 32367815
-    assert int(stored_force["BaseScore"]) == 32367815
+    assert int(stored_details["BaseScore"]) == 32518595
+    assert int(stored_force["BaseScore"]) == 32518595
     assert int(stored_force["Score"]) == 32521173

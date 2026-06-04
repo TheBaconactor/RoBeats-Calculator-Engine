@@ -30,7 +30,6 @@ from .response_cache_store import (
     _load_bundle_array_members_if_present,
     _load_bundle_array_members,
     _load_payload,
-    _memory_get,  # noqa: F401
     _memory_put,  # noqa: F401
     _payload_disk_info_if_complete,
     _payload_memory_get,
@@ -49,6 +48,7 @@ from .response_cache_types import (
     FgResponseFrontierPrewarmResult,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
+    all_response_stat_keys,
     normalize_fg_response_stat_keys,
 )
 from .response_types import FgResponseFrontierResult
@@ -68,6 +68,7 @@ __all__ = [
     "fg_response_frontier_payload_cache_key",
     "frontier_result_from_scoring_bundle",
     "frontier_result_from_scoring_bundle_for_stats",
+    "all_response_stat_keys",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
     "reset_fg_response_frontier_payload_cache",
@@ -302,7 +303,7 @@ def _materialize_scoring_bundle_from_arrays(
         frontier_idx_by_stat[int(key[0]), int(key[1])] = int(frontier_idx)
     first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
     surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
-    surface_counts = np.ascontiguousarray(first_pool[:, 8:10], dtype=np.int32)
+    surface_counts = np.ascontiguousarray(first_pool[:, 8:11], dtype=np.int32)
     total_notes = int(np.asarray(arrays["total_notes"]).item())
     expected_head_len = min(int(total_notes), 100)
     surface_head_coeffs = None
@@ -360,9 +361,22 @@ def load_response_frontier_scoring_bundle(
 
     try:
         arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
-    except ValueError:
-        build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
-        arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+    except ValueError as exc:
+        raise ValueError(
+            "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
+            "the candidate-independent all-FT/FF bundle before runtime scoring."
+        ) from exc
+    present = {
+        _normalize_stat_key((int(row[0]), int(row[1])))
+        for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
+    }
+    if not set(keys).issubset(present):
+        missing = sorted(set(keys) - present)
+        raise ValueError(
+            "FG response frontier scoring bundle does not cover requested stat keys. "
+            "Startup cache prebuild must build the candidate-independent all-FT/FF bundle before runtime scoring: "
+            f"{missing[:5]!r}"
+        )
     arrays.update(
         _load_bundle_array_members_if_present(
             bundle_key,

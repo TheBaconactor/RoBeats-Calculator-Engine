@@ -10,7 +10,6 @@ from gear_optimizer.core.config import (
     GPUExecutionSettings,
     InflightSettings,
     load_config,
-    read_fg_candidate_limit,
     read_iteration_engine_settings,
 )
 
@@ -38,7 +37,6 @@ def _build_config() -> configparser.ConfigParser:
                 "IgnoreResumeQueue": "true",
                 "SongRepeats": "0",
                 "LoopRestartWaitSec": "99.5",
-                "FG_CandidateLimit": "9999",
             },
             "CalculateSong": {
                 "Difficulty": "",
@@ -91,8 +89,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.loop_restart_wait_sec == 60.0
 
     assert ie.force_greats_debug is False
-
-    assert read_fg_candidate_limit(cfg, default=51, min_limit=1) == 5000
 
 
 @pytest.mark.parametrize(

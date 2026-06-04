@@ -6,13 +6,13 @@ from typing import Any, Callable
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
 from ....solver.force_greats_common import extract_base_stats
-from ....solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from ....solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from ....solver.scoring.fg_policy import extract_fg_song_inputs
 from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     prepare_force_greats_response_frontier_scoring_batch,
-    reconstruct_force_greats_response_counts,
+    reconstruct_force_greats_response_trace,
 )
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from .entry_utils import eval_data_from_entry, expected_selected_element
@@ -112,45 +112,63 @@ def _force_payload_from_response_frontier(
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
+    paired_base_score: int,
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
+    song_inputs = extract_fg_song_inputs(calc_song)
+    frontier_trace = reconstruct_force_greats_response_trace(
+        frontier=frontier,
+        target_surface=result.surface,
+        timestamps=song_inputs.timestamps,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        raw_fever_fill=float(result.raw_fever_fill),
+        real_fever_time=float(result.real_fever_time),
+        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    )
+    trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)
+        if forced_counts != trace_counts:
+            raise ValueError("ForceGreats response frontier forced_counts do not match the reconstructed trace")
     else:
-        song_inputs = extract_fg_song_inputs(calc_song)
-        forced_counts = tuple(
-            int(v)
-            for v in reconstruct_force_greats_response_counts(
-                frontier=frontier,
-                target_surface=result.surface,
-                timestamps=song_inputs.timestamps,
-                great_candidate_timestamps=song_inputs.great_candidates,
-                raw_fever_fill=float(result.raw_fever_fill),
-                real_fever_time=float(result.real_fever_time),
-                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-            )
-        )
+        forced_counts = trace_counts
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    replay_base_score = int(score_stats_exact(result.stats, calc_song, ref_arrays))
-    exact_fg = evaluate_force_greats_exact(result.stats, calc_song, ref_arrays, list(forced_counts))
-    if not isinstance(exact_fg, dict):
-        raise ValueError("ForceGreats response frontier exact replay failed")
-    final_score = int(exact_fg["final_score"])
+    paired_base = safe_int(paired_base_score, 0)
+    if paired_base <= 0:
+        raise ValueError("ForceGreats response frontier requires a positive source paired base score.")
+    final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
+    if final_score_obj is None:
+        raise ValueError("ForceGreats response frontier exact surface replay failed")
+    final_score = int(final_score_obj)
 
     payload = dict(eval_data)
     payload["BaseStats"] = dict(base_stats)
     payload["Stats"] = dict(result.stats)
-    payload["BaseScore"] = int(replay_base_score)
+    payload["BaseScore"] = int(paired_base)
     payload["Score"] = int(final_score)
     payload["Selected Element"] = str(selected_element or payload.get("Selected Element", "") or "")
     payload["GemCounts"] = dict(result.gem_counts)
     payload["FT"] = int(result.ft)
     payload["FF"] = int(result.ff)
     payload["forced_counts"] = list(forced_counts)
+    payload["response_surface"] = [
+        int(result.surface.fever0),
+        int(result.surface.fever1),
+        int(result.surface.fever2),
+        int(result.surface.fever3),
+        int(result.surface.great0),
+        int(result.surface.great1),
+        int(result.surface.great2),
+        int(result.surface.great3),
+        int(result.surface.body_fever),
+        int(result.surface.body_great),
+        int(result.surface.body_fever_great),
+    ]
     payload["ForceGreats"] = {
         "config": config,
         "final_score": int(final_score),
+        "frontier_trace": list(frontier_trace),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),
         "frontier_states": int(frontier.states_evaluated),
         "frontier_max_state": int(frontier.max_state_frontier),
@@ -260,9 +278,6 @@ def materialize_force_greats_response_frontier_plan_results(
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
-        known_base_score = int(entry["base_score"])
-        if int(result.best_score) <= int(known_base_score):
-            continue
         gear_names, mini_names = materialize_entry_names(entry, mutate=True)
         pending_variants.append(
             {
@@ -271,7 +286,6 @@ def materialize_force_greats_response_frontier_plan_results(
                 "selected": selected,
                 "base_stats": base_stats,
                 "result": result,
-                "base_score": int(known_base_score),
                 "gear": gear_names,
                 "minis": mini_names,
                 "fg_score": int(result.best_score),
@@ -291,21 +305,26 @@ def materialize_force_greats_response_frontier_plan_results(
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
+            paired_base_score=safe_int(item["entry"].get("base_score"), 0),
         )
 
         entry = item["entry"]
         exact_fg_score = safe_int(payload.get("Score", 0), 0)
-        if int(exact_fg_score) > safe_int(entry.get("fg_score", 0), 0):
+        exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
+        if exact_fg_score <= exact_base_score:
+            continue
+        if exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
             entry["force"] = payload
-            entry["fg_score"] = int(exact_fg_score)
+            entry["fg_score"] = exact_fg_score
+            entry["fg_base_score"] = exact_base_score
         variants.append(
             {
                 "data": payload,
                 "gear": item["gear"],
                 "minis": item["minis"],
-                "score": int(payload["BaseScore"]),
-                "base_score": int(payload["BaseScore"]),
-                "fg_score": int(exact_fg_score),
+                "score": exact_base_score,
+                "base_score": exact_base_score,
+                "fg_score": exact_fg_score,
                 "_entry_ref": entry,
                 "_is_ga": bool(item["_is_ga"]),
             }

@@ -602,7 +602,7 @@ class NativeSongDecodeState:
     decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
     ga_persistence_candidates: Optional[list[JsonDict]] = None
-    ga_post_candidates: Optional[list[JsonDict]] = None
+    fg_surface_prepared: bool = False
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
     best_minis: Optional[list[Any]] = None
@@ -612,7 +612,6 @@ class NativeSongDecodeState:
 @dataclass
 class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
-    fg_candidate_limit: int = 0
     fg_calc_song: Optional[CalcSong | JsonDict] = None
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None

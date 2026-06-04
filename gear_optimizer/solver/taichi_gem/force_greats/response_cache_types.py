@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 import numpy as np
 
@@ -11,7 +12,7 @@ from gear_optimizer.core.parsing import env_get
 
 from .response_types import FgResponseFrontierResult
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-sparse-bundle-v3"
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v7"
 _MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
 _PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
 _BUNDLE_ARRAY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_BUNDLE_ARRAY_CACHE_MAX", "2") or "2"))
@@ -32,16 +33,11 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
         "first_counts",
     )
 )
-_FRONTIER_STATE_INDEX_ARRAY_NAMES = frozenset(
-    (
-        "state_offsets",
-        "state_counts",
-        "state_keys",
-        "state_surface_offsets",
-        "state_surface_counts",
-    )
-)
-_FRONTIER_RESULT_ARRAY_NAMES = _SCORING_BUNDLE_ARRAY_NAMES | _FRONTIER_STATE_INDEX_ARRAY_NAMES
+
+
+@lru_cache(maxsize=1)
+def all_response_stat_keys() -> tuple[tuple[int, int], ...]:
+    return tuple((int(ft), int(ff)) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,14 +59,6 @@ class FgResponseFrontierCachePayload:
         if frontier is None:
             raise ValueError(f"FG response frontier stat key was not loaded: {key}")
         return frontier
-
-    def geometry_for_stats(self, *, ft_stat: int, ff_stat: int) -> tuple[float, int, float]:
-        ft_i, ff_i = self.stats_key(ft_stat=ft_stat, ff_stat=ff_stat)
-        return (
-            float(self.raw_fill_by_ff[ff_i]),
-            int(self.non_fever_base_by_ff[ff_i]),
-            float(self.real_time_by_ft[ft_i]),
-        )
 
     @property
     def frontiers(self) -> tuple[FgResponseFrontierResult, ...]:
@@ -105,21 +93,6 @@ class FgResponseFrontierPrewarmResult:
     total_notes: int
     long_notes: int
     frontier_count: int
-
-    def for_scoring(
-        self,
-        calc_song: dict[str, Any],
-        ref_arrays: dict[str, Any],
-        *,
-        stat_keys: Iterable[tuple[int, int]],
-    ) -> FgResponseFrontierScoringBundle:
-        from .response_cache import load_response_frontier_scoring_bundle
-
-        return load_response_frontier_scoring_bundle(
-            calc_song,
-            ref_arrays,
-            stat_keys=stat_keys,
-        )
 
 
 @dataclass(frozen=True, slots=True)

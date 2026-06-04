@@ -7,9 +7,8 @@ import numpy as np
 
 from .response_builder import _action_table
 from .response_build_gpu_precompute import (
-    _canonicalize_first_only_prepared_items,
+    _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_chunks,
-    _precompute_end_indices,
 )
 from .response_build_gpu_reducer import (
     _first_frontier_results_for_precomputed_range,
@@ -17,6 +16,69 @@ from .response_build_gpu_reducer import (
     _resolve_first_only_reducer_threads,
 )
 from .response_types import FgResponseFrontierResult, _EMPTY_SURFACE
+
+
+def _compact_first_frontier_action_arrays(
+    actions: list[int],
+    later_fill: list[int],
+    first_fill: list[int],
+    later_forced: list[int],
+    first_forced: list[int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rows: list[tuple[int, int, int, int, int, int]] = []
+    row_by_fill: dict[tuple[int, int], int] = {}
+    for action_idx, k in enumerate(actions):
+        later = int(later_fill[int(action_idx)])
+        first = int(first_fill[int(action_idx)])
+        key = (int(later), int(first))
+        row_idx = row_by_fill.get(key)
+        if row_idx is None:
+            row_by_fill[key] = len(rows)
+            rows.append(
+                (
+                    int(later),
+                    int(first),
+                    int(later_forced[int(action_idx)]),
+                    int(first_forced[int(action_idx)]),
+                    -1,
+                    -1,
+                )
+            )
+            continue
+
+        (
+            normal_later,
+            normal_first,
+            normal_later_forced,
+            normal_first_forced,
+            later_activation,
+            first_activation,
+        ) = rows[int(row_idx)]
+        if int(k) > 0 and int(action_idx) > 0 and int(later_fill[int(action_idx) - 1]) == int(later):
+            candidate = min(max(0, int(k) - 1), max(0, int(later) - 1))
+            later_activation = int(candidate) if int(later_activation) < 0 else min(int(later_activation), int(candidate))
+        if int(k) > 0 and int(action_idx) > 0 and int(first_fill[int(action_idx) - 1]) == int(first):
+            candidate = min(max(0, int(k) - 1), max(0, int(first)))
+            first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
+        rows[int(row_idx)] = (
+            int(normal_later),
+            int(normal_first),
+            int(normal_later_forced),
+            int(normal_first_forced),
+            int(later_activation),
+            int(first_activation),
+        )
+    if not rows:
+        rows.append((0, 0, 0, 0, -1, -1))
+    row_arr = np.asarray(rows, dtype=np.int32)
+    return (
+        np.ascontiguousarray(row_arr[:, 0], dtype=np.int32),
+        np.ascontiguousarray(row_arr[:, 1], dtype=np.int32),
+        np.ascontiguousarray(row_arr[:, 2], dtype=np.int32),
+        np.ascontiguousarray(row_arr[:, 3], dtype=np.int32),
+        np.ascontiguousarray(row_arr[:, 4], dtype=np.int32),
+        np.ascontiguousarray(row_arr[:, 5], dtype=np.int32),
+    )
 
 
 def _build_force_greats_response_first_frontiers_gpu_batch(
@@ -43,25 +105,36 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             raise ValueError("great_candidate_timestamps length must match timestamps")
 
     prepared = []
-    action_table_cache: dict[tuple[float, int, bool], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+    action_table_cache: dict[
+        tuple[float, int, bool],
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
     for idx, row in enumerate(geometry_rows):
         raw_fever_fill, non_fever_base, real_fever_time = row
         action_key = (float(raw_fever_fill), max(0, int(non_fever_base)), bool(use_forced_great_timing))
         action_arrays = action_table_cache.get(action_key)
         if action_arrays is None:
-            _actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+            actions, later_fill, first_fill, later_forced, first_forced = _action_table(
                 raw_fever_fill=float(raw_fever_fill),
                 non_fever_base=max(0, int(non_fever_base)),
                 use_forced_great_timing=bool(use_forced_great_timing),
             )
-            action_arrays = (
-                np.asarray(later_fill, dtype=np.int32),
-                np.asarray(first_fill, dtype=np.int32),
-                np.asarray(later_forced, dtype=np.int32),
-                np.asarray(first_forced, dtype=np.int32),
+            action_arrays = _compact_first_frontier_action_arrays(
+                actions,
+                later_fill,
+                first_fill,
+                later_forced,
+                first_forced,
             )
             action_table_cache[action_key] = action_arrays
-        later_fill_arr, first_fill_arr, later_forced_arr, first_forced_arr = action_arrays
+        (
+            later_fill_arr,
+            first_fill_arr,
+            later_forced_arr,
+            first_forced_arr,
+            later_activation_forced_arr,
+            first_activation_forced_arr,
+        ) = action_arrays
         prepared.append(
             (
                 idx,
@@ -71,26 +144,30 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 first_fill_arr,
                 later_forced_arr,
                 first_forced_arr,
+                later_activation_forced_arr,
+                first_activation_forced_arr,
             )
         )
 
     out: list[FgResponseFrontierResult | None] = [None] * len(geometry_rows)
-    prepared, duplicate_sources_by_source = _canonicalize_first_only_prepared_items(
+    canonical = _canonicalize_first_only_prepared_items_with_end_indices(
         prepared=prepared,
         timestamps=ts,
         great_candidate_timestamps=great_ts,
     )
+    prepared = canonical.prepared
+    duplicate_sources_by_source = canonical.duplicate_sources_by_source
     chunk_iter = _first_only_chunks(n=int(n), items=prepared)
 
     first_only_executor: concurrent.futures.ThreadPoolExecutor | None = None
     try:
         for action_count, chunk in chunk_iter:
             geometry_count = len(chunk)
-            real_times = np.asarray([item[2] for item in chunk], dtype=np.float32)
-            real_time_index, timestamp_end_idx, great_end_idx = _precompute_end_indices(
-                timestamps=ts,
-                great_candidate_timestamps=great_ts,
-                real_times=real_times,
+            real_time_index = np.ascontiguousarray(
+                np.asarray(
+                    [canonical.real_time_index_by_source[int(item[0])] for item in chunk],
+                    dtype=np.int32,
+                )
             )
             reducer_threads = _resolve_first_only_reducer_threads(int(geometry_count))
             if int(reducer_threads) <= 1:
@@ -102,14 +179,14 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         stop=int(geometry_count),
                         timestamps=ts,
                         great_candidate_timestamps=great_ts,
-                        timestamp_end_idx=timestamp_end_idx,
-                        great_end_idx=great_end_idx,
+                        timestamp_end_idx=canonical.timestamp_end_idx,
+                        great_end_idx=canonical.great_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     ),
                 )
             else:
-                target_ranges = max(int(reducer_threads), int(reducer_threads) * 32)
+                target_ranges = max(int(reducer_threads), int(reducer_threads) * 256)
                 step = max(1, (int(geometry_count) + int(target_ranges) - 1) // int(target_ranges))
                 ranges = tuple(
                     (start, min(int(geometry_count), start + int(step)))
@@ -126,8 +203,8 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         stop=int(stop),
                         timestamps=ts,
                         great_candidate_timestamps=great_ts,
-                        timestamp_end_idx=timestamp_end_idx,
-                        great_end_idx=great_end_idx,
+                        timestamp_end_idx=canonical.timestamp_end_idx,
+                        great_end_idx=canonical.great_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     )

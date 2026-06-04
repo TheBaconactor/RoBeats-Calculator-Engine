@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, GEM_SCALE_FEVER, LOADOUTS_PER_SONG_LIMIT, TOTAL_GEM_BUDGET
+from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
@@ -178,7 +178,6 @@ def build_solver_cfg_data(cfg: Any, *, p_color: str, s_color: str, selected_colo
         "secondary_color": str(s_color or ""),
         "use_gpu": True,
         "use_gpu_native": True,
-        "fg_candidate_limit": int(FG_CANDIDATE_LIMIT),
         "user_ft": int(user_gems.fever_time),
         "user_ff": int(user_gems.fever_fill),
         "user_pp": int(user_gems.perfect_points),
@@ -513,7 +512,6 @@ def prepare_solver_context(
     base_fixed_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
     selected_color = str(sel_color_built or selected_color or "")
     cfg_data["selected_color"] = selected_color
-    cfg_data["fg_candidate_limit"] = max(int(LOADOUTS_PER_SONG_LIMIT), int(FG_CANDIDATE_LIMIT))
 
     pools = initialize_pools(all_gears, all_minis, p_color, list(GEAR_SLOTS), s_color=s_color)
     if pools is None:

@@ -25,7 +25,6 @@ from ..core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
     LOADOUTS_PER_SONG_LIMIT,
-    FG_CANDIDATE_LIMIT,
     SKIP_ITEM_KEYS,
     GPU_GA_NUM_ISLANDS,
     GPU_GA_GENS_PER_MIGRATION,
@@ -52,16 +51,6 @@ except Exception as e:
     logger.debug(f"genetic:taichi_probe: {e}")
     _GPU_NATIVE_AVAILABLE = False
 
-def _canonical_fg_candidate_limit(fg_candidate_limit: int) -> int:
-    """
-    Canonical FG candidate set size: the configured top base-score loadouts.
-    """
-    try:
-        limit = int(fg_candidate_limit)
-    except Exception as e:
-        logger.debug(f"genetic:_canonical_fg_candidate_limit: {e}")
-        limit = int(FG_CANDIDATE_LIMIT)
-    return max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(limit)))
 
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
@@ -274,7 +263,7 @@ def decode_gpu_native_ga_runs_payload(
         if int(runs_payload.shape[1]) < header_cols_min:
             raise ValueError(f"runs_payload has too few columns: {runs_payload.shape[1]} < {header_cols_min}")
 
-        eff_limit = _canonical_fg_candidate_limit(int(fg_candidate_limit))
+        eff_limit = int(fg_candidate_limit)
 
         perf = _PERF_TIMING
         t_total = time.perf_counter() if perf else 0.0
@@ -780,10 +769,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     )
     novelty_repair_attempts = _resolve_ga_novelty_repair_attempts(cfg_data)
 
-    fg_candidate_limit = _canonical_fg_candidate_limit(
-        int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
-    )
-    cfg_data["fg_candidate_limit"] = int(fg_candidate_limit)
+    fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
 
     # Island model (mirrors _run_gpu_native_ga)
     num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island

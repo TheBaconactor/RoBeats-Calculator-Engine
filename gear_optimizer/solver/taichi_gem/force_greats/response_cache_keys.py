@@ -26,43 +26,15 @@ def _fg_response_cache_version() -> str:
     return str(response_cache._FG_RESPONSE_CACHE_VERSION)
 
 
-def _surface_row(surface: FgResponseSurface) -> tuple[int, ...]:
-    return (
-        int(surface.fever0),
-        int(surface.fever1),
-        int(surface.fever2),
-        int(surface.fever3),
-        int(surface.great0),
-        int(surface.great1),
-        int(surface.great2),
-        int(surface.great3),
-        int(surface.body_fever),
-        int(surface.body_great),
-    )
-
-
-def _surface_from_row(row: np.ndarray) -> FgResponseSurface:
-    values = tuple(int(v) for v in row[:10])
-    if len(values) != 10:
-        raise ValueError("FG response cache surface row must contain 10 values")
-    return FgResponseSurface(*values)
-
-
 def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgResponseSurface]) -> FgResponseSurface:
-    values = tuple(int(v) for v in row[:10])
+    values = tuple(int(v) for v in row[:11])
     surface = cache.get(values)
     if surface is None:
-        if len(values) != 10:
-            raise ValueError("FG response cache surface row must contain 10 values")
+        if len(values) != 11:
+            raise ValueError("FG response cache surface row must contain 11 values")
         surface = FgResponseSurface(*values)
         cache[values] = surface
     return surface
-
-
-def _surface_rows_array(rows: list[tuple[int, ...]]) -> np.ndarray:
-    if not rows:
-        return np.zeros((0, 10), dtype=np.uint32)
-    return np.asarray(rows, dtype=np.uint32).reshape((-1, 10))
 
 
 def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:

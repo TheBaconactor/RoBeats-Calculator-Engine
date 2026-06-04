@@ -19,9 +19,10 @@ from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
-from .response_builder import reconstruct_force_greats_response_counts
+from .response_builder import reconstruct_force_greats_response_counts, reconstruct_force_greats_response_trace
 from .response_cache import (
     FgResponseFrontierScoringBundle,
+    all_response_stat_keys,
     frontier_result_from_scoring_bundle_for_stats,
     load_response_frontier_scoring_bundle,
 )
@@ -43,12 +44,12 @@ __all__ = [
     "prepare_force_greats_response_frontier_scoring_batch",
     "score_prepared_force_greats_response_frontier_batch_gpu",
     "reconstruct_force_greats_response_counts",
+    "reconstruct_force_greats_response_trace",
     "solve_force_greats_response_frontier_batch_gpu",
     "solve_force_greats_response_frontier_many_gpu",
 ]
 
-_InnerStats = tuple[int, int, int, int, int, int, int]
-_ResponsePair = tuple[int, int, int, dict[str, Any] | _InnerStats, FgResponseFrontierResult, float, float]
+_ResponsePair = tuple[int, int, FgResponseFrontierResult, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +83,6 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_geometry_ms: float = 0.0
     scoring_group_build_ms: float = 0.0
     scoring_concat_ms: float = 0.0
-
-
-def _ftff_stat_key(stats_after_ftff: dict[str, Any]) -> tuple[int, int]:
-    ff_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Fill Rate", 0) or 0)))
-    ft_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Time", 0) or 0)))
-    return int(ft_stat), int(ff_stat)
 
 
 def _stats_after_ftff_for_inner(
@@ -136,6 +131,7 @@ def _surface_from_packed_arrays(
         int(word_row[7]),
         int(count_row[0]),
         int(count_row[1]),
+        int(count_row[2]),
     )
 
 
@@ -145,7 +141,6 @@ def _pack_scoring_surfaces_for_batch(
     group_meta: np.ndarray,
     group_ft_stat: np.ndarray,
     group_ff_stat: np.ndarray,
-    allow_pp: bool,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -468,6 +463,35 @@ def _build_response_group_rows_numba(
     return group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices
 
 
+@jit(nopython=True, cache=True)
+def _requested_response_stat_keys_numba(
+    base_components: np.ndarray,
+    ft_values: np.ndarray,
+    ff_values: np.ndarray,
+) -> np.ndarray:
+    seen = np.zeros((TOTAL_ROWS + 1, TOTAL_ROWS + 1), dtype=np.bool_)
+    requested_count = 0
+    for candidate_idx in range(int(base_components.shape[0])):
+        base_ft = int(base_components[candidate_idx, 5])
+        base_ff = int(base_components[candidate_idx, 6])
+        for pos in range(int(ft_values.shape[0])):
+            ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
+            ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
+            if not seen[ft_stat, ff_stat]:
+                seen[ft_stat, ff_stat] = True
+                requested_count += 1
+
+    out = np.empty((requested_count, 2), dtype=np.int32)
+    write = 0
+    for ft_stat in range(TOTAL_ROWS + 1):
+        for ff_stat in range(TOTAL_ROWS + 1):
+            if seen[ft_stat, ff_stat]:
+                out[write, 0] = int(ft_stat)
+                out[write, 1] = int(ff_stat)
+                write += 1
+    return out
+
+
 _GROUP_ROW_BUILDER_WARMED = False
 
 
@@ -484,6 +508,11 @@ def warmup_response_frontier_group_builder() -> None:
     base_components = np.asarray([[0, 0, 0, 1, 2, 0, 0]], dtype=np.int32)
     primary_delta = np.asarray(ft_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
     secondary_delta = np.asarray(ff_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
+    requested = _requested_response_stat_keys_numba(
+        np.ascontiguousarray(base_components, dtype=np.int32),
+        np.ascontiguousarray(ft_values, dtype=np.int32),
+        np.ascontiguousarray(ff_values, dtype=np.int32),
+    )
     group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices = _build_response_group_rows_numba(
         np.ascontiguousarray(base_components, dtype=np.int32),
         np.ascontiguousarray(ft_values, dtype=np.int32),
@@ -496,8 +525,18 @@ def warmup_response_frontier_group_builder() -> None:
         1,
         0,
     )
+    expected_requested = sorted(
+        (int(ft), int(ff))
+        for ft, ff in np.column_stack(
+            (
+                (ft_values * GEM_SCALE_FEVER).astype(np.int32, copy=False),
+                (ff_values * GEM_SCALE_FEVER).astype(np.int32, copy=False),
+            )
+        ).tolist()
+    )
     if (
-        int(group_meta.shape[0]) != int(ft_values.shape[0])
+        sorted((int(row[0]), int(row[1])) for row in requested.tolist()) != expected_requested
+        or int(group_meta.shape[0]) != int(ft_values.shape[0])
         or group_ft.tolist() != ft_values.astype(np.int32, copy=False).tolist()
         or group_ff.tolist() != ff_values.astype(np.int32, copy=False).tolist()
         or group_ft_stat.tolist() != (ft_values * GEM_SCALE_FEVER).astype(np.int32, copy=False).tolist()
@@ -520,7 +559,7 @@ def _solve_result_from_row(
     surface: FgResponseSurface | None = None,
     include_forced_counts: bool = True,
 ) -> FgResponseFrontierSolveResult:
-    ft, ff, _residual, _stats_after_ftff, frontier, raw_fill, real_fever_time = pair
+    ft, ff, frontier, raw_fill, real_fever_time = pair
     inner = FgResponseInnerResult(
         best_score=int(row[0]),
         surface_index=int(row[1]),
@@ -606,15 +645,6 @@ def prepare_force_greats_response_frontier_scoring_batch(
         and secondary_ft_delta == 0
         and secondary_ff_delta == 0
     )
-    bundle_t0 = time.perf_counter()
-    if scoring_bundle is None:
-        full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
-        scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song,
-            ref_arrays,
-            stat_keys=full_stat_grid,
-        )
-    scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
     base_components = np.ascontiguousarray(
         np.asarray(
             [
@@ -632,6 +662,14 @@ def prepare_force_greats_response_frontier_scoring_batch(
             dtype=np.int32,
         )
     )
+    bundle_t0 = time.perf_counter()
+    if scoring_bundle is None:
+        scoring_bundle = load_response_frontier_scoring_bundle(
+            calc_song,
+            ref_arrays,
+            stat_keys=all_response_stat_keys(),
+        )
+    scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
 
     head_len = min(int(song_inputs.total_notes), 100)
     body_total = max(0, int(song_inputs.total_notes) - 100)
@@ -689,7 +727,6 @@ def prepare_force_greats_response_frontier_scoring_batch(
         group_meta=group_meta,
         group_ft_stat=group_ft_stat,
         group_ff_stat=group_ff_stat,
-        allow_pp=bool((primary_color == selected_color) or (secondary_color == selected_color)),
     )
     return FgResponseFrontierPackedScoringBatch(
         started=float(time.perf_counter() if started is None else started),
@@ -743,7 +780,7 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
         int(surface_words.ndim) != 2
         or int(surface_words.shape[1]) != 8
         or int(surface_counts.ndim) != 2
-        or int(surface_counts.shape[1]) != 2
+        or int(surface_counts.shape[1]) != 3
         or int(surface_head_coeffs.ndim) != 2
         or int(surface_head_coeffs.shape[1]) != 4
     ):
@@ -800,22 +837,9 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
                 ff_stat=int(ff_stat),
             )
             frontier_by_stat_key[stat_key] = frontier
-        if bool(include_forced_counts) and not frontier.state_frontiers:
-            raise ValueError("FG response frontier scoring payload requires exact reconstruction state")
-        stats_after_ftff: _InnerStats = (
-            int(batch.group_meta[row_idx, 1]),
-            int(batch.group_meta[row_idx, 2]),
-            int(batch.group_meta[row_idx, 3]),
-            int(batch.group_meta[row_idx, 4]),
-            int(batch.group_meta[row_idx, 5]),
-            int(ft_stat),
-            int(ff_stat),
-        )
         pair: _ResponsePair = (
             int(ft),
             int(ff),
-            int(batch.group_meta[row_idx, 0]),
-            stats_after_ftff,
             frontier,
             float(scoring_bundle.raw_fill_by_ff[ff_stat]),
             float(scoring_bundle.real_time_by_ft[ft_stat]),

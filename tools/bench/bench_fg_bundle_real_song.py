@@ -155,8 +155,8 @@ def main() -> int:
     if not args.no_trace:
         os.environ["GPU_EXECUTOR_TRACE_PATH"] = str(args.trace)
 
-    from gear_optimizer.core.config import load_config, read_fg_candidate_limit
-    from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, TOTAL_ROWS
+    from gear_optimizer.core.config import load_config
+    from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
     from gear_optimizer.core.utils import cfg_to_dict
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.database import get_best_loadouts
@@ -198,7 +198,7 @@ def main() -> int:
     difficulty = str(meta.get("Difficulty") or "").strip()
     p_color = str(meta.get("Primary Color") or "").strip()
 
-    limit_cfg = int(read_fg_candidate_limit(cfg, default=FG_CANDIDATE_LIMIT, min_limit=1) or FG_CANDIDATE_LIMIT)
+    limit_cfg = int(LOADOUTS_PER_SONG_LIMIT)
     limit = int(args.candidate_limit) if int(args.candidate_limit or 0) > 0 else int(limit_cfg)
 
     team_buff = str(args.team_buff or "").strip().upper()
