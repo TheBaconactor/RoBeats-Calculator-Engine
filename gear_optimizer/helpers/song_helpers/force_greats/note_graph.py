@@ -138,14 +138,14 @@ def force_greats_note_graph(
     return notes
 
 
-def _head_counts_from_words(words: Sequence[int], head_limit: int) -> tuple[int, set[int]]:
-    """Return (popcount over notes [0, head_limit), set-of-indices) for a 4x32-bit mask."""
+def _head_set_from_words(words: Sequence[int], head_limit: int) -> set[int]:
+    """Return the set of note indices in [0, head_limit) set in a 4x32-bit head mask."""
     w = tuple(int(x) for x in tuple(words)[:4]) + (0,) * max(0, 4 - len(words))
     idxs: set[int] = set()
     for i in range(int(head_limit)):
         if (int(w[i // 32]) >> (i % 32)) & 1:
             idxs.add(i)
-    return len(idxs), idxs
+    return idxs
 
 
 def reconcile_force_greats_note_graph(
@@ -171,8 +171,8 @@ def reconcile_force_greats_note_graph(
     g_fever_idx = {int(x["note_index"]) for x in note_graph if bool(x["fever"])}
     g_great_idx = {int(x["note_index"]) for x in note_graph if str(x["note_result"]) == "Great"}
 
-    surf_fever_head_n, surf_fever_head_idx = _head_counts_from_words(fever_words, head_limit)
-    surf_great_head_n, surf_great_head_idx = _head_counts_from_words(great_words, head_limit)
+    surf_fever_head_idx = _head_set_from_words(fever_words, head_limit)
+    surf_great_head_idx = _head_set_from_words(great_words, head_limit)
 
     g_fever_head = {i for i in g_fever_idx if i < head_limit}
     g_great_head = {i for i in g_great_idx if i < head_limit}
