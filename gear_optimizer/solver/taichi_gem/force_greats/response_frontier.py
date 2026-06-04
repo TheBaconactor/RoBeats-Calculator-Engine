@@ -49,8 +49,7 @@ __all__ = [
     "solve_force_greats_response_frontier_many_gpu",
 ]
 
-_InnerStats = tuple[int, int, int, int, int, int, int]
-_ResponsePair = tuple[int, int, int, dict[str, Any] | _InnerStats, FgResponseFrontierResult, float, float]
+_ResponsePair = tuple[int, int, FgResponseFrontierResult, float, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +83,6 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_geometry_ms: float = 0.0
     scoring_group_build_ms: float = 0.0
     scoring_concat_ms: float = 0.0
-
-
-def _ftff_stat_key(stats_after_ftff: dict[str, Any]) -> tuple[int, int]:
-    ff_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Fill Rate", 0) or 0)))
-    ft_stat = max(0, min(TOTAL_ROWS, int(stats_after_ftff.get("Fever Time", 0) or 0)))
-    return int(ft_stat), int(ff_stat)
 
 
 def _stats_after_ftff_for_inner(
@@ -148,7 +141,6 @@ def _pack_scoring_surfaces_for_batch(
     group_meta: np.ndarray,
     group_ft_stat: np.ndarray,
     group_ff_stat: np.ndarray,
-    allow_pp: bool,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -567,7 +559,7 @@ def _solve_result_from_row(
     surface: FgResponseSurface | None = None,
     include_forced_counts: bool = True,
 ) -> FgResponseFrontierSolveResult:
-    ft, ff, _residual, _stats_after_ftff, frontier, raw_fill, real_fever_time = pair
+    ft, ff, frontier, raw_fill, real_fever_time = pair
     inner = FgResponseInnerResult(
         best_score=int(row[0]),
         surface_index=int(row[1]),
@@ -735,7 +727,6 @@ def prepare_force_greats_response_frontier_scoring_batch(
         group_meta=group_meta,
         group_ft_stat=group_ft_stat,
         group_ff_stat=group_ff_stat,
-        allow_pp=bool((primary_color == selected_color) or (secondary_color == selected_color)),
     )
     return FgResponseFrontierPackedScoringBatch(
         started=float(time.perf_counter() if started is None else started),
@@ -846,20 +837,9 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
                 ff_stat=int(ff_stat),
             )
             frontier_by_stat_key[stat_key] = frontier
-        stats_after_ftff: _InnerStats = (
-            int(batch.group_meta[row_idx, 1]),
-            int(batch.group_meta[row_idx, 2]),
-            int(batch.group_meta[row_idx, 3]),
-            int(batch.group_meta[row_idx, 4]),
-            int(batch.group_meta[row_idx, 5]),
-            int(ft_stat),
-            int(ff_stat),
-        )
         pair: _ResponsePair = (
             int(ft),
             int(ff),
-            int(batch.group_meta[row_idx, 0]),
-            stats_after_ftff,
             frontier,
             float(scoring_bundle.raw_fill_by_ff[ff_stat]),
             float(scoring_bundle.real_time_by_ft[ft_stat]),

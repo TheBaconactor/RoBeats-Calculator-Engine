@@ -937,29 +937,6 @@ def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> T
     )
 
 
-def prewarm_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> None:
-    """
-    Build/cache the exact symbolic frontier payload without touching Taichi fields.
-
-    Native in-flight mode uses this on background CPU workers for prepared future
-    songs. The later GPU request still owns field upload and kernel execution.
-    """
-    result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-    emit_profile_event(
-        component="inflight_orchestrator",
-        event="timeline_frontier_prewarm",
-        song_key=result.song_profile_key,
-        metrics={
-            "ms": float(result.elapsed_ms),
-            "cache_hit": int(result.cache_source != "built"),
-            "cache_source": str(result.cache_source),
-            "total_notes": int(result.total_notes),
-            "long_notes": int(result.long_notes),
-            "frontier_pool_used": int(result.payload.frontier_pool_used),
-        },
-    )
-
-
 def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
     """
     Build or load the reusable exact frontier payload without touching Taichi fields.

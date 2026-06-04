@@ -37,8 +37,11 @@ init_taichi()
 
 import taichi as ti  # noqa: E402
 
-# Reuse the validated leaf/reduction @ti.func building blocks UNCHANGED.
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_taichi import (  # noqa: E402
+# Reuse the validated leaf/reduction @ti.func building blocks UNCHANGED. The
+# response_build_gpu_taichi.py dev/reference module lives beside this probe under
+# tools/dev/; ensure this directory is importable so the sibling module resolves.
+sys.path.insert(0, os.path.dirname(__file__))
+from response_build_gpu_taichi import (  # noqa: E402
     vec7u64,
     _body_count,
     _pack_edge,

@@ -389,7 +389,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     queue_wait_ms = 0.0
     if isinstance(prep_submit_t0, (int, float)):
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
-    runtime = getattr(song, "runtime", song)
     perf = _truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)

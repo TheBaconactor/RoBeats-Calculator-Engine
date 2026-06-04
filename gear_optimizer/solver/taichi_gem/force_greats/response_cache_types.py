@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 import numpy as np
 
@@ -60,14 +60,6 @@ class FgResponseFrontierCachePayload:
             raise ValueError(f"FG response frontier stat key was not loaded: {key}")
         return frontier
 
-    def geometry_for_stats(self, *, ft_stat: int, ff_stat: int) -> tuple[float, int, float]:
-        ft_i, ff_i = self.stats_key(ft_stat=ft_stat, ff_stat=ff_stat)
-        return (
-            float(self.raw_fill_by_ff[ff_i]),
-            int(self.non_fever_base_by_ff[ff_i]),
-            float(self.real_time_by_ft[ft_i]),
-        )
-
     @property
     def frontiers(self) -> tuple[FgResponseFrontierResult, ...]:
         out: list[FgResponseFrontierResult] = []
@@ -101,21 +93,6 @@ class FgResponseFrontierPrewarmResult:
     total_notes: int
     long_notes: int
     frontier_count: int
-
-    def for_scoring(
-        self,
-        calc_song: dict[str, Any],
-        ref_arrays: dict[str, Any],
-        *,
-        stat_keys: Iterable[tuple[int, int]],
-    ) -> FgResponseFrontierScoringBundle:
-        from .response_cache import load_response_frontier_scoring_bundle
-
-        return load_response_frontier_scoring_bundle(
-            calc_song,
-            ref_arrays,
-            stat_keys=stat_keys,
-        )
 
 
 @dataclass(frozen=True, slots=True)

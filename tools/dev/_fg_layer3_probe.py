@@ -19,7 +19,11 @@ from gear_optimizer.solver.taichi_gem.runtime import init_taichi  # noqa: E402
 init_taichi()
 import taichi as ti  # noqa: E402
 
-from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_taichi as T  # noqa: E402
+# response_build_gpu_taichi.py is a dev/reference module that lives beside this
+# probe under tools/dev/ (relocated out of the production package). Ensure this
+# directory is importable so the sibling module resolves regardless of cwd.
+sys.path.insert(0, os.path.dirname(__file__))
+import response_build_gpu_taichi as T  # noqa: E402
 
 _HARNESS = os.path.join(os.path.dirname(__file__), "..", "..", "tests", "parity", "force_greats", "fg_frontier_kernel_parity.py")
 _spec = importlib.util.spec_from_file_location("fgp", _HARNESS)

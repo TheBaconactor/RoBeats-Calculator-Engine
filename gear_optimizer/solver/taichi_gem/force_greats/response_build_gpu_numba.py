@@ -182,13 +182,6 @@ def _numba_reduce(surfaces):
 
 
 @njit(cache=True, nogil=True)
-def _numba_body_pair_with_empty_surface():
-    kept = List.empty_list(_NUMBA_BODY_PAIR_TYPE)
-    kept.append((np.uint64(0), np.uint64(0), np.uint64(0)))
-    return kept
-
-
-@njit(cache=True, nogil=True)
 def _numba_prefix_head_great_mask(count: int):
     clipped = max(0, min(int(count), 100))
     lo = _numba_mask_segment(0, min(clipped, 64), 0)

@@ -51,8 +51,11 @@ init_taichi()
 
 import taichi as ti  # noqa: E402
 
-# Reuse the production dense path verbatim as the reference oracle on-GPU.
-from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_taichi import (  # noqa: E402
+# Reuse the dense path verbatim as the reference oracle on-GPU. The
+# response_build_gpu_taichi.py dev/reference module lives beside this probe under
+# tools/dev/; ensure this directory is importable so the sibling module resolves.
+sys.path.insert(0, os.path.dirname(__file__))
+from response_build_gpu_taichi import (  # noqa: E402
     _prefix_max_query_stamped,
     _prefix_max_update_stamped,
     _reduce_touched_body_pairs,

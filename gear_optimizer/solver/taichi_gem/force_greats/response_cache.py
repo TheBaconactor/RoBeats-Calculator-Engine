@@ -30,7 +30,6 @@ from .response_cache_store import (
     _load_bundle_array_members_if_present,
     _load_bundle_array_members,
     _load_payload,
-    _memory_get,  # noqa: F401
     _memory_put,  # noqa: F401
     _payload_disk_info_if_complete,
     _payload_memory_get,

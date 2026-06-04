@@ -298,26 +298,6 @@ def _load_bundle_array_members_if_present(cache_key: tuple, *, names: Iterable[s
         return {name: cached[name] for name in present}
 
 
-def _load_bundle_arrays(cache_key: tuple) -> dict[str, np.ndarray]:
-    return _load_bundle_array_members(
-        cache_key,
-        names=(
-            "stat_keys",
-            "frontier_ids",
-            "raw_fill_by_ff",
-            "non_fever_base_by_ff",
-            "real_time_by_ft",
-            "total_notes",
-            "long_notes",
-            "use_forced_great_timing",
-            "frontier_meta",
-            "first_offsets",
-            "first_counts",
-            "first_surface_pool",
-        ),
-    )
-
-
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
     with _frontier_cache_lock:
         _bundle_array_cache.pop(bundle_key, None)
