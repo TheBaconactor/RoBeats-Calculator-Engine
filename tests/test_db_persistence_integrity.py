@@ -791,7 +791,19 @@ def test_team_buff_fg_loadouts_force_gems_stay_in_force_payload(db_path, monkeyp
         "FT": 1,
         "FF": 17,
         "Selected Element": "Vibe",
-        "ForceGreats": {"config": {"NonFever1": 2}, "final_score": 200},
+        "ForceGreats": {
+            "config": {"NonFever1": 2},
+            "final_score": 200,
+            "frontier_trace": [
+                {
+                    "section": 1,
+                    "activation_index": 42,
+                    "activation_hit_ms": 4200.0,
+                    "activation_judgment": "late_great",
+                    "fever_end_index": 57,
+                }
+            ],
+        },
     }
 
     save_loadouts_batch(
@@ -828,6 +840,8 @@ def test_team_buff_fg_loadouts_force_gems_stay_in_force_payload(db_path, monkeyp
         assert "Stats" not in stored_force
         assert "score" not in stored_force
         assert stored_force["Score"] == 200
+        assert stored_force["ForceGreats"]["frontier_trace"][0]["activation_index"] == 42
+        assert stored_force["ForceGreats"]["frontier_trace"][0]["activation_judgment"] == "late_great"
 
         # The FG leaderboard row's details explain the paired base score for the
         # same FG allocation. The FG score/config replay lives in force_details_json.

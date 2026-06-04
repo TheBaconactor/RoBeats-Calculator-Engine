@@ -38,36 +38,10 @@ def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
     return int(np.searchsorted(timestamps, np.float32(value), side="left", sorter=None))
 
 
-def _great_carry_index(
-    *,
-    n: int,
-    activation_idx: int,
-    forced_start: int,
-    forced_applied: int,
-    great_candidate_timestamps: np.ndarray,
-) -> int:
-    if int(forced_applied) <= 0:
-        return -1
-    start = max(0, int(forced_start))
-    stop = min(int(n), int(activation_idx), start + int(forced_applied))
-    if stop <= start:
-        return -1
-    best_idx = start
-    best_time = float(great_candidate_timestamps[best_idx])
-    for idx in range(start + 1, stop):
-        candidate_time = float(great_candidate_timestamps[idx])
-        if candidate_time >= best_time:
-            best_idx = int(idx)
-            best_time = candidate_time
-    return int(best_idx)
-
-
 def _edge_end(
     *,
     n: int,
     a: int,
-    forced_start: int,
-    forced_applied: int,
     activation_great: bool,
     real_fever_time: float,
     use_forced_great_timing: bool,
@@ -76,19 +50,6 @@ def _edge_end(
 ) -> tuple[int, float, int]:
     start_time = float(timestamps[int(a)])
     carry_idx = -1
-    if bool(use_forced_great_timing) and int(forced_applied) > 0 and int(forced_start) < int(a):
-        prefix_idx = _great_carry_index(
-            n=int(n),
-            activation_idx=int(a),
-            forced_start=int(forced_start),
-            forced_applied=int(forced_applied),
-            great_candidate_timestamps=great_candidate_timestamps,
-        )
-        if int(prefix_idx) >= 0:
-            forced_t = float(great_candidate_timestamps[int(prefix_idx)])
-            if forced_t > start_time:
-                start_time = forced_t
-                carry_idx = int(prefix_idx)
     if bool(use_forced_great_timing) and bool(activation_great) and int(a) < int(n):
         activation_t = float(great_candidate_timestamps[int(a)])
         if activation_t > start_time:
@@ -185,15 +146,12 @@ def _trace_timing_fields(
     activation_idx: int,
     activation_great: bool,
 ) -> dict[str, Any]:
-    if int(carry_idx) < 0:
-        source = "chart_perfect"
-        note_idx: int | None = None
-    elif bool(activation_great) and int(carry_idx) == int(activation_idx):
+    if bool(activation_great) and int(carry_idx) == int(activation_idx):
         source = "activation_late_great"
         note_idx = int(carry_idx)
     else:
-        source = "prefix_late_great"
-        note_idx = int(carry_idx)
+        source = "chart_perfect"
+        note_idx: int | None = None
     return {
         "fever_start_source": source,
         "fever_start_note_index": note_idx,
@@ -232,8 +190,6 @@ def _edge_surface_options(
         e, start_time, _ = _edge_end(
             n=int(n),
             a=int(a),
-            forced_start=int(forced_start),
-            forced_applied=int(forced_applied),
             activation_great=False,
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
@@ -260,13 +216,11 @@ def _edge_surface_options(
                     ),
                 )
             )
-        if bool(use_forced_great_timing) and int(k) > 0:
+        if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
             prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
             activation_e, _activation_start_time, _ = _edge_end(
                 n=int(n),
                 a=int(a),
-                forced_start=int(forced_start),
-                forced_applied=int(prefix_forced),
                 activation_great=True,
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
@@ -322,8 +276,6 @@ def _edge_surface_option_details(
         e, start_time, carry_idx = _edge_end(
             n=int(n),
             a=int(a),
-            forced_start=int(forced_start),
-            forced_applied=int(forced_applied),
             activation_great=False,
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
@@ -339,6 +291,7 @@ def _edge_surface_option_details(
                     "activation_index": int(a),
                     "activation_ms": float(timestamps[int(a)]) * 1000.0,
                     "activation_hit_ms": float(start_time) * 1000.0,
+                    "activation_hit_offset_ms": (float(start_time) - float(timestamps[int(a)])) * 1000.0,
                     "activation_judgment": "perfect",
                     "forced_start_index": int(forced_start),
                     "forced_prefix_count": int(forced_applied),
@@ -359,13 +312,11 @@ def _edge_surface_option_details(
                     ),
                 }
             )
-        if bool(use_forced_great_timing) and int(k) > 0:
+        if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
             prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
             activation_e, activation_start_time, activation_carry_idx = _edge_end(
                 n=int(n),
                 a=int(a),
-                forced_start=int(forced_start),
-                forced_applied=int(prefix_forced),
                 activation_great=True,
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
@@ -388,6 +339,10 @@ def _edge_surface_option_details(
                         "activation_index": int(a),
                         "activation_ms": float(timestamps[int(a)]) * 1000.0,
                         "activation_hit_ms": float(activation_start_time) * 1000.0,
+                        "activation_hit_offset_ms": (
+                            float(activation_start_time) - float(timestamps[int(a)])
+                        )
+                        * 1000.0,
                         "activation_judgment": "late_great",
                         "forced_start_index": int(forced_start),
                         "forced_prefix_count": int(prefix_forced),

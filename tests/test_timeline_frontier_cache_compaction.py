@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
@@ -172,6 +173,35 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_skips_redundant_group_
     second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
+
+
+def test_load_timeline_frontier_payload_requires_startup_built_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Runtime Missing Timeline",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+
+    with pytest.raises(ValueError, match="Startup cache prebuild must build"):
+        timeline_api.load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert list(tmp_path.glob("*.npz")) == []
+
+    built = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert built.cache_source == "built"
+    timeline_api.reset_timeline_state()
+    loaded = timeline_api.load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert loaded.cache_source == "disk"
+    assert int(loaded.total_notes) == 4
 
 
 def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monkeypatch) -> None:

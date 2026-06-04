@@ -16,6 +16,7 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import env_flag
+from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
@@ -861,6 +862,7 @@ def _timeline_payload_context(
     *,
     ref_sig: bytes | None = None,
     lookup_ctx: dict | None = None,
+    require_cached_group_payload: bool = False,
 ) -> dict:
     lookup = dict(lookup_ctx or _timeline_payload_lookup_context(calc_song, ref_arrays, ref_sig=ref_sig))
     base_song_key = lookup["base_song_key"]
@@ -874,6 +876,11 @@ def _timeline_payload_context(
             _group_cache_put(base_song_key[:-1], disk_group_payload)
             group_payload = disk_group_payload
         else:
+            if bool(require_cached_group_payload):
+                raise ValueError(
+                    "Timeline frontier group payload is missing. Startup cache prebuild must build the "
+                    "candidate-independent all-FT/FF timeline frontier before runtime scoring."
+                )
             group_payload = _get_or_build_ceiling_group_payload(
                 base_song_key[:-1],
                 timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
@@ -993,6 +1000,33 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     )
 
 
+def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
+    """Load the required timeline-frontier cache artifact without building it."""
+    t0 = time.perf_counter()
+    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
+    payload, cache_source = _get_cached_frontier_payload_with_source(
+        lookup["song_key"],
+        ref_ft=lookup["ref_ft"],
+        ref_ff=lookup["ref_ff"],
+    )
+    if payload is None:
+        raise ValueError(
+            "Timeline frontier payload is missing. Startup cache prebuild must build the "
+            "candidate-independent all-FT/FF timeline frontier before runtime scoring."
+        )
+    return TimelineFrontierPrewarmResult(
+        payload=payload,
+        cache_key=cache_key,
+        disk_path=_frontier_disk_cache_path(cache_key),
+        cache_source=cache_source,
+        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
+        song_profile_key=lookup["song_profile_key"],
+        total_notes=int(lookup["total_notes"]),
+        long_notes=int(lookup["long_notes"]),
+    )
+
+
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
     Precompute all 161×161 fever timeline entries on GPU.
@@ -1030,7 +1064,14 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     song_key = lookup["song_key"]
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
-    ctx = _timeline_payload_context(calc_song, ref_arrays, ref_sig=ref_sig, lookup_ctx=lookup)
+    frontier_result = load_timeline_frontier_payload(calc_song, ref_arrays)
+    ctx = _timeline_payload_context(
+        calc_song,
+        ref_arrays,
+        ref_sig=ref_sig,
+        lookup_ctx=lookup,
+        require_cached_group_payload=True,
+    )
 
     # Upload chart timestamps and note-group metadata for the exact frontier path.
     timestamps = np.asarray(ctx["timestamps"], dtype=np.float32)
@@ -1068,32 +1109,25 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         group_high_ms,
     )
 
-    # Extract song metadata
     long_notes = int(ctx["long_notes"])
-    last_note_time = float(ctx["last_note_time"])
 
     # Sync before timing
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
 
-    group_payload = payload
-    ref_ft = np.asarray(ctx["ref_ft"], dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ctx["ref_ff"], dtype=np.float32).reshape(-1)
     song_slot_i = int(song_slot)
-    song_profile_key = ctx["song_profile_key"]
     t_frontier = time.perf_counter()
-    frontier_payload, frontier_cache_source = _get_or_build_ceiling_frontier_payload_with_source(
-        song_key,
-        song_slot=int(song_slot),
-        total_notes=int(total_notes),
-        long_notes=int(long_notes),
-        last_note_time=float(last_note_time),
-        song_profile_key=song_profile_key,
-        group_payload=group_payload,
-        ref_ft=ref_ft,
-        ref_ff=ref_ff,
-    )
-    cache_phase = "frontier_payload_built"
+    frontier_payload = frontier_result.payload
+    frontier_cache_source = frontier_result.cache_source
+    if int(frontier_payload.grid_frontier_count.shape[1]) < TOTAL_ROWS + 1 or int(
+        frontier_payload.grid_frontier_count.shape[2]
+    ) < TOTAL_ROWS + 1:
+        raise ValueError(
+            "Timeline frontier payload is incomplete. Startup cache prebuild must build the "
+            "candidate-independent all-FT/FF timeline frontier before runtime scoring."
+        )
+
+    cache_phase = "frontier_payload_cache_hit"
     if str(frontier_cache_source) == "memory":
         cache_phase = "frontier_payload_cache_hit_memory"
     elif str(frontier_cache_source) == "disk":

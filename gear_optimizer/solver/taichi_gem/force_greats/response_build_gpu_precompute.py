@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 _GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
@@ -17,15 +19,17 @@ def _first_only_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tu
     return [(0, list(items))]
 
 
-def _action_arrays_signature(item: tuple) -> tuple[bytes, bytes, bytes, bytes, bytes]:
-    return (
-        np.ascontiguousarray(item[3], dtype=np.int32).tobytes(),
-        np.ascontiguousarray(item[4], dtype=np.int32).tobytes(),
-        np.ascontiguousarray(item[5], dtype=np.int32).tobytes(),
-        np.ascontiguousarray(item[6], dtype=np.int32).tobytes(),
-        np.ascontiguousarray(item[7], dtype=np.int32).tobytes(),
-    )
+def _action_arrays_signature(item: tuple) -> tuple[bytes, ...]:
+    return tuple(np.ascontiguousarray(value, dtype=np.int32).tobytes() for value in item[3:])
 
+
+@dataclass(frozen=True)
+class FirstOnlyCanonicalization:
+    prepared: list[tuple]
+    duplicate_sources_by_source: dict[int, tuple[int, ...]]
+    real_time_index_by_source: dict[int, int]
+    timestamp_end_idx: np.ndarray
+    great_end_idx: np.ndarray
 
 
 def _canonicalize_first_only_prepared_items(
@@ -34,15 +38,38 @@ def _canonicalize_first_only_prepared_items(
     timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
 ) -> tuple[list[tuple], dict[int, tuple[int, ...]]]:
-    if len(prepared) <= 1:
-        return prepared, {int(item[0]): (int(item[0]),) for item in prepared}
+    canonical = _canonicalize_first_only_prepared_items_with_end_indices(
+        prepared=prepared,
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+    )
+    return canonical.prepared, canonical.duplicate_sources_by_source
 
+
+def _canonicalize_first_only_prepared_items_with_end_indices(
+    *,
+    prepared: list[tuple],
+    timestamps: np.ndarray,
+    great_candidate_timestamps: np.ndarray,
+) -> FirstOnlyCanonicalization:
+    if not prepared:
+        empty = np.empty((0, 0), dtype=np.int32)
+        return FirstOnlyCanonicalization([], {}, {}, empty, empty)
     real_times = np.asarray([item[2] for item in prepared], dtype=np.float32)
     real_time_index, timestamp_end_idx, great_end_idx = _precompute_end_indices(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         real_times=real_times,
     )
+    if len(prepared) == 1:
+        source_idx = int(prepared[0][0])
+        return FirstOnlyCanonicalization(
+            prepared,
+            {source_idx: (source_idx,)},
+            {source_idx: int(real_time_index[0])},
+            timestamp_end_idx,
+            great_end_idx,
+        )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
     end_class_by_signature: dict[tuple[bytes, bytes], int] = {}
     for idx in range(int(timestamp_end_idx.shape[0])):
@@ -58,12 +85,13 @@ def _canonicalize_first_only_prepared_items(
 
     canonical_items: list[tuple] = []
     duplicate_sources_by_source: dict[int, list[int]] = {}
-    action_class_by_object: dict[tuple[int, int, int, int, int], int] = {}
-    action_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes, bytes], int] = {}
+    action_class_by_object: dict[tuple[int, ...], int] = {}
+    action_class_by_signature: dict[tuple[bytes, ...], int] = {}
     canonical_by_signature: dict[tuple[int, int], int] = {}
+    real_time_index_by_source: dict[int, int] = {}
     for local_idx, item in enumerate(prepared):
         source_idx = int(item[0])
-        action_object_key = (id(item[3]), id(item[4]), id(item[5]), id(item[6]), id(item[7]))
+        action_object_key = tuple(id(value) for value in item[3:])
         action_class = action_class_by_object.get(action_object_key)
         if action_class is None:
             action_signature = _action_arrays_signature(item)
@@ -81,13 +109,20 @@ def _canonicalize_first_only_prepared_items(
             canonical_by_signature[signature] = int(source_idx)
             canonical_items.append(item)
             duplicate_sources_by_source[int(source_idx)] = [int(source_idx)]
+            real_time_index_by_source[int(source_idx)] = int(real_time_index[int(local_idx)])
             continue
         duplicate_sources_by_source[int(canonical_source_idx)].append(int(source_idx))
 
-    return canonical_items, {
-        int(source_idx): tuple(int(value) for value in source_indices)
-        for source_idx, source_indices in duplicate_sources_by_source.items()
-    }
+    return FirstOnlyCanonicalization(
+        canonical_items,
+        {
+            int(source_idx): tuple(int(value) for value in source_indices)
+            for source_idx, source_indices in duplicate_sources_by_source.items()
+        },
+        real_time_index_by_source,
+        timestamp_end_idx,
+        great_end_idx,
+    )
 
 
 
@@ -117,31 +152,3 @@ def _precompute_end_indices(
         np.ascontiguousarray(timestamp_end_idx),
         np.ascontiguousarray(great_end_idx),
     )
-
-
-def _precompute_great_range_argmax(great_candidate_timestamps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
-    n = int(great_ts.shape[0])
-    log2 = np.zeros(n + 1, dtype=np.int16)
-    for idx in range(2, n + 1):
-        log2[idx] = np.int16(int(log2[idx >> 1]) + 1)
-    levels = int(log2[n]) + 1 if n > 0 else 1
-    argmax = np.zeros((levels, max(1, n)), dtype=np.int32)
-    if n <= 0:
-        return np.ascontiguousarray(argmax), np.ascontiguousarray(log2)
-
-    argmax[0, :n] = np.arange(n, dtype=np.int32)
-    for level in range(1, levels):
-        span = 1 << int(level)
-        half = span >> 1
-        limit = n - span + 1
-        if limit <= 0:
-            argmax[level, :n] = argmax[level - 1, :n]
-            continue
-        left = argmax[level - 1, :limit]
-        right = argmax[level - 1, half : half + limit]
-        choose_right = great_ts[right] >= great_ts[left]
-        argmax[level, :limit] = np.where(choose_right, right, left).astype(np.int32, copy=False)
-        if limit < n:
-            argmax[level, limit:n] = argmax[level - 1, limit:n]
-    return np.ascontiguousarray(argmax), np.ascontiguousarray(log2)

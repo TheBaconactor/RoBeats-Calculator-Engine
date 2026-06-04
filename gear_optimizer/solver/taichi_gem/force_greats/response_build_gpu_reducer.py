@@ -6,16 +6,16 @@ import os
 import numpy as np
 
 from .response_build_gpu_numba import _first_frontier_from_precomputed_end_indices_numba
-from .response_build_gpu_surfaces import _surface_from_numba_row
+from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier
 from .response_types import FgResponseFrontierResult
 
-_FIRST_ONLY_REDUCER_THREADS = max(1, min(int(os.cpu_count() or 1), 8))
+_FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
     global _FIRST_ONLY_REDUCER_THREADS
     previous = int(_FIRST_ONLY_REDUCER_THREADS)
-    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1), 8))
+    _FIRST_ONLY_REDUCER_THREADS = max(1, min(int(max_threads), int(os.cpu_count() or 1)))
     return previous
 
 
@@ -35,17 +35,16 @@ def _first_frontier_result_from_precomputed_end_indices(
     n: int,
     action_count: int,
     non_fever_base: int,
-    actions: np.ndarray,
     later_fill: np.ndarray,
     first_fill: np.ndarray,
     later_forced: np.ndarray,
     first_forced: np.ndarray,
+    later_activation_forced: np.ndarray,
+    first_activation_forced: np.ndarray,
     timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     timestamp_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
-    great_range_argmax: np.ndarray,
-    great_range_log2: np.ndarray,
     real_time_idx: int,
     use_forced_great_timing: bool,
 ) -> FgResponseFrontierResult:
@@ -53,23 +52,22 @@ def _first_frontier_result_from_precomputed_end_indices(
         _first_frontier_from_precomputed_end_indices_numba(
             int(n),
             int(action_count),
-            actions,
             later_fill,
             first_fill,
             later_forced,
             first_forced,
+            later_activation_forced,
+            first_activation_forced,
             timestamps,
             great_candidate_timestamps,
             timestamp_end_idx,
             great_end_idx,
-            great_range_argmax,
-            great_range_log2,
             int(real_time_idx),
             1 if bool(use_forced_great_timing) else 0,
         )
     )
     return FgResponseFrontierResult(
-        first_frontier=tuple(_surface_from_numba_row(first_rows[idx]) for idx in range(int(first_rows.shape[0]))),
+        first_frontier=SurfaceRowsFirstFrontier(first_rows),
         state_frontiers={},
         states_evaluated=int(states_evaluated),
         actions=int(action_count),
@@ -92,8 +90,6 @@ def _first_frontier_results_for_precomputed_range(
     great_candidate_timestamps: np.ndarray,
     timestamp_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
-    great_range_argmax: np.ndarray,
-    great_range_log2: np.ndarray,
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
@@ -108,17 +104,16 @@ def _first_frontier_results_for_precomputed_range(
                     n=int(n),
                     action_count=int(item[3].shape[0]),
                     non_fever_base=int(item[1]),
-                    actions=np.ascontiguousarray(item[3], dtype=np.int32),
-                    later_fill=np.ascontiguousarray(item[4], dtype=np.int32),
-                    first_fill=np.ascontiguousarray(item[5], dtype=np.int32),
-                    later_forced=np.ascontiguousarray(item[6], dtype=np.int32),
-                    first_forced=np.ascontiguousarray(item[7], dtype=np.int32),
+                    later_fill=np.ascontiguousarray(item[3], dtype=np.int32),
+                    first_fill=np.ascontiguousarray(item[4], dtype=np.int32),
+                    later_forced=np.ascontiguousarray(item[5], dtype=np.int32),
+                    first_forced=np.ascontiguousarray(item[6], dtype=np.int32),
+                    later_activation_forced=np.ascontiguousarray(item[7], dtype=np.int32),
+                    first_activation_forced=np.ascontiguousarray(item[8], dtype=np.int32),
                     timestamps=timestamps,
                     great_candidate_timestamps=great_candidate_timestamps,
                     timestamp_end_idx=timestamp_end_idx,
                     great_end_idx=great_end_idx,
-                    great_range_argmax=great_range_argmax,
-                    great_range_log2=great_range_log2,
                     real_time_idx=int(real_time_index[int(local_idx)]),
                     use_forced_great_timing=bool(use_forced_great_timing),
                 ),

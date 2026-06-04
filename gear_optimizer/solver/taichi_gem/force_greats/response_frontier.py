@@ -22,6 +22,7 @@ from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 from .response_builder import reconstruct_force_greats_response_counts, reconstruct_force_greats_response_trace
 from .response_cache import (
     FgResponseFrontierScoringBundle,
+    all_response_stat_keys,
     frontier_result_from_scoring_bundle_for_stats,
     load_response_frontier_scoring_bundle,
 )
@@ -669,18 +670,12 @@ def prepare_force_greats_response_frontier_scoring_batch(
             dtype=np.int32,
         )
     )
-    requested_stat_rows = _requested_response_stat_keys_numba(
-        base_components,
-        np.ascontiguousarray(ft_values, dtype=np.int32),
-        np.ascontiguousarray(ff_values, dtype=np.int32),
-    )
-    requested_stat_keys = tuple(tuple(int(v) for v in row) for row in requested_stat_rows.tolist())
     bundle_t0 = time.perf_counter()
     if scoring_bundle is None:
         scoring_bundle = load_response_frontier_scoring_bundle(
             calc_song,
             ref_arrays,
-            stat_keys=requested_stat_keys,
+            stat_keys=all_response_stat_keys(),
         )
     scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
 
@@ -851,8 +846,6 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
                 ff_stat=int(ff_stat),
             )
             frontier_by_stat_key[stat_key] = frontier
-        if bool(include_forced_counts) and not frontier.state_frontiers:
-            raise ValueError("FG response frontier scoring payload requires exact reconstruction state")
         stats_after_ftff: _InnerStats = (
             int(batch.group_meta[row_idx, 1]),
             int(batch.group_meta[row_idx, 2]),

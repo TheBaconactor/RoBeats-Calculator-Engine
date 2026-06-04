@@ -12,7 +12,6 @@ from ....solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from ....solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     prepare_force_greats_response_frontier_scoring_batch,
-    reconstruct_force_greats_response_counts,
     reconstruct_force_greats_response_trace,
 )
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
@@ -117,22 +116,6 @@ def _force_payload_from_response_frontier(
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
-    if result.forced_counts:
-        forced_counts = tuple(int(v) for v in result.forced_counts)
-    else:
-        song_inputs = extract_fg_song_inputs(calc_song)
-        forced_counts = tuple(
-            int(v)
-            for v in reconstruct_force_greats_response_counts(
-                frontier=frontier,
-                target_surface=result.surface,
-                timestamps=song_inputs.timestamps,
-                great_candidate_timestamps=song_inputs.great_candidates,
-                raw_fever_fill=float(result.raw_fever_fill),
-                real_fever_time=float(result.real_fever_time),
-                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-            )
-        )
     song_inputs = extract_fg_song_inputs(calc_song)
     frontier_trace = reconstruct_force_greats_response_trace(
         frontier=frontier,
@@ -143,6 +126,13 @@ def _force_payload_from_response_frontier(
         real_fever_time=float(result.real_fever_time),
         use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
     )
+    trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
+    if result.forced_counts:
+        forced_counts = tuple(int(v) for v in result.forced_counts)
+        if forced_counts != trace_counts:
+            raise ValueError("ForceGreats response frontier forced_counts do not match the reconstructed trace")
+    else:
+        forced_counts = trace_counts
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:

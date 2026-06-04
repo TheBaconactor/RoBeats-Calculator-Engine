@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -21,7 +23,8 @@ def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
 
     previous = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(9999)
     try:
-        assert 1 <= response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) <= 8
+        cpu_count = max(1, int(os.cpu_count() or 1))
+        assert 1 <= response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) <= cpu_count
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(0)
         assert response_build_gpu_reducer._resolve_first_only_reducer_threads(9999) == 1
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(4)
@@ -98,6 +101,51 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
     assert frontiers[0] is frontiers[1]
 
 
+def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import (
+        response_build_gpu_batch,
+        response_build_gpu_precompute,
+        response_build_gpu_reducer,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+    )
+
+    surface = FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    result = FgResponseFrontierResult((surface,), {}, 1, 4, 0, 1, 1, 1, 3, 0.0)
+    calls = 0
+    real_precompute = response_build_gpu_precompute._precompute_end_indices
+    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
+
+    def _record_precompute(**kwargs):
+        nonlocal calls
+        calls += 1
+        return real_precompute(**kwargs)
+
+    def _fake_first_frontier(**_kwargs):
+        return result
+
+    monkeypatch.setattr(response_build_gpu_precompute, "_precompute_end_indices", _record_precompute)
+    monkeypatch.setattr(
+        response_build_gpu_reducer,
+        "_first_frontier_result_from_precomputed_end_indices",
+        _fake_first_frontier,
+    )
+    try:
+        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+            timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
+            use_forced_great_timing=True,
+        )
+    finally:
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+
+    assert calls == 1
+    assert len(frontiers) == 2
+
+
 def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
@@ -135,7 +183,7 @@ def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> Non
     assert any(int(surface.body_fever_great) > 0 for surface in frontier.first_frontier)
 
 
-def test_fg_response_edge_end_uses_latest_prefix_great_not_last_forced_note() -> None:
+def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
@@ -146,8 +194,6 @@ def test_fg_response_edge_end_uses_latest_prefix_great_not_last_forced_note() ->
     edge_end, start_time, carry_idx = _edge_end(
         n=int(timestamps.shape[0]),
         a=2,
-        forced_start=0,
-        forced_applied=2,
         activation_great=False,
         real_fever_time=1.0,
         use_forced_great_timing=True,
@@ -155,17 +201,14 @@ def test_fg_response_edge_end_uses_latest_prefix_great_not_last_forced_note() ->
         great_candidate_timestamps=great_candidates,
     )
 
-    assert edge_end == 4
-    assert start_time == pytest.approx(2.4)
-    assert carry_idx == 0
+    assert edge_end == 3
+    assert start_time == pytest.approx(2.0)
+    assert carry_idx == -1
 
 
-def test_fg_response_numba_edge_end_uses_latest_prefix_great() -> None:
+def test_fg_response_numba_edge_end_does_not_let_prefix_great_carry_perfect_activation() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_edge_end_idx_precomputed,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
-        _precompute_great_range_argmax,
     )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
@@ -174,12 +217,9 @@ def test_fg_response_numba_edge_end_uses_latest_prefix_great() -> None:
     great_candidates[1] = np.float32(1.1)
     timestamp_end_idx = np.searchsorted(timestamps, timestamps + np.float32(1.0), side="left").astype(np.int32)
     great_end_idx = np.searchsorted(timestamps, great_candidates + np.float32(1.0), side="left").astype(np.int32)
-    great_range_argmax, great_range_log2 = _precompute_great_range_argmax(great_candidates)
 
     edge_end, start_time = _numba_edge_end_idx_precomputed(
         int(timestamps.shape[0]),
-        2,
-        0,
         2,
         0,
         1,
@@ -187,13 +227,44 @@ def test_fg_response_numba_edge_end_uses_latest_prefix_great() -> None:
         great_candidates,
         timestamp_end_idx.reshape(1, -1),
         great_end_idx.reshape(1, -1),
-        great_range_argmax,
-        great_range_log2,
         0,
     )
 
-    assert edge_end == 4
-    assert start_time == pytest.approx(2.4)
+    assert edge_end == 3
+    assert start_time == pytest.approx(2.0)
+
+
+def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        _action_table,
+        _edge_surface_options,
+    )
+
+    timestamps = np.asarray([float(idx) for idx in range(8)], dtype=np.float32)
+    great_candidates = timestamps.copy()
+    great_candidates[3] = np.float32(3.5)
+    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+        raw_fever_fill=2.0,
+        non_fever_base=7,
+        use_forced_great_timing=True,
+    )
+
+    options = _edge_surface_options(
+        i=0,
+        first=False,
+        n=int(timestamps.shape[0]),
+        actions=actions,
+        later_fill=later_fill,
+        first_fill=first_fill,
+        later_forced=later_forced,
+        first_forced=first_forced,
+        real_fever_time=1.0,
+        use_forced_great_timing=True,
+        timestamps=timestamps,
+        great_candidate_timestamps=great_candidates,
+    )
+
+    assert not any(int(k) == 1 and int(next_state) == 5 for k, next_state, _surface in options)
 
 
 @pytest.mark.gpu
@@ -350,7 +421,11 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         use_forced_great_timing=True,
     )
     assert [row["forced_count"] for row in trace] == list(counts)
-    assert all("activation_ms" in row and "fever_end_index" in row for row in trace)
+    assert all("activation_ms" in row and "activation_hit_offset_ms" in row and "fever_end_index" in row for row in trace)
+    assert all(
+        row["activation_hit_offset_ms"] == pytest.approx(row["activation_hit_ms"] - row["activation_ms"])
+        for row in trace
+    )
     state = 0
     first = True
     surface = _EMPTY_SURFACE

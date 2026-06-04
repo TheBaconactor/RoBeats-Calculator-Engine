@@ -6,19 +6,18 @@ import os
 import time
 from collections import Counter
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
 )
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
 
 logger = logging.getLogger(__name__)
@@ -50,12 +49,11 @@ def _prebuild_cpu_count() -> int:
 
 
 def _resolve_prebuild_reducer_threads() -> int:
-    return max(1, min(8, _prebuild_cpu_count()))
+    return _prebuild_cpu_count()
 
 
 def _resolve_prebuild_worker_count() -> int:
-    reducer_threads = _resolve_prebuild_reducer_threads()
-    return max(1, min(4, (_prebuild_cpu_count() + reducer_threads - 1) // reducer_threads))
+    return 2 if _prebuild_cpu_count() >= 4 else 1
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()
@@ -82,12 +80,6 @@ def _build_fg_response_frontier_cache_for_path_shared(song_path_text: str) -> Fg
         shared,
         stat_keys=_PREBUILD_WORKER_STAT_KEYS,
     )
-
-
-@lru_cache(maxsize=1)
-def all_response_stat_keys() -> tuple[tuple[int, int], ...]:
-    return tuple((int(ft), int(ff)) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
-
 
 def _manifest_path() -> Path:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _fg_response_disk_cache_dir

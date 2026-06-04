@@ -49,6 +49,7 @@ from .response_cache_types import (
     FgResponseFrontierPrewarmResult,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
+    all_response_stat_keys,
     normalize_fg_response_stat_keys,
 )
 from .response_types import FgResponseFrontierResult
@@ -68,6 +69,7 @@ __all__ = [
     "fg_response_frontier_payload_cache_key",
     "frontier_result_from_scoring_bundle",
     "frontier_result_from_scoring_bundle_for_stats",
+    "all_response_stat_keys",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
     "reset_fg_response_frontier_payload_cache",
@@ -343,6 +345,12 @@ def _materialize_scoring_bundle_from_arrays(
     )
 
 
+def _bundle_arrays_cover_keys(arrays: dict[str, np.ndarray], keys: tuple[tuple[int, int], ...]) -> bool:
+    stat_key_rows = np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
+    present = {_normalize_stat_key((int(row[0]), int(row[1]))) for row in stat_key_rows}
+    return set(keys).issubset(present)
+
+
 def load_response_frontier_scoring_bundle(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
@@ -360,9 +368,22 @@ def load_response_frontier_scoring_bundle(
 
     try:
         arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
-    except ValueError:
-        build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
-        arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+    except ValueError as exc:
+        raise ValueError(
+            "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
+            "the candidate-independent all-FT/FF bundle before runtime scoring."
+        ) from exc
+    if not _bundle_arrays_cover_keys(arrays, keys):
+        present = {
+            _normalize_stat_key((int(row[0]), int(row[1])))
+            for row in np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2))
+        }
+        missing = sorted(set(keys) - present)
+        raise ValueError(
+            "FG response frontier scoring bundle does not cover requested stat keys. "
+            "Startup cache prebuild must build the candidate-independent all-FT/FF bundle before runtime scoring: "
+            f"{missing[:5]!r}"
+        )
     arrays.update(
         _load_bundle_array_members_if_present(
             bundle_key,

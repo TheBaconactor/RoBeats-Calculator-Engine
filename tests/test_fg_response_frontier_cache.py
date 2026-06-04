@@ -106,7 +106,14 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert len(list(tmp_path.glob("*.npz"))) == 1
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert data["first_surface_pool"].dtype == np.dtype("uint32")
-        assert data["state_surface_pool"].dtype == np.dtype("uint32")
+        assert not {
+            "state_offsets",
+            "state_counts",
+            "state_keys",
+            "state_surface_offsets",
+            "state_surface_counts",
+            "state_surface_pool",
+        }.intersection(data.files)
 
     def _raise_build(*_args, **_kwargs):
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
@@ -206,21 +213,44 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     assert int(bundle.surface_words.shape[0]) > 0
 
 
-def test_fg_response_frontier_scoring_bundle_builds_missing_canonical_cache(tmp_path: Path, monkeypatch) -> None:
+def test_fg_response_frontier_scoring_bundle_requires_startup_built_cache(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
+    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: ((0, 0),))
 
-    bundle = response_cache.load_response_frontier_scoring_bundle(
+    with pytest.raises(ValueError, match="Startup cache prebuild must build"):
+        response_cache.load_response_frontier_scoring_bundle(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=((0, 0),),
+        )
+    assert list(tmp_path.glob("*.npz")) == []
+
+
+def test_fg_response_frontier_scoring_bundle_rejects_partial_runtime_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache.reset_fg_response_frontier_payload_cache()
+    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: ((0, 0), (3, 3)))
+
+    response_cache.build_or_load_response_frontier_payload(
         _calc_song(),
         _varying_ref_arrays(),
         stat_keys=((0, 0),),
     )
+    response_cache.reset_fg_response_frontier_payload_cache()
 
-    assert set(bundle.frontier_idx_by_key) == {(0, 0)}
-    assert int(bundle.surface_words.shape[0]) > 0
-    assert len(list(tmp_path.glob("*.npz"))) == 1
+    with pytest.raises(ValueError, match="does not cover requested stat keys"):
+        response_cache.load_response_frontier_scoring_bundle(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=((3, 3),),
+        )
 
 
 def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
@@ -637,7 +667,7 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_balances_workers_and_reducer_width(monkeypatch) -> None:
+def test_fg_response_prebuild_balances_worker_count_and_reducer_width(monkeypatch) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -656,12 +686,49 @@ def test_fg_response_prebuild_balances_workers_and_reducer_width(monkeypatch) ->
         stat_keys=((0, 0),),
     )
 
-    assert worker_count == 4
-    assert seen["max_workers"] == 4
-    assert seen["initargs"][2] == 8
+    assert worker_count == 2
+    assert seen["max_workers"] == 2
+    assert seen["initargs"][2] == 32
 
 
-def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(monkeypatch) -> None:
+def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:
+    from gear_optimizer.solver import native_inflight_pipeline as pipeline
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+    from gear_optimizer.solver.taichi_gem.force_greats import response_ftff_prune
+
+    calc_song = {"song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)}}
+    ref_arrays = {"Fever Time": np.asarray([0.0]), "Fever Fill Rate": np.asarray([0.0])}
+    canonical_keys = ((0, 0), (1, 1))
+    bundle = object()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(response_ftff_prune, "warmup_response_ftff_prune", lambda: None)
+    monkeypatch.setattr(response_frontier, "warmup_response_frontier_group_builder", lambda: None)
+    monkeypatch.setattr(pipeline, "resolve_active_fg_calc_song", lambda _song: calc_song)
+    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
+
+    def _load_bundle(calc_song_arg, ref_arrays_arg, *, stat_keys):
+        seen["calc_song"] = calc_song_arg
+        seen["ref_arrays"] = ref_arrays_arg
+        seen["stat_keys"] = tuple(stat_keys)
+        return bundle
+
+    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load_bundle)
+
+    song = SimpleNamespace(
+        gpu_inputs=SimpleNamespace(ref_arrays=ref_arrays),
+        runtime=SimpleNamespace(fg=SimpleNamespace()),
+    )
+
+    pipeline.prepare_fg_static_sync(song)
+
+    assert song.runtime.fg.fg_response_scoring_bundle is bundle
+    assert song.runtime.fg.fg_static_prep_done is True
+    assert seen == {"calc_song": calc_song, "ref_arrays": ref_arrays, "stat_keys": canonical_keys}
+
+
+def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
@@ -749,8 +816,16 @@ def test_packed_scoring_does_not_require_state_frontiers_without_forced_counts(m
     assert result[0].best_score == 123
     assert result[0].forced_counts == ()
 
+    result_with_counts = response_frontier.score_prepared_force_greats_response_frontier_batch_gpu(
+        batch,
+        include_forced_counts=True,
+    )
 
-def test_packed_scoring_batch_loads_reachable_bundle_keys_during_prepare(monkeypatch) -> None:
+    assert result_with_counts[0].best_score == 123
+    assert result_with_counts[0].forced_counts == ()
+
+
+def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch) -> None:
     from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
@@ -765,8 +840,15 @@ def test_packed_scoring_batch_loads_reachable_bundle_keys_during_prepare(monkeyp
         great_candidates=np.asarray([0.0], dtype=np.float32),
     )
     seen: dict[str, object] = {}
+    canonical_keys = (
+        (0, 0),
+        (0, GEM_SCALE_FEVER),
+        (GEM_SCALE_FEVER, 0),
+        (TOTAL_ROWS, TOTAL_ROWS),
+    )
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
+    monkeypatch.setattr(response_frontier, "all_response_stat_keys", lambda: canonical_keys)
 
     def _fake_build_bundle(calc_song, ref_arrays, *, stat_keys):
         keys = tuple(stat_keys)
@@ -803,12 +885,9 @@ def test_packed_scoring_batch_loads_reachable_bundle_keys_during_prepare(monkeyp
     assert batch.scoring_bundle is seen["bundle"]
     assert seen["calc_song"] == {"song_data": {}}
     assert seen["ref_arrays"] == {"ref": batch.ref_arrays["ref"]}
-    assert set(seen["stat_keys"]) == {
-        (0, 0),
-        (0, GEM_SCALE_FEVER),
-        (GEM_SCALE_FEVER, 0),
-    }
+    assert seen["stat_keys"] == canonical_keys
     assert set(batch.kept_stat_keys).issubset(set(seen["stat_keys"]))
+    assert (TOTAL_ROWS, TOTAL_ROWS) not in set(batch.kept_stat_keys)
     assert batch.scoring_bundle_ms >= 0.0
     assert batch.scoring_surface_words.shape == (1, 8)
     assert batch.scoring_surface_head_coeffs is seen["bundle"].surface_head_coeffs

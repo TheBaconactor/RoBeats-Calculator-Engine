@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.data.song_io import clone_calc_song
@@ -316,24 +316,26 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     Response-frontier FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
-    runtime = getattr(song, "runtime", song)
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        all_response_stat_keys,
+        load_response_frontier_scoring_bundle,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
 
     warmup_response_ftff_prune()
     warmup_response_frontier_group_builder()
-    calc_song = resolve_active_fg_calc_song(song)
-    if getattr(song.runtime.fg, "fg_response_scoring_bundle", None) is None:
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-            load_response_frontier_scoring_bundle,
-        )
-
-        full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
-        runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song,
-            getattr(song.gpu_inputs, "ref_arrays", None),
-            stat_keys=full_stat_grid,
-        )
+    fg_calc_song = resolve_active_fg_calc_song(song)
+    if not isinstance(fg_calc_song, dict):
+        raise RuntimeError("FG static prep requires a resolved calc song")
+    ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
+    if not isinstance(ref_arrays, dict):
+        raise RuntimeError("FG static prep requires reference arrays")
+    song.runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
+        fg_calc_song,
+        ref_arrays,
+        stat_keys=all_response_stat_keys(),
+    )
     try:
         song.runtime.fg.fg_static_prep_done = True
     except AttributeError:
