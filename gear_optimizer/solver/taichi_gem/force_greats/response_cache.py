@@ -345,12 +345,6 @@ def _materialize_scoring_bundle_from_arrays(
     )
 
 
-def _bundle_arrays_cover_keys(arrays: dict[str, np.ndarray], keys: tuple[tuple[int, int], ...]) -> bool:
-    stat_key_rows = np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
-    present = {_normalize_stat_key((int(row[0]), int(row[1]))) for row in stat_key_rows}
-    return set(keys).issubset(present)
-
-
 def load_response_frontier_scoring_bundle(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
@@ -373,11 +367,11 @@ def load_response_frontier_scoring_bundle(
             "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
             "the candidate-independent all-FT/FF bundle before runtime scoring."
         ) from exc
-    if not _bundle_arrays_cover_keys(arrays, keys):
-        present = {
-            _normalize_stat_key((int(row[0]), int(row[1])))
-            for row in np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2))
-        }
+    present = {
+        _normalize_stat_key((int(row[0]), int(row[1])))
+        for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
+    }
+    if not set(keys).issubset(present):
         missing = sorted(set(keys) - present)
         raise ValueError(
             "FG response frontier scoring bundle does not cover requested stat keys. "

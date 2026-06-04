@@ -32,20 +32,6 @@ class FirstOnlyCanonicalization:
     great_end_idx: np.ndarray
 
 
-def _canonicalize_first_only_prepared_items(
-    *,
-    prepared: list[tuple],
-    timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-) -> tuple[list[tuple], dict[int, tuple[int, ...]]]:
-    canonical = _canonicalize_first_only_prepared_items_with_end_indices(
-        prepared=prepared,
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidate_timestamps,
-    )
-    return canonical.prepared, canonical.duplicate_sources_by_source
-
-
 def _canonicalize_first_only_prepared_items_with_end_indices(
     *,
     prepared: list[tuple],
