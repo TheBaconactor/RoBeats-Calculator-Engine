@@ -46,50 +46,6 @@ def fg_proxy_from_base_stats(stats: dict[str, Any] | None, primary_color: str, s
     return int(score)
 
 
-def _normalize_fg_group_key(value: Any) -> tuple[str, int, int] | None:
-    if isinstance(value, tuple):
-        parts = value
-    elif isinstance(value, list):
-        parts = tuple(value)
-    else:
-        return None
-    if len(parts) != 3:
-        return None
-    try:
-        return (
-            str(parts[0] or ""),
-            int(parts[1]),
-            int(parts[2]),
-        )
-    except Exception as e:
-        logger.debug(f"entry_utils:_normalize_fg_group_key: {e}")
-        return None
-
-
-def _cached_fg_group_meta_is_reusable(meta: dict[str, Any] | None) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    if bool(meta.get("skip")):
-        return True
-    group_key = _normalize_fg_group_key(meta.get("group_key"))
-    if group_key is None:
-        return False
-    try:
-        if int(meta.get("n_sections", 0) or 0) <= 0:
-            return False
-    except Exception as e:
-        logger.debug(f"entry_utils:_cached_fg_group_meta_is_reusable: {e}")
-        return False
-    try:
-        if int(meta.get("max_per_section", 0) or 0) < 0:
-            return False
-    except Exception as e:
-        logger.debug(f"entry_utils:_cached_fg_group_meta_is_reusable: {e}")
-        return False
-    signature = meta.get("signature")
-    return signature is not None
-
-
 def build_fg_group_meta(
     *,
     base_stats: dict[str, Any] | None,
@@ -146,46 +102,6 @@ def build_fg_group_meta(
     except Exception as e:
         logger.debug(f"entry_utils:build_fg_group_meta: {e}")
         return None
-
-
-def fg_group_meta_from_eval_data(
-    eval_data: dict[str, Any] | None,
-    *,
-    calc_song: dict[str, Any] | None,
-    ref_arrays: dict[str, Any] | None,
-    meta_primary_color: str = "",
-    primary_color: str = "",
-    secondary_color: str = "",
-    base_stats: dict[str, Any] | None = None,
-    prefer_grid: bool | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(eval_data, dict):
-        return None
-
-    cached = eval_data.get("_fg_group_meta")
-    if _cached_fg_group_meta_is_reusable(cached):
-        return cached
-
-    base_stats_obj = base_stats if isinstance(base_stats, dict) else eval_data.get("BaseStats")
-    if not isinstance(base_stats_obj, dict) or not base_stats_obj:
-        return None
-
-    meta = build_fg_group_meta(
-        base_stats=base_stats_obj,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_element=get_selected_element(eval_data, meta_primary_color),
-        center_ft=int(eval_data.get("FT", 0) or 0),
-        center_ff=int(eval_data.get("FF", 0) or 0),
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        run_idx=eval_data.get("_ga_gpu_run_idx"),
-        row_idx=eval_data.get("_ga_gpu_row_idx"),
-        prefer_grid=prefer_grid,
-    )
-    if isinstance(meta, dict):
-        eval_data["_fg_group_meta"] = meta
-    return meta
 
 
 def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict[str, Any] | None:

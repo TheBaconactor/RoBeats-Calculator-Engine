@@ -181,44 +181,6 @@ def _fg_response_score_device(
 
 
 @ti.func
-def _fg_response_head_coefficients(
-    fever0: ti.u32,
-    fever1: ti.u32,
-    fever2: ti.u32,
-    fever3: ti.u32,
-    head_len: ti.i32,
-) -> ti.types.vector(4, ti.i32):
-    n_hn = ti.i32(0)
-    n_hf = ti.i32(0)
-    sigma_hn = ti.i32(0)
-    sigma_hf = ti.i32(0)
-    head_len_c = ti.max(0, ti.min(head_len, 100))
-    for i in range(100):
-        if i < head_len_c:
-            word = ti.u32(0)
-            bit_idx = i
-            if i < 32:
-                word = fever0
-            elif i < 64:
-                word = fever1
-                bit_idx = i - 32
-            elif i < 96:
-                word = fever2
-                bit_idx = i - 64
-            else:
-                word = fever3
-                bit_idx = i - 96
-            pos = i + 1
-            if _fg_response_bit(word, bit_idx) != 0:
-                n_hf += 1
-                sigma_hf += pos
-            else:
-                n_hn += 1
-                sigma_hn += pos
-    return ti.Vector([n_hn, n_hf, sigma_hn, sigma_hf])
-
-
-@ti.func
 def _fg_response_surface_upper_bound(
     base_value: ti.f32,
     combo_mul: ti.f32,
