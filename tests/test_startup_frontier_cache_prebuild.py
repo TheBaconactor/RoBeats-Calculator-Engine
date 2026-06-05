@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,11 +24,14 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
     calls: list[str] = []
 
     def _timeline(**_kwargs):
-        calls.append("timeline")
+        calls.append("timeline_start")
+        time.sleep(0.02)
+        calls.append("timeline_end")
         return TimelineFrontierCachePrebuildSummary(total=1, completed=1, disk=1)
 
     def _fg(**_kwargs):
-        calls.append("fg")
+        calls.append("fg_start")
+        calls.append("fg_end")
         return FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1)
 
     monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", _timeline)
@@ -40,7 +44,7 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
         data_root="Data",
     )
 
-    assert set(calls) == {"timeline", "fg"}
+    assert calls == ["timeline_start", "timeline_end", "fg_start", "fg_end"]
 
 
 def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:

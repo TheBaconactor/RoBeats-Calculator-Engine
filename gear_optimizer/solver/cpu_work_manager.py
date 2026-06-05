@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import sys
 import time
@@ -57,23 +56,18 @@ def run_startup_cpu_work(
         metrics={"phase": "frontier_caches"},
     )
     queue_items = list(song_queue or [])
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="FrontierCache") as executor:
-        timeline_future = executor.submit(
-            run_timeline_frontier_cache_prebuild,
-            cfg=cfg,
-            song_queue=queue_items,
-            ref_arrays=ref_arrays,
-            data_root=data_root,
-        )
-        fg_future = executor.submit(
-            run_fg_response_frontier_cache_prebuild,
-            cfg=cfg,
-            song_queue=queue_items,
-            ref_arrays=ref_arrays,
-            data_root=data_root,
-        )
-        timeline_summary = timeline_future.result()
-        fg_summary = fg_future.result()
+    timeline_summary = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue_items,
+        ref_arrays=ref_arrays,
+        data_root=data_root,
+    )
+    fg_summary = run_fg_response_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue_items,
+        ref_arrays=ref_arrays,
+        data_root=data_root,
+    )
     elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
     timeline_failures = int(timeline_summary.failures)
     fg_failures = int(fg_summary.failures)
