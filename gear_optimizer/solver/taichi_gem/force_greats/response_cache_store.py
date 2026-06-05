@@ -95,6 +95,12 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         packed_frontiers = _pack_frontiers(frontiers)
         first_surface_pool = np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
         first_surface_head_len = min(int(payload.total_notes), 100)
+        first_surface_head_coeffs = _precompute_surface_head_coeffs(
+            first_surface_pool,
+            head_len=int(first_surface_head_len),
+        )
+        if bool(np.any(first_surface_head_coeffs < 0)) or bool(np.any(first_surface_head_coeffs > np.iinfo(np.uint16).max)):
+            raise ValueError("FG response surface head coefficients exceed persisted uint16 bounds")
         _save_npz_fast_compressed(
             tmp,
             {
@@ -111,10 +117,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
                 "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
                 "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
                 "first_surface_head_len": np.asarray(int(first_surface_head_len), dtype=np.int32),
-                "first_surface_head_coeffs": _precompute_surface_head_coeffs(
-                    first_surface_pool,
-                    head_len=int(first_surface_head_len),
-                ),
+                "first_surface_head_coeffs": np.ascontiguousarray(first_surface_head_coeffs, dtype=np.uint16),
                 **packed_frontiers,
             },
         )

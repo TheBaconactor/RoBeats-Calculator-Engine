@@ -3,7 +3,7 @@ from numba import njit, types
 from numba.typed import Dict, List
 
 _NUMBA_SURFACE_TYPE = types.UniTuple(types.uint64, 7)
-_NUMBA_EXACT_OVERLAP_KEY_TYPE = types.UniTuple(types.uint64, 3)
+_NUMBA_HEAD_OVERLAP_KEY_TYPE = types.UniTuple(types.uint64, 2)
 _NUMBA_BODY_PAIR_TYPE = types.UniTuple(types.uint64, 3)
 _NUMBA_PACKET_POINT_TYPE = types.UniTuple(types.int64, 3)
 _NUMBA_PACKET_POINT_LIST_TYPE = types.ListType(_NUMBA_PACKET_POINT_TYPE)
@@ -121,21 +121,18 @@ def _numba_reduce(surfaces):
             np.uint64(0),
         ))
         return kept
-    # Exact-overlap-bucketed Pareto maxima. The `_numba_append_surface` dominance gate requires
-    # exact_overlap = (equal body_fever_great, equal head fever&great masks); surfaces in different
-    # exact_overlap classes can never dominate each other, so confine every dominance scan to its
-    # class. Buckets are intrusive hash chains: `bucket_head[key]` is the latest kept position in the
-    # class, `prev_same[pos]` links to the previous kept position in the same class, `kept_flag`
-    # tracks which positions are currently retained. Survivors are emitted in original index order,
-    # so the output is BIT-IDENTICAL to the unbucketed reduce (validated: byte-identical caches).
-    # Measured ~3.4x faster on median-size charts (the pool bulk); neutral on the heaviest charts
-    # (whose cost is generation, not reduction). Cost: O(sum_class |class|^2) instead of O(F^2).
+    # Head-overlap-bucketed Pareto maxima. Head fever/great overlap must match inside a dominance
+    # scan; body Greats are compared in scorer-visible coordinates:
+    #   normal_great = body_great - body_fever_great, fever_great = body_fever_great.
+    # This keeps the reduction candidate-independent and lossless while allowing a surface with no
+    # more normal Greats and no more fever Greats to dominate one with the same head-overlap class.
     kept_flag = np.zeros(n, dtype=np.bool_)
     prev_same = np.full(n, -1, dtype=np.int64)
-    bucket_head = Dict.empty(_NUMBA_EXACT_OVERLAP_KEY_TYPE, types.int64)
+    bucket_head = Dict.empty(_NUMBA_HEAD_OVERLAP_KEY_TYPE, types.int64)
     for idx in range(n):
         cf_lo, cf_hi, cg_lo, cg_hi, cbf, cbg, cbfg = surfaces[idx]
-        key = (cbfg, cf_lo & cg_lo, cf_hi & cg_hi)
+        cng = cbg - cbfg
+        key = (cf_lo & cg_lo, cf_hi & cg_hi)
         head = bucket_head[key] if key in bucket_head else -1
         # phase 1: dominated by a currently-kept surface in the same class?
         dominated = False
@@ -143,10 +140,11 @@ def _numba_reduce(surfaces):
         while pos != -1:
             if kept_flag[pos]:
                 kf_lo, kf_hi, kg_lo, kg_hi, kbf, kbg, kbfg = surfaces[pos]
-                # exact_overlap is guaranteed within a class; only directional conditions remain.
+                kng = kbg - kbfg
                 if (
                     kbf >= cbf
-                    and kbg <= cbg
+                    and kng <= cng
+                    and kbfg <= cbfg
                     and (cf_lo & ~kf_lo) == 0
                     and (cf_hi & ~kf_hi) == 0
                     and (kg_lo & ~cg_lo) == 0
@@ -162,9 +160,11 @@ def _numba_reduce(surfaces):
         while pos != -1:
             if kept_flag[pos]:
                 kf_lo, kf_hi, kg_lo, kg_hi, kbf, kbg, kbfg = surfaces[pos]
+                kng = kbg - kbfg
                 if (
                     cbf >= kbf
-                    and cbg <= kbg
+                    and cng <= kng
+                    and cbfg <= kbfg
                     and (kf_lo & ~cf_lo) == 0
                     and (kf_hi & ~cf_hi) == 0
                     and (cg_lo & ~kg_lo) == 0
@@ -204,40 +204,54 @@ def _numba_body_prefix_surface(head_great_count: int, body_fever, body_great, bo
 
 
 @njit(cache=True, nogil=True)
-def _numba_branch_a_prefix_max_query_stamped(values, stamps, stamp: int, bfg: int, idx: int, width: int) -> int:
+def _numba_branch_a_body_max_query_stamped(
+    values,
+    stamps,
+    stamp: int,
+    fever_great_idx: int,
+    normal_great_idx: int,
+    width: int,
+) -> int:
     best = -1
-    base = int(bfg) * int(width)
-    cursor = int(idx) + 1
-    while cursor > 0:
-        flat_idx = int(base) + int(cursor)
-        if int(stamps[int(flat_idx)]) == int(stamp):
-            value = int(values[int(flat_idx)])
-            if int(value) > int(best):
-                best = int(value)
-        cursor -= cursor & -cursor
+    fever_cursor = int(fever_great_idx) + 1
+    while fever_cursor > 0:
+        base = int(fever_cursor) * int(width)
+        normal_cursor = int(normal_great_idx) + 1
+        while normal_cursor > 0:
+            flat_idx = int(base) + int(normal_cursor)
+            if int(stamps[int(flat_idx)]) == int(stamp):
+                value = int(values[int(flat_idx)])
+                if int(value) > int(best):
+                    best = int(value)
+            normal_cursor -= normal_cursor & -normal_cursor
+        fever_cursor -= fever_cursor & -fever_cursor
     return int(best)
 
 
 @njit(cache=True, nogil=True)
-def _numba_branch_a_prefix_max_update_stamped(
+def _numba_branch_a_body_max_update_stamped(
     values,
     stamps,
     stamp: int,
-    bfg: int,
-    idx: int,
+    fever_great_idx: int,
+    normal_great_idx: int,
     value: int,
     width: int,
 ) -> None:
-    base = int(bfg) * int(width)
-    cursor = int(idx) + 1
-    while cursor < int(width):
-        flat_idx = int(base) + int(cursor)
-        if int(stamps[int(flat_idx)]) != int(stamp):
-            stamps[int(flat_idx)] = int(stamp)
-            values[int(flat_idx)] = int(value)
-        elif int(value) > int(values[int(flat_idx)]):
-            values[int(flat_idx)] = int(value)
-        cursor += cursor & -cursor
+    fever_limit = int(values.shape[0]) // int(width)
+    fever_cursor = int(fever_great_idx) + 1
+    while fever_cursor < int(fever_limit):
+        base = int(fever_cursor) * int(width)
+        normal_cursor = int(normal_great_idx) + 1
+        while normal_cursor < int(width):
+            flat_idx = int(base) + int(normal_cursor)
+            if int(stamps[int(flat_idx)]) != int(stamp):
+                stamps[int(flat_idx)] = int(stamp)
+                values[int(flat_idx)] = int(value)
+            elif int(value) > int(values[int(flat_idx)]):
+                values[int(flat_idx)] = int(value)
+            normal_cursor += normal_cursor & -normal_cursor
+        fever_cursor += fever_cursor & -fever_cursor
 
 
 @njit(cache=True, nogil=True)
@@ -254,14 +268,21 @@ def _numba_append_branch_a_body_prefix_surface(
 ) -> bool:
     bg = int(body_great)
     bfg = int(body_fever_great)
-    if int(bg) < 0 or int(bg) + 1 >= int(width) or int(bfg) < 0 or (int(bfg) + 1) * int(width) > len(values):
+    normal_great = int(bg) - int(bfg)
+    if (
+        int(bg) < 0
+        or int(normal_great) < 0
+        or int(normal_great) + 1 >= int(width)
+        or int(bfg) < 0
+        or (int(bfg) + 1) * int(width) >= len(values)
+    ):
         raise ValueError("Branch-A FG response prefix reducer received an out-of-bounds body pair")
-    prev = _numba_branch_a_prefix_max_query_stamped(
+    prev = _numba_branch_a_body_max_query_stamped(
         values,
         stamps,
         int(stamp),
         int(bfg),
-        int(bg),
+        int(normal_great),
         int(width),
     )
     if int(prev) >= int(body_fever):
@@ -274,12 +295,12 @@ def _numba_append_branch_a_body_prefix_surface(
             body_fever_great,
         )
     )
-    _numba_branch_a_prefix_max_update_stamped(
+    _numba_branch_a_body_max_update_stamped(
         values,
         stamps,
         int(stamp),
         int(bfg),
-        int(bg),
+        int(normal_great),
         int(body_fever),
         int(width),
     )
@@ -1543,7 +1564,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_activation_prefix_by_action[int(action_idx)] = int(prefix_forced)
             first_activation_head_by_action[int(action_idx)] = min(100, max(0, int(prefix_forced)))
         branch_a_width = int(n) + 2
-        branch_a_size = int(pair_mod) * int(branch_a_width)
+        branch_a_size = (int(pair_mod) + 1) * int(branch_a_width)
         branch_a_values = np.zeros(int(branch_a_size), dtype=np.int32)
         branch_a_stamps = np.zeros(int(branch_a_size), dtype=np.int32)
         branch_a_stamp = 1

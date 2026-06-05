@@ -125,6 +125,57 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert set(second.payload.frontier_by_key) == set(keys)
 
 
+def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_surfaces import SurfaceRowsFirstFrontier
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _load_bundle_array_members,
+        _load_payload,
+        _save_payload,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    rows = np.asarray(
+        [
+            [1, 0, 0, 0, 0, 0, 0],
+            [3, 0, 1, 0, 5, 2, 1],
+        ],
+        dtype=np.uint64,
+    )
+    first = FgResponseFrontierResult(SurfaceRowsFirstFrontier(rows.copy()), {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
+    second = FgResponseFrontierResult(SurfaceRowsFirstFrontier(rows.copy()), {}, 8, 9, 10, 11, 12, 13, 14, 0.0)
+    payload = FgResponseFrontierCachePayload(
+        frontier_by_key={(0, 0): first, (1, 0): second},
+        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        total_notes=120,
+        long_notes=0,
+        use_forced_great_timing=True,
+    )
+    cache_key = ("unit", "equal-frontier-segments")
+
+    _save_payload(cache_key, payload)
+
+    arrays = _load_bundle_array_members(
+        cache_key,
+        names=("frontier_ids", "frontier_meta", "first_offsets", "first_counts", "first_surface_pool"),
+    )
+    assert arrays["frontier_ids"].tolist() == [0, 1]
+    assert arrays["frontier_meta"].shape[0] == 2
+    assert arrays["first_offsets"].tolist() == [0, 0]
+    assert arrays["first_counts"].tolist() == [2, 2]
+    assert arrays["first_surface_pool"].shape == (2, 11)
+
+    loaded = _load_payload(cache_key)
+    assert loaded is not None
+    assert loaded.frontier_by_key[(0, 0)] is not loaded.frontier_by_key[(1, 0)]
+    assert loaded.frontier_by_key[(0, 0)].first_frontier == loaded.frontier_by_key[(1, 0)].first_frontier
+    assert loaded.frontier_by_key[(1, 0)].non_fever_base == 14
+
+
 def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -168,6 +219,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert "first_surface_head_len" in data.files
         assert "first_surface_head_coeffs" in data.files
+        assert data["first_surface_head_coeffs"].dtype == np.dtype("uint16")
 
     response_cache.reset_fg_response_frontier_payload_cache()
 
@@ -183,6 +235,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
     assert bundle.surface_head_coeffs.shape == (bundle.surface_words.shape[0], 4)
+    assert bundle.surface_head_coeffs.dtype == np.dtype("int32")
 
 
 def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_probe(
@@ -686,8 +739,8 @@ def test_fg_response_prebuild_balances_worker_count_and_reducer_width(monkeypatc
         stat_keys=((0, 0),),
     )
 
-    assert worker_count == 2
-    assert seen["max_workers"] == 2
+    assert worker_count == 3
+    assert seen["max_workers"] == 3
     assert seen["initargs"][2] == 32
 
 

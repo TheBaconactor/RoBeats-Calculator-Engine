@@ -53,7 +53,7 @@ def _resolve_prebuild_reducer_threads() -> int:
 
 
 def _resolve_prebuild_worker_count() -> int:
-    return 2 if _prebuild_cpu_count() >= 4 else 1
+    return 3 if _prebuild_cpu_count() >= 8 else 2 if _prebuild_cpu_count() >= 4 else 1
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()

@@ -267,6 +267,78 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     assert not any(int(k) == 1 and int(next_state) == 5 for k, next_state, _surface in options)
 
 
+def test_fg_response_branch_a_prunes_body_dominated_fever_great_overlap() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_TYPE,
+        _numba_append_branch_a_body_prefix_surface,
+    )
+
+    bucket = List.empty_list(_NUMBA_SURFACE_TYPE)
+    width = 8
+    values = np.zeros((width * width,), dtype=np.int32)
+    stamps = np.zeros((width * width,), dtype=np.int32)
+
+    assert _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        0,
+        np.uint64(10),
+        np.uint64(1),
+        np.uint64(0),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert not _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        0,
+        np.uint64(9),
+        np.uint64(3),
+        np.uint64(1),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        0,
+        np.uint64(9),
+        np.uint64(0),
+        np.uint64(0),
+        values,
+        stamps,
+        1,
+        width,
+    )
+
+    assert list(bucket) == [
+        (0, 0, 0, 0, 10, 1, 0),
+        (0, 0, 0, 0, 9, 0, 0),
+    ]
+
+
+def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_TYPE,
+        _numba_reduce,
+    )
+
+    surfaces = List.empty_list(_NUMBA_SURFACE_TYPE)
+    surfaces.append(tuple(np.uint64(v) for v in (0, 0, 0, 0, 10, 1, 0)))
+    surfaces.append(tuple(np.uint64(v) for v in (0, 0, 0, 0, 9, 3, 1)))
+    surfaces.append(tuple(np.uint64(v) for v in (0, 0, 0, 0, 9, 0, 0)))
+
+    assert list(_numba_reduce(surfaces)) == [
+        (0, 0, 0, 0, 10, 1, 0),
+        (0, 0, 0, 0, 9, 0, 0),
+    ]
+
+
 @pytest.mark.gpu
 def test_fg_response_frontier_gpu_batch_materializes_state_frontiers() -> None:
     from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch

@@ -587,6 +587,7 @@ class NativeSongGPUInputs:
 @dataclass
 class NativeSongPrepState:
     cpu_prep_s: float = 0.0
+    wall_prep_s: float = 0.0
 
 
 @dataclass

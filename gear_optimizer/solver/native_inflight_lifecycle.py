@@ -161,9 +161,16 @@ def prime_native_inflight_prepared_queue(
             bind_bundle_song(prepared_song, first, repeat_ctx)
             prepared.append(prepared_song)
             prepared_count += 1
+            prep_elapsed_s = time.perf_counter() - float(t0)
+            prep_wall_s = float(getattr(prepared_song.runtime.prep, "wall_prep_s", 0.0) or 0.0)
+            if prep_wall_s <= 0.0 or prep_wall_s > prep_elapsed_s:
+                prep_wall_s = float(prep_elapsed_s)
+            prep_queue_s = max(0.0, float(prep_elapsed_s) - float(prep_wall_s))
+            if prep_queue_s > 0.0:
+                stage_profiler.record("prep_queue", prep_queue_s, song=task_key)
             stage_profiler.record(
                 "prep",
-                time.perf_counter() - t0,
+                prep_wall_s,
                 cpu_seconds=getattr(prepared_song.runtime.prep, "cpu_prep_s", None),
                 song=task_key,
             )

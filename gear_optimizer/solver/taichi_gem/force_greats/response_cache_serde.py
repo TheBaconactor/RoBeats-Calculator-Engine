@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -36,20 +37,76 @@ def _write_surface_row(rows: np.ndarray, idx: int, surface: FgResponseSurface) -
     rows[int(idx), 10] = int(surface.body_fever_great)
 
 
+def _surface_rows_from_frontier(frontier: FgResponseFrontierResult) -> np.ndarray:
+    first_frontier = frontier.first_frontier
+    if isinstance(first_frontier, SurfaceRowsFirstFrontier):
+        return np.ascontiguousarray(first_frontier.surface_rows(), dtype=np.uint32)
+    rows = np.empty((len(first_frontier), 11), dtype=np.uint32)
+    for idx, surface in enumerate(first_frontier):
+        _write_surface_row(rows, int(idx), surface)
+    return rows
+
+
+def _frontier_segment_fingerprint(frontier: FgResponseFrontierResult) -> tuple[int, int, bytes]:
+    first_frontier = frontier.first_frontier
+    if isinstance(first_frontier, SurfaceRowsFirstFrontier):
+        rows = np.ascontiguousarray(first_frontier.numba_rows(), dtype=np.uint64)
+        layout = 7
+    else:
+        rows = _surface_rows_from_frontier(frontier)
+        layout = 11
+    digest = hashlib.blake2b(rows.view(np.uint8), digest_size=16).digest()
+    return int(layout), int(rows.shape[0]), bytes(digest)
+
+
+def _frontier_segment_equal(left: FgResponseFrontierResult, right: FgResponseFrontierResult) -> bool:
+    left_first = left.first_frontier
+    right_first = right.first_frontier
+    if isinstance(left_first, SurfaceRowsFirstFrontier) and isinstance(right_first, SurfaceRowsFirstFrontier):
+        return bool(np.array_equal(left_first.numba_rows(), right_first.numba_rows()))
+    return bool(np.array_equal(_surface_rows_from_frontier(left), _surface_rows_from_frontier(right)))
+
+
+def _frontier_segment_ids(frontiers: tuple[FgResponseFrontierResult, ...]) -> tuple[list[int], np.ndarray]:
+    unique_frontier_indices: list[int] = []
+    segment_id_by_frontier = np.empty((len(frontiers),), dtype=np.int32)
+    by_fingerprint: dict[tuple[int, int, bytes], list[int]] = {}
+    for idx, frontier in enumerate(frontiers):
+        fingerprint = _frontier_segment_fingerprint(frontier)
+        segment_id = -1
+        for candidate_segment_id in by_fingerprint.get(fingerprint, ()):
+            candidate_idx = unique_frontier_indices[int(candidate_segment_id)]
+            if _frontier_segment_equal(frontier, frontiers[int(candidate_idx)]):
+                segment_id = int(candidate_segment_id)
+                break
+        if segment_id < 0:
+            segment_id = len(unique_frontier_indices)
+            unique_frontier_indices.append(int(idx))
+            by_fingerprint.setdefault(fingerprint, []).append(int(segment_id))
+        segment_id_by_frontier[int(idx)] = int(segment_id)
+    return unique_frontier_indices, segment_id_by_frontier
+
+
 def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str, np.ndarray]:
     meta = np.empty((len(frontiers), 7), dtype=np.int32)
     first_offsets = np.empty((len(frontiers),), dtype=np.int32)
     first_counts = np.empty((len(frontiers),), dtype=np.int32)
+    unique_frontier_indices, segment_id_by_frontier = _frontier_segment_ids(frontiers)
     row_backed_total = sum(
         len(frontier.first_frontier)
-        for frontier in frontiers
+        for frontier_idx in unique_frontier_indices
+        for frontier in (frontiers[int(frontier_idx)],)
         if isinstance(frontier.first_frontier, SurfaceRowsFirstFrontier)
     )
-    first_surface_pool = np.empty((sum(len(frontier.first_frontier) for frontier in frontiers), 11), dtype=np.uint32)
+    first_surface_pool = np.empty(
+        (sum(len(frontiers[int(frontier_idx)].first_frontier) for frontier_idx in unique_frontier_indices), 11),
+        dtype=np.uint32,
+    )
     first_numba_pool = np.empty((int(row_backed_total), 7), dtype=np.uint64)
     row_backed_ranges: list[tuple[int, int, int]] = []
-    first_cursor = 0
+    segment_offsets = np.empty((len(unique_frontier_indices),), dtype=np.int32)
     first_numba_cursor = 0
+    first_cursor = 0
 
     for idx, frontier in enumerate(frontiers):
         meta[idx] = np.asarray(
@@ -64,8 +121,11 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
             ],
             dtype=np.int32,
         )
-        first_offsets[idx] = int(first_cursor)
         first_counts[idx] = len(frontier.first_frontier)
+
+    for segment_id, frontier_idx in enumerate(unique_frontier_indices):
+        frontier = frontiers[int(frontier_idx)]
+        segment_offsets[int(segment_id)] = int(first_cursor)
         if isinstance(frontier.first_frontier, SurfaceRowsFirstFrontier):
             first_rows = frontier.first_frontier.numba_rows()
             first_count = int(first_rows.shape[0])
@@ -79,6 +139,9 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
             for surface in frontier.first_frontier:
                 _write_surface_row(first_surface_pool, int(first_cursor), surface)
                 first_cursor += 1
+
+    for idx in range(len(frontiers)):
+        first_offsets[int(idx)] = int(segment_offsets[int(segment_id_by_frontier[int(idx)])])
 
     if row_backed_ranges:
         converted = _surface_rows_from_numba_rows(first_numba_pool)

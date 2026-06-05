@@ -136,6 +136,7 @@ def _cache_stats_maybe_emit() -> None:
 
 
 def prepare_native_song(task: tuple) -> NativeSong:
+    wall_t0 = time.perf_counter()
     cpu_t0 = thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
@@ -351,5 +352,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         ),
     )
     prepare_fg_static_sync(song)
+    song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - float(wall_t0))
     song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song

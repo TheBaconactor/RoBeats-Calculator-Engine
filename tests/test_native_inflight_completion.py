@@ -233,7 +233,18 @@ def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
 
     queue_idx = src.index("fg_pipeline.queue(song")
     prep_idx = src.index("started_fg_prep = fg_pipeline.start_pending_prep", queue_idx)
-    submit_idx = src.index("fg_pipeline.submit_job", queue_idx)
+    submit_idx = src.index("_submit_fg_jobs(", queue_idx)
 
     assert queue_idx < prep_idx < submit_idx
     assert "max_new=1" in src[prep_idx:submit_idx]
+
+
+def test_song_prep_runway_fill_is_not_gated_by_ga_admission():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    first_fill_idx = src.index("if _fill_song_prep_runway():")
+    ga_yield_idx = src.index("if continuous_ga_should_yield_to_fg(")
+    inner_fill_idx = src.index("if _fill_song_prep_runway():", ga_yield_idx)
+
+    assert first_fill_idx < ga_yield_idx < inner_fill_idx
+    assert "pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit)" not in src

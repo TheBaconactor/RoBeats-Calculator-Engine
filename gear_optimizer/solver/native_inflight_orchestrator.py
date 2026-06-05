@@ -238,6 +238,49 @@ def run_native_inflight_song_pipeline(
         stage_profiler=stage_profiler,
         memory_resume_tracker=memory_resume_tracker,
     )
+    def _fill_song_prep_runway() -> bool:
+        submitted_any = False
+        while (
+            (not stopping)
+            and pending_tasks
+            and (len(prepared) + len(prep_inflight) < icfg.prep_limit)
+        ):
+            nxt = pending_tasks.popleft()
+            nxt_bundle_key = task_queue_label(nxt)
+            if nxt_bundle_key in completed_songs:
+                submitted_any = True
+                continue
+            logical_nxt, repeat_ctx = _next_logical_task(nxt)
+            nxt_key = task_queue_label(logical_nxt)
+            try:
+                prep_queue.submit(
+                    nxt,
+                    logical_nxt,
+                    register_future=completion_tracker.register,
+                )
+            except Exception as exc:
+                payload = build_native_task_error_payload(
+                    song_name=task_song_name(nxt),
+                    queue_key=str(nxt_key),
+                    exc=exc,
+                    trace=traceback.format_exc(),
+                    suppress_progress=repeat_ctx is not None,
+                )
+                _post(payload)
+                if repeat_ctx is not None:
+                    _advance_bundle(nxt, song_name=task_song_name(nxt), failed=True)
+                else:
+                    mark_song_completed(
+                        completed_songs=completed_songs,
+                        task_key=nxt_key,
+                        song_name=task_song_name(nxt),
+                        memory_resume_tracker=memory_resume_tracker,
+                    )
+                submitted_any = True
+                continue
+            submitted_any = True
+        return bool(submitted_any)
+
     def _emit_deferred_post_payload(song: NativeSong) -> None:
         emit_deferred_post_payload(
             song,
@@ -371,9 +414,16 @@ def run_native_inflight_song_pipeline(
                     prepared_song = fut.result()
                     repeat_ctx = extract_repeat_context(logical_task)
                     _bind_bundle_song(prepared_song, task, repeat_ctx)
+                    prep_elapsed_s = time.perf_counter() - float(t_submit)
+                    prep_wall_s = float(getattr(prepared_song.runtime.prep, "wall_prep_s", 0.0) or 0.0)
+                    if prep_wall_s <= 0.0 or prep_wall_s > prep_elapsed_s:
+                        prep_wall_s = float(prep_elapsed_s)
+                    prep_queue_s = max(0.0, float(prep_elapsed_s) - float(prep_wall_s))
+                    if prep_queue_s > 0.0:
+                        stage_profiler.record("prep_queue", prep_queue_s, song=task_key)
                     stage_profiler.record(
                         "prep",
-                        time.perf_counter() - float(t_submit),
+                        prep_wall_s,
                         cpu_seconds=getattr(prepared_song.runtime.prep, "cpu_prep_s", None),
                         song=task_key,
                     )
@@ -453,6 +503,8 @@ def run_native_inflight_song_pipeline(
                     )
                     if int(submitted_fg) > 0:
                         did_work = True
+            if _fill_song_prep_runway():
+                did_work = True
             if pending_fg:
                 try:
                     fg_prep_start_budget = continuous_fg_prep_start_budget(
@@ -559,40 +611,7 @@ def run_native_inflight_song_pipeline(
                     continue
                 if stopping:
                     break
-                if pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit):
-                    nxt = pending_tasks.popleft()
-                    nxt_bundle_key = task_queue_label(nxt)
-                    if nxt_bundle_key in completed_songs:
-                        did_work = True
-                        continue
-                    logical_nxt, repeat_ctx = _next_logical_task(nxt)
-                    nxt_key = task_queue_label(logical_nxt)
-                    try:
-                        prep_queue.submit(
-                            nxt,
-                            logical_nxt,
-                            register_future=completion_tracker.register,
-                        )
-                    except Exception as exc:
-                        payload = build_native_task_error_payload(
-                            song_name=task_song_name(nxt),
-                            queue_key=str(nxt_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                            suppress_progress=repeat_ctx is not None,
-                        )
-                        _post(payload)
-                        if repeat_ctx is not None:
-                            _advance_bundle(nxt, song_name=task_song_name(nxt), failed=True)
-                        else:
-                            mark_song_completed(
-                                completed_songs=completed_songs,
-                                task_key=nxt_key,
-                                song_name=task_song_name(nxt),
-                                memory_resume_tracker=memory_resume_tracker,
-                            )
-                        did_work = True
-                        continue
+                if _fill_song_prep_runway():
                     did_work = True
                     continue
                 break
