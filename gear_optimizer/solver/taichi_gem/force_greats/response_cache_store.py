@@ -5,12 +5,13 @@ import time
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.core.profile_events import emit_profile_event
 
 from .response_cache_keys import _fg_response_disk_cache_path, _fg_response_cache_version
 from .response_cache_types import (
@@ -32,6 +33,31 @@ _frontier_cache_lock = threading.RLock()
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
 _NPZ_FAST_COMPRESS_LEVEL = 1
+# Row granularity for on-disk first-surface npz members. This is a fetch-granularity knob
+# (smaller chunks -> more members but less over-read per live fetch), not a GPU/TDR dispatch
+# bound -- these rows never size a kernel launch.
+_FIRST_SURFACE_CHUNK_ROWS = 32768
+
+
+def _first_surface_pool_chunk_name(chunk_idx: int) -> str:
+    return f"first_surface_pool_chunk_{int(chunk_idx):05d}"
+
+
+def _first_surface_head_coeff_chunk_name(chunk_idx: int) -> str:
+    return f"first_surface_head_coeffs_chunk_{int(chunk_idx):05d}"
+
+
+def _named_row_chunks(
+    rows: np.ndarray,
+    name_fn: Callable[[int], str],
+    transform: Callable[[np.ndarray], np.ndarray],
+) -> dict[str, np.ndarray]:
+    row_count = int(rows.shape[0])
+    chunks: dict[str, np.ndarray] = {}
+    for chunk_idx, start in enumerate(range(0, row_count, int(_FIRST_SURFACE_CHUNK_ROWS))):
+        end = min(row_count, int(start) + int(_FIRST_SURFACE_CHUNK_ROWS))
+        chunks[name_fn(chunk_idx)] = transform(rows[int(start) : int(end)])
+    return chunks
 
 
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
@@ -46,12 +72,24 @@ def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
 
 
 def _persisted_packed_frontiers(packed_frontiers: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    first_surface_pool = np.asfortranarray(np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32))
+    row_count = int(first_surface_pool.shape[0])
+    chunk_offsets = np.asarray(
+        list(range(0, row_count, int(_FIRST_SURFACE_CHUNK_ROWS))) + [row_count],
+        dtype=np.int32,
+    )
     return {
         "frontier_meta": np.asfortranarray(np.asarray(packed_frontiers["frontier_meta"], dtype=np.int32)),
         "first_offsets": np.asarray(packed_frontiers["first_offsets"], dtype=np.int32),
         "first_counts": np.asarray(packed_frontiers["first_counts"], dtype=np.int32),
-        "first_surface_pool": np.asfortranarray(np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)),
+        "first_surface_chunk_offsets": chunk_offsets,
+        **_named_row_chunks(first_surface_pool, _first_surface_pool_chunk_name, np.asfortranarray),
     }
+
+
+def _persisted_surface_head_coeff_chunks(first_surface_head_coeffs: np.ndarray) -> dict[str, np.ndarray]:
+    coeffs = np.ascontiguousarray(np.asarray(first_surface_head_coeffs, dtype=np.uint16))
+    return _named_row_chunks(coeffs, _first_surface_head_coeff_chunk_name, np.ascontiguousarray)
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
@@ -141,8 +179,8 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
                     "FG response first surface head length",
                     np.asarray(int(first_surface_head_len), dtype=np.int32),
                 ),
-                "first_surface_head_coeffs": np.ascontiguousarray(first_surface_head_coeffs, dtype=np.uint16),
                 **_persisted_packed_frontiers(packed_frontiers),
+                **_persisted_surface_head_coeff_chunks(first_surface_head_coeffs),
             },
         )
         tmp.replace(path)
@@ -224,7 +262,8 @@ def _payload_disk_info_if_complete(
         "frontier_meta",
         "first_offsets",
         "first_counts",
-        "first_surface_pool",
+        "first_surface_chunk_offsets",
+        "first_surface_head_len",
         "total_notes",
         "long_notes",
     }
@@ -238,8 +277,27 @@ def _payload_disk_info_if_complete(
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
             meta = np.asarray(data["frontier_meta"], dtype=np.int32)
+            chunk_offsets = np.asarray(data["first_surface_chunk_offsets"], dtype=np.int64).reshape(-1)
+            first_offsets = np.asarray(data["first_offsets"], dtype=np.int64).reshape(-1)
+            first_counts = np.asarray(data["first_counts"], dtype=np.int64).reshape(-1)
             if int(stat_keys.shape[0]) != int(frontier_ids.shape[0]):
                 return None
+            if int(first_offsets.shape[0]) != int(meta.shape[0]) or int(first_counts.shape[0]) != int(meta.shape[0]):
+                return None
+            if int(chunk_offsets.shape[0]) < 2 or int(chunk_offsets[0]) != 0:
+                return None
+            if bool(np.any(chunk_offsets[1:] < chunk_offsets[:-1])):
+                return None
+            if bool(np.any(first_offsets < 0)) or bool(np.any(first_counts <= 0)):
+                return None
+            if int(chunk_offsets[-1]) < int(np.max(first_offsets + first_counts)):
+                return None
+            last_chunk = int(chunk_offsets.shape[0]) - 2
+            for chunk_idx in (0, last_chunk):
+                if _first_surface_pool_chunk_name(chunk_idx) not in data.files:
+                    return None
+                if _first_surface_head_coeff_chunk_name(chunk_idx) not in data.files:
+                    return None
             present: set[tuple[int, int]] = set()
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[int(idx)])
@@ -293,36 +351,118 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         return {name: cached[name] for name in requested}
 
 
-def _load_bundle_array_members_if_present(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
-    requested = tuple(dict.fromkeys(str(name) for name in names))
-    if not requested:
-        return {}
-    with _frontier_cache_lock:
-        cached = _bundle_array_cache.get(cache_key)
-        if cached is not None and all(name in cached for name in requested):
-            _bundle_array_cache.move_to_end(cache_key)
-            return {name: cached[name] for name in requested}
-    path = _fg_response_disk_cache_path(cache_key)
-    if not path.exists():
-        return {}
-    with np.load(path, allow_pickle=False) as data:
-        version = str(data["version"].item())
-        if version != _fg_response_cache_version():
-            return {}
-        present = [name for name in requested if name in data.files]
-        loaded = {name: np.asarray(data[name]) for name in present}
-    if not loaded:
-        return {}
-    with _frontier_cache_lock:
-        cached = _bundle_array_cache.get(cache_key)
-        if cached is None:
-            cached = {}
-            _bundle_array_cache[cache_key] = cached
-        cached.update(loaded)
-        while len(_bundle_array_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
-            _bundle_array_cache.popitem(last=False)
-        _bundle_array_cache.move_to_end(cache_key)
-        return {name: cached[name] for name in present}
+def _normalize_surface_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    normalized: list[tuple[int, int]] = []
+    for start, count in ranges:
+        start_i = int(start)
+        count_i = int(count)
+        if start_i < 0 or count_i <= 0:
+            raise ValueError("FG response surface range is invalid")
+        normalized.append((start_i, count_i))
+    if not normalized:
+        raise ValueError("FG response surface rows require at least one range")
+    return tuple(normalized)
+
+
+def _chunk_span_for_range(offsets: np.ndarray, start: int, end: int) -> tuple[int, int]:
+    first_chunk = int(np.searchsorted(offsets, int(start), side="right") - 1)
+    last_chunk = int(np.searchsorted(offsets, int(end) - 1, side="right") - 1)
+    return first_chunk, last_chunk
+
+
+def _surface_chunk_indices_for_ranges(chunk_offsets: np.ndarray, ranges: tuple[tuple[int, int], ...]) -> tuple[int, ...]:
+    offsets = np.asarray(chunk_offsets, dtype=np.int64).reshape(-1)
+    if int(offsets.shape[0]) < 2 or int(offsets[0]) != 0 or bool(np.any(offsets[1:] < offsets[:-1])):
+        raise ValueError("FG response surface chunk offsets are invalid")
+    total_rows = int(offsets[-1])
+    needed: set[int] = set()
+    for start, count in ranges:
+        end = int(start) + int(count)
+        if end > total_rows:
+            raise ValueError("FG response surface range exceeds cached rows")
+        first_chunk, last_chunk = _chunk_span_for_range(offsets, int(start), end)
+        if first_chunk < 0 or last_chunk >= int(offsets.shape[0]) - 1:
+            raise ValueError("FG response surface range resolved outside chunk offsets")
+        needed.update(range(first_chunk, last_chunk + 1))
+    return tuple(sorted(needed))
+
+
+def _copy_chunked_rows(
+    *,
+    out: np.ndarray,
+    column_count: int,
+    chunk_offsets: np.ndarray,
+    chunks: dict[int, np.ndarray],
+    ranges: tuple[tuple[int, int], ...],
+) -> None:
+    offsets = np.asarray(chunk_offsets, dtype=np.int64).reshape(-1)
+    out_cursor = 0
+    for start, count in ranges:
+        end = int(start) + int(count)
+        first_chunk, last_chunk = _chunk_span_for_range(offsets, int(start), end)
+        for chunk_idx in range(first_chunk, last_chunk + 1):
+            chunk_start = int(offsets[int(chunk_idx)])
+            chunk_end = int(offsets[int(chunk_idx) + 1])
+            copy_start = max(int(start), chunk_start)
+            copy_end = min(end, chunk_end)
+            chunk = np.asarray(chunks[int(chunk_idx)])
+            if int(chunk.ndim) != 2 or int(chunk.shape[1]) != int(column_count):
+                raise ValueError("FG response surface chunk shape is invalid")
+            local_start = int(copy_start) - chunk_start
+            local_end = int(copy_end) - chunk_start
+            out[out_cursor : out_cursor + (copy_end - copy_start)] = chunk[local_start:local_end]
+            out_cursor += int(copy_end - copy_start)
+    if out_cursor != int(out.shape[0]):
+        raise ValueError("FG response surface chunk copy produced the wrong row count")
+
+
+def load_first_surface_scoring_rows(
+    cache_key: tuple,
+    ranges: Iterable[tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    started = time.perf_counter()
+    normalized = _normalize_surface_ranges(ranges)
+    offsets = np.asarray(
+        _load_bundle_array_members(cache_key, names=("first_surface_chunk_offsets",))["first_surface_chunk_offsets"],
+        dtype=np.int64,
+    )
+    chunk_indices = _surface_chunk_indices_for_ranges(offsets, normalized)
+    pool_names = tuple(_first_surface_pool_chunk_name(chunk_idx) for chunk_idx in chunk_indices)
+    coeff_names = tuple(_first_surface_head_coeff_chunk_name(chunk_idx) for chunk_idx in chunk_indices)
+    loaded = _load_bundle_array_members(cache_key, names=pool_names + coeff_names)
+    pool_chunks = {chunk_idx: np.asarray(loaded[_first_surface_pool_chunk_name(chunk_idx)], dtype=np.uint32) for chunk_idx in chunk_indices}
+    coeff_chunks = {
+        chunk_idx: np.asarray(loaded[_first_surface_head_coeff_chunk_name(chunk_idx)], dtype=np.int32)
+        for chunk_idx in chunk_indices
+    }
+    row_count = sum(int(count) for _start, count in normalized)
+    rows = np.empty((int(row_count), 11), dtype=np.uint32)
+    coeffs = np.empty((int(row_count), 4), dtype=np.int32)
+    _copy_chunked_rows(
+        out=rows,
+        column_count=11,
+        chunk_offsets=offsets,
+        chunks=pool_chunks,
+        ranges=normalized,
+    )
+    _copy_chunked_rows(
+        out=coeffs,
+        column_count=4,
+        chunk_offsets=offsets,
+        chunks=coeff_chunks,
+        ranges=normalized,
+    )
+    emit_profile_event(
+        component="fg_response_cache",
+        event="surface_chunk_load",
+        metrics={
+            "ranges": int(len(normalized)),
+            "chunks": int(len(chunk_indices)),
+            "rows": int(row_count),
+            "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
+        },
+    )
+    return np.ascontiguousarray(rows, dtype=np.uint32), np.ascontiguousarray(coeffs, dtype=np.int32)
 
 
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:

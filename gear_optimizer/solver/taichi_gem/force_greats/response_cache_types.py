@@ -12,7 +12,7 @@ from gear_optimizer.core.parsing import env_get
 
 from .response_types import FgResponseFrontierResult
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v9"
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v10"
 _MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
 _PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
 _BUNDLE_ARRAY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_BUNDLE_ARRAY_CACHE_MAX", "2") or "2"))
@@ -27,10 +27,11 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
         "total_notes",
         "long_notes",
         "use_forced_great_timing",
+        "first_surface_head_len",
         "frontier_meta",
-        "first_surface_pool",
         "first_offsets",
         "first_counts",
+        "first_surface_chunk_offsets",
     )
 )
 
@@ -109,6 +110,7 @@ class FgResponseFrontierScoringBundle:
     surface_head_coeffs: np.ndarray
     frontier_offsets: np.ndarray
     frontier_lengths: np.ndarray
+    surface_chunk_offsets: np.ndarray
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool

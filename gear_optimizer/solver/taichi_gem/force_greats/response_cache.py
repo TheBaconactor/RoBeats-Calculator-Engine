@@ -27,7 +27,6 @@ from .response_cache_serde import (
 from .response_cache_store import (
     _frontier_is_complete,
     _invalidate_bundle_array_views,
-    _load_bundle_array_members_if_present,
     _load_bundle_array_members,
     _load_payload,
     _memory_put,  # noqa: F401
@@ -38,6 +37,7 @@ from .response_cache_store import (
     _save_payload,
     _scoring_bundle_memory_get,
     _scoring_bundle_memory_put,
+    load_first_surface_scoring_rows,
     reset_fg_response_frontier_payload_cache,
 )
 from .response_cache_types import (
@@ -69,6 +69,7 @@ __all__ = [
     "frontier_result_from_scoring_bundle",
     "frontier_result_from_scoring_bundle_for_stats",
     "all_response_stat_keys",
+    "load_first_surface_scoring_rows",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
     "reset_fg_response_frontier_payload_cache",
@@ -301,30 +302,14 @@ def _materialize_scoring_bundle_from_arrays(
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     for key, frontier_idx in frontier_idx_by_key.items():
         frontier_idx_by_stat[int(key[0]), int(key[1])] = int(frontier_idx)
-    first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
-    surface_words = np.ascontiguousarray(first_pool[:, :8], dtype=np.uint32)
-    surface_counts = np.ascontiguousarray(first_pool[:, 8:11], dtype=np.int32)
     total_notes = int(np.asarray(arrays["total_notes"]).item())
     expected_head_len = min(int(total_notes), 100)
-    surface_head_coeffs = None
     persisted_head_len = arrays.get("first_surface_head_len")
-    persisted_coeffs = arrays.get("first_surface_head_coeffs")
-    if persisted_head_len is not None and persisted_coeffs is not None:
-        candidate_coeffs = np.asarray(persisted_coeffs, dtype=np.int32)
-        if (
-            int(np.asarray(persisted_head_len).item()) == int(expected_head_len)
-            and int(candidate_coeffs.ndim) == 2
-            and int(candidate_coeffs.shape[0]) == int(surface_words.shape[0])
-            and int(candidate_coeffs.shape[1]) == 4
-        ):
-            surface_head_coeffs = np.ascontiguousarray(candidate_coeffs, dtype=np.int32)
-    if surface_head_coeffs is None:
-        from .response_inner_host import _precompute_surface_head_coeffs
-
-        surface_head_coeffs = _precompute_surface_head_coeffs(
-            surface_words,
-            head_len=int(expected_head_len),
-        )
+    if persisted_head_len is None or int(np.asarray(persisted_head_len).item()) != int(expected_head_len):
+        raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
+    surface_words = np.empty((0, 8), dtype=np.uint32)
+    surface_counts = np.empty((0, 3), dtype=np.int32)
+    surface_head_coeffs = np.empty((0, 4), dtype=np.int32)
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
@@ -338,6 +323,7 @@ def _materialize_scoring_bundle_from_arrays(
         surface_head_coeffs=surface_head_coeffs,
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
         frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
+        surface_chunk_offsets=np.asarray(arrays["first_surface_chunk_offsets"], dtype=np.int64),
         total_notes=int(total_notes),
         long_notes=int(np.asarray(arrays["long_notes"]).item()),
         use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),
@@ -377,12 +363,6 @@ def load_response_frontier_scoring_bundle(
             "Startup cache prebuild must build the candidate-independent all-FT/FF bundle before runtime scoring: "
             f"{missing[:5]!r}"
         )
-    arrays.update(
-        _load_bundle_array_members_if_present(
-            bundle_key,
-            names=("first_surface_head_len", "first_surface_head_coeffs"),
-        )
-    )
     scoring_bundle = _materialize_scoring_bundle_from_arrays(cache_key=bundle_key, keys=keys, arrays=arrays)
     _scoring_bundle_memory_put(bundle_key, scoring_bundle)
     return scoring_bundle

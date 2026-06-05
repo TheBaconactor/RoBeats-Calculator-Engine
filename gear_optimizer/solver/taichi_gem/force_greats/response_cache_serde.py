@@ -11,8 +11,9 @@ from .response_cache_keys import (
     fg_response_frontier_geometry_cache_key,
 )
 from .response_cache_store import (
+    _first_surface_pool_chunk_name,
     _frontier_is_complete,
-    _load_bundle_array_members,
+    load_first_surface_scoring_rows,
     _memory_get,
     _memory_put,
 )
@@ -162,7 +163,14 @@ def _unpack_frontiers(data: object) -> tuple[FgResponseFrontierResult, ...]:
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
     first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
     first_counts = np.asarray(data["first_counts"], dtype=np.int32)
-    first_pool = np.asarray(data["first_surface_pool"], dtype=np.uint32)
+    chunk_offsets = np.asarray(data["first_surface_chunk_offsets"], dtype=np.int64).reshape(-1)
+    if int(chunk_offsets.shape[0]) < 2:
+        raise ValueError("FG response frontier chunked surface cache is empty")
+    first_pool = np.empty((int(chunk_offsets[-1]), 11), dtype=np.uint32)
+    for chunk_idx in range(int(chunk_offsets.shape[0]) - 1):
+        start = int(chunk_offsets[int(chunk_idx)])
+        end = int(chunk_offsets[int(chunk_idx) + 1])
+        first_pool[start:end] = np.asarray(data[_first_surface_pool_chunk_name(chunk_idx)], dtype=np.uint32)
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
@@ -204,11 +212,13 @@ class _LazyResponseFirstFrontier:
     def _as_tuple(self) -> tuple[FgResponseSurface, ...]:
         materialized = self._materialized
         if materialized is None:
-            arrays = _load_bundle_array_members(self._bundle_key, names=("first_surface_pool",))
-            first_pool = np.asarray(arrays["first_surface_pool"], dtype=np.uint32)
+            first_pool, _coeffs = load_first_surface_scoring_rows(
+                self._bundle_key,
+                ((int(self._first_start), int(self._first_count)),),
+            )
             materialized = tuple(
                 _surface_from_row_cached(first_pool[row_idx], self._surface_cache)
-                for row_idx in range(self._first_start, self._first_start + self._first_count)
+                for row_idx in range(int(first_pool.shape[0]))
             )
             self._materialized = materialized
         return materialized

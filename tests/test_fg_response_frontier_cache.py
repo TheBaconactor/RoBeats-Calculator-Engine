@@ -108,8 +108,10 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
         assert data["stat_keys"].dtype == np.dtype("uint8")
         assert data["stat_keys"].flags.f_contiguous
         assert data["frontier_meta"].flags.f_contiguous
-        assert data["first_surface_pool"].dtype == np.dtype("uint32")
-        assert data["first_surface_pool"].flags.f_contiguous
+        assert "first_surface_pool" not in data.files
+        assert data["first_surface_chunk_offsets"].dtype == np.dtype("int32")
+        assert data["first_surface_pool_chunk_00000"].dtype == np.dtype("uint32")
+        assert data["first_surface_pool_chunk_00000"].flags.f_contiguous
         assert not {
             "state_offsets",
             "state_counts",
@@ -165,19 +167,65 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
 
     arrays = _load_bundle_array_members(
         cache_key,
-        names=("frontier_ids", "frontier_meta", "first_offsets", "first_counts", "first_surface_pool"),
+        names=(
+            "frontier_ids",
+            "frontier_meta",
+            "first_offsets",
+            "first_counts",
+            "first_surface_chunk_offsets",
+            "first_surface_pool_chunk_00000",
+        ),
     )
     assert arrays["frontier_ids"].tolist() == [0, 1]
     assert arrays["frontier_meta"].shape[0] == 2
     assert arrays["first_offsets"].tolist() == [0, 0]
     assert arrays["first_counts"].tolist() == [2, 2]
-    assert arrays["first_surface_pool"].shape == (2, 11)
+    assert arrays["first_surface_chunk_offsets"].tolist() == [0, 2]
+    assert arrays["first_surface_pool_chunk_00000"].shape == (2, 11)
 
     loaded = _load_payload(cache_key)
     assert loaded is not None
     assert loaded.frontier_by_key[(0, 0)] is not loaded.frontier_by_key[(1, 0)]
     assert loaded.frontier_by_key[(0, 0)].first_frontier == loaded.frontier_by_key[(1, 0)].first_frontier
     assert loaded.frontier_by_key[(1, 0)].non_fever_base == 14
+
+
+def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _save_payload,
+        load_first_surface_scoring_rows,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(response_cache_store, "_FIRST_SURFACE_CHUNK_ROWS", 1)
+    surfaces = (
+        FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0),
+        FgResponseSurface(2, 0, 0, 0, 0, 0, 0, 0, 20, 1, 0),
+        FgResponseSurface(3, 0, 0, 0, 0, 0, 0, 0, 30, 2, 1),
+    )
+    frontier = FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
+    payload = FgResponseFrontierCachePayload(
+        frontier_by_key={(0, 0): frontier},
+        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        total_notes=3,
+        long_notes=0,
+        use_forced_great_timing=True,
+    )
+    cache_key = ("unit", "surface-chunks")
+
+    _save_payload(cache_key, payload)
+    rows, coeffs = load_first_surface_scoring_rows(cache_key, ((1, 2),))
+
+    assert rows[:, 0].tolist() == [2, 3]
+    assert rows[:, 8:11].tolist() == [[20, 1, 0], [30, 2, 1]]
+    assert coeffs.shape == (2, 4)
+    assert coeffs.dtype == np.dtype("int32")
 
 
 def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit(
@@ -205,7 +253,8 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
     )
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
-    assert int(bundle.surface_words.shape[0]) > 0
+    assert bundle.surface_words.shape == (0, 8)
+    assert int(bundle.surface_chunk_offsets[-1]) > 0
 
 
 def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
@@ -222,9 +271,10 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     assert first.cache_source == "built"
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert "first_surface_head_len" in data.files
-        assert "first_surface_head_coeffs" in data.files
+        assert "first_surface_head_coeffs" not in data.files
+        assert "first_surface_head_coeffs_chunk_00000" in data.files
         assert data["first_surface_head_len"].dtype == np.dtype("uint8")
-        assert data["first_surface_head_coeffs"].dtype == np.dtype("uint16")
+        assert data["first_surface_head_coeffs_chunk_00000"].dtype == np.dtype("uint16")
 
     response_cache.reset_fg_response_frontier_payload_cache()
 
@@ -239,8 +289,12 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     )
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
-    assert bundle.surface_head_coeffs.shape == (bundle.surface_words.shape[0], 4)
-    assert bundle.surface_head_coeffs.dtype == np.dtype("int32")
+    frontier_idx = bundle.frontier_idx_by_key[(0, 0)]
+    start = int(bundle.frontier_offsets[int(frontier_idx)])
+    count = int(bundle.frontier_lengths[int(frontier_idx)])
+    _rows, coeffs = response_cache.load_first_surface_scoring_rows(bundle.cache_key, ((start, count),))
+    assert coeffs.shape == (count, 4)
+    assert coeffs.dtype == np.dtype("int32")
 
 
 def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_probe(
@@ -268,7 +322,8 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     )
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
-    assert int(bundle.surface_words.shape[0]) > 0
+    assert bundle.surface_words.shape == (0, 8)
+    assert int(bundle.surface_chunk_offsets[-1]) > 0
 
 
 def test_fg_response_frontier_scoring_bundle_requires_startup_built_cache(tmp_path: Path, monkeypatch) -> None:
@@ -955,7 +1010,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     assert (TOTAL_ROWS, TOTAL_ROWS) not in set(batch.kept_stat_keys)
     assert batch.scoring_bundle_ms >= 0.0
     assert batch.scoring_surface_words.shape == (1, 8)
-    assert batch.scoring_surface_head_coeffs is seen["bundle"].surface_head_coeffs
+    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, seen["bundle"].surface_head_coeffs)
     assert batch.scoring_surface_counts.shape == (1, 3)
     assert batch.scoring_surface_head_coeffs.shape == (1, 4)
     assert batch.scoring_group_offsets.shape == batch.group_ft.shape
@@ -1007,10 +1062,10 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
 
     assert batch.scoring_bundle is prewarmed_bundle
     assert batch.kept_stat_keys == ((0, 0),)
-    assert batch.scoring_surface_head_coeffs is prewarmed_bundle.surface_head_coeffs
+    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, prewarmed_bundle.surface_head_coeffs)
 
 
-def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repacking(monkeypatch) -> None:
+def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
@@ -1051,11 +1106,56 @@ def test_packed_scoring_batch_reuses_canonical_bundle_surface_pool_without_repac
         scoring_bundle=prewarmed_bundle,
     )
 
-    assert batch.scoring_surface_words is surface_words
-    assert batch.scoring_surface_counts is surface_counts
-    assert batch.scoring_group_offsets.tolist() == [2]
+    np.testing.assert_array_equal(batch.scoring_surface_words, surface_words[2:3])
+    np.testing.assert_array_equal(batch.scoring_surface_counts, surface_counts[2:3])
+    assert batch.scoring_group_offsets.tolist() == [0]
     assert batch.scoring_group_lengths.tolist() == [1]
-    assert batch.scoring_surface_head_coeffs is surface_head_coeffs
+    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, surface_head_coeffs[2:3])
     assert not hasattr(batch, "scoring_logical_owners")
     assert not hasattr(batch, "scoring_logical_surfaces")
     assert not hasattr(batch, "scoring_logical_work_cumsum")
+
+
+def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+
+    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat[0, 0] = 0
+    frontier_idx_by_stat[1, 0] = 1
+    frontier_idx_by_stat[2, 0] = 2
+    surface_words = np.arange(24, dtype=np.uint32).reshape(3, 8)
+    surface_counts = np.arange(9, dtype=np.int32).reshape(3, 3)
+    surface_head_coeffs = np.arange(12, dtype=np.int32).reshape(3, 4)
+    bundle = SimpleNamespace(
+        frontier_idx_by_stat=frontier_idx_by_stat,
+        frontier_offsets=np.asarray([0, 0, 2], dtype=np.int32),
+        frontier_lengths=np.asarray([2, 2, 1], dtype=np.int32),
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+        surface_head_coeffs=surface_head_coeffs,
+        cache_key=("unit", "unused"),
+    )
+
+    (
+        packed_words,
+        packed_counts,
+        packed_coeffs,
+        group_offsets,
+        group_lengths,
+        unique_frontiers,
+        _compact_ms,
+        _head_coeff_ms,
+    ) = response_frontier._pack_scoring_surfaces_for_batch(
+        scoring_bundle=bundle,
+        group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 3, 0]] * 3, dtype=np.int32),
+        group_ft_stat=np.asarray([0, 1, 2], dtype=np.int32),
+        group_ff_stat=np.asarray([0, 0, 0], dtype=np.int32),
+    )
+
+    assert unique_frontiers == 3
+    np.testing.assert_array_equal(packed_words, surface_words)
+    np.testing.assert_array_equal(packed_counts, surface_counts)
+    np.testing.assert_array_equal(packed_coeffs, surface_head_coeffs)
+    assert group_offsets.tolist() == [0, 0, 2]
+    assert group_lengths.tolist() == [2, 2, 1]
