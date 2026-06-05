@@ -14,7 +14,6 @@ from gear_optimizer.core.parsing import env_get
 IS_METAL = False
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
-MAX_HEAD_NOTES = 100  # Maximum notes in head section
 MAX_GENOMES = 4096  # Support up to 4096 unique genomes per batch
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)

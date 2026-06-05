@@ -113,21 +113,6 @@ class ProgressUI:
                 self._status = str(status)
         self._render()
 
-    def emit_block(self, lines: list[str]) -> None:
-        """Print a multi-line block without fighting the single-line renderer."""
-        if not self._enabled or self._stream is None:
-            return
-        try:
-            with self._lock:
-                self._stream.write("\r\x1b[K")
-                self._stream.write("\n")
-                for line in lines:
-                    self._stream.write(str(line) + "\n")
-                self._stream.flush()
-        except Exception as e:
-            logger.debug(f"progress:emit_block: {e}")
-        self._render()
-
     def _run(self) -> None:
         while not self._stop.is_set():
             self._render()

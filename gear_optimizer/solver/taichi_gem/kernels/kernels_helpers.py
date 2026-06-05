@@ -36,7 +36,6 @@ GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_ga_reduce_block_dim), 256))
 GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
 if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
     GA_FTFF_REDUCE_BLOCK_DIM = 32
-GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
 try:
     _skyline_reduce_block_dim = int(env_get("SKYLINE_FTFF_REDUCE_BLOCK_DIM", str(GA_FTFF_REDUCE_BLOCK_DIM)) or "256")
 except Exception as e:

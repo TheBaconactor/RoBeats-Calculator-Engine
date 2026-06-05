@@ -15,8 +15,6 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._runtime_failed_count = 0
     app._run_current_song_label = ""
     app._runtime_status_name = "idle"
-    app._tui_progress = None
-    app._tui_publish = lambda **_kwargs: None
     app._set_runtime_progress_counts = lambda **_kwargs: None
     return app
 

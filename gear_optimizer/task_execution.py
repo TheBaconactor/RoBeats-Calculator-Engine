@@ -67,9 +67,6 @@ class TaskExecutionMixin:
             logger.info(f"Using {available_cpus} logical CPU cores")
 
             completed_songs = set()
-            # Hotkeys need access to the current queue and completion set.
-            self._run_tasks_ref = tasks if isinstance(tasks, list) else None
-            self._run_completed_ref = completed_songs
             self._run_current_song_label = ""
             self._start_hotkeys()
 
@@ -94,8 +91,6 @@ class TaskExecutionMixin:
 
             if memory_resume_tracker:
                 memory_resume_tracker.finalize(memory_release_requested())
-            self._run_tasks_ref = None
-            self._run_completed_ref = None
             self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
@@ -140,15 +135,6 @@ class TaskExecutionMixin:
                 self._progress_counts_driven = True
                 if self._progress is not None:
                     self._progress.update_counts(completed=0, total=int(total_tasks))
-                else:
-                    self._tui_publish(
-                        song="",
-                        status=str(getattr(self, "_runtime_status_name", "") or "running"),
-                        completed=0,
-                        total=int(total_tasks),
-                        failed=int(getattr(self, "_runtime_failed_count", 0) or 0),
-                        new_records=int(getattr(self, "_session_new_records", 0) or 0),
-                    )
                 self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
                 NativeOptimizationEngine().run(
                     NativeOptimizationRequest(

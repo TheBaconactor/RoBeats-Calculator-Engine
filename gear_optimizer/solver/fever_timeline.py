@@ -597,44 +597,6 @@ class SongTimelineGrid:
         self._timeline_grid[ft_idx][ff_idx] = result
         return result
 
-    def get_timeline_with_forced(self, ft_idx, ff_idx, forced_counts):
-        ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
-        ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
-        ft_factor = self.ft_factors[ft_idx]
-        ff_factor = self.ff_factors[ff_idx]
-
-        max_sections = 16
-        forced_counts_arr = np.array(forced_counts, dtype=np.int32)
-        forced_len = len(forced_counts_arr)
-        padded_counts = np.zeros(max_sections, dtype=np.int32)
-        padded_counts[:forced_len] = forced_counts_arr
-
-        section_start_out = np.zeros(max_sections, dtype=np.int32)
-        section_forced_out = np.zeros(max_sections, dtype=np.int32)
-        section_fill_penalty_out = np.zeros(max_sections, dtype=np.int32)
-        section_skip_wasted_out = np.zeros(max_sections, dtype=np.int32)
-
-        mask_result, cbf, cbn, _base, _sec_cnt = calculate_force_greats_timeline_indices(
-            self.fg_timestamps,
-            self.fg_great_candidate_timestamps,
-            self.total_notes,
-            ff_factor,
-            ft_factor,
-            self.long_notes,
-            self.last_note_time,
-            padded_counts,
-            forced_len,
-            True,
-            True,
-            False,
-            self._fever_mask_buffer,
-            section_start_out,
-            section_forced_out,
-            section_fill_penalty_out,
-            section_skip_wasted_out,
-        )
-        return mask_result.copy(), cbf, cbn
-
     def get_fever_params(self, ft_idx, ff_idx):
         """
         Get fever parameters for Force Greats calculation.

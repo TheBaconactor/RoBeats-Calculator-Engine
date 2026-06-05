@@ -38,9 +38,6 @@ class RuntimeUiMixin:
         finally:
             self._progress = None
 
-    def _tui_publish(self, **kwargs) -> None:
-        _ = kwargs
-
     def _record_info_song_key(self, record_info: dict | None) -> str:
         if not isinstance(record_info, dict):
             return ""
@@ -157,8 +154,6 @@ class RuntimeUiMixin:
             logger.info(str(msg))
 
     def _start_hotkeys(self) -> None:
-        if getattr(self, "_tui_progress", None) is not None:
-            return
         if not bool(getattr(self, "_hotkeys_enabled", True)):
             return
         existing = getattr(self, "_hotkey_thread", None)
@@ -196,9 +191,6 @@ class RuntimeUiMixin:
 
     def _stop_hotkeys(self) -> None:
         self._hotkey_thread = None
-
-    def _stop_tui(self) -> None:
-        return None
 
     def _print_banner(self) -> None:
         stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout

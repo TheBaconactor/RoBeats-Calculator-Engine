@@ -71,27 +71,6 @@ def get_evolution_db_path() -> str:
     except Exception as e:
         logger.warning(f"database:get_evolution_db_path: {e}")
     return PATHS.evolution_db_default
-def get_evolution_overlay_db_path() -> str:
-    """
-    Return the configured overlay DB location used for backend/live overlay writes.
-    This DB mirrors the canonical schema but remains separate so the website backend
-    can compare fresh optimizer output against the canonical DB without rebuilding
-    the static site artifacts.
-    """
-    for env_name in ("EVOLUTION_OVERLAY_DB_PATH", "METAFINDER_EVOLUTION_OVERLAY_DB"):
-        env_path = str(os.getenv(env_name, "") or "").strip()
-        if env_path:
-            return env_path
-    try:
-        external_db = os.path.abspath(
-            os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution_overlay.db")
-        )
-        if os.path.exists(external_db):
-            return external_db
-        return external_db
-    except Exception as e:
-        logger.warning(f"database:get_evolution_overlay_db_path: {e}")
-        return os.path.abspath(os.path.join(PATHS.script_dir, "evolution_overlay.db"))
 def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Create a SQLite connection with optimized settings.

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .base_stats import build_base_fixed_stats_array
 from ..core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
 
 _REGISTRY_FLAG_KEYS: tuple[str, ...] = (
@@ -85,59 +84,6 @@ class RegistrySolveRequest:
         for key in _REGISTRY_FLAG_KEYS:
             payload[key] = int(self.flags.get(key, 0))
         return payload
-
-
-def registry_batch_solve_supported(registry: Any) -> bool:
-    return bool(
-        registry is not None and hasattr(registry, "encode_population") and hasattr(registry, "to_gpu_arrays")
-    )
-
-
-def representative_genomes_from_plan(plan: Any) -> list[list[dict]]:
-    rep_genomes: list[list[dict]] = []
-    for members in getattr(plan, "unique_members", None) or []:
-        if not members:
-            continue
-        idx0 = int(members[0])
-        uncached = getattr(plan, "uncached_genomes", None) or []
-        if 0 <= idx0 < len(uncached):
-            rep_genomes.append(uncached[idx0])
-    return rep_genomes
-
-
-def build_registry_solve_request(
-    *,
-    plan: Any,
-    registry: Any,
-    song_slot: int = 0,
-    timeline_grid: Any = None,
-    ref_arrays: Any = None,
-) -> RegistrySolveRequest | None:
-    if not registry_batch_solve_supported(registry):
-        return None
-
-    rep_genomes = representative_genomes_from_plan(plan)
-    if not rep_genomes:
-        return None
-
-    population_indices = registry.encode_population(rep_genomes)
-    gpu_arrays = registry.to_gpu_arrays()
-    base_fixed_stats, _ = build_base_fixed_stats_array(
-        getattr(plan, "base_stats_fixed", None),
-        getattr(plan, "cfg_data", None),
-        fallback_selected_color=getattr(plan, "sel_color", None),
-    )
-    return RegistrySolveRequest(
-        population_indices=population_indices,
-        item_stats=gpu_arrays.get("item_stats"),
-        slot_start=gpu_arrays.get("slot_start"),
-        slot_count=gpu_arrays.get("slot_count"),
-        base_fixed_stats=base_fixed_stats,
-        timeline_grid=getattr(plan, "calc_song", None) if timeline_grid is None else timeline_grid,
-        ref_arrays=getattr(plan, "ref_arrays", None) if ref_arrays is None else ref_arrays,
-        flags=dict(getattr(plan, "flags", None) or {}),
-        song_slot=int(song_slot),
-    )
 
 
 def dispatch_registry_solve(request: RegistrySolveRequest, *, gpu_client: Any = None) -> list:

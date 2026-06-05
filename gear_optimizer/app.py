@@ -88,34 +88,16 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
         self._progress: _ProgressUI | None = None
-        self._tui_enabled = False
-        try:
-            raw = env_get("METAFINDER_UI_PROCESS")
-            if raw is not None and str(raw).strip() != "":
-                self._tui_enabled = truthy(raw)
-        except (TypeError, ValueError):
-            self._tui_enabled = True
-        self._tui_epoch = 0
-        self._tui_progress = None
-        self._tui_process = None
-        self._tui_stop_event = None
-        self._tui_cmd_queue = None
-        self._tui_resp_queue = None
-        self._tui_cmd_thread: threading.Thread | None = None
-        self._tui_cmd_stop = threading.Event()
         self._orig_stdout = None
         self._orig_stderr = None
         self._progress_counts_driven = False
         self._hotkey_thread: threading.Thread | None = None
         self._hotkeys_enabled = True
-        self._run_tasks_ref = None
-        self._run_completed_ref = None
         self._run_current_song_label = ""
         self._runtime_status_name = "idle"
         self._stop_poll_interval_sec = 0.05
         self._stop_next_check_monotonic = 0.0
         self._stop_cached_result = False
-        self._stats_verified_once = False
         self._session_new_records = 0
         self._session_new_record_keys: set[str] = set()
         self._session_new_record_best_by_song: dict[str, int] = {}
@@ -364,11 +346,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 metrics={"db_file": str(db_display_name)},
             )
             init_db()
-            ignore_resume = truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", ""))
-            memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
-            is_fresh_queue = ignore_resume or not memory_resume_exists
-            if is_fresh_queue:
-                self._stats_verified_once = True
             fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
             fg_status = "ResponseFrontier"
             logger.info(f" >> [ForceGreats] {fg_status}")
