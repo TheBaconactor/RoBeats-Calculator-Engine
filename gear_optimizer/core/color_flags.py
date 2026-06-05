@@ -49,18 +49,6 @@ class ColorFlags:
     def as_tuple(self) -> tuple[int, ...]:
         return tuple(int(getattr(self, key)) for key in _COLOR_FLAG_KEYS)
 
-    def optimizer_args(self) -> tuple[int, int, int, int, int, int, int, int]:
-        return (
-            int(self.is_p_pp),
-            int(self.is_s_pp),
-            int(self.is_p_cm),
-            int(self.is_s_cm),
-            int(self.is_p_fm),
-            int(self.is_s_fm),
-            int(self.is_p_ov),
-            int(self.is_s_ov),
-        )
-
 
 @lru_cache(maxsize=64)
 def _build_color_flags_tuple(p: str, s: str, sel: str) -> tuple[int, ...]:

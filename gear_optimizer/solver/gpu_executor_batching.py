@@ -441,21 +441,6 @@ def plan_execution_units(
     return execution_units
 
 
-def order_responses_for_requests(
-    requests: list[GpuRequest],
-    responses: Any,
-) -> list[GpuResponse | None]:
-    by_id: dict[int, GpuResponse] = {}
-    for response in responses or []:
-        if response is None:
-            continue
-        try:
-            by_id[int(response.request_id)] = response
-        except (ValueError, TypeError, AttributeError):
-            continue
-    return [by_id.get(int(req.request_id)) for req in requests]
-
-
 class ResponseDeliveryTracker:
     def __init__(self) -> None:
         self.failures_total = 0

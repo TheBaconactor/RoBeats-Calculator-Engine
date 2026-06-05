@@ -113,17 +113,6 @@ class UserGemsSettings:
             selected_color=selected,
         )
 
-    def to_solver_cfg(self) -> dict[str, int | str]:
-        return {
-            "user_ft": int(self.fever_time),
-            "user_ff": int(self.fever_fill),
-            "user_pp": int(self.perfect_points),
-            "user_cm": int(self.combo_multiplier),
-            "user_fm": int(self.fever_multiplier),
-            "static_elem_input": int(self.static_element),
-            "selected_color": str(self.selected_color or ""),
-        }
-
 
 def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
     for key in keys:

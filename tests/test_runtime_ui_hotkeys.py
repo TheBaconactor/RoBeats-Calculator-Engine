@@ -21,7 +21,6 @@ class _FakeMsvcrt:
 
 class _HotkeyHarness(RuntimeUiMixin):
     def __init__(self) -> None:
-        self._tui_progress = None
         self._hotkeys_enabled = True
         self._hotkey_thread: threading.Thread | None = None
         self.stop_calls: list[tuple[str, bool]] = []

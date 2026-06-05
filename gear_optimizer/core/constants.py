@@ -61,11 +61,6 @@ LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score (single FG 
 # --- SHARED ENUMS / TOKENS ---
 DIFFICULTIES = ("Easy", "Normal", "Hard")
 
-# --- FORCE GREATS OPTIMIZATION ---
-# Production FG always searches the full FT/FF gem allocation grid.
-FG_SEARCH_RADIUS = -1
-FG_PLATEAU_REP_STRIDE = 64
-
 # --- MEMORY MANAGEMENT CONSTANTS ---
 DEFAULT_MEMORY_GUARD_PERCENT = 50.0
 STRICT_PLATFORM_MEMORY_GUARD_PERCENT = 35.0
