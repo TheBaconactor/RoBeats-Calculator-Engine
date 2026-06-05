@@ -54,7 +54,7 @@ def read_native_fg_pipeline_settings(
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
-    fg_workers_default = 1
+    fg_workers_default = 2 if int(inflight_limit_i) > 1 else 1
     fg_workers = fg_workers_default
     if cfg0 is not None:
         try:

@@ -239,16 +239,16 @@ def score_stats_exact(
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
 ) -> int:
-    (
-        ref_arrays,
-        primary_val,
-        secondary_val,
-        pp_factor,
-        combo_mul,
-        fever_mul,
-        ft_idx,
-        ff_idx,
-    ) = _score_stat_inputs(stats, calc_song, ref_arrays)
+    return int(score_stats_exact_batch([stats], calc_song, ref_arrays)[0])
+
+
+def score_stats_exact_batch(
+    stats_rows: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> list[int]:
+    if not stats_rows:
+        return []
 
     song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
     song_data = song_dict.get("song_data", {}) or {}
@@ -257,48 +257,44 @@ def score_stats_exact(
         timestamps = song_data.get("timestamps", ())
     total_notes = int(len(timestamps))
     if total_notes <= 0:
-        return 0
+        return [0 for _stats in stats_rows]
 
     from ..taichi_gem.api.timeline import load_timeline_frontier_payload
 
-    frontier_refs = dict(ref_arrays)
+    frontier_refs = dict(resolve_exact_replay_ref_arrays(ref_arrays))
     for axis in ("Fever Time", "Fever Fill Rate"):
         axis_values = np.asarray(frontier_refs.get(axis, ())).reshape(-1)
         if int(axis_values.shape[0]) < TOTAL_ROWS + 1:
             raise ValueError(f"{axis} axis must include stat rows 0..{TOTAL_ROWS}")
         frontier_refs[axis] = axis_values[: TOTAL_ROWS + 1]
 
-    # Timeline frontier is the default authoritative base-scoring behavior.
     payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
-    ft_idx = max(0, min(int(ft_idx), TOTAL_ROWS))
-    ff_idx = max(0, min(int(ff_idx), TOTAL_ROWS))
-    frontier_count = int(payload.grid_frontier_count[0, ft_idx, ff_idx])
-    if frontier_count <= 0:
-        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
-    frontier_offset = int(payload.grid_frontier_offset[0, ft_idx, ff_idx])
-    frontier_limit = int(frontier_offset + frontier_count)
-    if frontier_offset < 0 or frontier_limit > int(payload.frontier_pool_used):
-        raise ValueError("Timing frontier payload contains an invalid surface range")
-
-    best_score: int | None = None
-    for surface_idx in range(frontier_offset, frontier_limit):
-        score = _score_surface_counts_exact(
-            total_notes=total_notes,
-            primary_val=int(primary_val),
-            secondary_val=int(secondary_val),
-            pp_factor=float(pp_factor),
-            combo_mul=float(combo_mul),
-            fever_mul=float(fever_mul),
-            body_fever=safe_int(payload.grid_frontier_body_fever_pool[0, surface_idx], 0),
-            body_normal=safe_int(payload.grid_frontier_body_normal_pool[0, surface_idx], 0),
-            fever_words=payload.grid_frontier_masks_bits_pool[0, surface_idx],
+    scores: list[int] = []
+    for stats in stats_rows:
+        (
+            _ref_arrays,
+            primary_val,
+            secondary_val,
+            pp_factor,
+            combo_mul,
+            fever_mul,
+            ft_idx,
+            ff_idx,
+        ) = _score_stat_inputs(stats, song_dict, frontier_refs)
+        scores.append(
+            _score_timeline_frontier_payload_vectorized(
+                payload=payload,
+                total_notes=int(total_notes),
+                primary_val=int(primary_val),
+                secondary_val=int(secondary_val),
+                pp_factor=float(pp_factor),
+                combo_mul=float(combo_mul),
+                fever_mul=float(fever_mul),
+                ft_idx=int(ft_idx),
+                ff_idx=int(ff_idx),
+            )
         )
-        if best_score is None or int(score) > int(best_score):
-            best_score = int(score)
-
-    if best_score is None:
-        raise ValueError("Timing frontier replay did not produce a score")
-    return int(best_score)
+    return scores
 
 
 def _score_stat_inputs(
@@ -375,6 +371,69 @@ def _score_surface_counts_exact(
         is_fever = ((int(words[word_idx]) >> int(bit_idx)) & 1) != 0
         score += floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
     return int(score)
+
+
+def _score_timeline_frontier_payload_vectorized(
+    *,
+    payload: Any,
+    total_notes: int,
+    primary_val: int,
+    secondary_val: int,
+    pp_factor: float,
+    combo_mul: float,
+    fever_mul: float,
+    ft_idx: int,
+    ff_idx: int,
+) -> int:
+    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
+    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
+    frontier_count = int(payload.grid_frontier_count[0, ft_i, ff_i])
+    if frontier_count <= 0:
+        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
+    frontier_offset = int(payload.grid_frontier_offset[0, ft_i, ff_i])
+    frontier_limit = int(frontier_offset + frontier_count)
+    if frontier_offset < 0 or frontier_limit > int(payload.frontier_pool_used):
+        raise ValueError("Timing frontier payload contains an invalid surface range")
+
+    body_total = max(0, int(total_notes) - 100)
+    body_fever = np.asarray(
+        payload.grid_frontier_body_fever_pool[0, frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    body_normal = np.asarray(
+        payload.grid_frontier_body_normal_pool[0, frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    if bool(np.any(body_fever < 0)) or bool(np.any(body_normal < 0)) or bool(
+        np.any((body_fever + body_normal) != int(body_total))
+    ):
+        raise ValueError("Timing surface body counts do not match song body note count")
+
+    base_value = np.float64(float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor))
+    combo_f = np.float64(float(combo_mul))
+    fever_f = np.float64(float(fever_mul))
+    combo_val = np.int64(np.floor(base_value * combo_f))
+    fever_val = np.int64(np.floor(base_value * combo_f * fever_f))
+    scores = (body_fever * combo_val) + (body_normal * combo_val)
+    if int(fever_val) != int(combo_val):
+        scores = scores + (body_fever * (fever_val - combo_val))
+
+    words = np.asarray(payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4], dtype=np.uint64)
+    head_len = min(max(0, int(total_notes)), 100)
+    factor = np.float64((float(combo_f) - 1.0) * float(base_value) / 100.0)
+    for i in range(head_len):
+        ramp_val = np.float64(float(base_value) + (float(i + 1) * float(factor)))
+        normal_score = np.int64(np.floor(ramp_val))
+        fever_score = np.int64(np.floor(ramp_val * fever_f))
+        if int(normal_score) == int(fever_score):
+            scores = scores + normal_score
+            continue
+        fever_mask = ((words[:, i // 32] >> np.uint64(i % 32)) & np.uint64(1)) != 0
+        scores = scores + np.where(fever_mask, fever_score, normal_score).astype(np.int64)
+
+    if int(scores.shape[0]) <= 0:
+        raise ValueError("Timing frontier replay did not produce a score")
+    return int(np.max(scores))
 
 
 def score_response_surface_base_exact(

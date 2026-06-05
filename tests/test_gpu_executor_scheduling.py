@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from queue import Queue
+import threading
 from time import perf_counter
 
 from gear_optimizer.solver.gpu_executor import GpuExecutor
@@ -100,6 +101,47 @@ def test_ready_fg_continuation_does_not_cross_ref_load_boundary():
     executor._request_queue.put(_request(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, 3))
 
     selected = executor._pop_ready_fg_continuation_nowait(batch_max_size=8)
+
+    assert selected is None
+    assert [request.request_id for request in executor._staged_requests] == [1, 2]
+    GpuExecutor._instance = None
+
+
+def test_late_fg_continuation_gets_owner_grace_before_next_ga():
+    GpuExecutor._instance = None
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    executor._request_queue = Queue()
+    executor._staged_requests = deque([_request(GpuRequestType.GPU_NATIVE_GA_RUN, 1)])
+
+    timer = threading.Timer(
+        0.01,
+        lambda: executor._request_queue.put(
+            _request(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, 2)
+        ),
+    )
+    timer.start()
+    try:
+        selected = executor._pop_ready_fg_continuation(batch_max_size=8, grace_s=0.25)
+    finally:
+        timer.cancel()
+
+    assert selected.request_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH
+    assert selected.request_id == 2
+    assert [request.request_id for request in executor._staged_requests] == [1]
+    GpuExecutor._instance = None
+
+
+def test_late_fg_continuation_grace_keeps_ref_load_boundary():
+    GpuExecutor._instance = None
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    executor._request_queue = Queue()
+    executor._staged_requests = deque([_request(GpuRequestType.GPU_NATIVE_GA_RUN, 1)])
+    executor._request_queue.put(_request(GpuRequestType.LOAD_REF_ARRAYS, 2))
+    executor._request_queue.put(_request(GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH, 3))
+
+    selected = executor._pop_ready_fg_continuation(batch_max_size=8, grace_s=0.25)
 
     assert selected is None
     assert [request.request_id for request in executor._staged_requests] == [1, 2]

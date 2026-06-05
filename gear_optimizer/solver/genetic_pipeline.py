@@ -585,7 +585,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
     try:
         gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-        ensure_ready = gpu_api.ensure_ready
         precompute_timeline_gpu = gpu_api.precompute_timeline_gpu
         gpu_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
     except Exception as exc:
@@ -711,9 +710,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     def _restore_song_gpu_state() -> None:
         # Rebuild Taichi/GA static state for this song slot after hard resets.
-        t_phase = time.perf_counter()
-        ensure_ready(ref_arrays)
-        _emit_ga_setup_phase(phase="ensure_ready_ref_arrays", start=t_phase)
         t_phase = time.perf_counter()
         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
         _emit_ga_setup_phase(phase="precompute_timeline_gpu", start=t_phase)

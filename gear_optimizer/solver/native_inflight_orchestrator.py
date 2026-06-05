@@ -180,6 +180,45 @@ def run_native_inflight_song_pipeline(
                 dispatch_burst=int(icfg.continuous_ga_dispatch_burst),
             )
         )
+    def _submit_fg_jobs(*, submit_budget: int, allow_not_ready: bool) -> int:
+        submitted = 0
+        while int(submit_budget) > 0 and len(fg_futures) < fg_workers and pending_fg:
+            effective_allow_not_ready = bool(allow_not_ready)
+            if effective_allow_not_ready and fg_pipeline.has_active_prep():
+                effective_allow_not_ready = False
+            fg_song = fg_pipeline.pop_next(allow_not_ready=bool(effective_allow_not_ready))
+            if fg_song is None:
+                break
+            if int(getattr(fg_song.runtime, "song_slot", 0) or 0) <= 0:
+                try:
+                    ga_pipeline.reserve_slot(fg_song, slot_pool)
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_submit_fg_jobs: {e}")
+                    fg_pipeline.requeue_front(fg_song)
+                    break
+            if fg_submit_debug:
+                try:
+                    logger.debug(
+                        "[InFlight][FGSubmit] song=%s pending_fg=%s fg_inflight=%s",
+                        fg_song.config.task_key,
+                        len(pending_fg),
+                        len(fg_futures),
+                    )
+                except Exception as e:
+                    logger.debug(f"native_inflight_orchestrator:_submit_fg_jobs: {e}")
+            fg_song.runtime.fg.fg_queued_t0 = None
+            fg_pipeline.submit_job(
+                native_fg_pipeline.run_fg_job_sync,
+                fg_song,
+                gpu_client=gpu_client,
+                post_sender=post_sender,
+                progress_cb=progress_cb,
+                progress_tracker=progress_tracker,
+                register_future=completion_tracker.register,
+            )
+            submitted += 1
+            submit_budget -= 1
+        return int(submitted)
     prime_target = read_prime_target(
         cfg0,
         inflight_limit=int(icfg.inflight_limit),
@@ -366,6 +405,7 @@ def run_native_inflight_song_pipeline(
                             song_name=song_name,
                             memory_resume_tracker=memory_resume_tracker,
                         )
+            ready_fg_from_prep = False
             for prep_completion in fg_pipeline.finish_completed_prep():
                 song = prep_completion.song
                 did_work = True
@@ -385,6 +425,7 @@ def run_native_inflight_song_pipeline(
                             song=song.config.song_name,
                         )
                     if prep_completion.error is None:
+                        ready_fg_from_prep = True
                         continue
                     if stopping and is_stop_abort_exception(prep_completion.error):
                         pass
@@ -399,6 +440,19 @@ def run_native_inflight_song_pipeline(
                         )
                 except Exception as exc:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {exc}")
+            if ready_fg_from_prep and pending_fg and len(fg_futures) < fg_workers:
+                ready_budget = min(
+                    int(fg_pipeline.ready_count()),
+                    max(0, int(fg_workers) - len(fg_futures)),
+                    int(fg_batch_max),
+                )
+                if ready_budget > 0:
+                    submitted_fg = _submit_fg_jobs(
+                        submit_budget=int(ready_budget),
+                        allow_not_ready=False,
+                    )
+                    if int(submitted_fg) > 0:
+                        did_work = True
             if pending_fg:
                 try:
                     fg_prep_start_budget = continuous_fg_prep_start_budget(
@@ -881,45 +935,15 @@ def run_native_inflight_song_pipeline(
                     fg_slot_reserve=int(icfg.fg_slot_reserve),
                 )
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
-                    while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
-                        allow_not_ready = continuous_fg_allow_not_ready(
+                    submitted_fg = _submit_fg_jobs(
+                        submit_budget=int(submit_budget),
+                        allow_not_ready=continuous_fg_allow_not_ready(
                             blocked_on_slot=bool(blocked_on_slot_acquire),
                             no_ga_remaining=bool(no_ga_remaining),
-                        )
-                        if allow_not_ready and fg_pipeline.has_active_prep():
-                            allow_not_ready = False
-                        fg_song = fg_pipeline.pop_next(allow_not_ready=allow_not_ready)
-                        if fg_song is None:
-                            break
-                        if int(getattr(fg_song.runtime, "song_slot", 0) or 0) <= 0:
-                            try:
-                                ga_pipeline.reserve_slot(fg_song, slot_pool)
-                            except Exception as e:
-                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                                fg_pipeline.requeue_front(fg_song)
-                                break
-                        if fg_submit_debug:
-                            try:
-                                logger.debug(
-                                    "[InFlight][FGSubmit] song=%s pending_fg=%s fg_inflight=%s",
-                                    fg_song.config.task_key,
-                                    len(pending_fg),
-                                    len(fg_futures),
-                                )
-                            except Exception as e:
-                                logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
-                        fg_song.runtime.fg.fg_queued_t0 = None
-                        fg_pipeline.submit_job(
-                            native_fg_pipeline.run_fg_job_sync,
-                            fg_song,
-                            gpu_client=gpu_client,
-                            post_sender=post_sender,
-                            progress_cb=progress_cb,
-                            progress_tracker=progress_tracker,
-                            register_future=completion_tracker.register,
-                        )
+                        ),
+                    )
+                    if int(submitted_fg) > 0:
                         did_work = True
-                        submit_budget -= 1
             if post_emit_pending:
                 post_emit_budget = 1
                 if not (

@@ -1,8 +1,8 @@
 """
-API Timeline - GPU timeline precomputation and grid upload.
+API Timeline - cached exact frontier load and GPU grid upload.
 
-This module provides GPU-accelerated timeline precomputation:
-- precompute_timeline_gpu: Compute all 161×161 fever timelines on GPU
+Startup builds the candidate-independent timeline frontier cache; runtime uploads
+the cached grid/frontier payload for the active song slot.
 """
 
 import time
@@ -38,41 +38,6 @@ logger = logging.getLogger(__name__)
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
-
-
-@ti.kernel
-def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
-    """
-    Upload song timestamps without padding to MAX_SONG_NOTES.
-
-    This reduces CPU->GPU transfer volume vs `field.from_numpy(padded)` while
-    preserving behavior (kernels only read indices < total_notes).
-    """
-    for i in range(n):
-        fields.song_timestamps[i] = timestamps[i]
-
-
-@ti.kernel
-def _upload_song_note_group_idx_kernel(n: ti.i32, note_group_idx: ti.types.ndarray(dtype=ti.i32, ndim=1)):
-    """Upload note_idx -> group_idx mapping without padding."""
-    for i in range(n):
-        fields.song_note_group_idx[i] = note_group_idx[i]
-
-
-@ti.kernel
-def _upload_song_groups_kernel(
-    n_groups: ti.i32,
-    group_starts: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    group_base_t_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    group_low_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    group_high_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
-):
-    """Upload chord-group arrays used by the analytical timing-envelope ceiling kernel."""
-    for g in range(n_groups):
-        fields.song_group_starts[g] = group_starts[g]
-        fields.song_group_base_t_ms[g] = group_base_t_ms[g]
-        fields.song_group_low_ms[g] = group_low_ms[g]
-        fields.song_group_high_ms[g] = group_high_ms[g]
 
 
 @ti.kernel
@@ -1006,12 +971,11 @@ def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Timelin
 
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
-    Precompute all 161×161 fever timeline entries on GPU.
+    Upload the startup-built exact timeline frontier for one song slot.
 
-    This replaces the CPU Numba path (calculate_fever_timeline_indices) which
-    had 28.7s typeof() overhead from 20M calls.
-
-    GPU computes all 26,521 timelines in parallel in ~100ms.
+    Runtime is cache-consumer only: the candidate-independent startup cache owns
+    group-envelope construction and frontier building. The live GPU path uploads
+    only the per-slot fields read by GA scoring kernels.
 
     Args:
         calc_song: Song calculation context with timestamps/metadata
@@ -1042,51 +1006,8 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     frontier_result = load_timeline_frontier_payload(calc_song, ref_arrays)
-    ctx = _timeline_payload_context(
-        calc_song,
-        ref_arrays,
-        ref_sig=ref_sig,
-        lookup_ctx=lookup,
-        require_cached_group_payload=True,
-    )
-
-    # Upload chart timestamps and note-group metadata for the exact frontier path.
-    timestamps = np.asarray(ctx["timestamps"], dtype=np.float32)
-    total_notes = int(ctx["total_notes"])
-
-    # Upload only the used prefix (avoid padding to MAX_SONG_NOTES).
-    _upload_song_timestamps_kernel(int(total_notes), timestamps)
-
-    group_count = 0
-    note_group_idx = None
-    group_starts = None
-    group_base_t_ms = None
-    group_low_ms = None
-    group_high_ms = None
-    payload = ctx["group_payload"]
-    payload_n = int(payload.get("n", 0) or 0)
-    if int(payload_n) != int(total_notes):
-        raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
-
-    note_group_idx = np.asarray(payload.get("note_group_idx", ()), dtype=np.int32)
-    group_starts = np.asarray(payload.get("group_starts", ()), dtype=np.int32)
-    group_base_t_ms = np.asarray(payload.get("group_base_t_ms", ()), dtype=np.int32)
-    group_low_ms = np.asarray(payload.get("group_low_ms", ()), dtype=np.int32)
-    group_high_ms = np.asarray(payload.get("group_high_ms", ()), dtype=np.int32)
-    group_count = int(payload.get("group_count", 0) or 0)
-    if total_notes > 0 and group_count <= 0:
-        raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
-
-    _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
-    _upload_song_groups_kernel(
-        int(group_count),
-        group_starts,
-        group_base_t_ms,
-        group_low_ms,
-        group_high_ms,
-    )
-
-    long_notes = int(ctx["long_notes"])
+    total_notes = int(lookup["total_notes"])
+    long_notes = int(lookup["long_notes"])
 
     # Sync before timing
     _maybe_sync(for_timing=True)

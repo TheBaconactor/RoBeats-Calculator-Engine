@@ -2,6 +2,16 @@ import numpy as np
 
 from gear_optimizer.core.constants import GEM_SCALE_NORMAL
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
+from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, score_stats_exact_batch
+from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+
+
+def _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    timeline_api.reset_timeline_state()
 
 
 def test_hydrate_fg_candidate_stats_uses_base_fixed_to_avoid_double_counting_user_gems():
@@ -85,7 +95,9 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
     assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL
 
 
-def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score():
+def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score(
+    tmp_path, monkeypatch
+):
     calc_song = {
         "metadata": {
             "Primary Color": "Rush",
@@ -93,7 +105,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
             "Long Notes": 0,
             "Last Note Time": 0.0,
         },
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "note_types": [1]},
     }
     ref_arrays = {
         "Perfect Points": [1.0] * 161,
@@ -124,6 +136,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
             "Selected Element": "Rush",
         },
     }
+    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
@@ -141,7 +154,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
     assert cand["Data"]["BaseScore"] == 26
 
 
-def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
+def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_path, monkeypatch):
     timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -150,7 +163,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
     }
     ref_arrays = {
         "Perfect Points": [1.0] * 161,
@@ -180,6 +193,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
             "Selected Element": "Rush",
         },
     }
+    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
@@ -193,3 +207,40 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload():
     assert cand["RawGASearchScore"] == 999
     assert cand["BaseScore"] == 80336
     assert cand["Data"]["BaseScore"] == 80336
+
+
+def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_path, monkeypatch):
+    timestamps = np.linspace(0.0, 12.0, 128, dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 4,
+            "Last Note Time": float(timestamps[-1]),
+        },
+        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+    }
+    ref_arrays = {
+        "Perfect Points": [float(1 + (i % 7) / 10.0) for i in range(161)],
+        "Combo Multiplier": [float(1 + (i / 500.0)) for i in range(161)],
+        "Fever Multiplier": [float(1 + (i / 400.0)) for i in range(161)],
+        "Fever Fill Rate": [float(1 + (i / 300.0)) for i in range(161)],
+        "Fever Time": [float(1 + (i / 250.0)) for i in range(161)],
+    }
+    stats_rows = [
+        {
+            "Perfect Points": 10 + i,
+            "Combo Multiplier": 20 + i,
+            "Fever Multiplier": 30 + i,
+            "Fever Fill Rate": 40 + i,
+            "Fever Time": 50 + i,
+            "Rush": 100 + (i * 3),
+            "Flow": 70 + (i * 2),
+        }
+        for i in range(5)
+    ]
+    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
+
+    assert score_stats_exact_batch(stats_rows, calc_song, ref_arrays) == [
+        score_stats_exact(stats, calc_song, ref_arrays) for stats in stats_rows
+    ]

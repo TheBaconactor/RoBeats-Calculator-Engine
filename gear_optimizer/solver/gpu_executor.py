@@ -107,6 +107,7 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
+FG_CONTINUATION_GRACE_S = 0.250
 
 
 def _request_work_units(request: GpuRequest) -> float:
@@ -522,17 +523,21 @@ class GpuExecutor:
                 ) -> None:
                     if not requests:
                         return
-                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN and len(requests) > 1:
+                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
                         for req in requests:
                             exec_started = perf_counter()
                             responses = list(handler([req]) or [])
                             _deliver_group_responses(request_type, [req], responses, perf_counter() - exec_started)
+                            fg_req = self._pop_ready_fg_continuation(
+                                batch_max_size=batch_max,
+                                grace_s=FG_CONTINUATION_GRACE_S,
+                            )
                             while True:
-                                fg_req = self._pop_ready_fg_continuation_nowait(batch_max_size=batch_max)
                                 if fg_req is None:
                                     break
                                 batch.append(fg_req)
                                 _execute_single_request(fg_req)
+                                fg_req = self._pop_ready_fg_continuation_nowait(batch_max_size=batch_max)
                         return
                     exec_started = perf_counter()
                     responses = list(handler(requests) or [])
@@ -635,6 +640,46 @@ class GpuExecutor:
             except queue.Empty:
                 return None
         return None
+    def _pop_ready_fg_continuation(self, *, batch_max_size: int, grace_s: float) -> GpuRequest | None:
+        selected = self._pop_ready_fg_continuation_nowait(batch_max_size=int(batch_max_size))
+        if selected is not None:
+            return selected
+        if (not self._in_process_queues) or float(grace_s) <= 0.0:
+            return None
+        if self._staged_fg_continuation_blocked():
+            return None
+
+        target = max(2, int(batch_max_size))
+        deadline = perf_counter() + float(grace_s)
+        while len(self._staged_requests) < target:
+            if self._staged_fg_continuation_blocked():
+                return None
+            remaining = float(deadline - perf_counter())
+            if remaining <= 0.0:
+                return None
+            try:
+                _stage_request(self._staged_requests, self._pop_queue_request(remaining))
+            except queue.Empty:
+                return None
+            selected = self._pop_ready_fg_continuation_nowait(batch_max_size=int(batch_max_size))
+            if selected is not None:
+                return selected
+            if self._staged_fg_continuation_blocked():
+                return None
+        return None
+    def _staged_fg_continuation_blocked(self) -> bool:
+        staged = list(self._staged_requests)
+        if not staged:
+            return False
+        first_type = staged[0].request_type
+        if first_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH:
+            return False
+        if first_type != GpuRequestType.GPU_NATIVE_GA_RUN:
+            return True
+        return any(
+            req.request_type in (GpuRequestType.SHUTDOWN, GpuRequestType.LOAD_REF_ARRAYS)
+            for req in staged[1:]
+        )
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
             _stage_request(self._staged_requests, self._pop_queue_request(timeout))

@@ -25,6 +25,19 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
     def obsolete_fg_prep_sizer(**_kwargs):
         raise AssertionError("dynamic FG prep workers are canonical, not CPU-scaled")
 
+    single_song_settings = read_native_fg_pipeline_settings(
+        None,
+        inflight_limit=1,
+        ga_credit_budget_cfg=12,
+        default_worker_threads=obsolete_fg_prep_sizer,
+    )
+
+    assert single_song_settings.workers == 1
+    assert single_song_settings.batch_max == 1
+    assert single_song_settings.prep_workers == 1
+    assert single_song_settings.ga_credit_budget == 12
+    assert single_song_settings.db_prefetch_workers == 1
+
     settings = read_native_fg_pipeline_settings(
         None,
         inflight_limit=8,
@@ -32,8 +45,8 @@ def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
         default_worker_threads=obsolete_fg_prep_sizer,
     )
 
-    assert settings.workers == 1
-    assert settings.batch_max == 1
+    assert settings.workers == 2
+    assert settings.batch_max == 2
     assert settings.prep_workers == 1
     assert settings.ga_credit_budget == 12
     assert settings.db_prefetch_workers == 1

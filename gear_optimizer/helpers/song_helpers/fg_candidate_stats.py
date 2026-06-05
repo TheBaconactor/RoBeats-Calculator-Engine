@@ -8,7 +8,7 @@ import numpy as np
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.utils import get_selected_element
 from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
-from ...solver.scoring.exact_rescore import score_stats_exact
+from ...solver.scoring.exact_rescore import score_stats_exact_batch
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
@@ -93,6 +93,9 @@ def hydrate_fg_candidate_stats(
             if fallback_sel and not selected_color:
                 selected_color = str(fallback_sel)
         return base_fixed
+
+    if (calc_song is None) != (ref_arrays is None):
+        raise ValueError("calc_song and ref_arrays must be provided together for canonical FG candidate scores")
 
     for cand in candidates:
         if not isinstance(cand, dict):
@@ -185,11 +188,7 @@ def hydrate_fg_candidate_stats(
             cand.get("RawGASearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
             0,
         )
-        if (calc_song is None) != (ref_arrays is None):
-            raise ValueError("calc_song and ref_arrays must be provided together for canonical FG candidate scores")
-        base_score = (
-            int(score_stats_exact(stats, calc_song, ref_arrays)) if calc_song is not None else raw_ga_search_score
-        )
+        base_score = int(raw_ga_search_score)
         cand["RawGASearchScore"] = int(raw_ga_search_score)
         cand["Score"] = int(base_score)
         cand["BaseScore"] = int(base_score)
@@ -202,3 +201,32 @@ def hydrate_fg_candidate_stats(
         data["Selected Element"] = sel
         data["Stats"] = stats
         cand["Data"] = data
+
+    if calc_song is None:
+        return
+
+    stats_rows = []
+    candidates_with_stats = []
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        data = cand.get("Data")
+        if not isinstance(data, dict):
+            continue
+        stats = data.get("Stats")
+        if not isinstance(stats, dict) or not stats:
+            raise ValueError("FG candidate hydration produced a candidate without replayable Stats")
+        stats_rows.append(stats)
+        candidates_with_stats.append(cand)
+
+    exact_scores = score_stats_exact_batch(stats_rows, calc_song, ref_arrays)
+    if len(exact_scores) != len(candidates_with_stats):
+        raise ValueError("FG candidate exact score batch returned the wrong number of scores")
+    for cand, base_score in zip(candidates_with_stats, exact_scores, strict=True):
+        data = cand.get("Data")
+        if not isinstance(data, dict):
+            raise ValueError("FG candidate exact score batch lost candidate Data")
+        cand["Score"] = int(base_score)
+        cand["BaseScore"] = int(base_score)
+        data["Score"] = int(base_score)
+        data["BaseScore"] = int(base_score)
