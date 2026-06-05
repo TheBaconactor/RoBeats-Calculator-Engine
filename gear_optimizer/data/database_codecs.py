@@ -203,6 +203,8 @@ def _pack_stats_for_storage(details: Any) -> Any:
 
     if not out.get("ForceGreats"):
         out.pop("ForceGreats", None)
+    if not out.get("TimelineFrontier"):
+        out.pop("TimelineFrontier", None)
     out.pop("Difficulty", None)
     return out
 

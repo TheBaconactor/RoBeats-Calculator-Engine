@@ -11,6 +11,7 @@ from gear_optimizer.helpers.song_helpers.persistence_canon import build_persiste
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn, normalize_force_payload
 from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
 
 def _fixture_payload(filename: str) -> dict[str, Any]:
@@ -54,7 +55,23 @@ def _details_runtime_agnostic_view(details: Any) -> dict[str, Any]:
     out = dict(details)
     out.pop("attempt_lifetime", None)
     out.pop("attempts_first", None)
+    out.pop("TimelineFrontier", None)
     return out
+
+
+def _assert_selected_base_timeline_frontier(details: Any) -> None:
+    assert isinstance(details, dict)
+    frontier = details.get("TimelineFrontier")
+    assert isinstance(frontier, dict)
+    assert frontier.get("activation_judgment") == "perfect"
+    trace = frontier.get("frontier_trace")
+    assert isinstance(trace, list) and trace
+    assert all(row.get("activation_judgment") == "perfect" for row in trace)
+    assert all("activation_index" in row and "activation_hit_offset_ms" in row for row in trace)
+
+
+def _prebuild_timeline_frontier(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> None:
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
 
 def _float32_ref_arrays(ref_arrays: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -111,6 +128,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     calc_song = get_base_calc_song(str(song_file), cfg_dict)
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(ref_arrays, dict) and ref_arrays
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     build_details_fn = make_build_details_fn(
         str(frozen["primary_color"]),
         str(frozen["secondary_color"]),
@@ -172,6 +190,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     assert missing_sig in rows_by_signature
 
     base_row = rows_by_signature[base_sig]
+    _assert_selected_base_timeline_frontier(base_row.get("details") or {})
     base_details_actual = _details_runtime_agnostic_view(base_row.get("details") or {})
     base_details_expected = _details_runtime_agnostic_view(base_entry["details"])
     assert base_details_actual == base_details_expected
@@ -184,6 +203,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     assert int(base_row["score"]) != int(db_payload["score"])
 
     fg_row = rows_by_signature[fg_sig]
+    _assert_selected_base_timeline_frontier(fg_row.get("details") or {})
     fg_details_actual = _details_runtime_agnostic_view(fg_row.get("details") or {})
     fg_details_expected = _details_runtime_agnostic_view(fg_entry["details"])
     assert fg_details_actual == fg_details_expected
@@ -208,6 +228,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     assert int(fg_row["fg_score"]) != int(db_payload["best_fg"]["score"])
 
     missing_row = rows_by_signature[missing_sig]
+    _assert_selected_base_timeline_frontier(missing_row.get("details") or {})
     missing_details_actual = _details_runtime_agnostic_view(missing_row.get("details") or {})
     missing_details_expected = _details_runtime_agnostic_view(build_details_fn(dict(missing_stats_entry["eval_data"])))
     assert missing_details_actual == missing_details_expected
@@ -241,6 +262,7 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
     calc_song = get_base_calc_song(str(song_file), cfg_dict)
     authoritative_ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(authoritative_ref_arrays, dict) and authoritative_ref_arrays
+    _prebuild_timeline_frontier(calc_song, authoritative_ref_arrays)
     runtime_ref_arrays = _float32_ref_arrays(authoritative_ref_arrays)
     assert np.asarray(authoritative_ref_arrays["Perfect Points"]).dtype == np.float64
     assert np.asarray(runtime_ref_arrays["Perfect Points"]).dtype == np.float32
@@ -325,6 +347,8 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
 
         runtime_details = _details_runtime_agnostic_view(runtime_row.get("details") or {})
         authoritative_details = _details_runtime_agnostic_view(authoritative_row.get("details") or {})
+        _assert_selected_base_timeline_frontier(runtime_row.get("details") or {})
+        _assert_selected_base_timeline_frontier(authoritative_row.get("details") or {})
         assert runtime_details == authoritative_details
 
         stats = dict(runtime_details.get("Stats") or {})
@@ -363,6 +387,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     calc_song = get_base_calc_song(str(song_file), cfg_dict)
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(ref_arrays, dict) and ref_arrays
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     build_details_fn = make_build_details_fn(
         str(frozen["primary_color"]),
         str(frozen["secondary_color"]),
@@ -395,6 +420,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert base_sig in rows_by_signature
 
     row = rows_by_signature[base_sig]
+    _assert_selected_base_timeline_frontier(row.get("details") or {})
     details_actual = _details_runtime_agnostic_view(row.get("details") or {})
     details_expected = _details_runtime_agnostic_view(base_entry["details"])
     assert details_actual == details_expected
@@ -402,7 +428,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert stats
     assert stats == dict(base_entry["details"]["Stats"])
     exact = int(score_stats_exact(stats, calc_song, ref_arrays))
-    authority_score = 45366044
+    authority_score = 45507369
     assert int(row["score"]) == exact
     assert int(row["score"]) == int(base_entry["expected_score"])
     assert int(row["score"]) == authority_score, (
@@ -420,6 +446,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
 
     # Timeline-selection guard: alternate timeline can tie, but must never beat authority.
     wrong_timeline_calc_song = _calc_song_with_truncated_timeline(calc_song)
+    _prebuild_timeline_frontier(wrong_timeline_calc_song, ref_arrays)
     wrong_timeline_score = int(score_stats_exact(stats, wrong_timeline_calc_song, ref_arrays))
     assert wrong_timeline_score <= authority_score, (
         "Timeline selection guard failed: alternate timeline beat authoritative score "

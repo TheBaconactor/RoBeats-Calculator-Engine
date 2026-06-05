@@ -12,7 +12,9 @@ full non-dominated surface set is retained for exact scoring.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+import threading
 import time
 from typing import Iterable
 
@@ -25,6 +27,9 @@ from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 _CARRY_L = -40
 _CARRY_U = 80
 _MAX_HEAD = 100
+_GROUPED_TIMELINE_CONTEXT_CACHE_MAX = 64
+_GROUPED_TIMELINE_CONTEXT_CACHE_LOCK = threading.RLock()
+_GROUPED_TIMELINE_CONTEXT_CACHE: "OrderedDict[tuple[object, ...], _GroupedTimelineContext]" = OrderedDict()
 
 
 @dataclass(frozen=True)
@@ -588,6 +593,58 @@ def _build_grouped_timeline_context(
     )
 
 
+def _grouped_context_cache_key(
+    total_notes: int,
+    arrays: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[object, ...]:
+    key: list[object] = [int(total_notes)]
+    for arr in arrays:
+        key.extend((id(arr), tuple(int(v) for v in arr.shape), str(arr.dtype)))
+    return tuple(key)
+
+
+def _cached_grouped_timeline_context(
+    total_notes: int,
+    *,
+    group_starts: np.ndarray,
+    group_ends: np.ndarray,
+    group_base_t_ms: np.ndarray,
+    group_low_ms: np.ndarray,
+    group_high_ms: np.ndarray,
+    note_group_idx: np.ndarray,
+) -> _GroupedTimelineContext:
+    arrays = (
+        np.asarray(group_starts, dtype=np.int32),
+        np.asarray(group_ends, dtype=np.int32),
+        np.asarray(group_base_t_ms, dtype=np.int32),
+        np.asarray(group_low_ms, dtype=np.int32),
+        np.asarray(group_high_ms, dtype=np.int32),
+        np.asarray(note_group_idx, dtype=np.int32),
+    )
+    cache_key = _grouped_context_cache_key(int(total_notes), arrays)
+    with _GROUPED_TIMELINE_CONTEXT_CACHE_LOCK:
+        cached = _GROUPED_TIMELINE_CONTEXT_CACHE.get(cache_key)
+        if cached is not None:
+            _GROUPED_TIMELINE_CONTEXT_CACHE.move_to_end(cache_key)
+            return cached
+
+    ctx = _build_grouped_timeline_context(
+        int(total_notes),
+        group_starts=arrays[0],
+        group_ends=arrays[1],
+        group_base_t_ms=arrays[2],
+        group_low_ms=arrays[3],
+        group_high_ms=arrays[4],
+        note_group_idx=arrays[5],
+    )
+    with _GROUPED_TIMELINE_CONTEXT_CACHE_LOCK:
+        _GROUPED_TIMELINE_CONTEXT_CACHE[cache_key] = ctx
+        _GROUPED_TIMELINE_CONTEXT_CACHE.move_to_end(cache_key)
+        while len(_GROUPED_TIMELINE_CONTEXT_CACHE) > _GROUPED_TIMELINE_CONTEXT_CACHE_MAX:
+            _GROUPED_TIMELINE_CONTEXT_CACHE.popitem(last=False)
+    return ctx
+
+
 def _empty_frontier_pack() -> TimelineFrontierPack:
     empty = TimelineExactSignature(
         head_len=0,
@@ -608,6 +665,43 @@ def _empty_frontier_pack() -> TimelineFrontierPack:
         fever_activations=0,
         gap=0,
     )
+
+
+def _propagate_band_to_group(
+    ctx: _GroupedTimelineContext,
+    start_g: int,
+    lo: int,
+    hi: int,
+    target_g: int,
+    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] | None = None,
+) -> tuple[int, int]:
+    if int(target_g) <= int(start_g):
+        return int(lo), int(hi)
+    cache_key = (int(start_g), int(lo), int(hi), int(target_g))
+    if propagation_cache is not None:
+        cached = propagation_cache.get(cache_key)
+        if cached is not None:
+            return cached
+    g = int(start_g)
+    out_lo = int(lo)
+    out_hi = int(hi)
+    dist = int(target_g - start_g)
+    p2 = 0
+    while dist:
+        if dist & 1:
+            b = int(ctx.jump_b[g][p2])
+            out_lo = max(int(ctx.jump_a_lo[g][p2]), int(out_lo) - int(b))
+            out_hi = max(int(ctx.jump_a_hi[g][p2]), int(out_hi) - int(b))
+            g += 1 << p2
+            if out_lo > out_hi:
+                if propagation_cache is not None:
+                    propagation_cache[cache_key] = (1, 0)
+                return 1, 0
+        dist >>= 1
+        p2 += 1
+    if propagation_cache is not None:
+        propagation_cache[cache_key] = (int(out_lo), int(out_hi))
+    return int(out_lo), int(out_hi)
 
 
 def _build_exact_timeline_frontier_from_context(
@@ -631,35 +725,6 @@ def _build_exact_timeline_frontier_from_context(
     total_body = int(ctx.total_body)
     fill_count_i = max(1, int(fill_count))
     d_ms_i = max(0, int(d_ms))
-
-    def _propagate_to_group(start_g: int, lo: int, hi: int, target_g: int) -> tuple[int, int]:
-        if int(target_g) <= int(start_g):
-            return int(lo), int(hi)
-        cache_key = (int(start_g), int(lo), int(hi), int(target_g))
-        if propagation_cache is not None:
-            cached = propagation_cache.get(cache_key)
-            if cached is not None:
-                return cached
-        g = int(start_g)
-        out_lo = int(lo)
-        out_hi = int(hi)
-        dist = int(target_g - start_g)
-        p2 = 0
-        while dist:
-            if dist & 1:
-                b = int(ctx.jump_b[g][p2])
-                out_lo = max(int(ctx.jump_a_lo[g][p2]), int(out_lo) - int(b))
-                out_hi = max(int(ctx.jump_a_hi[g][p2]), int(out_hi) - int(b))
-                g += 1 << p2
-                if out_lo > out_hi:
-                    if propagation_cache is not None:
-                        propagation_cache[cache_key] = (1, 0)
-                    return 1, 0
-            dist >>= 1
-            p2 += 1
-        if propagation_cache is not None:
-            propagation_cache[cache_key] = (int(out_lo), int(out_hi))
-        return int(out_lo), int(out_hi)
 
     all_normal_cache: dict[int, TimelineExactSignature] = {}
 
@@ -712,7 +777,14 @@ def _build_exact_timeline_frontier_from_context(
             solve_cache[solve_key] = result
             return result
 
-        act_lo, act_hi = _propagate_to_group(start_group_i, lo_i, hi_i, g_act)
+        act_lo, act_hi = _propagate_band_to_group(
+            ctx,
+            start_group_i,
+            lo_i,
+            hi_i,
+            g_act,
+            propagation_cache=propagation_cache,
+        )
         if act_lo > act_hi:
             result = (_all_normal_surface(start_note_i),)
             solve_cache[solve_key] = result
@@ -832,6 +904,219 @@ def _build_exact_timeline_frontier_from_context(
         fever_activations=canonical.fever_activations,
         gap=canonical.gap,
     )
+
+
+def _activation_offset_for_exit(
+    ctx: _GroupedTimelineContext,
+    *,
+    activation_group: int,
+    act_lo: int,
+    act_hi: int,
+    exit_group: int,
+    d_ms: int,
+) -> int:
+    s = int(activation_group)
+    g = int(exit_group)
+    lo = int(act_lo)
+    hi = int(act_hi)
+    if lo > hi:
+        raise ValueError("timeline frontier trace received an empty activation band")
+    if g <= s or s + 1 >= int(ctx.gcount):
+        return lo
+    if g >= int(ctx.gcount):
+        survive_lo = max(lo, int(ctx.exit_need_prefix_current[s, int(ctx.gcount) - 1]) - int(d_ms))
+        if survive_lo > hi:
+            raise ValueError("timeline frontier trace could not choose a terminal activation offset")
+        return int(survive_lo)
+
+    delta = int(ctx.exit_delta[s, g])
+    r_lo = max(lo, int(ctx.exit_need_prefix_prev[s, g]) - int(d_ms))
+    r_hi = min(hi, int(ctx.group_high_ms[g]) + delta - int(d_ms))
+    if r_lo > r_hi:
+        raise ValueError("timeline frontier trace could not choose an activation offset")
+    return int(r_lo)
+
+
+def _subtract_timeline_edge(
+    remaining_bits: tuple[int, int, int, int],
+    remaining_body_fever: int,
+    edge_bits: tuple[int, int, int, int],
+    edge_body_fever: int,
+) -> tuple[tuple[int, int, int, int], int] | None:
+    for idx in range(4):
+        if int(edge_bits[idx]) & ~int(remaining_bits[idx]):
+            return None
+    if int(edge_body_fever) > int(remaining_body_fever):
+        return None
+    return (
+        (
+            int(remaining_bits[0]) & ~int(edge_bits[0]),
+            int(remaining_bits[1]) & ~int(edge_bits[1]),
+            int(remaining_bits[2]) & ~int(edge_bits[2]),
+            int(remaining_bits[3]) & ~int(edge_bits[3]),
+        ),
+        int(remaining_body_fever) - int(edge_body_fever),
+    )
+
+
+def reconstruct_timeline_frontier_trace(
+    *,
+    total_notes: int,
+    group_starts: np.ndarray,
+    group_ends: np.ndarray,
+    group_base_t_ms: np.ndarray,
+    group_low_ms: np.ndarray,
+    group_high_ms: np.ndarray,
+    note_group_idx: np.ndarray,
+    fill_count: int,
+    d_ms: int,
+    target_surface: TimelineExactSignature,
+) -> tuple[dict[str, object], ...]:
+    """Reconstruct one compact Perfect-window witness for a selected base surface."""
+
+    ctx = _cached_grouped_timeline_context(
+        int(total_notes),
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+    n = int(ctx.total_notes)
+    if n <= 0:
+        return ()
+
+    target_bits = (
+        int(target_surface.head_bits[0]),
+        int(target_surface.head_bits[1]),
+        int(target_surface.head_bits[2]),
+        int(target_surface.head_bits[3]),
+    )
+    target_body_fever = int(target_surface.body_fever)
+    if target_body_fever < 0 or target_body_fever > int(ctx.total_body):
+        raise ValueError("timeline frontier trace target has invalid body fever count")
+    if int(target_surface.body_normal) != int(ctx.total_body) - target_body_fever:
+        raise ValueError("timeline frontier trace target body counts do not match song body count")
+
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] = {}
+    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] = {}
+    fill_count_i = max(1, int(fill_count))
+    d_ms_i = max(0, int(d_ms))
+
+    def _empty(bits: tuple[int, int, int, int], body_fever: int) -> bool:
+        return int(body_fever) == 0 and not any(int(value) for value in bits)
+
+    def _search(
+        start_group: int,
+        lo: int,
+        hi: int,
+        is_first: bool,
+        remaining_bits: tuple[int, int, int, int],
+        remaining_body_fever: int,
+    ) -> tuple[dict[str, object], ...] | None:
+        if _empty(remaining_bits, remaining_body_fever):
+            return ()
+        start_group_i = int(start_group)
+        start_note_i = int(n) if start_group_i >= int(ctx.gcount) else int(ctx.group_starts[start_group_i])
+        notes_to_fill = int(fill_count_i - 1 if bool(is_first) else fill_count_i)
+        activation_note = int(start_note_i + max(0, notes_to_fill))
+        if activation_note >= n or activation_note <= 0 or start_note_i >= n:
+            return None
+
+        g_act = int(ctx.note_group_idx[activation_note])
+        if g_act < 0 or g_act >= int(ctx.gcount):
+            return None
+
+        act_lo, act_hi = _propagate_band_to_group(
+            ctx,
+            start_group_i,
+            int(lo),
+            int(hi),
+            g_act,
+            propagation_cache=propagation_cache,
+        )
+        if act_lo > act_hi:
+            return None
+
+        exits = _cached_first_exit_boundary_intervals(
+            ctx,
+            activation_group=g_act,
+            act_lo=int(act_lo),
+            act_hi=int(act_hi),
+            d_ms=d_ms_i,
+            transition_cache=transition_cache,
+        )
+        for boundary_note, exit_group, exit_lo, exit_hi in exits:
+            mask_start = max(0, min(int(activation_note), int(ctx.head_len)))
+            mask_end = max(0, min(int(boundary_note), int(ctx.head_len)))
+            range_mask_arr = ctx.head_range_masks[mask_start, mask_end]
+            edge_bits = (
+                int(range_mask_arr[0]),
+                int(range_mask_arr[1]),
+                int(range_mask_arr[2]),
+                int(range_mask_arr[3]),
+            )
+            body_add = 0
+            if int(boundary_note) > int(ctx.head_len):
+                body_start = max(int(ctx.head_len), int(activation_note))
+                if int(boundary_note) > int(body_start):
+                    body_add = int(boundary_note) - int(body_start)
+            next_remaining = _subtract_timeline_edge(
+                remaining_bits,
+                int(remaining_body_fever),
+                edge_bits,
+                int(body_add),
+            )
+            if next_remaining is None:
+                continue
+
+            activation_ms = int(ctx.group_base_t_ms[g_act])
+            activation_offset_ms = _activation_offset_for_exit(
+                ctx,
+                activation_group=g_act,
+                act_lo=int(act_lo),
+                act_hi=int(act_hi),
+                exit_group=int(exit_group),
+                d_ms=d_ms_i,
+            )
+            if int(boundary_note) >= n or int(exit_group) >= int(ctx.gcount):
+                fever_end_ms: float | None = None
+            else:
+                fever_end_ms = float(int(ctx.group_base_t_ms[int(exit_group)]))
+            section = {
+                "activation_index": int(activation_note),
+                "activation_ms": float(activation_ms),
+                "activation_hit_ms": float(activation_ms + activation_offset_ms),
+                "activation_hit_offset_ms": float(activation_offset_ms),
+                "activation_judgment": "perfect",
+                "fever_start_source": "perfect_window",
+                "fever_start_note_index": int(activation_note),
+                "fever_start_hit_ms": float(activation_ms + activation_offset_ms),
+                "fever_end_index": int(boundary_note),
+                "fever_end_ms": fever_end_ms,
+                "forced_count": 0,
+                "forced_start_index": int(activation_note),
+                "forced_prefix_count": 0,
+                "body_fever": int(body_add),
+                "body_great": 0,
+                "body_fever_great": 0,
+            }
+
+            rem_bits, rem_body = next_remaining
+            if _empty(rem_bits, rem_body):
+                return (section,)
+            if int(exit_group) >= int(ctx.gcount):
+                continue
+            tail = _search(int(exit_group), int(exit_lo), int(exit_hi), False, rem_bits, int(rem_body))
+            if tail is not None:
+                return (section,) + tail
+        return None
+
+    trace = _search(0, int(ctx.lo0), int(ctx.hi0), True, target_bits, target_body_fever)
+    if trace is None:
+        raise ValueError("could not reconstruct timeline frontier surface trace")
+    return tuple({**dict(row), "section": idx + 1} for idx, row in enumerate(trace))
 
 
 def _exit_trace_certifies_d_ms(

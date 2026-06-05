@@ -255,6 +255,12 @@ def _stale_00_hard_fg_entry() -> dict:
     }
 
 
+def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+
 def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directly():
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.data.song_io import get_base_calc_song
@@ -263,6 +269,7 @@ def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directl
     calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     out = canonicalize_authoritative_fg_entries(
         [_stale_00_hard_fg_entry()],
@@ -297,6 +304,7 @@ def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path,
     calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     canonical = canonicalize_authoritative_fg_entries([stale], calc_song=calc_song, ref_arrays=ref_arrays)
     save_loadouts_batch(song, canonical)
 

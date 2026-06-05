@@ -18,7 +18,8 @@ are derived frontend-side from the persisted stats.
 
 Two graphs per loadout, matching the intended software behavior:
   * BASE = timeline frontier            -> base_note_graph(...)
-        all notes Perfect; the deterministic fever windows mark `fever`.
+        all notes Perfect; selected activation witnesses carry exact `delta_ms`
+        when a compact timeline trace is available.
   * FG   = fg frontier + timeline       -> force_greats_note_graph(...)
         per-note Perfect/Great + fever; the activation-note Late Great is the only
         timing WITNESS (carries the exact `delta_ms`); prefix/forced Greats are pure
@@ -37,6 +38,7 @@ import numpy as np
 
 __all__ = [
     "base_note_graph",
+    "timeline_frontier_note_graph",
     "force_greats_note_graph",
     "reconcile_force_greats_note_graph",
 ]
@@ -46,11 +48,56 @@ def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
 
 
+def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> list[dict[str, Any]]:
+    n = int(total_notes)
+    ts = np.asarray(timestamps).reshape(-1)
+    if int(ts.shape[0]) < n:
+        raise ValueError("note graph timestamps shorter than total_notes")
+    return [
+        {
+            "note_index": int(i),
+            "hit_time_ms": _hit_time_ms(ts, i),
+            "note_result": "Perfect",
+            "delta_ms": 0.0,
+            "fever": False,
+            "is_activation_witness": False,
+            "section": 0,
+        }
+        for i in range(n)
+    ]
+
+
+def timeline_frontier_note_graph(
+    *,
+    frontier_trace: Sequence[Mapping[str, Any]],
+    total_notes: int,
+    timestamps: Sequence[float] | np.ndarray,
+) -> list[dict[str, Any]]:
+    """BASE note-graph from the selected timeline-frontier witness trace."""
+
+    n = int(total_notes)
+    notes = _perfect_note_graph(n, timestamps)
+    for sec in frontier_trace:
+        section = int(sec.get("section", 0))
+        a = int(sec["activation_index"])
+        e = int(sec["fever_end_index"])
+        for j in range(max(0, a), min(e, n)):
+            notes[j]["fever"] = True
+            if notes[j]["section"] == 0:
+                notes[j]["section"] = section
+        if 0 <= a < n:
+            notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+            notes[a]["is_activation_witness"] = True
+            notes[a]["section"] = section
+    return notes
+
+
 def base_note_graph(
     *,
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
     is_fever_mask: Sequence[bool] | np.ndarray,
+    frontier_trace: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -59,21 +106,20 @@ def base_note_graph(
     loadout's persisted Fever Fill Rate / Fever Time stats + the song notes (its
     `fever_mask_buffer` argument is written for ALL notes, not just the head slice).
     """
+    if frontier_trace is not None:
+        return timeline_frontier_note_graph(
+            frontier_trace=frontier_trace,
+            total_notes=int(total_notes),
+            timestamps=timestamps,
+        )
     n = int(total_notes)
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float64).reshape(-1))
     fev = np.asarray(is_fever_mask).reshape(-1)
-    if int(ts.shape[0]) < n or int(fev.shape[0]) < n:
+    if int(fev.shape[0]) < n:
         raise ValueError("base_note_graph: timestamps/is_fever_mask shorter than total_notes")
-    return [
-        {
-            "note_index": int(i),
-            "hit_time_ms": _hit_time_ms(ts, i),
-            "note_result": "Perfect",
-            "delta_ms": 0.0,
-            "fever": bool(fev[int(i)]),
-        }
-        for i in range(n)
-    ]
+    notes = _perfect_note_graph(n, timestamps)
+    for i in range(n):
+        notes[i]["fever"] = bool(fev[int(i)])
+    return notes
 
 
 def force_greats_note_graph(
@@ -94,22 +140,7 @@ def force_greats_note_graph(
     All other notes are Perfect (delta 0). A note may be both fever and Great.
     """
     n = int(total_notes)
-    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float64).reshape(-1))
-    if int(ts.shape[0]) < n:
-        raise ValueError("force_greats_note_graph: timestamps shorter than total_notes")
-
-    notes: list[dict[str, Any]] = [
-        {
-            "note_index": int(i),
-            "hit_time_ms": _hit_time_ms(ts, i),
-            "note_result": "Perfect",
-            "delta_ms": 0.0,            # selector default; witness overrides below
-            "fever": False,
-            "is_activation_witness": False,
-            "section": 0,               # 0 = not associated with a fever section
-        }
-        for i in range(n)
-    ]
+    notes = _perfect_note_graph(n, timestamps)
 
     for sec in frontier_trace:
         section = int(sec.get("section", 0))

@@ -9,6 +9,7 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _enumerate_first_exit_boundary_intervals_from_activation_band,
     _enumerate_first_exit_boundary_intervals_from_context,
     _exit_trace_certifies_d_ms,
+    reconstruct_timeline_frontier_trace,
     reduce_timeline_frontier,
 )
 
@@ -67,6 +68,51 @@ def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
     assert pack_a.canonical in pack_a.surfaces
     assert pack_a.head_len == 6
     assert pack_a.body_fever + pack_a.body_normal == 0
+
+
+def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:
+    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
+    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
+    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
+    group_low_ms = np.array([-20, -20, -20, -20, -20, -20], dtype=np.int32)
+    group_high_ms = np.array([40, 40, 40, 40, 40, 40], dtype=np.int32)
+    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
+    ctx = _build_grouped_timeline_context(
+        9,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=110)
+    target = pack.surfaces[0]
+
+    trace = reconstruct_timeline_frontier_trace(
+        total_notes=9,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+        fill_count=2,
+        d_ms=110,
+        target_surface=target,
+    )
+
+    fever_bits = [0, 0, 0, 0]
+    body_fever = 0
+    for row in trace:
+        assert row["activation_judgment"] == "perfect"
+        assert -20 <= row["activation_hit_offset_ms"] <= 40
+        for note_idx in range(int(row["activation_index"]), min(int(row["fever_end_index"]), target.head_len)):
+            fever_bits[note_idx // 32] |= 1 << (note_idx % 32)
+        body_fever += int(row["body_fever"])
+
+    assert tuple(fever_bits) == target.head_bits
+    assert body_fever == target.body_fever
 
 
 def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:

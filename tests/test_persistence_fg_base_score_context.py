@@ -85,6 +85,11 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
     monkeypatch.setattr(authority, "score_stats_exact", lambda *_args, **_kwargs: 160)
     monkeypatch.setattr(
         authority,
+        "score_stats_exact_with_timeline_trace",
+        lambda *_args, **_kwargs: {"score": 160, "TimelineFrontier": {}},
+    )
+    monkeypatch.setattr(
+        authority,
         "evaluate_force_greats_exact",
         lambda *_args, **_kwargs: {
             "final_score": 150,

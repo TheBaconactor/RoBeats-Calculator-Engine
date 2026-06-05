@@ -7,6 +7,7 @@ from ...solver.scoring.exact_rescore import (
     evaluate_force_greats_exact,
     score_force_greats_response_surface_exact,
     score_stats_exact,
+    score_stats_exact_with_timeline_trace,
 )
 from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from .fg_config import extract_fg_config, has_valid_fg_config
@@ -98,7 +99,15 @@ def _canonicalize_base_score(
     stats = _details_stats(out)
     if not stats:
         return
-    out["score"] = int(score_stats_exact(stats, calc_song, ref_arrays))
+    replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
+    out["score"] = int(replay.get("score", 0) or 0)
+    details = out.get("details")
+    if isinstance(details, dict):
+        timeline = replay.get("TimelineFrontier")
+        if isinstance(timeline, dict):
+            details_out = dict(details)
+            details_out["TimelineFrontier"] = dict(timeline)
+            out["details"] = details_out
 
 
 def _canonical_force_payload(

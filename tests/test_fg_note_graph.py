@@ -201,6 +201,29 @@ def test_base_note_graph_maps_fever_timeline():
     assert graph[2]["hit_time_ms"] == pytest.approx(200.0)
 
 
+def test_base_note_graph_uses_timeline_frontier_trace_witness():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+
+    n = 6
+    ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
+    mask = np.zeros(n, dtype=np.bool_)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 2,
+            "activation_hit_offset_ms": 40.0,
+            "fever_end_index": 5,
+        }
+    ]
+
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace)
+
+    assert all(g["note_result"] == "Perfect" for g in graph)
+    assert [g["fever"] for g in graph] == [False, False, True, True, True, False]
+    assert graph[2]["delta_ms"] == pytest.approx(40.0)
+    assert graph[2]["is_activation_witness"] is True
+
+
 def test_base_note_graph_matches_production_fever_timeline():
     """base fever mask is the production fever timeline's full per-note is_fever buffer."""
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices

@@ -78,6 +78,7 @@ def make_build_details_fn(
             "PrimaryColor": primary_color,
             "SecondaryColor": secondary_color,
             "Difficulty": effective_difficulty,
+            "TimelineFrontier": data_dict.get("TimelineFrontier", {}),
             "ForceGreats": data_dict.get("ForceGreats", {}),
         }
 
