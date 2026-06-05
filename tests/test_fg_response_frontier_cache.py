@@ -105,7 +105,11 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert first.disk_path.exists()
     assert len(list(tmp_path.glob("*.npz"))) == 1
     with np.load(first.disk_path, allow_pickle=False) as data:
+        assert data["stat_keys"].dtype == np.dtype("uint8")
+        assert data["stat_keys"].flags.f_contiguous
+        assert data["frontier_meta"].flags.f_contiguous
         assert data["first_surface_pool"].dtype == np.dtype("uint32")
+        assert data["first_surface_pool"].flags.f_contiguous
         assert not {
             "state_offsets",
             "state_counts",
@@ -219,6 +223,7 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert "first_surface_head_len" in data.files
         assert "first_surface_head_coeffs" in data.files
+        assert data["first_surface_head_len"].dtype == np.dtype("uint8")
         assert data["first_surface_head_coeffs"].dtype == np.dtype("uint16")
 
     response_cache.reset_fg_response_frontier_payload_cache()
@@ -395,6 +400,13 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     assert current.cache_source == "built"
     assert build_calls == [2]
     assert len(list(tmp_path.glob("*.npz"))) == 2
+
+
+def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _as_uint8_exact
+
+    with pytest.raises(ValueError, match="exceeds persisted uint8 bounds"):
+        _as_uint8_exact("unit", np.asarray([0, 256], dtype=np.int32))
 
 
 def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path: Path, monkeypatch) -> None:

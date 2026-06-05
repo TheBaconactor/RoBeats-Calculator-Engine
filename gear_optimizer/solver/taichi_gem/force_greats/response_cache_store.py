@@ -34,6 +34,26 @@ _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_B
 _NPZ_FAST_COMPRESS_LEVEL = 1
 
 
+def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values)
+    if array.size:
+        min_value = int(np.min(array))
+        max_value = int(np.max(array))
+        info = np.iinfo(np.uint8)
+        if min_value < int(info.min) or max_value > int(info.max):
+            raise ValueError(f"{name} exceeds persisted uint8 bounds: {min_value}..{max_value}")
+    return np.asarray(array, dtype=np.uint8)
+
+
+def _persisted_packed_frontiers(packed_frontiers: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    return {
+        "frontier_meta": np.asfortranarray(np.asarray(packed_frontiers["frontier_meta"], dtype=np.int32)),
+        "first_offsets": np.asarray(packed_frontiers["first_offsets"], dtype=np.int32),
+        "first_counts": np.asarray(packed_frontiers["first_counts"], dtype=np.int32),
+        "first_surface_pool": np.asfortranarray(np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)),
+    }
+
+
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
     with _frontier_cache_lock:
         frontier = _frontier_cache.get(cache_key)
@@ -94,6 +114,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         sorted_items = sorted(payload.frontier_by_key.items())
         packed_frontiers = _pack_frontiers(frontiers)
         first_surface_pool = np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
+        stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
         first_surface_head_len = min(int(payload.total_notes), 100)
         first_surface_head_coeffs = _precompute_surface_head_coeffs(
             first_surface_pool,
@@ -105,7 +126,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
             tmp,
             {
                 "version": np.asarray(_fg_response_cache_version()),
-                "stat_keys": np.asarray([key for key, _frontier in sorted_items], dtype=np.int32),
+                "stat_keys": np.asfortranarray(_as_uint8_exact("FG response stat keys", stat_keys)),
                 "frontier_ids": np.asarray(
                     [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
                     dtype=np.int32,
@@ -116,9 +137,12 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
                 "total_notes": np.asarray(int(payload.total_notes), dtype=np.int32),
                 "long_notes": np.asarray(int(payload.long_notes), dtype=np.int32),
                 "use_forced_great_timing": np.asarray(int(payload.use_forced_great_timing), dtype=np.int8),
-                "first_surface_head_len": np.asarray(int(first_surface_head_len), dtype=np.int32),
+                "first_surface_head_len": _as_uint8_exact(
+                    "FG response first surface head length",
+                    np.asarray(int(first_surface_head_len), dtype=np.int32),
+                ),
                 "first_surface_head_coeffs": np.ascontiguousarray(first_surface_head_coeffs, dtype=np.uint16),
-                **packed_frontiers,
+                **_persisted_packed_frontiers(packed_frontiers),
             },
         )
         tmp.replace(path)
