@@ -95,7 +95,7 @@ def warmup_ga_kernels_light() -> None:
 
     import taichi as ti
 
-    from .timeline import precompute_timeline_gpu
+    from .timeline import precompute_timeline_gpu_for_warmup
 
     n_slots = 9
     n_runs = min(3, int(fields.MAX_GA_RUNS))
@@ -108,7 +108,7 @@ def warmup_ga_kernels_light() -> None:
 
     ref_arrays = _warmup_ref_arrays()
     ensure_ready(ref_arrays)
-    precompute_timeline_gpu(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
+    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
 
     item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)

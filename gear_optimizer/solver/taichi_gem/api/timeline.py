@@ -1068,6 +1068,19 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         print(f"[GPU Timeline] Computed 161×161 grid in {(_t1 - _t0) * 1000:.1f}ms")
 
 
+def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
+    """
+    Warmup-only entrypoint for synthetic charts.
+
+    Production scoring must consume the startup-built frontier cache via
+    precompute_timeline_gpu(). GPU JIT warmups use synthetic charts that are not
+    part of the song queue, so they explicitly build their own disposable
+    payload before exercising the same upload path.
+    """
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+
+
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""
     global _gpu_timeline_song_id_by_slot
