@@ -548,7 +548,12 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     monkeypatch.setattr(
         adapter,
         "extract_fg_song_inputs",
-        lambda calc_song: SimpleNamespace(timestamps=[0.0], great_candidates=[0.0], use_forced_great_timing=True),
+        lambda calc_song: SimpleNamespace(
+            timestamps=[0.0],
+            perfect_candidates=[0.0],
+            great_candidates=[0.0],
+            use_forced_great_timing=True,
+        ),
     )
 
     def _fake_reconstruct_trace(**kwargs):
@@ -611,6 +616,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         lambda calc_song: SimpleNamespace(
             total_notes=1,
             timestamps=[0.0],
+            perfect_candidates=[0.0],
             great_candidates=[0.0],
             use_forced_great_timing=True,
         ),
@@ -1148,6 +1154,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
         lambda _song: SimpleNamespace(
             total_notes=2,
             timestamps=[0.0, 1.0],
+            perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
@@ -1317,6 +1324,7 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
         lambda _song: SimpleNamespace(
             total_notes=2,
             timestamps=[0.0, 1.0],
+            perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),

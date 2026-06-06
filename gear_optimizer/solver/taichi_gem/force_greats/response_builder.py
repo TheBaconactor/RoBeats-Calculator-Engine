@@ -46,12 +46,15 @@ def _edge_end(
     real_fever_time: float,
     use_forced_great_timing: bool,
     timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray | None = None,
+    great_candidate_timestamps: np.ndarray | None = None,
 ) -> tuple[int, float, int]:
-    start_time = float(timestamps[int(a)])
+    perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
+    great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
+    start_time = float(perfect_ts[int(a)])
     carry_idx = -1
     if bool(use_forced_great_timing) and bool(activation_great) and int(a) < int(n):
-        activation_t = float(great_candidate_timestamps[int(a)])
+        activation_t = float(great_ts[int(a)])
         if activation_t > start_time:
             start_time = activation_t
             carry_idx = int(a)
@@ -143,12 +146,16 @@ def _trace_timing_fields(
     *,
     carry_idx: int,
     start_time: float,
+    chart_time: float,
     activation_idx: int,
     activation_great: bool,
 ) -> dict[str, Any]:
     if bool(activation_great) and int(carry_idx) == int(activation_idx):
         source = "activation_late_great"
         note_idx = int(carry_idx)
+    elif float(start_time) != float(chart_time):
+        source = "perfect_window"
+        note_idx = int(activation_idx)
     else:
         source = "chart_perfect"
         note_idx: int | None = None
@@ -172,7 +179,8 @@ def _edge_surface_options(
     real_fever_time: float,
     use_forced_great_timing: bool,
     timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray | None = None,
+    great_candidate_timestamps: np.ndarray | None = None,
 ) -> list[tuple[int, int, FgResponseSurface]]:
     out: list[tuple[int, int, FgResponseSurface]] = []
     fills = first_fill if first else later_fill
@@ -194,6 +202,7 @@ def _edge_surface_options(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
             timestamps=timestamps,
+            perfect_candidate_timestamps=perfect_candidate_timestamps,
             great_candidate_timestamps=great_candidate_timestamps,
         )
         skip_contiguous = fill == prev_fill and (start_time == prev_start_time or e == prev_e)
@@ -225,6 +234,7 @@ def _edge_surface_options(
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
                 timestamps=timestamps,
+                perfect_candidate_timestamps=perfect_candidate_timestamps,
                 great_candidate_timestamps=great_candidate_timestamps,
             )
             if int(activation_e) > int(e):
@@ -258,7 +268,8 @@ def _edge_surface_option_details(
     real_fever_time: float,
     use_forced_great_timing: bool,
     timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray | None = None,
+    great_candidate_timestamps: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     fills = first_fill if first else later_fill
@@ -280,6 +291,7 @@ def _edge_surface_option_details(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
             timestamps=timestamps,
+            perfect_candidate_timestamps=perfect_candidate_timestamps,
             great_candidate_timestamps=great_candidate_timestamps,
         )
         if fill != prev_fill or (start_time != prev_start_time and e != prev_e):
@@ -300,6 +312,7 @@ def _edge_surface_option_details(
                     **_trace_timing_fields(
                         carry_idx=int(carry_idx),
                         start_time=float(start_time),
+                        chart_time=float(timestamps[int(a)]),
                         activation_idx=int(a),
                         activation_great=False,
                     ),
@@ -321,6 +334,7 @@ def _edge_surface_option_details(
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
                 timestamps=timestamps,
+                perfect_candidate_timestamps=perfect_candidate_timestamps,
                 great_candidate_timestamps=great_candidate_timestamps,
             )
             if int(activation_e) > int(e):
@@ -353,6 +367,7 @@ def _edge_surface_option_details(
                         **_trace_timing_fields(
                             carry_idx=int(activation_carry_idx),
                             start_time=float(activation_start_time),
+                            chart_time=float(timestamps[int(a)]),
                             activation_idx=int(a),
                             activation_great=True,
                         ),
@@ -370,6 +385,7 @@ def reconstruct_force_greats_response_counts(
     frontier: FgResponseFrontierResult,
     target_surface: FgResponseSurface,
     timestamps: Any,
+    perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     raw_fever_fill: float,
     real_fever_time: float,
@@ -379,6 +395,7 @@ def reconstruct_force_greats_response_counts(
         frontier=frontier,
         target_surface=target_surface,
         timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
@@ -392,6 +409,7 @@ def reconstruct_force_greats_response_trace(
     frontier: FgResponseFrontierResult,
     target_surface: FgResponseSurface,
     timestamps: Any,
+    perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     raw_fever_fill: float,
     real_fever_time: float,
@@ -401,6 +419,11 @@ def reconstruct_force_greats_response_trace(
     n = int(ts.shape[0])
     if n <= 0 or target_surface == _EMPTY_SURFACE:
         return ()
+    perfect_ts = ts if perfect_candidate_timestamps is None else np.ascontiguousarray(
+        np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
+    )
+    if int(perfect_ts.shape[0]) != n:
+        raise ValueError("perfect_candidate_timestamps length must match timestamps")
     great_ts = ts if great_candidate_timestamps is None else np.ascontiguousarray(
         np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
     )
@@ -490,6 +513,7 @@ def reconstruct_force_greats_response_trace(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
             timestamps=ts,
+            perfect_candidate_timestamps=perfect_ts,
             great_candidate_timestamps=great_ts,
         ):
             edge = option["surface"]

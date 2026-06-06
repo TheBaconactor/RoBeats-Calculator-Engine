@@ -168,7 +168,25 @@ def test_fg_note_graph_body_counts_synthetic():
     assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 190.0
     assert wit["fever"] is True  # the witness is both fever and great
 
-    # Case 3: multi-section (two fever windows), head fever + body fever.
+    # Case 3: optimized Perfect-window activation WITNESS -> delayed, but not Great.
+    trace_perfect = [{
+        "section": 1, "activation_index": 12, "fever_end_index": 16,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_start_source": "perfect_window",
+    }]
+    gp = force_greats_note_graph(frontier_trace=trace_perfect, total_notes=n, timestamps=ts)
+    reconcile_force_greats_note_graph(
+        gp, total_notes=n,
+        fever_words=_words_from_indices(set(range(12, 16))), great_words=(0, 0, 0, 0),
+        body_fever=0, body_great=0, body_fever_great=0,
+    )
+    witp = next(x for x in gp if x["is_activation_witness"])
+    assert witp["note_index"] == 12
+    assert witp["note_result"] == "Perfect"
+    assert witp["delta_ms"] == 40.0
+
+    # Case 4: multi-section (two fever windows), head fever + body fever.
     trace3 = [
         {"section": 1, "activation_index": 50, "fever_end_index": 56,
          "forced_start_index": 0, "forced_prefix_count": 2,

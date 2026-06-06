@@ -875,6 +875,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         calc_song={"song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)}},
         song_inputs=SimpleNamespace(
             timestamps=np.asarray([0.0], dtype=np.float32),
+            perfect_candidates=np.asarray([0.0], dtype=np.float32),
             great_candidates=np.asarray([0.0], dtype=np.float32),
             use_forced_great_timing=True,
         ),
@@ -957,6 +958,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
         primary_color="Rush",
         secondary_color="Flow",
         timestamps=np.asarray([0.0], dtype=np.float32),
+        perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
     )
     seen: dict[str, object] = {}
@@ -1029,6 +1031,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         primary_color="Rush",
         secondary_color="Flow",
         timestamps=np.asarray([0.0], dtype=np.float32),
+        perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
@@ -1077,6 +1080,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         primary_color="Rush",
         secondary_color="Flow",
         timestamps=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+        perfect_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         great_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)

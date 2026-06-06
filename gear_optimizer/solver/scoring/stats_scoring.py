@@ -13,6 +13,9 @@ import numpy as np
 from math import ceil, floor
 import logging
 
+from gear_optimizer.core.array_signature import array_sig16
+from gear_optimizer.core.parsing import env_get
+
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...core.utils import timing_envelope_full_context, timing_envelope_timing_context, safe_int, safe_float
 
@@ -24,9 +27,6 @@ from ..fever_timeline import (
 from ...core.ref_lookup import resolve_stat_factors
 
 from ..scoring_core import fast_calculate_score, lookup_reference_py
-
-
-from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
@@ -499,7 +499,8 @@ def _song_cache_key_for_fg_timeline(calc_song):
     """
     Generate cache key for ForceGreats timeline evaluation.
 
-    This key MUST vary when fg_timestamps / fg_great_candidate_timestamps vary,
+    This key MUST vary when fg_timestamps / fg_perfect_candidate_timestamps /
+    fg_great_candidate_timestamps vary,
     otherwise FG timeline caches can cross-contaminate between different simulated runs.
     """
     meta = calc_song.get("metadata", {}) or {}
@@ -523,13 +524,25 @@ def _song_cache_key_for_fg_timeline(calc_song):
         first_ms = 0
         last_ms = 0
 
+    perfect_candidates = song_data.get("fg_perfect_candidate_timestamps")
     great_candidates = song_data.get("fg_great_candidate_timestamps")
+    perfect_sig = b""
+    great_sig = b""
+    has_perfect_candidates = 0
     has_great_candidates = 0
     try:
+        has_perfect_candidates = 1 if perfect_candidates is not None and int(len(perfect_candidates)) == int(n) else 0
+        if has_perfect_candidates:
+            perfect_sig = bytes(array_sig16(np.asarray(perfect_candidates, dtype=np.float32).reshape(-1)))
         has_great_candidates = 1 if great_candidates is not None and int(len(great_candidates)) == int(n) else 0
+        if has_great_candidates:
+            great_sig = bytes(array_sig16(np.asarray(great_candidates, dtype=np.float32).reshape(-1)))
     except Exception as e:
         logger.debug(f"stats_scoring:_song_cache_key_for_fg_timeline: {e}")
+        has_perfect_candidates = 0
         has_great_candidates = 0
+        perfect_sig = b""
+        great_sig = b""
 
     return (
         str(meta.get("Song Name", "")),
@@ -539,5 +552,8 @@ def _song_cache_key_for_fg_timeline(calc_song):
         safe_int(last_ms, 0),
         safe_float(meta.get("Last Note Time", 0) or 0, 0.0),
         safe_int(meta.get("Long Notes", 0) or 0, 0),
+        int(has_perfect_candidates),
+        perfect_sig,
         int(has_great_candidates),
+        great_sig,
     ) + timing_envelope_full_context(calc_song)

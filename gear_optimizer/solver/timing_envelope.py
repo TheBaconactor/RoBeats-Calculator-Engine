@@ -376,6 +376,58 @@ def build_great_candidate_envelope_sec(
     return out
 
 
+def build_perfect_candidate_envelope_sec(
+    timestamps_sec: np.ndarray,
+    note_types: np.ndarray | None,
+    *,
+    perfect_lower_ms: int = -20,
+    perfect_upper_ms: int = 40,
+    held_tail_type: int = 3,
+    held_tail_time_multiplier: int = 2,
+    quantize_ms: bool = True,
+) -> np.ndarray:
+    """Build latest valid Perfect-candidate envelope timestamps per chord group."""
+
+    ts_sec = np.asarray(timestamps_sec, dtype=np.float32)
+    n = int(ts_sec.shape[0])
+    if n <= 0:
+        return ts_sec.astype(np.float32, copy=False)
+
+    if note_types is None or len(note_types) != n:
+        nt = np.ones(n, dtype=np.int16)
+    else:
+        nt = np.asarray(note_types, dtype=np.int16)
+
+    perfect_low_ms, perfect_high_ms = build_per_note_perfect_window_ms(
+        nt,
+        perfect_lower_ms=int(perfect_lower_ms),
+        perfect_upper_ms=int(perfect_upper_ms),
+        held_tail_type=int(held_tail_type),
+        held_tail_time_multiplier=int(held_tail_time_multiplier),
+    )
+    prepared = prepare_grouped_timing_windows(
+        ts_sec,
+        note_low_ms=np.asarray(perfect_low_ms, dtype=np.int32),
+        note_high_ms=np.asarray(perfect_high_ms, dtype=np.int32),
+        quantize_ms=bool(quantize_ms),
+    )
+
+    group_starts = np.asarray(prepared["group_starts"], dtype=np.int32)
+    group_ends = np.asarray(prepared["group_ends"], dtype=np.int32)
+    group_base_t = np.asarray(prepared["group_base_t"], dtype=np.int32)
+    group_high = np.asarray(prepared["group_high"], dtype=np.int32)
+
+    event_ms = np.empty(int(n), dtype=np.int32)
+    for g in range(int(group_starts.shape[0])):
+        s = int(group_starts[g])
+        e = int(group_ends[g])
+        event_ms[s:e] = int(group_base_t[g]) + int(group_high[g])
+
+    out = event_ms.astype(np.float32)
+    out *= np.float32(0.001)
+    return out
+
+
 def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | None:
     """
     Attach deterministic timing-envelope streams to a calc_song.
@@ -419,6 +471,10 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
         song_data.pop("_note_types_sig", None)
 
     song_data["fg_timestamps"] = chart_ts
+    song_data["fg_perfect_candidate_timestamps"] = build_perfect_candidate_envelope_sec(
+        chart_ts,
+        note_types,
+    )
     song_data["fg_great_candidate_timestamps"] = build_great_candidate_envelope_sec(
         chart_ts,
         note_types,
@@ -428,6 +484,7 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
     meta = dict(calc_song.get("metadata", {}) or {})
     meta["TimingEnvelopeApplied"] = True
     meta["TimingEnvelopeMode"] = "perfect_window"
+    meta["TimingEnvelopeFGPerfect"] = "perfect_upper"
     meta["TimingEnvelopeFGCarry"] = "late_upper"
     for key in (
         "HumanHitSimApplied",

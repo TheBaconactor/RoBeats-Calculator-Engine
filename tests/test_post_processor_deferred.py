@@ -8,6 +8,27 @@ from gear_optimizer.pipeline.post_processor_deferred import (
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
 
+def _ref_arrays() -> dict:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+
+    rows = int(TOTAL_ROWS) + 1
+    return {
+        "Perfect Points": [1.0] * rows,
+        "Combo Multiplier": [1.0] * rows,
+        "Fever Multiplier": [1.0] * rows,
+        "Fever Fill Rate": [1.0] * rows,
+        "Fever Time": [1.0] * rows,
+    }
+
+
+def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song)
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+
 def test_deferred_post_finalizer_builds_replay_authoritative_entries():
     calc_song = {
         "metadata": {
@@ -18,13 +39,7 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         },
         "song_data": {"timestamps": [0.0]},
     }
-    ref_arrays = {
-        "Perfect Points": [1.0] * 1001,
-        "Combo Multiplier": [1.0] * 1001,
-        "Fever Multiplier": [1.0] * 1001,
-        "Fever Fill Rate": [1.0] * 1001,
-        "Fever Time": [1.0] * 1001,
-    }
+    ref_arrays = _ref_arrays()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -34,6 +49,7 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         "Rush": 10,
         "Flow": 5,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     inflated_score = int(score_stats_exact(stats, calc_song, ref_arrays)) + 12345
     item = {
         "_deferred_post": True,

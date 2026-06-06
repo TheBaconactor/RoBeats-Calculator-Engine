@@ -651,6 +651,7 @@ def _solve_result_from_row(
             frontier=frontier,
             target_surface=surface,
             timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
             raw_fever_fill=float(raw_fill),
             real_fever_time=float(real_fever_time),

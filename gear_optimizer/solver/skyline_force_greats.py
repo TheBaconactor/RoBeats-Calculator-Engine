@@ -136,6 +136,7 @@ def _materialize_force_payload(
         frontier=fg_result.frontier,
         target_surface=fg_result.surface,
         timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         raw_fever_fill=float(fg_result.raw_fever_fill),
         real_fever_time=float(fg_result.real_fever_time),

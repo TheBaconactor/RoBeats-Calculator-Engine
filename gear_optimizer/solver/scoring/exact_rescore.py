@@ -83,6 +83,7 @@ def _get_fg_timeline_buffers(total_notes: int):
 
 def _compute_force_greats_timeline(
     timestamps,
+    perfect_candidate_timestamps,
     great_candidate_timestamps,
     total_notes,
     fever_fill_rate,
@@ -108,6 +109,7 @@ def _compute_force_greats_timeline(
         section_count,
     ) = calculate_force_greats_timeline_indices(
         timestamps,
+        perfect_candidate_timestamps,
         great_candidate_timestamps,
         total_notes,
         fever_fill_rate,
@@ -802,6 +804,7 @@ def evaluate_force_greats_exact(
         section_details,
     ) = _compute_force_greats_timeline(
         song_inputs.timestamps,
+        song_inputs.perfect_candidates,
         song_inputs.great_candidates,
         song_inputs.total_notes,
         factors.fever_fill_rate,

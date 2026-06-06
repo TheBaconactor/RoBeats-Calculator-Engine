@@ -29,6 +29,7 @@ class FirstOnlyCanonicalization:
     duplicate_sources_by_source: dict[int, tuple[int, ...]]
     real_time_index_by_source: dict[int, int]
     timestamp_end_idx: np.ndarray
+    perfect_end_idx: np.ndarray
     great_end_idx: np.ndarray
 
 
@@ -36,14 +37,16 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     *,
     prepared: list[tuple],
     timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
-        return FirstOnlyCanonicalization([], {}, {}, empty, empty)
+        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty)
     real_times = np.asarray([item[2] for item in prepared], dtype=np.float32)
-    real_time_index, timestamp_end_idx, great_end_idx = _precompute_end_indices(
+    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
         timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         real_times=real_times,
     )
@@ -54,13 +57,15 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             {source_idx: (source_idx,)},
             {source_idx: int(real_time_index[0])},
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
         )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
-    end_class_by_signature: dict[tuple[bytes, bytes], int] = {}
+    end_class_by_signature: dict[tuple[bytes, bytes, bytes], int] = {}
     for idx in range(int(timestamp_end_idx.shape[0])):
         signature = (
             np.ascontiguousarray(timestamp_end_idx[idx], dtype=np.int32).tobytes(),
+            np.ascontiguousarray(perfect_end_idx[idx], dtype=np.int32).tobytes(),
             np.ascontiguousarray(great_end_idx[idx], dtype=np.int32).tobytes(),
         )
         class_idx = end_class_by_signature.get(signature)
@@ -107,6 +112,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         },
         real_time_index_by_source,
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
     )
 
@@ -115,17 +121,28 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
 def _precompute_end_indices(
     *,
     timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     real_times: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float32), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
+    perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
     great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
+    perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
     for idx, real_time in enumerate(unique_real_times):
         rt = np.float32(real_time)
         timestamp_end_idx[idx] = np.searchsorted(ts, np.asarray(ts + rt, dtype=np.float32), side="left").astype(
+            np.int32,
+            copy=False,
+        )
+        perfect_end_idx[idx] = np.searchsorted(
+            ts,
+            np.asarray(perfect_ts + rt, dtype=np.float32),
+            side="left",
+        ).astype(
             np.int32,
             copy=False,
         )
@@ -136,5 +153,6 @@ def _precompute_end_indices(
     return (
         np.ascontiguousarray(inverse.astype(np.int32, copy=False)),
         np.ascontiguousarray(timestamp_end_idx),
+        np.ascontiguousarray(perfect_end_idx),
         np.ascontiguousarray(great_end_idx),
     )

@@ -26,6 +26,7 @@ from gear_optimizer.pipeline.post_processor_fg_updates import (
     canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
 )
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries
+from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
@@ -248,6 +249,20 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         best_fg = 0
                     if saved > 0:
                         logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
+            except MissingFrontierCacheError as exc:
+                # Fail loudly: a required prebuilt frontier cache was missing, so the FG
+                # score could not be canonicalized. Count it and surface it rather than
+                # silently completing the song with only its base score.
+                failed += 1
+                msg = (
+                    f"[POST][FG] FAILED: {item.get('song', 'Unknown')} - required frontier "
+                    f"cache missing; FG score not saved: {exc}"
+                )
+                print(msg, file=sys.stderr)
+                try:
+                    logging.error(msg + "\n" + traceback.format_exc())
+                except Exception as e:
+                    logger.warning(f"post_processor:_print_pending_final: {e}")
             except Exception as exc:
                 msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
                 print(msg, file=sys.stderr)

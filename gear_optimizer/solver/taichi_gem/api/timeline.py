@@ -20,6 +20,7 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
     build_timeline_frontier_grid_payload,
@@ -953,7 +954,7 @@ def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Timelin
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        raise ValueError(
+        raise MissingFrontierCacheError(
             "Timeline frontier payload is missing. Startup cache prebuild must build the "
             "candidate-independent all-FT/FF timeline frontier before runtime scoring."
         )

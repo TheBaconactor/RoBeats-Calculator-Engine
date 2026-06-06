@@ -30,6 +30,7 @@ class SongMeta:
 @dataclass(frozen=True, slots=True)
 class FGSongInputs:
     timestamps: Any
+    perfect_candidates: Any
     great_candidates: Any
     use_forced_great_timing: bool
     total_notes: int
@@ -60,6 +61,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     if timestamps is None:
         timestamps = ()
+    perfect_candidates = song_data.get("fg_perfect_candidate_timestamps", timestamps)
     great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
     use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
 
@@ -78,6 +80,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
 
     return FGSongInputs(
         timestamps=timestamps,
+        perfect_candidates=perfect_candidates,
         great_candidates=great_candidates,
         use_forced_great_timing=bool(use_forced_great_timing),
         total_notes=int(total_notes),

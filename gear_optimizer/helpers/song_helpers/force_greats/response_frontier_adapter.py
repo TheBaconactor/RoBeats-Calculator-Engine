@@ -121,6 +121,7 @@ def _force_payload_from_response_frontier(
         frontier=frontier,
         target_surface=result.surface,
         timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         raw_fever_fill=float(result.raw_fever_fill),
         real_fever_time=float(result.real_fever_time),

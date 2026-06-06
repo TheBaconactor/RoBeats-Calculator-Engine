@@ -84,6 +84,7 @@ def _compact_first_frontier_action_arrays(
 def _build_force_greats_response_first_frontiers_gpu_batch(
     *,
     timestamps: Any,
+    perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     geometries: Any,
     use_forced_great_timing: bool = True,
@@ -97,6 +98,12 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         return tuple(FgResponseFrontierResult((_EMPTY_SURFACE,), {}, 0, 0, 0, 0, 1, 1, 0, 0.0) for _ in geometry_rows)
     if bool(np.any(ts[1:] < ts[:-1])):
         raise ValueError("timestamps must be sorted in nondecreasing order")
+    if perfect_candidate_timestamps is None:
+        perfect_ts = ts
+    else:
+        perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
+        if int(perfect_ts.shape[0]) != n:
+            raise ValueError("perfect_candidate_timestamps length must match timestamps")
     if great_candidate_timestamps is None:
         great_ts = ts
     else:
@@ -153,6 +160,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     canonical = _canonicalize_first_only_prepared_items_with_end_indices(
         prepared=prepared,
         timestamps=ts,
+        perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
     )
     prepared = canonical.prepared
@@ -178,8 +186,10 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         start=0,
                         stop=int(geometry_count),
                         timestamps=ts,
+                        perfect_candidate_timestamps=perfect_ts,
                         great_candidate_timestamps=great_ts,
                         timestamp_end_idx=canonical.timestamp_end_idx,
+                        perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
@@ -202,8 +212,10 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         start=int(start),
                         stop=int(stop),
                         timestamps=ts,
+                        perfect_candidate_timestamps=perfect_ts,
                         great_candidate_timestamps=great_ts,
                         timestamp_end_idx=canonical.timestamp_end_idx,
+                        perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
@@ -227,12 +239,14 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
 def build_force_greats_response_first_frontiers_gpu_batch(
     *,
     timestamps: Any,
+    perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     geometries: Any,
     use_forced_great_timing: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
     return _build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         geometries=geometries,
         use_forced_great_timing=bool(use_forced_great_timing),

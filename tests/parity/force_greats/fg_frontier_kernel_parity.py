@@ -29,6 +29,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba impo
 def build_kernel_args(
     *,
     timestamps: Any,
+    perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     raw_fever_fill: float,
     non_fever_base: int,
@@ -43,6 +44,14 @@ def build_kernel_args(
     """
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
+    if perfect_candidate_timestamps is None:
+        perfect_ts = ts
+    else:
+        perfect_ts = np.ascontiguousarray(
+            np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
+        )
+        if int(perfect_ts.shape[0]) != n:
+            raise ValueError("perfect_candidate_timestamps length must match timestamps")
     if great_candidate_timestamps is None:
         great_ts = ts
     else:
@@ -69,8 +78,9 @@ def build_kernel_args(
     )
 
     real_times = np.asarray([float(real_fever_time)], dtype=np.float32)
-    real_time_index, timestamp_end_idx, great_end_idx = _precompute_end_indices(
+    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
         timestamps=ts,
+        perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
         real_times=real_times,
     )
@@ -85,8 +95,10 @@ def build_kernel_args(
         "later_activation_forced": np.ascontiguousarray(later_activation_forced_arr, dtype=np.int32),
         "first_activation_forced": np.ascontiguousarray(first_activation_forced_arr, dtype=np.int32),
         "timestamps": ts,
+        "perfect_candidate_timestamps": perfect_ts,
         "great_candidate_timestamps": great_ts,
         "timestamp_end_idx": timestamp_end_idx,
+        "perfect_end_idx": perfect_end_idx,
         "great_end_idx": great_end_idx,
         "real_time_idx": int(real_time_index[0]),
         "use_forced_great_timing_i": 1 if bool(use_forced_great_timing) else 0,
@@ -105,8 +117,10 @@ def numba_first_frontier(args: dict[str, Any]):
         args["later_activation_forced"],
         args["first_activation_forced"],
         args["timestamps"],
+        args["perfect_candidate_timestamps"],
         args["great_candidate_timestamps"],
         args["timestamp_end_idx"],
+        args["perfect_end_idx"],
         args["great_end_idx"],
         int(args["real_time_idx"]),
         int(args["use_forced_great_timing_i"]),

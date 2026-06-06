@@ -164,6 +164,134 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
     assert any((int(surface.fever0) & int(surface.great0)) != 0 for surface in frontier.first_frontier)
 
 
+def test_fg_response_first_frontier_emits_optimized_perfect_activation_edge() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+
+    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+    perfect_candidates = timestamps.copy()
+    perfect_candidates[2] = np.float32(2.5)
+    great_candidates = timestamps.copy()
+
+    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        geometries=((2.25, 3, 1.0),),
+        use_forced_great_timing=True,
+    )[0]
+
+    target = next(
+        surface
+        for surface in frontier.first_frontier
+        if int(surface.fever0) == 0b1100 and int(surface.great0) == 0
+    )
+    trace = reconstruct_force_greats_response_trace(
+        frontier=frontier,
+        target_surface=target,
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        raw_fever_fill=2.25,
+        real_fever_time=1.0,
+        use_forced_great_timing=True,
+    )
+
+    assert trace[0]["activation_judgment"] == "perfect"
+    assert trace[0]["fever_start_source"] == "perfect_window"
+    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(500.0)
+
+
+def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.4, 4.0], dtype=np.float32)
+    perfect_candidates = timestamps.copy()
+    perfect_candidates[2] = np.float32(2.5)
+    great_candidates = timestamps.copy()
+    great_candidates[2] = np.float32(2.5)
+
+    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        geometries=((2.25, 3, 1.0),),
+        use_forced_great_timing=True,
+    )[0]
+
+    assert any(int(surface.fever0) == 0b11100 and int(surface.great0) == 0 for surface in frontier.first_frontier)
+    assert not any(
+        int(surface.fever0) == 0b11100 and (int(surface.great0) & 0b00100)
+        for surface in frontier.first_frontier
+    )
+
+
+def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfect() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.4, 4.0], dtype=np.float32)
+    perfect_candidates = timestamps.copy()
+    perfect_candidates[2] = np.float32(2.1)
+    great_candidates = timestamps.copy()
+    great_candidates[2] = np.float32(2.5)
+
+    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        geometries=((2.25, 3, 1.0),),
+        use_forced_great_timing=True,
+    )[0]
+
+    assert any(
+        int(surface.fever0) == 0b11100
+        and (int(surface.great0) & 0b00100)
+        and (int(surface.fever0) & int(surface.great0) & 0b00100)
+        for surface in frontier.first_frontier
+    )
+
+
+def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:
+    from gear_optimizer.solver.scoring.exact_rescore import _compute_force_greats_timeline
+
+    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+    perfect_candidates = timestamps.copy()
+    perfect_candidates[2] = np.float32(2.5)
+    great_candidates = timestamps.copy()
+
+    (
+        fever_mask_head,
+        _count_body_fever,
+        _count_body_normal,
+        non_fever_base,
+        _section_details,
+    ) = _compute_force_greats_timeline(
+        timestamps,
+        perfect_candidates,
+        great_candidates,
+        int(timestamps.shape[0]),
+        1.5,
+        4.0 / 3.0,
+        0,
+        4.0,
+        [],
+        clamp_base_notes_nonnegative=True,
+        clamp_forced_to_section_notes=True,
+        use_forced_great_timing=True,
+    )
+
+    assert non_fever_base == 3
+    assert fever_mask_head.tolist() == [False, False, True, True, False]
+
+
 def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,

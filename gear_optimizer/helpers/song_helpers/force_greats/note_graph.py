@@ -21,9 +21,10 @@ Two graphs per loadout, matching the intended software behavior:
         all notes Perfect; selected activation witnesses carry exact `delta_ms`
         when a compact timeline trace is available.
   * FG   = fg frontier + timeline       -> force_greats_note_graph(...)
-        per-note Perfect/Great + fever; the activation-note Late Great is the only
-        timing WITNESS (carries the exact `delta_ms`); prefix/forced Greats are pure
-        v3 selectors (Great label, `delta_ms=None`, no precise witness).
+        per-note Perfect/Great + fever; optimized activation hits are timing
+        WITNESSES (Perfect-window or Late-Great, carrying exact `delta_ms`);
+        prefix/forced Greats are pure v3 selectors (Great label, `delta_ms=None`,
+        no precise witness).
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
 + `response_surface`; BASE: the packed stats, replayed through the fever timeline),
@@ -135,8 +136,9 @@ def force_greats_note_graph(
     sequential, non-overlapping region of the timeline:
       - fever window  [activation_index, fever_end_index)            -> fever
       - forced greats [forced_start_index, forced_start_index+forced_prefix_count) -> Great (selector)
-      - if activation_judgment == "late_great": the note at activation_index is also a
-        Great and is the timing WITNESS, carrying activation_hit_offset_ms as delta_ms.
+      - the activation note is a timing WITNESS when activation_hit_offset_ms is nonzero.
+        If activation_judgment == "late_great", that witness is also a Great; otherwise
+        it remains Perfect.
     All other notes are Perfect (delta 0). A note may be both fever and Great.
     """
     n = int(total_notes)
@@ -160,8 +162,17 @@ def force_greats_note_graph(
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
 
-        if str(sec.get("activation_judgment", "")) == "late_great" and 0 <= a < n:
+        activation_judgment = str(sec.get("activation_judgment", ""))
+        if activation_judgment == "late_great" and 0 <= a < n:
             notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
+            notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+            notes[a]["is_activation_witness"] = True
+            notes[a]["section"] = section
+        elif (
+            activation_judgment == "perfect"
+            and 0 <= a < n
+            and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
+        ):
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section

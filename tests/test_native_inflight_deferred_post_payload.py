@@ -9,6 +9,27 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
 )
 
 
+def _ref_arrays() -> dict:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+
+    rows = int(TOTAL_ROWS) + 1
+    return {
+        "Perfect Points": [1.0] * rows,
+        "Combo Multiplier": [1.0] * rows,
+        "Fever Multiplier": [1.0] * rows,
+        "Fever Fill Rate": [1.0] * rows,
+        "Fever Time": [1.0] * rows,
+    }
+
+
+def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song)
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+
 def test_native_song_error_payload_suppresses_bundle_progress():
     song = make_native_song(song_name="Bundle Song", task_key="bundle-key")
     song.runtime.bundle.bundle_parent_task = ("parent",)
@@ -86,10 +107,11 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
 
     calc_song = {
-        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"},
+        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
         "song_data": {"timestamps": [0.0], "note_types": [1]},
     }
-    ref_arrays = {"Perfect Points": [0], "Combo Multiplier": [1.0], "Fever Multiplier": [1.0]}
+    ref_arrays = _ref_arrays()
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     ga_candidates = [
         {
             "Score": 111,
@@ -323,13 +345,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         },
         "song_data": {"timestamps": [0.0]},
     }
-    ref_arrays = {
-        "Perfect Points": [1.0] * 1001,
-        "Combo Multiplier": [1.0] * 1001,
-        "Fever Multiplier": [1.0] * 1001,
-        "Fever Fill Rate": [1.0] * 1001,
-        "Fever Time": [1.0] * 1001,
-    }
+    ref_arrays = _ref_arrays()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -339,6 +355,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         "Rush": 10,
         "Flow": 5,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
 

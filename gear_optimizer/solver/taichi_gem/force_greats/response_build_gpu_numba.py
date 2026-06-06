@@ -630,6 +630,7 @@ def _numba_packet_queue_push_activation(
     body_counts,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
     back_alpha,
@@ -641,7 +642,7 @@ def _numba_packet_queue_push_activation(
     perfect_e = _numba_clamped_end_idx(
         int(n),
         int(activation),
-        int(timestamp_end_idx[int(real_time_idx), int(activation)]),
+        int(perfect_end_idx[int(real_time_idx), int(activation)]),
     )
     edge_e = int(perfect_e)
     fever_great_delta = 0
@@ -801,10 +802,11 @@ def _numba_edge_end_idx_from_tables(
     activation_great_i: int,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ) -> int:
-    edge_e = int(timestamp_end_idx[int(real_time_idx), int(activation_idx)])
+    edge_e = int(perfect_end_idx[int(real_time_idx), int(activation_idx)])
     if int(use_forced_great_timing_i) != 0 and int(activation_great_i) != 0 and int(activation_idx) < int(n):
         late_e = int(great_end_idx[int(real_time_idx), int(activation_idx)])
         if int(late_e) > int(edge_e):
@@ -825,6 +827,7 @@ def _numba_later_edge_from_precomputed(
     later_forced,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ) -> int:
@@ -838,6 +841,7 @@ def _numba_later_edge_from_precomputed(
         0,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
     )
@@ -852,6 +856,7 @@ def _numba_first_edge_from_precomputed(
     first_forced,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ) -> int:
@@ -864,6 +869,7 @@ def _numba_first_edge_from_precomputed(
         0,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
     )
@@ -879,6 +885,7 @@ def _numba_later_activation_edge_from_precomputed(
     later_activation_forced,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ):
@@ -895,6 +902,7 @@ def _numba_later_activation_edge_from_precomputed(
         1,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
     )
@@ -909,6 +917,7 @@ def _numba_first_activation_edge_from_precomputed(
     first_activation_forced,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ):
@@ -924,6 +933,7 @@ def _numba_first_activation_edge_from_precomputed(
         1,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
     )
@@ -941,8 +951,10 @@ def _numba_zero_forced_body_fever_precomputed(
     first_activation_forced,
     use_forced_great_timing_i: int,
     timestamps,
+    perfect_candidate_timestamps,
     great_candidate_timestamps,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ) -> int:
@@ -955,6 +967,7 @@ def _numba_zero_forced_body_fever_precomputed(
         first_forced,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
     )
@@ -973,6 +986,7 @@ def _numba_zero_forced_body_fever_precomputed(
             later_forced,
             int(use_forced_great_timing_i),
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -995,8 +1009,10 @@ def _numba_max_body_fever_precomputed(
     first_activation_forced,
     use_forced_great_timing_i: int,
     timestamps,
+    perfect_candidate_timestamps,
     great_candidate_timestamps,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
 ) -> int:
@@ -1029,6 +1045,7 @@ def _numba_max_body_fever_precomputed(
                     0,
                     int(use_forced_great_timing_i),
                     timestamp_end_idx,
+                    perfect_end_idx,
                     great_end_idx,
                     int(real_time_idx),
                 )
@@ -1040,6 +1057,7 @@ def _numba_max_body_fever_precomputed(
                         1,
                         int(use_forced_great_timing_i),
                         timestamp_end_idx,
+                        perfect_end_idx,
                         great_end_idx,
                         int(real_time_idx),
                     )
@@ -1069,6 +1087,7 @@ def _numba_max_body_fever_precomputed(
             first_forced,
             int(use_forced_great_timing_i),
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -1085,6 +1104,7 @@ def _numba_max_body_fever_precomputed(
             first_activation_forced,
             int(use_forced_great_timing_i),
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -1107,6 +1127,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     reachable,
     use_forced_great_timing_i: int,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
     pair_mod: int,
@@ -1181,6 +1202,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     body_counts,
                     int(use_forced_great_timing_i),
                     timestamp_end_idx,
+                    perfect_end_idx,
                     great_end_idx,
                     int(real_time_idx),
                     back_alpha_by_family[int(family_idx)],
@@ -1272,8 +1294,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
     later_activation_forced,
     first_activation_forced,
     timestamps,
+    perfect_candidate_timestamps,
     great_candidate_timestamps,
     timestamp_end_idx,
+    perfect_end_idx,
     great_end_idx,
     real_time_idx: int,
     use_forced_great_timing_i: int,
@@ -1289,8 +1313,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_activation_forced,
             int(use_forced_great_timing_i),
             timestamps,
+            perfect_candidate_timestamps,
             great_candidate_timestamps,
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -1308,8 +1334,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_activation_forced,
                 int(use_forced_great_timing_i),
                 timestamps,
+                perfect_candidate_timestamps,
                 great_candidate_timestamps,
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1326,6 +1354,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_forced,
             int(use_forced_great_timing_i),
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -1338,6 +1367,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_activation_forced,
             int(use_forced_great_timing_i),
             timestamp_end_idx,
+            perfect_end_idx,
             great_end_idx,
             int(real_time_idx),
         )
@@ -1356,6 +1386,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 later_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1369,6 +1400,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 later_activation_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1409,6 +1441,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
         reachable,
         int(use_forced_great_timing_i),
         timestamp_end_idx,
+        perfect_end_idx,
         great_end_idx,
         int(real_time_idx),
         int(pair_mod),
@@ -1449,6 +1482,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     later_forced,
                     int(use_forced_great_timing_i),
                     timestamp_end_idx,
+                    perfect_end_idx,
                     great_end_idx,
                     int(real_time_idx),
                 )
@@ -1489,6 +1523,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 later_activation_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1545,6 +1580,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1557,6 +1593,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_activation_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1713,6 +1750,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )
@@ -1754,6 +1792,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_activation_forced,
                 int(use_forced_great_timing_i),
                 timestamp_end_idx,
+                perfect_end_idx,
                 great_end_idx,
                 int(real_time_idx),
             )

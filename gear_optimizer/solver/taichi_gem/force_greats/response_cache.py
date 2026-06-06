@@ -174,6 +174,7 @@ def _build_response_frontier_cache_payload(
         build_t0 = time.perf_counter()
         built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
             geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),

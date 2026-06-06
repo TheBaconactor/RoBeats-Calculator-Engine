@@ -263,6 +263,7 @@ def calculate_fever_activations_grid(
 @jit(nopython=True, cache=True)
 def calculate_force_greats_timeline_indices(
     song_timestamps,
+    perfect_candidate_timestamps,
     great_candidate_timestamps,
     total_notes,
     fever_fill_rate,
@@ -371,7 +372,7 @@ def calculate_force_greats_timeline_indices(
         if current_idx >= total_notes:
             break
 
-        start_time = song_timestamps[current_idx]
+        start_time = perfect_candidate_timestamps[current_idx]
         if use_forced_great_timing and carry_time > start_time:
             start_time = carry_time
         end_time = start_time + real_fever_time

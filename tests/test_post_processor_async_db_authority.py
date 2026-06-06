@@ -5,6 +5,27 @@ import threading
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
+def _ref_arrays() -> dict:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+
+    rows = int(TOTAL_ROWS) + 1
+    return {
+        "Perfect Points": [1.0] * rows,
+        "Combo Multiplier": [1.0] * rows,
+        "Fever Multiplier": [1.0] * rows,
+        "Fever Fill Rate": [1.0] * rows,
+        "Fever Time": [1.0] * rows,
+    }
+
+
+def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song)
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+
 def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
@@ -25,13 +46,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         },
         "song_data": {"timestamps": [0.0]},
     }
-    ref_arrays = {
-        "Perfect Points": [1.0] * 1001,
-        "Combo Multiplier": [1.0] * 1001,
-        "Fever Multiplier": [1.0] * 1001,
-        "Fever Fill Rate": [1.0] * 1001,
-        "Fever Time": [1.0] * 1001,
-    }
+    ref_arrays = _ref_arrays()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -41,6 +56,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         "Rush": 10,
         "Flow": 5,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
 
