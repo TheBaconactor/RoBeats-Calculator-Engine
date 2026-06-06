@@ -220,7 +220,7 @@ def _ga_exact_genome_stats_signature_reuse_enabled() -> int:
     if raw_norm == _GA_EXACT_STATS_REUSE_RAW:
         return int(_GA_EXACT_STATS_REUSE_ENABLED)
     _GA_EXACT_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"0", "false", "no", "off"}:
+    if raw_norm in {"", "0", "false", "no", "off"}:
         _GA_EXACT_STATS_REUSE_ENABLED = 0
     else:
         _GA_EXACT_STATS_REUSE_ENABLED = 1
