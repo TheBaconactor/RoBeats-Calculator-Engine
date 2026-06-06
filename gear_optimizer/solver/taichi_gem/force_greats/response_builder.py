@@ -175,25 +175,94 @@ def _closest_hit_time_for_exit(
     hi = float(legal_hi)
     if lo > hi:
         raise ValueError("FG response trace received an empty activation witness interval")
-    if target > int(activation_idx) + 1:
-        prev_end = np.float32(float(timestamps[target - 1]) - float(real_fever_time))
-        lo = max(lo, float(np.nextafter(prev_end, np.float32(np.inf))))
-    if target < int(n):
-        hi = min(hi, float(timestamps[target]) - float(real_fever_time))
-    if lo > hi:
-        raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
 
-    chart = float(chart_time)
-    hit = min(max(chart, lo), hi)
-    for _ in range(4):
+    def _exit_idx(hit: float) -> int:
         end_idx = _lower_bound_from(timestamps, hit + float(real_fever_time))
         if end_idx <= int(activation_idx):
             end_idx = min(int(n), int(activation_idx) + 1)
-        if int(end_idx) == int(target):
-            return float(hit)
-        hit = float(np.nextafter(np.float32(hit), np.float32(np.inf)))
-        if hit > hi:
-            break
+        return int(end_idx)
+
+    def _next_hit(hit: float, direction: float) -> float:
+        return float(np.nextafter(np.float32(hit), np.float32(direction)))
+
+    def _ceil_hit(value: float) -> float:
+        hit = float(np.float32(value))
+        if hit < float(value):
+            hit = _next_hit(hit, np.float32(np.inf))
+        return float(hit)
+
+    def _floor_hit(value: float) -> float:
+        hit = float(np.float32(value))
+        if hit > float(value):
+            hit = _next_hit(hit, np.float32(-np.inf))
+        return float(hit)
+
+    def _float32_order(value: float) -> int:
+        bits = int(np.asarray(np.float32(value), dtype=np.float32).view(np.uint32))
+        if bits & 0x80000000:
+            return int(0x80000000 - bits)
+        return int(bits + 0x80000000)
+
+    def _hit_from_order(order: int) -> float:
+        if int(order) >= 0x80000000:
+            bits = int(order) - 0x80000000
+        else:
+            bits = 0x80000000 - int(order)
+        return float(np.asarray(np.uint32(bits), dtype=np.uint32).view(np.float32))
+
+    def _first_order_with_exit_at_least(first_order: int, last_order: int, expected: int) -> int | None:
+        lo_order = int(first_order)
+        hi_order = int(last_order)
+        found: int | None = None
+        while lo_order <= hi_order:
+            mid = (lo_order + hi_order) // 2
+            if _exit_idx(_hit_from_order(mid)) >= int(expected):
+                found = int(mid)
+                hi_order = int(mid) - 1
+            else:
+                lo_order = int(mid) + 1
+        return found
+
+    def _last_order_with_exit_at_most(first_order: int, last_order: int, expected: int) -> int | None:
+        lo_order = int(first_order)
+        hi_order = int(last_order)
+        found: int | None = None
+        while lo_order <= hi_order:
+            mid = (lo_order + hi_order) // 2
+            if _exit_idx(_hit_from_order(mid)) <= int(expected):
+                found = int(mid)
+                lo_order = int(mid) + 1
+            else:
+                hi_order = int(mid) - 1
+        return found
+
+    chart = float(chart_time)
+    hit = min(max(chart, lo), hi)
+    start_idx = _exit_idx(hit)
+    if int(start_idx) == int(target):
+        return float(hit)
+
+    min_order = _float32_order(_ceil_hit(lo))
+    max_order = _float32_order(_floor_hit(hi))
+    if min_order > max_order:
+        raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
+
+    if int(start_idx) < int(target):
+        if _exit_idx(hi) < int(target):
+            raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
+        start_order = max(min_order, _float32_order(_ceil_hit(hit)))
+        candidate_order = _first_order_with_exit_at_least(start_order, max_order, int(target))
+        candidate = None if candidate_order is None else _hit_from_order(int(candidate_order))
+        if candidate is not None and _exit_idx(candidate) == int(target):
+            return float(candidate)
+    else:
+        if _exit_idx(lo) > int(target):
+            raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
+        start_order = min(max_order, _float32_order(_floor_hit(hit)))
+        candidate_order = _last_order_with_exit_at_most(min_order, start_order, int(target))
+        candidate = None if candidate_order is None else _hit_from_order(int(candidate_order))
+        if candidate is not None and _exit_idx(candidate) == int(target):
+            return float(candidate)
     raise ValueError("closest-to-zero FG trace witness changed the response surface")
 
 

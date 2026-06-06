@@ -207,6 +207,32 @@ def test_fg_response_trace_logs_closest_perfect_witness_for_selected_surface() -
     assert 0.0 < trace[0]["activation_hit_offset_ms"] < 0.001
 
 
+def test_fg_response_trace_witness_search_crosses_float32_left_boundary() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        _closest_hit_time_for_exit,
+        _lower_bound_from,
+    )
+
+    timestamps = np.asarray(
+        [15.46399974822998, 73.97799682617188, 74.11299896240234],
+        dtype=np.float32,
+    )
+
+    hit = _closest_hit_time_for_exit(
+        timestamps,
+        3,
+        0,
+        15.46399974822998,
+        15.46399974822998,
+        15.504000663757324,
+        58.48316925859451,
+        2,
+    )
+
+    assert _lower_bound_from(timestamps, hit + 58.48316925859451) == 2
+    assert 30.82 < (hit - 15.46399974822998) * 1000.0 < 30.84
+
+
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
