@@ -970,7 +970,13 @@ def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Timelin
     )
 
 
-def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
+def precompute_timeline_gpu(
+    calc_song: dict,
+    ref_arrays: dict,
+    song_slot: int = 0,
+    *,
+    prebuilt_frontier: "TimelineFrontierPrewarmResult | None" = None,
+) -> None:
     """
     Upload the startup-built exact timeline frontier for one song slot.
 
@@ -982,6 +988,12 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         calc_song: Song calculation context with timestamps/metadata
         ref_arrays: Reference lookup arrays (must include Fever Time/Fill Rate)
         song_slot: Grid slot to write to (0-7, default 0 for single-song mode)
+        prebuilt_frontier: Optional already-resolved frontier payload to upload BY VALUE.
+            Production runtime leaves this None so the path stays cache-consumer-only and
+            fails loud via load_timeline_frontier_payload() when the startup cache is missing.
+            The synthetic GPU warmup (which is not part of the song queue and builds its own
+            disposable payload) passes it in so the upload never re-reads the clearable
+            in-memory frontier cache between build and upload.
 
     After calling this, the grid fields for song_slot are populated:
     - grid_count_body_fever[song_slot, ft, ff]
@@ -1006,7 +1018,11 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     song_key = lookup["song_key"]
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
-    frontier_result = load_timeline_frontier_payload(calc_song, ref_arrays)
+    frontier_result = (
+        prebuilt_frontier
+        if prebuilt_frontier is not None
+        else load_timeline_frontier_payload(calc_song, ref_arrays)
+    )
     total_notes = int(lookup["total_notes"])
     long_notes = int(lookup["long_notes"])
 
@@ -1074,11 +1090,23 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
 
     Production scoring must consume the startup-built frontier cache via
     precompute_timeline_gpu(). GPU JIT warmups use synthetic charts that are not
-    part of the song queue, so they explicitly build their own disposable
-    payload before exercising the same upload path.
+    part of the song queue, so they explicitly build their own disposable payload
+    and hand it to the upload BY VALUE.
+
+    Robustness: ensure GPU/fields are ready first (so any cold-init Vulkan reset, which
+    clears the in-memory frontier cache via reset_timeline_state(), happens before the
+    build), then build the disposable payload and pass it straight to the upload. Carrying
+    the payload by value means a cache clear/eviction between build and upload can no longer
+    raise MissingFrontierCacheError -- the exact failure this entrypoint exists to prevent.
     """
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+    ensure_ready(ref_arrays)
+    frontier_result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    precompute_timeline_gpu(
+        calc_song,
+        ref_arrays,
+        song_slot=song_slot,
+        prebuilt_frontier=frontier_result,
+    )
 
 
 def reset_timeline_state() -> None:

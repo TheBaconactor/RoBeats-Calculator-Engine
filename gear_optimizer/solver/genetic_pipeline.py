@@ -704,6 +704,24 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             },
         )
 
+    # DIAGNOSTIC (off by default; GA_LOOP_PROFILE=1). Decides whether the per-generation
+    # GPU re-feed gap is host-bound (host Python + Vulkan submit latency -> reducing the
+    # number of per-gen kernel submits via fusion would help) or GPU-bound (the kernels are
+    # the work -> fusion would not help). For a sparse sample of steady-state generations it
+    # times host-enqueue (launch all of a generation's kernels with the GPU starting idle, so
+    # async launches return after enqueue/submit) vs gpu-exec (a trailing ti.sync()).
+    # Warmup generations are skipped so one-time JIT compile is excluded. Zero overhead and no
+    # logging when disabled; aggregated result is written to GA_LOOP_PROFILE_PATH (one JSON line
+    # per GA request) only when enabled.
+    ga_loop_profile = env_flag("GA_LOOP_PROFILE", "0")
+    _lp_warmup_gens = max(0, int(env_get("GA_LOOP_PROFILE_WARMUP_GENS", "8") or "8"))
+    _lp_sample_every = max(1, int(env_get("GA_LOOP_PROFILE_SAMPLE_EVERY", "8") or "8"))
+    _lp_acc = {"samples": 0, "host_enqueue_s": 0.0, "gpu_exec_s": 0.0, "host_max_s": 0.0, "gpu_max_s": 0.0,
+               "prep_host_s": 0.0, "eval_host_s": 0.0, "rest_host_s": 0.0}
+    _lp_ti = None
+    if ga_loop_profile:
+        import taichi as _lp_ti
+
     def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
         msg = str(exc)
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
@@ -954,47 +972,67 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     n_total = int(batch_len) * int(n_genomes)
                     phase_samples_current = {} if phase_events_enabled else None
 
+                    # Loop-invariant per-batch kernel args: build the prepare/evaluate kwargs
+                    # once so the per-generation prepare->evaluate GPU re-feed window does not
+                    # rebuild these dicts every generation. Every value here is fixed for this
+                    # batch (n_total, n_slots, budgets, color flags, ftff caps) and is recomputed
+                    # to the same value if the attempt loop re-enters on a Vulkan-reset retry.
+                    prepare_kwargs = dict(
+                        n_genomes=n_total,
+                        n_slots=int(n_slots),
+                        is_p_ft=is_p_ft,
+                        is_s_ft=is_s_ft,
+                        is_p_ff=is_p_ff,
+                        is_s_ff=is_s_ff,
+                        is_p_pp=is_p_pp,
+                        is_s_pp=is_s_pp,
+                        is_p_cm=is_p_cm,
+                        is_s_cm=is_s_cm,
+                        is_p_fm=is_p_fm,
+                        is_s_fm=is_s_fm,
+                        is_p_ov=is_p_ov,
+                        is_s_ov=is_s_ov,
+                    )
+                    eval_kwargs = dict(
+                        n_genomes=n_total,
+                        n_slots=int(n_slots),
+                        total_budget=total_budget,
+                        gem_scale_fever=gem_scale_fever,
+                        song_slot=int(song_slot),
+                        is_p_ft=is_p_ft,
+                        is_s_ft=is_s_ft,
+                        is_p_ff=is_p_ff,
+                        is_s_ff=is_s_ff,
+                        is_p_pp=is_p_pp,
+                        is_s_pp=is_s_pp,
+                        is_p_cm=is_p_cm,
+                        is_s_cm=is_s_cm,
+                        is_p_fm=is_p_fm,
+                        is_s_fm=is_s_fm,
+                        is_p_ov=is_p_ov,
+                        is_s_ov=is_s_ov,
+                        max_ft_gems_global=int(max_ft_gems_global),
+                        max_ff_gems_global=int(max_ff_gems_global),
+                    )
+
                     for gen in range(int(n_generations)):
                         _raise_if_abort_requested(abort_requested, f"before GPU-native GA generation {int(gen)}")
+                        _lp_sample = bool(
+                            ga_loop_profile and gen >= _lp_warmup_gens and (gen % _lp_sample_every) == 0
+                        )
+                        if _lp_sample:
+                            if env_flag("GA_LOOP_PROFILE_NOSYNC", "0"):
+                                _lp_h0 = time.perf_counter()  # measure host in the production stream (no drain)
+                            else:
+                                _lp_ti.sync()
+                                _lp_h0 = time.perf_counter()
                         t0 = time.perf_counter() if phase_timing else 0.0
-                        gpu_api.ga_prepare_population_base_stats(
-                            n_genomes=n_total,
-                            n_slots=int(n_slots),
-                            is_p_ft=is_p_ft,
-                            is_s_ft=is_s_ft,
-                            is_p_ff=is_p_ff,
-                            is_s_ff=is_s_ff,
-                            is_p_pp=is_p_pp,
-                            is_s_pp=is_s_pp,
-                            is_p_cm=is_p_cm,
-                            is_s_cm=is_s_cm,
-                            is_p_fm=is_p_fm,
-                            is_s_fm=is_s_fm,
-                            is_p_ov=is_p_ov,
-                            is_s_ov=is_s_ov,
-                        )
-                        eval_kwargs = dict(
-                            n_genomes=n_total,
-                            n_slots=int(n_slots),
-                            total_budget=total_budget,
-                            gem_scale_fever=gem_scale_fever,
-                            song_slot=int(song_slot),
-                            is_p_ft=is_p_ft,
-                            is_s_ft=is_s_ft,
-                            is_p_ff=is_p_ff,
-                            is_s_ff=is_s_ff,
-                            is_p_pp=is_p_pp,
-                            is_s_pp=is_s_pp,
-                            is_p_cm=is_p_cm,
-                            is_s_cm=is_s_cm,
-                            is_p_fm=is_p_fm,
-                            is_s_fm=is_s_fm,
-                            is_p_ov=is_p_ov,
-                            is_s_ov=is_s_ov,
-                            max_ft_gems_global=int(max_ft_gems_global),
-                            max_ff_gems_global=int(max_ff_gems_global),
-                        )
+                        gpu_api.ga_prepare_population_base_stats(**prepare_kwargs)
+                        if _lp_sample:
+                            _lp_t_prep = time.perf_counter()
                         gpu_api.ga_evaluate_prepared_population(**eval_kwargs)
+                        if _lp_sample:
+                            _lp_t_eval = time.perf_counter()
                         _sync()
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA evaluate generation {int(gen)}"
@@ -1159,6 +1197,23 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     combos=int(n_combos),
                                 )
 
+                        if _lp_sample:
+                            _lp_h1 = time.perf_counter()
+                            _lp_ti.sync()
+                            _lp_g1 = time.perf_counter()
+                            _lp_acc["samples"] += 1
+                            _lp_h = _lp_h1 - _lp_h0
+                            _lp_g = _lp_g1 - _lp_h1
+                            _lp_acc["host_enqueue_s"] += _lp_h
+                            _lp_acc["gpu_exec_s"] += _lp_g
+                            _lp_acc["prep_host_s"] += _lp_t_prep - _lp_h0
+                            _lp_acc["eval_host_s"] += _lp_t_eval - _lp_t_prep
+                            _lp_acc["rest_host_s"] += _lp_h1 - _lp_t_eval
+                            if _lp_h > _lp_acc["host_max_s"]:
+                                _lp_acc["host_max_s"] = _lp_h
+                            if _lp_g > _lp_acc["gpu_max_s"]:
+                                _lp_acc["gpu_max_s"] = _lp_g
+
                     # Pack a compact GA->FG candidate table for this batch, avoiding large
                     # `(runs, pop, payload_cols)` downloads. Row 0 is per-run best (tracked
                     # across generations), rows 1..K are top-score entries from the final population.
@@ -1244,4 +1299,39 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         raise RuntimeError(
             f"Internal error: expected a single selected-payload segment, got {len(payload_segments)} segments"
         )
+
+    if ga_loop_profile and int(_lp_acc["samples"]) > 0:
+        _lp_n = int(_lp_acc["samples"])
+        _lp_host_total = float(_lp_acc["host_enqueue_s"])
+        _lp_gpu_total = float(_lp_acc["gpu_exec_s"])
+        _lp_rec = {
+            "song": song_profile_key,
+            "samples": _lp_n,
+            "n_generations": int(n_generations),
+            "pop": int(n_genomes),
+            "runs": int(num_runs),
+            "host_enqueue_mean_ms": 1000.0 * _lp_host_total / _lp_n,
+            "gpu_exec_mean_ms": 1000.0 * _lp_gpu_total / _lp_n,
+            "host_enqueue_max_ms": 1000.0 * float(_lp_acc["host_max_s"]),
+            "gpu_exec_max_ms": 1000.0 * float(_lp_acc["gpu_max_s"]),
+            "prep_host_mean_ms": 1000.0 * float(_lp_acc["prep_host_s"]) / _lp_n,
+            "eval_host_mean_ms": 1000.0 * float(_lp_acc["eval_host_s"]) / _lp_n,
+            "rest_host_mean_ms": 1000.0 * float(_lp_acc["rest_host_s"]) / _lp_n,
+            # host_fraction ~ recoverable-by-fusion share of a generation: >0.5 => host/submit-bound
+            # (reducing per-gen submits helps); <<0.5 => GPU-bound (fusion will not help).
+            "host_fraction": _lp_host_total / max(1e-9, _lp_host_total + _lp_gpu_total),
+        }
+        _lp_path = str(env_get("GA_LOOP_PROFILE_PATH", "") or "").strip()
+        if _lp_path:
+            try:
+                import json as _lp_json
+                import os as _lp_os
+                _lp_dir = _lp_os.path.dirname(_lp_os.path.abspath(_lp_path))
+                if _lp_dir:
+                    _lp_os.makedirs(_lp_dir, exist_ok=True)
+                with open(_lp_path, "a", encoding="utf-8") as _lp_fh:
+                    _lp_fh.write(_lp_json.dumps(_lp_rec) + "\n")
+            except Exception as e:
+                logger.debug(f"genetic:ga_loop_profile_write: {e}")
+
     return payload_segments[0]

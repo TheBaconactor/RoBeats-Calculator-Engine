@@ -1,19 +1,35 @@
 from pathlib import Path
 
 
-def test_timeline_warmup_wrapper_builds_payload_before_upload(monkeypatch) -> None:
+def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypatch) -> None:
+    """Warmup must ensure-ready, build, then upload the BUILT payload by value.
+
+    Carrying the payload by value (prebuilt_frontier) is what makes the warmup robust to a
+    frontier-cache clear/eviction between build and upload (the MissingFrontierCacheError this
+    wrapper exists to prevent). The earlier test only asserted call order with both functions
+    stubbed, so it could not catch a regression back to the fragile re-load-from-cache form.
+    """
     from gear_optimizer.solver.taichi_gem.api import timeline
 
     calls: list[str] = []
+    sentinel = object()
+
+    def _ensure(*_args, **_kwargs):
+        calls.append("ensure")
 
     def _build(calc_song, ref_arrays):
         calls.append("build")
         assert calc_song["metadata"]["Song Name"] == "warmup"
         assert ref_arrays["Fever Time"] == [1.0]
+        return sentinel
 
-    def _upload(calc_song, ref_arrays, *, song_slot=0):
+    def _upload(calc_song, ref_arrays, *, song_slot=0, prebuilt_frontier=None):
         calls.append(f"upload:{song_slot}")
+        # The fix: the warmup hands the built payload straight to the upload, so the upload
+        # never re-reads the clearable in-memory frontier cache.
+        assert prebuilt_frontier is sentinel
 
+    monkeypatch.setattr(timeline, "ensure_ready", _ensure)
     monkeypatch.setattr(timeline, "build_or_load_timeline_frontier_payload", _build)
     monkeypatch.setattr(timeline, "precompute_timeline_gpu", _upload)
 
@@ -23,7 +39,49 @@ def test_timeline_warmup_wrapper_builds_payload_before_upload(monkeypatch) -> No
         song_slot=3,
     )
 
-    assert calls == ["build", "upload:3"]
+    assert calls == ["ensure", "build", "upload:3"]
+
+
+def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypatch) -> None:
+    """With prebuilt_frontier provided, the upload must NOT re-load from the frontier cache.
+
+    This is the core of the warmup fix: even if reset_timeline_state()/LRU eviction wiped the
+    in-memory cache between build and upload, a prebuilt payload is uploaded by value and the
+    fail-loud load is skipped entirely.
+    """
+    import numpy as np
+    from types import SimpleNamespace
+    from gear_optimizer.solver.taichi_gem.api import timeline
+
+    total_rows = int(timeline.TOTAL_ROWS)
+    fake_payload = SimpleNamespace(
+        grid_frontier_count=np.zeros((1, total_rows + 1, total_rows + 1), dtype=np.int32),
+        frontier_pool_used=0,
+    )
+    fake_result = SimpleNamespace(payload=fake_payload, cache_source="prebuilt")
+
+    def _load_must_not_run(*_args, **_kwargs):
+        raise AssertionError("load_timeline_frontier_payload must not run when prebuilt_frontier is provided")
+
+    monkeypatch.setattr(timeline, "ensure_ready", lambda *_a, **_k: b"")
+    monkeypatch.setattr(
+        timeline,
+        "_timeline_payload_lookup_context",
+        lambda _cs, _ra, ref_sig=None: {"song_key": ("warmup",), "total_notes": 1, "long_notes": 0},
+    )
+    monkeypatch.setattr(timeline, "load_timeline_frontier_payload", _load_must_not_run)
+    monkeypatch.setattr(timeline, "_upload_timeline_frontier_payload_slot", lambda *_a, **_k: 0)
+    monkeypatch.setattr(timeline, "_emit_timeline_phase", lambda **_k: None)
+    # Make sure the per-slot short-circuit does not skip the upload path.
+    timeline._gpu_timeline_song_id_by_slot = [None] * len(timeline._gpu_timeline_song_id_by_slot)
+
+    # Must not raise (would raise MissingFrontierCacheError via the load on the un-fixed path).
+    timeline.precompute_timeline_gpu(
+        {"metadata": {}, "song_data": {}},
+        {"Fever Time": [1.0]},
+        song_slot=0,
+        prebuilt_frontier=fake_result,
+    )
 
 
 def test_synthetic_gpu_warmups_use_warmup_timeline_wrapper() -> None:

@@ -81,9 +81,8 @@ from .kernels_ga import (
     ga_aggregate_genome_stats_kernel,
     # FUSED kernels
     ga_aggregate_and_init_best_kernel,
-    ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
+    ga_next_generation_full_runs_kernel,  # FUSED: multi-run batching + population swap
     ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
-    ga_swap_population_kernel,  # FUSED: swap
 )
 
 # Import scoring functions
@@ -177,7 +176,6 @@ __all__ = [
     "ga_aggregate_and_init_best_kernel",
     "ga_next_generation_full_runs_kernel",
     "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
-    "ga_swap_population_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",

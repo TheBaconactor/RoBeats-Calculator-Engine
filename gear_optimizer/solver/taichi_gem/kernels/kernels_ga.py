@@ -852,6 +852,15 @@ def ga_next_generation_full_runs_kernel(
         immigrant_rate_fp,
         novelty_repair_attempts,
     )
+    # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):
+    # copy the freshly built next generation into the active buffer. Runs as a separate
+    # top-level loop so Taichi's inter-loop barrier guarantees every population_next_indices[g, s]
+    # is written by the next-generation loop above before any thread reads it here. Pure per-(g, s)
+    # copy => bit-identical to the previous separate swap kernel, minus one Vulkan submit.
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_runs * n_genomes_per_run):
+        for s in range(n_slots):
+            kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
 @ti.kernel
 def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     run_idx_start: ti.i32,
@@ -978,17 +987,10 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         immigrant_rate_fp,
         novelty_repair_attempts,
     )
-@ti.kernel
-def ga_swap_population_kernel(n_genomes: ti.i32, n_slots: ti.i32):
-    """
-    FUSED: swap the next-generation population into the active buffer.
-    This is Phase 2 of the fused next-generation operation:
-    1. Copy population_next_indices -> population_indices (swap)
-    Args:
-        n_genomes: Population size
-        n_slots: Slots per genome
-    """
+    # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):
+    # see ga_next_generation_full_runs_kernel above. Pure per-(g, s) copy under Taichi's
+    # inter-loop barrier => bit-identical to the previous separate swap kernel, minus one submit.
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
+    for g in range(n_total):
         for s in range(n_slots):
             kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]

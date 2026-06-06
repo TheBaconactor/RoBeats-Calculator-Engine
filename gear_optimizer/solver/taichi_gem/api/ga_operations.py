@@ -707,9 +707,8 @@ def ga_next_generation_fused_runs(
 ) -> None:
     """
     FULLY FUSED next generation for multiple independent runs packed contiguously.
-    Executes:
-    1) ga_next_generation_full_runs_kernel (select+crossover+mutate+elitism within each run)
-    2) ga_swap_population_kernel (swap) for the combined population
+    Executes ga_next_generation_full_runs_kernel, which performs select+crossover+mutate+elitism
+    within each run and swaps the new generation into the active buffer in the same dispatch.
     """
     ensure_ready()
     n_runs = int(n_runs)
@@ -745,7 +744,6 @@ def ga_next_generation_fused_runs(
         ir_fp,
         int(novelty_repair_attempts),
     )
-    kernels.ga_swap_population_kernel(int(n_total), n_slots)
 def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     *,
     run_idx_start: int,
@@ -830,7 +828,6 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
         ir_fp,
         int(novelty_repair_attempts),
     )
-    kernels.ga_swap_population_kernel(int(n_runs) * int(n_genomes_per_run), int(n_slots))
 def ga_init_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> None:
     """
     Initialize per-run best rows (row 0) for multi-run payload packing.
