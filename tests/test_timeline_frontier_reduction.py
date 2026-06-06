@@ -115,6 +115,33 @@ def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:
     assert body_fever == target.body_fever
 
 
+def test_timeline_frontier_trace_logs_smallest_positive_offset_when_zero_changes_surface() -> None:
+    group_starts = np.array([0, 1, 2], dtype=np.int32)
+    group_ends = np.array([1, 2, 3], dtype=np.int32)
+    group_base_t_ms = np.array([0, 1000, 2000], dtype=np.int32)
+    group_low_ms = np.array([0, 0, 0], dtype=np.int32)
+    group_high_ms = np.array([500, 500, 500], dtype=np.int32)
+    note_group_idx = np.array([0, 1, 2], dtype=np.int32)
+    target = TimelineExactSignature(3, (0b110, 0, 0, 0), 0, 0, 1, 0)
+
+    trace = reconstruct_timeline_frontier_trace(
+        total_notes=3,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+        fill_count=2,
+        d_ms=1000,
+        target_surface=target,
+    )
+
+    assert len(trace) == 1
+    assert trace[0]["fever_end_index"] == 3
+    assert trace[0]["activation_hit_offset_ms"] == 1.0
+
+
 def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:
     group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
     group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)

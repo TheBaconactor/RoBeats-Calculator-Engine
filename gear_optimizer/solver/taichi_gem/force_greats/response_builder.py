@@ -166,6 +166,37 @@ def _trace_timing_fields(
     }
 
 
+def _closest_hit_time_for_exit(
+    timestamps: np.ndarray, n: int, activation_idx: int, chart_time: float,
+    legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
+) -> float:
+    target = max(0, min(int(target_end_idx), int(n)))
+    lo = float(legal_lo)
+    hi = float(legal_hi)
+    if lo > hi:
+        raise ValueError("FG response trace received an empty activation witness interval")
+    if target > int(activation_idx) + 1:
+        prev_end = np.float32(float(timestamps[target - 1]) - float(real_fever_time))
+        lo = max(lo, float(np.nextafter(prev_end, np.float32(np.inf))))
+    if target < int(n):
+        hi = min(hi, float(timestamps[target]) - float(real_fever_time))
+    if lo > hi:
+        raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
+
+    chart = float(chart_time)
+    hit = min(max(chart, lo), hi)
+    for _ in range(4):
+        end_idx = _lower_bound_from(timestamps, hit + float(real_fever_time))
+        if end_idx <= int(activation_idx):
+            end_idx = min(int(n), int(activation_idx) + 1)
+        if int(end_idx) == int(target):
+            return float(hit)
+        hit = float(np.nextafter(np.float32(hit), np.float32(np.inf)))
+        if hit > hi:
+            break
+    raise ValueError("closest-to-zero FG trace witness changed the response surface")
+
+
 def _edge_surface_options(
     *,
     i: int,
@@ -277,6 +308,8 @@ def _edge_surface_option_details(
     prev_fill = -1
     prev_start_time = -1.0
     prev_e = -1
+    perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
+    great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
     for action_idx, k in enumerate(actions):
         fill = int(fills[action_idx])
         a = int(fill if first else int(i) + fill)
@@ -295,15 +328,22 @@ def _edge_surface_option_details(
             great_candidate_timestamps=great_candidate_timestamps,
         )
         if fill != prev_fill or (start_time != prev_start_time and e != prev_e):
+            chart_time = float(timestamps[int(a)])
+            closest_start_time = _closest_hit_time_for_exit(
+                timestamps, int(n), int(a), float(chart_time),
+                min(float(chart_time), float(perfect_ts[int(a)])),
+                max(float(chart_time), float(perfect_ts[int(a)])),
+                float(real_fever_time), int(e),
+            )
             great_end = min(int(n), int(forced_start) + int(forced_applied))
             out.append(
                 {
                     "k": int(k),
                     "next_state": int(e),
                     "activation_index": int(a),
-                    "activation_ms": float(timestamps[int(a)]) * 1000.0,
-                    "activation_hit_ms": float(start_time) * 1000.0,
-                    "activation_hit_offset_ms": (float(start_time) - float(timestamps[int(a)])) * 1000.0,
+                    "activation_ms": float(chart_time) * 1000.0,
+                    "activation_hit_ms": float(closest_start_time) * 1000.0,
+                    "activation_hit_offset_ms": (float(closest_start_time) - float(chart_time)) * 1000.0,
                     "activation_judgment": "perfect",
                     "forced_start_index": int(forced_start),
                     "forced_prefix_count": int(forced_applied),
@@ -311,8 +351,8 @@ def _edge_surface_option_details(
                     "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
                     **_trace_timing_fields(
                         carry_idx=int(carry_idx),
-                        start_time=float(start_time),
-                        chart_time=float(timestamps[int(a)]),
+                        start_time=float(closest_start_time),
+                        chart_time=float(chart_time),
                         activation_idx=int(a),
                         activation_great=False,
                     ),
@@ -327,7 +367,7 @@ def _edge_surface_option_details(
             )
         if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
             prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
-            activation_e, activation_start_time, activation_carry_idx = _edge_end(
+            activation_e, _activation_start_time, activation_carry_idx = _edge_end(
                 n=int(n),
                 a=int(a),
                 activation_great=True,
@@ -338,6 +378,13 @@ def _edge_surface_option_details(
                 great_candidate_timestamps=great_candidate_timestamps,
             )
             if int(activation_e) > int(e):
+                chart_time = float(timestamps[int(a)])
+                great_hi = float(great_ts[int(a)])
+                late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
+                closest_activation_start_time = _closest_hit_time_for_exit(
+                    timestamps, int(n), int(a), float(chart_time),
+                    float(late_lo), float(great_hi), float(real_fever_time), int(activation_e),
+                )
                 activation_surface = _edge_surface(
                     n=int(n),
                     fever_start=int(a),
@@ -351,11 +398,9 @@ def _edge_surface_option_details(
                         "k": int(k),
                         "next_state": int(activation_e),
                         "activation_index": int(a),
-                        "activation_ms": float(timestamps[int(a)]) * 1000.0,
-                        "activation_hit_ms": float(activation_start_time) * 1000.0,
-                        "activation_hit_offset_ms": (
-                            float(activation_start_time) - float(timestamps[int(a)])
-                        )
+                        "activation_ms": float(chart_time) * 1000.0,
+                        "activation_hit_ms": float(closest_activation_start_time) * 1000.0,
+                        "activation_hit_offset_ms": (float(closest_activation_start_time) - float(chart_time))
                         * 1000.0,
                         "activation_judgment": "late_great",
                         "forced_start_index": int(forced_start),
@@ -366,8 +411,8 @@ def _edge_surface_option_details(
                         else float(timestamps[int(activation_e)]) * 1000.0,
                         **_trace_timing_fields(
                             carry_idx=int(activation_carry_idx),
-                            start_time=float(activation_start_time),
-                            chart_time=float(timestamps[int(a)]),
+                            start_time=float(closest_activation_start_time),
+                            chart_time=float(chart_time),
                             activation_idx=int(a),
                             activation_great=True,
                         ),

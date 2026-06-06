@@ -164,7 +164,7 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
     assert any((int(surface.fever0) & int(surface.great0)) != 0 for surface in frontier.first_frontier)
 
 
-def test_fg_response_first_frontier_emits_optimized_perfect_activation_edge() -> None:
+def test_fg_response_trace_logs_closest_perfect_witness_for_selected_surface() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
@@ -203,7 +203,8 @@ def test_fg_response_first_frontier_emits_optimized_perfect_activation_edge() ->
 
     assert trace[0]["activation_judgment"] == "perfect"
     assert trace[0]["fever_start_source"] == "perfect_window"
-    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(500.0)
+    assert trace[0]["fever_end_index"] == 4
+    assert 0.0 < trace[0]["activation_hit_offset_ms"] < 0.001
 
 
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
@@ -236,6 +237,9 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 3.4, 4.0], dtype=np.float32)
     perfect_candidates = timestamps.copy()
@@ -251,12 +255,28 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         use_forced_great_timing=True,
     )[0]
 
-    assert any(
-        int(surface.fever0) == 0b11100
-        and (int(surface.great0) & 0b00100)
-        and (int(surface.fever0) & int(surface.great0) & 0b00100)
+    target = next(
+        surface
         for surface in frontier.first_frontier
+        if int(surface.fever0) == 0b11100 and (int(surface.great0) & 0b00100)
     )
+    assert int(target.fever0) & int(target.great0) & 0b00100
+
+    trace = reconstruct_force_greats_response_trace(
+        frontier=frontier,
+        target_surface=target,
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        raw_fever_fill=2.25,
+        real_fever_time=1.0,
+        use_forced_great_timing=True,
+    )
+
+    assert trace[0]["activation_judgment"] == "late_great"
+    assert trace[0]["fever_start_source"] == "activation_late_great"
+    assert trace[0]["fever_end_index"] == 5
+    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(400.00009536743164)
 
 
 def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:

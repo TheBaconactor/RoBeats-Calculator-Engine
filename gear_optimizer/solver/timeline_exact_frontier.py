@@ -915,6 +915,11 @@ def _activation_offset_for_exit(
     exit_group: int,
     d_ms: int,
 ) -> int:
+    def _closest_offset_to_zero(lo: int, hi: int) -> int:
+        if int(lo) <= 0 <= int(hi):
+            return 0
+        return int(lo) if abs(int(lo)) <= abs(int(hi)) else int(hi)
+
     s = int(activation_group)
     g = int(exit_group)
     lo = int(act_lo)
@@ -922,19 +927,19 @@ def _activation_offset_for_exit(
     if lo > hi:
         raise ValueError("timeline frontier trace received an empty activation band")
     if g <= s or s + 1 >= int(ctx.gcount):
-        return lo
+        return _closest_offset_to_zero(lo, hi)
     if g >= int(ctx.gcount):
         survive_lo = max(lo, int(ctx.exit_need_prefix_current[s, int(ctx.gcount) - 1]) - int(d_ms))
         if survive_lo > hi:
             raise ValueError("timeline frontier trace could not choose a terminal activation offset")
-        return int(survive_lo)
+        return _closest_offset_to_zero(int(survive_lo), hi)
 
     delta = int(ctx.exit_delta[s, g])
     r_lo = max(lo, int(ctx.exit_need_prefix_prev[s, g]) - int(d_ms))
     r_hi = min(hi, int(ctx.group_high_ms[g]) + delta - int(d_ms))
     if r_lo > r_hi:
         raise ValueError("timeline frontier trace could not choose an activation offset")
-    return int(r_lo)
+    return _closest_offset_to_zero(int(r_lo), int(r_hi))
 
 
 def _subtract_timeline_edge(
