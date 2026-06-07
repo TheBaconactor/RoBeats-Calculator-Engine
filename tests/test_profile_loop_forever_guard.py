@@ -40,7 +40,6 @@ def test_profiling_mode_disabled_without_flags(monkeypatch):
 def test_loop_restart_wait_seconds_defaults_to_zero(monkeypatch):
     app = _mk_app()
     monkeypatch.delenv("METAFINDER_LOOP_RESTART_WAIT_SEC", raising=False)
-    monkeypatch.delenv("LOOP_RESTART_WAIT_SEC", raising=False)
     cfg = configparser.ConfigParser()
     cfg.read_dict({"CalculateSong": {"LoopForever": "true"}})
     assert app._loop_restart_wait_seconds(cfg, default_seconds=0.0) == 0.0

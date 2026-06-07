@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Python: module gear_optimizer.core.parsing</title>
+</head><body>
+
+<table class="heading">
+<tr class="heading-text decor">
+<td class="title">&nbsp;<br><strong class="title"><a href="gear_optimizer.html" class="white">gear_optimizer</a>.<a href="gear_optimizer.core.html" class="white">core</a>.parsing</strong></td>
+<td class="extra"><a href=".">index</a><br><a href="file:redacted-user-home%5Cdesktop%5Ctop%20secret%5Cbeats%5Cgear%20optimizer%5Cgear_optimizer%5Ccore%5Cparsing.py"><redacted-user-home>\desktop\top secret\beats\gear optimizer\gear_optimizer\core\parsing.py</a></td></tr></table>
+    <p><span class="code">Side-effect-free&nbsp;parsing&nbsp;helpers&nbsp;shared&nbsp;across&nbsp;runtime&nbsp;modules.</span></p>
+<p>
+<table class="section">
+<tr class="decor pkg-content-decor heading-text">
+<td class="section-title" colspan=3>&nbsp;<br><strong class="bigsection">Modules</strong></td></tr>
+    
+<tr><td class="decor pkg-content-decor"><span class="code">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td><td>&nbsp;</td>
+<td class="singlecolumn"><table><tr><td class="multicolumn"><a href="configparser.html">configparser</a><br>
+</td><td class="multicolumn"><a href="os.html">os</a><br>
+</td><td class="multicolumn"></td><td class="multicolumn"></td></tr></table></td></tr></table><p>
+<table class="section">
+<tr class="decor functions-decor heading-text">
+<td class="section-title" colspan=3>&nbsp;<br><strong class="bigsection">Functions</strong></td></tr>
+    
+<tr><td class="decor functions-decor"><span class="code">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td><td>&nbsp;</td>
+<td class="singlecolumn"><dl><dt><a name="-config_bool"><strong>config_bool</strong></a>(cfg: 'Any', section: 'str', key: 'str', *, default: 'bool' = False) -&gt; 'bool'</dt><dd><span class="code">Read&nbsp;a&nbsp;boolean&nbsp;config&nbsp;value&nbsp;while&nbsp;tolerating&nbsp;ConfigParser&nbsp;variants.</span></dd></dl>
+ <dl><dt><a name="-env_flag"><strong>env_flag</strong></a>(name: 'str', default: 'str' = '0', *, environ: 'Mapping[str, str] | None' = None) -&gt; 'bool'</dt><dd><span class="code">Read&nbsp;a&nbsp;boolean&nbsp;environment&nbsp;flag&nbsp;without&nbsp;importing&nbsp;the&nbsp;env&nbsp;singleton.</span></dd></dl>
+ <dl><dt><a name="-env_float"><strong>env_float</strong></a>(name: 'str', default: 'float', *, environ: 'Mapping[str, str] | None' = None) -&gt; 'float'</dt><dd><span class="code">Read&nbsp;a&nbsp;float&nbsp;environment&nbsp;value,&nbsp;returning&nbsp;the&nbsp;default&nbsp;on&nbsp;missing/invalid&nbsp;input.</span></dd></dl>
+ <dl><dt><a name="-env_get"><strong>env_get</strong></a>(name: 'str', default: 'Any' = None, *, environ: 'Mapping[str, str] | None' = None) -&gt; 'Any'</dt><dd><span class="code">Read&nbsp;an&nbsp;environment&nbsp;value&nbsp;with&nbsp;the&nbsp;same&nbsp;semantics&nbsp;as&nbsp;`os.environ.get`.</span></dd></dl>
+ <dl><dt><a name="-env_int"><strong>env_int</strong></a>(name: 'str', default: 'int', *, environ: 'Mapping[str, str] | None' = None) -&gt; 'int'</dt><dd><span class="code">Read&nbsp;an&nbsp;integer&nbsp;environment&nbsp;value,&nbsp;returning&nbsp;the&nbsp;default&nbsp;on&nbsp;missing/invalid&nbsp;input.</span></dd></dl>
+ <dl><dt><a name="-env_str"><strong>env_str</strong></a>(name: 'str', default: 'str' = '', *, environ: 'Mapping[str, str] | None' = None) -&gt; 'str'</dt><dd><span class="code">Read&nbsp;a&nbsp;string&nbsp;environment&nbsp;value,&nbsp;returning&nbsp;the&nbsp;default&nbsp;on&nbsp;missing&nbsp;input.</span></dd></dl>
+ <dl><dt><a name="-truthy"><strong>truthy</strong></a>(value: 'Any', *, extra_truthy: 'tuple[str, ...]' = ()) -&gt; 'bool'</dt><dd><span class="code">Return&nbsp;True&nbsp;when&nbsp;a&nbsp;raw&nbsp;config/env&nbsp;value&nbsp;is&nbsp;a&nbsp;recognized&nbsp;truthy&nbsp;token.</span></dd></dl>
+</td></tr></table><p>
+<table class="section">
+<tr class="decor data-decor heading-text">
+<td class="section-title" colspan=3>&nbsp;<br><strong class="bigsection">Data</strong></td></tr>
+    
+<tr><td class="decor data-decor"><span class="code">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td><td>&nbsp;</td>
+<td class="singlecolumn"><strong>TRUTHY_ENV_VALUES</strong> = frozenset({'1', 'on', 'true', 'yes'})<br>
+<strong>TRUTHY_VALUES</strong> = frozenset({'1', 'on', 'true', 'yes'})</td></tr></table>
+</body></html>

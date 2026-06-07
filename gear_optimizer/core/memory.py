@@ -27,7 +27,6 @@ except ImportError:
     psutil = None
 
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
-from .env_config import ENV
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
@@ -351,19 +350,6 @@ class MemoryGuardResumeTracker:
         self._last_write_t = time.monotonic()
         self._write_every_n = 1
         self._write_every_sec = 0.0
-
-        # Optional performance tuning: reduce how often we rewrite the resume file.
-        #
-        # Defaults preserve existing behavior (write after every completed song).
-        # If configured, a crash may re-run up to N-1 songs since the last write.
-        try:
-            self._write_every_n = max(1, int(ENV.memory_guard_write_every_n))
-        except (TypeError, ValueError):
-            self._write_every_n = 1
-        try:
-            self._write_every_sec = float(ENV.memory_guard_write_every_sec)
-        except (TypeError, ValueError):
-            self._write_every_sec = 0.0
 
     def prime(self, queue, context):
         """Initialize tracker with full queue and context."""

@@ -11,7 +11,7 @@ import importlib
 
 import numpy as np
 
-from ..core.parsing import env_flag, env_get, env_int
+from ..core.parsing import env_flag, env_get
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,10 @@ except Exception as e:
 
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
+    # cfg-driven only (config.ini GPU_GA_NoveltyRepairAttempts -> ga_novelty_repair_attempts);
+    # the ambient GPU_GA_NOVELTY_REPAIR_ATTEMPTS env override was removed.
     cfg = dict(cfg_data or {})
-    raw = env_get("GPU_GA_NOVELTY_REPAIR_ATTEMPTS")
-    if raw is None or str(raw).strip() == "":
-        raw = cfg.get("ga_novelty_repair_attempts", 2)
+    raw = cfg.get("ga_novelty_repair_attempts", 2)
     try:
         attempts = int(raw)
     except Exception as e:
@@ -149,11 +149,12 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
         raise RuntimeError(f"GpuExecutor aborted: {where}")
 
 
-# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS.
+# DEV / DEBUG: PERF_TIMING.
+# Vulkan reset/retry are hardwired constants (tests setattr these module globals directly).
 _PERF_TIMING = env_flag("PERF_TIMING", "0")
-_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
-_GPU_NATIVE_GA_VULKAN_RETRIES = env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
-_GPU_NATIVE_GA_BATCH_RUNS = env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
+_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = 0
+_GPU_NATIVE_GA_VULKAN_RETRIES = 1
+_GPU_NATIVE_GA_BATCH_RUNS = 0  # auto: choose_ga_batch_runs decides (was GPU_NATIVE_GA_BATCH_RUNS)
 
 
 if _GPU_NATIVE_AVAILABLE:
@@ -385,9 +386,10 @@ def decode_gpu_native_ga_runs_payload(
         # - Reconstructing full per-candidate post-gem `Stats` is expensive.
         # - ForceGreatsFinder grouping only needs `BaseStats`, so keep full `Stats`
         #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
+        # cfg-driven only; the ambient GA_DECODE_INCLUDE_STATS env override was removed.
         include_full_stats = bool(
-            env_flag("GA_DECODE_INCLUDE_STATS", "0")
-            or (isinstance(cfg_data, dict) and (cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats")))
+            isinstance(cfg_data, dict)
+            and (cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats"))
         )
         fg_group_meta_enabled = bool(isinstance(calc_song, dict) and calc_song and fg_group_meta_limit_i != 0)
         base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
@@ -933,6 +935,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
                 gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
+                # hard_reset restores GA-buffer defaults; re-size for the rest of the
+                # song (was the GPU_NATIVE_GA_MAX_RUNS/GENOMES env bridge's job).
+                gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
                 _restore_song_gpu_state()
                 _stage_segment_initial_populations(
                     run_start=int(run_start_global),
@@ -1268,6 +1273,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         break
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
+                        # hard_reset restores GA-buffer defaults; re-size for the rest
+                        # of the song (was the env bridge's job before flag elimination).
+                        gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
                         _restore_song_gpu_state()
                         _stage_segment_initial_populations(
                             run_start=int(run_start_global),

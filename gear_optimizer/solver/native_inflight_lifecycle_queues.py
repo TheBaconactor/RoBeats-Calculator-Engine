@@ -91,14 +91,6 @@ class PostSender:
         self._post_queue = post_queue
         self._stop_requested = stop_requested
         backlog = 0
-        try:
-            backlog = int(env_get("POST_LOCAL_BACKLOG", backlog))
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:PostSender.__init__: {e}")
-            backlog = 0
-        backlog = int(backlog)
-        if backlog < 0:
-            backlog = 0
         self._q: queue.Queue[Any] = queue.Queue(maxsize=backlog)
         self._sentinel = object()
         self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)

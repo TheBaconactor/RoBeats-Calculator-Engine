@@ -66,7 +66,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     failed = 0
     total = int(total_tasks or 0)
     timing = env_flag("POST_TIMING")
-    sync_output = env_flag("POST_SYNC_OUTPUT", "1")
+    sync_output = True  # FG-coalesced print ordering is an output-coherence invariant (always on)
     timing_threshold_ms = 50.0
     try:
         timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))

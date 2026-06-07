@@ -24,15 +24,8 @@ from ..core.utils import parse_float as _safe_float, safe_int as _safe_int, timi
 
 # Global cache for SongTimelineGrid instances (one per song).
 # NOTE: Keep bounded to avoid runaway RAM growth on long runs over large song sets.
-from gear_optimizer.core.parsing import env_get
-
 logger = logging.getLogger(__name__)
-try:
-    _SONG_TIMELINE_GRID_CACHE_MAX = int(env_get("SONG_TIMELINE_GRID_CACHE_MAX", "128") or "128")
-except Exception as e:
-    logger.debug(f"fever_timeline: {e}")
-    _SONG_TIMELINE_GRID_CACHE_MAX = 128
-_SONG_TIMELINE_GRID_CACHE_MAX = max(0, int(_SONG_TIMELINE_GRID_CACHE_MAX))
+_SONG_TIMELINE_GRID_CACHE_MAX = 128
 SONG_TIMELINE_GRIDS: "OrderedDict[tuple, SongTimelineGrid]" = OrderedDict()
 
 def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
@@ -417,7 +410,7 @@ class SongTimelineGrid:
 
     GRID_SIZE = TOTAL_ROWS + 1  # 0 to 160 inclusive = 161
 
-    def __init__(self, calc_song, ref_arrays):
+    def __init__(self, calc_song, ref_arrays, *, bucket_mode: str | None = None):
         """
         Initialize the timeline grid for a song.
 
@@ -473,10 +466,10 @@ class SongTimelineGrid:
         # - a / signature: canonicalize by computed timeline signature (exact topology-cell
         #   reduction; always safe, but cannot avoid first-time compute for a new signature).
         #
-        # Default to exact signature bucketing so identical topology cells are reduced
-        # by default. Set TIMELINE_BUCKET_MODE=off to disable or TIMELINE_BUCKET_MODE=b
-        # to keep factor-only canonicalization.
-        self._bucket_mode = str(env_get("TIMELINE_BUCKET_MODE", "a") or "a").strip().lower()
+        # Production always uses exact signature bucketing ('a'). The optional
+        # `bucket_mode` constructor arg lets the bucketing validator build the
+        # unbucketed ('off') reference and the factor ('b') variant.
+        self._bucket_mode = str(bucket_mode or "a").strip().lower()
         if self._bucket_mode in {"none", "0", "false"}:
             self._bucket_mode = "off"
         if self._bucket_mode in {"factor", "factors", "b"}:

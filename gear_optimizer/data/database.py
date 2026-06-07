@@ -148,11 +148,7 @@ def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: b
     conn = conns.get(db_path)
     if conn is not None:
         return conn
-    try:
-        read_timeout = float(env_get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        read_timeout = 0.2
+    read_timeout = 0.2
     conn = get_db_connection_readonly(db_path, timeout=read_timeout)
     conns[db_path] = conn
     return conn

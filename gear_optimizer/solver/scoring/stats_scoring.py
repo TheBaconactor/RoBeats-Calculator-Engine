@@ -14,7 +14,6 @@ from math import ceil, floor
 import logging
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.parsing import env_get
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...core.utils import timing_envelope_full_context, timing_envelope_timing_context, safe_int, safe_float
@@ -39,12 +38,7 @@ _FG_BASELINE_CACHE_LOCK = threading.Lock()
 
 
 def _fg_baseline_grid_auto_threshold() -> int:
-    try:
-        threshold = int(env_get("FG_BASELINE_GRID_AUTO_THRESHOLD", "16") or "16")
-    except Exception as e:
-        logger.debug(f"stats_scoring:_fg_baseline_grid_auto_threshold: {e}")
-        threshold = 16
-    return max(0, min(int(threshold), 512))
+    return 16
 
 
 def _fg_baseline_cache_get(cache_key: tuple | None) -> tuple[int, int] | None:
@@ -415,7 +409,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
 
     # Fast path: use per-song fever_activations/gap grids to avoid per-(FT,FF) timeline stepping.
-    use_grid = str(env_get("FG_BASELINE_GRID", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+    use_grid = True  # grid baseline is output-identical and faster than the per-point path (always on)
     if prefer_grid is None:
         prefer_grid = False
         if use_grid:

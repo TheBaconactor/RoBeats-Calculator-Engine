@@ -15,7 +15,6 @@ import logging
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.env_config import env_flag
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.profile_events import emit_profile_event
@@ -200,11 +199,9 @@ def _upload_timeline_frontier_payload_slot(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-_CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(env_get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
+_CEILING_GROUP_PAYLOAD_CACHE_MAX = 32
 _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
-_CEILING_FRONTIER_PAYLOAD_CACHE_MAX = max(
-    1, int(env_get("CEILING_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8")
-)
+_CEILING_FRONTIER_PAYLOAD_CACHE_MAX = 8
 _ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _ceiling_payload_cache_lock = threading.RLock()
 _FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v4"
@@ -363,8 +360,6 @@ def _group_cache_put(base_song_key: tuple, payload: dict) -> None:
 
 
 def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int) -> dict | None:
-    if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
-        return None
     path = _frontier_disk_cache_path(cache_key)
     if not path.exists():
         return None
@@ -380,8 +375,6 @@ def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int)
 
 
 def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPayload | None:
-    if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
-        return None
     path = _frontier_disk_cache_path(cache_key)
     if not path.exists():
         return None
@@ -500,8 +493,6 @@ def _save_frontier_payload_to_disk(
     *,
     group_payload: dict | None = None,
 ) -> None:
-    if not env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1"):
-        return
     path = _frontier_disk_cache_path(cache_key)
     tmp: Path | None = None
     try:
@@ -887,7 +878,7 @@ def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> T
         if isinstance(cached, TimelineFrontierGridPayload):
             cache_source = "memory"
     disk_path = _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and env_flag("TIMELINE_FRONTIER_DISK_CACHE", "1") and disk_path.exists():
+    if cache_source == "missing" and disk_path.exists():
         cache_source = "disk"
 
     song_data = calc_song.get("song_data", {}) or {}

@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_flag, env_get, truthy
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
     get_evolution_db_path,
@@ -60,9 +60,6 @@ def _async_db_strict() -> bool:
     When enabled, async DB failures should surface to the caller so the optimizer
     doesn't continue "successfully" while persistence is broken.
     """
-    raw = env_get("METAFINDER_ASYNC_DB_STRICT")
-    if raw is not None:
-        return truthy(raw)
     return env_flag("GPU_STRICT", "1")
 
 

@@ -10,7 +10,6 @@ import logging
 import taichi as ti
 from gear_optimizer.core.parsing import env_int
 from .runtime import is_initialized, init_taichi
-from gear_optimizer.core.parsing import env_get
 IS_METAL = False
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
@@ -30,25 +29,15 @@ def _clamp_song_slots(n: int) -> int:
             logger.debug(f"fields:_clamp_song_slots: {e}")
         return 256
     return n
-MAX_TIMELINE_FRONTIER_SURFACES = env_int("GPU_TIMELINE_FRONTIER_SURFACES", 262144)
-MAX_TIMELINE_FRONTIER_SURFACES = max(1, min(int(MAX_TIMELINE_FRONTIER_SURFACES), 1_048_576))
+MAX_TIMELINE_FRONTIER_SURFACES = 262144  # GPU frontier field-size cap (within [1, 1_048_576] VRAM bound)
 MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
-MAX_TIMING_RESPONSE_COMBOS = env_int("GPU_TIMING_RESPONSE_ANTICHAIN_COMBOS", 2_000_000)
-MAX_TIMING_RESPONSE_COMBOS = max(MAX_FTFF_COMBOS, min(int(MAX_TIMING_RESPONSE_COMBOS), 8_000_000))
-GA_FTFF_REDUCE_BLOCK_DIM = env_int(
-    "GA_FTFF_REDUCE_BLOCK_DIM", 256
-)  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
-GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(GA_FTFF_REDUCE_BLOCK_DIM), 256))
-GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
-if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
-    GA_FTFF_REDUCE_BLOCK_DIM = 32
-GA_FG_CANDIDATES_PER_RUN = env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
-GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(GA_FG_CANDIDATES_PER_RUN)))
+MAX_TIMING_RESPONSE_COMBOS = 2_000_000  # GPU antichain field-size cap (>> MAX_FTFF_COMBOS, within 8_000_000 VRAM bound)
+GA_FTFF_REDUCE_BLOCK_DIM = 256  # Vulkan reduce block dim; MUST match kernels_helpers.py + kernels/ga_eval/warmstart.py
+GA_FG_CANDIDATES_PER_RUN = 64  # MUST match kernels/ga_eval/payload.py _GA_FG_CANDIDATES_PER_RUN
 GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
-GA_INIT_HEURISTIC_K = env_int("GPU_GA_INIT_HEURISTIC_K", 64)
-GA_INIT_HEURISTIC_K = max(0, min(256, int(GA_INIT_HEURISTIC_K)))
+GA_INIT_HEURISTIC_K = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
 ref_pp_field: ti.Field = None
 ref_cm_field: ti.Field = None
 ref_fm_field: ti.Field = None
@@ -111,6 +100,11 @@ DEFAULT_MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/downl
 DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE.
 MAX_GA_RUNS = DEFAULT_MAX_GA_RUNS
 MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
+# Non-env record of the last requested GA buffer sizing (replaces the
+# GPU_NATIVE_GA_MAX_RUNS / GPU_NATIVE_GA_MAX_GENOMES env bridge). Re-applied
+# before any early field allocation by _apply_requested_ga_run_buffers().
+_REQUESTED_MAX_GA_RUNS: int | None = None
+_REQUESTED_MAX_GA_RUN_GENOMES: int | None = None
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
 GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Small staging buffer for compact run payload downloads.
 ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
@@ -293,7 +287,7 @@ def reset_fields_state() -> None:
     globals so `ensure_fields_allocated()` can safely re-allocate and re-bind.
     """
     global _fields_allocated, _grid_fields_allocated
-    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
+    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES, _REQUESTED_MAX_GA_RUNS, _REQUESTED_MAX_GA_RUN_GENOMES
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
@@ -433,6 +427,14 @@ def reset_fields_state() -> None:
     timing_response_genome_length = None
     MAX_GA_RUNS = int(DEFAULT_MAX_GA_RUNS)
     MAX_GA_RUN_GENOMES = int(DEFAULT_MAX_GA_RUN_GENOMES)
+    # Restore-defaults-on-reset contract (docs/Implementation Records/
+    # GPU_GA_BUFFER_CONFIG_RESET_RESTORE.md): clear the requested record so a stale
+    # session size never silently re-applies after a hard_reset_taichi. The GA
+    # recovery paths (genetic_pipeline.py) explicitly re-call configure_ga_run_buffers()
+    # after a mid-run reset to re-size for the rest of the song -- fixing the
+    # padded-transfer cost WITHOUT breaking the restore-defaults contract.
+    _REQUESTED_MAX_GA_RUNS = None
+    _REQUESTED_MAX_GA_RUN_GENOMES = None
     _sync_skyline_aliases()
     _fields_allocated = False
     _grid_fields_allocated = False
@@ -457,7 +459,13 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
     shapes for the current session.
     Callers MUST invoke this before the first `ensure_fields_allocated()`/kernel run.
     """
-    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
+    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES, _REQUESTED_MAX_GA_RUNS, _REQUESTED_MAX_GA_RUN_GENOMES
+    # Record the requested sizing even if fields are already allocated, so a later
+    # reset_fields_state() + re-allocation re-applies it (replaces the env bridge).
+    if max_runs is not None:
+        _REQUESTED_MAX_GA_RUNS = int(max_runs)
+    if max_genomes is not None:
+        _REQUESTED_MAX_GA_RUN_GENOMES = int(max_genomes)
     if _fields_allocated:
         return
     if max_runs is not None:
@@ -469,36 +477,25 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
 
 def configure_skyline_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
     configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
-def _maybe_configure_ga_run_buffers_from_env() -> None:
+def _apply_requested_ga_run_buffers() -> None:
     """
-    Best-effort GA buffer sizing before the first field allocation.
-    This is primarily to avoid large padded Vulkan `to_numpy()` transfers for
-    GPU-native GA multi-run payloads when Taichi fields are allocated early
-    (e.g., by the GPU executor) before the GA code can call `configure_ga_run_buffers()`.
+    Re-apply the last requested GA buffer sizing before the first field allocation.
+
+    GA multi-run payloads otherwise allocate at the large defaults and incur big
+    padded Vulkan `to_numpy()` transfers when fields are allocated (e.g., by the
+    in-process GPU executor warmup) before the GA code's own
+    `configure_ga_run_buffers()` call. The requested sizes are recorded in-process
+    by `configure_ga_run_buffers()` (this replaces the former
+    `GPU_NATIVE_GA_MAX_RUNS` / `GPU_NATIVE_GA_MAX_GENOMES` env bridge).
     """
     if _fields_allocated:
         return
-    raw_runs = str(env_get("GPU_NATIVE_GA_MAX_RUNS", "") or "").strip()
-    raw_genomes = str(env_get("GPU_NATIVE_GA_MAX_GENOMES", "") or "").strip()
-    if not raw_runs and not raw_genomes:
+    if _REQUESTED_MAX_GA_RUNS is None and _REQUESTED_MAX_GA_RUN_GENOMES is None:
         return
-    max_runs = None
-    max_genomes = None
-    if raw_runs:
-        try:
-            max_runs = int(raw_runs)
-        except Exception as e:
-            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
-            max_runs = None
-    if raw_genomes:
-        try:
-            max_genomes = int(raw_genomes)
-        except Exception as e:
-            logger.debug(f"fields:_maybe_configure_ga_run_buffers_from_env: {e}")
-            max_genomes = None
-    if max_runs is None and max_genomes is None:
-        return
-    configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
+    configure_ga_run_buffers(
+        max_runs=_REQUESTED_MAX_GA_RUNS,
+        max_genomes=_REQUESTED_MAX_GA_RUN_GENOMES,
+    )
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().
@@ -855,7 +852,7 @@ def ensure_fields_allocated():
     if not is_initialized():
         init_taichi()
     if not _fields_allocated:
-        _maybe_configure_ga_run_buffers_from_env()
+        _apply_requested_ga_run_buffers()
         allocate_fields()
         global song_timestamps
         if song_timestamps is None:

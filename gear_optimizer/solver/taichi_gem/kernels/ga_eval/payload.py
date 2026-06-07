@@ -8,14 +8,12 @@ Includes:
 
 import taichi as ti
 
-from gear_optimizer.core.parsing import env_int
-
 from .. import kernels_helpers
 from .write_results import _best_combo_idx_from_chunk_state, _materialize_best_combo_stats
 
 
 # IMPORTANT: must match `fields.GA_FG_CANDIDATES_PER_RUN` at allocation time.
-_GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64))))
+_GA_FG_CANDIDATES_PER_RUN = 64
 _GA_FG_BASE_STATS_COLS = 7
 _GA_FG_RESULTS_COLS = 7
 _GA_FG_COLS = 1 + 9 + _GA_FG_RESULTS_COLS + _GA_FG_BASE_STATS_COLS  # score + ids + results + base_stats7

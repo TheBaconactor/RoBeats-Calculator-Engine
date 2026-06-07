@@ -83,7 +83,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         )
         self._banner_enabled = _banner_enabled_default(
             stream_is_tty=bool(self._stdout_is_tty),
-            banner_env=env_get("METAFINDER_BANNER"),
+            banner_env=ENV.banner_env,
         )
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
@@ -212,8 +212,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
         ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-        os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-        os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(GA_POPULATION_SIZE))
         try:
             from gear_optimizer.solver.taichi_gem import fields as gpu_fields
             gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
@@ -244,7 +242,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
     def _profiling_mode_enabled(self, cfg=None) -> bool:
-        if bool(getattr(ENV, "debug_profile", False)) or bool(getattr(ENV, "perf_timing_unconditional", False)):
+        if bool(ENV.debug_profile) or bool(ENV.perf_timing_unconditional):
             return True
         truthy_keys = (
             "DEBUG_PROFILE",
@@ -551,7 +549,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
         def _read_song_queue_limit() -> int:
             limit = int(self._current_runtime_settings(cfg).song_queue_limit)
-            for env_key in ("SONG_QUEUE_LIMIT", "METAFINDER_SONG_QUEUE_LIMIT"):
+            for env_key in ("SONG_QUEUE_LIMIT",):
                 raw = env_get(env_key)
                 if raw is None:
                     continue
@@ -952,7 +950,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             wait_s = float(self._current_runtime_settings(cfg).loop_restart_wait_sec)
         except (ValueError, TypeError):
             pass
-        for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC", "LOOP_RESTART_WAIT_SEC"):
+        for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC",):
             raw = env_get(env_key)
             if raw is None or str(raw).strip() == "":
                 continue

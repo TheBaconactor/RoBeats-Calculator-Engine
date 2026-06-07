@@ -57,44 +57,22 @@ def _int_value(value: Any, *, fallback: int) -> int:
         return int(fallback)
 
 
-def _env_override_int(env_get: Callable[..., Any], name: str) -> tuple[int | None, bool]:
-    try:
-        raw = env_get(name)
-    except (ValueError, TypeError):
-        return None, False
-    if raw is None or str(raw).strip() == "":
-        return None, False
-    try:
-        return int(str(raw).strip()), True
-    except (ValueError, TypeError):
-        return None, False
-
-
 def load_loop_batch_settings(
     *,
     env_config: Any,
     env_get: Callable[..., Any],
 ) -> LoopBatchSettings:
+    # GPU-owner loop batch base is hardwired (was GPU_EXECUTOR_BATCH_WAIT_MS /
+    # GPU_EXECUTOR_MAX_BATCH overrides). *_overridden stay False so the downstream
+    # effective-owner-batch widening always applies, as in production-no-override.
     wait_ms = _int_value(getattr(env_config, "gpu_executor_batch_wait_ms", 10) or 10, fallback=10)
     max_batch = _int_value(getattr(env_config, "gpu_executor_max_batch", 8) or 8, fallback=8)
-    wait_overridden = False
-    max_overridden = False
-
-    override, ok = _env_override_int(env_get, "GPU_EXECUTOR_BATCH_WAIT_MS")
-    if ok and override is not None:
-        wait_ms = int(override)
-        wait_overridden = True
-
-    override, ok = _env_override_int(env_get, "GPU_EXECUTOR_MAX_BATCH")
-    if ok and override is not None:
-        max_batch = int(override)
-        max_overridden = True
 
     return LoopBatchSettings(
         wait_ms=int(wait_ms),
         max_batch=int(max_batch),
-        wait_overridden=bool(wait_overridden),
-        max_overridden=bool(max_overridden),
+        wait_overridden=False,
+        max_overridden=False,
     )
 
 
@@ -140,50 +118,14 @@ def plan_loop_batch(
     )
 
 
-def _env_ms_as_seconds(
-    env_get: Callable[..., Any],
-    name: str,
-    default_ms: str,
-    *,
-    fallback_s: float,
-    min_s: float,
-    max_s: float,
-) -> float:
-    try:
-        raw_ms = env_get(name, default_ms)
-        value_s = float(str(raw_ms).strip()) / 1000.0
-    except (ValueError, TypeError):
-        value_s = float(fallback_s)
-    return max(float(min_s), min(float(value_s), float(max_s)))
-
-
-def _env_int(env_get: Callable[..., Any], name: str, default: str | None, *, fallback: int) -> int:
-    try:
-        raw = env_get(name, default) if default is not None else env_get(name)
-        return int(str(raw).strip())
-    except (ValueError, TypeError):
-        return int(fallback)
-
-
 def ga_recovery_streak_cap(*, env_get: Callable[..., Any]) -> int:
-    raw = _env_int(
-        env_get,
-        "GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX",
-        "1",
-        fallback=1,
-    )
-    return max(1, min(int(raw), 128))
+    # Hardwired to the most FG-protective value (was GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX=1).
+    return 1
 
 
 def ga_recovery_lookahead_limit(*, batch_max_size: int, env_get: Callable[..., Any]) -> int:
-    default_limit = max(8, min(max(1, int(batch_max_size)) * 4, 64))
-    raw = _env_int(
-        env_get,
-        "GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS",
-        str(default_limit),
-        fallback=default_limit,
-    )
-    return max(1, min(int(raw), 256))
+    # Hardwired to the batch-size-derived default (was GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS).
+    return max(8, min(max(1, int(batch_max_size)) * 4, 64))
 
 
 def load_inprocess_coalesce_settings(
@@ -193,58 +135,24 @@ def load_inprocess_coalesce_settings(
     env_get: Callable[..., Any],
     env_flag_fn: Callable[[str, str], bool],
 ) -> InProcessCoalesceSettings:
+    # Hardwired in-proc coalesce tuning (was GPU_EXECUTOR_INPROC_COALESCE +
+    # _IDLE_WAIT_MS=100 / _IDLE_RECENT_WAIT_MS=10 / _IDLE_RECENT_GRACE_MS=250 /
+    # _COALESCE_YIELD_ROUNDS / _COALESCE_AFTER_FIRST_MS=2). Yield rounds stay
+    # derived from max_wait_ms; after_first_ms drops to 0 when batching is off.
     max_wait_ms_i = int(max_wait_ms)
-    enabled = bool(env_flag_fn("GPU_EXECUTOR_INPROC_COALESCE", "1"))
+    enabled = True
     idle_wait_s = 0.1
     recent_idle_wait_s = 0.0
     recent_idle_grace_s = 0.0
     yields_left = 0
 
     if in_process_queues:
-        idle_wait_s = _env_ms_as_seconds(
-            env_get,
-            "GPU_EXECUTOR_INPROC_IDLE_WAIT_MS",
-            "100",
-            fallback_s=0.1,
-            min_s=0.0,
-            max_s=1.0,
-        )
-        recent_idle_wait_s = _env_ms_as_seconds(
-            env_get,
-            "GPU_EXECUTOR_INPROC_IDLE_RECENT_WAIT_MS",
-            "10",
-            fallback_s=0.01,
-            min_s=0.0,
-            max_s=idle_wait_s,
-        )
-        recent_idle_grace_s = _env_ms_as_seconds(
-            env_get,
-            "GPU_EXECUTOR_INPROC_IDLE_RECENT_GRACE_MS",
-            "250",
-            fallback_s=0.25,
-            min_s=0.0,
-            max_s=5.0,
-        )
-        default_yields = max(0, min(64, max_wait_ms_i))
-        raw_yields = env_get("GPU_EXECUTOR_INPROC_COALESCE_YIELD_ROUNDS")
-        if raw_yields is None or str(raw_yields).strip() == "":
-            yields_left = default_yields
-        else:
-            yields_left = _env_int(
-                env_get,
-                "GPU_EXECUTOR_INPROC_COALESCE_YIELD_ROUNDS",
-                None,
-                fallback=default_yields,
-            )
-        yields_left = max(0, min(int(yields_left), 256))
+        idle_wait_s = 0.1
+        recent_idle_wait_s = 0.01
+        recent_idle_grace_s = 0.25
+        yields_left = max(0, min(64, max_wait_ms_i))
 
-    after_first_ms = _env_int(
-        env_get,
-        "GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS",
-        "2",
-        fallback=0,
-    )
-    after_first_ms = max(0, int(after_first_ms))
+    after_first_ms = 2
     if max_wait_ms_i <= 0:
         after_first_ms = 0
 
@@ -680,20 +588,10 @@ def load_native_ga_batch_limits(
     *,
     env_get_fn: Callable[[str, Any], Any] = env_get,
 ) -> NativeGaBatchLimits:
-    try:
-        max_reqs = int(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "2") or "2")
-    except (ValueError, TypeError):
-        max_reqs = 2
-    max_reqs = max(1, min(int(max_reqs), 128))
-
-    try:
-        max_work_units = float(env_get_fn("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "240000") or "240000")
-    except (ValueError, TypeError):
-        max_work_units = 240000.0
-    if max_work_units <= 0.0:
-        max_work_units = float("inf")
-
-    return NativeGaBatchLimits(max_reqs=int(max_reqs), max_work_units=float(max_work_units))
+    # Hardwired (was GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS=2 / _MAX_WORK_UNITS=240000).
+    # The per-dispatch work-unit cap is a GPU TDR / oversized-submit safety bound -- baked
+    # and always active (the former 0=unbounded override is removed).
+    return NativeGaBatchLimits(max_reqs=2, max_work_units=240000.0)
 
 
 def plan_native_ga_batch_chunks(

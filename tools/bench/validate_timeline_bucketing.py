@@ -13,7 +13,6 @@ Environment:
 
 from __future__ import annotations
 
-import os
 import random
 import sys
 import time
@@ -116,12 +115,10 @@ def main() -> int:
     sample_pairs = sorted(sample_pairs)
 
     # Build baseline grids (mode=off)
-    os.environ["TIMELINE_BUCKET_MODE"] = "off"
-    baseline_grids = [SongTimelineGrid(cs, ref_arrays) for cs in songs]
+    baseline_grids = [SongTimelineGrid(cs, ref_arrays, bucket_mode="off") for cs in songs]
 
     # Build bucketed grids
-    os.environ["TIMELINE_BUCKET_MODE"] = mode
-    bucketed_grids = [SongTimelineGrid(cs, ref_arrays) for cs in songs]
+    bucketed_grids = [SongTimelineGrid(cs, ref_arrays, bucket_mode=mode) for cs in songs]
 
     t0 = time.perf_counter()
     mismatches = 0

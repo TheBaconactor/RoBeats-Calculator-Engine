@@ -6,7 +6,10 @@ from gear_optimizer.app_async_db import AsyncDbSaver
 
 
 def test_async_db_saver_strict_latches_errors_and_surfaces_them(monkeypatch):
-    monkeypatch.setenv("METAFINDER_ASYNC_DB_STRICT", "1")
+    # Async DB persistence is strict when GPU_STRICT is on (default); pin it so the
+    # test stays hermetic under a GPU_STRICT=0 dev/CI env. A save failure must latch
+    # and surface rather than continue "successfully".
+    monkeypatch.setenv("GPU_STRICT", "1")
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")

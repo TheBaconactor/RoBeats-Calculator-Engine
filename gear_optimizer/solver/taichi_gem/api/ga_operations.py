@@ -36,25 +36,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
     def get_kernels():
         return SimpleNamespace()
 from ..ga_chunking import compute_ga_combo_chunk
-from gear_optimizer.core.parsing import env_get
 from .common_operations import compute_array_sig, probability_to_u32_fp
 logger = logging.getLogger(__name__)
-_GA_PLATEAU_PRUNE_ENABLED: int = 0
-if env_flag("GPU_NATIVE_GA_PLATEAU_PRUNE"):
-    _GA_PLATEAU_PRUNE_ENABLED = 1
-_GA_COMBO_CHUNK_MIN: int = max(64, int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
-_GA_COMBO_CHUNK_MAX: int = max(
-    _GA_COMBO_CHUNK_MIN, int(env_get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
-)
-_GA_COMBO_TAIL_MERGE_MAX: int = max(0, int(env_get("GPU_NATIVE_GA_COMBO_TAIL_MERGE_MAX", "256") or 256))
-_GA_EVAL_BUDGET_RAW: str | None = None
-_GA_EVAL_BUDGET: int = int(MAX_EVALS_PER_DISPATCH)
-_GA_BASE_STATS_REUSE_RAW: str | None = None
-_GA_BASE_STATS_REUSE_ENABLED: int = 0
-_GA_EXACT_EVAL_RESULTS_REUSE_RAW: str | None = None
-_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED: int = 0
-_GA_EXACT_STATS_REUSE_RAW: str | None = None
-_GA_EXACT_STATS_REUSE_ENABLED: int = 0
+_GA_PLATEAU_PRUNE_ENABLED: int = 0  # plateau pruning off (was GPU_NATIVE_GA_PLATEAU_PRUNE; not proven bit-exact+faster)
+_GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
+_GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
+_GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
 _GA_KERNELS_LIGHT_WARMED: bool = False
 
 
@@ -168,63 +155,8 @@ def warmup_ga_kernels_light() -> None:
     ti.sync()
     _GA_KERNELS_LIGHT_WARMED = True
 def _ga_eval_budget() -> int:
-    global _GA_EVAL_BUDGET_RAW, _GA_EVAL_BUDGET
-    raw = env_get("GPU_NATIVE_GA_EVAL_BUDGET", None)
-    raw_norm = str(raw or "").strip()
-    if raw_norm == _GA_EVAL_BUDGET_RAW:
-        return int(_GA_EVAL_BUDGET)
-    _GA_EVAL_BUDGET_RAW = raw_norm
-    if raw_norm == "":
-        _GA_EVAL_BUDGET = int(MAX_EVALS_PER_DISPATCH)
-        return int(_GA_EVAL_BUDGET)
-    try:
-        val = int(raw_norm)
-    except Exception as e:
-        logger.debug(f"ga_operations:_ga_eval_budget: {e}")
-        _GA_EVAL_BUDGET = int(MAX_EVALS_PER_DISPATCH)
-        return int(_GA_EVAL_BUDGET)
-    _GA_EVAL_BUDGET = max(64, min(int(MAX_EVALS_PER_DISPATCH), int(val)))
-    return int(_GA_EVAL_BUDGET)
-def _ga_exact_genome_base_stats_reuse_enabled() -> int:
-    global _GA_BASE_STATS_REUSE_RAW, _GA_BASE_STATS_REUSE_ENABLED
-    raw = env_get("GPU_NATIVE_GA_BASE_STATS_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _GA_BASE_STATS_REUSE_RAW:
-        return int(_GA_BASE_STATS_REUSE_ENABLED)
-    _GA_BASE_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _GA_BASE_STATS_REUSE_ENABLED = 0
-    else:
-        _GA_BASE_STATS_REUSE_ENABLED = 1
-    return int(_GA_BASE_STATS_REUSE_ENABLED)
-def _ga_exact_genome_eval_results_reuse_enabled() -> int:
-    global _GA_EXACT_EVAL_RESULTS_REUSE_RAW, _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED
-    raw = env_get("GPU_NATIVE_GA_EXACT_EVAL_RESULTS_REUSE", None)
-    if raw is None:
-        raw = env_get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _GA_EXACT_EVAL_RESULTS_REUSE_RAW:
-        return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
-    _GA_EXACT_EVAL_RESULTS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED = 0
-    else:
-        _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED = 1
-    return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
-def _ga_exact_genome_stats_signature_reuse_enabled() -> int:
-    global _GA_EXACT_STATS_REUSE_RAW, _GA_EXACT_STATS_REUSE_ENABLED
-    raw = env_get("GPU_NATIVE_GA_EXACT_STATS_REUSE", None)
-    if raw is None:
-        raw = env_get("GPU_NATIVE_GA_SCORE_SIGNATURE_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _GA_EXACT_STATS_REUSE_RAW:
-        return int(_GA_EXACT_STATS_REUSE_ENABLED)
-    _GA_EXACT_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _GA_EXACT_STATS_REUSE_ENABLED = 0
-    else:
-        _GA_EXACT_STATS_REUSE_ENABLED = 1
-    return int(_GA_EXACT_STATS_REUSE_ENABLED)
+    # Per-dispatch exact-eval budget = the GPU TDR/memory chunking cap.
+    return int(MAX_EVALS_PER_DISPATCH)
 kernels = get_kernels()
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 _BASE_FIXED_STATS_CACHE: tuple | None = None
@@ -475,11 +407,6 @@ def ga_prepare_population_base_stats(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
-    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
-    exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
-    if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
-        kernels.ga_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
     kernels.ga_aggregate_and_init_best_kernel(
         n_genomes,
         n_slots,
@@ -495,12 +422,8 @@ def ga_prepare_population_base_stats(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
-        int(exact_genome_base_stats_reuse),
+        0,  # exact-eval reuse-map removed (per-generation host overhead; was always off)
     )
-    if exact_genome_base_stats_reuse:
-        kernels.ga_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
-    if exact_genome_stats_signature_reuse:
-        kernels.ga_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
 def ga_evaluate_prepared_population(
     n_genomes: int,
     n_slots: int = 9,
@@ -546,8 +469,6 @@ def ga_evaluate_prepared_population(
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     if use_exact_inner_solver_i == 0:
         raise ValueError("GA evaluation requires exact inner GPU solving.")
-    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled())
-    exact_genome_stats_signature_reuse = bool(_ga_exact_genome_stats_signature_reuse_enabled())
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
@@ -603,12 +524,10 @@ def ga_evaluate_prepared_population(
             song_slot_i,
             int(prune_plateaus_i),
             use_exact_inner_solver_i,
-            int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
+            0,  # exact-eval reuse-map removed (was always off)
         )
         kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
         offset += int(chunk_len)
-    if exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse:
-        kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
 def _validate_ga_runs_batch(
     *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
 ) -> tuple[int, int, int, int]:

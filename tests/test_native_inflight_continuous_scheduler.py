@@ -815,22 +815,16 @@ def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch)
     assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
 
 
-def test_read_inflight_event_wait_settings_defaults_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", raising=False)
-    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", raising=False)
-
-    assert abs(read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
-    assert abs(read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
-    assert abs(read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
-
+def test_read_inflight_event_wait_settings_are_hardwired(monkeypatch):
+    # The in-flight event-wait timings are now hardwired constants (no env
+    # override); setting the former env vars must have NO effect.
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "9.0")
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", "-1")
     monkeypatch.setenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", "100")
 
-    assert abs(read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
-    assert abs(read_inflight_event_wait_gpu_cap_s() - 0.0) < 1e-9
-    assert abs(read_inflight_event_wait_short_spin_s() - 0.05) < 1e-9
+    assert abs(read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
+    assert abs(read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
+    assert abs(read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
 
 
 def test_wait_for_completion_event_short_timeout_uses_zero_timeout_poll():

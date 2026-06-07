@@ -14,8 +14,6 @@ from gear_optimizer.helpers.song_helpers.database_context import (
 )
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_prev_record
 
-from gear_optimizer.core.parsing import env_get
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,22 +35,10 @@ _DB_CONTEXT_CACHE: "OrderedDict[tuple[str, str], tuple[float, Optional[dict], in
 
 
 def _db_context_cache_max() -> int:
-    try:
-        raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_MAX")
-        if raw is not None and str(raw).strip() != "":
-            return max(0, int(raw))
-    except Exception as e:
-        logger.debug(f"song_db_context:_db_context_cache_max: {e}")
     return 1024
 
 
 def _db_context_cache_ttl_s() -> float:
-    try:
-        raw = env_get("INFLIGHT_DB_CONTEXT_CACHE_TTL_SEC")
-        if raw is not None and str(raw).strip() != "":
-            return max(0.0, float(raw))
-    except Exception as e:
-        logger.debug(f"song_db_context:_db_context_cache_ttl_s: {e}")
     return 1.0
 
 

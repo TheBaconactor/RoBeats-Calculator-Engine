@@ -432,8 +432,9 @@ def get_kernel_profiler_enabled() -> bool:
 
 
 def get_block_dim() -> int:
-    # Empirically good defaults for this workload are 256.
-    return _clamp_block_dim(env_int("TAICHI_BLOCK_DIM", 256))
+    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the worklog-proven best for this
+    # workload; _clamp_block_dim keeps the Vulkan [1,1024] dispatch bound.
+    return _clamp_block_dim(256)
 
 
 def _get_offline_cache_dir() -> str:

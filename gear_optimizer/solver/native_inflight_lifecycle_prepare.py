@@ -250,13 +250,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
     n_genomes = int(GA_POPULATION_SIZE)
     init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k = 0
-    try:
-        init_heuristic_k = int(str(env_get("GPU_GA_INIT_HEURISTIC_K", "64") or "64"))
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:prepare_native_song: {e}")
-        init_heuristic_k = 64
-    init_heuristic_k = max(0, int(init_heuristic_k))
+    init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
     init_heuristic_copies = 25
     try:
         from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk

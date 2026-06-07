@@ -14,7 +14,6 @@ from cachetools import LRUCache
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_get
 from gear_optimizer.data.models import WarnOnce
 
 logger = logging.getLogger(__name__)
@@ -47,12 +46,12 @@ def _stable_cfg_hash(cfg_dict: dict | None) -> str:
     return out
 
 
-_BASE_CALC_SONG_CACHE_MAX = max(1, int(env_get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))
+_BASE_CALC_SONG_CACHE_MAX = 64
 _BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
 _BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
 
 _SONG_HEADER_CACHE_PATH = PATHS.bin_path("song_header_cache.json")
-_SONG_HEADER_CACHE_MAX = max(256, int(env_get("SONG_HEADER_CACHE_MAX", "4096") or "4096"))
+_SONG_HEADER_CACHE_MAX = 4096
 _SONG_HEADER_CACHE_LOCK = threading.Lock()
 _SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SONG_HEADER_CACHE_LOADED = False

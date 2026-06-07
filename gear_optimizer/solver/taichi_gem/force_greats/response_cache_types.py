@@ -8,14 +8,13 @@ from typing import Iterable
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.parsing import env_get
 
 from .response_types import FgResponseFrontierResult
 
 _FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v11"
-_MEMORY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_MEMORY_CACHE_MAX", "4096") or "4096"))
-_PAYLOAD_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_PAYLOAD_CACHE_MAX", "8") or "8"))
-_BUNDLE_ARRAY_CACHE_MAX = max(1, int(env_get("FG_RESPONSE_FRONTIER_BUNDLE_ARRAY_CACHE_MAX", "2") or "2"))
+_MEMORY_CACHE_MAX = 4096
+_PAYLOAD_CACHE_MAX = 8
+_BUNDLE_ARRAY_CACHE_MAX = 2
 _BUNDLE_KEY_MARKER = "all-stat-keys"
 _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
     (

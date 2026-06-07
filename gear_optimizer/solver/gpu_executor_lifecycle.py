@@ -81,19 +81,10 @@ def load_executor_start_settings(
     if system_timer_override_allowed_fn is None:
         system_timer_override_allowed_fn = _system_timer_override_allowed_shared
     if bool(in_process) and str(os_name) == "nt" and bool(system_timer_override_allowed_fn()):
-        try:
-            raw_wait = env_get_fn("GPU_EXECUTOR_BATCH_WAIT_MS")
-            if raw_wait is None or str(raw_wait).strip() == "":
-                base_wait_ms = int(getattr(env_config, "gpu_executor_batch_wait_ms", 10) or 10)
-                batch_wait_ms = min(int(base_wait_ms), 6)
-            else:
-                batch_wait_ms = int(str(raw_wait).strip())
-        except (ValueError, TypeError):
-            batch_wait_ms = 6
-        try:
-            after_first_ms = int(env_get_fn("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
-        except (ValueError, TypeError):
-            after_first_ms = 2
+        # Hardwired (was GPU_EXECUTOR_BATCH_WAIT_MS / GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS):
+        # in-proc base batch wait 10ms clamped to 6, after-first 2ms.
+        batch_wait_ms = min(int(getattr(env_config, "gpu_executor_batch_wait_ms", 10) or 10), 6)
+        after_first_ms = 2
         enable_high_res_timer = (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4)
 
     return ExecutorStartSettings(
@@ -675,18 +666,11 @@ class ShortWaitSpinSettings:
 
 
 def load_short_wait_spin_settings(env_get_fn: Callable[[str, str], Any]) -> ShortWaitSpinSettings:
-    try:
-        short_wait_spin_ms = float(str(env_get_fn("GPU_EXECUTOR_SHORT_WAIT_SPIN_MS", "3.0") or "3.0").strip())
-    except (ValueError, TypeError):
-        short_wait_spin_ms = 3.0
-    try:
-        short_wait_spin_yields = int(str(env_get_fn("GPU_EXECUTOR_SHORT_WAIT_SPIN_YIELD_ROUNDS", "8") or "8").strip())
-    except (ValueError, TypeError):
-        short_wait_spin_yields = 8
-
+    # Hardwired GPU-owner queue short-wait spin tuning
+    # (was GPU_EXECUTOR_SHORT_WAIT_SPIN_MS=3.0 / _YIELD_ROUNDS=8).
     return ShortWaitSpinSettings(
-        short_wait_spin_sec=max(0.0, float(short_wait_spin_ms) / 1000.0),
-        short_wait_spin_yield_rounds=max(0, min(int(short_wait_spin_yields), 100_000)),
+        short_wait_spin_sec=0.003,
+        short_wait_spin_yield_rounds=8,
     )
 
 
@@ -897,8 +881,8 @@ class WorkerResponseRouter:
 
 
 worker_response_router = WorkerResponseRouter(
-    pending_ttl_sec=max(0.0, float(getattr(ENV, "gpu_executor_pending_ttl_sec", 300.0) or 0.0)),
-    pending_max=max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0)),
+    pending_ttl_sec=300.0,
+    pending_max=2048,
 )
 
 # ---- merged from gpu_executor_worker_state.py ----

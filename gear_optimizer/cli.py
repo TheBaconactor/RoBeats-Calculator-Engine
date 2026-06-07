@@ -56,7 +56,7 @@ def _apply_debug_profile_env(cfg_path: str) -> None:
 
 
 def _apply_throughput_mode_env() -> None:
-    throughput = env_flag("METAFINDER_THROUGHPUT") or env_flag("THROUGHPUT_MODE")
+    throughput = env_flag("METAFINDER_THROUGHPUT")
     allow_profiling = env_flag("METAFINDER_ALLOW_PROFILING")
     if not throughput and allow_profiling:
         return

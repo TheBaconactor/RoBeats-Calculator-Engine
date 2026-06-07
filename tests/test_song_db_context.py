@@ -8,7 +8,6 @@ def _clear_cache() -> None:
 
 def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
     _clear_cache()
-    monkeypatch.setenv("INFLIGHT_DB_CONTEXT_CACHE_TTL_SEC", "60")
     calls: list[str] = []
 
     def _fake_load_database_progress_baseline(

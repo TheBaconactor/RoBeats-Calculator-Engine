@@ -10,7 +10,6 @@ These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
 import taichi as ti
-from gear_optimizer.core.parsing import env_float
 from . import kernels_helpers
 from .ga_eval.write_results import (
     _best_combo_idx_from_chunk_state,
@@ -18,7 +17,7 @@ from .ga_eval.write_results import (
     _refresh_live_score_from_chunk_state,
     _write_run_best_payload_row,
 )
-_GA_DIVERSE_PARENT_B_RATE = max(0.0, min(1.0, env_float("GPU_GA_DIVERSE_PARENT_B_RATE", 0.125)))
+_GA_DIVERSE_PARENT_B_RATE = 0.125  # FG-proxy diversity bias (was GPU_GA_DIVERSE_PARENT_B_RATE)
 _GA_DIVERSE_PARENT_B_RATE_FP = int(_GA_DIVERSE_PARENT_B_RATE * 4294967295.0)
 @ti.func
 def _repair_mini_uniqueness(

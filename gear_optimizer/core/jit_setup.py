@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from typing import Callable, TypeVar
 from .env_config import ENV
-from .parsing import env_flag
 _F = TypeVar("_F", bound=Callable[..., object])
 def _default_numba_cache_dir() -> str | None:
     """
@@ -19,7 +18,7 @@ def _default_numba_cache_dir() -> str | None:
         return str(cache_dir)
     except OSError:
         return None
-_NUMBA_DISK_CACHE_ENABLED = env_flag("NUMBA_DISK_CACHE", "1")
+_NUMBA_DISK_CACHE_ENABLED = True
 if _NUMBA_DISK_CACHE_ENABLED and "NUMBA_CACHE_DIR" not in os.environ:
     _cache_dir = _default_numba_cache_dir()
     if _cache_dir:
@@ -43,9 +42,10 @@ def jit(nopython: bool = True, cache: bool = True) -> Callable[[_F], _F]:
     Create a JIT decorator.
     Disk caching is enabled by default (respects the `cache=` argument) and is
     redirected to `bin/numba_cache/` unless `NUMBA_CACHE_DIR` is already set.
-    Disable globally via `NUMBA_DISK_CACHE=0`.
+    Always on (the NUMBA_DISK_CACHE override was removed; the disk cache only
+    skips recompilation, so JIT output is bit-identical).
     """
-    disk_cache_enabled = env_flag("NUMBA_DISK_CACHE", "1")
+    disk_cache_enabled = True
     use_cache = bool(cache) and disk_cache_enabled
     if use_cache:
         cache_dir = str(ENV.numba_cache_dir or "").strip()

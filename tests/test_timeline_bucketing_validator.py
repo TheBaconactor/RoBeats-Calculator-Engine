@@ -1,12 +1,9 @@
-import os
-
 import numpy as np
 import pytest
 
 from gear_optimizer.solver.fever_timeline import SongTimelineGrid
 
 
-from gear_optimizer.core.parsing import env_get
 def _make_calc_song(*, name: str, n_notes: int, duration: float) -> dict:
     ts = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float64)
     return {
@@ -49,24 +46,16 @@ def test_timeline_bucketing_matches_unbucketed(mode: str) -> None:
     ref_arrays = _make_ref_arrays_with_plateaus()
     calc_song = _make_calc_song(name="S", n_notes=500, duration=60.0)
 
-    env_prev = env_get("TIMELINE_BUCKET_MODE")
-    try:
-        os.environ["TIMELINE_BUCKET_MODE"] = "off"
-        base = SongTimelineGrid(calc_song, ref_arrays)
+    # Unbucketed reference vs the bucketed variant -- proves production mode 'a'
+    # (and 'b') reduce identical topology cells losslessly.
+    base = SongTimelineGrid(calc_song, ref_arrays, bucket_mode="off")
+    buck = SongTimelineGrid(calc_song, ref_arrays, bucket_mode=mode)
 
-        os.environ["TIMELINE_BUCKET_MODE"] = mode
-        buck = SongTimelineGrid(calc_song, ref_arrays)
+    # Sample a reasonable set of pairs (include boundaries).
+    pairs = [(0, 0), (0, 160), (160, 0), (160, 160), (80, 80), (40, 120), (120, 40)]
+    for i in range(0, 161, 7):
+        pairs.append((i, (i * 3) % 161))
+        pairs.append(((i * 5) % 161, i))
 
-        # Sample a reasonable set of pairs (include boundaries).
-        pairs = [(0, 0), (0, 160), (160, 0), (160, 160), (80, 80), (40, 120), (120, 40)]
-        for i in range(0, 161, 7):
-            pairs.append((i, (i * 3) % 161))
-            pairs.append(((i * 5) % 161, i))
-
-        for ft_idx, ff_idx in pairs:
-            assert _sig(base.get_timeline(ft_idx, ff_idx)) == _sig(buck.get_timeline(ft_idx, ff_idx))
-    finally:
-        if env_prev is None:
-            os.environ.pop("TIMELINE_BUCKET_MODE", None)
-        else:
-            os.environ["TIMELINE_BUCKET_MODE"] = env_prev
+    for ft_idx, ff_idx in pairs:
+        assert _sig(base.get_timeline(ft_idx, ff_idx)) == _sig(buck.get_timeline(ft_idx, ff_idx))

@@ -152,16 +152,22 @@ def test_legacy_ftff_solver_api_stays_deleted() -> None:
 
 
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
-    allowed = {
+    # The public GPU API surface is the `taichi_gem.api` and
+    # `taichi_gem.force_greats.api` packages (INCLUDING their submodules, e.g.
+    # `taichi_gem.api.timeline`), plus the `taichi_gem.runtime` module. Scoring
+    # may import from those. Everything DEEPER -- kernels, fields, force_greats
+    # internals, the bare taichi_gem package -- remains forbidden.
+    allowed_prefixes = (
         "gear_optimizer.solver.taichi_gem.api",
         "gear_optimizer.solver.taichi_gem.force_greats.api",
         "gear_optimizer.solver.taichi_gem.runtime",
         "taichi_gem.api",
         "taichi_gem.force_greats.api",
         "taichi_gem.runtime",
-    }
-    if module in allowed:
-        return False
+    )
+    for prefix in allowed_prefixes:
+        if module == prefix or module.startswith(prefix + "."):
+            return False
     if module == "gear_optimizer.solver.taichi_gem" or module.startswith("gear_optimizer.solver.taichi_gem."):
         return True
     if module == "taichi_gem" or module.startswith("taichi_gem."):

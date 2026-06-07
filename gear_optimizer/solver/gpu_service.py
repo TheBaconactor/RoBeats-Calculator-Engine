@@ -102,11 +102,7 @@ class GpuServiceClient:
         else:
             self._timeout_fatal = bool(timeout_fatal_default)
         self._request_timeout_default_enabled = bool(timeout_default_enabled)
-        try:
-            self._timeout_poll_sec = max(0.05, float(env_get("GPU_SERVICE_TIMEOUT_POLL_SEC", "0.25") or "0.25"))
-        except Exception as e:
-            logger.debug(f"gpu_service:__init__: {e}")
-            self._timeout_poll_sec = 0.25
+        self._timeout_poll_sec = 0.25
 
     @property
     def executor(self) -> GpuExecutor:
@@ -310,14 +306,10 @@ class GpuServiceClient:
                 fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
 
     def _request_timeout_sec_for(self, request_type: GpuRequestType) -> float:
-        env_key = (
-            "GPU_SERVICE_REQUEST_TIMEOUT_"
-            + "".join(ch if ch.isalnum() else "_" for ch in str(request_type.value or "").upper())
-            + "_SEC"
-        )
-        raw = str(env_get(env_key, "") or "").strip()
-        if not raw:
-            raw = str(env_get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
+        # Single canonical deployment-boundary timeout knob. The former
+        # dynamically-constructed per-type GPU_SERVICE_REQUEST_TIMEOUT_<TYPE>_SEC
+        # name was registry-invisible (a typo silently no-op'd it) and is removed.
+        raw = str(env_get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
 
         if raw:
             try:
