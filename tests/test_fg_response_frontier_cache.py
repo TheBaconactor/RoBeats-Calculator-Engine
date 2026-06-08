@@ -448,10 +448,10 @@ def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
 
 
 def test_response_frontier_job_prep_has_no_scoring_cache_prebuild_route() -> None:
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.helpers.song_helpers import force_greats
 
-    assert not hasattr(response_frontier_adapter, "prebuild_response_frontier_job_caches")
-    assert not hasattr(response_frontier_adapter, "prebuild_force_greats_response_frontier_candidate_cache")
+    assert not hasattr(force_greats, "prebuild_response_frontier_job_caches")
+    assert not hasattr(force_greats, "prebuild_force_greats_response_frontier_candidate_cache")
 
 
 def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> None:

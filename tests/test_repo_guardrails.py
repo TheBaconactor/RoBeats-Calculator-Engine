@@ -97,6 +97,7 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_inner.py",
+        "gear_optimizer/helpers/song_helpers/force_greats/response_frontier_adapter.py",
         "scripts/profile/profile_ga_gpu.py",
         "scripts/profile/profile_main_hot.py",
         "scripts/regression/ga_gpu_integration.py",
